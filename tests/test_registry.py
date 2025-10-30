@@ -3,8 +3,8 @@ from dataclasses import dataclass
 import torch
 
 from kfold.config import _resolve_registry_defaults
-from kfold.model.modules.seq_repr.base import BaseSeqReprModule
-from kfold.utils.registry import SEQ_REPR_MODULE, BaseConfig
+from kfold.model.modules.seq_encoder import BaseSequenceEncoder
+from kfold.utils.registry import SEQUNECE_ENCODER, BaseConfig, Registry
 
 
 @dataclass
@@ -13,8 +13,8 @@ class ExampleSeqReprConfig(BaseConfig):
     n_layers: int = 4
 
 
-@SEQ_REPR_MODULE.register(config_cls=ExampleSeqReprConfig)
-class ExampleSeqReprModule(BaseSeqReprModule):
+@SEQUNECE_ENCODER.register(config_cls=ExampleSeqReprConfig)
+class ExampleSeqReprModule(BaseSequenceEncoder):
     def __init__(self, cfg: ExampleSeqReprConfig):
         self.cfg: ExampleSeqReprConfig = cfg
 
@@ -56,5 +56,5 @@ if __name__ == "__main__":
     print(OmegaConf.to_yaml(overridden_config))
 
     # Create model
-    model = SEQ_REPR_MODULE.instantiate(overridden_config.model)
+    model = Registry.instantiate(overridden_config.model)
     print(type(model))

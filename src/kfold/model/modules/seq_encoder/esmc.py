@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import warnings
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 
-from kfold.model.modules.seq_repr.base import BaseSeqReprModule
-from kfold.utils.registry import SEQ_REPR_MODULE, BaseConfig
+from kfold.utils.registry import SEQUNECE_ENCODER, BaseConfig
+
+from .base import BaseSequenceEncoder
 
 try:
     from flash_attn.bert_padding import pad_input, unpad_input  # type:ignore
@@ -20,6 +22,7 @@ except ImportError:
     is_flash_attn_available = False
 
 
+@dataclass
 class ESMCConfig(BaseConfig):
     model_name: str = "ESMC_300M"
     d_model: int = 960
@@ -29,8 +32,8 @@ class ESMCConfig(BaseConfig):
     load_pretrained: bool = True
 
 
-@SEQ_REPR_MODULE.register(config_cls=ESMCConfig)
-class ESMC(BaseSeqReprModule):
+@SEQUNECE_ENCODER.register(config_cls=ESMCConfig)
+class ESMC(BaseSequenceEncoder):
     def __init__(self, cfg: ESMCConfig):
         super().__init__(cfg)
 
@@ -46,13 +49,11 @@ class ESMC(BaseSeqReprModule):
             None,
             cfg.n_layers,
             n_layers_geom=0,
-            use_flash_attn=self._use_flash_attn,
         )
 
         if cfg.load_pretrained:
             # Load pretrained weights
             model = load_local_model(cfg.model_name, device="cpu")
-            assert isinstance(model, ESMC)
             del model.sequence_head  # remove the head to avoid size mismatch
             self.load_state_dict(model.state_dict(), strict=True)
 

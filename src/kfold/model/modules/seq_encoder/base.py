@@ -2,11 +2,11 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.utils.registry import SEQ_REPR_MODULE
+from kfold.utils.registry import SEQUNECE_ENCODER
 
 
-@SEQ_REPR_MODULE.register()
-class BaseSeqReprModule(torch.nn.Module, ABC):
+@SEQUNECE_ENCODER.register()
+class BaseSequenceEncoder(torch.nn.Module, ABC):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg

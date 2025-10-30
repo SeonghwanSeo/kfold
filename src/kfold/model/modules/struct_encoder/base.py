@@ -2,11 +2,11 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.utils.registry import STRUCT_REPR_MODULE
+from kfold.utils.registry import STRUCTURE_ENCODER
 
 
-@STRUCT_REPR_MODULE.register()
-class BaseStructReprModule(torch.nn.Module, ABC):
+@STRUCTURE_ENCODER.register()
+class BaseStructureEncoder(torch.nn.Module, ABC):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg

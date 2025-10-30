@@ -5,11 +5,11 @@ global_config:
   c_atompair: 128
 
 model:
-  seq_repr:
-    _yaml_: "module/seq_repr/esmc_300m.yaml"
+  sequence_encoder:
+    _yaml_: "module/sequence_encoder/esmc_300m.yaml"
 
-  struct_repr:
-    _yaml_: "module/struct_repr/base.yaml"
+  structure_encoder:
+    _yaml_: "module/structure_encoder/base.yaml"
 
   transformer:
     _yaml_: "module/transformer/pairformer.yaml"

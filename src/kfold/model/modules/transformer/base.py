@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import torch
 
 from kfold.data.model_input import FoldingInput
-from kfold.utils.registry import STRUCT_REPR_MODULE, BaseConfig
+from kfold.utils.registry import TRANSFORMER_MODULE, BaseConfig
 
 # TODO (seonghwanseo): we can define some common parameters across different transformer
 # architectures, like seq_channel, token_channel, atom_channel, etc.
@@ -15,7 +15,7 @@ class BaseTransformerConfig(BaseConfig):
     num_blocks: int = 48
 
 
-@STRUCT_REPR_MODULE.register(config_cls=BaseTransformerConfig)
+@TRANSFORMER_MODULE.register(config_cls=BaseTransformerConfig)
 class BaseTransformer(torch.nn.Module, ABC):
     def __init__(self, cfg: BaseTransformerConfig):
         super().__init__()
