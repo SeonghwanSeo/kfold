@@ -1,0 +1,27 @@
+global_config:
+  c_s: 192 # token_channel
+  c_z: 128 # pair_channel
+  c_atom: 192
+  c_atompair: 128
+
+model:
+  seq_repr:
+    _yaml_: "module/seq_repr/esmc_300m.yaml"
+
+  struct_repr:
+    _yaml_: "module/struct_repr/base.yaml"
+
+  transformer:
+    _yaml_: "module/transformer/pairformer.yaml"
+    c_s: ${global_config.c_s}
+    c_z: ${global_config.c_z}
+    num_blocks: 24
+
+  diffusion:
+    _yaml_: "module/diffusion/base.yaml"
+
+  confidence_head:
+    _yaml_: "module/confidence_head/base.yaml"
+
+  distogram_head:
+    _yaml_: "module/distogram_head/simple.yaml"

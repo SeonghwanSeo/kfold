@@ -1,0 +1,9 @@
+_registry_: "transformer_module"
+_class_: "Pairformer"
+c_s: 384
+c_z: 128
+num_blocks: 48
+num_heads: 16
+dropout: 0.25
+pairwise_head_width: 32
+pairwise_num_heads: 4
