@@ -1,1 +1,1 @@
-from . import atoms, chain, residue  # noqa: F401
+from . import chain, residue, atom  # noqa: F401 # fmt: skip

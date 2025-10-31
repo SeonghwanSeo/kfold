@@ -33,6 +33,7 @@ torch_float = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 torch_int = (torch.int32, torch.int64)
 
 
+# === Base class for dataclass with tensor === #
 class TensorObj:
     def __getitem__(self, idx: int | slice | torch.Tensor) -> Self:
         fields = {
@@ -119,34 +120,42 @@ class Layout(TensorObj):
         raise NotImplementedError
 
 
+# === Layout dataclasses (chain-level, token-level, atom-level, bond-level) === #
 @dataclass(frozen=True, slots=True)
 class ChainLayout(Layout):
     """Chain-level layout information.
 
     Attributes
     ----------
-    chain_type: torch.Tensor
+    chain_type: torch.Tensor (int32)
         Chain types of shape [Nchain,], indicating the type of each chain.
-    entity_id: torch.Tensor
+    entity_id: torch.Tensor (int32)
         Entity IDs of shape [Nchain,], starting from 1.
-    asym_id: torch.Tensor
+    asym_id: torch.Tensor (int32)
         Asymmetric unit IDs of shape [Nchain,], starting from 1.
-    sym_id: torch.Tensor
+    sym_id: torch.Tensor (int32)
         Symmetry IDs of shape [Nchain,], starting from 1.
-    num_tokens: torch.Tensor
+    num_tokens: torch.Tensor (int32)
         Number of tokens per chain of shape [Nchain,].
+    num_residues: torch.Tensor (int32)
+        Number of residues per chain of shape [Nchain,].
+    num_atoms: torch.Tensor (int32)
+        Number of atoms per chain of shape [Nchain,].
+    pad_mask: torch.Tensor (bool)
+        Mask tensor of shape [Nchain,], indicating valid chains.
 
     # NOTE: this layout might not be used in model.forward(),
-    # but it is useful for data processing and analysis.
+    # but it may be useful for data processing and analysis.
 
     """
 
-    chain_type: torch.Tensor  # [Nchain,], int
-    entity_id: torch.Tensor  # [Nchain,], int
-    asym_id: torch.Tensor  # [Nchain,], int
-    sym_id: torch.Tensor  # [Nchain,], int
-    num_tokens: torch.Tensor  # [Nchain,], int
-    num_atoms: torch.Tensor  # [Nchain,], int
+    chain_type: torch.Tensor  # [Nchain,], int32
+    entity_id: torch.Tensor  # [Nchain,], int32
+    asym_id: torch.Tensor  # [Nchain,], int32
+    sym_id: torch.Tensor  # [Nchain,], int32
+    num_tokens: torch.Tensor  # [Nchain,], int32
+    num_residues: torch.Tensor  # [Nchain,], int32
+    num_atoms: torch.Tensor  # [Nchain,], int32
     pad_mask: torch.Tensor  # [Nchain,], bool
 
     def __len__(self) -> int:
@@ -159,6 +168,7 @@ class ChainLayout(Layout):
         check_tensor(self.asym_id, name="asym_id", dtype=torch_int, shape=(N,))
         check_tensor(self.sym_id, name="sym_id", dtype=torch_int, shape=(N,))
         check_tensor(self.num_tokens, name="num_tokens", dtype=torch_int, shape=(N,))
+        check_tensor(self.num_residues, name="num_residues", dtype=torch_int, shape=(N,))
         check_tensor(self.num_atoms, name="num_atoms", dtype=torch_int, shape=(N,))
 
     def pad(self, total_length: int) -> Self:
@@ -176,6 +186,7 @@ class ChainLayout(Layout):
             "asym_id": PAD_IDX,
             "sym_id": PAD_IDX,
             "num_tokens": PAD_IDX,
+            "num_residues": PAD_IDX,
             "num_atoms": PAD_IDX,
             "pad_mask": False,
         }
@@ -198,39 +209,39 @@ class TokenLayout(Layout):
 
     Attributes
     ----------
-    token_type: torch.Tensor
+    token_type: torch.Tensor (int32)
         Sequence tokens of shape [L,] (aatype, atom, ...)
-    chain_type: torch.Tensor
+    chain_type: torch.Tensor (int32)
         Chain types of shape [L,], indicating the type of each token.
-    residue_idx: torch.Tensor:
+    residue_idx: torch.Tensor (int32)
         Residue indices of shape [L,], used for residue-level operations.
         example)
             4-len polymer(protein/RNA/DNA):
                 residue_idx: [0, 1, 2, 3]
             6-sized ligand:
                 residue_idx: [0, 0, 0, 0, 0, 0]
-    disto_idx: torch.Tensor
+    disto_idx: torch.Tensor (int32)
         Distortion indices of shape [L,], used for distortion handling.
-    center_idx: torch.Tensor
+    center_idx: torch.Tensor (int32)
         Center indices of shape [L,], used for centering operations.
-    resolve_mask: torch.Tensor
+    resolved_mask: torch.Tensor (bool)
         Mask tensor of shape [L,], indicating tokens to be resolved.
-    pad_mask: torch.Tensor
+    pad_mask: torch.Tensor (bool)
         Mask tensor of shape [L,], indicating valid tokens.
-    is_pocket: torch.Tensor
+    is_pocket: torch.Tensor (bool)
         Boolean tensor of shape [L,], indicating whether the token is part of a pocket
     """
 
-    token_type: torch.Tensor  # [L,], int
-    chain_type: torch.Tensor  # [L,], int
-    asym_id: torch.Tensor  # [L,], int, same to sequence_id
-    entity_id: torch.Tensor  # [L,], int
-    sym_id: torch.Tensor  # [L,], int
-    residue_idx: torch.Tensor  # [L,], int
-    disto_idx: torch.Tensor  # [L,], int
-    center_idx: torch.Tensor  # [L,], int
-    cyclic_period: torch.Tensor  # [L,], int
-    resolve_mask: torch.Tensor  # [L,], bool
+    token_type: torch.Tensor  # [L,], int32
+    chain_type: torch.Tensor  # [L,], int32
+    entity_id: torch.Tensor  # [L,], int32
+    asym_id: torch.Tensor  # [L,], int23, same to sequence_id
+    sym_id: torch.Tensor  # [L,], int32
+    residue_idx: torch.Tensor  # [L,], int32
+    disto_idx: torch.Tensor  # [L,], int32
+    center_idx: torch.Tensor  # [L,], int32
+    cyclic_period: torch.Tensor  # [L,], int32
+    resolved_mask: torch.Tensor  # [L,], bool
     pad_mask: torch.Tensor  # [L,], bool
     is_pocket: torch.Tensor  # [L,], bool
 
@@ -241,8 +252,8 @@ class TokenLayout(Layout):
         L = len(self)
         check_tensor(self.token_type, name="token_type", dtype=torch_int, shape=(L,))
         check_tensor(self.chain_type, name="chain_type", dtype=torch_int, shape=(L,))
-        check_tensor(self.asym_id, name="asym_id", dtype=torch_int, shape=(L,))
         check_tensor(self.entity_id, name="entity_id", dtype=torch_int, shape=(L,))
+        check_tensor(self.asym_id, name="asym_id", dtype=torch_int, shape=(L,))
         check_tensor(self.sym_id, name="sym_id", dtype=torch_int, shape=(L,))
         check_tensor(self.residue_idx, name="residue_idx", dtype=torch_int, shape=(L,))
         check_tensor(self.disto_idx, name="disto_idx", dtype=torch_int, shape=(L,))
@@ -250,7 +261,9 @@ class TokenLayout(Layout):
         check_tensor(
             self.cyclic_period, name="cyclic_period", dtype=torch_int, shape=(L,)
         )
-        check_tensor(self.resolve_mask, name="resolve_mask", dtype=torch.bool, shape=(L,))
+        check_tensor(
+            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(L,)
+        )
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(L,))
         check_tensor(self.is_pocket, name="is_pocket", dtype=torch.bool, shape=(L,))
 
@@ -266,14 +279,14 @@ class TokenLayout(Layout):
         pad_values = {
             "token_type": PAD_IDX,
             "chain_type": PAD_IDX,
-            "asym_id": PAD_IDX,
             "entity_id": PAD_IDX,
+            "asym_id": PAD_IDX,
             "sym_id": PAD_IDX,
             "residue_idx": PAD_IDX,
             "disto_idx": PAD_IDX,
             "center_idx": PAD_IDX,
             "cyclic_period": 0,
-            "resolve_mask": False,
+            "resolved_mask": False,
             "pad_mask": False,
             "is_pocket": False,
         }
@@ -296,49 +309,53 @@ class AtomLayout(Layout):
 
     Attributes
     ----------
-    atom_type: torch.Tensor
-        Unique atom identifiers of shape [Natom,].
-    element: torch.Tensor
-        Atomic numbers of shape [Natom,].
-    charge: torch.Tensor
+    atom_name: torch.Tensor (int32)
+        Encoded atom name of shape [Natom, 4].
+        To be encoded as one-hot vector of size 64.
+    element: torch.Tensor (int32)
+        One-hot encoded atomic numbers of shape [Natom,].
+        To be encoded as one-hot vector of size 128.
+    charge: torch.Tensor (float32)
         Formal charges of shape [Natom,].
-    token_idx: torch.Tensor
+    token_idx: torch.Tensor (int32)
         Token indices mapping atoms to their parent tokens of shape [Natom,].
-    apo_coords: torch.Tensor
+    apo_coords: torch.Tensor (float32)
         Apo (unbound) state coordinates of shape [Natom, Napo, 3],
         where Napo is the number of apo conformations.
-    resolve_mask: torch.Tensor
+    resolved_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating atoms to be resolved.
-    pad_mask: torch.Tensor
+    pad_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating valid (non-padded) atoms.
-    label_coords: torch.Tensor
+    label_coords: torch.Tensor (float32)
         Holo (bound) state coordinates of shape [Natom, 3].
         This is used as the ground truth for training, and may be set to 0
         for inference.
     """
 
-    atom_type: torch.Tensor  # [Natom,], int
-    element: torch.Tensor  # [Natom,], int (Atomic Num)
-    charge: torch.Tensor  # [Natom,], int
-    token_idx: torch.Tensor  # [Natom,], int
-    apo_coords: torch.Tensor  # [Natom, Napo, 3], float
-    resolve_mask: torch.Tensor  # [Natom,], bool
+    atom_name: torch.Tensor  # [Natom, 4], int32, to be encoded one-hot (64-dim)
+    element: torch.Tensor  # [Natom], int32, to be encoded one-hot (128-dim)
+    charge: torch.Tensor  # [Natom,], float32
+    token_idx: torch.Tensor  # [Natom,], int32
+    apo_coords: torch.Tensor  # [Natom, Napo, 3], float32
+    resolved_mask: torch.Tensor  # [Natom,], bool
     pad_mask: torch.Tensor  # [Natom,], bool
-    label_coords: torch.Tensor  # [Natom, 3], float
+    label_coords: torch.Tensor  # [Natom, 3], float32
 
     def __len__(self) -> int:
-        return self.atom_type.shape[0]
+        return self.atom_name.shape[0]
 
     def __post_init__(self):
         N = len(self)
-        check_tensor(self.atom_type, name="atom_type", dtype=torch_int, shape=(N,))
+        check_tensor(self.atom_name, name="atom_name", dtype=torch_int, shape=(N, 4))
         check_tensor(self.element, name="element", dtype=torch_int, shape=(N,))
-        check_tensor(self.charge, name="charge", dtype=torch_int, shape=(N,))
+        check_tensor(self.charge, name="charge", dtype=torch_float, shape=(N,))
         check_tensor(self.token_idx, name="token_idx", dtype=torch_int, shape=(N,))
         check_tensor(
             self.apo_coords, name="apo_coords", dtype=torch_float, shape=(N, -1, 3)
         )
-        check_tensor(self.resolve_mask, name="resolve_mask", dtype=torch.bool, shape=(N,))
+        check_tensor(
+            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(N,)
+        )
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(N,))
         check_tensor(
             self.label_coords, name="label_coords", dtype=torch_float, shape=(N, 3)
@@ -354,12 +371,12 @@ class AtomLayout(Layout):
 
         # value: PAD_IDX means padding
         pad_values = {
-            "atom_type": PAD_IDX,
-            "element": PAD_IDX,
-            "charge": PAD_IDX,
+            "atom_name": 63,  # max value for atom_name encoding
+            "element": 127,  # max value for element encoding
+            "charge": 0.0,
             "token_idx": PAD_IDX,
             "apo_coords": 0.0,
-            "resolve_mask": False,
+            "resolved_mask": False,
             "pad_mask": False,
             "label_coords": 0.0,
         }
@@ -396,13 +413,13 @@ class BondLayout(Layout):
         Atom indices of the second atom in the bond of shape [Nbond,].
     """
 
-    asym_id_1: torch.Tensor  # [Nbond,], int
-    asym_id_2: torch.Tensor  # [Nbond,], int
-    token_idx_1: torch.Tensor  # [Nbond,], int
-    token_idx_2: torch.Tensor  # [Nbond,], int
-    atom_idx_1: torch.Tensor  # [Nbond,], int
-    atom_idx_2: torch.Tensor  # [Nbond,], int
-    bond_type: torch.Tensor  # [Nbond,], int
+    asym_id_1: torch.Tensor  # [Nbond,], int32
+    asym_id_2: torch.Tensor  # [Nbond,], int32
+    token_idx_1: torch.Tensor  # [Nbond,], int32
+    token_idx_2: torch.Tensor  # [Nbond,], int32
+    atom_idx_1: torch.Tensor  # [Nbond,], int32
+    atom_idx_2: torch.Tensor  # [Nbond,], int32
+    bond_type: torch.Tensor  # [Nbond,], int32
     pad_mask: torch.Tensor  # [Nbond,], bool
 
     def __len__(self) -> int:
@@ -501,6 +518,20 @@ class FoldingInput:
     @property
     def device(self) -> torch.device:
         return self.token.token_type.device
+
+    def extract_chains(self, asym_ids: list[int]) -> Self:
+        Nchain = int(self.chain.pad_mask.sum().item())
+        Ntoken = int(self.token.pad_mask.sum().item())
+        Natom = int(self.atom.pad_mask.sum().item())
+        Nbond = int(self.bond.pad_mask.sum().item())
+
+        return self.__class__(
+            chain=self.chain[:Nchain],
+            token=self.token[:Ntoken],
+            atom=self.atom[:Natom],
+            bond=self.bond[:Nbond],
+            metadata=self.metadata,
+        )
 
     def to_chains(self) -> list[ChainInput]:
         """Split the FoldingInput into a list of ChainInput for each chain.
@@ -631,6 +662,9 @@ class FoldingInput:
             asym_id=torch.tensor(chain_fields["asym_id"], dtype=torch.int, device=device),
             sym_id=torch.tensor(chain_fields["sym_id"], dtype=torch.int, device=device),
             num_tokens=torch.tensor(
+                chain_fields["num_tokens"], dtype=torch.int, device=device
+            ),
+            num_residues=torch.tensor(
                 chain_fields["num_tokens"], dtype=torch.int, device=device
             ),
             num_atoms=torch.tensor(
