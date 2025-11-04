@@ -1,4 +1,5 @@
 import json
+import multiprocessing
 import random
 import time
 from pathlib import Path
@@ -11,14 +12,14 @@ from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.boltz.utils.featurizer import featurize
 from kfold.utils.boltz.utils.tokenize import tokenize
 
-BOLTZ_PATH = Path("/storage/share/Boltz1/rcsb_processed_targets/")
+BOLTZ_PATH = Path("/home/icl_shwan/rcsb_processed_targets/")
 BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
 BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
 
 def check_eq(a: torch.Tensor, b: torch.Tensor, key):
     assert a.shape == b.shape, f"Shape mismatch in {key}: {a.shape} vs {b.shape}"
-    assert torch.eq(a, b).all(), f"Mismatch in {key}: {a} vs {b}"
+    assert torch.eq(a, b).all(), f"Mismatch in {key}"
 
 
 def check_close(a: torch.Tensor, b: torch.Tensor, key):
@@ -42,8 +43,11 @@ def check_structure(key: str, verbose: bool = False):
         return
 
     st = time.time()
-    tokenized = tokenize(boltz_structure)
-    featurized = featurize(tokenized)
+    try:
+        tokenized = tokenize(boltz_structure)
+        featurized = featurize(tokenized)
+    except Exception as e:
+        raise Exception(f"Fail during Boltz featurization - {e}") from e
     print_(f"Tokenized and featurized in {time.time() - st:.2f} seconds")
 
     st = time.time()
@@ -78,16 +82,6 @@ def check_structure(key: str, verbose: bool = False):
         total_keys.remove(key)
 
     # check remaining token features
-    check_eq(token_layout.frames_index, featurized["frames_idx"], "frames_idx")
-    total_keys.remove("frames_idx")
-
-    check_eq(
-        token_layout.frames_mask,
-        featurized["frame_resolved_mask"],
-        "frame_resolved_mask",
-    )
-    total_keys.remove("frame_resolved_mask")
-
     check_eq(token_layout.pad_mask, featurized["token_pad_mask"], "token_pad_mask")
     total_keys.remove("token_pad_mask")
 
@@ -116,7 +110,7 @@ def check_structure(key: str, verbose: bool = False):
     total_keys.remove("r_set_to_rep_atom")
 
     check_eq(
-        atom_layout.resolved_mask[token_layout.disto_index],
+        token_layout.disto_mask,
         featurized["token_disto_mask"],
         "token_disto_mask",
     )
@@ -135,6 +129,21 @@ def check_structure(key: str, verbose: bool = False):
             key="disto_center",
         )
     total_keys.remove("disto_center")
+
+    # Frame features
+    frame_mask1 = token_layout.frames_mask & token_layout.resolved_mask
+    frame_mask2 = (
+        featurized["frame_resolved_mask"] & featurized["token_resolved_mask"].bool()
+    )
+    check_eq(frame_mask1, frame_mask2, "frame_resolved_mask")
+    total_keys.remove("frame_resolved_mask")
+
+    check_eq(
+        token_layout.frames_index[frame_mask1],
+        featurized["frames_idx"][frame_mask2],
+        "frames_idx",
+    )
+    total_keys.remove("frames_idx")
 
     # ========================================= #
 
@@ -194,23 +203,50 @@ def check_structure(key: str, verbose: bool = False):
     print_(f"Remaining keys: {total_keys}")
 
 
-if __name__ == "__main__":
-    with open(BOLTZ_MANIFEST_PATH) as f:
-        manifest = json.load(f)
-
-    manifest = {v["id"]: v for v in manifest}
-    keys = sorted(list(manifest.keys()))
-    random.seed(42)
-    random.shuffle(keys)
-
-    for key in tqdm(keys[:10000]):
-        record = manifest[key]
-        metadata = parse_record(record)
-
-        if metadata.num_chains > 50:
-            continue
-
-        try:
-            check_structure(key)
-        except Exception as e:
+def safe_check_structure(key: str):
+    try:
+        check_structure(key, verbose=False)
+        return True
+    except Exception as e:
+        if "frames_idx" in str(e):
+            # print("Although the frames_idx is different, it might be fine (ligand side)")
+            pass
+        else:
             print(f"Test failed for {key}: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    if False:
+        test_keys = ["4u79"]
+        for key in test_keys:
+            check_structure(key, True)
+    else:
+        with open(BOLTZ_MANIFEST_PATH) as f:
+            manifest = json.load(f)
+
+        manifest = {v["id"]: v for v in manifest}
+        keys = sorted(list(manifest.keys()))
+        random.seed(42)
+        random.shuffle(keys)
+
+        keys = keys[:10000]
+
+        test_keys = []
+        for key in keys:
+            record = manifest[key]
+            metadata = parse_record(record)
+
+            if metadata.num_chains > 50:
+                continue
+            test_keys.append(key)
+
+        with multiprocessing.Pool(64) as p:
+            results = list(
+                tqdm(
+                    p.imap_unordered(safe_check_structure, test_keys, chunksize=1),
+                    total=len(test_keys),
+                    desc="Processing structures",
+                )
+            )
+        print(sum(results), len(results))

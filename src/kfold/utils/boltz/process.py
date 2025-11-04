@@ -1,105 +1,11 @@
-from typing import TypeVar
-
 import numpy as np
 import torch
 
 import kfold.constants as C
 from kfold.data import metadata, model_input
 
+from .process_utils import centering, compute_ligand_frames_inplace
 from .structure import BoltzStructure
-
-ArrayT = TypeVar("ArrayT", np.ndarray, torch.Tensor)
-
-
-def compute_ligand_frames_inplace(
-    token_layout: model_input.TokenLayout,
-    atom_layout: model_input.AtomLayout,
-    chain_layout: model_input.ChainLayout,
-):
-    """Update frames for non-polymer chains."""
-
-    def compute_collinear_mask(v1: torch.Tensor, v2: torch.Tensor):
-        norm1 = torch.norm(v1, dim=1, keepdim=True)
-        norm2 = torch.norm(v2, dim=1, keepdim=True)
-        v1 = v1 / (norm1 + 1e-6)
-        v2 = v2 / (norm2 + 1e-6)
-        mask_angle = torch.abs(torch.sum(v1 * v2, dim=1)) < 0.9063
-        mask_overlap1 = norm1.reshape(-1) > 1e-2
-        mask_overlap2 = norm2.reshape(-1) > 1e-2
-        return mask_angle & mask_overlap1 & mask_overlap2
-
-    num_chains = len(chain_layout)
-    is_ligand = chain_layout.is_ligand
-    num_atoms = chain_layout.num_atoms
-    num_tokens = chain_layout.num_tokens
-    token_starts = chain_layout.num_tokens.cumsum(0) - num_tokens
-    atom_starts = chain_layout.num_atoms.cumsum(0) - num_atoms
-
-    frames_index = token_layout.frames_index  # (Nt, 3)
-    frames_mask = token_layout.frames_mask  # (Nt,)
-
-    for i in range(num_chains):
-        if not is_ligand[i] or num_atoms[i] < 3:
-            continue
-
-        atom_st, atom_end = atom_starts[i], atom_starts[i] + num_atoms[i]
-        token_st, token_end = token_starts[i], token_starts[i] + num_tokens[i]
-        assert num_atoms[i] == num_tokens[i], (
-            "Ligand chain should have equal number of tokens and atoms."
-        )
-
-        coords = atom_layout.label_coords[atom_st:atom_end].reshape(-1, 3)
-        dist_mat = torch.cdist(coords, coords, p=2)
-
-        resolved_mask = atom_layout.resolved_mask[atom_st:atom_end]
-        resolved_pair = resolved_mask[None, :] & resolved_mask[:, None]
-        dist_mat = torch.where(resolved_pair, dist_mat, torch.tensor(1e6))
-        indices = dist_mat.argsort(dim=1)
-        frames = (
-            torch.stack([indices[:, 1], indices[:, 0], indices[:, 2]], dim=1) + atom_st
-        )
-        frames_index[token_st:token_end] = frames
-        frames_mask[token_st:token_end] = atom_layout.resolved_mask[frames].all(dim=1)
-
-    coords = atom_layout.label_coords.reshape(-1, 3)
-    frames_expanded = coords[frames_index]  # (Nt, 3, 3)
-    mask_collinear = compute_collinear_mask(
-        frames_expanded[:, 1] - frames_expanded[:, 0],
-        frames_expanded[:, 1] - frames_expanded[:, 2],
-    )
-    frames_mask[~mask_collinear] = False
-
-
-def centering(coords: ArrayT, mask: ArrayT, mask_to_zero: bool = True) -> ArrayT:
-    """Center coordinates based on the masked mean position.
-
-    Parameters
-    ----------
-    coords : np.ndarray | torch.Tensor
-        The coordinates tensor of shape (N, ..., 3).
-    mask : np.ndarray | torch.Tensor
-        The boolean mask tensor of shape (N,).
-    mask_to_zero : bool, optional
-        If True, positions where mask is False will be set to zero after centering.
-        # NOTE: this is not used in Boltz. (Boltz's masked coords is -center_pos)
-
-    Returns
-    -------
-    np.ndarray | torch.Tensor
-        The centered coordinates tensor of shape (N, ..., 3).
-
-    """
-    if not mask.any():
-        return coords
-    masked_coords = coords[mask]
-    if isinstance(masked_coords, np.ndarray):
-        center_pos = masked_coords.mean(axis=0, keepdims=True)
-    else:
-        center_pos = masked_coords.mean(dim=0, keepdim=True)
-    centered_coords = coords - center_pos
-    if mask_to_zero:
-        centered_coords[~mask] = 0.0
-    return centered_coords  # type: ignore
 
 
 def parse_record(record_json: dict) -> metadata.Metadata:
@@ -156,8 +62,7 @@ def parse_record(record_json: dict) -> metadata.Metadata:
 
 
 def parse_structure(
-    chains: np.ndarray,
-    structure: BoltzStructure,
+    chains: np.ndarray, structure: BoltzStructure
 ) -> model_input.FoldingInput:
     """Extract structure layout from BoltzStructure.
 
@@ -179,6 +84,7 @@ def parse_structure(
     boolean_fields = [
         "frames_mask",
         "resolved_mask",
+        "disto_mask",
         "pad_mask",
         "is_pocket",
     ]
@@ -217,10 +123,10 @@ def parse_structure(
         "residue_index": [],
         "disto_index": [],
         "center_index": [],
-        "cyclic_period": [],
         "frames_index": [],
         "resolved_mask": [],
         "frames_mask": [],
+        "disto_mask": [],
     }
 
     atom_info = {
@@ -281,6 +187,7 @@ def parse_structure(
             num_atoms_in_res = residue["atom_num"]
             atom_end = atom_start + num_atoms_in_res
             residue_atoms = structure.atoms[atom_start:atom_end]
+            is_res_present = residue["is_present"]
 
             if residue["is_standard"]:
                 # Proteins' amino acid and nucleic acids' base
@@ -292,32 +199,31 @@ def parse_structure(
                 token_info["asym_id"].append(asym_id)
                 token_info["entity_id"].append(entity_id)
                 token_info["sym_id"].append(sym_id)
-
                 token_info["residue_index"].append(chain_res_index)
+
+                # get center and disto atom
+                center_idx = residue["atom_center"] - atom_start
+                disto_idx = residue["atom_disto"] - atom_start
+                center_atom = residue_atoms[center_idx]
+                disto_atom = residue_atoms[disto_idx]
+
                 # shift atom indices to be relative to the entire structure
-                token_info["disto_index"].append(
-                    global_atom_idx + (residue["atom_disto"] - atom_start)
+                token_info["center_index"].append(global_atom_idx + center_idx)
+                token_info["disto_index"].append(global_atom_idx + disto_idx)
+                token_info["resolved_mask"].append(
+                    is_res_present & center_atom["is_present"]
                 )
-                token_info["center_index"].append(
-                    global_atom_idx + (residue["atom_center"] - atom_start)
-                )
-                token_info["resolved_mask"].append(residue["is_present"])
-                # NOTE: Boltz1 training set does not include cyclic_period info
-                token_info["cyclic_period"].append(0)
+                token_info["disto_mask"].append(is_res_present & disto_atom["is_present"])
 
                 # === Insert frame info === #
                 if res_name is C.residue.ResidueName.UNK or (num_atoms_in_res < 3):
                     # Unknown residue or insufficient atoms for frame
-                    frames_index = [0, 0, 0]
+                    frames_index = [0, 0, 0]  # placeholder
                     is_frames = False
                 else:
                     restype_atoms = C.atom.RESIDUE_ATOMS[res_name]
                     n, ca, c = C.atom.RESIDUE_FRAME_ATOMS[res_name]
-                    frames_index = [
-                        restype_atoms.index(n),
-                        restype_atoms.index(ca),
-                        restype_atoms.index(c),
-                    ]
+                    frames_index = [restype_atoms.index(a) for a in (n, ca, c)]
                     is_frames = residue_atoms[frames_index]["is_present"].all()
                 token_info["frames_index"].append(
                     [v + global_atom_idx for v in frames_index]
@@ -338,24 +244,25 @@ def parse_structure(
                 res_type = res_name.index
 
                 for atom in residue_atoms:
+                    is_present = is_res_present & atom["is_present"]
+
                     # === Insert token info === #
                     token_info["chain_type"].append(chain_type)
                     token_info["asym_id"].append(asym_id)
                     token_info["entity_id"].append(entity_id)
                     token_info["sym_id"].append(sym_id)
-
                     token_info["res_type"].append(res_type)
                     token_info["residue_index"].append(chain_res_index)
+
                     token_info["disto_index"].append(global_atom_idx)
                     token_info["center_index"].append(global_atom_idx)
-                    token_info["resolved_mask"].append(atom["is_present"])
-                    # NOTE: Boltz1 training set does not include cyclic_period info
-                    token_info["cyclic_period"].append(0)
+                    token_info["resolved_mask"].append(is_present)
+                    token_info["disto_mask"].append(is_present)
 
                     # === Insert frame info === #
                     token_info["frames_index"].append(
                         (global_atom_idx, global_atom_idx, global_atom_idx)
-                    )
+                    )  # placeholder
                     token_info["frames_mask"].append(False)
 
                     # === Insert atom info === #
@@ -469,7 +376,10 @@ def parse_structure(
 
     # Add additional fields
     token_info["token_index"] = torch.arange(1, len(token_info["res_type"]) + 1)
+    # FIXME: we may change this on-the-fly like Boltz
     token_info["is_pocket"] = torch.zeros_like(token_info["resolved_mask"])
+    # NOTE: Boltz1 training set does not include cyclic_period info
+    token_info["cyclic_period"] = torch.zeros_like(token_info["res_type"])
 
     # Add mask fields
     chain_info["pad_mask"] = torch.ones_like(chain_info["chain_type"], dtype=torch.bool)
@@ -503,6 +413,7 @@ def parse_structure(
         center_index=token_info["center_index"].view(Nt),
         frames_index=token_info["frames_index"].view(Nt, 3),
         resolved_mask=token_info["resolved_mask"].view(Nt),
+        disto_mask=token_info["disto_mask"].view(Nt),
         frames_mask=token_info["frames_mask"].view(Nt),
         pad_mask=token_info["pad_mask"].view(Nt),
         is_pocket=token_info["is_pocket"].view(Nt),
@@ -527,6 +438,7 @@ def parse_structure(
         bond_type=bond_info["bond_type"].view(Nb),
         pad_mask=bond_info["pad_mask"].view(Nb),
     )
+
     # Update ligand frames
     compute_ligand_frames_inplace(token_layout, atom_layout, chain_layout)
 

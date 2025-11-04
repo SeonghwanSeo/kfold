@@ -251,12 +251,14 @@ class TokenLayout(Layout):
         Center indices of shape [L,], used for centering operations.
     frames_index: torch.Tensor (int32)
         Frame indices of shape [L, 3], used for frame transformations.
+    disto_mask: torch.Tensor (bool)
+        Mask tensor of shape [L,], indicating disto atom of tokens to be resolved.
     resolved_mask: torch.Tensor (bool)
         Mask tensor of shape [L,], indicating tokens to be resolved.
-    pad_mask: torch.Tensor (bool)
-        Mask tensor of shape [L,], indicating valid tokens.
     frames_mask: torch.Tensor (bool)
         Boolean tensor of shape [L,], indicating whether the token's frame is resolved.
+    pad_mask: torch.Tensor (bool)
+        Mask tensor of shape [L,], indicating valid tokens.
     is_pocket: torch.Tensor (bool)
         Boolean tensor of shape [L,], indicating whether the token is part of a pocket
     """
@@ -271,10 +273,11 @@ class TokenLayout(Layout):
     disto_index: torch.Tensor  # [L,], int32
     center_index: torch.Tensor  # [L,], int32
     frames_index: torch.Tensor  # [L, 3], int32
-    cyclic_period: torch.Tensor  # [L,], int32
     resolved_mask: torch.Tensor  # [L,], bool
-    pad_mask: torch.Tensor  # [L,], bool
+    disto_mask: torch.Tensor  # [L,], bool
     frames_mask: torch.Tensor  # [L,], bool
+    pad_mask: torch.Tensor  # [L,], bool
+    cyclic_period: torch.Tensor  # [L,], int32
     is_pocket: torch.Tensor  # [L,], bool
 
     def __len__(self) -> int:
@@ -297,13 +300,14 @@ class TokenLayout(Layout):
             self.frames_index, name="frames_index", dtype=torch_int, shape=(L, 3)
         )
         check_tensor(
-            self.cyclic_period, name="cyclic_period", dtype=torch_int, shape=(L,)
-        )
-        check_tensor(
             self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(L,)
         )
+        check_tensor(self.disto_mask, name="disto_mask", dtype=torch.bool, shape=(L,))
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(L,))
         check_tensor(self.frames_mask, name="frames_mask", dtype=torch.bool, shape=(L,))
+        check_tensor(
+            self.cyclic_period, name="cyclic_period", dtype=torch_int, shape=(L,)
+        )
         check_tensor(self.is_pocket, name="is_pocket", dtype=torch.bool, shape=(L,))
 
     @cached_property
