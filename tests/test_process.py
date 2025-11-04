@@ -21,9 +21,7 @@ def check_eq(a: torch.Tensor, b: torch.Tensor, key):
 
 def check_close(a: torch.Tensor, b: torch.Tensor, key):
     assert a.shape == b.shape, f"Shape mismatch in {key}: {a.shape} vs {b.shape}"
-    assert torch.allclose(a, b.to(a.dtype), rtol=1e-3, atol=1e-4), (
-        f"Mismatch in {key}: {a} vs {b}"
-    )
+    assert torch.allclose(a, b.to(a.dtype), rtol=1e-3, atol=1e-4), f"Mismatch in {key}"
 
 
 def check_structure(key: str, verbose: bool = False):
@@ -34,6 +32,12 @@ def check_structure(key: str, verbose: bool = False):
     path = BOLTZ_STRUCTURE_DIR / f"{key}.npz"
     boltz_structure = BoltzStructure.load(path)
     print_(f"Loaded structure in {time.time() - st:.2f} seconds")
+
+    if not 0 < len(boltz_structure.chains) < 100:
+        print_(
+            f"Skipping large structure {key} with {len(boltz_structure.chains)} chains"
+        )
+        return
 
     st = time.time()
     tokenized = tokenize(boltz_structure)

@@ -372,6 +372,9 @@ def parse_structure(
 
     # Then iterate cross-chain bonds
     for bond in structure.connections:
+        if bond["atom_1"] not in atom_index_map or bond["atom_2"] not in atom_index_map:
+            continue
+
         # Map original atom indices to reindexed atom indices
         atom_1 = atom_index_map[bond["atom_1"]]
         atom_2 = atom_index_map[bond["atom_2"]]
