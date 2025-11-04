@@ -1,5 +1,6 @@
 import enum
 
+from . import residue
 from .residue import ResidueName
 
 
@@ -153,6 +154,15 @@ residue_atoms: dict[str, tuple[str, ...]] = {
            "N1", "C2",  "O2",  "N3",  "C4",  "O4",  "C5",  "C7",  "C6"),
     "DN": ("P",  "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'", "C1'")
 }  # fmt: skip
+
+RESIDUE_FRAME_ATOMS: dict[ResidueName, tuple[AtomName, AtomName, AtomName]] = {
+    ResidueName[res]: (AtomName.N, AtomName.CA, AtomName.C)
+    for res in residue.PROTEIN_RESIDUES
+} | {
+    ResidueName[res]: (AtomName.C1_PRIME, AtomName.C3_PRIME, AtomName.C4_PRIME)
+    for res in residue.RNA_RESIDUES + residue.DNA_RESIDUES
+}
+
 
 # atoms for each residue
 RESIDUE_ATOMS: dict[ResidueName, tuple[AtomName, ...]] = {

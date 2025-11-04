@@ -28,6 +28,7 @@ dependencies = [
   "numpy",
 
   # additional dependencies
+  "tqdm",
   "omegaconf",
   "rdkit",
   "gemmi==0.6.5",
