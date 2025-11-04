@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 import kfold.constants as C
-from kfold.data import model_input
+from kfold.data import metadata, model_input
 
 from .structure import BoltzStructure
 
@@ -49,7 +49,7 @@ def compute_ligand_frames_inplace(
         )
 
         coords = atom_layout.label_coords[atom_st:atom_end].reshape(-1, 3)
-        dist_mat = torch.cdist(coords, coords)
+        dist_mat = torch.cdist(coords, coords, p=2)
 
         resolved_mask = atom_layout.resolved_mask[atom_st:atom_end]
         resolved_pair = resolved_mask[None, :] & resolved_mask[:, None]
@@ -100,6 +100,59 @@ def centering(coords: ArrayT, mask: ArrayT, mask_to_zero: bool = True) -> ArrayT
     if mask_to_zero:
         centered_coords[~mask] = 0.0
     return centered_coords  # type: ignore
+
+
+def parse_record(record_json: dict) -> metadata.Metadata:
+    """Parse metadata record from JSON dictionary.
+
+    Parameters
+    ----------
+    record_json : dict
+        The metadata record in JSON format.
+
+    Returns
+    -------
+    Metadata
+        The parsed metadata object.
+    """
+    pdb_id = record_json["id"]
+    exp_record = metadata.ExperimentRecord(
+        pdb_id=record_json["id"], **record_json["structure"]
+    )
+
+    chain_infos = []
+    for cinfo in record_json["chains"]:
+        cinfo_meta = metadata.ChainInfo(
+            chain_type=C.chain.ChainType(cinfo["mol_type"]),
+            chain_name=cinfo["chain_name"],
+            num_residues=cinfo["num_residues"],
+            valid=cinfo["valid"],
+            entity_id=1,  # dummy value
+            asym_id=1,  # dummy value
+            sym_id=1,  # dummy value
+        )
+        chain_infos.append(cinfo_meta)
+
+    interface_infos = []
+    for iinfo in record_json["interfaces"]:
+        if iinfo["valid"] is False:
+            continue
+        asym_id1 = chain_infos[iinfo["chain_1"]].asym_id
+        asym_id2 = chain_infos[iinfo["chain_2"]].asym_id
+        interface_meta = metadata.InterfaceInfo(
+            asym_ids=[asym_id1, asym_id2],
+            is_bonded=False,
+        )
+        interface_infos.append(interface_meta)
+
+    return metadata.Metadata(
+        id=pdb_id,
+        source="rcsb",
+        exp=exp_record,
+        prediction=None,
+        chains=chain_infos,
+        interfaces=interface_infos,
+    )
 
 
 def parse_structure(

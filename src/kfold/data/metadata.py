@@ -1,12 +1,12 @@
 """Implemented from https://github.com/jwohlwend/boltz"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import kfold.constants as C
 
 
 @dataclass
-class RCSBRecord:
+class ExperimentRecord:
     """Metadata record from RCSB PDB."""
 
     pdb_id: str | None = None
@@ -35,13 +35,11 @@ class PredictionRecord:
 class ChainInfo:
     chain_type: C.chain.ChainType
     chain_name: str  # same to auth_asym_id
-    ccd: str | None  # None for protein/nucleic acid chains
     entity_id: int  # starts from 1
     asym_id: int  # starts from 1
     sym_id: int  # starts from 1
     num_residues: int
-    num_tokens: int
-    num_atoms: int
+    valid: bool = True
 
 
 @dataclass
@@ -60,10 +58,10 @@ class InterfaceInfo:
 class Metadata:
     id: str
     source: str  # e.g., "rcsb"
-    rcsb: RCSBRecord | None = None
+    exp: ExperimentRecord | None = None
     prediction: PredictionRecord | None = None
-    chains: list[ChainInfo] = []
-    interfaces: list[InterfaceInfo] = []
+    chains: list[ChainInfo] = field(default_factory=list)
+    interfaces: list[InterfaceInfo] = field(default_factory=list)
 
     def __post_init__(self):
         # FIXME: we may wand to add more sources later

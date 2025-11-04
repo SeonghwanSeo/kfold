@@ -1,3 +1,4 @@
+import json
 import random
 import time
 from pathlib import Path
@@ -5,12 +6,13 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
-from kfold.utils.boltz.process import parse_structure
+from kfold.utils.boltz.process import parse_record, parse_structure
 from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.boltz.utils.featurizer import featurize
 from kfold.utils.boltz.utils.tokenize import tokenize
 
 BOLTZ_PATH = Path("/storage/share/Boltz1/rcsb_processed_targets/")
+BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
 BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
 
@@ -193,11 +195,21 @@ def check_structure(key: str, verbose: bool = False):
 
 
 if __name__ == "__main__":
-    keys = sorted([p.stem for p in BOLTZ_STRUCTURE_DIR.glob("*.npz")])
+    with open(BOLTZ_MANIFEST_PATH) as f:
+        manifest = json.load(f)
+
+    manifest = {v["id"]: v for v in manifest}
+    keys = sorted(list(manifest.keys()))
     random.seed(42)
     random.shuffle(keys)
 
     for key in tqdm(keys[:10000]):
+        record = manifest[key]
+        metadata = parse_record(record)
+
+        if metadata.num_chains > 50:
+            continue
+
         try:
             check_structure(key)
         except Exception as e:
