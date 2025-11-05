@@ -53,7 +53,7 @@ class ESMC(BaseSequenceEncoder):
 
         if cfg.load_pretrained:
             # Load pretrained weights
-            model = load_local_model(cfg.model_name, device="cpu")
+            model = load_local_model(cfg.model_name, device=torch.device("cpu"))
             del model.sequence_head  # remove the head to avoid size mismatch
             self.load_state_dict(model.state_dict(), strict=True)
 

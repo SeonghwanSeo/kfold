@@ -21,43 +21,53 @@ RNA_RESIDUES: tuple[str, ...] = ("A", "G", "C", "U", "N")
 DNA_RESIDUES: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
 
 
-class ResidueName(enum.IntEnum):
+class ResidueName(enum.Enum):
     # protein
-    ALA = enum.auto()
-    ARG = enum.auto()
-    ASN = enum.auto()
-    ASP = enum.auto()
-    CYS = enum.auto()
-    GLN = enum.auto()
-    GLU = enum.auto()
-    GLY = enum.auto()
-    HIS = enum.auto()
-    ILE = enum.auto()
-    LEU = enum.auto()
-    LYS = enum.auto()
-    MET = enum.auto()
-    PHE = enum.auto()
-    PRO = enum.auto()
-    SER = enum.auto()
-    THR = enum.auto()
-    TRP = enum.auto()
-    TYR = enum.auto()
-    VAL = enum.auto()
-    UNK = enum.auto()
+    ALA = "ALA"
+    ARG = "ARG"
+    ASN = "ASN"
+    ASP = "ASP"
+    CYS = "CYS"
+    GLN = "GLN"
+    GLU = "GLU"
+    GLY = "GLY"
+    HIS = "HIS"
+    ILE = "ILE"
+    LEU = "LEU"
+    LYS = "LYS"
+    MET = "MET"
+    PHE = "PHE"
+    PRO = "PRO"
+    SER = "SER"
+    THR = "THR"
+    TRP = "TRP"
+    TYR = "TYR"
+    VAL = "VAL"
+    UNK = "UNK"
 
     # rna
-    A = enum.auto()
-    G = enum.auto()
-    C = enum.auto()
-    U = enum.auto()
-    N = enum.auto()
+    A = "A"
+    G = "G"
+    C = "C"
+    U = "U"
+    N = "N"
 
     # dna
-    DA = enum.auto()
-    DG = enum.auto()
-    DC = enum.auto()
-    DT = enum.auto()
-    DN = enum.auto()
+    DA = "DA"
+    DG = "DG"
+    DC = "DC"
+    DT = "DT"
+    DN = "DN"
+
+    @property
+    def index(self) -> int:
+        """Get the index of the residue in the enum."""
+        return residue_name_to_index[self]
+
+
+residue_name_to_index: dict[ResidueName, int] = {
+    atom: idx for idx, atom in enumerate(ResidueName)
+}
 
 
 protein_one_letter_to_residue_name: dict[str, ResidueName] = {

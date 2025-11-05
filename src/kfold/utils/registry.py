@@ -188,11 +188,9 @@ class Registry:
 # data
 DATAMODULE = Registry("datamodule")
 DATASET = Registry("dataset")
-TRANSFORM = Registry("transform")
-PRIOR_DISTRIBUTION = Registry("prior_distribution")
-TIME_DISTRIBUTION = Registry("time_distribution")
-INTERPOLANT = Registry("interpolant")
+DATA_FILTER = Registry("data_filter")
 
+# model
 SEQUNECE_ENCODER = Registry("sequence_encoder")
 STRUCTURE_ENCODER = Registry("structure_encoder")
 TRANSFORMER_MODULE = Registry("transformer_module")
