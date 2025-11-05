@@ -4,5 +4,5 @@ from . import (
     distogram_head,
     seq_encoder,
     struct_encoder,
-    transformer,
+    trunk,
 )

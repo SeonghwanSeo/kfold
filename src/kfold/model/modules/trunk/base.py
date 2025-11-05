@@ -10,8 +10,8 @@ from kfold.utils.registry import TRANSFORMER_MODULE, BaseConfig
 
 
 class BaseTransformerConfig(BaseConfig):
-    c_s: int = 384
-    c_z: int = 128
+    channel_s: int = 384
+    channel_z: int = 128
     num_blocks: int = 48
 
 

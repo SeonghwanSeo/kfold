@@ -592,6 +592,27 @@ class FoldingInput:
     def device(self) -> torch.device:
         return self.token.res_type.device
 
+    def get_atom_to_token(self) -> torch.Tensor:
+        """Return [Natom, Ntoken] dense mapping matrix from atoms to tokens."""
+        return self.atom_to_token
+
+    @cached_property
+    def atom_to_token(self) -> torch.Tensor:
+        """Return [Natom, Ntoken] sparse mapping matrix from atoms to tokens."""
+        Natom = int(self.atom.pad_mask.sum().item())
+
+        indices = torch.arange(Natom, device=self.device)
+        token_indices = self.atom.token_index[:Natom]
+        values = torch.ones(Natom, device=self.device)
+
+        atom_to_token = torch.sparse_coo_tensor(
+            indices=torch.stack([indices, token_indices], dim=0),
+            values=values,
+            size=(len(self.atom), len(self.token)),
+            device=self.device,
+        )
+        return atom_to_token
+
     def extract_chains(self, asym_ids: list[int]) -> Self:
         Nchain = int(self.chain.pad_mask.sum().item())
         Ntoken = int(self.token.pad_mask.sum().item())
