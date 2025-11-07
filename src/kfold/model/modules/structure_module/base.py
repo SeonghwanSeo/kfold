@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import torch
 
 from kfold.data.model_input import FoldingInput
-from kfold.model.modules.diffusion_module import BaseDiffusionModule
+from kfold.model.modules.score_model import BaseScoreModel
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 
@@ -17,7 +17,7 @@ class BaseStructureModule(ABC):
     NOTE: this is not a torch.nn.Module, as it may not have learnable parameters.
     """
 
-    def __init__(self, cfg: BaseConfig, score_model: BaseDiffusionModule):
+    def __init__(self, cfg: BaseConfig, score_model: BaseScoreModel):
         self.cfg = cfg
         self.score_model = score_model
 

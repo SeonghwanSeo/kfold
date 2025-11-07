@@ -1,12 +1,9 @@
-from collections.abc import Callable
-
 import torch
-import torch.nn.functional as F
 
-import kfold.constants as C
 from kfold.data.model_input import FoldingInput
+from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
+from kfold.model.layers.alphafold3.input_encoder import InputFeatureEmbedder
 from kfold.model.layers.alphafold3.primitives import LinearNoBias
-from kfold.model.layers.alphafold3.transformers import AtomAttentionEncoder
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 
 from .base import BaseInputEmbedder
@@ -14,6 +11,11 @@ from .base import BaseInputEmbedder
 
 @INPUT_EMBEDDER.register()
 class AF3InputEmbedder(BaseInputEmbedder):
+    """Input embedding module based on AlphaFold3.
+    See Section 3 Algorithm 1 and Algorithm 2 of AlphaFold3 paper.
+    Algorithm 1 Line[1-5]
+    """
+
     class Config(BaseConfig):
         """Configuration for the Input embedding module.
 
@@ -33,123 +35,104 @@ class AF3InputEmbedder(BaseInputEmbedder):
             The atom encoder depth.
         atom_encoder_heads: int,
             The atom encoder heads.
+        max_relative_token : int
+            The maximum relative residue distance for relative position encoding.
+        max_relative_chain : int
+            The maximum relative chain distance for relative position encoding.
         """
 
         channel_s: int = 384
+        channel_z: int = 128
         channel_atom: int = 128
         channel_atompair: int = 16
         atoms_per_window_queries: int = 32
         atoms_per_window_keys: int = 128
         atom_encoder_depth: int = 3
         atom_encoder_heads: int = 4
+        max_relative_token: int = 32
+        max_relative_chain: int = 2
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
+        self.channel_s = cfg.channel_s
+        self.channel_z = cfg.channel_z
+        self.channel_atom = cfg.channel_atom
+        self.channel_atompair = cfg.channel_atompair
 
-        self.encoder = AtomAttentionEncoderWithoutStructure(
+        self.encoder = InputFeatureEmbedder(
             channel_s=cfg.channel_s,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
-            channel_token=cfg.channel_s,  # Same to channel_s
             atoms_per_window_queries=cfg.atoms_per_window_queries,
             atoms_per_window_keys=cfg.atoms_per_window_keys,
-            num_blocks=cfg.atom_encoder_depth,
-            num_heads=cfg.atom_encoder_heads,
-        )
-
-        # residue info
-        self.num_res_types: int = C.NUM_RES_TYPES
-
-        # out projection
-        s_input_dim = cfg.channel_s + self.num_res_types + 32 + 1
-        self.s_init = LinearNoBias(s_input_dim, cfg.channel_s)
-
-    def forward(self, f_input: FoldingInput) -> torch.Tensor:
-        """Perform the forward pass.
-
-        Parameters
-        ----------
-        input : FoldingInput
-            Input features
-
-        Returns
-        -------
-        Tensor
-            The embedded tokens. [L, c_s]
-        """
-        # FIXME: add more
-
-        # Atom attention encoder forward
-        a, *_ = self.encoder(f_input)  # [L, c_s]
-
-        # Concatenate additional token features
-        res_type = f_input.token.res_type  # [L,]
-        profile = f_input.msa.profile  # [L,]
-        deletion_mean = f_input.msa.deletion_mean  # [L,]
-        s = torch.cat(
-            [
-                a,
-                F.one_hot(res_type, self.num_res_types).float(),
-                F.one_hot(profile, 32).float(),
-                deletion_mean.unsqueeze(-1),
-            ],
-            dim=-1,
+            atom_encoder_depth=cfg.atom_encoder_depth,
+            atom_encoder_heads=cfg.atom_encoder_heads,
         )
 
         # Project to model dimension
-        # NOTE: (SeonghwanSeo) I introduce additional linear layer to unify the dimension.
-        s = self.s_init(s)  # [L, c_s]
-
-        return s
-
-
-class AtomAttentionEncoderWithoutStructure(AtomAttentionEncoder):
-    """Atom attention encoder without structure information.
-    AlphaFold3 Algorithm 5 without noisy structure r_l.
-    """
-
-    def __init__(
-        self,
-        channel_s: int,
-        channel_atom: int,
-        channel_atompair: int,
-        channel_token: int,
-        num_blocks: int = 3,
-        num_heads: int = 4,
-        atoms_per_window_queries: int = 32,
-        atoms_per_window_keys: int = 128,
-        activation_checkpointing=False,
-    ):
-        super().__init__(
-            channel_s=channel_s,
-            channel_z=0,  # no pair embedding used in input embedding
-            channel_atom=channel_atom,
-            channel_atompair=channel_atompair,
-            channel_token=channel_token,
-            num_blocks=num_blocks,
-            num_heads=num_heads,
-            atoms_per_window_queries=atoms_per_window_queries,
-            atoms_per_window_keys=atoms_per_window_keys,
-            use_structure=False,
-            activation_checkpointing=activation_checkpointing,
+        # Line 2
+        self.linear_no_bias_s_init = LinearNoBias(cfg.channel_s, cfg.channel_s)
+        # Line 3
+        self.linear_no_bias_z_init1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
+        self.linear_no_bias_z_init2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
+        # Line 4
+        self.relative_pos_encoding = RelativePositionEncoding(
+            cfg.channel_z, r_max=cfg.max_relative_token, s_max=cfg.max_relative_chain
         )
+        # Line 5
+        self.linear_no_bias_bond = LinearNoBias(1, cfg.channel_z)
 
     def forward(
-        self,
-        f_input: FoldingInput,
-        s_trunk: torch.Tensor | None = None,
-        z: torch.Tensor | None = None,
-        r: torch.Tensor | None = None,
-        model_cache: dict | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Callable]:
-        assert s_trunk is None and z is None and r is None, (
-            "s_trunk, z_trunk, r must be None"
-        )
-        assert model_cache is None, "model_cache must be None in input embedding."
-        a, q, c, p, to_keys = super().forward(f_input, s_trunk, z, r, model_cache)
+        self, f_input: FoldingInput, model_cache: dict | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass of embedding module.
 
-        assert a.shape[0] == 1, "Batch size must be 1 for input embedding."
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
 
-        # Squeeze batch dimension
-        a, q, c, p = a.squeeze(0), q.squeeze(0), c.squeeze(0), p.squeeze(0)
-        return a, q, c, p, to_keys
+        Returns
+        -------
+        s_inputs : torch.Tensor
+            Tensor of shape (L, C_s) containing input single features
+        s_init: torch.Tensor
+            Tensor of shape (L, C_s) containing initial single representation
+            before trunk.
+        z_init: torch.Tensor
+            Tensor of shape (L, L, C_s) containing initial pair representation
+            before trunk.
+        """
+
+        # Line 1
+        s_inputs = self.encoder(f_input)  # [L, c_s]
+
+        # Get initial single and pair representations
+        # Line 2
+        s_init = self.linear_no_bias_s_init(s_inputs)  # [L, c_s]
+
+        # Line 3
+        z_init = (
+            self.linear_no_bias_z_init1(s_inputs)[None, :, :]
+            + self.linear_no_bias_z_init2(s_inputs)[:, None, :]
+        )  # [L, L, c_z]
+
+        # Line 4
+        # NOTE: cache the relative position encoding if possible for efficiency
+        z_init = z_init + self.relative_pos_encoding(f_input, model_cache)  # [L, c_z]
+
+        # Line 5
+        z_init = z_init + self.linear_no_bias_bond(
+            self.get_adjacency_matrix(f_input.bond.token_index, f_input.num_tokens)
+        )  # [L, L, c_z]
+
+        return s_inputs, s_init, z_init
+
+    def get_adjacency_matrix(
+        self, bond_index: torch.Tensor, num_tokens: int
+    ) -> torch.Tensor:
+        """Get the adjacency bond matrix from the input features."""
+        adj = torch.zeros((num_tokens, num_tokens), device=bond_index.device)
+        adj[bond_index[:, 0], bond_index[:, 1]] = 1.0
+        adj[bond_index[:, 1], bond_index[:, 0]] = 1.0  # undirected
+        return adj.unsqueeze(-1)  # [L, L, 1]

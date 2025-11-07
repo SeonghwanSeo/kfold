@@ -3,11 +3,11 @@ from abc import ABC, abstractmethod
 import torch
 
 from kfold.data.model_input import FoldingInput
-from kfold.utils.registry import DIFFUSION_MODULE
+from kfold.utils.registry import SCORE_MODEL
 
 
-@DIFFUSION_MODULE.register()
-class BaseDiffusionModule(torch.nn.Module, ABC):
+@SCORE_MODEL.register()
+class BaseScoreModel(torch.nn.Module, ABC):
     """Base class for diffusion score model modules.
     See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3
     """

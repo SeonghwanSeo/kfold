@@ -3,7 +3,7 @@ from . import (  # noqa
     structure_encoder,
     input_embedder,
     trunk,
-    diffusion_module,
+    score_model,
     structure_module,
     distogram_head,
     confidence_head,

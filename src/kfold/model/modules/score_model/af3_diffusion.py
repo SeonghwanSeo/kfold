@@ -4,13 +4,13 @@ import torch
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.layers.alphafold3.diffusion import DiffusionModule
-from kfold.utils.registry import DIFFUSION_MODULE, BaseConfig
+from kfold.utils.registry import SCORE_MODEL, BaseConfig
 
-from .base import BaseDiffusionModule
+from .base import BaseScoreModel
 
 
-@DIFFUSION_MODULE.register()
-class AF3DiffusionModule(BaseDiffusionModule):
+@SCORE_MODEL.register()
+class AF3DiffusionModule(BaseScoreModel):
     """AF3 Diffusion module
     Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
     """

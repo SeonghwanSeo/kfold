@@ -2,14 +2,14 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.utils.registry import TRANSFORMER_MODULE, BaseConfig
+from kfold.utils.registry import TRUNK, BaseConfig
 
 # TODO (seonghwanseo): we can define some common parameters across different transformer
 # architectures, like seq_channel, token_channel, atom_channel, etc.
 
 
-@TRANSFORMER_MODULE.register()
-class BaseTransformer(torch.nn.Module, ABC):
+@TRUNK.register()
+class BaseTrunk(torch.nn.Module, ABC):
     class Config(BaseConfig):
         channel_s: int = 384
         channel_z: int = 128

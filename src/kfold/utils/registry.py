@@ -211,10 +211,10 @@ STRUCTURE_ENCODER = Registry("structure_encoder")
 INPUT_EMBEDDER = Registry("input_embedder")
 
 # pairformer
-TRANSFORMER_MODULE = Registry("transformer_module")
+TRUNK = Registry("trunk")
 
 STRUCTURE_MODULE = Registry("structure_module")
-DIFFUSION_MODULE = Registry("diffusion_module")
+SCORE_MODEL = Registry("score_model")
 AFFINITY_HEAD = Registry("affinity_head")
 CONFIDENCE_HEAD = Registry("confidence_head")
 DISTOGRAM_HEAD = Registry("distogram_head")

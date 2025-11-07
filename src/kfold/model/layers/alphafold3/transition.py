@@ -74,5 +74,5 @@ class Transition(nn.Module):
                 if i == 0:
                     x_out = x_chunk @ fc3_slice.T
                 else:
-                    x_out = x_out + x_chunk @ fc3_slice.T
-            return x_out
+                    x_out = x_out + x_chunk @ fc3_slice.T  # type: ignore
+            return x_out  # type: ignore

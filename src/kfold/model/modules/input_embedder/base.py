@@ -9,7 +9,7 @@ from kfold.utils.registry import INPUT_EMBEDDER
 @INPUT_EMBEDDER.register()
 class BaseInputEmbedder(torch.nn.Module, ABC):
     """Base class for input feature embedding modules.
-    See Section 3.1.1: InputEmbedder, Algorithm 2 of AlphaFold3 paper.
+    See Section 3 Algorithm 1 Line [1-5] of AlphaFold3 paper.
     """
 
     def __init__(self, cfg):
@@ -17,7 +17,9 @@ class BaseInputEmbedder(torch.nn.Module, ABC):
         self.cfg = cfg
 
     @abstractmethod
-    def forward(self, f_input: FoldingInput) -> torch.Tensor:
+    def forward(
+        self, f_input: FoldingInput, model_cache: dict | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of embedding module.
 
         Parameters
@@ -27,6 +29,12 @@ class BaseInputEmbedder(torch.nn.Module, ABC):
 
         Returns
         -------
-        s : torch.Tensor
-            Tensor of shape (L, C_s) containing sequence embeddings.
+        s_inputs : torch.Tensor
+            Tensor of shape (L, C_s) containing input single features
+        s_init: torch.Tensor
+            Tensor of shape (L, C_s) containing initial single representation
+            before trunk.
+        z_init: torch.Tensor
+            Tensor of shape (L, L, C_s) containing initial pair representation
+            before trunk.
         """

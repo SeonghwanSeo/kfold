@@ -2,14 +2,14 @@ import torch
 
 from kfold.utils.registry import DISTOGRAM_HEAD
 
-from .base import BaseDistogramHead, BaseDistogramHeadConfig
+from .base import BaseDistogramHead
 
 
-@DISTOGRAM_HEAD.register(config_cls=BaseDistogramHeadConfig)
+@DISTOGRAM_HEAD.register()
 class DistogramHead(BaseDistogramHead):
-    def __init__(self, cfg: BaseDistogramHeadConfig):
+    def __init__(self, cfg: BaseDistogramHead.Config):
         super().__init__(cfg)
-        self.linear = torch.nn.Linear(cfg.c_z, cfg.num_bins)
+        self.linear = torch.nn.Linear(cfg.channel_z, cfg.num_bins)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Forward pass of distogram head module.

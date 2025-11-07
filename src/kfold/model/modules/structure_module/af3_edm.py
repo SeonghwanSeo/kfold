@@ -7,7 +7,7 @@ import torch.nn.functional as F
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.layers.alphafold3.utils import CenterRandomAugmentation
-from kfold.model.modules.diffusion_module.base import BaseDiffusionModule
+from kfold.model.modules.score_model.base import BaseScoreModel
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseStructureModule
@@ -67,7 +67,7 @@ class AF3AtomDiffusion(BaseStructureModule):
         coordinate_augmentation: bool = True
         synchronize_sigmas: bool = False
 
-    def __init__(self, cfg: Config, score_model: BaseDiffusionModule):
+    def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the atom diffusion module."""
         super().__init__(cfg, score_model)
         self.sigma_min: float = cfg.sigma_min

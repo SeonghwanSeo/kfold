@@ -594,6 +594,18 @@ class FoldingInput:
         )
 
     @property
+    def num_chains(self) -> int:
+        return len(self.chain)
+
+    @property
+    def num_tokens(self) -> int:
+        return len(self.token)
+
+    @property
+    def num_atoms(self) -> int:
+        return len(self.atom)
+
+    @property
     def device(self) -> torch.device:
         return self.token.res_type.device
 

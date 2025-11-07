@@ -9,7 +9,8 @@ Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/b
 
 | Section | Algorithm | Class | File |
 |---------|-----------|------| -----|
-| **3.1** Input Embeddings  | Algorithm 3  | RelativePositionEncoding | `embeddings.py` |
+| **3.1** Input Embeddings  | Algorithm 2  | InputFeatureEmbedder | `input_encoder.py` |
+|                           | Algorithm 3  | RelativePositionEncoding | `embeddings.py` |
 | **3.2** Atom attention    | Algorithm 5  | AtomAttentionEncoder | `transformers.py` |
 |                           | Algorithm 6  | AtomAttentionDecoder | `transformers.py` |
 |                           | Algorithm 7  | AtomTransformer | `transformers.py` |

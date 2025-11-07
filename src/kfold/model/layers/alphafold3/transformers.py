@@ -696,7 +696,7 @@ class AtomAttentionEncoder(nn.Module):
             W, H = self.atoms_per_window_queries, self.atoms_per_window_keys
             K = Na // W
             indexing_matrix = get_indexing_matrix(K, W, H, f_input.device)
-            to_keys = partial(single_to_keys(), indexing_matrix=indexing_matrix, W=W, H=H)
+            to_keys = partial(single_to_keys, indexing_matrix=indexing_matrix, W=W, H=H)
 
             # Initialize single conditioning and pair representations
             # Line 1
