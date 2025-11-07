@@ -184,6 +184,19 @@ class Registry:
 
         return module
 
+    def print_registered(self) -> None:
+        """Print all registered modules in the registry."""
+        print(f"<Registry: {self.name}>")
+        for name in self._module_dict.keys():
+            print(f"  - {name}")
+
+    @classmethod
+    def print_all_registered(cls) -> None:
+        """Print all registered modules in all registries."""
+        for registry in cls.__obj_dict__.values():
+            registry.print_registered()
+            print()
+
 
 # data
 DATAMODULE = Registry("datamodule")
@@ -200,7 +213,7 @@ INPUT_EMBEDDER = Registry("input_embedder")
 # pairformer
 TRANSFORMER_MODULE = Registry("transformer_module")
 
-STRUCTURE_MODULE = Registry("score_model")
+STRUCTURE_MODULE = Registry("structure_module")
 DIFFUSION_MODULE = Registry("diffusion_module")
 AFFINITY_HEAD = Registry("affinity_head")
 CONFIDENCE_HEAD = Registry("confidence_head")

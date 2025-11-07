@@ -5,14 +5,15 @@ import math
 import torch
 import torch.nn.functional as F
 
-from kfold.boltz_local.modules.utils import center_random_augmentation
 from kfold.data.model_input import FoldingInput
+from kfold.model.layers.alphafold3.utils import CenterRandomAugmentation
 from kfold.model.modules.diffusion_module.base import BaseDiffusionModule
-from kfold.utils.registry import BaseConfig
+from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseStructureModule
 
 
+@STRUCTURE_MODULE.register()
 class AF3AtomDiffusion(BaseStructureModule):
     """Atom diffusion module used in AlphaFold3.
     See Section 3.7 Algorithm 18: SampleDiffusion in the AF3 paper.
@@ -82,6 +83,12 @@ class AF3AtomDiffusion(BaseStructureModule):
         self.step_scale: float = cfg.step_scale
         self.coordinate_augmentation: bool = cfg.coordinate_augmentation
         self.synchronize_sigmas: bool = cfg.synchronize_sigmas
+
+        if self.coordinate_augmentation:
+            self.random_augmentation = CenterRandomAugmentation(
+                centering=True,
+                random_rotate=self.coordinate_augmentation,
+            )
 
     # === EDM diffusion coefficients === #
     def c_skip(self, sigma: torch.Tensor) -> torch.Tensor:
@@ -187,7 +194,7 @@ class AF3AtomDiffusion(BaseStructureModule):
         # Line 2: gradually denoise
         for step_idx in range(1, num_sampling_steps):
             # Line 3
-            atom_coords = center_random_augmentation(atom_coords, atom_mask)
+            atom_coords = self.random_augmentation(atom_coords, atom_mask=atom_mask)
 
             # Line 4
             sigma_tm, sigma_t, gamma = (
@@ -297,12 +304,7 @@ class AF3AtomDiffusion(BaseStructureModule):
         atom_mask = f_input.atom.pad_mask.unsqueeze(0)  # (1, Natom)
 
         # Apply coordinate augmentation
-        holo_coords = center_random_augmentation(
-            holo_coords,
-            atom_mask,
-            centering=True,
-            augmentation=self.coordinate_augmentation,
-        )
+        holo_coords = self.random_augmentation(holo_coords, atom_mask)
 
         # Mask out the padding atoms
         holo_coords = torch.masked_fill(holo_coords, ~atom_mask, 0.0)

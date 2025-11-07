@@ -1,8 +1,9 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License,
 
-from typing import TypeVar
+from typing import TypeVar, overload
 
 import torch
+from torch.types import Device
 
 _T = TypeVar("_T")
 
@@ -139,3 +140,231 @@ class ExponentialMovingAverage:
 
     def to(self, device):
         self.shadow_params = [tensor.to(device) for tensor in self.shadow_params]
+
+
+class CenterRandomAugmentation:
+    """Centering and Random Augmentation Module
+    See Section 3.7 Algorithm 19 CentreRandomAugmentation
+
+    Usage)
+    ```python
+    augment = CenterRandomAugmentation(...)
+    x = augment(x, atom_mask=mask)
+    x, y = augment(x, y, atom_mask=mask)
+    ```
+    """
+
+    def __init__(
+        self, s_trans: float = 1.0, centering: bool = True, random_rotate: bool = True
+    ):
+        self.s_trans: float = s_trans
+        self.centering: bool = centering
+        self.random_rotate: bool = random_rotate
+
+    @overload
+    def __call__(
+        self,
+        coords: torch.Tensor,
+        atom_mask: torch.Tensor,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def __call__(
+        self,
+        coords1: torch.Tensor,
+        coords2: torch.Tensor,
+        *others: torch.Tensor,
+        atom_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]: ...
+
+    def __call__(  # type: ignore[override]
+        self,
+        *coords: torch.Tensor,
+        atom_mask: torch.Tensor,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        return self.augment(*coords, atom_mask=atom_mask)
+
+    @overload
+    def augment(
+        self,
+        coords: torch.Tensor,
+        atom_mask: torch.Tensor,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def augment(
+        self,
+        coords1: torch.Tensor,
+        coords2: torch.Tensor,
+        *others: torch.Tensor,
+        atom_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]: ...
+
+    def augment(  # type: ignore[override]
+        self,
+        *coords: torch.Tensor,
+        atom_mask: torch.Tensor,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        """See Section 3.7 Algorithm 19 CentreRandomAugmentation
+
+        Parameters
+        ----------
+        coords : torch.Tensor
+            One or more tensors of shape (B, N, 3) representing atomic coordinates.
+        atom_mask : torch.Tensor
+            A tensor of shape (B, N) representing the atom mask.
+        """
+
+        coords_list: list[torch.Tensor] = list(coords)
+        ref_coords = coords_list[0]
+        B, N = atom_mask.shape
+
+        # Check all input coords have the same batch size and number of atoms
+        for c in coords_list:
+            assert c.shape[0] == B and c.shape[1] == N, (
+                "All input coordinate tensors must have the same batch size and length."
+            )
+
+        # Line 1
+        if self.centering:
+            center = torch.sum(
+                ref_coords * atom_mask[:, :, None], dim=1, keepdim=True
+            ) / torch.sum(atom_mask[:, :, None], dim=1, keepdim=True)
+
+            coords_list = [x - center for x in coords_list]
+
+        # Line 2,4
+        if self.random_rotate:
+            R = random_rotations(N, ref_coords.dtype, ref_coords.device)
+            rotate = lambda x: torch.einsum("bmd,bds->bms", x, R)  # noqa
+            coords_list = [rotate(x) for x in coords_list]
+
+        # Line 3,4
+        if self.s_trans > 0.0:
+            random_trans = torch.randn_like(ref_coords[:, 0:1, :]) * self.s_trans
+            coords_list = [x + random_trans for x in coords_list]
+
+        if len(coords) == 1:
+            # Single tensor input, return tensor
+            return coords_list[0]
+        else:
+            # Multiple tensor input, return list of tensors
+            return tuple(coords_list)
+
+
+def center(atom_coords: torch.Tensor, atom_mask: torch.Tensor) -> torch.Tensor:
+    atom_mean = torch.sum(
+        atom_coords * atom_mask[:, :, None], dim=1, keepdim=True
+    ) / torch.sum(atom_mask[:, :, None], dim=1, keepdim=True)
+    atom_coords = atom_coords - atom_mean
+    return atom_coords
+
+
+def compute_random_augmentation(
+    num_diffusion_samples: int,
+    s_trans: float = 1.0,
+    device: torch.device | None = None,
+    dtype: torch.dtype = torch.float32,
+):
+    R = random_rotations(num_diffusion_samples, dtype=dtype, device=device)
+    random_trans = (
+        torch.randn((num_diffusion_samples, 1, 3), dtype=dtype, device=device) * s_trans
+    )
+    return R, random_trans
+
+
+# the following is copied from Torch3D, BSD License,
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+
+
+def _copysign(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Return a tensor where each element has the absolute value taken from the,
+    corresponding element of a, with sign taken from the corresponding
+    element of b. This is like the standard copysign floating-point operation,
+    but is not careful about negative 0 and NaN.
+
+    Args:
+        a: source tensor.
+        b: tensor whose signs will be used, of the same shape as a.
+
+    Returns:
+        Tensor of the same shape as a with the signs of b.
+    """
+    signs_differ = (a < 0) != (b < 0)
+    return torch.where(signs_differ, -a, a)
+
+
+def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
+    """
+    Convert rotations given as quaternions to rotation matrices.
+
+    Args:
+        quaternions: quaternions with real part first,
+            as tensor of shape (..., 4).
+
+    Returns:
+        Rotation matrices as tensor of shape (..., 3, 3).
+    """
+    r, i, j, k = torch.unbind(quaternions, -1)
+    # pyre-fixme[58]: `/` is not supported for operand types `float` and `Tensor`.
+    two_s = 2.0 / (quaternions * quaternions).sum(-1)
+
+    o = torch.stack(
+        (
+            1 - two_s * (j * j + k * k),
+            two_s * (i * j - k * r),
+            two_s * (i * k + j * r),
+            two_s * (i * j + k * r),
+            1 - two_s * (i * i + k * k),
+            two_s * (j * k - i * r),
+            two_s * (i * k - j * r),
+            two_s * (j * k + i * r),
+            1 - two_s * (i * i + j * j),
+        ),
+        -1,
+    )
+    return o.reshape(quaternions.shape[:-1] + (3, 3))
+
+
+def random_quaternions(
+    n: int, dtype: torch.dtype | None = None, device: Device | None = None
+) -> torch.Tensor:
+    """
+    Generate random quaternions representing rotations,
+    i.e. versors with nonnegative real part.
+
+    Args:
+        n: Number of quaternions in a batch to return.
+        dtype: Type to return.
+        device: Desired device of returned tensor. Default:
+            uses the current device for the default tensor type.
+
+    Returns:
+        Quaternions as tensor of shape (N, 4).
+    """
+    if isinstance(device, str):
+        device = torch.device(device)
+    o = torch.randn((n, 4), dtype=dtype, device=device)
+    s = (o * o).sum(1)
+    o = o / _copysign(torch.sqrt(s), o[:, 0])[:, None]
+    return o
+
+
+def random_rotations(
+    n: int, dtype: torch.dtype | None = None, device: Device | None = None
+) -> torch.Tensor:
+    """
+    Generate random rotations as 3x3 rotation matrices.
+
+    Args:
+        n: Number of rotation matrices in a batch to return.
+        dtype: Type to return.
+        device: Device of returned tensor. Default: if None,
+            uses the current device for the default tensor type.
+
+    Returns:
+        Rotation matrices as tensor of shape (n, 3, 3).
+    """
+    quaternions = random_quaternions(n, dtype=dtype, device=device)
+    return quaternion_to_matrix(quaternions)

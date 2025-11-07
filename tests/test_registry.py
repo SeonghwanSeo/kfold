@@ -3,20 +3,20 @@ from dataclasses import dataclass
 import torch
 
 from kfold.config import _resolve_registry_defaults
-from kfold.model.modules.seq_encoder import BaseSequenceEncoder
+from kfold.model.modules.sequence_encoder import BaseSequenceEncoder
 from kfold.utils.registry import SEQUNECE_ENCODER, BaseConfig, Registry
 
 
 @dataclass
-class ExampleSeqReprConfig(BaseConfig):
+class Config(BaseConfig):
     d_model: int = 128
     n_layers: int = 4
 
 
-@SEQUNECE_ENCODER.register(config_cls=ExampleSeqReprConfig)
-class ExampleSeqReprModule(BaseSequenceEncoder):
-    def __init__(self, cfg: ExampleSeqReprConfig):
-        self.cfg: ExampleSeqReprConfig = cfg
+@SEQUNECE_ENCODER.register(config_cls=Config)
+class ExampleSequenceEncoder(BaseSequenceEncoder):
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
 
     def forward(
         self,
@@ -31,11 +31,14 @@ class ExampleSeqReprModule(BaseSequenceEncoder):
 if __name__ == "__main__":
     from omegaconf import OmegaConf
 
+    # Print all registered modules
+    Registry.print_all_registered()
+
     # create example yaml file
     cfg = {
         "model": {
-            "_registry_": "seq_repr_module",
-            "_class_": "ExampleSeqReprModule",
+            "_registry_": "sequence_encoder",
+            "_class_": "ExampleSequenceEncoder",
             "d_model": 256,
         },
         "train": {

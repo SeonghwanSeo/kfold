@@ -4,10 +4,10 @@ import torch
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.modules.diffusion_module import BaseDiffusionModule
-from kfold.utils.registry import DIFFUSION_MODULE, BaseConfig
+from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 
-@DIFFUSION_MODULE.register()
+@STRUCTURE_MODULE.register()
 class BaseStructureModule(ABC):
     """High-level diffusion framework for structure generation.
     You may want to implement diffusion bridge methods here.

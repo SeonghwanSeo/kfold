@@ -31,5 +31,5 @@ class KFold(torch.nn.Module):
             Registry.instantiate(model_config.distogram_head)
         )
 
-    def forward(self, input: FoldingInput, mode: str = "train"):
+    def forward(self, f_input: FoldingInput, mode: str = "train"):
         raise NotImplementedError("Forward pass is not implemented yet.")

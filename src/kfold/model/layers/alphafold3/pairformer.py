@@ -33,7 +33,7 @@ class PairformerStack(nn.Module):
         pairwise_num_heads: int = 4,
         activation_checkpointing: bool = False,
         offload_to_cpu: bool = False,
-        use_kernel: bool = False,
+        use_kernels: bool = False,
     ):
         """Initialize the Pairformer module."""
         super().__init__()
@@ -46,7 +46,7 @@ class PairformerStack(nn.Module):
         self.pairwise_num_heads: int = pairwise_num_heads
         self.activation_checkpointing: bool = activation_checkpointing
         self.offload_to_cpu: bool = offload_to_cpu
-        self.use_kernels: bool = use_kernel
+        self.use_kernels: bool = use_kernels
 
         self.blocks = nn.ModuleList()
         for _ in range(num_blocks):
@@ -107,12 +107,8 @@ class PairformerStack(nn.Module):
             The updated pairwise embeddings.
 
         """
-        if not self.training:
-            if z.shape[1] > 384:
-                chunk_size_tri_attn = 128
-            else:
-                chunk_size_tri_attn = 512
-        else:
+        if self.training:
+            # During training, we do not use chunking
             chunk_size_tri_attn = None
 
         # Line 1

@@ -23,7 +23,7 @@ Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/b
 |                           | Algorithm 15 | TriangleAttentionEndingNode | `triangular_update/` |
 | **3.5** Template module   | Algorithm 16 | TemplateEmbedder | N/A |
 | **3.6** Pairformer stack  | Algorithm 18| PairformerStack | `pairformer.py` |
-| **3.7** Diffusion Module  | Algorithm 19 | CenterRandomAugmentation | `primitives.py` |
+| **3.7** Diffusion Module  | Algorithm 19 | CenterRandomAugmentation | `utils.py` |
 |                           | Algorithm 20 | DiffusionModule | `diffusion.py` |
 |                           | Algorithm 21 | DiffusionConditioning | `diffusion.py` |
 |                           | Algorithm 22 | FourierEmbedding | `diffusion.py` |
