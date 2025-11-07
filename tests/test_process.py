@@ -209,7 +209,7 @@ def safe_check_structure(key: str):
         return True
     except Exception as e:
         if "frames_idx" in str(e):
-            # print("Although the frames_idx is different, it might be fine (ligand side)")
+            # "Although the frames_idx is different, it might be fine (ligand side)"
             pass
         else:
             print(f"Test failed for {key}: {e}")

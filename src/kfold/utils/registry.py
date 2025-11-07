@@ -193,7 +193,14 @@ DATA_FILTER = Registry("data_filter")
 # model
 SEQUNECE_ENCODER = Registry("sequence_encoder")
 STRUCTURE_ENCODER = Registry("structure_encoder")
+
+# InputFeatureEmbedder, Algorithm 2.
+INPUT_EMBEDDER = Registry("input_embedder")
+
+# pairformer
 TRANSFORMER_MODULE = Registry("transformer_module")
+
+STRUCTURE_MODULE = Registry("score_model")
 DIFFUSION_MODULE = Registry("diffusion_module")
 AFFINITY_HEAD = Registry("affinity_head")
 CONFIDENCE_HEAD = Registry("confidence_head")

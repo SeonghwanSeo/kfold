@@ -56,7 +56,7 @@ token_index = token_layout.token_index  # (Nt,)
 | `res_type` | `res_type` | `(Nt,)` | Residue type (one-hot encoded) |
 | `token_pad_mask` | `pad_mask` | `(Nt,)` | Mask for valid tokens or padding |
 | `token_resolved_mask` | `resolved_mask` | `(Nt,)` | Mask for resolved tokens |
-| `pocket_feature` | `is_pocket` | `(Nt,)` | Feature for pocket tokens, TODO: implement more |
+| `pocket_feature` | `pocket_contact_type` | `(Nt,)` | Feature for pocket tokens, TODO: implement more |
 | `cyclic_period` | `cyclic_period` | `(Nt,)` | Cyclic period, not used in Boltz1. |
 
 
@@ -98,5 +98,3 @@ token_index = bond_layout.token_index  # (Nt,)
 | - | `atom_index` | `(Nb, 2)` | Index of connecting atoms |
 | - | `bond_type` | `(Nb,)` | Bond type (single, double, triple, aromatic, covalent) |
 | - | `bond_mask` | `(Nb,)` | Mask for valid bonds |
-
-

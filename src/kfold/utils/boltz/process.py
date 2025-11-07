@@ -86,7 +86,6 @@ def parse_structure(
         "resolved_mask",
         "disto_mask",
         "pad_mask",
-        "is_pocket",
     ]
     float_fields = [
         "ref_charge",
@@ -377,7 +376,8 @@ def parse_structure(
     # Add additional fields
     token_info["token_index"] = torch.arange(1, len(token_info["res_type"]) + 1)
     # FIXME: we may change this on-the-fly like Boltz
-    token_info["is_pocket"] = torch.zeros_like(token_info["resolved_mask"])
+    # 0 means no pocket constraint, 1 means pocket contact
+    token_info["pocket_contact_type"] = torch.zeros_like(token_info["res_type"])
     # NOTE: Boltz1 training set does not include cyclic_period info
     token_info["cyclic_period"] = torch.zeros_like(token_info["res_type"])
 
@@ -416,7 +416,7 @@ def parse_structure(
         disto_mask=token_info["disto_mask"].view(Nt),
         frames_mask=token_info["frames_mask"].view(Nt),
         pad_mask=token_info["pad_mask"].view(Nt),
-        is_pocket=token_info["is_pocket"].view(Nt),
+        pocket_contact_type=token_info["pocket_contact_type"].view(Nt),
         cyclic_period=token_info["cyclic_period"].view(Nt),
     )
     atom_layout = model_input.AtomLayout(

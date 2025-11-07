@@ -1,7 +1,9 @@
-"""Simple auto-import script for package initialization."""
-
+# from . import <files>
 import importlib
 from pathlib import Path
+
+from . import *  # noqa
+from .base import BaseStructureEncoder
 
 # Get all Python module names in current directory
 _package_dir = Path(__file__).parent

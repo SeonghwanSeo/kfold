@@ -259,8 +259,8 @@ class TokenLayout(Layout):
         Boolean tensor of shape [L,], indicating whether the token's frame is resolved.
     pad_mask: torch.Tensor (bool)
         Mask tensor of shape [L,], indicating valid tokens.
-    is_pocket: torch.Tensor (bool)
-        Boolean tensor of shape [L,], indicating whether the token is part of a pocket
+    pocket_contact_type: torch.Tensor (int)
+        Pocket contact types of shape [L,], indicating pocket contact information.
     """
 
     token_index: torch.Tensor  # [L,], int32
@@ -278,7 +278,7 @@ class TokenLayout(Layout):
     frames_mask: torch.Tensor  # [L,], bool
     pad_mask: torch.Tensor  # [L,], bool
     cyclic_period: torch.Tensor  # [L,], int32
-    is_pocket: torch.Tensor  # [L,], bool
+    pocket_contact_type: torch.Tensor  # [L,], bool
 
     def __len__(self) -> int:
         return self.res_type.shape[0]
@@ -308,7 +308,12 @@ class TokenLayout(Layout):
         check_tensor(
             self.cyclic_period, name="cyclic_period", dtype=torch_int, shape=(L,)
         )
-        check_tensor(self.is_pocket, name="is_pocket", dtype=torch.bool, shape=(L,))
+        check_tensor(
+            self.pocket_contact_type,
+            name="pocket_contact_type",
+            dtype=torch_int,
+            shape=(L,),
+        )
 
     @cached_property
     def is_protein(self) -> torch.Tensor:
@@ -351,7 +356,7 @@ class TokenLayout(Layout):
             "cyclic_period": 0,
             "resolved_mask": False,
             "pad_mask": False,
-            "is_pocket": False,
+            "pocket_contact_type": 0,
         }
 
         pad_size = total_length - L

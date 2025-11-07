@@ -383,25 +383,28 @@ def process_atom_features(
     }
 
 
-def process_symmetry_features(cropped: Tokenized, symmetries: dict) -> dict[str, Tensor]:
-    """Get the symmetry features.
-
-    Parameters
-    ----------
-    data : Tokenized
-        The tokenized data.
-
-    Returns
-    -------
-    dict[str, Tensor]
-        The symmetry features.
-
-    """
-    features = get_chain_symmetries(cropped)
-    features.update(get_amino_acids_symmetries(cropped))
-    features.update(get_ligand_symmetries(cropped, symmetries))
-
-    return features
+# def process_symmetry_features(
+#     cropped: Tokenized,
+#     symmetries: dict,
+# ) -> dict[str, Tensor]:
+#     """Get the symmetry features.
+#
+#     Parameters
+#     ----------
+#     data : Tokenized
+#         The tokenized data.
+#
+#     Returns
+#     -------
+#     dict[str, Tensor]
+#         The symmetry features.
+#
+#     """
+#     features = get_chain_symmetries(cropped)
+#     features.update(get_amino_acids_symmetries(cropped))
+#     features.update(get_ligand_symmetries(cropped, symmetries))
+#
+#     return features
 
 
 def process_chain_feature_constraints(

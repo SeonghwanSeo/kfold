@@ -1,84 +1,59 @@
+"""Section 3.6 Pairformer Stack of AlphaFold 3 paper."""
+
+# started from code from https://github.com/jwohlwend/boltz, MIT License,
+
 import torch
 import torch.nn as nn
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 
-from kfold.boltz_local.layers.attention import AttentionPairBias
-from kfold.boltz_local.layers.dropout import get_dropout_mask
-from kfold.boltz_local.layers.transition import Transition
-from kfold.boltz_local.layers.triangular_attention.attention import (
+from .dropout import get_dropout_mask
+from .transformers import AttentionPairBias
+from .transition import Transition
+from .triangular_update import (
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
-)
-from kfold.boltz_local.layers.triangular_mult import (
     TriangleMultiplicationIncoming,
     TriangleMultiplicationOutgoing,
 )
-from kfold.utils.registry import TRANSFORMER_MODULE
-
-from .base import BaseTransformerConfig
 
 
-@TRANSFORMER_MODULE.register()
-class PairformerModule(nn.Module):
-    """Pairformer module."""
+class PairformerStack(nn.Module):
+    """Pairformer stack.
+    See Section 3.6 Algorithm 20 Pairformer Stack
+    """
 
-    class Config(BaseTransformerConfig):
-        """Configuration for the Pairformer module.
-
-        Parameters
-        ----------
-        channel_s : int
-            The token single embedding size.
-        channel_z : int
-            The token pairwise embedding size.
-        num_blocks : int
-            The number of blocks.
-        num_heads : int, optional
-            The number of heads, by default 16
-        dropout : float, optional
-            The dropout rate, by default 0.25
-        pairwise_head_width : int, optional
-            The pairwise head width, by default 32
-        pairwise_num_heads : int, optional
-            The number of pairwise heads, by default 4
-        activation_checkpointing : bool, optional
-            Whether to use activation checkpointing, by default False
-        no_update_s : bool, optional
-            Whether to update the single embeddings, by default False
-        offload_to_cpu : bool, optional
-            Whether to offload to CPU, by default False
-        """
-
-        channel_s: int = 384
-        channel_z: int = 128
-        num_blocks: int = 48
-        num_heads: int = 16
-        dropout: float = 0.25
-        pairwise_head_width: int = 32
-        pairwise_num_heads: int = 4
-        activation_checkpointing: bool = False
-        offload_to_cpu: bool = False
-
-    def __init__(self, cfg: Config, use_kernel: bool = False):
+    def __init__(
+        self,
+        channel_s: int = 384,
+        channel_z: int = 128,
+        num_blocks: int = 48,
+        num_heads: int = 16,
+        dropout: float = 0.25,
+        pairwise_head_width: int = 32,
+        pairwise_num_heads: int = 4,
+        activation_checkpointing: bool = False,
+        offload_to_cpu: bool = False,
+        use_kernel: bool = False,
+    ):
         """Initialize the Pairformer module."""
         super().__init__()
-        self.channel_s: int = cfg.channel_s
-        self.channel_z: int = cfg.channel_z
-        self.num_blocks: int = cfg.num_blocks
-        self.dropout: float = cfg.dropout
-        self.num_heads: int = cfg.num_heads
-        self.pairwise_head_width: int = cfg.pairwise_head_width
-        self.pairwise_num_heads: int = cfg.pairwise_num_heads
-        self.activation_checkpointing: bool = cfg.activation_checkpointing
-        self.offload_to_cpu: bool = cfg.offload_to_cpu
+        self.channel_s: int = channel_s
+        self.channel_z: int = channel_z
+        self.num_blocks: int = num_blocks
+        self.dropout: float = dropout
+        self.num_heads: int = num_heads
+        self.pairwise_head_width: int = pairwise_head_width
+        self.pairwise_num_heads: int = pairwise_num_heads
+        self.activation_checkpointing: bool = activation_checkpointing
+        self.offload_to_cpu: bool = offload_to_cpu
         self.use_kernels: bool = use_kernel
 
-        self.layers = nn.ModuleList()
-        for _ in range(cfg.num_blocks):
-            if cfg.activation_checkpointing:
-                self.layers.append(
+        self.blocks = nn.ModuleList()
+        for _ in range(num_blocks):
+            if activation_checkpointing:
+                self.blocks.append(
                     checkpoint_wrapper(
-                        PairformerLayer(
+                        PairformerBlock(
                             self.channel_s,
                             self.channel_z,
                             self.num_heads,
@@ -91,8 +66,8 @@ class PairformerModule(nn.Module):
                     )
                 )
             else:
-                self.layers.append(
-                    PairformerLayer(
+                self.blocks.append(
+                    PairformerBlock(
                         self.channel_s,
                         self.channel_z,
                         self.num_heads,
@@ -140,19 +115,18 @@ class PairformerModule(nn.Module):
         else:
             chunk_size_tri_attn = None
 
-        for layer in self.layers:
-            s, z = layer(
-                s,
-                z,
-                mask,
-                pair_mask,
-                chunk_size_tri_attn,
-            )
+        # Line 1
+        for block in self.blocks:
+            # Line 2-8
+            s, z = block(s, z, mask, pair_mask, chunk_size_tri_attn)
+        # Line 10
         return s, z
 
 
-class PairformerLayer(nn.Module):
-    """Pairformer module."""
+class PairformerBlock(nn.Module):
+    """Pairformer block.
+    See Section 3.6 Algorithm 20 Pairformer Stack : Line [2-8]
+    """
 
     def __init__(
         self,
@@ -215,7 +189,9 @@ class PairformerLayer(nn.Module):
         pair_mask: torch.Tensor,
         chunk_size_tri_attn: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Perform the forward pass."""
+        """Perform the forward pass.
+        See Section 3.6 Algorithm 20 Pairformer Stack
+        """
 
         # Line 2
         dropout = get_dropout_mask(z, self.dropout, self.training)
