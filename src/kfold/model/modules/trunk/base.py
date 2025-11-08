@@ -18,28 +18,42 @@ class BaseTrunk(torch.nn.Module, ABC):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
+        self.is_compiled: bool = False
+
+    def compile(self):
+        """Compile the trunk module."""
+        # NOTE: you should compile the submodules inside the trunk
+        # since the computation graph is changed depending on the
+        # number of recycling steps. Thus, compile the sub module
+        # instead of the whole trunk module.
+        self.is_compiled = True
+        raise NotImplementedError("compile method is not implemented yet.")
 
     @abstractmethod
     def forward(
         self,
-        s: torch.Tensor,
-        z: torch.Tensor,
+        s_inputs: torch.Tensor,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
         mask: torch.Tensor,
-        pair_mask: torch.Tensor,
-        chunk_size_tri_attn: int | None = None,
+        num_recycles: int,
+        **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass of transformer module.
+        """Perform the forward pass.
+        See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
 
         Parameters
         ----------
-        s : torch.Tensor
-            Tensor of shape (B, L, c_s) containing token single feature
-        z : torch.Tensor
-            Tensor of shape (B, L, L, c_z) containing token pair feature
+        s_inputs : torch.Tensor
+            Tensor of shape (L, C_s) containing input single features
+        s_inits: torch.Tensor
+            Tensor of shape (L, C_s) containing initial single representation
+        z_inits: torch.Tensor
+            Tensor of shape (L, L, C_s) containing initial pair representation
         mask : torch.Tensor
             The token mask of shape (B, L)
-        pair_mask : torch.Tensor
-            The pairwise mask of shape (B, L, L)
+        num_recycles : int
+            The number of recycling steps.
 
         Returns
         -------

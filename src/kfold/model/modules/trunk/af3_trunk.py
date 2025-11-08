@@ -43,6 +43,10 @@ class AF3PairformerModule(BaseTrunk):
             Whether to use activation checkpointing, by default False
         offload_to_cpu : bool, optional
             Whether to offload to CPU, by default False
+        use_kernels : bool, optional
+            Whether to use custom kernels, by default False
+        tri_attn_chunk_threshold : int, optional
+            The threshold for chunking in triangle attention, by default 384
         """
 
         channel_s: int = 384
@@ -57,17 +61,25 @@ class AF3PairformerModule(BaseTrunk):
         activation_checkpointing: bool = False
         offload_to_cpu: bool = False
         use_kernels: bool = False
+        tri_attn_chunk_threshold: int = 384
 
-    def __init__(self, cfg: Config, use_kernels: bool = False):
+    def __init__(self, cfg: Config):
         """Initialize the Pairformer module."""
         super().__init__(cfg)
-        self.use_msa = cfg.use_msa
-        self.use_template = cfg.use_template
-        self.use_kernels = cfg.use_kernels or use_kernels
+        self.use_msa: bool = cfg.use_msa
+        self.use_template: bool = cfg.use_template
+        self.use_kernels: bool = cfg.use_kernels
+        self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
-        assert self.no_template, "Boltz1 does not support template."
+        if self.use_template:
+            raise NotImplementedError(
+                "Template Embedder is not implemented yet (Boltz1 does not support too)"
+            )
+        if self.use_msa:
+            # TODO: Implement MSA Module
+            raise NotImplementedError("MSA Module is not implemented yet")
 
-        self.pairformer_module = PairformerStack(
+        self.pairformer_module: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             num_blocks=cfg.num_blocks,
@@ -88,15 +100,25 @@ class AF3PairformerModule(BaseTrunk):
         init.gating_init_(self.linear_no_bias_s.weight)
         init.gating_init_(self.linear_no_bias_z.weight)
 
+    def compile(self):
+        """Compile the trunk module."""
+        # NOTE: you should compile the submodules inside the trunk
+        # since the computation graph is changed depending on the
+        # number of recycling steps. Thus, compile the sub module
+        # instead of the whole trunk module.
+        self.is_compiled = True
+        self.pairformer_module = torch.compile(
+            self.pairformer_module, dynamic=False, fullgraph=False
+        )  # type: ignore
+
     def forward(
         self,
         s_inputs: torch.Tensor,
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         mask: torch.Tensor,
-        pair_mask: torch.Tensor,
         num_recycles: int,
-        chunk_size_tri_attn: int | None = None,
+        **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
         See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
@@ -111,8 +133,6 @@ class AF3PairformerModule(BaseTrunk):
             Tensor of shape (L, L, C_s) containing initial pair representation
         mask : torch.Tensor
             The token mask of shape (B, L)
-        pair_mask : torch.Tensor
-            The pairwise mask of shape (B, L, L)
         num_recycles : int
             The number of recycling steps.
 
@@ -124,7 +144,7 @@ class AF3PairformerModule(BaseTrunk):
             The updated tensor of shape (B, L, L, c_z).
         """
         if not self.training:
-            if z_init.shape[1] > 384:
+            if z_init.shape[1] > self.chunk_threshold:
                 chunk_size_tri_attn = 128
             else:
                 chunk_size_tri_attn = 512
@@ -159,7 +179,7 @@ class AF3PairformerModule(BaseTrunk):
                 # Line 12
                 # Revert to uncompiled version for validation
                 pairformer_module: PairformerStack
-                if self.is_pairformer_compiled and not self.training:
+                if self.is_compiled and not self.training:
                     pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
                 else:
                     pairformer_module = self.pairformer_module
@@ -167,7 +187,6 @@ class AF3PairformerModule(BaseTrunk):
                     s,
                     z,
                     mask=mask,
-                    pair_mask=pair_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
                 )
 

@@ -15,6 +15,12 @@ class BaseScoreModel(torch.nn.Module, ABC):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
+        self.is_compiled: bool = False
+
+    def compile(self):
+        """Compile the score model module."""
+        self.forward = torch.compile(self.forward, dynamic=False, fullgraph=False)  # type: ignore
+        self.is_compiled = True
 
     @abstractmethod
     def forward(

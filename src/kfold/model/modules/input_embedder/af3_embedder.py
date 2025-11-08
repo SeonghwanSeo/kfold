@@ -95,36 +95,36 @@ class AF3InputEmbedder(BaseInputEmbedder):
         Returns
         -------
         s_inputs : torch.Tensor
-            Tensor of shape (L, C_s) containing input single features
+            Tensor of shape (B, L, C_s) containing input single features
         s_init: torch.Tensor
-            Tensor of shape (L, C_s) containing initial single representation
+            Tensor of shape (B, L, C_s) containing initial single representation
             before trunk.
         z_init: torch.Tensor
-            Tensor of shape (L, L, C_s) containing initial pair representation
+            Tensor of shape (B, L, L, C_s) containing initial pair representation
             before trunk.
         """
 
         # Line 1
-        s_inputs = self.encoder(f_input)  # [L, c_s]
+        s_inputs = self.encoder(f_input)  # [B, L, c_s]
 
         # Get initial single and pair representations
         # Line 2
-        s_init = self.linear_no_bias_s_init(s_inputs)  # [L, c_s]
+        s_init = self.linear_no_bias_s_init(s_inputs)  # [B, L, c_s]
 
         # Line 3
         z_init = (
             self.linear_no_bias_z_init1(s_inputs)[None, :, :]
             + self.linear_no_bias_z_init2(s_inputs)[:, None, :]
-        )  # [L, L, c_z]
+        )  # [B, L, L, c_z]
 
         # Line 4
         # NOTE: cache the relative position encoding if possible for efficiency
-        z_init = z_init + self.relative_pos_encoding(f_input, model_cache)  # [L, c_z]
+        z_init = z_init + self.relative_pos_encoding(f_input, model_cache)  # [B, L, c_z]
 
         # Line 5
         z_init = z_init + self.linear_no_bias_bond(
             self.get_adjacency_matrix(f_input.bond.token_index, f_input.num_tokens)
-        )  # [L, L, c_z]
+        )  # [B, L, L, c_z]
 
         return s_inputs, s_init, z_init
 
@@ -132,7 +132,8 @@ class AF3InputEmbedder(BaseInputEmbedder):
         self, bond_index: torch.Tensor, num_tokens: int
     ) -> torch.Tensor:
         """Get the adjacency bond matrix from the input features."""
-        adj = torch.zeros((num_tokens, num_tokens), device=bond_index.device)
+        batch_size = bond_index.shape[0]
+        adj = torch.zeros((batch_size, num_tokens, num_tokens), device=bond_index.device)
         adj[bond_index[:, 0], bond_index[:, 1]] = 1.0
         adj[bond_index[:, 1], bond_index[:, 0]] = 1.0  # undirected
         return adj.unsqueeze(-1)  # [L, L, 1]

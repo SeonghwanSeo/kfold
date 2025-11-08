@@ -14,7 +14,7 @@ from kfold.data.model_input import FoldingInput
 from . import initialize as init
 from .embeddings import AtomEmbedding
 from .primitives import AdaLN, LinearNoBias
-from .utils import expand_batch
+from .utils import repeat_dim
 
 
 # === Helper functions for local atom attention === #
@@ -152,13 +152,13 @@ class AttentionPairBias(nn.Module):
         Parameters
         ----------
         a : torch.Tensor
-            The input atom/token tensor (B, N, c_a)
+            The input atom/token tensor (B, N, L, c_a)
         s : torch.Tensor | None
-            The input single tensor (B, N, c_s), can be None if use_s is False
+            The input single tensor (B, N, L, c_s), can be None if use_s is False
         z : torch.Tensor
-            The input pairwise tensor (B, N, N, c_z) or (1, N, N, c_z)
+            The input pairwise tensor (B, L, L, c_z) or (1, L, L, c_z)
         mask : torch.Tensor
-            The pairwise mask tensor (B, N) or (1, N)
+            The pairwise mask tensor (B, L) or (1, N)
         to_keys : Callable, optional
             A function to transform s to keys, by default None
 
@@ -199,7 +199,7 @@ class AttentionPairBias(nn.Module):
         # Caching attention bias during diffusion roll-out
         if model_cache is None or "attn_bias" not in model_cache:
             attn_bias = self.proj_z(z)
-            # The pairwise mask (B, N) is broadcasted to (B, 1, 1, N) and (B, H, N, N)
+            # The pairwise mask (B, L) is broadcasted to (B, 1, 1, L) and (B, H, L, L)
             attn_bias = attn_bias.masked_fill(~mask[:, None, None, :], -self.inf)
 
             if model_cache is not None:
@@ -491,21 +491,39 @@ class AtomTransformer(nn.Module):
         to_keys,
         model_cache=None,
     ) -> torch.Tensor:
-        """See Section 3.2 Algorithm 7 Atom Transformer"""
+        """See Section 3.2 Algorithm 7 Atom Transformer
+
+        Parameters
+        ----------
+        q : torch.Tensor
+            The single representation, shape [..., L, c_atom].
+        c : torch.Tensor
+            The single conditioning, shape [..., L, c_atom].
+        p : torch.Tensor
+            The pair representation, shape [..., K, W, H, c_atompair].
+        mask : torch.Tensormask
+            The attention mask, shape [..., L].
+
+        Returns
+        -------
+        q : torch.Tensor
+            The output single representation, shape [..., L, c_atom].
+        """
 
         W: int = self.attn_window_queries
         H: int = self.attn_window_keys
 
-        B, N, D = q.shape
-        NW = N // W
+        original_shape = q.shape  # [..., L, D]
+        L, D = original_shape[-2:]
+        K = L // W  # number of windows
 
         # reshape tokens
-        q = q.view((B * NW, W, -1))
-        c = c.view((B * NW, W, -1))
-        p = p.view((B * NW, W, H, -1))
-        mask = mask.view(B * NW, W)
+        q = q.view((-1, W, D))
+        c = c.view((-1, W, D))
+        p = p.view((-1, W, H, D))
+        mask = mask.view(-1, W)
 
-        to_keys_new = lambda x: to_keys(x.view(B, NW * W, -1)).view(B * NW, H, -1)  # noqa
+        to_keys_new = lambda x: to_keys(x.view(-1, K * W, D)).view(-1, H, D)  # noqa
 
         # main transformer
         q = self.diffusion_transformer(
@@ -518,7 +536,7 @@ class AtomTransformer(nn.Module):
         )
 
         if W is not None:
-            q = q.view((B, NW * W, D))
+            q = q.view(original_shape)
 
         return q
 
@@ -652,11 +670,11 @@ class AtomAttentionEncoder(nn.Module):
         f_input : FoldingInput
             The folding input.
         s_trunk : torch.Tensor | None
-            The trunk single representation, shape [Nt, c_s].
+            The trunk single representation, shape [B, Lt, c_s].
         z : torch.Tensor | None
-            The conditioning pair representation, shape [Nsample, Nt, c_z].
+            The conditioning pair representation, shape [B, Lt, c_z].
         r : torch.Tensor | None
-            The noised structures' positions, shape [Nsample, Na, c_r],
+            The noised structures' positions, shape [B, N, La, c_r],
             where Nsample is the number of diffusion samples.
         model_cache : dict | None
             The model cache for storing intermediate representations, by default None.
@@ -664,13 +682,14 @@ class AtomAttentionEncoder(nn.Module):
         Returns
         -------
         a : torch.Tensor
-            The token single representation, shape [Nsample, Nt, c_token].
+            The token single representation, shape [B, Lt, c_token] or [B, N, Lt, c_token]
         q_skip : torch.Tensor
-            The atom single representation, shape [Nsample, Na, c_atom].
+            The atom single representation, shape [B, La, c_atom] or [B, N, Lt, c_atom]
         c_skip : torch.Tensor
-            The atom single conditioning, shape [Nsample, Na, c_atom].
+            The atom single conditioning, shape [B, La, c_atom] or [B, N, La, c_atom]
         p_skip : torch.Tensor
-            The atom pair representation, shape [Nsample, K, W, H, c_atompair].
+            The atom pair representation, shape [B, K, W, H, c_atompair] or
+            [B, N, K, W, H, c_atompair]
         to_keys : Callable
             The function to convert single representation to keys representation.
         """
@@ -692,19 +711,19 @@ class AtomAttentionEncoder(nn.Module):
             # Cache the representation for structure-independent components
 
             # Get indexing matrix for single to keys conversion
-            Na = len(f_input.atom)
+            La = f_input.num_atoms
             W, H = self.atoms_per_window_queries, self.atoms_per_window_keys
-            K = Na // W
+            K = La // W
             indexing_matrix = get_indexing_matrix(K, W, H, f_input.device)
             to_keys = partial(single_to_keys, indexing_matrix=indexing_matrix, W=W, H=H)
 
             # Initialize single conditioning and pair representations
             # Line 1
-            c = self.get_atom_single_conditioning(f_input)  # [Na, c_atom]
+            c = self.get_atom_single_conditioning(f_input)  # [B, La, c_atom]
             # Line 2-6
             p = self.get_atom_pair_representation(
                 f_input, to_keys
-            )  # [K, W, H, c_atompair]
+            )  # [B, K, W, H, c_atompair]
             # Line 7
             q = c
 
@@ -719,7 +738,7 @@ class AtomAttentionEncoder(nn.Module):
             # Line 13-14
             p = p + self.c_to_p_trans_q(c.view(K, W, 1, c.shape[-1]))
             p = p + self.c_to_p_trans_k(to_keys(c).view(K, 1, H, c.shape[-1]))
-            p = p + self.p_mlp(p)  # [K, W, H, c_atompair]
+            p = p + self.p_mlp(p)  # [B, K, W, H, c_atompair]
 
             layer_cache["q"] = q
             layer_cache["c"] = c
@@ -732,28 +751,28 @@ class AtomAttentionEncoder(nn.Module):
             to_keys = layer_cache["to_keys"]
 
         # Shapes at this point:
-        # q: [Na, c_atom]
-        # c: [Na, c_atom]
-        # p: [K, W, H, c_atompair]
+        # q: [B, La, c_atom]
+        # c: [B, La, c_atom]
+        # p: [B, K, W, H, c_atompair]
+        # atom_mask: [B, N, La]
 
+        # Repeat for diffusion samples
         if self.use_structure:
-            # NOTE: here we repeat the conditioning for each diffused sample
-            # batch size = num_diffusion_samples (number of diffused samples per input)
-            assert r is not None
-            Nsample = r.shape[0]
+            assert r is not None, "r cannot be None when use_structure is True"
+            N = r.shape[1]  # number of diffusion samples
         else:
-            # Else, use batch size 1
-            Nsample = 1
+            N = 1
 
-        c = expand_batch(c, Nsample)  # [Nsample, Na, c_atom]
-        q = expand_batch(q, Nsample)  # [Nsample, Na, c_atom]
-        p = expand_batch(p, Nsample)  # [Nsample, K, W, H, c_atompair]
-        atom_mask = expand_batch(atom_mask, Nsample)  # [Nsample, Na]
+        q = repeat_dim(q, dim=1, n=N, add_dim=True)
+        c = repeat_dim(c, dim=1, n=N, add_dim=True)
+        p = repeat_dim(p, dim=0, n=N, add_dim=True)
+        atom_mask = repeat_dim(atom_mask, dim=1, n=N, add_dim=True)
 
         # Shapes at this point:
-        # q: [Nsample, Na, c_atom]
-        # c: [Nsample, Na, c_atom]
-        # p: [Nsample, K, W, H, c_atompair]
+        # q: [B, N, La, c_atom]
+        # c: [B, N, La, c_atom]
+        # p: [B, N, K, W, H, c_atompair]
+        # atom_mask: [B, N, La]
 
         # Line 11
         if self.use_structure:
@@ -771,15 +790,15 @@ class AtomAttentionEncoder(nn.Module):
         )
 
         # Aggregate atom representations to token representations
-        # [Nsample, Na, c_atom] -> [Nsample, Nt, c_token]
+        # [B, N, La, c_atom] -> [B, N, Lt, c_token]
         # NOTE that c_token can be different from c_s (channel_s)
         # Line 16
-        q_to_a = self.atom_to_token_trans(q)
         atom_to_token = f_input.atom_to_token.float()
         atom_to_token_mean = atom_to_token / (
-            atom_to_token.sum(dim=0, keepdim=True) + 1e-6
-        )  # [Na, Nt]
-        a = torch.bmm(atom_to_token_mean.T.unsqueeze(0), q_to_a)  # [Nsample, Nt, c_token]
+            atom_to_token.sum(dim=-2, keepdim=True) + 1e-6
+        )  # [B, La, Lt]
+        q_to_a = self.atom_to_token_trans(q)
+        a = torch.bmm(atom_to_token_mean.T.unsqueeze(0), q_to_a)  # [B, N, Lt, c_token]
 
         # Line 17
         q_skip, c_skip, p_skip = q, c, p
@@ -801,9 +820,9 @@ class AtomAttentionEncoder(nn.Module):
         Returns
         -------
         c: torch.Tensor
-            The atom single conditioning, shape [Na, c_atom].
+            The atom single conditioning, shape [B, La, c_atom].
         """
-        return self.embed_atom(f_input)  # [Na, c_atom]
+        return self.embed_atom(f_input)  # [B, La, c_atom]
 
     def get_atom_pair_representation(
         self,
@@ -828,13 +847,13 @@ class AtomAttentionEncoder(nn.Module):
         # Create atom-pairwise representation with AtomTransformer
         # NOTE(seonghwanseo): Message passing is only performed between atoms in
         # same residues (ref_space_uid: residue unique id)
-        ref_pos = f_input.atom.ref_pos.unsqueeze(0)  # [Na, 3]
-        residue_uid = f_input.atom.ref_space_uid.unsqueeze(0)  # [Na]
+        ref_pos = f_input.atom.ref_pos.unsqueeze(0)  # [La, 3]
+        residue_uid = f_input.atom.ref_space_uid.unsqueeze(0)  # [La]
         mask = f_input.atom.pad_mask
 
-        Na = len(f_input.atom)
+        La = len(f_input.atom)
         W, H = self.atoms_per_window_queries, self.atoms_per_window_keys
-        K = Na // W
+        K = La // W
 
         ref_pos_queries = ref_pos.view(K, W, 1, 3)
         ref_pos_keys = to_keys(ref_pos).view(K, 1, H, 3)
@@ -870,16 +889,16 @@ class AtomAttentionEncoder(nn.Module):
         Parameters
         ----------
         c : torch.Tensor
-            The atom single conditioning, shape [Na, c_atom].
+            The atom single conditioning, shape [La, c_atom].
         s_trunk : torch.Tensor
-            The trunk single representation, shape [Nt, c_s].
+            The trunk single representation, shape [Lt, c_s].
         atom_to_token : torch.Tensor
-        The atom to token mapping, shape [Na, Nt].
+        The atom to token mapping, shape [La, Lt].
         """
-        # [Nt, c_s] -> [Na, c_atom]
+        # [Lt, c_s] -> [La, c_atom]
         s_to_c = self.s_to_c_trans(s_trunk)
         s_to_c = torch.bmm(atom_to_token, s_to_c)
-        return c + s_to_c  # [Na, c_atom]
+        return c + s_to_c  # [La, c_atom]
 
     def add_trunk_pair_embedding(
         self,
@@ -898,15 +917,15 @@ class AtomAttentionEncoder(nn.Module):
         to_keys : Callable
             The function to convert single representation to keys representation.
         z_trunk : torch.Tensor
-            The trunk pair representation, shape [Nt, c_z].
+            The trunk pair representation, shape [Lt, c_z].
         atom_to_token : torch.Tensor
-            The atom to token mapping, shape [Na, Nt].
+            The atom to token mapping, shape [La, Lt].
         """
-        # [Nt, Nt, c_z] -> [K, W, H, c_atompair]
-        Na, Nt = p.shape[0], z_trunk.shape[0]
+        # [Lt, Lt, c_z] -> [K, W, H, c_atompair]
+        La, Lt = p.shape[0], z_trunk.shape[0]
         W = self.atoms_per_window_queries
-        K = Na // W
-        atom_to_token_queries = atom_to_token.view(K, W, Nt)
+        K = La // W
+        atom_to_token_queries = atom_to_token.view(K, W, Lt)
         atom_to_token_keys = to_keys(atom_to_token)
         z_to_p = self.z_to_p_trans(z_trunk)
         z_to_p = torch.einsum(
@@ -928,12 +947,12 @@ class AtomAttentionEncoder(nn.Module):
         Parameters
         ----------
         q : torch.Tensor
-            The atom single representation, shape [Nsample, Na, c_atom].
+            The atom single representation, shape [B, Nsample, La, c_atom].
         r : torch.Tensor
-            The noised structures' positions, shape [Nsample, Na, c_r].
+            The noised structures' positions, shape [B, Nsample, La, 3].
         """
         r_to_q = self.r_to_q_trans(r)
-        return q + r_to_q  # [Nsample, Na, c_atom]
+        return q + r_to_q  # [Nsample, La, c_atom]
 
 
 class AtomAttentionDecoder(nn.Module):
@@ -1006,11 +1025,11 @@ class AtomAttentionDecoder(nn.Module):
         num_diffusion_samples: int = 1,
         model_cache=None,
     ):
-        atom_mask = f_input.atom.pad_mask  # [Na]
+        atom_mask = f_input.atom.pad_mask  # [B, La]
 
-        a_to_q = self.a_to_q_trans(a)  # [Ndiff, Nt, c_atom]
-        a_to_q = torch.bmm(f_input.atom_to_token, a_to_q)  # [Ndiff, Na, c_atom]
-        q = q + a_to_q  # [Ndiff, Na, c_atom]
+        a_to_q = self.a_to_q_trans(a)  # [B, N, Lt, c_atom]
+        a_to_q = torch.bmm(f_input.atom_to_token, a_to_q)  # [B, N, La, c_atom]
+        q = q + a_to_q  # [B, N, La, c_atom]
 
         layer_cache = None
         if model_cache is not None:

@@ -83,7 +83,6 @@ class PairformerStack(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        pair_mask: torch.Tensor,
         chunk_size_tri_attn: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -96,8 +95,6 @@ class PairformerStack(nn.Module):
             The pairwise embeddings
         mask : torch.Tensor
             The token mask
-        pair_mask : torch.Tensor
-            The pairwise mask
 
         Returns
         -------
@@ -108,8 +105,11 @@ class PairformerStack(nn.Module):
 
         """
         if self.training:
-            # During training, we do not use chunking
-            chunk_size_tri_attn = None
+            assert chunk_size_tri_attn is None, (
+                "During training, chunk_size_tri_attn must be None."
+            )
+
+        pair_mask = mask.unsqueeze(-1) & mask.unsqueeze(-2)  # [B, L, L]
 
         # Line 1
         for block in self.blocks:

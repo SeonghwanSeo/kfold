@@ -16,7 +16,6 @@ from .transformers import (
     AtomAttentionEncoder,
     DiffusionTransformer,
 )
-from .utils import expand_batch
 
 
 class FourierEmbedding(nn.Module):
@@ -54,12 +53,12 @@ class FourierEmbedding(nn.Module):
         Parameters
         ----------
         times : torch.Tensor
-            The input times. Shape (N,)
+            The input times. Shape (B, N,)
 
         Returns
         -------
         torch.Tensor
-            The Fourier embeddings. Shape (N, channel)
+            The Fourier embeddings. Shape (B, N, channel)
         """
         # Line 2
         return torch.cos((2 * math.pi) * times[..., None] * self.w + self.b)
@@ -206,20 +205,26 @@ class DiffusionModule(nn.Module):
         Parameters
         ----------
         x_noisy : torch.Tensor
-            The noisy atom positions, shape [Nsample, La, 3],
-            where Nsample is the number of diffusion samples.
+            The noisy atom positions, shape [B, N, La, 3],
+            where B is the batch size and Nsample is the number of diffusion samples.
         times : torch.Tensor
-            The diffusion times, shape [Nsample].
+            The diffusion times, shape [B, N].
         f_input : FoldingInput
             The folding input.
         s_inputs : torch.Tensor
-            The input single representation, shape [Lt, c_s].
+            The input single representation, shape [B, Lt, c_s].
         s_trunk : torch.Tensor
-            The trunk single representation, shape [Lt, c_s].
+            The trunk single representation, shape [B, Lt, c_s].
         z_trunk : torch.Tensor
-            The trunk pair representation, shape [Lt, c_z].
+            The trunk pair representation, shape [B, Lt, c_z].
+
+        Returns
+        -------
+        x_update : torch.Tensor
+            The updated atom positions, shape [B, N, La, 3].
         """
-        num_samples = x_noisy.shape[0]  # (=Nsample)
+
+        B, N = x_noisy.shape[:2]  # noqa
 
         # Line 1
         s, z = self.diffusion_conditioning(
@@ -229,22 +234,22 @@ class DiffusionModule(nn.Module):
             z_trunk=z_trunk,
             times=times,
             model_cache=model_cache,
-        )  # [Lt, Cs], [N, Lt, Lt, Cz]
+        )  # [B, Lt, Cs], [B, Lt, Lt, Cz]
 
         # Scale positions
-        c_in = 1 / torch.sqrt(times**2 + self.sigma_data**2)  # [Nsample]
-        r_noisy = x_noisy * c_in[:, None, None]  # [Nsample, La, 3]
+        c_in = 1 / torch.sqrt(times**2 + self.sigma_data**2)  # [B, N]
+        r_noisy = x_noisy * c_in[:, None, None]  # [B, N, La, 3]
 
         # Compute Atom Attention Encoder and aggregation to coarse-grained tokens
         # Shape:
-        # - a: [Nsample, Lt, 2*Cs]
-        # - q_skip: [Nsample, La, Ca]
-        # - c_skip: [Nsample, La, Ca]
-        # - p_skip: [Nsample, La, La, Cap]
+        # - a: [B, N, Lt, 2*Cs]
+        # - q_skip: [B, N, La, Ca]
+        # - c_skip: [B, N, La, Ca]
+        # - p_skip: [B, N, La, La, Cap]
 
         a, q_skip, c_skip, p_skip, to_keys = self.atom_attention_encoder(
             f_input=f_input,
-            r=r_noisy,  # [Nsample, La, 3]
+            r=r_noisy,  # [B, N, La, 3]
             s_trunk=s_trunk,  # [Lt, Cs]
             z=z,  # [Lt, Lt, Cz]
             model_cache=model_cache,
@@ -253,13 +258,13 @@ class DiffusionModule(nn.Module):
         # Full self-attention on token level
         a = a + self.s_to_a_linear(s)  # [Nsample, La, Cs]
 
-        mask = expand_batch(f_input.token.pad_mask, num_samples)
+        mask = f_input.token.pad_mask[:, None, :]  # [B, 1, Lt]
         a = self.token_transformer(
-            a,  # [Nsample, Lt, Cs]
-            mask=mask.float(),  # [Nsample, Lt]
-            s=s,  # [Nsample, Lt, Cs]
-            z=z,  # [Lt, Lt, Cz]
-            num_diffusion_samples=num_samples,
+            a,  # [B, N, Lt, Cs]
+            mask=mask.float(),  # [B, 1, Lt]
+            s=s,  # [B, N, Lt, Cs]
+            z=z,  # [B, Lt, Lt, Cz]
+            num_diffusion_samples=N,
             model_cache=model_cache,
         )
         a = self.a_norm(a)
@@ -271,7 +276,7 @@ class DiffusionModule(nn.Module):
             c=c_skip,
             p=p_skip,
             f_input=f_input,
-            num_diffusion_samples=num_samples,
+            num_diffusion_samples=N,
             to_keys=to_keys,
             model_cache=model_cache,
         )
@@ -281,7 +286,7 @@ class DiffusionModule(nn.Module):
         # TODO: add hparams to control.
         c_skip = (self.sigma_data**2) / (self.sigma_data**2 + times**2)
         c_out = self.sigma_data * times / torch.sqrt(self.sigma_data**2 + times**2)
-        x_update = c_skip[None, :, :] * x_noisy + c_out[None, :, :] * r_update
+        x_update = c_skip.view(B, N, 1, 1) * x_noisy + c_out.view(B, N, 1, 1) * r_update
 
         return x_update
 
@@ -296,12 +301,13 @@ class DiffusionConditioning(nn.Module):
     For model efficiency, I implement this function to return batched s and
     single z, where the batch size is the number of diffusion samples.
     Input:
-        s_inputs: [Lt, c_s] - input single representation
-        s_trunk: [Lt, c_s] - trunk single representation
-        z_trunk: [Lt, Lt, c_z] - trunk pair representation
+        times: [B, N] - diffusion times
+        s_inputs: [B, Lt, c_s] - input single representation
+        s_trunk: [B, Lt, c_s] - trunk single representation
+        z_trunk: [B, Lt, Lt, c_z] - trunk pair representation
     Output:
-        s: [Nsample, Lt, c_s] - time-dependent single conditioning
-        z: [Lt, Lt, c_z] - time-independent pair conditioning
+        s: [B, N, Lt, c_s] - time-dependent single conditioning
+        z: [B, Lt, Lt, c_z] - time-independent pair conditioning
 
     Due to this reason, in Boltz2, they remove the time term from conditioning,
     i.e., return time-independent s and z. (see Boltz2's diffusion_conditioning.py)
@@ -378,24 +384,24 @@ class DiffusionConditioning(nn.Module):
         Parameters
         ----------
         times : torch.Tensor
-            Tensor of shape (Nsample) containing diffusion times.
+            Tensor of shape (B, N) containing diffusion times.
         f_input : FoldingInput
             The folding input.
         s_inputs : torch.Tensor
-            Tensor of shape (Lt, c_s) containing input single embeddings.
+            Tensor of shape (B, Lt, c_s) containing input single embeddings.
         s_trunk : torch.Tensors
-            Tensor of shape (Lt, c_s) containing trunk single embeddings.
+            Tensor of shape (B, Lt, c_s) containing trunk single embeddings.
         z_trunk : torch.Tensor
-            Tensor of shape (Lt, Lt, c_z) containing trunk pair embeddings.
+            Tensor of shape (B, Lt, Lt, c_z) containing trunk pair embeddings.
         model_cache : dict | None
             The model cache for storing intermediate representations, by default None.
 
         Returns
         -------
         s : torch.Tensor
-            Tensor of shape (Nsample, Lt, c_s) containing conditioned single embeddings.
+            Tensor of shape (B, N, Lt, c_s) containing conditioned single embeddings.
         z : torch.Tensor
-            Tensor of shape (Lt, Lt, c_z) containing conditioned pair embeddings.
+            Tensor of shape (B, Lt, Lt, c_z) containing conditioned pair embeddings.
         """
 
         if model_cache is not None:
@@ -409,11 +415,13 @@ class DiffusionConditioning(nn.Module):
         if "z" not in layer_cache:
             # For time-independent pair representation z, we cache the result
             # Line 1
-            rel_pos_feats = self.rel_pos_encoding(f_input, model_cache)  # [Lt, Lt, c_z]
+            rel_pos_feats = self.rel_pos_encoding(
+                f_input, model_cache
+            )  # [B, Lt, Lt, c_z]
             z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
 
             # Line 2
-            z = self.linear_no_bias_pair(self.layernorm_pair(z))  # [Lt, Lt, c_z]
+            z = self.linear_no_bias_pair(self.layernorm_pair(z))  # [B, Lt, Lt, c_z]
 
             # Line 3-5
             for transition in self.transitions_pair:
@@ -423,18 +431,18 @@ class DiffusionConditioning(nn.Module):
             z = layer_cache["z"]
 
         # Line 6
-        s = torch.cat((s_trunk, s_inputs), dim=-1)  # [Lt, 2*c_s]
+        s = torch.cat((s_trunk, s_inputs), dim=-1)  # [B, Lt, 2*c_s]
 
         # Line 7
-        s = self.linear_no_bias_single(self.layernorm_single(s))  # [Lt, c_s]
+        s = self.linear_no_bias_single(self.layernorm_single(s))  # [B, Lt, c_s]
 
         # Line 8
         c_noise = (times / self.sigma_data).clamp(1e-20).log() * 0.25
-        fourier_embed = self.fourier_embed(c_noise)  # [Nsample, dim_fourier]
+        fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]
 
         # Line 9
         fourier_embed = self.linear_no_bias_fourier(self.layernorm_fourier(fourier_embed))
-        s = s[:, None, :, :] + fourier_embed[:, :, None, :]  # [Nsample, Lt, c_s]
+        s = s[:, None, :, :] + fourier_embed[:, :, None, :]  # [B, N, Lt, c_s]
 
         # Line 10-12
         for transition in self.transitions_single:

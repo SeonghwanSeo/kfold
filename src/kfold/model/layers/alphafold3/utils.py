@@ -8,18 +8,22 @@ from torch.types import Device
 _T = TypeVar("_T")
 
 
-def expand_batch(x: torch.Tensor, b: int) -> torch.Tensor:
-    """Expands a tensor x to have batch size b by unsqueezing and expanding."""
-    if b == 1:
-        return x.unsqueeze(0)
-    return x.unsqueeze(0).expand(b, *x.shape)
+def expand_dim(x: torch.Tensor, dim: int, n: int, add_dim: bool) -> torch.Tensor:
+    """Expands a tensor x"""
+    if add_dim:
+        x = x.unsqueeze(dim)
+    shape = [-1] * x.ndim
+    shape[dim] = n
+    return x.expand(shape)
 
 
-def repeat_batch(x: torch.Tensor, b: int) -> torch.Tensor:
-    """Repeats a tensor x to have batch size b by unsqueezing and repeating."""
-    if b == 1:
-        return x.unsqueeze(0)
-    return x.unsqueeze(0).repeat(b, *(1,) * x.ndim)
+def repeat_dim(x: torch.Tensor, dim: int, n: int, add_dim: bool) -> torch.Tensor:
+    """Repeats a tensor x"""
+    if add_dim:
+        x = x.unsqueeze(dim)
+    shape = [1] * x.ndim
+    shape[dim] *= n
+    return x.repeat(shape)
 
 
 def exists(v) -> bool:

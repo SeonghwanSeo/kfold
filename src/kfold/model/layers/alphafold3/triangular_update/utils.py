@@ -309,7 +309,7 @@ def chunk_layer(
     prepped_inputs = tensor_tree_map(_prep_inputs, inputs)
     prepped_outputs = None
     if _out is not None:
-        reshape_fn = lambda t: t.view([-1] + list(t.shape[no_batch_dims:]))  # noqa [E731]
+        reshape_fn = lambda t: t.view([-1] + list(t.shape[no_batch_dims:]))  # noqa: E731
         prepped_outputs = tensor_tree_map(reshape_fn, _out)
 
     flat_batch_dim = 1
@@ -323,7 +323,7 @@ def chunk_layer(
     for _ in range(no_chunks):
         # Chunk the input
         if not low_mem:
-            select_chunk = lambda t: t[i : i + chunk_size] if t.shape[0] != 1 else t  # noqa [E731]
+            select_chunk = lambda t: t[i : i + chunk_size] if t.shape[0] != 1 else t  # noqa
         else:
             select_chunk = partial(
                 _chunk_slice,
@@ -339,7 +339,7 @@ def chunk_layer(
 
         # Allocate space for the output
         if out is None:
-            allocate = lambda t: t.new_zeros((flat_batch_dim,) + t.shape[1:])  # noqa [E731]
+            allocate = lambda t: t.new_zeros((flat_batch_dim,) + t.shape[1:])  # noqa: E731
             out = tensor_tree_map(allocate, output_chunk)
 
         # Put the chunk in its pre-allocated space
@@ -352,9 +352,9 @@ def chunk_layer(
                         assign(v, d2[k])
                     else:
                         if _add_into_out:
-                            v[i : i + chunk_size] += d2[k]  # noqa [B023]
+                            v[i : i + chunk_size] += d2[k]  # noqa: B023
                         else:
-                            v[i : i + chunk_size] = d2[k]  # noqa [B023]
+                            v[i : i + chunk_size] = d2[k]  # noqa: B023
 
             assign(out, output_chunk)
         elif out_type is tuple:

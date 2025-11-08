@@ -30,12 +30,14 @@ dependencies = [
   # additional dependencies
   "tqdm",
   "scipy",
-  "einops",
   "omegaconf",
   "rdkit",
+  "einops",
+  "fairscale",
   "gemmi==0.6.5",
   "modelcif==1.2", # to write cif file
 ]
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
+train = ['lightning']

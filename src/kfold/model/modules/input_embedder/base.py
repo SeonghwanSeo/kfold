@@ -30,11 +30,11 @@ class BaseInputEmbedder(torch.nn.Module, ABC):
         Returns
         -------
         s_inputs : torch.Tensor
-            Tensor of shape (L, C_s) containing input single features
+            Tensor of shape (B, L, C_s) containing input single features
         s_init: torch.Tensor
-            Tensor of shape (L, C_s) containing initial single representation
+            Tensor of shape (B, L, C_s) containing initial single representation
             before trunk.
         z_init: torch.Tensor
-            Tensor of shape (L, L, C_s) containing initial pair representation
+            Tensor of shape (B, L, L, C_s) containing initial pair representation
             before trunk.
         """

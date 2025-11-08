@@ -12,7 +12,7 @@ from .primitives import LinearNoBias
 class RelativePositionEncoding(nn.Module):
     """Relative position encoder."""
 
-    def __init__(self, channel_z: int, r_max=32, s_max=2):
+    def __init__(self, channel_z: int, r_max: int = 32, s_max: int = 2):
         """Initialize the relative position encoder.
 
         Parameters
@@ -32,15 +32,12 @@ class RelativePositionEncoding(nn.Module):
 
     def forward(self, f_input: FoldingInput, model_cache: dict | None) -> torch.Tensor:
         """See Section 3.1.2 Algorithm 3: Relative position encoding in the AF3 paper."""
+        # All shape: [B, Lt]
         asym_id = f_input.token.asym_id
         entity_id = f_input.token.entity_id
         sym_id = f_input.token.sym_id
         residue_index = f_input.token.residue_index
         token_index = f_input.token.token_index
-        cyclic_period = f_input.token.cyclic_period
-
-        if torch.any(cyclic_period != 0):
-            raise NotImplementedError("Cyclic periods not supported yet.")
 
         if model_cache is not None:
             cache_prefix = "relative_position_encoding"
@@ -120,7 +117,7 @@ class RelativePositionEncoding(nn.Module):
             rel_position_encoding = layer_cache["rel_pos_encoding"]
 
         # Line 10:2 (lienar)
-        p = self.linear_layer(rel_position_encoding)  # [L, L, c_z]
+        p = self.linear_layer(rel_position_encoding)  # [B, L, L, c_z]
 
         return p  # [L, L, c_z]
 
@@ -155,7 +152,7 @@ class AtomEmbedding(nn.Module):
         """Embed atom features.
         Line 1:
         c = LinearNoBias(concat(ref_pos, ref_charge, ref_mask, ref_element, ref_atom_name_chars)))
-        """  # noqa [E501]
+        """  # noqa: E501
 
         atom_layout = f_input.atom
         ref_pos = atom_layout.ref_pos

@@ -77,15 +77,15 @@ class InputFeatureEmbedder(nn.Module):
         Returns
         -------
         Tensor
-            The embedded tokens. [L, c_s]
+            The embedded tokens. [B, Lt, c_s]
         """
         # Atom attention encoder forward
-        a, *_ = self.encoder(f_input)  # [L, c_s]
+        a, *_ = self.encoder(f_input)  # [B, Lt, c_s]
 
         # Concatenate additional token features
-        res_type = f_input.token.res_type  # [L,]
-        profile = f_input.msa.profile  # [L,]
-        deletion_mean = f_input.msa.deletion_mean  # [L,]
+        res_type = f_input.token.res_type  # [B, Lt,]
+        profile = f_input.msa.profile  # [B, Lt,]
+        deletion_mean = f_input.msa.deletion_mean  # [B, Lt,]
         s = torch.cat(
             [
                 a,
@@ -98,7 +98,7 @@ class InputFeatureEmbedder(nn.Module):
 
         # Project to model dimension
         # NOTE: (SeonghwanSeo) I introduce additional linear layer to unify the dimension.
-        s = self.proj_to_s(s)  # [L, c_s]
+        s = self.proj_to_s(s)  # [B, Lt, c_s]
 
         return s
 
