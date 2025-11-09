@@ -1,4 +1,5 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
+from dataclasses import dataclass
 
 import torch
 
@@ -15,6 +16,7 @@ class AF3DiffusionModule(BaseScoreModel):
     Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
     """
 
+    @dataclass
     class Config(BaseConfig):
         """Initialize the diffusion module.
 
@@ -36,16 +38,16 @@ class AF3DiffusionModule(BaseScoreModel):
             The standard deviation of the data distribution, by default 16.
         dim_fourier : int, optional
             The dimension of the fourier embedding, by default 256.
-        atom_encoder_depth : int, optional
-            The depth of the atom encoder, by default 3.
+        atom_encoder_blocks : int, optional
+            The number of blocks of the atom encoder, by default 3.
         atom_encoder_heads : int, optional
             The number of heads in the atom encoder, by default 4.
-        token_transformer_depth : int, optional
-            The depth of the token transformer, by default 24.
+        token_transformer_blocks : int, optional
+            The number of blocks of the token transformer, by default 24.
         token_transformer_heads : int, optional
             The number of heads in the token transformer, by default 8.
-        atom_decoder_depth : int, optional
-            The depth of the atom decoder, by default 3.
+        atom_decoder_blocks : int, optional
+            The number of blocks of the atom decoder, by default 3.
         atom_decoder_heads : int, optional
             The number of heads in the atom decoder, by default 4.
         conditioning_transition_layers : int, optional
@@ -65,11 +67,11 @@ class AF3DiffusionModule(BaseScoreModel):
         atoms_per_window_keys: int = 128
         sigma_data: int = 16
         dim_fourier: int = 256
-        atom_encoder_depth: int = 3
+        atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
-        token_transformer_depth: int = 24
+        token_transformer_blocks: int = 24
         token_transformer_heads: int = 8
-        atom_decoder_depth: int = 3
+        atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
         conditioning_transition_layers: int = 2
         activation_checkpointing: bool = False
@@ -87,11 +89,11 @@ class AF3DiffusionModule(BaseScoreModel):
             atoms_per_window_keys=cfg.atoms_per_window_keys,
             sigma_data=cfg.sigma_data,
             dim_fourier=cfg.dim_fourier,
-            atom_encoder_depth=cfg.atom_encoder_depth,
+            atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
-            token_transformer_depth=cfg.token_transformer_depth,
+            token_transformer_blocks=cfg.token_transformer_blocks,
             token_transformer_heads=cfg.token_transformer_heads,
-            atom_decoder_depth=cfg.atom_decoder_depth,
+            atom_decoder_blocks=cfg.atom_decoder_blocks,
             atom_decoder_heads=cfg.atom_decoder_heads,
             conditioning_transition_layers=cfg.conditioning_transition_layers,
             activation_checkpointing=cfg.activation_checkpointing,

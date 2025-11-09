@@ -1,6 +1,9 @@
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 
+from kfold.data.model_input import FoldingInput
 from kfold.model.layers.alphafold3 import initialize as init
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.alphafold3.primitives import LinearNoBias
@@ -10,12 +13,13 @@ from .base import BaseTrunk
 
 
 @TRUNK.register()
-class AF3PairformerModule(BaseTrunk):
+class AF3PairformerTrunk(BaseTrunk):
     """AlphaFold3 pairformer module.
 
     See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
     """
 
+    @dataclass
     class Config(BaseTrunk.Config):
         """Configuration for the Pairformer module.
 
@@ -100,13 +104,12 @@ class AF3PairformerModule(BaseTrunk):
         init.gating_init_(self.linear_no_bias_s.weight)
         init.gating_init_(self.linear_no_bias_z.weight)
 
-    def compile(self):
+    def do_compile(self):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
-        self.is_compiled = True
         self.pairformer_module = torch.compile(
             self.pairformer_module, dynamic=False, fullgraph=False
         )  # type: ignore
@@ -116,7 +119,7 @@ class AF3PairformerModule(BaseTrunk):
         s_inputs: torch.Tensor,
         s_init: torch.Tensor,
         z_init: torch.Tensor,
-        mask: torch.Tensor,
+        f_input: FoldingInput,
         num_recycles: int,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -126,13 +129,13 @@ class AF3PairformerModule(BaseTrunk):
         Parameters
         ----------
         s_inputs : torch.Tensor
-            Tensor of shape (L, C_s) containing input single features
+            Tensor of shape (B, L, C_s) containing input single features
         s_inits: torch.Tensor
-            Tensor of shape (L, C_s) containing initial single representation
+            Tensor of shape (B, L, C_s) containing initial single representation
         z_inits: torch.Tensor
-            Tensor of shape (L, L, C_s) containing initial pair representation
-        mask : torch.Tensor
-            The token mask of shape (B, L)
+            Tensor of shape (B, L, L, C_s) containing initial pair representation
+        f_input : FoldingInput
+            The input features.
         num_recycles : int
             The number of recycling steps.
 
@@ -166,7 +169,7 @@ class AF3PairformerModule(BaseTrunk):
                 z = z_init + self.linear_no_bias_z(self.layernorm_z(z_hat))
 
                 # Line 9: TemplateEmbedder
-                if self.use_templte:
+                if self.use_template:
                     raise NotImplementedError("Template Embedder is not implemented yet")
 
                 # Line 10: MSAModule
@@ -186,7 +189,7 @@ class AF3PairformerModule(BaseTrunk):
                 s, z = pairformer_module(
                     s,
                     z,
-                    mask=mask,
+                    mask=f_input.token.pad_mask.float(),
                     chunk_size_tri_attn=chunk_size_tri_attn,
                 )
 

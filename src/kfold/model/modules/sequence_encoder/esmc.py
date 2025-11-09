@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 
-from kfold.utils.registry import SEQUNECE_ENCODER, BaseConfig
+from kfold.utils.registry import SEQUENCE_ENCODER, BaseConfig
 
 from .base import BaseSequenceEncoder
 
@@ -32,7 +32,7 @@ class ESMCConfig(BaseConfig):
     load_pretrained: bool = True
 
 
-@SEQUNECE_ENCODER.register(config_cls=ESMCConfig)
+@SEQUENCE_ENCODER.register(config_cls=ESMCConfig)
 class ESMC(BaseSequenceEncoder):
     def __init__(self, cfg: ESMCConfig):
         super().__init__(cfg)

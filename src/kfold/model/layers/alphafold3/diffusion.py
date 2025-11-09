@@ -79,11 +79,11 @@ class DiffusionModule(nn.Module):
         atoms_per_window_keys: int = 128,
         sigma_data: int = 16,
         dim_fourier: int = 256,
-        atom_encoder_depth: int = 3,
+        atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
-        token_transformer_depth: int = 24,
+        token_transformer_blocks: int = 24,
         token_transformer_heads: int = 8,
-        atom_decoder_depth: int = 3,
+        atom_decoder_blocks: int = 3,
         atom_decoder_heads: int = 4,
         conditioning_transition_layers: int = 2,
         activation_checkpointing: bool = False,
@@ -109,16 +109,16 @@ class DiffusionModule(nn.Module):
             The standard deviation of the data distribution, by default 16.
         dim_fourier : int, optional
             The dimension of the fourier embedding, by default 256.
-        atom_encoder_depth : int, optional
-            The depth of the atom encoder, by default 3.
+        atom_encoder_blocks : int, optional
+            The number of blocks in the atom encoder, by default 3.
         atom_encoder_heads : int, optional
             The number of heads in the atom encoder, by default 4.
-        token_transformer_depth : int, optional
-            The depth of the token transformer, by default 24.
+        token_transformer_blocks : int, optional
+            The number of blocks in the token transformer, by default 24.
         token_transformer_heads : int, optional
             The number of heads in the token transformer, by default 8.
-        atom_decoder_depth : int, optional
-            The depth of the atom decoder, by default 3.
+        atom_decoder_blocks : int, optional
+            The number of blocks in the atom decoder, by default 3.
         atom_decoder_heads : int, optional
             The number of heads in the atom decoder, by default 4.
         conditioning_transition_layers : int, optional
@@ -135,6 +135,8 @@ class DiffusionModule(nn.Module):
         self.atoms_per_window_keys: int = atoms_per_window_keys
         self.sigma_data: int = sigma_data
 
+        channel_token = channel_s * 2
+
         # === Diffusion conditioning === #
         self.diffusion_conditioning = DiffusionConditioning(
             channel_s=channel_s,
@@ -150,42 +152,42 @@ class DiffusionModule(nn.Module):
             channel_z=channel_z,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
-            channel_token=channel_s * 2,
+            channel_token=channel_token,
+            num_blocks=atom_encoder_blocks,
+            num_heads=atom_encoder_heads,
             atoms_per_window_queries=atoms_per_window_queries,
             atoms_per_window_keys=atoms_per_window_keys,
-            num_blocks=atom_encoder_depth,
-            num_heads=atom_encoder_heads,
             activation_checkpointing=activation_checkpointing,
+            use_structure=True,
         )
 
         # === Full token-level attention === #
-        self.s_to_a_linear = nn.Sequential(
-            nn.LayerNorm(channel_s),
-            LinearNoBias(channel_s, channel_s),
-        )
-        init.final_init_(self.s_to_a_linear[1].weight)
+        self.layernorm_s = nn.LayerNorm(channel_token)
+        self.trans_s_to_a = LinearNoBias(channel_token, channel_token)
+        init.final_init_(self.trans_s_to_a.weight)
 
         self.token_transformer = DiffusionTransformer(
-            channel_a=channel_s,
+            channel_a=channel_token,
             channel_s=channel_s,
             channel_z=channel_z,
-            num_blocks=token_transformer_depth,
+            num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             activation_checkpointing=activation_checkpointing,
             offload_to_cpu=offload_to_cpu,
         )
 
-        self.a_norm = nn.LayerNorm(2 * channel_s)
+        self.layernorm_a = nn.LayerNorm(2 * channel_s)
 
         # === Local token-level attention decoder === #
         self.atom_attention_decoder = AtomAttentionDecoder(
+            channel_a=channel_token,
             channel_s=channel_s,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
+            num_blocks=atom_decoder_blocks,
+            num_heads=atom_decoder_heads,
             attn_window_queries=atoms_per_window_queries,
             attn_window_keys=atoms_per_window_keys,
-            num_blocks=atom_decoder_depth,
-            num_heads=atom_decoder_heads,
             activation_checkpointing=activation_checkpointing,
         )
 
@@ -224,6 +226,7 @@ class DiffusionModule(nn.Module):
             The updated atom positions, shape [B, N, La, 3].
         """
 
+        # B: batch size, N: number of diffusion samples
         B, N = x_noisy.shape[:2]  # noqa
 
         # Line 1
@@ -247,27 +250,26 @@ class DiffusionModule(nn.Module):
         # - c_skip: [B, N, La, Ca]
         # - p_skip: [B, N, La, La, Cap]
 
-        a, q_skip, c_skip, p_skip, to_keys = self.atom_attention_encoder(
+        a, q_skip, c_skip, p_skip, local_attn_indexer = self.atom_attention_encoder(
             f_input=f_input,
             r=r_noisy,  # [B, N, La, 3]
-            s_trunk=s_trunk,  # [Lt, Cs]
-            z=z,  # [Lt, Lt, Cz]
+            s_trunk=s_trunk,  # [B, Lt, Cs]
+            z=z,  # [B, Lt, Lt, Cz]
             model_cache=model_cache,
         )
 
         # Full self-attention on token level
-        a = a + self.s_to_a_linear(s)  # [Nsample, La, Cs]
+        a = a + self.trans_s_to_a(self.layernorm_s(s))  # [Nsample, La, Cs]
 
-        mask = f_input.token.pad_mask[:, None, :]  # [B, 1, Lt]
+        mask = f_input.token.pad_mask.float()  # [B, Lt]
         a = self.token_transformer(
             a,  # [B, N, Lt, Cs]
-            mask=mask.float(),  # [B, 1, Lt]
             s=s,  # [B, N, Lt, Cs]
             z=z,  # [B, Lt, Lt, Cz]
-            num_diffusion_samples=N,
+            attn_mask=mask[:, None, None],  # [B, 1, 1, Lt], broadcasted to [B, N, Lt, Lt]
             model_cache=model_cache,
         )
-        a = self.a_norm(a)
+        a = self.layernorm_a(a)
 
         # Broadcast token activations to atoms and run Sequence-local Atom Attention
         r_update = self.atom_attention_decoder(
@@ -276,8 +278,7 @@ class DiffusionModule(nn.Module):
             c=c_skip,
             p=p_skip,
             f_input=f_input,
-            num_diffusion_samples=N,
-            to_keys=to_keys,
+            local_attn_indexer=local_attn_indexer,
             model_cache=model_cache,
         )
 
@@ -365,7 +366,7 @@ class DiffusionConditioning(nn.Module):
 
         self.transitions_single = nn.ModuleList(
             [
-                Transition(channel_z, expansion_factor=transition_expansion_factor)
+                Transition(channel_s, expansion_factor=transition_expansion_factor)
                 for _ in range(num_transitions)
             ]
         )

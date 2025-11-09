@@ -36,7 +36,9 @@ class KFold(torch.nn.Module):
         # NOTE: structure module is not a torch.nn.Module
         # This handles diffusion sampling as well
         self.structure_module: submodules.structure_module.BaseStructureModule = (
-            Registry.instantiate(model_config.structure_module)
+            Registry.instantiate(
+                model_config.structure_module, score_model=self.score_model
+            )
         )
 
         # Heads
@@ -49,19 +51,29 @@ class KFold(torch.nn.Module):
         # )
 
         # Compile submodules
-        # TODO, add compile for confidence head after implementing it
-        if model_config.compile_trunk:
-            self.trunk.compile()
-        if model_config.compile_score_model:
-            self.score_model.compile()
-        # if model_config.compile_confidence_head:
+        if hasattr(model_config, "compile_trunk"):
+            self.trunk.compile(getattr(model_config, "compile_trunk", False))
+        else:
+            print(
+                "Model config does not have 'compile_trunk' attribute."
+                " Skipping trunk compilation."
+            )
+
+        if hasattr(model_config, "compile_score_model"):
+            self.score_model.compile(getattr(model_config, "compile_score_model", False))
+        else:
+            print(
+                "Model config does not have 'compile_score_model' attribute."
+                " Skipping score model compilation."
+            )
+        # if getattr(model_config, "compile_confidence_head", False):
         #     self.confidence_head.compile()
 
     def forward(
         self,
         f_input: FoldingInput,
         num_recycles: int,
-        num_diffusion_steps: int,
+        num_steps: int,
         num_diffusion_samples: int,
     ) -> dict[str, torch.Tensor]:
         """Forward pass of KFold model for model training."""
@@ -78,18 +90,28 @@ class KFold(torch.nn.Module):
             )
             f_input = FoldingInput.from_list([f_input])
 
+        print("--- KFold forward pass ---")
+        print("--- Input Embedder ---")
         s_inputs, s_init, z_init = self.input_embedder(f_input)
 
+        print("--- Trunk ---")
         s_trunk, z_trunk = self.trunk(
-            s_inputs, s_init, z_init, f_input.token.pad_mask, num_recycles
+            s_inputs,
+            s_init,
+            z_init,
+            f_input,
+            num_recycles,
         )
 
         dict_out = {
             "s_trunk": s_trunk,
             "z_trunk": z_trunk,
         }
+        print("--- Distogram head ---")
 
         dict_out["distogram_logits"] = self.distogram_head(z_trunk)
+
+        print("--- Structure ---")
 
         dict_out |= self.structure_module.train_diffusion_step(s_trunk, z_trunk, f_input)
 

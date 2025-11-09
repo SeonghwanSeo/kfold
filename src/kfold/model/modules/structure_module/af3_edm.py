@@ -1,6 +1,7 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 
 import math
+from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -14,18 +15,19 @@ from .base import BaseStructureModule
 
 
 @STRUCTURE_MODULE.register()
-class AF3AtomDiffusion(BaseStructureModule):
+class AF3SampleDiffusion(BaseStructureModule):
     """Atom diffusion module used in AlphaFold3.
     See Section 3.7 Algorithm 18: SampleDiffusion in the AF3 paper.
     """
 
+    @dataclass
     class Config(BaseConfig):
         """Configuration for the Structure module.
 
         Parameters
         ----------
-        num_sampling_steps : int, optional
-            The number of sampling steps, by default 5.
+        num_steps : int, optional
+            The number of sampling steps, by default 200.
         sigma_min : float, optional
             The minimum sigma value, by default 0.0004.
         sigma_max : float, optional
@@ -53,7 +55,7 @@ class AF3AtomDiffusion(BaseStructureModule):
             Whether to synchronize the sigmas, by default False.
         """
 
-        num_sampling_steps: int = 5
+        num_steps: int = 200
         sigma_min: float = 0.0004
         sigma_max: float = 160.0
         sigma_data: float = 16.0
@@ -76,7 +78,7 @@ class AF3AtomDiffusion(BaseStructureModule):
         self.rho: int = cfg.rho
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
-        self.num_sampling_steps: int = cfg.num_sampling_steps
+        self.num_steps: int = cfg.num_steps
         self.gamma_0: float = cfg.gamma_0
         self.gamma_min: float = cfg.gamma_min
         self.noise_scale: float = cfg.noise_scale
@@ -160,7 +162,7 @@ class AF3AtomDiffusion(BaseStructureModule):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        num_sampling_steps: int | None = None,
+        num_steps: int | None = None,
         num_diffusion_samples: int = 1,
         max_parallel_samples: int | None = None,
     ) -> torch.Tensor:
@@ -168,16 +170,14 @@ class AF3AtomDiffusion(BaseStructureModule):
         See Section 3.7: Algorithm 18 of AlphaFold3 paper.
         """
 
-        if num_sampling_steps is None:
-            num_sampling_steps = self.num_sampling_steps
+        if num_steps is None:
+            num_steps = self.num_steps
 
         if max_parallel_samples is None:
             max_parallel_samples = num_diffusion_samples
 
         # Get noise schedule
-        sigmas = self.get_sampling_schedule(
-            num_sampling_steps=num_sampling_steps, device=s_inputs.device
-        )
+        sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device)
         gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
         sigmas, gammas = sigmas.tolist(), gammas.tolist()
 
@@ -192,7 +192,7 @@ class AF3AtomDiffusion(BaseStructureModule):
         atom_coords = init_sigma * prior_coords  # (B, Natom, 3)
 
         # Line 2: gradually denoise
-        for step_idx in range(1, num_sampling_steps):
+        for step_idx in range(1, num_steps):
             # Line 3
             atom_coords = self.random_augmentation(atom_coords, atom_mask=atom_mask)
 
@@ -261,21 +261,21 @@ class AF3AtomDiffusion(BaseStructureModule):
 
     def get_sampling_schedule(
         self,
-        num_sampling_steps: int | None = None,
+        num_steps: int | None = None,
         device: torch.device | None = None,
     ) -> torch.Tensor:
         """Get the noise schedule for diffusion sampling."""
 
-        if num_sampling_steps is None:
-            num_sampling_steps = self.num_sampling_steps
+        if num_steps is None:
+            num_steps = self.num_steps
 
         inv_rho = 1 / self.rho
 
-        steps = torch.arange(num_sampling_steps, dtype=torch.float32, device=device)
+        steps = torch.arange(num_steps, dtype=torch.float32, device=device)
         sigmas = (
             self.sigma_max**inv_rho
             + steps
-            / (num_sampling_steps - 1)
+            / (num_steps - 1)
             * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
         ) ** self.rho
 
@@ -301,13 +301,13 @@ class AF3AtomDiffusion(BaseStructureModule):
     ) -> torch.Tensor:
         """Sample from the prior distribution."""
         holo_coords = super().sample_holo(f_input, num_diffusion_samples)
-        atom_mask = f_input.atom.pad_mask.unsqueeze(0)  # (1, Natom)
+        atom_mask = f_input.atom.pad_mask.float()  # (1, Latom)
 
         # Apply coordinate augmentation
         holo_coords = self.random_augmentation(holo_coords, atom_mask)
 
         # Mask out the padding atoms
-        holo_coords = torch.masked_fill(holo_coords, ~atom_mask, 0.0)
+        holo_coords = holo_coords * atom_mask.view(-1, 1, 1, 1)  # (B, N, Latom, 3)
         return holo_coords
 
     def interpolate(
@@ -315,7 +315,7 @@ class AF3AtomDiffusion(BaseStructureModule):
         noise_coords: torch.Tensor,
         label_coords: torch.Tensor,
         sigma: torch.Tensor,
-        f_input: FoldingInput,
+        mask: torch.Tensor,
     ) -> torch.Tensor:
         """Interpolate between noise and label coordinates.
 
@@ -324,20 +324,18 @@ class AF3AtomDiffusion(BaseStructureModule):
         Parameters
         ----------
         noise_coords : torch.Tensor
-            The noisy coordinates. Shape (B, N, 3).
+            The noisy coordinates. Shape (B, N, La, 3).
         label_coords : torch.Tensor
-            The label coordinates. Shape (B, N, 3).
+            The label coordinates. Shape (B, N, La, 3).
         sigma : torch.Tensor
-            The sigma values. Shape (B,).
-        f_input : FoldingInput
-            The FoldingInput object.
+            The sigma values. Shape (B, N).
+        mask : torch.Tensor
+            The atom mask. Shape (B, La).
         """
-        atom_mask = f_input.atom.pad_mask.unsqueeze(0)  # (1, Natom)
-
         noised_atom_coords = (
             label_coords + sigma[:, None, None] * noise_coords
         )  # (B, Natom, 3)
 
         # Mask out the padding atoms
-        noised_atom_coords = torch.masked_fill(noised_atom_coords, ~atom_mask, 0.0)
+        noised_atom_coords = noised_atom_coords * mask[:, None, None]  # (B, Natom, 3)
         return noised_atom_coords

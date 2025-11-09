@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 
 from kfold.data.model_input import FoldingInput
@@ -16,6 +18,7 @@ class AF3InputEmbedder(BaseInputEmbedder):
     Algorithm 1 Line[1-5]
     """
 
+    @dataclass
     class Config(BaseConfig):
         """Configuration for the Input embedding module.
 
@@ -23,6 +26,8 @@ class AF3InputEmbedder(BaseInputEmbedder):
         ----------
         channel_s : int
             The token single embedding size.
+        channel_z : int
+            The token pairwise embedding size.
         channel_atom : int
             The token single embedding size.
         channel_atompair : int
@@ -31,8 +36,8 @@ class AF3InputEmbedder(BaseInputEmbedder):
             The number of atoms per window for queries.
         atoms_per_window_keys: int,
             The number of atoms per window for keys.
-        atom_encoder_depth: int,
-            The atom encoder depth.
+        atom_encoder_blocks: int,
+            The atom encoder blocks.
         atom_encoder_heads: int,
             The atom encoder heads.
         max_relative_token : int
@@ -47,7 +52,7 @@ class AF3InputEmbedder(BaseInputEmbedder):
         channel_atompair: int = 16
         atoms_per_window_queries: int = 32
         atoms_per_window_keys: int = 128
-        atom_encoder_depth: int = 3
+        atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
         max_relative_token: int = 32
         max_relative_chain: int = 2
@@ -65,7 +70,7 @@ class AF3InputEmbedder(BaseInputEmbedder):
             channel_atompair=cfg.channel_atompair,
             atoms_per_window_queries=cfg.atoms_per_window_queries,
             atoms_per_window_keys=cfg.atoms_per_window_keys,
-            atom_encoder_depth=cfg.atom_encoder_depth,
+            atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
         )
 
@@ -133,7 +138,26 @@ class AF3InputEmbedder(BaseInputEmbedder):
     ) -> torch.Tensor:
         """Get the adjacency bond matrix from the input features."""
         batch_size = bond_index.shape[0]
-        adj = torch.zeros((batch_size, num_tokens, num_tokens), device=bond_index.device)
-        adj[bond_index[:, 0], bond_index[:, 1]] = 1.0
-        adj[bond_index[:, 1], bond_index[:, 0]] = 1.0  # undirected
-        return adj.unsqueeze(-1)  # [L, L, 1]
+        adj = torch.zeros(
+            (batch_size, num_tokens, num_tokens),
+            device=bond_index.device,
+            dtype=torch.float32,
+        )
+
+        src, dst = bond_index[:, :, 0], bond_index[:, :, 1]
+
+        batch_indices = (
+            torch.arange(batch_size, device=bond_index.device)
+            .unsqueeze(-1)
+            .expand_as(src)
+        )
+
+        adj[batch_indices, src, dst] = 1.0
+        adj[batch_indices, dst, src] = 1.0  # undirected
+
+        # Padding is located at index 0, remove bonds to/from padding tokens
+        # This can be done by zeroing out the diagonal
+        mask = torch.eye(num_tokens, dtype=torch.float32, device=bond_index.device)
+        adj = adj * (1.0 - mask).unsqueeze(0)
+
+        return adj.unsqueeze(-1)  # [B, L, L, 1]

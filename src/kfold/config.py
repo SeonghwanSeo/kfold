@@ -65,9 +65,14 @@ def _resolve_registry_defaults(config: DictConfig) -> DictConfig:
             type_name = obj["_class_"]
             registry: Registry = Registry.get_register(registry_name)
             config_cls = registry.__config_dict__.get(type_name, None)
-            if config_cls is not None:
-                # Merge with registry defaults
-                obj = OmegaConf.to_container(OmegaConf.merge(config_cls, obj))
+            try:
+                if config_cls is not None:
+                    # Merge with registry defaults
+                    obj = OmegaConf.to_container(OmegaConf.merge(config_cls, obj))
+            except Exception as e:
+                raise Exception(
+                    f"Failed to merge defaults for {registry_name}.{type_name} - {e}"
+                ) from e
 
         # Recursively process all nested dicts
         resolved = {}

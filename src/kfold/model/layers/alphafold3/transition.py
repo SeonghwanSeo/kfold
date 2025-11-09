@@ -28,15 +28,15 @@ class Transition(nn.Module):
         if out_dim is None:
             out_dim = dim
 
-        self.norm = nn.LayerNorm(dim, eps=1e-5)
+        self.layernorm = nn.LayerNorm(dim, eps=1e-5)
         self.fc1 = nn.Linear(dim, hidden, bias=False)
         self.fc2 = nn.Linear(dim, hidden, bias=False)
         self.fc3 = nn.Linear(hidden, out_dim, bias=False)
         self.silu = nn.SiLU()
         self.hidden = hidden
 
-        init.bias_init_one_(self.norm.weight)
-        init.bias_init_zero_(self.norm.bias)
+        init.bias_init_one_(self.layernorm.weight)
+        init.bias_init_zero_(self.layernorm.bias)
 
         init.lecun_normal_init_(self.fc1.weight)
         init.lecun_normal_init_(self.fc2.weight)
@@ -58,7 +58,7 @@ class Transition(nn.Module):
             The output data of shape (..., D)
 
         """
-        x = self.norm(x)
+        x = self.layernorm(x)
 
         if chunk_size is None or self.training:
             x = self.silu(self.fc1(x)) * self.fc2(x)

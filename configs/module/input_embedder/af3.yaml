@@ -1,0 +1,12 @@
+_registry_: "input_embedder"
+_class_: "AF3InputEmbedder"
+channel_s: 384
+channel_z: 128
+channel_atom: 128
+channel_atompair: 16
+atoms_per_window_queries: 32
+atoms_per_window_keys: 128
+atom_encoder_blocks: 3
+atom_encoder_heads: 4
+max_relative_token: 32
+max_relative_chain: 2

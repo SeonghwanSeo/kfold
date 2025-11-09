@@ -1,8 +1,10 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License,
 
+from functools import lru_cache
 from typing import TypeVar, overload
 
 import torch
+import torch.nn.functional as F
 from torch.types import Device
 
 _T = TypeVar("_T")
@@ -34,8 +36,77 @@ def default(v: _T | None, d: _T) -> _T:
     return v if exists(v) else d  # type: ignore[return-value]
 
 
-def log(t: torch.Tensor, eps=1e-20) -> torch.Tensor:
-    return torch.log(t.clamp(min=eps))
+@lru_cache(maxsize=2)
+def get_indexing_matrix(W: int, Lq: int, Lk: int, device: torch.device) -> torch.Tensor:
+    """Get indexing matrix for local attention.
+    Cache the result for efficiency.
+    """
+    assert Lq % 2 == 0
+    assert Lk % (Lq // 2) == 0
+
+    h = Lk // (Lq // 2)
+    assert h % 2 == 0
+
+    arange = torch.arange(2 * W, device=device)
+    index = ((arange.unsqueeze(0) - arange.unsqueeze(1)) + h // 2).clamp(min=0, max=h + 1)
+    index = index.view(W, 2, 2 * W)[:, 0, :]
+    onehot = F.one_hot(index, num_classes=h + 2)[..., 1:-1].transpose(1, 0)
+    return onehot.reshape(2 * W, h * W).float()
+
+
+class LocalAttentionIndexer:
+    def __init__(
+        self,
+        num_atoms: int,
+        atoms_per_window_queries: int,
+        atoms_per_window_keys: int,
+        device: torch.device,
+    ) -> None:
+        """Indexer for local atom attention.
+
+        Converts flat atom sequences into windowed query/key representations
+        for efficient local attention computation.
+
+        Parameters
+        ----------
+        num_atoms : int
+            Number of atoms (L).
+        atoms_per_window_queries : int
+            Atoms per window for queries (Lq).
+        atoms_per_window_keys : int
+            Atoms per window for keys (Lk).
+        """
+        assert num_atoms % atoms_per_window_queries == 0
+        self.L: int = num_atoms
+        self.W: int = num_atoms // atoms_per_window_queries
+        self.Lq: int = atoms_per_window_queries
+        self.Lk: int = atoms_per_window_keys
+        self.indexing_matrix = get_indexing_matrix(self.W, self.Lq, self.Lk, device)
+
+    def to_query(self, x: torch.Tensor) -> torch.Tensor:
+        """Convert single tensor to query tensor using indexing matrix.
+        [..., L, D] -> [..., K, Lq, D]
+        """
+        return x.unflatten(-2, (self.W, self.Lq))
+
+    def to_key(self, x: torch.Tensor) -> torch.Tensor:
+        """Convert single tensor to key tensor using indexing matrix.
+        [..., L, D] -> [..., K, Lw, D]
+        """
+        # if dtype is not float, convert to float for einsum
+        original_dtype = x.dtype
+        if original_dtype == torch.long:
+            x = x.float()
+
+        original_shape = x.shape  # [..., L, D]
+        L, D = original_shape[-2:]
+        assert L == self.L
+        W, Lq, Lk = self.W, self.Lq, self.Lk
+
+        x = x.unflatten(-2, (2 * W, Lq // 2))  # [..., 2W, Lq/2, D]
+        key = torch.einsum("... j i d, j k -> ... k i d", x, self.indexing_matrix)
+        key = key.reshape(*original_shape[:-2], W, Lk, D)  # [..., W, Lk, D]
+        return key.to(original_dtype)
 
 
 class ExponentialMovingAverage:

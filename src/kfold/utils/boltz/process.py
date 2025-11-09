@@ -100,17 +100,17 @@ def parse_structure(
         elif key in float_fields:
             return torch.float32
         else:
-            return torch.int32
+            return torch.long
 
     chain_info = {
-        "chain_type": torch.as_tensor(chains["mol_type"].copy(), dtype=torch.int32),
-        "entity_id": torch.as_tensor(chains["entity_id"].copy(), dtype=torch.int32) + 1,
-        "asym_id": torch.as_tensor(chains["asym_id"].copy(), dtype=torch.int32) + 1,
-        "sym_id": torch.as_tensor(chains["sym_id"].copy(), dtype=torch.int32) + 1,
-        "num_residues": torch.as_tensor(chains["res_num"].copy(), dtype=torch.int32),
-        "num_atoms": torch.as_tensor(chains["atom_num"].copy(), dtype=torch.int32),
+        "chain_type": torch.as_tensor(chains["mol_type"].copy(), dtype=torch.long),
+        "entity_id": torch.as_tensor(chains["entity_id"].copy(), dtype=torch.long) + 1,
+        "asym_id": torch.as_tensor(chains["asym_id"].copy(), dtype=torch.long) + 1,
+        "sym_id": torch.as_tensor(chains["sym_id"].copy(), dtype=torch.long) + 1,
+        "num_residues": torch.as_tensor(chains["res_num"].copy(), dtype=torch.long),
+        "num_atoms": torch.as_tensor(chains["atom_num"].copy(), dtype=torch.long),
         # 'num_tokens' will be computed below
-        "num_tokens": torch.zeros(len(chains), dtype=torch.int32),
+        "num_tokens": torch.zeros(len(chains), dtype=torch.long),
     }
 
     token_info = {

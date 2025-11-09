@@ -51,7 +51,7 @@ class Registry:
         return name in self._module_dict
 
     @classmethod
-    def instantiate(cls, config: BaseConfig) -> Any:
+    def instantiate(cls, config: BaseConfig, **kwargs) -> Any:
         """Instantiate a module from the registry using the provided config.
 
         Parameters
@@ -75,7 +75,7 @@ class Registry:
         """
         registry = cls.get_register(config._registry_)
         module_cls = registry[config._class_]
-        return module_cls(config)
+        return module_cls(config, **kwargs)
 
     def register(
         self, name: str | None = None, config_cls: type[BaseConfig] | None = None

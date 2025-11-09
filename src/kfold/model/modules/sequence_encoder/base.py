@@ -2,10 +2,10 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.utils.registry import SEQUNECE_ENCODER
+from kfold.utils.registry import SEQUENCE_ENCODER
 
 
-@SEQUNECE_ENCODER.register()
+@SEQUENCE_ENCODER.register()
 class BaseSequenceEncoder(torch.nn.Module, ABC):
     def __init__(self, cfg):
         super().__init__()

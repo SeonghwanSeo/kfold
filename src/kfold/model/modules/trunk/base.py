@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
+from kfold.data.model_input import FoldingInput
 from kfold.utils.registry import TRUNK, BaseConfig
 
 # TODO (seonghwanseo): we can define some common parameters across different transformer
@@ -20,14 +21,19 @@ class BaseTrunk(torch.nn.Module, ABC):
         self.cfg = cfg
         self.is_compiled: bool = False
 
-    def compile(self):
+    def compile(self, compile: bool = True):
+        """Compile the trunk module."""
+        if compile:
+            self.do_compile()
+            self.is_compiled = True
+
+    def do_compile(self):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
-        self.is_compiled = True
-        raise NotImplementedError("compile method is not implemented yet.")
+        raise NotImplementedError("do_compile method is not implemented yet.")
 
     @abstractmethod
     def forward(
@@ -35,7 +41,7 @@ class BaseTrunk(torch.nn.Module, ABC):
         s_inputs: torch.Tensor,
         s_init: torch.Tensor,
         z_init: torch.Tensor,
-        mask: torch.Tensor,
+        f_input: FoldingInput,
         num_recycles: int,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -45,13 +51,13 @@ class BaseTrunk(torch.nn.Module, ABC):
         Parameters
         ----------
         s_inputs : torch.Tensor
-            Tensor of shape (L, C_s) containing input single features
+            Tensor of shape (B, L, C_s) containing input single features
         s_inits: torch.Tensor
-            Tensor of shape (L, C_s) containing initial single representation
+            Tensor of shape (B, L, C_s) containing initial single representation
         z_inits: torch.Tensor
-            Tensor of shape (L, L, C_s) containing initial pair representation
-        mask : torch.Tensor
-            The token mask of shape (B, L)
+            Tensor of shape (B, L, L, C_s) containing initial pair representation
+        f_input : FoldingInput
+            The input features.
         num_recycles : int
             The number of recycling steps.
 

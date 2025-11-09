@@ -49,7 +49,7 @@ class BaseStructureModule(ABC):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        num_sampling_steps: int | None = None,
+        num_steps: int | None = None,
         num_diffusion_samples: int = 1,
         max_parallel_samples: int | None = None,
     ) -> torch.Tensor:
@@ -66,7 +66,7 @@ class BaseStructureModule(ABC):
     @abstractmethod
     def get_sampling_schedule(
         self,
-        num_sampling_steps: int | None = None,
+        num_steps: int | None = None,
         device: torch.device | None = None,
     ) -> torch.Tensor:
         """Get the noise schedule for diffusion sampling."""
@@ -86,24 +86,22 @@ class BaseStructureModule(ABC):
         noise_coords: torch.Tensor,
         label_coords: torch.Tensor,
         sigma: torch.Tensor,
-        f_input: FoldingInput,
+        mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Interpolate between apo (noised) and holo (label) coordinates.
+        """Interpolate between noise and label coordinates.
 
         We may want to perform kabsch alignment here before interpolation.
 
         Parameters
         ----------
         noise_coords : torch.Tensor
-            The noisy coordinates. Shape (B, L, 3).
+            The noisy coordinates. Shape (B, N, La, 3).
         label_coords : torch.Tensor
-            The label coordinates. Shape (B, L, 3).
+            The label coordinates. Shape (B, N, La, 3).
         sigma : torch.Tensor
-            The sigma values. Shape (B,).
-        f_input : FoldingInput
-            The FoldingInput object.
-
-        L: number of atoms
+            The sigma values. Shape (B, N).
+        mask : torch.Tensor
+            The atom mask. Shape (B, La).
         """
 
     @abstractmethod

@@ -27,7 +27,6 @@ __all__ = [
     "TokenLayout",
     "AtomLayout",
     "BondLayout",
-    "ChainInput",
     "FoldingInput",
 ]
 
@@ -109,6 +108,22 @@ class TensorObj:
         data.update(kwargs)
         return self.from_dict(data)
 
+    # === Save / Load methods === #
+    def get_state(self) -> dict[str, torch.Tensor | Any]:
+        """Get the state dictionary of the object.
+        We may want to convert datatypes here to reduce the size on disk.
+        """
+        # convert datatypes if necessary
+        return self.to_dict()
+
+    @classmethod
+    def load_state(cls, state: dict[str, torch.Tensor | Any]) -> Self:
+        """Set the state of the object from the state dictionary.
+        Restore datatypes if necessary.
+        """
+        # convert datatypes if necessary
+        return cls.from_dict(state)
+
 
 class Layout(TensorObj, ABC):
     """Base class for layout information.
@@ -132,9 +147,40 @@ class Layout(TensorObj, ABC):
         return self.length
 
     @property
+    def batch_size(self) -> int:
+        """Batch size of layout."""
+        assert self.is_batched, "Layout is not batched."
+        return self._layout_shape[0]
+
+    @property
     def length(self) -> int:
         """Get the length of the layout."""
         return self._layout_shape[-1]
+
+    def __repr__(self) -> str:
+        """Enhanced repr with layout-specific info."""
+        class_name = self.__class__.__name__
+
+        # Layout meta info
+        length = len(self)
+        device = self.device
+
+        if self.is_batched:
+            shape_desc = f"batch_size={self.batch_size}, length={length}, device={device}"
+        else:
+            shape_desc = f"length={length}, device={device}"
+
+        # Fields
+        fields = self.to_dict()
+        field_strs = []
+        for name, value in fields.items():
+            if isinstance(value, torch.Tensor):
+                dtype_str = str(value.dtype).replace("torch.", "")
+                shape_str = "x".join(map(str, value.shape))
+                field_strs.append(f"  {name}: [{dtype_str}, {shape_str}]")
+
+        fields_repr = "\n".join(field_strs)
+        return f"{class_name}({shape_desc})\n{fields_repr}"
 
     # === Methods for unbatched layout === #
     def __getitem__(self, idx: int | slice | torch.Tensor) -> Self:
@@ -158,11 +204,6 @@ class Layout(TensorObj, ABC):
         raise NotImplementedError
 
     # === Methods for batched layout === #
-    @property
-    def batch_size(self) -> int:
-        """Batch size of layout."""
-        assert self.is_batched, "Layout is not batched."
-        return self._layout_shape[-1]
 
     @classmethod
     def from_list(cls, data_list: list[Self]) -> Self:
@@ -220,19 +261,19 @@ class ChainLayout(Layout):
 
     Attributes
     ----------
-    chain_type: torch.Tensor (int32)
+    chain_type: torch.Tensor (long)
         Chain types of shape [Nchain,], indicating the type of each chain.
-    entity_id: torch.Tensor (int32)
+    entity_id: torch.Tensor (long)
         Entity IDs of shape [Nchain,], starting from 1.
-    asym_id: torch.Tensor (int32)
+    asym_id: torch.Tensor (long)
         Asymmetric unit IDs of shape [Nchain,], starting from 1.
-    sym_id: torch.Tensor (int32)
+    sym_id: torch.Tensor (long)
         Symmetry IDs of shape [Nchain,], starting from 1.
-    num_tokens: torch.Tensor (int32)
+    num_tokens: torch.Tensor (long)
         Number of tokens per chain of shape [Nchain,].
-    num_residues: torch.Tensor (int32)
+    num_residues: torch.Tensor (long)
         Number of residues per chain of shape [Nchain,].
-    num_atoms: torch.Tensor (int32)
+    num_atoms: torch.Tensor (long)
         Number of atoms per chain of shape [Nchain,].
     pad_mask: torch.Tensor (bool)
         Mask tensor of shape [Nchain,], indicating valid chains.
@@ -242,13 +283,13 @@ class ChainLayout(Layout):
 
     """
 
-    chain_type: torch.Tensor  # [Nchain,], int32
-    entity_id: torch.Tensor  # [Nchain,], int32
-    asym_id: torch.Tensor  # [Nchain,], int32
-    sym_id: torch.Tensor  # [Nchain,], int32
-    num_tokens: torch.Tensor  # [Nchain,], int32
-    num_residues: torch.Tensor  # [Nchain,], int32
-    num_atoms: torch.Tensor  # [Nchain,], int32
+    chain_type: torch.Tensor  # [Nchain,], long
+    entity_id: torch.Tensor  # [Nchain,], long
+    asym_id: torch.Tensor  # [Nchain,], long
+    sym_id: torch.Tensor  # [Nchain,], long
+    num_tokens: torch.Tensor  # [Nchain,], long
+    num_residues: torch.Tensor  # [Nchain,], long
+    num_atoms: torch.Tensor  # [Nchain,], long
     pad_mask: torch.Tensor  # [Nchain,], bool
 
     # === Batched layout === #
@@ -329,25 +370,25 @@ class TokenLayout(Layout):
 
     Attributes
     ----------
-    token_index: torch.Tensor (int32)
+    token_index: torch.Tensor (long)
         Token indices of shape [L,], mapping each token to its position.
         starting from 1.
-    res_type: torch.Tensor (int32)
+    res_type: torch.Tensor (long)
         Sequence tokens of shape [L,] (aatype, atom, ...)
-    chain_type: torch.Tensor (int32)
+    chain_type: torch.Tensor (long)
         Chain types of shape [L,], indicating the type of each token.
-    residue_index: torch.Tensor (int32)
+    residue_index: torch.Tensor (long)
         Residue indices of shape [L,], used for residue-level operations.
         example)
             4-len polymer(protein/RNA/DNA):
                 residue_index: [0, 1, 2, 3]
             6-sized ligand:
                 residue_index: [0, 0, 0, 0, 0, 0]
-    disto_index: torch.Tensor (int32)
+    disto_index: torch.Tensor (long)
         Distortion indices of shape [L,], used for distortion handling.
-    center_index: torch.Tensor (int32)
+    center_index: torch.Tensor (long)
         Center indices of shape [L,], used for centering operations.
-    frames_index: torch.Tensor (int32)
+    frames_index: torch.Tensor (long)
         Frame indices of shape [L, 3], used for frame transformations.
     disto_mask: torch.Tensor (bool)
         Mask tensor of shape [L,], indicating disto atom of tokens to be resolved.
@@ -361,21 +402,21 @@ class TokenLayout(Layout):
         Pocket contact types of shape [L,], indicating pocket contact information.
     """
 
-    token_index: torch.Tensor  # [L,], int32
-    res_type: torch.Tensor  # [L,], int32
-    chain_type: torch.Tensor  # [L,], int32
-    entity_id: torch.Tensor  # [L,], int32
+    token_index: torch.Tensor  # [L,], long
+    res_type: torch.Tensor  # [L,], long
+    chain_type: torch.Tensor  # [L,], long
+    entity_id: torch.Tensor  # [L,], long
     asym_id: torch.Tensor  # [L,], int23, same to sequence_id
-    sym_id: torch.Tensor  # [L,], int32
-    residue_index: torch.Tensor  # [L,], int32
-    disto_index: torch.Tensor  # [L,], int32
-    center_index: torch.Tensor  # [L,], int32
-    frames_index: torch.Tensor  # [L, 3], int32
+    sym_id: torch.Tensor  # [L,], long
+    residue_index: torch.Tensor  # [L,], long
+    disto_index: torch.Tensor  # [L,], long
+    center_index: torch.Tensor  # [L,], long
+    frames_index: torch.Tensor  # [L, 3], long
     resolved_mask: torch.Tensor  # [L,], bool
     disto_mask: torch.Tensor  # [L,], bool
     frames_mask: torch.Tensor  # [L,], bool
     pad_mask: torch.Tensor  # [L,], bool
-    cyclic_period: torch.Tensor  # [L,], int32
+    cyclic_period: torch.Tensor  # [L,], long
     pocket_contact_type: torch.Tensor  # [L,], bool
 
     @property
@@ -456,17 +497,21 @@ class TokenLayout(Layout):
 
         # value: PAD_IDX means padding
         pad_values = {
-            "res_type": PAD_IDX,
+            "token_index": PAD_IDX,
+            "res_type": 0,
             "chain_type": PAD_IDX,
-            "entity_id": PAD_IDX,
-            "asym_id": PAD_IDX,
-            "sym_id": PAD_IDX,
+            "entity_id": 0,
+            "asym_id": 0,
+            "sym_id": 0,
             "residue_index": PAD_IDX,
             "disto_index": PAD_IDX,
             "center_index": PAD_IDX,
-            "cyclic_period": 0,
+            "frames_index": PAD_IDX,
             "resolved_mask": False,
+            "disto_mask": False,
+            "frames_mask": False,
             "pad_mask": False,
+            "cyclic_period": 0,
             "pocket_contact_type": 0,
         }
 
@@ -490,10 +535,10 @@ class AtomLayout(Layout):
 
     Attributes
     ----------
-    ref_atom_name_chars: torch.Tensor (int32)
+    ref_atom_name_chars: torch.Tensor (long)
         Encoded atom name of shape [Natom, 4].
         To be encoded as one-hot vector of size 64.
-    ref_element: torch.Tensor (int32)
+    ref_element: torch.Tensor (long)
         One-hot encoded atomic numbers of shape [Natom,].
         To be encoded as one-hot vector of size 128.
     ref_charge: torch.Tensor (float32)
@@ -502,10 +547,10 @@ class AtomLayout(Layout):
         Reference coordinates of shape [Natom, 3].
         Generated from ETKDG or ccd
         (TODO (seonghwan): I think we can replace this to apo_coords)
-    ref_space_uid: torch.Tensor (int32)
+    ref_space_uid: torch.Tensor (long)
         Numerical encoding of the chain id and residue index associated with
         this reference conformer.
-    token_index: torch.Tensor (int32)
+    token_index: torch.Tensor (long)
         Token indices mapping atoms to their parent tokens of shape [Natom,].
     apo_coords: torch.Tensor (float32)
         Apo (unbound) state coordinates of shape [Natom, Napo, 3],
@@ -521,12 +566,12 @@ class AtomLayout(Layout):
         for inference.
     """
 
-    ref_atom_name_chars: torch.Tensor  # [Natom, 4], int32, to be encoded one-hot (64-dim)
-    ref_element: torch.Tensor  # [Natom], int32, to be encoded one-hot (128-dim)
+    ref_atom_name_chars: torch.Tensor  # [Natom, 4], long, to be encoded one-hot (64-dim)
+    ref_element: torch.Tensor  # [Natom], long, to be encoded one-hot (128-dim)
     ref_charge: torch.Tensor  # [Natom,], float32
     ref_pos: torch.Tensor  # [Natom, Nholo, 3], float32
-    ref_space_uid: torch.Tensor  # [Natom,], int32
-    token_index: torch.Tensor  # [Natom,], int32
+    ref_space_uid: torch.Tensor  # [Natom,], long
+    token_index: torch.Tensor  # [Natom,], long
     apo_coords: torch.Tensor  # [Natom, Napo, 3], float32
     resolved_mask: torch.Tensor  # [Natom,], bool
     pad_mask: torch.Tensor  # [Natom,], bool
@@ -585,7 +630,9 @@ class AtomLayout(Layout):
             "ref_atom_name_chars": 63,  # max value for atom_name encoding
             "ref_element": 127,  # max value for element encoding
             "ref_charge": 0.0,
-            "token_index": PAD_IDX,
+            "ref_pos": 0.0,
+            "ref_space_uid": PAD_IDX,
+            "token_index": 0,
             "apo_coords": 0.0,
             "resolved_mask": False,
             "pad_mask": False,
@@ -623,10 +670,10 @@ class BondLayout(Layout):
         Atom indices of the second atom in the bond of shape [Nbond,].
     """
 
-    asym_id: torch.Tensor  # [Nbond,], int32
-    token_index: torch.Tensor  # [Nbond,], int32
-    atom_index: torch.Tensor  # [Nbond,], int32
-    bond_type: torch.Tensor  # [Nbond,], int32
+    asym_id: torch.Tensor  # [Nbond,], long
+    token_index: torch.Tensor  # [Nbond,], long
+    atom_index: torch.Tensor  # [Nbond,], long
+    bond_type: torch.Tensor  # [Nbond,], long
     pad_mask: torch.Tensor  # [Nbond,], bool
 
     @property
@@ -676,38 +723,6 @@ class BondLayout(Layout):
             )
             fields[name] = torch.cat([tensor, pad_tensor], dim=0)
         return self.from_dict(fields)
-
-
-@dataclass(frozen=True, slots=False)
-class ChainInput:
-    """Input of co-folding"""
-
-    chain_type: int
-    entity_id: int
-    asym_id: str
-    sym_id: int
-    token: TokenLayout
-    atom: AtomLayout
-    bond: BondLayout
-
-    def to(self, device: str | torch.device) -> Self:
-        return self.__class__(
-            chain_type=self.chain_type,
-            entity_id=self.entity_id,
-            asym_id=self.asym_id,
-            sym_id=self.sym_id,
-            token=self.token.to(device),
-            atom=self.atom.to(device),
-            bond=self.bond.to(device),
-        )
-
-    @property
-    def is_batched(self) -> bool:
-        return self.token.is_batched
-
-    @property
-    def device(self) -> torch.device:
-        return self.token.res_type.device
 
 
 @dataclass(frozen=True, slots=False)
@@ -841,53 +856,76 @@ class FoldingInput:
 
     @cached_property
     def atom_to_token(self) -> torch.Tensor:
-        """Return [Natom, Ntoken] or [B, Natom, Ntoken] sparse mapping matrix
+        """Return [Natom, Ntoken] or [B, Natom, Ntoken] dense mapping matrix
         from atoms to tokens.
         """
-
-        def get_sparse_tensor(
-            atom_indices: torch.Tensor,
-            token_indices: torch.Tensor,
-            Natom: int,
-            Ntoken: int,
-        ) -> torch.Tensor:
-            values = torch.ones_like(
-                atom_indices, dtype=torch.float32, device=self.device
-            )
-            return torch.sparse_coo_tensor(
-                indices=torch.stack([atom_indices, token_indices], dim=0),
-                values=values,
-                size=(Natom, Ntoken),
-                device=self.device,
-            )
 
         if not self.is_batched:
             Natom = int(self.atom.pad_mask.sum().item())
             atom_indices = torch.arange(Natom, device=self.device)
             token_indices = self.atom.token_index[:Natom]
-
-            return get_sparse_tensor(
-                atom_indices, token_indices, self.num_atoms, self.num_tokens
+            mapping = torch.zeros(
+                (self.num_atoms, self.num_tokens),
+                dtype=torch.float32,
+                device=self.device,
             )
+            mapping[atom_indices, token_indices] = 1.0
         else:
             batch_size = self.chain.batch_size
             num_atoms = self.atom.pad_mask.sum(dim=1).tolist()
-            sparse_matrices = []
+            mapping = torch.zeros(
+                (batch_size, self.num_atoms, self.num_tokens),
+                dtype=torch.float32,
+                device=self.device,
+            )
             for b in range(batch_size):
                 Natom = num_atoms[b]
                 atom_indices = torch.arange(Natom, device=self.device)
                 token_indices = self.atom.token_index[b, :Natom]
-
-                sparse_matrix = get_sparse_tensor(
-                    atom_indices,
-                    token_indices,
-                    self.num_atoms,
-                    self.num_tokens,
-                )
-                sparse_matrices.append(sparse_matrix)
-            return torch.stack(sparse_matrices, dim=0)
+                mapping[b, atom_indices, token_indices] = 1.0
+        return mapping
 
     def extract_chains(self, asym_ids: list[int]) -> Self:
         """Extract specific chains using asym ids"""
         assert not self.is_batched, "Batched input is not supported."
         raise NotImplementedError("extract_chains() is not implemented yet.")
+
+    def __repr__(self) -> str:
+        """FoldingInput summary representation."""
+        device = self.device
+
+        # Summary statistics
+        num_chains = self.num_chains
+        num_tokens = self.num_tokens
+        num_atoms = self.num_atoms
+        num_bonds = len(self.bond)
+
+        # Metadata
+        if self.metadata:
+            metadata_keys = list(self.metadata.keys())
+        else:
+            metadata_keys = []
+
+        if self.is_batched:
+            return (
+                f"FoldingInput(\n"
+                f"  batch_size: {self.batch_size}\n"
+                f"  num_chains: {num_chains}\n"
+                f"  num_tokens: {num_tokens}\n"
+                f"  num_atoms: {num_atoms}\n"
+                f"  num_bonds: {num_bonds}\n"
+                f"  metadata: {metadata_keys}\n"
+                f"  device: {device}\n"
+                f")"
+            )
+        else:
+            return (
+                f"FoldingInput(\n"
+                f"  num_chains: {num_chains}\n"
+                f"  num_tokens: {num_tokens}\n"
+                f"  num_atoms: {num_atoms}\n"
+                f"  num_bonds: {num_bonds}\n"
+                f"  metadata: {metadata_keys}\n"
+                f"  device: {device}\n"
+                f")"
+            )

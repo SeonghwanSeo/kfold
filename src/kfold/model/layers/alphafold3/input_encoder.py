@@ -1,5 +1,3 @@
-from collections.abc import Callable
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,7 +20,7 @@ class InputFeatureEmbedder(nn.Module):
         channel_atompair: int = 16,
         atoms_per_window_queries: int = 32,
         atoms_per_window_keys: int = 128,
-        atom_encoder_depth: int = 3,
+        atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
     ) -> None:
         super().__init__()
@@ -40,10 +38,10 @@ class InputFeatureEmbedder(nn.Module):
             The number of atoms per window for queries.
         atoms_per_window_keys: int,
             The number of atoms per window for keys.
-        atom_encoder_depth: int,
-            The atom encoder depth.
+        atom_encoder_blocks: int,
+            The number of blocks in atom encoder.
         atom_encoder_heads: int,
-            The atom encoder heads.
+            The number of heads in atom encoder.
         """
 
         self.encoder = AtomAttentionEncoderWithoutStructure(
@@ -53,7 +51,7 @@ class InputFeatureEmbedder(nn.Module):
             channel_token=channel_s,  # Same to channel_s
             atoms_per_window_queries=atoms_per_window_queries,
             atoms_per_window_keys=atoms_per_window_keys,
-            num_blocks=atom_encoder_depth,
+            num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
         )
 
@@ -64,7 +62,7 @@ class InputFeatureEmbedder(nn.Module):
         # out projection
         # NOTE: (SeonghwanSeo) I introduce additional linear layer to unify the dimension.
         s_input_dim = channel_s + self.num_res_types + self.num_profile_bins + 1
-        self.proj_to_s = LinearNoBias(s_input_dim, channel_s)
+        self.proj_s = LinearNoBias(s_input_dim, channel_s)
 
     def forward(self, f_input: FoldingInput) -> torch.Tensor:
         """Perform the forward pass.
@@ -84,8 +82,13 @@ class InputFeatureEmbedder(nn.Module):
 
         # Concatenate additional token features
         res_type = f_input.token.res_type  # [B, Lt,]
-        profile = f_input.msa.profile  # [B, Lt,]
-        deletion_mean = f_input.msa.deletion_mean  # [B, Lt,]
+        if False:
+            # TODO: add MSA features later
+            profile = f_input.msa.profile  # [B, Lt,]
+            deletion_mean = f_input.msa.deletion_mean  # [B, Lt,]
+        else:
+            profile = torch.zeros_like(res_type)
+            deletion_mean = torch.zeros_like(res_type).float()  # [B, Lt,]
         s = torch.cat(
             [
                 a,
@@ -98,7 +101,7 @@ class InputFeatureEmbedder(nn.Module):
 
         # Project to model dimension
         # NOTE: (SeonghwanSeo) I introduce additional linear layer to unify the dimension.
-        s = self.proj_to_s(s)  # [B, Lt, c_s]
+        s = self.proj_s(s)  # [B, Lt, c_s]
 
         return s
 
@@ -141,15 +144,15 @@ class AtomAttentionEncoderWithoutStructure(AtomAttentionEncoder):
         z: torch.Tensor | None = None,
         r: torch.Tensor | None = None,
         model_cache: dict | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Callable]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         assert s_trunk is None and z is None and r is None, (
             "s_trunk, z_trunk, r must be None"
         )
         assert model_cache is None, "model_cache must be None in input embedding."
-        a, q, c, p, to_keys = super().forward(f_input, s_trunk, z, r, model_cache)
+        a, q, c, p = super().forward(f_input, s_trunk, z, r, model_cache)
 
         assert a.shape[0] == 1, "Batch size must be 1 for input embedding."
 
         # Squeeze batch dimension
         a, q, c, p = a.squeeze(0), q.squeeze(0), c.squeeze(0), p.squeeze(0)
-        return a, q, c, p, to_keys
+        return a, q, c, p

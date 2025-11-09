@@ -109,7 +109,7 @@ class PairformerStack(nn.Module):
                 "During training, chunk_size_tri_attn must be None."
             )
 
-        pair_mask = mask.unsqueeze(-1) & mask.unsqueeze(-2)  # [B, L, L]
+        pair_mask = mask[:, :, None] * mask[:, None, :]
 
         # Line 1
         for block in self.blocks:
@@ -219,7 +219,12 @@ class PairformerBlock(nn.Module):
         z = z + self.transition_z(z)
 
         # Line 7
-        s = s + self.attention(s, None, z, mask)
+        s = s + self.attention(
+            s,  # [B, L, C_s]
+            None,
+            z,  # [B, L, L, C_z]
+            attn_mask=mask.unsqueeze(-2),  # [B, 1, L], broadcast to [B, L, L]
+        )
 
         # Line 8
         s = s + self.transition_s(s)

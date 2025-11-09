@@ -41,12 +41,12 @@ class KFoldTrainingModule(pl.LightningModule):
         recycling_steps = random.randint(0, training_config.recycling_steps)
 
         # Compute the forward pass
-        out = self(
+        out: dict[str, torch.Tensor] = self(
             feats=batch,
             recycling_steps=recycling_steps,
-            num_sampling_steps=training_config.sampling_steps,
+            num_steps=training_config.num_steps,
             diffusion_batch_size=training_config.diffusion_batch_size,
-            num_samples=training_config.num_samples,
+            num_diffusion_samples=training_config.num_diffusion_samples,
         )
 
         # Compute losses
