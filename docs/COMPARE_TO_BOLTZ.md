@@ -29,7 +29,7 @@ ref_pos = atom_layout.ref_pos  # (Natom, 3)
 | `atom_pad_masks` | `pad_mask` | `(Natom,)` | Mask for valid atoms or padding |
 | `atom_resolved_mask` | `resolved_mask` | `(Natom,)` | Mask for resolved atoms |
 | `coords` | `label_coords` | `(Nholo, Natom, 3)` vs `(Natom, Nholo, 3)` | Target coordinates for training, `Nholo` is the number of ensemble (Always 1). |
-| - | `apo_coords` | `(Natom, Natompo, 3)` | Apo structure coordinates |
+| - | `apo_coords` | `(Natom, Napo, 3)` | Apo structure coordinates |
 
 
 ### Token features
@@ -65,7 +65,7 @@ token_index = token_layout.token_index  # (Ntoken,)
 | Boltz | K-Fold | Shape | Descriptions |
 |---------|-----|-------|--------------|
 | `disto_center` | `disto_index` | `(Ntoken, 3)` vs `(Ntoken,)` | Disto coords vs Disto atom index (Cβ) |
-| `disto_target` | - | `(Ntoken, Ntoken, Nbondin)` | Can be obtained from `disto_center` |
+| `disto_target` | - | `(Ntoken, Ntoken, Nbin)` | Can be obtained from `disto_center` |
 | `token_disto_mask` | `disto_mask` | `(Ntoken,)` vs `(Ntoken,)` | Mask for valid disto tokens |
 
 
@@ -97,4 +97,6 @@ token_index = bond_layout.token_index  # (Ntoken,)
 | - | `asym_id` | `(Nbond, 2)` | Index of connecting chains |
 | - | `atom_index` | `(Nbond, 2)` | Index of connecting atoms |
 | - | `bond_type` | `(Nbond,)` | Bond type (single, double, triple, aromatic, covalent) |
-| - | `bond_mask` | `(Nbond,)` | Mask for valid bonds |
+| - | `is_polymer_ligand_bond` | `(Nbond,)` | Whether the bond is between polymer and ligand |
+| - | `is_ligand_ligand_bond` | `(Nbond,)` | Whether the bond is between ligands |
+| - | `pad_mask` | `(Nbond,)` | Mask for valid bonds |
