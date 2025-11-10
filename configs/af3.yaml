@@ -1,0 +1,38 @@
+global_hparam:
+  channel_s: 384 # token single channel
+  channel_z: 128 # token pair channel
+  channel_atom: 128 # atom single channel
+  channel_atompair: 16 # atom pair channel
+  num_distogram_bins: 64
+
+model:
+  _registry_: "main_module"
+  _class_: "KFold"
+
+  compile_trunk: false
+  compile_score_model: false
+
+  input_embedder:
+    _yaml_: "module/input_embedder/af3.yaml"
+    channel_s: ${global_hparam.channel_s}
+    channel_z: ${global_hparam.channel_z}
+
+  trunk:
+    _yaml_: "module/trunk/af3.yaml"
+    channel_s: ${global_hparam.channel_s}
+    channel_z: ${global_hparam.channel_z}
+
+  structure_module:
+    _yaml_: "module/structure_module/af3.yaml"
+
+  score_model:
+    _yaml_: "module/score_model/af3.yaml"
+    channel_s: ${global_hparam.channel_s}
+    channel_z: ${global_hparam.channel_z}
+    channel_atom: ${global_hparam.channel_atom}
+    channel_atompair: ${global_hparam.channel_atompair}
+
+  distogram_head:
+    _yaml_: "module/distogram_head/af3.yaml"
+    channel_z: ${global_hparam.channel_z}
+    num_bins: ${global_hparam.num_distogram_bins}

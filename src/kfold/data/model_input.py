@@ -1,9 +1,12 @@
 import copy
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, Self
 
 import torch
 
+import kfold.constants as C
 from kfold.utils.misc import check_tensor
 
 # NOTE (seoseonghwan): I do not consider batching since
@@ -24,7 +27,6 @@ __all__ = [
     "TokenLayout",
     "AtomLayout",
     "BondLayout",
-    "ChainInput",
     "FoldingInput",
 ]
 
@@ -33,7 +35,16 @@ torch_float = (torch.float16, torch.bfloat16, torch.float32, torch.float64)
 torch_int = (torch.int32, torch.int64)
 
 
+# === Base class for dataclass with tensor === #
 class TensorObj:
+    @cached_property
+    def device(self) -> torch.device:
+        for tensor in self.to_dict().values():
+            if isinstance(tensor, torch.Tensor):
+                return tensor.device
+        else:
+            raise ValueError("No tensor found in the dataclass.")
+
     def __getitem__(self, idx: int | slice | torch.Tensor) -> Self:
         fields = {
             name: self.slicing(name, tensor, idx)
@@ -97,15 +108,85 @@ class TensorObj:
         data.update(kwargs)
         return self.from_dict(data)
 
+    # === Save / Load methods === #
+    def get_state(self) -> dict[str, torch.Tensor | Any]:
+        """Get the state dictionary of the object.
+        We may want to convert datatypes here to reduce the size on disk.
+        """
+        # convert datatypes if necessary
+        return self.to_dict()
 
-class Layout(TensorObj):
-    """Base class for layout information."""
+    @classmethod
+    def load_state(cls, state: dict[str, torch.Tensor | Any]) -> Self:
+        """Set the state of the object from the state dictionary.
+        Restore datatypes if necessary.
+        """
+        # convert datatypes if necessary
+        return cls.from_dict(state)
+
+
+class Layout(TensorObj, ABC):
+    """Base class for layout information.
+    Layout shape: [L, ...] or [B, L, ...]
+
+    NOTE: padding is only supported for non-batched layout.
+    """
+
+    @property
+    @abstractmethod
+    def _layout_shape(self) -> tuple[int] | tuple[int, int]:
+        """Get the shape of the layout: [L,] or [B, L]"""
+
+    @property
+    def is_batched(self) -> bool:
+        """Whether the layout is batched."""
+        return len(self._layout_shape) == 2
 
     def __len__(self) -> int:
-        raise NotImplementedError
+        """Get the length of the layout."""
+        return self.length
 
+    @property
+    def batch_size(self) -> int:
+        """Batch size of layout."""
+        assert self.is_batched, "Layout is not batched."
+        return self._layout_shape[0]
+
+    @property
+    def length(self) -> int:
+        """Get the length of the layout."""
+        return self._layout_shape[-1]
+
+    def __repr__(self) -> str:
+        """Enhanced repr with layout-specific info."""
+        class_name = self.__class__.__name__
+
+        # Layout meta info
+        length = len(self)
+        device = self.device
+
+        if self.is_batched:
+            shape_desc = f"batch_size={self.batch_size}, length={length}, device={device}"
+        else:
+            shape_desc = f"length={length}, device={device}"
+
+        # Fields
+        fields = self.to_dict()
+        field_strs = []
+        for name, value in fields.items():
+            if isinstance(value, torch.Tensor):
+                dtype_str = str(value.dtype).replace("torch.", "")
+                shape_str = "x".join(map(str, value.shape))
+                field_strs.append(f"  {name}: [{dtype_str}, {shape_str}]")
+
+        fields_repr = "\n".join(field_strs)
+        return f"{class_name}({shape_desc})\n{fields_repr}"
+
+    # === Methods for unbatched layout === #
     def __getitem__(self, idx: int | slice | torch.Tensor) -> Self:
         """Get a subset of the layout."""
+        # TODO: can we support this for batched layout?
+        assert not self.is_batched, "Batched layout is not supported."
         # Ensure that idx is not integer
         if isinstance(idx, int):
             raise ValueError(
@@ -116,57 +197,127 @@ class Layout(TensorObj):
 
     def pad(self, total_length: int) -> Self:
         """Pad the layout to the total length."""
+        assert not self.is_batched, "Batched layout is not supported."
+        assert self.length <= total_length, (
+            f"Cannot pad to a smaller length: {total_length} < {self.length}"
+        )
         raise NotImplementedError
 
+    # === Methods for batched layout === #
 
+    @classmethod
+    def from_list(cls, data_list: list[Self]) -> Self:
+        """Create a Batched Layout from a list of data."""
+        assert len(data_list) > 0, "data_list must not be empty."
+        ref_data = data_list[0]
+        ref_length = len(ref_data)
+        ref_device = ref_data.device
+
+        field_dict: dict[str, list[torch.Tensor]] = {k: [] for k in ref_data.keys()}
+        for data in data_list:
+            assert not data.is_batched, "All layouts in data_list must be non-batched."
+            assert len(data) == ref_length, (
+                "All layouts in data_list must have the same length."
+            )
+            assert data.device == ref_device, (
+                "All layouts in data_list must be on the same device."
+            )
+            for name, tensor in data.to_dict().items():
+                field_dict[name].append(tensor)
+
+        batched_fields = {
+            name: torch.stack(tensors, dim=0) for name, tensors in field_dict.items()
+        }
+        return cls.from_dict(batched_fields)
+
+    def to_list(self, copy: bool = False) -> list[Self]:
+        """Unpack a Batched Layout into a list of data."""
+        assert self.is_batched, "Layout is not batched."
+        if copy:
+            data_dict = {
+                name: tensor.clone() if isinstance(tensor, torch.Tensor) else tensor
+                for name, tensor in self.to_dict().items()
+            }
+        else:
+            data_dict = self.to_dict()
+
+        data_list: list[Self] = []
+        batch_size = self.batch_size
+        for i in range(batch_size):
+            fields = {
+                name: tensor[i] if isinstance(tensor, torch.Tensor) else tensor
+                for name, tensor in data_dict.items()
+            }
+            data_list.append(self.from_dict(fields))
+        return data_list
+
+
+# === Layout dataclasses (chain-level, token-level, atom-level, bond-level) === #
 @dataclass(frozen=True, slots=True)
 class ChainLayout(Layout):
     """Chain-level layout information.
 
+    Shape: [Nchain, ...] or [B, Nchain, ...]
+
     Attributes
     ----------
-    chain_type: torch.Tensor
+    chain_type: torch.Tensor (long)
         Chain types of shape [Nchain,], indicating the type of each chain.
-    entity_id: torch.Tensor
+    entity_id: torch.Tensor (long)
         Entity IDs of shape [Nchain,], starting from 1.
-    asym_id: torch.Tensor
+    asym_id: torch.Tensor (long)
         Asymmetric unit IDs of shape [Nchain,], starting from 1.
-    sym_id: torch.Tensor
+    sym_id: torch.Tensor (long)
         Symmetry IDs of shape [Nchain,], starting from 1.
-    num_tokens: torch.Tensor
+    num_tokens: torch.Tensor (long)
         Number of tokens per chain of shape [Nchain,].
+    num_residues: torch.Tensor (long)
+        Number of residues per chain of shape [Nchain,].
+    num_atoms: torch.Tensor (long)
+        Number of atoms per chain of shape [Nchain,].
+    pad_mask: torch.Tensor (bool)
+        Mask tensor of shape [Nchain,], indicating valid chains.
 
     # NOTE: this layout might not be used in model.forward(),
-    # but it is useful for data processing and analysis.
+    # but it may be useful for data processing and analysis.
 
     """
 
-    chain_type: torch.Tensor  # [Nchain,], int
-    entity_id: torch.Tensor  # [Nchain,], int
-    asym_id: torch.Tensor  # [Nchain,], int
-    sym_id: torch.Tensor  # [Nchain,], int
-    num_tokens: torch.Tensor  # [Nchain,], int
-    num_atoms: torch.Tensor  # [Nchain,], int
+    chain_type: torch.Tensor  # [Nchain,], long
+    entity_id: torch.Tensor  # [Nchain,], long
+    asym_id: torch.Tensor  # [Nchain,], long
+    sym_id: torch.Tensor  # [Nchain,], long
+    num_tokens: torch.Tensor  # [Nchain,], long
+    num_residues: torch.Tensor  # [Nchain,], long
+    num_atoms: torch.Tensor  # [Nchain,], long
     pad_mask: torch.Tensor  # [Nchain,], bool
 
-    def __len__(self) -> int:
-        return self.entity_id.shape[0]
+    # === Batched layout === #
+    @property
+    def _layout_shape(self) -> tuple[int] | tuple[int, int]:
+        return self.pad_mask.shape  # [Nchain,] or [B, Nchain]
 
     def __post_init__(self):
-        N = len(self)
-        check_tensor(self.chain_type, name="chain_type", dtype=torch_int, shape=(N,))
-        check_tensor(self.entity_id, name="entity_id", dtype=torch_int, shape=(N,))
-        check_tensor(self.asym_id, name="asym_id", dtype=torch_int, shape=(N,))
-        check_tensor(self.sym_id, name="sym_id", dtype=torch_int, shape=(N,))
-        check_tensor(self.num_tokens, name="num_tokens", dtype=torch_int, shape=(N,))
-        check_tensor(self.num_atoms, name="num_atoms", dtype=torch_int, shape=(N,))
+        # shape: [Nchain,] or [B, Nchain]
+        shape = self._layout_shape
+
+        check_tensor(self.chain_type, name="chain_type", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.entity_id, name="entity_id", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.asym_id, name="asym_id", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.sym_id, name="sym_id", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.num_tokens, name="num_tokens", dtype=torch_int, shape=(*shape,))
+        check_tensor(
+            self.num_residues, name="num_residues", dtype=torch_int, shape=(*shape,)
+        )
+        check_tensor(self.num_atoms, name="num_atoms", dtype=torch_int, shape=(*shape,))
 
     def pad(self, total_length: int) -> Self:
         """Pad the layout to the total length."""
-        N = len(self)
-        assert N <= total_length, f"Cannot pad to a smaller length: {total_length} < {N}"
+        assert not self.is_batched, "Padding batched layout is not supported."
+        L = len(self)
+        assert L <= total_length, f"Cannot pad to a smaller length: {total_length} < {L}"
 
-        if N == total_length:
+        if L == total_length:
             return self
 
         # value: PAD_IDX means padding
@@ -176,20 +327,41 @@ class ChainLayout(Layout):
             "asym_id": PAD_IDX,
             "sym_id": PAD_IDX,
             "num_tokens": PAD_IDX,
+            "num_residues": PAD_IDX,
             "num_atoms": PAD_IDX,
             "pad_mask": False,
         }
 
-        pad_size = total_length - N
+        pad_size = total_length - L
         fields = {}
         for name, tensor in self.to_dict().items():
             pad_value = pad_values[name]
-            pad_shape = [pad_size] + list(tensor.shape)[1:]
+            pad_shape = [pad_size, *tensor.shape[1:]]
             pad_tensor = torch.full(
                 pad_shape, pad_value, dtype=tensor.dtype, device=tensor.device
             )
             fields[name] = torch.cat([tensor, pad_tensor], dim=0)
         return self.from_dict(fields)
+
+    @cached_property
+    def is_protein(self) -> torch.Tensor:
+        """Boolean tensor indicating whether the chain is protein."""
+        return self.chain_type == C.chain.ChainType.Protein.value
+
+    @cached_property
+    def is_dna(self) -> torch.Tensor:
+        """Boolean tensor indicating whether the chain is dna."""
+        return self.chain_type == C.chain.ChainType.DNA.value
+
+    @cached_property
+    def is_rna(self) -> torch.Tensor:
+        """Boolean tensor indicating whether the chain is rna."""
+        return self.chain_type == C.chain.ChainType.RNA.value
+
+    @cached_property
+    def is_ligand(self) -> torch.Tensor:
+        """Boolean tensor indicating whether the chain is ligand."""
+        return self.chain_type == C.chain.ChainType.Ligand.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,64 +370,125 @@ class TokenLayout(Layout):
 
     Attributes
     ----------
-    token_type: torch.Tensor
+    token_index: torch.Tensor (long)
+        Token indices of shape [L,], mapping each token to its position.
+        starting from 1.
+    res_type: torch.Tensor (long)
         Sequence tokens of shape [L,] (aatype, atom, ...)
-    chain_type: torch.Tensor
+    chain_type: torch.Tensor (long)
         Chain types of shape [L,], indicating the type of each token.
-    residue_idx: torch.Tensor:
+    residue_index: torch.Tensor (long)
         Residue indices of shape [L,], used for residue-level operations.
         example)
             4-len polymer(protein/RNA/DNA):
-                residue_idx: [0, 1, 2, 3]
+                residue_index: [0, 1, 2, 3]
             6-sized ligand:
-                residue_idx: [0, 0, 0, 0, 0, 0]
-    disto_idx: torch.Tensor
+                residue_index: [0, 0, 0, 0, 0, 0]
+    disto_index: torch.Tensor (long)
         Distortion indices of shape [L,], used for distortion handling.
-    center_idx: torch.Tensor
+    center_index: torch.Tensor (long)
         Center indices of shape [L,], used for centering operations.
-    resolve_mask: torch.Tensor
+    frames_index: torch.Tensor (long)
+        Frame indices of shape [L, 3], used for frame transformations.
+    disto_mask: torch.Tensor (bool)
+        Mask tensor of shape [L,], indicating disto atom of tokens to be resolved.
+    resolved_mask: torch.Tensor (bool)
         Mask tensor of shape [L,], indicating tokens to be resolved.
-    pad_mask: torch.Tensor
+    frames_mask: torch.Tensor (bool)
+        Boolean tensor of shape [L,], indicating whether the token's frame is resolved.
+    pad_mask: torch.Tensor (bool)
         Mask tensor of shape [L,], indicating valid tokens.
-    is_pocket: torch.Tensor
-        Boolean tensor of shape [L,], indicating whether the token is part of a pocket
+    pocket_contact_type: torch.Tensor (int)
+        Pocket contact types of shape [L,], indicating pocket contact information.
     """
 
-    token_type: torch.Tensor  # [L,], int
-    chain_type: torch.Tensor  # [L,], int
-    asym_id: torch.Tensor  # [L,], int, same to sequence_id
-    entity_id: torch.Tensor  # [L,], int
-    sym_id: torch.Tensor  # [L,], int
-    residue_idx: torch.Tensor  # [L,], int
-    disto_idx: torch.Tensor  # [L,], int
-    center_idx: torch.Tensor  # [L,], int
-    cyclic_period: torch.Tensor  # [L,], int
-    resolve_mask: torch.Tensor  # [L,], bool
+    token_index: torch.Tensor  # [L,], long
+    res_type: torch.Tensor  # [L,], long
+    chain_type: torch.Tensor  # [L,], long
+    entity_id: torch.Tensor  # [L,], long
+    asym_id: torch.Tensor  # [L,], int23, same to sequence_id
+    sym_id: torch.Tensor  # [L,], long
+    residue_index: torch.Tensor  # [L,], long
+    disto_index: torch.Tensor  # [L,], long
+    center_index: torch.Tensor  # [L,], long
+    frames_index: torch.Tensor  # [L, 3], long
+    resolved_mask: torch.Tensor  # [L,], bool
+    disto_mask: torch.Tensor  # [L,], bool
+    frames_mask: torch.Tensor  # [L,], bool
     pad_mask: torch.Tensor  # [L,], bool
-    is_pocket: torch.Tensor  # [L,], bool
+    cyclic_period: torch.Tensor  # [L,], long
+    pocket_contact_type: torch.Tensor  # [L,], bool
 
-    def __len__(self) -> int:
-        return self.token_type.shape[0]
+    @property
+    def _layout_shape(self) -> tuple[int] | tuple[int, int]:
+        return self.pad_mask.shape  # [Nchain,] or [B, Nchain]
 
     def __post_init__(self):
-        L = len(self)
-        check_tensor(self.token_type, name="token_type", dtype=torch_int, shape=(L,))
-        check_tensor(self.chain_type, name="chain_type", dtype=torch_int, shape=(L,))
-        check_tensor(self.asym_id, name="asym_id", dtype=torch_int, shape=(L,))
-        check_tensor(self.entity_id, name="entity_id", dtype=torch_int, shape=(L,))
-        check_tensor(self.sym_id, name="sym_id", dtype=torch_int, shape=(L,))
-        check_tensor(self.residue_idx, name="residue_idx", dtype=torch_int, shape=(L,))
-        check_tensor(self.disto_idx, name="disto_idx", dtype=torch_int, shape=(L,))
-        check_tensor(self.center_idx, name="center_idx", dtype=torch_int, shape=(L,))
+        shape = self._layout_shape
         check_tensor(
-            self.cyclic_period, name="cyclic_period", dtype=torch_int, shape=(L,)
+            self.token_index, name="token_index", dtype=torch_int, shape=(*shape,)
         )
-        check_tensor(self.resolve_mask, name="resolve_mask", dtype=torch.bool, shape=(L,))
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(L,))
-        check_tensor(self.is_pocket, name="is_pocket", dtype=torch.bool, shape=(L,))
+        check_tensor(self.res_type, name="res_type", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.chain_type, name="chain_type", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.entity_id, name="entity_id", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.asym_id, name="asym_id", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.sym_id, name="sym_id", dtype=torch_int, shape=(*shape,))
+        check_tensor(
+            self.residue_index, name="residue_index", dtype=torch_int, shape=(*shape,)
+        )
+        check_tensor(
+            self.disto_index, name="disto_index", dtype=torch_int, shape=(*shape,)
+        )
+        check_tensor(
+            self.center_index, name="center_index", dtype=torch_int, shape=(*shape,)
+        )
+        check_tensor(
+            self.frames_index, name="frames_index", dtype=torch_int, shape=(*shape, 3)
+        )
+        check_tensor(
+            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(*shape,)
+        )
+        check_tensor(
+            self.disto_mask, name="disto_mask", dtype=torch.bool, shape=(*shape,)
+        )
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
+        check_tensor(
+            self.frames_mask, name="frames_mask", dtype=torch.bool, shape=(*shape,)
+        )
+        check_tensor(
+            self.cyclic_period, name="cyclic_period", dtype=torch_int, shape=(*shape,)
+        )
+        check_tensor(
+            self.pocket_contact_type,
+            name="pocket_contact_type",
+            dtype=torch_int,
+            shape=(*shape,),
+        )
+
+    @cached_property
+    def is_protein(self) -> torch.Tensor:
+        """Boolean tensor of shape [L,], indicating whether the token is protein."""
+        return self.chain_type == C.chain.ChainType.Protein.value
+
+    @cached_property
+    def is_dna(self) -> torch.Tensor:
+        """Boolean tensor of shape [L,], indicating whether the token is dna."""
+        return self.chain_type == C.chain.ChainType.DNA.value
+
+    @cached_property
+    def is_rna(self) -> torch.Tensor:
+        """Boolean tensor of shape [L,], indicating whether the token is rna."""
+        return self.chain_type == C.chain.ChainType.RNA.value
+
+    @cached_property
+    def is_ligand(self) -> torch.Tensor:
+        """Boolean tensor of shape [L,], indicating whether the token is ligand."""
+        return self.chain_type == C.chain.ChainType.Ligand.value
 
     def pad(self, total_length: int) -> Self:
         """Pad the layout to the total length."""
+        assert not self.is_batched, "Padding batched layout is not supported."
+
         L = len(self)
         assert L <= total_length, f"Cannot pad to a smaller length: {total_length} < {L}"
 
@@ -264,18 +497,22 @@ class TokenLayout(Layout):
 
         # value: PAD_IDX means padding
         pad_values = {
-            "token_type": PAD_IDX,
+            "token_index": PAD_IDX,
+            "res_type": 0,
             "chain_type": PAD_IDX,
-            "asym_id": PAD_IDX,
-            "entity_id": PAD_IDX,
-            "sym_id": PAD_IDX,
-            "residue_idx": PAD_IDX,
-            "disto_idx": PAD_IDX,
-            "center_idx": PAD_IDX,
-            "cyclic_period": 0,
-            "resolve_mask": False,
+            "entity_id": 0,
+            "asym_id": 0,
+            "sym_id": 0,
+            "residue_index": PAD_IDX,
+            "disto_index": PAD_IDX,
+            "center_index": PAD_IDX,
+            "frames_index": PAD_IDX,
+            "resolved_mask": False,
+            "disto_mask": False,
+            "frames_mask": False,
             "pad_mask": False,
-            "is_pocket": False,
+            "cyclic_period": 0,
+            "pocket_contact_type": 0,
         }
 
         pad_size = total_length - L
@@ -294,77 +531,115 @@ class TokenLayout(Layout):
 class AtomLayout(Layout):
     """Atom-level layout information for molecular structures.
 
+    Shape: [Nchain, ...] or [B, Nchain, ...]
+
     Attributes
     ----------
-    atom_type: torch.Tensor
-        Unique atom identifiers of shape [Natom,].
-    element: torch.Tensor
-        Atomic numbers of shape [Natom,].
-    charge: torch.Tensor
+    ref_atom_name_chars: torch.Tensor (long)
+        Encoded atom name of shape [Natom, 4].
+        To be encoded as one-hot vector of size 64.
+    ref_element: torch.Tensor (long)
+        One-hot encoded atomic numbers of shape [Natom,].
+        To be encoded as one-hot vector of size 128.
+    ref_charge: torch.Tensor (float32)
         Formal charges of shape [Natom,].
-    token_idx: torch.Tensor
+    ref_pos: torch.Tensor (float32)
+        Reference coordinates of shape [Natom, 3].
+        Generated from ETKDG or ccd
+        (TODO (seonghwan): I think we can replace this to apo_coords)
+    ref_space_uid: torch.Tensor (long)
+        Numerical encoding of the chain id and residue index associated with
+        this reference conformer.
+    token_index: torch.Tensor (long)
         Token indices mapping atoms to their parent tokens of shape [Natom,].
-    apo_coords: torch.Tensor
+    apo_coords: torch.Tensor (float32)
         Apo (unbound) state coordinates of shape [Natom, Napo, 3],
         where Napo is the number of apo conformations.
-    resolve_mask: torch.Tensor
+    resolved_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating atoms to be resolved.
-    pad_mask: torch.Tensor
+    pad_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating valid (non-padded) atoms.
-    label_coords: torch.Tensor
-        Holo (bound) state coordinates of shape [Natom, 3].
+    label_coords: torch.Tensor (float32)
+        Holo (bound) state coordinates of shape [Natom, Nholo, 3],
+        where Nholo is the number of ensemble holo conformations.
         This is used as the ground truth for training, and may be set to 0
         for inference.
     """
 
-    atom_type: torch.Tensor  # [Natom,], int
-    element: torch.Tensor  # [Natom,], int (Atomic Num)
-    charge: torch.Tensor  # [Natom,], int
-    token_idx: torch.Tensor  # [Natom,], int
-    apo_coords: torch.Tensor  # [Natom, Napo, 3], float
-    resolve_mask: torch.Tensor  # [Natom,], bool
+    ref_atom_name_chars: torch.Tensor  # [Natom, 4], long, to be encoded one-hot (64-dim)
+    ref_element: torch.Tensor  # [Natom], long, to be encoded one-hot (128-dim)
+    ref_charge: torch.Tensor  # [Natom,], float32
+    ref_pos: torch.Tensor  # [Natom, Nholo, 3], float32
+    ref_space_uid: torch.Tensor  # [Natom,], long
+    token_index: torch.Tensor  # [Natom,], long
+    apo_coords: torch.Tensor  # [Natom, Napo, 3], float32
+    resolved_mask: torch.Tensor  # [Natom,], bool
     pad_mask: torch.Tensor  # [Natom,], bool
-    label_coords: torch.Tensor  # [Natom, 3], float
+    label_coords: torch.Tensor  # [Natom, 3], float32
 
-    def __len__(self) -> int:
-        return self.atom_type.shape[0]
+    @property
+    def _layout_shape(self) -> tuple[int] | tuple[int, int]:
+        return self.pad_mask.shape
 
     def __post_init__(self):
-        N = len(self)
-        check_tensor(self.atom_type, name="atom_type", dtype=torch_int, shape=(N,))
-        check_tensor(self.element, name="element", dtype=torch_int, shape=(N,))
-        check_tensor(self.charge, name="charge", dtype=torch_int, shape=(N,))
-        check_tensor(self.token_idx, name="token_idx", dtype=torch_int, shape=(N,))
+        shape = self._layout_shape
         check_tensor(
-            self.apo_coords, name="apo_coords", dtype=torch_float, shape=(N, -1, 3)
+            self.ref_atom_name_chars,
+            name="ref_atom_name_chars",
+            dtype=torch_int,
+            shape=(*shape, 4),
         )
-        check_tensor(self.resolve_mask, name="resolve_mask", dtype=torch.bool, shape=(N,))
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(N,))
         check_tensor(
-            self.label_coords, name="label_coords", dtype=torch_float, shape=(N, 3)
+            self.ref_element, name="ref_element", dtype=torch_int, shape=(*shape,)
+        )
+        check_tensor(
+            self.ref_charge, name="ref_charge", dtype=torch_float, shape=(*shape,)
+        )
+        check_tensor(self.ref_pos, name="ref_pos", dtype=torch_float, shape=(*shape, 3))
+        check_tensor(
+            self.ref_space_uid, name="ref_space_uid", dtype=torch_int, shape=(*shape,)
+        )
+        check_tensor(
+            self.token_index, name="token_index", dtype=torch_int, shape=(*shape,)
+        )
+        check_tensor(
+            self.apo_coords, name="apo_coords", dtype=torch_float, shape=(*shape, -1, 3)
+        )
+        check_tensor(
+            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(*shape,)
+        )
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
+        check_tensor(
+            self.label_coords,
+            name="label_coords",
+            dtype=torch_float,
+            shape=(*shape, -1, 3),
         )
 
     def pad(self, total_length: int) -> Self:
         """Pad the layout to the total length."""
-        N = len(self)
-        assert N <= total_length, f"Cannot pad to a smaller length: {total_length} < {N}"
+        assert not self.is_batched, "Padding batched layout is not supported."
+        L = len(self)
+        assert L <= total_length, f"Cannot pad to a smaller length: {total_length} < {L}"
 
-        if N == total_length:
+        if L == total_length:
             return self
 
         # value: PAD_IDX means padding
         pad_values = {
-            "atom_type": PAD_IDX,
-            "element": PAD_IDX,
-            "charge": PAD_IDX,
-            "token_idx": PAD_IDX,
+            "ref_atom_name_chars": 63,  # max value for atom_name encoding
+            "ref_element": 127,  # max value for element encoding
+            "ref_charge": 0.0,
+            "ref_pos": 0.0,
+            "ref_space_uid": PAD_IDX,
+            "token_index": 0,
             "apo_coords": 0.0,
-            "resolve_mask": False,
+            "resolved_mask": False,
             "pad_mask": False,
             "label_coords": 0.0,
         }
 
-        pad_size = total_length - N
+        pad_size = total_length - L
         fields = {}
         for name, tensor in self.to_dict().items():
             pad_value = pad_values[name]
@@ -380,66 +655,87 @@ class AtomLayout(Layout):
 class BondLayout(Layout):
     """Bond-level layout information for molecular structures.
 
+    Shape: [Nchain, ...] or [B, Nchain, ...]
+
     Attributes
     ----------
-    asym_id_1: torch.Tensor
-        Chain asym indices of the first atom in the bond of shape [Nbond,].
-    asym_id_2: torch.Tensor
-        Chain asym indices of the second atom in the bond of shape [Nbond,].
-    token_idx_1: torch.Tensor
-        Token indices of the first atom in the bond of shape [Nbond,].
-    token_idx_2: torch.Tensor
-        Token indices of the second atom in the bond of shape [Nbond,].
-    atom_idx_1: torch.Tensor
+    asym_id: torch.Tensor
+        Chain asym indices of the connecting atoms in the bond of shape [Nbond,].
+    token_index: torch.Tensor
+        Token indices of the connecting atoms in the bond of shape [Nbond,].
+    atom_index: torch.Tensor
+        Atom indices of the connecting atoms in the bond of shape [Nbond,].
         Atom indices of the first atom in the bond of shape [Nbond,].
-    atom_idx_2: torch.Tensor
-        Atom indices of the second atom in the bond of shape [Nbond,].
+    bond_type: torch.Tensor
+        Bond types of shape [Nbond,], indicating the type of each bond.
+    is_ligand_ligand_bond: torch.Tensor
+        Boolean tensor of shape [Nbond,], indicating whether the bond is between
+        two ligand atoms.
+    is_polymer_ligand_bond: torch.Tensor
+        Boolean tensor of shape [Nbond,], indicating whether the bond is between polymer
+        and ligand atoms.
     """
 
-    asym_id_1: torch.Tensor  # [Nbond,], int
-    asym_id_2: torch.Tensor  # [Nbond,], int
-    token_idx_1: torch.Tensor  # [Nbond,], int
-    token_idx_2: torch.Tensor  # [Nbond,], int
-    atom_idx_1: torch.Tensor  # [Nbond,], int
-    atom_idx_2: torch.Tensor  # [Nbond,], int
-    bond_type: torch.Tensor  # [Nbond,], int
+    asym_id: torch.Tensor  # [Nbond,], long
+    token_index: torch.Tensor  # [Nbond,], long
+    atom_index: torch.Tensor  # [Nbond,], long
+    bond_type: torch.Tensor  # [Nbond,], long
+    is_ligand_ligand_bond: torch.Tensor  # [Nbond,], bool
+    is_polymer_ligand_bond: torch.Tensor  # [Nbond,], bool
     pad_mask: torch.Tensor  # [Nbond,], bool
 
-    def __len__(self) -> int:
-        return self.atom_idx_1.shape[0]
+    @property
+    def _layout_shape(self) -> tuple[int] | tuple[int, int]:
+        return self.pad_mask.shape
 
     def __post_init__(self):
-        N = len(self)
-        check_tensor(self.asym_id_1, name="asym_id_1", dtype=torch_int, shape=(N,))
-        check_tensor(self.asym_id_2, name="asym_id_2", dtype=torch_int, shape=(N,))
-        check_tensor(self.token_idx_1, name="token_idx_1", dtype=torch_int, shape=(N,))
-        check_tensor(self.token_idx_2, name="token_idx_2", dtype=torch_int, shape=(N,))
-        check_tensor(self.atom_idx_1, name="atom_idx_1", dtype=torch_int, shape=(N,))
-        check_tensor(self.atom_idx_2, name="atom_idx_2", dtype=torch_int, shape=(N,))
-        check_tensor(self.bond_type, name="bond_type", dtype=torch_int, shape=(N,))
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(N,))
+        shape = self._layout_shape
+        check_tensor(self.asym_id, name="asym_id", dtype=torch_int, shape=(*shape, 2))
+        check_tensor(
+            self.token_index, name="token_index", dtype=torch_int, shape=(*shape, 2)
+        )
+        check_tensor(
+            self.atom_index, name="atom_index", dtype=torch_int, shape=(*shape, 2)
+        )
+        check_tensor(self.bond_type, name="bond_type", dtype=torch_int, shape=(*shape,))
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
+        check_tensor(
+            self.is_ligand_ligand_bond,
+            name="is_ligand_ligand_bond",
+            dtype=torch.bool,
+            shape=(*shape,),
+        )
+        check_tensor(
+            self.is_polymer_ligand_bond,
+            name="is_polymer_ligand_bond",
+            dtype=torch.bool,
+            shape=(*shape,),
+        )
 
     def pad(self, total_length: int) -> Self:
         """Pad the layout to the total length."""
-        N = len(self)
-        assert N <= total_length, f"Cannot pad to a smaller length: {total_length} < {N}"
+        assert not self.is_batched, "Padding batched layout is not supported."
+        L = len(self)
+        assert L <= total_length, f"Cannot pad to a smaller length: {total_length} < {L}"
 
-        if N == total_length:
+        if L == total_length:
             return self
 
-        # value: PAD_IDX means padding
+        # NOTE: (SeoSeongwhan) (0, 0) means self-looping, which doesn't exist in data.
+        # Therefore, we can simply remove an element (0, 0) in model forward safely.
+        # This trick is inspired by AlphaFold3's implementation:
+        # https://github.com/google-deepmind/alphafold3/blob/aed6e82cb10a751eee1a2b9b4ec9acf464812ff8/src/alphafold3/model/network/evoformer.py#L162-L163
         pad_values = {
-            "asym_id_1": PAD_IDX,
-            "asym_id_2": PAD_IDX,
-            "token_idx_1": PAD_IDX,
-            "token_idx_2": PAD_IDX,
-            "atom_idx_1": PAD_IDX,
-            "atom_idx_2": PAD_IDX,
-            "bond_type": PAD_IDX,
+            "asym_id": 0,
+            "token_index": 0,
+            "atom_index": 0,
+            "bond_type": 0,
             "pad_mask": False,
+            "is_ligand_ligand_bond": False,
+            "is_polymer_ligand_bond": False,
         }
 
-        pad_size = total_length - N
+        pad_size = total_length - L
         fields = {}
         for name, tensor in self.to_dict().items():
             pad_value = pad_values[name]
@@ -452,34 +748,6 @@ class BondLayout(Layout):
 
 
 @dataclass(frozen=True, slots=False)
-class ChainInput:
-    """Input of co-folding"""
-
-    chain_type: int
-    entity_id: int
-    asym_id: str
-    sym_id: int
-    token: TokenLayout
-    atom: AtomLayout
-    bond: BondLayout
-
-    def to(self, device: str | torch.device) -> Self:
-        return self.__class__(
-            chain_type=self.chain_type,
-            entity_id=self.entity_id,
-            asym_id=self.asym_id,
-            sym_id=self.sym_id,
-            token=self.token.to(device),
-            atom=self.atom.to(device),
-            bond=self.bond.to(device),
-        )
-
-    @property
-    def device(self) -> torch.device:
-        return self.token.token_type.device
-
-
-@dataclass(frozen=True, slots=False)
 class FoldingInput:
     """Input of co-folding"""
 
@@ -488,6 +756,38 @@ class FoldingInput:
     atom: AtomLayout
     bond: BondLayout
     metadata: dict[str, Any] | None = None  # Optional metadata
+
+    def __post_init__(self):
+        # check all layouts are on the same device
+        device = self.chain.device
+        assert self.token.device == device, "token layout must be on the same device."
+        assert self.atom.device == device, "atom layout must be on the same device."
+        assert self.bond.device == device, "bond layout must be on the same device."
+
+        # check all layouts are non-batched or batched
+        is_batched = self.chain.is_batched
+        assert self.token.is_batched == is_batched, (
+            "token layout must be batched or non-batched as same as chain layout."
+        )
+        assert self.atom.is_batched == is_batched, (
+            "atom layout must be batched or non-batched as same as chain layout."
+        )
+        assert self.bond.is_batched == is_batched, (
+            "bond layout must be batched or non-batched as same as chain layout."
+        )
+
+        # check the batch size if batched
+        if is_batched:
+            batch_size = self.chain.batch_size
+            assert self.token.batch_size == batch_size, (
+                "token layout must have the same batch size as chain layout."
+            )
+            assert self.atom.batch_size == batch_size, (
+                "atom layout must have the same batch size as chain layout."
+            )
+            assert self.bond.batch_size == batch_size, (
+                "bond layout must have the same batch size as chain layout."
+            )
 
     def to(self, device: str | torch.device) -> Self:
         return self.__class__(
@@ -500,160 +800,154 @@ class FoldingInput:
 
     @property
     def device(self) -> torch.device:
-        return self.token.token_type.device
+        return self.token.res_type.device
 
-    def to_chains(self) -> list[ChainInput]:
-        """Split the FoldingInput into a list of ChainInput for each chain.
+    @property
+    def is_batched(self) -> bool:
+        return self.token.is_batched
 
-        WARNING: Inter-chain bond information will be lost.
-        """
-        Nchain = int(self.chain.pad_mask.sum().item())
+    @property
+    def batch_size(self) -> int:
+        assert self.is_batched, "Input is not batched."
+        return self.token.batch_size
 
-        chain_type_list = self.chain.chain_type.tolist()
-        entity_id_list = self.chain.entity_id.tolist()
-        asym_id_list = self.chain.asym_id.tolist()
-        sym_id_list = self.chain.sym_id.tolist()
-        num_tokens_list = self.chain.num_tokens.tolist()
-        num_atoms_list = self.chain.num_atoms.tolist()
+    @property
+    def num_chains(self) -> int:
+        return len(self.chain)
 
-        chains: list[ChainInput] = []
-        token_offset = 0
-        atom_offset = 0
-        for i in range(Nchain):
-            num_tokens = num_tokens_list[i]
-            num_atoms = num_atoms_list[i]
+    @property
+    def num_tokens(self) -> int:
+        return len(self.token)
 
-            # get token layout
-            chain_tokens = self.token[token_offset : token_offset + num_tokens]
-            # update
-            chain_tokens = chain_tokens.copy_with(
-                disto_idx=chain_tokens.disto_idx - atom_offset,
-                center_idx=chain_tokens.center_idx - atom_offset,
-            )
-
-            # get atom layout
-            chain_atoms = self.atom[atom_offset : atom_offset + num_atoms]
-            # update
-            chain_atoms = chain_atoms.copy_with(
-                token_idx=chain_atoms.token_idx - token_offset,
-            )
-
-            # get bond layout
-            asym_id = asym_id_list[i]
-            bond_mask = (self.bond.asym_id_1 == asym_id) & (
-                self.bond.asym_id_2 == asym_id
-            )
-            chain_bonds = self.bond[bond_mask]
-            # update
-            chain_bonds = chain_bonds.copy_with(
-                token_idx_1=chain_bonds.token_idx_1 - token_offset,
-                token_idx_2=chain_bonds.token_idx_2 - token_offset,
-                atom_idx_1=chain_bonds.atom_idx_1 - atom_offset,
-                atom_idx_2=chain_bonds.atom_idx_2 - atom_offset,
-            )
-
-            chain_input = ChainInput(
-                chain_type=chain_type_list[i],
-                entity_id=entity_id_list[i],
-                asym_id=asym_id_list[i],
-                sym_id=sym_id_list[i],
-                token=chain_tokens,
-                atom=chain_atoms,
-                bond=chain_bonds,
-            )
-            chains.append(chain_input)
-            token_offset += num_tokens
-            atom_offset += num_atoms
-        return chains
+    @property
+    def num_atoms(self) -> int:
+        return len(self.atom)
 
     @classmethod
-    def from_chains(cls, chains: list[ChainInput]) -> Self:
-        """Combine a list of ChainInput into a single FoldingInput."""
-        assert len(chains) > 0, "chains must not be empty"
+    def from_list(cls, data_list: list[Self]) -> Self:
+        """Create a Batched Input from a list of data."""
+        # Check all data are non-batched
+        for data in data_list:
+            assert not data.is_batched, "All inputs in data_list must be non-batched."
 
-        device = chains[0].device
-        # check all chains are on the same device
-        for chain in chains:
-            assert chain.device == device, (
-                f"All chains must be on the same device,"
-                f" but got {chain.device} and {device}"
+        # Check all data are on the same device
+        ref_device = data_list[0].device
+        for data in data_list:
+            assert data.device == ref_device, (
+                "All inputs in data_list must be on the same device."
             )
 
-        chain_fields = {
-            "chain_type": [],
-            "entity_id": [],
-            "asym_id": [],
-            "sym_id": [],
-            "num_tokens": [],
-            "num_atoms": [],
-        }
-        token_tensors = {name: [] for name in chains[0].token.to_dict().keys()}
-        atom_tensors = {name: [] for name in chains[0].atom.to_dict().keys()}
-        bond_tensors = {name: [] for name in chains[0].bond.to_dict().keys()}
-
-        token_offset = 0
-        atom_offset = 0
-        for chain in chains:
-            chain_fields["chain_type"].append(chain.chain_type)
-            chain_fields["entity_id"].append(chain.entity_id)
-            chain_fields["asym_id"].append(chain.asym_id)
-            chain_fields["sym_id"].append(chain.sym_id)
-            chain_fields["num_tokens"].append(len(chain.token))
-            chain_fields["num_atoms"].append(len(chain.atom))
-
-            for name, tensor in chain.token.to_dict().items():
-                if name in ("disto_idx", "center_idx"):
-                    tensor = tensor + atom_offset
-                token_tensors[name].append(tensor)
-
-            for name, tensor in chain.atom.to_dict().items():
-                if name == "token_idx":
-                    tensor = tensor + token_offset
-                atom_tensors[name].append(tensor)
-
-            for name, tensor in chain.bond.to_dict().items():
-                if name in ("token_idx_1", "token_idx_2"):
-                    tensor = tensor + token_offset
-                elif name in ("atom_idx_1", "atom_idx_2"):
-                    tensor = tensor + atom_offset
-                bond_tensors[name].append(tensor)
-
-            token_offset += len(chain.token)
-            atom_offset += len(chain.atom)
-
-        chain_layout = ChainLayout(
-            chain_type=torch.tensor(
-                chain_fields["chain_type"], dtype=torch.int, device=device
-            ),
-            entity_id=torch.tensor(
-                chain_fields["entity_id"], dtype=torch.int, device=device
-            ),
-            asym_id=torch.tensor(chain_fields["asym_id"], dtype=torch.int, device=device),
-            sym_id=torch.tensor(chain_fields["sym_id"], dtype=torch.int, device=device),
-            num_tokens=torch.tensor(
-                chain_fields["num_tokens"], dtype=torch.int, device=device
-            ),
-            num_atoms=torch.tensor(
-                chain_fields["num_atoms"], dtype=torch.int, device=device
-            ),
-            pad_mask=torch.ones(len(chains), dtype=torch.bool, device=device),
-        )
-
-        token_layout = TokenLayout(
-            **{name: torch.cat(tensors, dim=0) for name, tensors in token_tensors.items()}
-        )
-
-        atom_layout = AtomLayout(
-            **{name: torch.cat(tensors, dim=0) for name, tensors in atom_tensors.items()}
-        )
-
-        bond_layout = BondLayout(
-            **{name: torch.cat(tensors, dim=0) for name, tensors in bond_tensors.items()}
-        )
+        batched_chain = ChainLayout.from_list([data.chain for data in data_list])
+        batched_token = TokenLayout.from_list([data.token for data in data_list])
+        batched_atom = AtomLayout.from_list([data.atom for data in data_list])
+        batched_bond = BondLayout.from_list([data.bond for data in data_list])
 
         return cls(
-            chain=chain_layout,
-            token=token_layout,
-            atom=atom_layout,
-            bond=bond_layout,
+            chain=batched_chain,
+            token=batched_token,
+            atom=batched_atom,
+            bond=batched_bond,
+            metadata=None,
         )
+
+    def to_list(self, copy: bool = False) -> list[Self]:
+        chain_list = self.chain.to_list(copy=copy)
+        token_list = self.token.to_list(copy=copy)
+        atom_list = self.atom.to_list(copy=copy)
+        bond_list = self.bond.to_list(copy=copy)
+
+        data_list: list[Self] = []
+        batch_size = self.batch_size
+        for b in range(batch_size):
+            data_list.append(
+                self.__class__(
+                    chain=chain_list[b],
+                    token=token_list[b],
+                    atom=atom_list[b],
+                    bond=bond_list[b],
+                    metadata=None,
+                )
+            )
+        return data_list
+
+    def get_atom_to_token(self) -> torch.Tensor:
+        """Return [Natom, Ntoken] or [B, Natom, Ntoken] dense mapping matrix
+        from atoms to tokens.
+        """
+        return self.atom_to_token
+
+    @cached_property
+    def atom_to_token(self) -> torch.Tensor:
+        """Return [Natom, Ntoken] or [B, Natom, Ntoken] dense mapping matrix
+        from atoms to tokens.
+        """
+
+        if not self.is_batched:
+            Natom = int(self.atom.pad_mask.sum().item())
+            atom_indices = torch.arange(Natom, device=self.device)
+            token_indices = self.atom.token_index[:Natom]
+            mapping = torch.zeros(
+                (self.num_atoms, self.num_tokens),
+                dtype=torch.float32,
+                device=self.device,
+            )
+            mapping[atom_indices, token_indices] = 1.0
+        else:
+            batch_size = self.chain.batch_size
+            num_atoms = self.atom.pad_mask.sum(dim=1).tolist()
+            mapping = torch.zeros(
+                (batch_size, self.num_atoms, self.num_tokens),
+                dtype=torch.float32,
+                device=self.device,
+            )
+            for b in range(batch_size):
+                Natom = num_atoms[b]
+                atom_indices = torch.arange(Natom, device=self.device)
+                token_indices = self.atom.token_index[b, :Natom]
+                mapping[b, atom_indices, token_indices] = 1.0
+        return mapping
+
+    def extract_chains(self, asym_ids: list[int]) -> Self:
+        """Extract specific chains using asym ids"""
+        assert not self.is_batched, "Batched input is not supported."
+        raise NotImplementedError("extract_chains() is not implemented yet.")
+
+    def __repr__(self) -> str:
+        """FoldingInput summary representation."""
+        device = self.device
+
+        # Summary statistics
+        num_chains = self.num_chains
+        num_tokens = self.num_tokens
+        num_atoms = self.num_atoms
+        num_bonds = len(self.bond)
+
+        # Metadata
+        if self.metadata:
+            metadata_keys = list(self.metadata.keys())
+        else:
+            metadata_keys = []
+
+        if self.is_batched:
+            return (
+                f"FoldingInput(\n"
+                f"  batch_size: {self.batch_size}\n"
+                f"  num_chains: {num_chains}\n"
+                f"  num_tokens: {num_tokens}\n"
+                f"  num_atoms: {num_atoms}\n"
+                f"  num_bonds: {num_bonds}\n"
+                f"  metadata: {metadata_keys}\n"
+                f"  device: {device}\n"
+                f")"
+            )
+        else:
+            return (
+                f"FoldingInput(\n"
+                f"  num_chains: {num_chains}\n"
+                f"  num_tokens: {num_tokens}\n"
+                f"  num_atoms: {num_atoms}\n"
+                f"  num_bonds: {num_bonds}\n"
+                f"  metadata: {metadata_keys}\n"
+                f"  device: {device}\n"
+                f")"
+            )

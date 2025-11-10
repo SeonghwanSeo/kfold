@@ -1,6 +1,16 @@
 import enum
 
+from . import residue
 from .residue import ResidueName
+
+
+def encode_atom_name(atom_name: str) -> tuple[int, int, int, int]:
+    """Expand atom names to standard format."""
+    name = atom_name.strip()
+    name_int = [ord(c) - 32 for c in name]
+    name_int = name_int + [0] * (4 - len(name_int))  # pad to 4 characters
+    return tuple(name_int)  # pyright: ignore
+
 
 protein_atom37: tuple[str, ...] = (
     "N",   "CA",  "C",   "CB",  "O",   "CG",  "CG1", "CG2", "OG",  "OG1",
@@ -16,78 +26,86 @@ nucleic_atom29: tuple[str, ...] = (
 )  # fmt: skip
 
 
-class AtomName(enum.IntEnum):
+class AtomName(enum.Enum):
     """This is also used for indexing atom types"""
 
     # protein
-    N = enum.auto()
-    CA = enum.auto()
-    C = enum.auto()
-    CB = enum.auto()
-    O = enum.auto()  # noqa
-    CG = enum.auto()
-    CG1 = enum.auto()
-    CG2 = enum.auto()
-    OG = enum.auto()
-    OG1 = enum.auto()
-    SG = enum.auto()
-    CD = enum.auto()
-    CD1 = enum.auto()
-    CD2 = enum.auto()
-    ND1 = enum.auto()
-    ND2 = enum.auto()
-    OD1 = enum.auto()
-    OD2 = enum.auto()
-    SD = enum.auto()
-    CE = enum.auto()
-    CE1 = enum.auto()
-    CE2 = enum.auto()
-    CE3 = enum.auto()
-    NE = enum.auto()
-    NE1 = enum.auto()
-    NE2 = enum.auto()
-    OE1 = enum.auto()
-    OE2 = enum.auto()
-    CH2 = enum.auto()
-    NH1 = enum.auto()
-    NH2 = enum.auto()
-    OH = enum.auto()
-    CZ = enum.auto()
-    CZ2 = enum.auto()
-    CZ3 = enum.auto()
-    NZ = enum.auto()
-    OXT = enum.auto()
+    N = "N"
+    CA = "CA"
+    C = "C"
+    CB = "CB"
+    O = "O"  # noqa
+    CG = "CG"
+    CG1 = "CG1"
+    CG2 = "CG2"
+    OG = "OG"
+    OG1 = "OG1"
+    SG = "SG"
+    CD = "CD"
+    CD1 = "CD1"
+    CD2 = "CD2"
+    ND1 = "ND1"
+    ND2 = "ND2"
+    OD1 = "OD1"
+    OD2 = "OD2"
+    SD = "SD"
+    CE = "CE"
+    CE1 = "CE1"
+    CE2 = "CE2"
+    CE3 = "CE3"
+    NE = "NE"
+    NE1 = "NE1"
+    NE2 = "NE2"
+    OE1 = "OE1"
+    OE2 = "OE2"
+    CH2 = "CH2"
+    NH1 = "NH1"
+    NH2 = "NH2"
+    OH = "OH"
+    CZ = "CZ"
+    CZ2 = "CZ2"
+    CZ3 = "CZ3"
+    NZ = "NZ"
+    OXT = "OXT"
 
-    # rna/dna
-    C1P = enum.auto()
-    C2 = enum.auto()
-    C2P = enum.auto()
-    C3P = enum.auto()
-    C4 = enum.auto()
-    C4P = enum.auto()
-    C5 = enum.auto()
-    C5P = enum.auto()
-    C6 = enum.auto()
-    C7 = enum.auto()
-    C8 = enum.auto()
-    N1 = enum.auto()
-    N2 = enum.auto()
-    N3 = enum.auto()
-    N4 = enum.auto()
-    N6 = enum.auto()
-    N7 = enum.auto()
-    N9 = enum.auto()
-    O2 = enum.auto()
-    O2P = enum.auto()
-    O3P = enum.auto()
-    O4 = enum.auto()
-    O4P = enum.auto()
-    O5P = enum.auto()
-    O6 = enum.auto()
-    OP1 = enum.auto()
-    OP2 = enum.auto()
-    OP3 = enum.auto()
-    P = enum.auto()
+    # rna/dna (using prime notation)
+    C1_PRIME = "C1'"
+    C2 = "C2"
+    C2_PRIME = "C2'"
+    C3_PRIME = "C3'"
+    C4 = "C4"
+    C4_PRIME = "C4'"
+    C5 = "C5"
+    C5_PRIME = "C5'"
+    C6 = "C6"
+    C7 = "C7"
+    C8 = "C8"
+    N1 = "N1"
+    N2 = "N2"
+    N3 = "N3"
+    N4 = "N4"
+    N6 = "N6"
+    N7 = "N7"
+    N9 = "N9"
+    O2 = "O2"
+    O2_PRIME = "O2'"
+    O3_PRIME = "O3'"
+    O4 = "O4"
+    O4_PRIME = "O4'"
+    O5_PRIME = "O5'"
+    O6 = "O6"
+    OP1 = "OP1"
+    OP2 = "OP2"
+    OP3 = "OP3"
+    P = "P"
+
+    @property
+    def index(self) -> int:
+        """Get the index of the atom in the combined atom list."""
+        return atom_name_to_index[self]
+
+
+atom_name_to_index: dict[AtomName, int] = {atom: idx for idx, atom in enumerate(AtomName)}
 
 
 residue_atoms: dict[str, tuple[str, ...]] = {
@@ -137,9 +155,18 @@ residue_atoms: dict[str, tuple[str, ...]] = {
     "DN": ("P",  "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'", "C1'")
 }  # fmt: skip
 
+RESIDUE_FRAME_ATOMS: dict[ResidueName, tuple[AtomName, AtomName, AtomName]] = {
+    ResidueName[res]: (AtomName.N, AtomName.CA, AtomName.C)
+    for res in residue.PROTEIN_RESIDUES
+} | {
+    ResidueName[res]: (AtomName.C1_PRIME, AtomName.C3_PRIME, AtomName.C4_PRIME)
+    for res in residue.RNA_RESIDUES + residue.DNA_RESIDUES
+}
+
+
 # atoms for each residue
 RESIDUE_ATOMS: dict[ResidueName, tuple[AtomName, ...]] = {
-    ResidueName[res]: tuple(AtomName[atom] for atom in atoms)
+    ResidueName[res]: tuple(AtomName(atom) for atom in atoms)
     for res, atoms in residue_atoms.items()
 }
 
@@ -168,17 +195,17 @@ REF_ATOM: dict[ResidueName, AtomName] = {
     ResidueName.VAL: AtomName.CA,
     ResidueName.UNK: AtomName.CA,
     # rna
-    ResidueName.A: AtomName.C1P,
-    ResidueName.G: AtomName.C1P,
-    ResidueName.C: AtomName.C1P,
-    ResidueName.U: AtomName.C1P,
-    ResidueName.N: AtomName.C1P,
+    ResidueName.A: AtomName.C1_PRIME,
+    ResidueName.G: AtomName.C1_PRIME,
+    ResidueName.C: AtomName.C1_PRIME,
+    ResidueName.U: AtomName.C1_PRIME,
+    ResidueName.N: AtomName.C1_PRIME,
     # dna
-    ResidueName.DA: AtomName.C1P,
-    ResidueName.DG: AtomName.C1P,
-    ResidueName.DC: AtomName.C1P,
-    ResidueName.DT: AtomName.C1P,
-    ResidueName.DN: AtomName.C1P,
+    ResidueName.DA: AtomName.C1_PRIME,
+    ResidueName.DG: AtomName.C1_PRIME,
+    ResidueName.DC: AtomName.C1_PRIME,
+    ResidueName.DT: AtomName.C1_PRIME,
+    ResidueName.DN: AtomName.C1_PRIME,
 }
 
 # pseudo-beta atom for each residue to compute distogram
@@ -210,11 +237,11 @@ PSEUDO_BETA_ATOM: dict[ResidueName, AtomName] = {
     ResidueName.G: AtomName.C4,
     ResidueName.C: AtomName.C2,
     ResidueName.U: AtomName.C2,
-    ResidueName.N: AtomName.C1P,
+    ResidueName.N: AtomName.C1_PRIME,
     # dna
     ResidueName.DA: AtomName.C4,
     ResidueName.DG: AtomName.C4,
     ResidueName.DC: AtomName.C2,
     ResidueName.DT: AtomName.C2,
-    ResidueName.DN: AtomName.C1P,
+    ResidueName.DN: AtomName.C1_PRIME,
 }
