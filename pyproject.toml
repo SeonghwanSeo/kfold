@@ -29,11 +29,20 @@ dependencies = [
 
   # additional dependencies
   "tqdm",
+  "scipy",
   "omegaconf",
   "rdkit",
+  "einops",
+  "fairscale",
   "gemmi==0.6.5",
   "modelcif==1.2", # to write cif file
+
+  # cuequivariance
+  "cuequivariance_ops_cu12>=0.5.0",
+  "cuequivariance_ops_torch_cu12>=0.5.0",
+  "cuequivariance_torch>=0.5.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
+train = ['lightning']

@@ -86,7 +86,8 @@ def parse_structure(
         "resolved_mask",
         "disto_mask",
         "pad_mask",
-        "is_pocket",
+        "is_polymer_ligand_bond",
+        "is_ligand_ligand_bond",
     ]
     float_fields = [
         "ref_charge",
@@ -101,17 +102,17 @@ def parse_structure(
         elif key in float_fields:
             return torch.float32
         else:
-            return torch.int32
+            return torch.long
 
     chain_info = {
-        "chain_type": torch.as_tensor(chains["mol_type"].copy(), dtype=torch.int32),
-        "entity_id": torch.as_tensor(chains["entity_id"].copy(), dtype=torch.int32) + 1,
-        "asym_id": torch.as_tensor(chains["asym_id"].copy(), dtype=torch.int32) + 1,
-        "sym_id": torch.as_tensor(chains["sym_id"].copy(), dtype=torch.int32) + 1,
-        "num_residues": torch.as_tensor(chains["res_num"].copy(), dtype=torch.int32),
-        "num_atoms": torch.as_tensor(chains["atom_num"].copy(), dtype=torch.int32),
+        "chain_type": torch.as_tensor(chains["mol_type"].copy(), dtype=torch.long),
+        "entity_id": torch.as_tensor(chains["entity_id"].copy(), dtype=torch.long) + 1,
+        "asym_id": torch.as_tensor(chains["asym_id"].copy(), dtype=torch.long) + 1,
+        "sym_id": torch.as_tensor(chains["sym_id"].copy(), dtype=torch.long) + 1,
+        "num_residues": torch.as_tensor(chains["res_num"].copy(), dtype=torch.long),
+        "num_atoms": torch.as_tensor(chains["atom_num"].copy(), dtype=torch.long),
         # 'num_tokens' will be computed below
-        "num_tokens": torch.zeros(len(chains), dtype=torch.int32),
+        "num_tokens": torch.zeros(len(chains), dtype=torch.long),
     }
 
     token_info = {
@@ -149,6 +150,8 @@ def parse_structure(
         "token_index": [],
         "atom_index": [],
         "bond_type": [],
+        "is_polymer_ligand_bond": [],
+        "is_ligand_ligand_bond": [],
     }
 
     # Since some chains can be masked,
@@ -311,22 +314,13 @@ def parse_structure(
     # === Get bond features === #
     # First iterate bonds (intra-chain)
     for bond in structure.bonds:
-        # Map original atom indices to reindexed atom indices
         if bond["atom_1"] not in atom_index_map or bond["atom_2"] not in atom_index_map:
             continue
+
+        # Map original atom indices to reindexed atom indices
         atom_1 = atom_index_map[bond["atom_1"]]
         atom_2 = atom_index_map[bond["atom_2"]]
         bond_type = bond["type"]
-
-        # Get asym_id and token_index from atom_index
-        token_index_1 = atom_info["token_index"][atom_1]
-        token_index_2 = atom_info["token_index"][atom_2]
-        asym_id1 = token_info["asym_id"][token_index_1]
-        asym_id2 = token_info["asym_id"][token_index_2]
-
-        assert asym_id1 == asym_id2, "Bonds across chains are not supported."
-        bond_info["asym_id"].append((asym_id1, asym_id2))
-        bond_info["token_index"].append((token_index_1, token_index_2))
         bond_info["atom_index"].append((atom_1, atom_2))
         bond_info["bond_type"].append(bond_type)
 
@@ -339,17 +333,32 @@ def parse_structure(
         atom_1 = atom_index_map[bond["atom_1"]]
         atom_2 = atom_index_map[bond["atom_2"]]
         bond_type = C.bond.ConnectType.COVALENT.value
+        bond_info["atom_index"].append((atom_1, atom_2))
+        bond_info["bond_type"].append(bond_type)
 
+    # Add additional bond info fields
+    for atom_1, atom_2 in bond_info["atom_index"]:
         # Get asym_id and token_index from atom_index
         token_index_1 = atom_info["token_index"][atom_1]
         token_index_2 = atom_info["token_index"][atom_2]
         asym_id1 = token_info["asym_id"][token_index_1]
         asym_id2 = token_info["asym_id"][token_index_2]
 
+        chain_type1 = token_info["chain_type"][token_index_1]
+        chain_type2 = token_info["chain_type"][token_index_2]
+        ligand_ctype = C.chain.ChainType.Ligand.value
+        _is_ligand1 = chain_type1 == ligand_ctype
+        _is_ligand2 = chain_type2 == ligand_ctype
+
+        is_ligand_ligand_bond = bool(_is_ligand1 and _is_ligand2)
+        is_polymer_ligand_bond = bool(
+            (_is_ligand1 and not _is_ligand2) or (not _is_ligand1 and _is_ligand2)
+        )
+
         bond_info["asym_id"].append((asym_id1, asym_id2))
         bond_info["token_index"].append((token_index_1, token_index_2))
-        bond_info["atom_index"].append((atom_1, atom_2))
-        bond_info["bond_type"].append(bond_type)
+        bond_info["is_ligand_ligand_bond"].append(is_ligand_ligand_bond)
+        bond_info["is_polymer_ligand_bond"].append(is_polymer_ligand_bond)
 
     # === Convert lists to tensors === #
     token_info = {
@@ -377,7 +386,8 @@ def parse_structure(
     # Add additional fields
     token_info["token_index"] = torch.arange(1, len(token_info["res_type"]) + 1)
     # FIXME: we may change this on-the-fly like Boltz
-    token_info["is_pocket"] = torch.zeros_like(token_info["resolved_mask"])
+    # 0 means no pocket constraint, 1 means pocket contact
+    token_info["pocket_contact_type"] = torch.zeros_like(token_info["res_type"])
     # NOTE: Boltz1 training set does not include cyclic_period info
     token_info["cyclic_period"] = torch.zeros_like(token_info["res_type"])
 
@@ -416,7 +426,7 @@ def parse_structure(
         disto_mask=token_info["disto_mask"].view(Nt),
         frames_mask=token_info["frames_mask"].view(Nt),
         pad_mask=token_info["pad_mask"].view(Nt),
-        is_pocket=token_info["is_pocket"].view(Nt),
+        pocket_contact_type=token_info["pocket_contact_type"].view(Nt),
         cyclic_period=token_info["cyclic_period"].view(Nt),
     )
     atom_layout = model_input.AtomLayout(
@@ -436,6 +446,8 @@ def parse_structure(
         token_index=bond_info["token_index"].view(Nb, 2),
         atom_index=bond_info["atom_index"].view(Nb, 2),
         bond_type=bond_info["bond_type"].view(Nb),
+        is_polymer_ligand_bond=bond_info["is_polymer_ligand_bond"].view(Nb),
+        is_ligand_ligand_bond=bond_info["is_ligand_ligand_bond"].view(Nb),
         pad_mask=bond_info["pad_mask"].view(Nb),
     )
 

@@ -1,0 +1,4 @@
+_registry_: "distogram_head"
+_class_: "DistogramHead"
+channel_z: 128
+num_bins: 64

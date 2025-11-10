@@ -1,0 +1,2 @@
+_registry_: "input_embedder"
+_class_: "BaseInputEmbedder"

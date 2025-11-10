@@ -51,7 +51,7 @@ class Registry:
         return name in self._module_dict
 
     @classmethod
-    def instantiate(cls, config: BaseConfig) -> Any:
+    def instantiate(cls, config: BaseConfig, **kwargs) -> Any:
         """Instantiate a module from the registry using the provided config.
 
         Parameters
@@ -75,7 +75,7 @@ class Registry:
         """
         registry = cls.get_register(config._registry_)
         module_cls = registry[config._class_]
-        return module_cls(config)
+        return module_cls(config, **kwargs)
 
     def register(
         self, name: str | None = None, config_cls: type[BaseConfig] | None = None
@@ -184,17 +184,46 @@ class Registry:
 
         return module
 
+    def print_registered(self) -> None:
+        """Print all registered modules in the registry."""
+        print(f"<Registry: {self.name}>")
+        for name in self._module_dict.keys():
+            print(f"  - {name}")
+
+    @classmethod
+    def print_all_registered(cls) -> None:
+        """Print all registered modules in all registries."""
+        for registry in cls.__obj_dict__.values():
+            registry.print_registered()
+            print()
+
 
 # data
 DATAMODULE = Registry("datamodule")
 DATASET = Registry("dataset")
 DATA_FILTER = Registry("data_filter")
 
-# model
-SEQUNECE_ENCODER = Registry("sequence_encoder")
+# K-Fold module
+MAIN_MODULE = Registry("main_module")
+
+# Input encoder
+SEQUENCE_ENCODER = Registry("sequence_encoder")
 STRUCTURE_ENCODER = Registry("structure_encoder")
-TRANSFORMER_MODULE = Registry("transformer_module")
-DIFFUSION_MODULE = Registry("diffusion_module")
-AFFINITY_HEAD = Registry("affinity_head")
-CONFIDENCE_HEAD = Registry("confidence_head")
+
+# Section 3.1 Algorithm 2 InputFeatureEmbedder,
+INPUT_EMBEDDER = Registry("input_embedder")
+
+# Section 3.6 Algorithm 17 Pairformer
+TRUNK = Registry("trunk")
+
+# Section 3.7 Algorithm 18 SampleDiffusion
+STRUCTURE_MODULE = Registry("structure_module")
+# Section 3.7 Algorithm 20 DiffusionModule
+SCORE_MODEL = Registry("score_model")
+
+# Section 3 Algorithm 1 Inference Loop
 DISTOGRAM_HEAD = Registry("distogram_head")
+
+CONFIDENCE_HEAD = Registry("confidence_head")
+
+AFFINITY_HEAD = Registry("affinity_head")

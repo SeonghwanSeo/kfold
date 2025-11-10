@@ -59,6 +59,9 @@ class ResidueName(enum.Enum):
     DT = "DT"
     DN = "DN"
 
+    # gap
+    GAP = "GAP"  # Maybe unused
+
     @property
     def index(self) -> int:
         """Get the index of the residue in the enum."""
