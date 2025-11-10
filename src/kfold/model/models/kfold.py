@@ -74,7 +74,7 @@ class KFold(torch.nn.Module):
         f_input: FoldingInput,
         num_recycles: int,
         num_steps: int,
-        num_diffusion_samples: int,
+        diffusion_batch_size: int,
     ) -> dict[str, torch.Tensor]:
         """Forward pass of KFold model for model training."""
         if not f_input.is_batched:
@@ -90,11 +90,10 @@ class KFold(torch.nn.Module):
             )
             f_input = FoldingInput.from_list([f_input])
 
-        print("--- KFold forward pass ---")
-        print("--- Input Embedder ---")
+        # Embed inputs
         s_inputs, s_init, z_init = self.input_embedder(f_input)
 
-        print("--- Trunk ---")
+        # Trunk with recycling
         s_trunk, z_trunk = self.trunk(
             s_inputs,
             s_init,
@@ -102,18 +101,27 @@ class KFold(torch.nn.Module):
             f_input,
             num_recycles,
         )
-
         dict_out = {
             "s_trunk": s_trunk,
             "z_trunk": z_trunk,
         }
-        print("--- Distogram head ---")
 
+        # Distogram head
         dict_out["distogram_logits"] = self.distogram_head(z_trunk)
 
-        print("--- Structure ---")
-
-        dict_out |= self.structure_module.train_diffusion_step(s_trunk, z_trunk, f_input)
+        # Diffusion head
+        # t_hat: [B, N]
+        # prior_atom_coords: [B, N, La, 3]
+        # noised_atom_coords: [B, N, La, 3]
+        # denoised_atom_coords: [B, N, La, 3]
+        # label_atom_coords: [B, N, La, 3]
+        dict_out |= self.structure_module.training_step(
+            f_input,
+            s_inputs,
+            s_trunk,
+            z_trunk,
+            diffusion_batch_size,
+        )
 
         # TODO: implement confidence prediction with mini-rollout
         return dict_out

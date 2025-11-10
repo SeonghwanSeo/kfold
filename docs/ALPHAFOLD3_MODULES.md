@@ -1,8 +1,10 @@
 # AlphaFold3 Implementation
 
+## Mapping of Algorithms to Code
+
+### Layer Implementations
 The directory [`src/kfold/model/layers/alphafold3`](src/kfold/model/layers/alphafold3) contains the implementation of the modules described in the AlphaFold3 paper.
 
-## Mapping of Algorithms to Code
 Below is a mapping of the algorithms presented in the paper to their corresponding classes and files in the codebase.
 Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/boltz), MIT licensed.
 
@@ -14,9 +16,9 @@ Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/b
 | **3.2** Atom attention    | Algorithm 5  | AtomAttentionEncoder | `transformers.py` |
 |                           | Algorithm 6  | AtomAttentionDecoder | `transformers.py` |
 |                           | Algorithm 7  | AtomTransformer | `transformers.py` |
-| **3.3** MSA Module        | Algorithm 8  | MsaModule | `msa_module.py` |
-|                           | Algorithm 9  | OuterProductMean | `msa_module.py` |
-|                           | Algorithm 10 | MSAPairWeightedAveraging | `msa_module.py` |
+| **3.3** MSA Module        | Algorithm 8  | MsaModule | `msa_module.py` (TODO)|
+|                           | Algorithm 9  | OuterProductMean | `msa_module.py` (TODO)|
+|                           | Algorithm 10 | MSAPairWeightedAveraging | `msa_module.py` (TODO)|
 |                           | Algorithm 11 | Transition | `primitives.py` |
 | **3.4** Triangle updates  | Algorithm 12 | TriangleMultiplicationOutgoing | `triangular_update/` |
 |                           | Algorithm 13 | TriangleMultiplicationIncoming | `triangular_update/` |
@@ -32,6 +34,25 @@ Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/b
 |                           | Algorithm 24 | AttentionPairBias | `transformers.py` |
 |                           | Algorithm 25 | ConditionedTransitionBlock | `transformers.py` |
 |                           | Algorithm 26 | AdaLN | `primitives.py` |
+| **3.7** Confidence Head   | Algorithm 31 | ConfidenceHead | `confidence.py` (TODO) |
+
+
+### Loss Implementations
+
+The directory [`src/kfold/training/kfold/loss`](src/kfold/model/training/kfold/loss) contains the implementation of the loss functions described in the AlphaFold3 paper.
+
+Below is a mapping of the algorithms of loss functions.
+| Section | Algorithm | Class | File |
+|---------|-----------|------| -----|
+| **3.7** Diffusion Module            | Equation 2-5  | WeightedMSELoss | `diffusion.py` |
+|                                     | Algorithm 27  | SmoothLDDTLoss | `diffusion.py` |
+|                                     | Algorithm 28  | weighted_rigid_align | `diffusion.py` |
+| **4.3** Model confidence prediction | Equation 8-9  | PLDDTLoss | `confidence.py` (TODO)|
+|                                     | Algorithm 29  | expressCoordinatesInFrame | `confidence.py` (TODO) |
+|                                     | Algorithm 30  | computeAlignmentError | `confidence.py` (TODO)|
+|                                     | Equation 10-11  | PAELoss | `confidence.py` (TODO)|
+|                                     | Equation 12-13  | PDELoss | `confidence.py` (TODO)|
+|                                     | Equation 14  | ResolvedLoss | `confidence.py` (TODO)|
 
 
 ## Modifications from the Original Paper

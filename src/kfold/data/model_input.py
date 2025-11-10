@@ -666,14 +666,22 @@ class BondLayout(Layout):
     atom_index: torch.Tensor
         Atom indices of the connecting atoms in the bond of shape [Nbond,].
         Atom indices of the first atom in the bond of shape [Nbond,].
-    atom_index_2: torch.Tensor
-        Atom indices of the second atom in the bond of shape [Nbond,].
+    bond_type: torch.Tensor
+        Bond types of shape [Nbond,], indicating the type of each bond.
+    is_ligand_ligand_bond: torch.Tensor
+        Boolean tensor of shape [Nbond,], indicating whether the bond is between
+        two ligand atoms.
+    is_polymer_ligand_bond: torch.Tensor
+        Boolean tensor of shape [Nbond,], indicating whether the bond is between polymer
+        and ligand atoms.
     """
 
     asym_id: torch.Tensor  # [Nbond,], long
     token_index: torch.Tensor  # [Nbond,], long
     atom_index: torch.Tensor  # [Nbond,], long
     bond_type: torch.Tensor  # [Nbond,], long
+    is_ligand_ligand_bond: torch.Tensor  # [Nbond,], bool
+    is_polymer_ligand_bond: torch.Tensor  # [Nbond,], bool
     pad_mask: torch.Tensor  # [Nbond,], bool
 
     @property
@@ -691,6 +699,18 @@ class BondLayout(Layout):
         )
         check_tensor(self.bond_type, name="bond_type", dtype=torch_int, shape=(*shape,))
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
+        check_tensor(
+            self.is_ligand_ligand_bond,
+            name="is_ligand_ligand_bond",
+            dtype=torch.bool,
+            shape=(*shape,),
+        )
+        check_tensor(
+            self.is_polymer_ligand_bond,
+            name="is_polymer_ligand_bond",
+            dtype=torch.bool,
+            shape=(*shape,),
+        )
 
     def pad(self, total_length: int) -> Self:
         """Pad the layout to the total length."""
@@ -711,6 +731,8 @@ class BondLayout(Layout):
             "atom_index": 0,
             "bond_type": 0,
             "pad_mask": False,
+            "is_ligand_ligand_bond": False,
+            "is_polymer_ligand_bond": False,
         }
 
         pad_size = total_length - L

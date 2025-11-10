@@ -46,14 +46,14 @@ class FourierEmbedding(nn.Module):
         self.w = nn.Parameter(w, requires_grad=False)
         self.b = nn.Parameter(b, requires_grad=False)
 
-    def forward(self, times: torch.Tensor) -> torch.Tensor:
+    def forward(self, t_hat: torch.Tensor) -> torch.Tensor:
         """Forward pass.
         See Section 3.7 Algorithm 22 of AlphaFold3 paper.
 
         Parameters
         ----------
-        times : torch.Tensor
-            The input times. Shape (B, N,)
+        t_hat : torch.Tensor
+            The input noise level. Shape (B, N,)
 
         Returns
         -------
@@ -61,7 +61,7 @@ class FourierEmbedding(nn.Module):
             The Fourier embeddings. Shape (B, N, channel)
         """
         # Line 2
-        return torch.cos((2 * math.pi) * times[..., None] * self.w + self.b)
+        return torch.cos((2 * math.pi) * t_hat[..., None] * self.w + self.b)
 
 
 class DiffusionModule(nn.Module):
@@ -162,8 +162,8 @@ class DiffusionModule(nn.Module):
         )
 
         # === Full token-level attention === #
-        self.layernorm_s = nn.LayerNorm(channel_token)
-        self.trans_s_to_a = LinearNoBias(channel_token, channel_token)
+        self.layernorm_s = nn.LayerNorm(channel_s)
+        self.trans_s_to_a = LinearNoBias(channel_s, channel_token)
         init.final_init_(self.trans_s_to_a.weight)
 
         self.token_transformer = DiffusionTransformer(
@@ -181,7 +181,6 @@ class DiffusionModule(nn.Module):
         # === Local token-level attention decoder === #
         self.atom_attention_decoder = AtomAttentionDecoder(
             channel_a=channel_token,
-            channel_s=channel_s,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             num_blocks=atom_decoder_blocks,
@@ -194,7 +193,7 @@ class DiffusionModule(nn.Module):
     def forward(
         self,
         x_noisy: torch.Tensor,
-        times: torch.Tensor,
+        t_hat: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
@@ -209,8 +208,8 @@ class DiffusionModule(nn.Module):
         x_noisy : torch.Tensor
             The noisy atom positions, shape [B, N, La, 3],
             where B is the batch size and Nsample is the number of diffusion samples.
-        times : torch.Tensor
-            The diffusion times, shape [B, N].
+        t_hat : torch.Tensor
+            The diffusion noise level (or sigmas), shape [B, N].
         f_input : FoldingInput
             The folding input.
         s_inputs : torch.Tensor
@@ -235,61 +234,68 @@ class DiffusionModule(nn.Module):
             s_inputs=s_inputs,
             s_trunk=s_trunk,
             z_trunk=z_trunk,
-            times=times,
+            t_hat=t_hat,
             model_cache=model_cache,
-        )  # [B, Lt, Cs], [B, Lt, Lt, Cz]
+        )  # [B, Lt, c_s], [B, Lt, Lt, c_z]
 
+        # Line 2
         # Scale positions
-        c_in = 1 / torch.sqrt(times**2 + self.sigma_data**2)  # [B, N]
-        r_noisy = x_noisy * c_in[:, None, None]  # [B, N, La, 3]
+        c_in = 1 / torch.sqrt(t_hat**2 + self.sigma_data**2)  # [B, N]
+        r_noisy = x_noisy * c_in[..., None, None]  # [B, N, La, 3]
 
-        # Compute Atom Attention Encoder and aggregation to coarse-grained tokens
-        # Shape:
-        # - a: [B, N, Lt, 2*Cs]
-        # - q_skip: [B, N, La, Ca]
-        # - c_skip: [B, N, La, Ca]
-        # - p_skip: [B, N, La, La, Cap]
-
-        a, q_skip, c_skip, p_skip, local_attn_indexer = self.atom_attention_encoder(
+        # === Local attention on atom-level and aggregate to coarse-grained token === #
+        # Line 3
+        a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
             f_input=f_input,
             r=r_noisy,  # [B, N, La, 3]
-            s_trunk=s_trunk,  # [B, Lt, Cs]
-            z=z,  # [B, Lt, Lt, Cz]
+            s_trunk=s_trunk,  # [B, Lt, c_s]
+            z=z,  # [B, Lt, Lt, c_z]
             model_cache=model_cache,
         )
+        # Shape:
+        # - a: [B, N, Lt, c_token]
+        # - q_skip: [B, N, La, c_atom]
+        # - c_skip: [B, N, La, c_atom]
+        # - p_skip: [B, N, La, La, c_atompair]
 
-        # Full self-attention on token level
-        a = a + self.trans_s_to_a(self.layernorm_s(s))  # [Nsample, La, Cs]
+        # === Full attention on token-level === #
+        # Line 4
+        a = a + self.trans_s_to_a(self.layernorm_s(s))  # [Nsample, La, c_token]
 
+        # Line 5
         mask = f_input.token.pad_mask.float()  # [B, Lt]
         a = self.token_transformer(
-            a,  # [B, N, Lt, Cs]
-            s=s,  # [B, N, Lt, Cs]
-            z=z,  # [B, Lt, Lt, Cz]
+            a,  # [B, N, Lt, c_token]
+            s=s,  # [B, N, Lt, c_s]
+            z=z,  # [B, Lt, Lt, c_z]
             attn_mask=mask[:, None, None],  # [B, 1, 1, Lt], broadcasted to [B, N, Lt, Lt]
             model_cache=model_cache,
         )
+
+        # Line 6
         a = self.layernorm_a(a)
 
-        # Broadcast token activations to atoms and run Sequence-local Atom Attention
+        # === Broadcast token to atoms and run Local Atom Attention === #
+        # Line 7
         r_update = self.atom_attention_decoder(
             a=a,
-            q=q_skip,
-            c=c_skip,
-            p=p_skip,
+            q_skip=q_skip,
+            c_skip=c_skip,
+            p_skip=p_skip,
             f_input=f_input,
-            local_attn_indexer=local_attn_indexer,
             model_cache=model_cache,
         )
 
-        # Rescale positions and update
+        # === Rescale positions and update === #
         # NOTE: I simply use AF3 formula instead of Boltz1's
         # TODO: add hparams to control.
-        c_skip = (self.sigma_data**2) / (self.sigma_data**2 + times**2)
-        c_out = self.sigma_data * times / torch.sqrt(self.sigma_data**2 + times**2)
-        x_update = c_skip.view(B, N, 1, 1) * x_noisy + c_out.view(B, N, 1, 1) * r_update
 
-        return x_update
+        # Line 8
+        c_skip = (self.sigma_data**2) / (self.sigma_data**2 + t_hat**2)
+        c_out = self.sigma_data * t_hat / torch.sqrt(self.sigma_data**2 + t_hat**2)
+        x_out = c_skip[..., None, None] * x_noisy + c_out[..., None, None] * r_update
+
+        return x_out
 
 
 class DiffusionConditioning(nn.Module):
@@ -302,7 +308,7 @@ class DiffusionConditioning(nn.Module):
     For model efficiency, I implement this function to return batched s and
     single z, where the batch size is the number of diffusion samples.
     Input:
-        times: [B, N] - diffusion times
+        t_hat: [B, N] - diffusion noise level (or sigma in EDM)
         s_inputs: [B, Lt, c_s] - input single representation
         s_trunk: [B, Lt, c_s] - trunk single representation
         z_trunk: [B, Lt, Lt, c_z] - trunk pair representation
@@ -373,7 +379,7 @@ class DiffusionConditioning(nn.Module):
 
     def forward(
         self,
-        times: torch.Tensor,
+        t_hat: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
@@ -384,8 +390,8 @@ class DiffusionConditioning(nn.Module):
 
         Parameters
         ----------
-        times : torch.Tensor
-            Tensor of shape (B, N) containing diffusion times.
+        t_hat : torch.Tensor
+            Tensor of shape (B, N) containing diffusion noise level (or sigma).
         f_input : FoldingInput
             The folding input.
         s_inputs : torch.Tensor
@@ -438,7 +444,7 @@ class DiffusionConditioning(nn.Module):
         s = self.linear_no_bias_single(self.layernorm_single(s))  # [B, Lt, c_s]
 
         # Line 8
-        c_noise = (times / self.sigma_data).clamp(1e-20).log() * 0.25
+        c_noise = (t_hat / self.sigma_data).clamp(1e-20).log() * 0.25
         fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]
 
         # Line 9

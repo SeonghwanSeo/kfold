@@ -9,8 +9,8 @@ model:
   _registry_: "main_module"
   _class_: "KFold"
 
-  compile_trunk: true
-  compile_score_model: true
+  compile_trunk: false
+  compile_score_model: false
 
   input_embedder:
     _yaml_: "module/input_embedder/af3.yaml"

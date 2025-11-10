@@ -13,7 +13,7 @@ from kfold.data.model_input import FoldingInput, AtomLayout
 model_input: FoldingInput = ...
 atom_layout: AtomLayout = model_input.atom
 
-ref_pos = atom_layout.ref_pos  # (Natomtom, 3)
+ref_pos = atom_layout.ref_pos  # (Natom, 3)
 ...
 ```
 

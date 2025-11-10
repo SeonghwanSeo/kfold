@@ -12,7 +12,7 @@ from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.boltz.utils.featurizer import featurize
 from kfold.utils.boltz.utils.tokenize import tokenize
 
-BOLTZ_PATH = Path("/home/icl_shwan/rcsb_processed_targets/")
+BOLTZ_PATH = Path("/cache/wykim_lab/rcsb_processed_targets/")
 BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
 BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
@@ -209,7 +209,7 @@ def safe_check_structure(key: str):
         return True
     except Exception as e:
         if "frames_idx" in str(e):
-            # "Although the frames_idx is different, it might be fine (ligand side)"
+            "Although the frames_idx is different, it might be fine (ligand side)"
             pass
         else:
             print(f"Test failed for {key}: {e}")

@@ -285,32 +285,33 @@ class CenterRandomAugmentation:
         Parameters
         ----------
         coords : torch.Tensor
-            One or more tensors of shape (B, N, 3) representing atomic coordinates.
+            One or more tensors of shape (B, L, 3) representing atomic coordinates.
         atom_mask : torch.Tensor
-            A tensor of shape (B, N) representing the atom mask.
+            A tensor of shape (B, L) representing the atom mask.
         """
 
         coords_list: list[torch.Tensor] = list(coords)
         ref_coords = coords_list[0]
-        B, N = atom_mask.shape
+        B, L = atom_mask.shape
 
         # Check all input coords have the same batch size and number of atoms
         for c in coords_list:
-            assert c.shape[0] == B and c.shape[1] == N, (
+            assert c.shape[0] == B and c.shape[1] == L, (
                 "All input coordinate tensors must have the same batch size and length."
+                f" Got {c.shape} vs {(B, L)}."
             )
 
         # Line 1
         if self.centering:
             center = torch.sum(
-                ref_coords * atom_mask[:, :, None], dim=1, keepdim=True
-            ) / torch.sum(atom_mask[:, :, None], dim=1, keepdim=True)
+                ref_coords * atom_mask[:, :, None], dim=-2, keepdim=True
+            ) / torch.sum(atom_mask[:, :, None], dim=-2, keepdim=True).clamp(1)
 
             coords_list = [x - center for x in coords_list]
 
         # Line 2,4
         if self.random_rotate:
-            R = random_rotations(N, ref_coords.dtype, ref_coords.device)
+            R = random_rotations(B, ref_coords.dtype, ref_coords.device)
             rotate = lambda x: torch.einsum("bmd,bds->bms", x, R)  # noqa
             coords_list = [rotate(x) for x in coords_list]
 

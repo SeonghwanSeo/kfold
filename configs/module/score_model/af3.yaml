@@ -16,5 +16,5 @@ token_transformer_heads: 16
 atom_decoder_blocks: 3
 atom_decoder_heads: 4
 conditioning_transition_layers: 2
-activation_checkpointing: False
+activation_checkpointing: True
 offload_to_cpu: False

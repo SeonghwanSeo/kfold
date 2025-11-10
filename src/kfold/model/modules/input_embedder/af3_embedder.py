@@ -128,23 +128,29 @@ class AF3InputEmbedder(BaseInputEmbedder):
 
         # Line 5
         z_init = z_init + self.linear_no_bias_bond(
-            self.get_adjacency_matrix(f_input.bond.token_index, f_input.num_tokens)
+            self.get_adjacency_matrix(
+                f_input.bond.token_index, f_input.num_tokens, f_input.bond.pad_mask
+            ).unsqueeze(-1)  # [B, L, L, 1]
         )  # [B, L, L, c_z]
 
         return s_inputs, s_init, z_init
 
     def get_adjacency_matrix(
-        self, bond_index: torch.Tensor, num_tokens: int
+        self, bond_index: torch.Tensor, num_tokens: int, mask: torch.Tensor
     ) -> torch.Tensor:
         """Get the adjacency bond matrix from the input features."""
+
+        # Masking; (0, 0) is padding index
+        bond_index = bond_index * mask.unsqueeze(-1)
+
+        src, dst = bond_index[:, :, 0], bond_index[:, :, 1]
+
         batch_size = bond_index.shape[0]
         adj = torch.zeros(
             (batch_size, num_tokens, num_tokens),
             device=bond_index.device,
             dtype=torch.float32,
         )
-
-        src, dst = bond_index[:, :, 0], bond_index[:, :, 1]
 
         batch_indices = (
             torch.arange(batch_size, device=bond_index.device)
@@ -155,9 +161,6 @@ class AF3InputEmbedder(BaseInputEmbedder):
         adj[batch_indices, src, dst] = 1.0
         adj[batch_indices, dst, src] = 1.0  # undirected
 
-        # Padding is located at index 0, remove bonds to/from padding tokens
-        # This can be done by zeroing out the diagonal
-        mask = torch.eye(num_tokens, dtype=torch.float32, device=bond_index.device)
-        adj = adj * (1.0 - mask).unsqueeze(0)
-
-        return adj.unsqueeze(-1)  # [B, L, L, 1]
+        # Padding is always located at index (0,)
+        adj[:, 0, 0] = 0
+        return adj

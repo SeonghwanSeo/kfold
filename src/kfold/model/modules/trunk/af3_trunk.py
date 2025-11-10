@@ -1,3 +1,4 @@
+import contextlib
 from dataclasses import dataclass
 
 import torch
@@ -158,9 +159,9 @@ class AF3PairformerTrunk(BaseTrunk):
         z_hat, s_hat = z_init, s_init  # just to make sure the types are correct
 
         for i in range(num_recycles + 1):
-            enable_grad = self.training and (i == num_recycles)
+            no_grad = self.training and (i < num_recycles)
 
-            with torch.set_grad_enabled(enable_grad):
+            with no_grad and torch.no_grad() or contextlib.nullcontext():
                 # Fixes an issue with unused parameters in autocast
                 if self.training and (i == num_recycles) and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
@@ -186,6 +187,7 @@ class AF3PairformerTrunk(BaseTrunk):
                     pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
                 else:
                     pairformer_module = self.pairformer_module
+
                 s, z = pairformer_module(
                     s,
                     z,

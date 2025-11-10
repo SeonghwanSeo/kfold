@@ -25,22 +25,22 @@ class BaseStructureEncoder(torch.nn.Module, ABC):
         Parameters
         ----------
         coords : torch.Tensor (float)
-            Tensor of shape (B, Nconf, Natom, 3) containing atomic structure.
+            Tensor of shape (B, Nsample, Latom, 3) containing atomic structure.
         atom_type : torch.Tensor (int)
-            Tensor of shape (B, Natom) containing atom types.
+            Tensor of shape (B, Latom) containing atom types.
         token_type : torch.Tensor (int)
-            Tensor of shape (B, Natom) containing token types.
+            Tensor of shape (B, Latom) containing token types.
         token_id : torch.Tensor (int)
-            Tensor of shape (B, Natom) containing token IDs.
+            Tensor of shape (B, Latom) containing token IDs.
         mask : torch.Tensor (bool)
-            Tensor of shape (B, Natom) containing mask for valid atoms.
+            Tensor of shape (B, Latom) containing mask for valid atoms.
 
         Returns
         -------
         s: torch.Tensor
-            Tensor of shape (B, L, c_s) containing single feature
+            Tensor of shape (B, Ltoken, c_s) containing single feature
         z: torch.Tensor
-            Tensor of shape (B, L, L, c_z) containing pair feature
+            Tensor of shape (B, Ltoken, Ltoken, c_z) containing pair feature
 
         # NOTE (seonghwanseo):
         1. If you want to use more features, you can consider to use

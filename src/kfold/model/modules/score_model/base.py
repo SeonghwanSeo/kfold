@@ -31,34 +31,35 @@ class BaseScoreModel(torch.nn.Module, ABC):
     def forward(
         self,
         x_noisy: torch.Tensor,
-        times: torch.Tensor,
+        t_hat: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         model_cache=None,
     ) -> torch.Tensor:
-        """Forward pass of embedding module.
+        """Forward pass of the AF3 diffusion module.
+        See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
 
         Parameters
         ----------
         x_noisy : torch.Tensor
-            Tensor of shape (N_samples, L, 3) containing noisy atom positions.
-        time : torch.Tensor
-            Tensor of shape (N_samples,) containing diffusion times.
+            The noisy atom positions, shape [B, N, La, 3],
+            where N is number of diffusion samples and La is number of atoms.
+        t_hat : torch.Tensor
+            The diffusion noise level (or sigmas), shape [B, N].
         f_input : FoldingInput
-            FoldingInput object containing model inputs.
+            The folding input.
         s_inputs : torch.Tensor
-            Tensor of shape (L, c_s) containing input sequence embeddings.
+            The input single representation, shape [B, Lt, c_s].
         s_trunk : torch.Tensor
-            Tensor of shape (L, c_s) containing trunk sequence embeddings.
+            The trunk single representation, shape [B, Lt, c_s].
         z_trunk : torch.Tensor
-            Tensor of shape (L, L, c_z) containing trunk pairwise embeddings.
-        times : torch.Tensor
-            Tensor of shape (N_samples,) containing diffusion times.
+            The trunk pair representation, shape [B, Lt, c_z].
+
 
         Returns
         -------
-        s : torch.Tensor
-            Tensor of shape (L, C_s) containing sequence embeddings.
+        x_out : torch.Tensor
+            The denoised atom positions, shape [B, N, La, 3].
         """
