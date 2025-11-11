@@ -3,14 +3,16 @@ global_hparam:
   channel_z: 128 # token pair channel
   channel_atom: 128 # atom single channel
   channel_atompair: 16 # atom pair channel
+
+  # distogram
   num_distogram_bins: 64
+  min_distogram_dist: 2.0
+  max_distogram_dist: 22.0
+
 
 model:
   _registry_: "main_module"
-  _class_: "KFold"
-
-  compile_trunk: false
-  compile_score_model: false
+  _class_: "AlphaFold3"
 
   input_embedder:
     _yaml_: "module/input_embedder/af3.yaml"
@@ -36,3 +38,8 @@ model:
     _yaml_: "module/distogram_head/af3.yaml"
     channel_z: ${global_hparam.channel_z}
     num_bins: ${global_hparam.num_distogram_bins}
+    min_dist: ${global_hparam.min_distogram_dist}
+    max_dist: ${global_hparam.max_distogram_dist}
+
+training:
+  _yaml_: "train/af3-structure.yaml"

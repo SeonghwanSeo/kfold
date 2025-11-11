@@ -26,17 +26,20 @@ def parse_record(record_json: dict) -> metadata.Metadata:
         pdb_id=record_json["id"], **record_json["structure"]
     )
 
+    asym_id = 1  # starts from 1
     chain_infos = []
     for cinfo in record_json["chains"]:
         cinfo_meta = metadata.ChainInfo(
             chain_type=C.chain.ChainType(cinfo["mol_type"]),
             chain_name=cinfo["chain_name"],
             num_residues=cinfo["num_residues"],
+            cluster_id=str(cinfo["cluster_id"]),
             valid=cinfo["valid"],
-            entity_id=1,  # dummy value
-            asym_id=1,  # dummy value
-            sym_id=1,  # dummy value
+            entity_id=-1,  # dummy value
+            asym_id=asym_id,
+            sym_id=-1,  # dummy value
         )
+        asym_id += 1
         chain_infos.append(cinfo_meta)
 
     interface_infos = []
@@ -46,7 +49,8 @@ def parse_record(record_json: dict) -> metadata.Metadata:
         asym_id1 = chain_infos[iinfo["chain_1"]].asym_id
         asym_id2 = chain_infos[iinfo["chain_2"]].asym_id
         interface_meta = metadata.InterfaceInfo(
-            asym_ids=[asym_id1, asym_id2],
+            asym_ids=(asym_id1, asym_id2),
+            valid=iinfo["valid"],
             is_bonded=False,
         )
         interface_infos.append(interface_meta)

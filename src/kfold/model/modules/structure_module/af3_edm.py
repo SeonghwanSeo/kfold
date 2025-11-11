@@ -182,15 +182,14 @@ class AF3SampleDiffusion(BaseStructureModule):
         if max_parallel_samples is None:
             max_parallel_samples = num_diffusion_samples
 
+        model_cache = {}
+
         # Get noise schedule
         sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device)
         gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
         sigmas, gammas = sigmas.tolist(), gammas.tolist()
 
         atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
-
-        # Model cache for efficiency
-        model_cache: dict = {}
 
         # Line 1
         init_sigma = sigmas[0]
@@ -320,17 +319,12 @@ class AF3SampleDiffusion(BaseStructureModule):
         )  # [B, N, Latom, 3]
         atom_mask = f_input.atom.pad_mask.float()  # (B, Latom)
 
-        B, N, L = holo_coords.shape[:3]
-        holo_coords = holo_coords.view(B * N, L, 3)  # (B*N, Latom, 3)
-        atom_mask = atom_mask.repeat_interleave(N, dim=0)  # (B * N, Latom)
-
         # Apply coordinate augmentation
         holo_coords = self.random_augmentation(holo_coords, atom_mask=atom_mask)
 
         # Mask out the padding atoms
         holo_coords = holo_coords * atom_mask[:, :, None]  # (B*N, Latom, 3)
 
-        holo_coords = holo_coords.view(B, N, L, 3)
         return holo_coords
 
     def interpolate(

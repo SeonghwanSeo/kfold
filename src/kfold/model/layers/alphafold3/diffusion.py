@@ -226,7 +226,6 @@ class DiffusionModule(nn.Module):
         """
 
         # B: batch size, N: number of diffusion samples
-        B, N = x_noisy.shape[:2]  # noqa
 
         # Line 1
         s, z = self.diffusion_conditioning(

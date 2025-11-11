@@ -55,6 +55,8 @@ def check_structure(key: str, verbose: bool = False):
     folding_input = parse_structure(chains, boltz_structure)
     print_(f"Parsed structure in {time.time() - st:.2f} seconds")
 
+    print(folding_input)
+
     # Check the input is the same
     atom_layout = folding_input.atom
     token_layout = folding_input.token
@@ -221,7 +223,7 @@ if __name__ == "__main__":
         test_keys = ["4u79"]
         for key in test_keys:
             check_structure(key, True)
-    else:
+    elif False:
         with open(BOLTZ_MANIFEST_PATH) as f:
             manifest = json.load(f)
 
@@ -236,6 +238,9 @@ if __name__ == "__main__":
         for key in keys:
             record = manifest[key]
             metadata = parse_record(record)
+            print(record)
+            print(metadata)
+            breakpoint()
 
             if metadata.num_chains > 50:
                 continue
@@ -250,3 +255,24 @@ if __name__ == "__main__":
                 )
             )
         print(sum(results), len(results))
+    else:
+        with open(BOLTZ_MANIFEST_PATH) as f:
+            manifest = json.load(f)
+
+        manifest = {v["id"]: v for v in manifest}
+        keys = sorted(list(manifest.keys()))
+        random.seed(42)
+        random.shuffle(keys)
+
+        keys = keys[:10000]
+
+        for key in keys:
+            record = manifest[key]
+            metadata = parse_record(record)
+            print(record)
+            print(metadata)
+
+            if metadata.num_chains > 50:
+                continue
+            safe_check_structure(key)
+            breakpoint()

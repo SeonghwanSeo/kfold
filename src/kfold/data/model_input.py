@@ -755,7 +755,7 @@ class FoldingInput:
     token: TokenLayout
     atom: AtomLayout
     bond: BondLayout
-    metadata: dict[str, Any] | None = None  # Optional metadata
+    metadata: Any = None
 
     def __post_init__(self):
         # check all layouts are on the same device
@@ -841,13 +841,14 @@ class FoldingInput:
         batched_token = TokenLayout.from_list([data.token for data in data_list])
         batched_atom = AtomLayout.from_list([data.atom for data in data_list])
         batched_bond = BondLayout.from_list([data.bond for data in data_list])
+        batched_metadata = [data.metadata for data in data_list]
 
         return cls(
             chain=batched_chain,
             token=batched_token,
             atom=batched_atom,
             bond=batched_bond,
-            metadata=None,
+            metadata=batched_metadata,
         )
 
     def to_list(self, copy: bool = False) -> list[Self]:
@@ -865,7 +866,7 @@ class FoldingInput:
                     token=token_list[b],
                     atom=atom_list[b],
                     bond=bond_list[b],
-                    metadata=None,
+                    metadata=self.metadata[b] if self.metadata else None,
                 )
             )
         return data_list
@@ -922,12 +923,6 @@ class FoldingInput:
         num_atoms = self.num_atoms
         num_bonds = len(self.bond)
 
-        # Metadata
-        if self.metadata:
-            metadata_keys = list(self.metadata.keys())
-        else:
-            metadata_keys = []
-
         if self.is_batched:
             return (
                 f"FoldingInput(\n"
@@ -936,7 +931,7 @@ class FoldingInput:
                 f"  num_tokens: {num_tokens}\n"
                 f"  num_atoms: {num_atoms}\n"
                 f"  num_bonds: {num_bonds}\n"
-                f"  metadata: {metadata_keys}\n"
+                f"  metadata: {self.metadata}\n"
                 f"  device: {device}\n"
                 f")"
             )
@@ -947,7 +942,7 @@ class FoldingInput:
                 f"  num_tokens: {num_tokens}\n"
                 f"  num_atoms: {num_atoms}\n"
                 f"  num_bonds: {num_bonds}\n"
-                f"  metadata: {metadata_keys}\n"
+                f"  metadata: {self.metadata}\n"
                 f"  device: {device}\n"
                 f")"
             )

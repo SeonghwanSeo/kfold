@@ -475,7 +475,7 @@ class AtomTransformer(nn.Module):
         c: torch.Tensor,
         p: torch.Tensor,
         mask: torch.Tensor,
-        model_cache=None,
+        model_cache: dict | None = None,
     ) -> torch.Tensor:
         """See Section 3.2 Algorithm 7 Atom Transformer
 
