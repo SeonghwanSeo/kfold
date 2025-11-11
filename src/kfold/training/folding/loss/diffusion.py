@@ -10,7 +10,6 @@ from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 from kfold.data.model_input import FoldingInput
 
 
-@torch.no_grad()
 def weighted_rigid_align(
     true_coords: torch.Tensor,
     pred_coords: torch.Tensor,
@@ -33,68 +32,72 @@ def weighted_rigid_align(
         Aligned coordinates of shape (..., L, 3)
     """
 
-    L = true_coords.shape[-2]
-    weights = weights.unsqueeze(-1)  # [..., L, 1]
-    weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1)  # [..., 1, 1]
+    device = true_coords.device
+    with torch.autocast(device.type, enabled=False):
+        L = true_coords.shape[-2]
+        weights = weights.unsqueeze(-1)  # [..., L, 1]
+        weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1)  # [..., 1, 1]
 
-    if L < 4:
-        print(
-            "Warning: The size of one of the point clouds is <= dim+1. "
-            + "`WeightedRigidAlign` cannot return a unique rotation."
+        if L < 4:
+            print(
+                "Warning: The size of one of the point clouds is <= dim+1. "
+                + "`WeightedRigidAlign` cannot return a unique rotation."
+            )
+
+        # Compute weighted centroids
+        true_centroid = (true_coords * weights).sum(
+            dim=-2, keepdim=True
+        ) / weight_sum  # [..., 1, 3]
+        pred_centroid = (pred_coords * weights).sum(
+            dim=-2, keepdim=True
+        ) / weight_sum  # [..., 1, 3]
+
+        # Center the coordinates
+        true_coords_centered = true_coords - true_centroid  # [..., L, 3]
+        pred_coords_centered = pred_coords - pred_centroid  # [..., L, 3]
+
+        # Compute the weighted covariance matrix
+        cov_matrix = einops.einsum(
+            weights * pred_coords_centered,
+            true_coords_centered,
+            "... n i, ... n j -> ... i j",
         )
 
-    # Compute weighted centroids
-    true_centroid = (true_coords * weights).sum(
-        dim=-2, keepdim=True
-    ) / weight_sum  # [..., 1, 3]
-    pred_centroid = (pred_coords * weights).sum(
-        dim=-2, keepdim=True
-    ) / weight_sum  # [..., 1, 3]
+        # Compute the SVD of the covariance matrix, required float32 for svd and det
+        original_dtype = cov_matrix.dtype
+        cov_matrix_32 = cov_matrix.to(dtype=torch.float32)
+        U, S, V = torch.linalg.svd(
+            cov_matrix_32, driver="gesvd" if cov_matrix_32.is_cuda else None
+        )
+        V = V.mH
 
-    # Center the coordinates
-    true_coords_centered = true_coords - true_centroid  # [..., L, 3]
-    pred_coords_centered = pred_coords - pred_centroid  # [..., L, 3]
+        # Catch ambiguous rotation by checking the magnitude of singular values
+        if (S.abs() <= 1e-15).any() and not (L < 4):
+            warnings.warn(
+                "Warning: Excessively low rank of "
+                + "cross-correlation between aligned point clouds. "
+                + "`WeightedRigidAlign` cannot return a unique rotation.",
+                stacklevel=2,
+            )
 
-    # Compute the weighted covariance matrix
-    cov_matrix = einops.einsum(
-        weights * pred_coords_centered,
-        true_coords_centered,
-        "... n i, ... n j -> ... i j",
-    )
-
-    # Compute the SVD of the covariance matrix, required float32 for svd and determinant
-    original_dtype = cov_matrix.dtype
-    cov_matrix_32 = cov_matrix.to(dtype=torch.float32)
-    U, S, V = torch.linalg.svd(
-        cov_matrix_32, driver="gesvd" if cov_matrix_32.is_cuda else None
-    )
-    V = V.mH
-
-    # Catch ambiguous rotation by checking the magnitude of singular values
-    if (S.abs() <= 1e-15).any() and not (L < 4):
-        warnings.warn(
-            "Warning: Excessively low rank of "
-            + "cross-correlation between aligned point clouds. "
-            + "`WeightedRigidAlign` cannot return a unique rotation.",
-            stacklevel=2,
+        # Compute the rotation matrix
+        rot_matrix = torch.einsum("... i j, ... k j -> ... i k", U, V).to(
+            dtype=torch.float32
         )
 
-    # Compute the rotation matrix
-    rot_matrix = torch.einsum("... i j, ... k j -> ... i k", U, V).to(dtype=torch.float32)
+        # Ensure proper rotation matrix with determinant 1
+        F = torch.eye(3, dtype=torch.float32, device=cov_matrix.device)  # [3, 3]
+        F = F.unsqueeze(0).expand(*rot_matrix.shape[:-2], 3, 3).clone()  # [..., 3, 3]
+        F[..., -1, -1] = torch.det(rot_matrix)  # Now broadcasts correctly
 
-    # Ensure proper rotation matrix with determinant 1
-    F = torch.eye(3, dtype=torch.float32, device=cov_matrix.device)  # [3, 3]
-    F = F.unsqueeze(0).expand(*rot_matrix.shape[:-2], 3, 3).clone()  # [..., 3, 3]
-    F[..., -1, -1] = torch.det(rot_matrix)  # Now broadcasts correctly
+        rot_matrix = einops.einsum(U, F, V, "... i j, ... j k, ... l k -> ... i l")
+        rot_matrix = rot_matrix.to(dtype=original_dtype)
 
-    rot_matrix = einops.einsum(U, F, V, "... i j, ... j k, ... l k -> ... i l")
-    rot_matrix = rot_matrix.to(dtype=original_dtype)
-
-    # Apply the rotation and translation
-    aligned_coords = (
-        einops.einsum(true_coords_centered, rot_matrix, "... n i, ... j i -> ... n j")
-        + pred_centroid
-    )
+        # Apply the rotation and translation
+        aligned_coords = (
+            einops.einsum(true_coords_centered, rot_matrix, "... n i, ... j i -> ... n j")
+            + pred_centroid
+        )
     return aligned_coords
 
 
@@ -145,7 +148,7 @@ class WeightedMSELoss(torch.nn.Module):
 
         # See Section 3.7.1 Equation 2
         if align or self.align:
-            with torch.no_grad(), torch.autocast("cuda", enabled=False):
+            with torch.no_grad():
                 x_true = weighted_rigid_align(
                     true_coords=x_true.float(),  # [B, N, L, 3]
                     pred_coords=x_pred.float(),  # [B, N, L, 3]
