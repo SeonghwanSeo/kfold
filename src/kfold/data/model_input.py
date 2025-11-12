@@ -306,6 +306,7 @@ class TokenLayout(TensorLayout):
         # value: PAD_IDX means padding
         pad_values = {
             "token_index": 0,
+            "org_token_index": 0,
             "res_type": 0,
             "chain_type": PAD_IDX,
             "entity_id": 0,
@@ -315,6 +316,8 @@ class TokenLayout(TensorLayout):
             "disto_index": PAD_IDX,
             "center_index": PAD_IDX,
             "frames_index": PAD_IDX,
+            "disto_coords": 0.0,
+            "center_coords": 0.0,
             "resolved_mask": False,
             "disto_mask": False,
             "frames_mask": False,
@@ -440,11 +443,12 @@ class AtomLayout(TensorLayout):
 
         # value: PAD_IDX means padding
         pad_values = {
-            "ref_atom_name_chars": 63,  # max value for atom_name encoding
-            "ref_element": 127,  # max value for element encoding
+            "ref_atom_name_chars": 0.0,  # max value for atom_name encoding
+            "ref_element": 0.0,  # max value for element encoding
             "ref_charge": 0.0,
             "ref_pos": 0.0,
-            "ref_space_uid": PAD_IDX,
+            "ref_space_uid": -1,
+            "ref_token_index": PAD_IDX,
             "token_index": 0,
             "apo_coords": 0.0,
             "resolved_mask": False,
@@ -550,8 +554,8 @@ class BondLayout(TensorLayout):
             "atom_index": 0,
             "bond_type": 0,
             "pad_mask": False,
-            "is_ligand_ligand_bond": False,
-            "is_polymer_ligand_bond": False,
+            "is_ligand_ligand": False,
+            "is_polymer_ligand": False,
         }
 
         pad_size = total_length - L

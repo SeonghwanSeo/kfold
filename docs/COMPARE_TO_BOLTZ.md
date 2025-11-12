@@ -101,8 +101,8 @@ token_index = bond_layout.token_index  # (Ntoken,)
 | - | `asym_id` | `(Nbond, 2)` | Index of connecting chains |
 | - | `atom_index` | `(Nbond, 2)` | Index of connecting atoms |
 | - | `bond_type` | `(Nbond,)` | Bond type (single, double, triple, aromatic, covalent) |
-| - | `is_polymer_ligand_bond` (\*3) | `(Nbond,)` | Whether the bond is between polymer and ligand |
-| - | `is_ligand_ligand_bond` | `(Nbond,)` | Whether the bond is between ligands |
+| - | `is_polymer_ligand` (\*3) | `(Nbond,)` | Whether the bond is between polymer and ligand |
+| - | `is_ligand_ligand` | `(Nbond,)` | Whether the bond is between ligands |
 | - | `pad_mask` | `(Nbond,)` | Mask for valid bonds |
 
 * \*3: Used to compute bond-loss in AlphaFold3, while Boltz does not use this loss.

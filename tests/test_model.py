@@ -4,6 +4,7 @@ import torch
 from omegaconf import OmegaConf
 
 from kfold.config import load_config
+from kfold.data.featurize import featurize_structure
 from kfold.data.model_input import FoldingInput
 from kfold.model.models.kfold import KFold
 from kfold.training.folding.loss.diffusion import (
@@ -11,7 +12,7 @@ from kfold.training.folding.loss.diffusion import (
     SmoothLDDTLoss,
     WeightedMSELoss,
 )
-from kfold.utils.boltz.process import parse_structure
+from kfold.utils.boltz.process import tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 
 TEST_CONFIG_PATH = Path("./configs/af3-mini.yaml")
@@ -47,8 +48,7 @@ if __name__ == "__main__":
 
     dummy_data_path = BOLTZ_STRUCTURE_DIR / "10gs.npz"
     boltz_structure = BoltzStructure.load(dummy_data_path)
-    chains = boltz_structure.chains[boltz_structure.mask]
-    folding_input = parse_structure(chains, boltz_structure)
+    folding_input = featurize_structure(tokenize_structure(boltz_structure))
     print(folding_input)
 
     # pad
