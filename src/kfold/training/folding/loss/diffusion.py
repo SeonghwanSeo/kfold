@@ -226,7 +226,7 @@ class BondLoss(torch.nn.Module):
         """
         # Return 0 if no polymer-ligand bonds exist
         bond_index = f_input.bond.atom_index  # [B, Nbond, 2]
-        is_polymer_ligand_bond = f_input.bond.is_polymer_ligand_bond  # [B, Nbond]
+        is_polymer_ligand_bond = f_input.bond.is_polymer_ligand  # [B, Nbond]
 
         if not is_polymer_ligand_bond.any():
             return torch.zeros(x_pred.shape[:2], device=x_pred.device)  # [B, N]

@@ -323,7 +323,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         holo_coords = self.random_augmentation(holo_coords, atom_mask=atom_mask)
 
         # Mask out the padding atoms
-        holo_coords = holo_coords * atom_mask[:, :, None]  # (B*N, Latom, 3)
+        holo_coords = holo_coords * atom_mask[:, None, :, None]  # (B, N, Latom, 3)
 
         return holo_coords
 

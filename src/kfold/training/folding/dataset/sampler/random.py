@@ -1,8 +1,10 @@
 # Started from https://github.com/jwohlwend/boltz
+from dataclasses import dataclass
+
 import numpy as np
 
 from kfold.data.metadata import Metadata
-from kfold.utils.registry import DATA_SAMPLER
+from kfold.utils.registry import DATA_SAMPLER, BaseConfig
 
 from .base import BaseSampler, Sample
 
@@ -15,7 +17,8 @@ class RandomSampler(BaseSampler):
     complex level or the chain level, based on the configuration.
     """
 
-    class Config:
+    @dataclass
+    class Config(BaseConfig):
         """Configuration for RandomSampler.
 
         Parameters

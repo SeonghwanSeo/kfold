@@ -52,7 +52,7 @@ class DistogramLoss(torch.nn.Module):
         # Compute the distogram loss
         disto_loss = torch.nn.functional.cross_entropy(
             logits.view(B * L * L, self.num_bins),
-            target_distogram.view(),
+            target_distogram.view(B * L * L),
             reduction="none",
         ).view(B, L, L)
 

@@ -159,7 +159,7 @@ class AF3PairformerTrunk(BaseTrunk):
         z_hat, s_hat = z_init, s_init  # just to make sure the types are correct
 
         for i in range(1, num_cycles + 1):
-            no_grad = self.training and (i == num_cycles)
+            no_grad = self.training and (i < num_cycles)
 
             with no_grad and torch.no_grad() or contextlib.nullcontext():
                 # Fixes an issue with unused parameters in autocast

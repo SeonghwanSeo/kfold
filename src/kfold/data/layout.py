@@ -84,8 +84,7 @@ class TensorObj(ArrayObj[torch.Tensor]):
         for tensor in self.to_dict().values():
             if isinstance(tensor, torch.Tensor):
                 return tensor.device
-        else:
-            raise ValueError("No tensor found in the dataclass.")
+        raise ValueError("No tensor found in the dataclass.")
 
     def to(self, device: str | torch.device) -> Self:
         fields = {

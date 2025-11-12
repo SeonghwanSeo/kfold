@@ -241,8 +241,8 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
                 atom_info["label_coords"].append(residue_atoms["coords"])
 
                 # === Add mapping === #
-                for i, atom_index in enumerate(range(atom_start, atom_end)):
-                    atom_index_map[atom_index] = (global_token_index, i)
+                for j, atom_index in enumerate(range(atom_start, atom_end)):
+                    atom_index_map[atom_index] = (global_token_index, j)
 
                 # === Update offset === #
                 num_tokens_in_chain += 1
