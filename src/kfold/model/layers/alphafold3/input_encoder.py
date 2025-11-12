@@ -81,7 +81,7 @@ class InputFeatureEmbedder(nn.Module):
         a, *_ = self.encoder(f_input)  # [B, Lt, c_s]
 
         # Concatenate additional token features
-        res_type = f_input.token.res_type  # [B, Lt,]
+        res_type = f_input.token.res_type  # [B, Lt, 32]
         if False:
             # TODO: add MSA features later
             profile = f_input.msa.profile  # [B, Lt,]
@@ -92,7 +92,7 @@ class InputFeatureEmbedder(nn.Module):
         s = torch.cat(
             [
                 a,
-                F.one_hot(res_type, self.num_res_types).float(),
+                res_type,
                 F.one_hot(profile, self.num_profile_bins).float(),
                 deletion_mean.unsqueeze(-1),
             ],

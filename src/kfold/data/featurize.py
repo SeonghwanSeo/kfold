@@ -80,6 +80,10 @@ def featurize_structure(
     # ====== Compute additional features ====== #
 
     # === Token-level features ===
+    # Make one-hot vector for residue types
+    residue_one_hot = np.eye(32, dtype=np.float32)
+    token_dict["res_type"] = residue_one_hot[token_dict["res_type"]]
+
     # NOTE: Token index should be remapped due cropping
     token_dict["org_token_index"] = token_dict["token_index"]
     token_dict["token_index"] = np.arange(num_tokens, dtype=np.long)
@@ -93,7 +97,7 @@ def featurize_structure(
     for tidx in range(num_tokens):
         is_standard = token_dict["is_standard"][tidx]
         if is_standard:
-            res_name = residue_index_to_name[token_dict["res_type"][tidx]]
+            res_name = residue_index_to_name[token_data.res_type[tidx]]
             num_atoms_in_res = token_dict["num_atoms"][tidx]
             if res_name is not C.residue.ResidueName.UNK and (num_atoms_in_res >= 3):
                 restype_atoms = C.atom.RESIDUE_ATOMS[res_name]
@@ -124,6 +128,23 @@ def featurize_structure(
     atom_dict["label_coords"] = utils.centering(
         atom_dict["label_coords"], atom_dict["resolved_mask"]
     )
+
+    # Make one-hot vector for atom types
+    ref_element_one_hot = np.eye(128, dtype=np.float32)
+    atom_dict["ref_element"] = ref_element_one_hot[atom_dict["ref_element"]]
+    ref_atom_name_one_hot = np.eye(64, dtype=np.float32)
+    atom_dict["ref_atom_name_chars"] = ref_atom_name_one_hot[
+        atom_dict["ref_atom_name_chars"]
+    ]
+
+    # add disto/center coords
+    # HACK: we assume there is only one holo coordinate set.
+    token_dict["disto_coords"] = atom_dict["label_coords"][:, 0][
+        token_dict["disto_index"]
+    ]
+    token_dict["center_coords"] = atom_dict["label_coords"][:, 0][
+        token_dict["center_index"]
+    ]
 
     # Add ref space uid info
     # See section 2.8 Table 5 of AlphaFold3 paper

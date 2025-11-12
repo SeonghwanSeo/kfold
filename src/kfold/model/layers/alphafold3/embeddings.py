@@ -149,7 +149,7 @@ class AtomEmbedding(nn.Module):
         self.embed_atom_pos = LinearNoBias(3, channel_atom)
         self.embed_atom_charge = LinearNoBias(1, channel_atom)
         self.embed_atom_mask = LinearNoBias(1, channel_atom)
-        self.embed_atom_element = nn.Embedding(self.num_atom_elements, channel_atom)
+        self.embed_atom_element = LinearNoBias(self.num_atom_elements, channel_atom)
         self.embed_atom_name_chars = LinearNoBias(
             4 * self.num_atom_name_chars, channel_atom
         )
@@ -168,10 +168,10 @@ class AtomEmbedding(nn.Module):
         ref_atom_name_chars = atom_layout.ref_atom_name_chars
 
         atom_feats = self.embed_atom_pos(ref_pos)
-        atom_feats = atom_feats + self.embed_atom_charge(ref_charge.float().unsqueeze(-1))
+        atom_feats = atom_feats + self.embed_atom_charge(ref_charge.unsqueeze(-1))
         atom_feats = atom_feats + self.embed_atom_mask(ref_mask.float().unsqueeze(-1))
         atom_feats = atom_feats + self.embed_atom_element(ref_element)
         atom_feats = atom_feats + self.embed_atom_name_chars(
-            F.one_hot(ref_atom_name_chars, self.num_atom_name_chars).flatten(-2).float()
+            ref_atom_name_chars.flatten(-2)
         )
         return atom_feats

@@ -152,8 +152,9 @@ class TokenLayout(TensorLayout):
         Token indices of shape [L,], mapping each token to its position.
     org_token_index: torch.Tensor (long)
         Original token indices of shape [L,], before cropping.
-    res_type: torch.Tensor (long)
-        Sequence tokens of shape [L,] (aatype, atom, ...)
+    res_type: torch.Tensor (float32)
+        Sequence tokens of shape [L, 32] (aatype, atom, ...)
+        One-hot vector
     chain_type: torch.Tensor (long)
         Chain types of shape [L,], indicating the type of each token.
     residue_index: torch.Tensor (long)
@@ -164,11 +165,15 @@ class TokenLayout(TensorLayout):
             6-sized ligand:
                 residue_index: [0, 0, 0, 0, 0, 0]
     disto_index: torch.Tensor (long)
-        Distortion indices of shape [L,], used for distortion handling.
+        Representative atom indices of shape [L,], Cβ
     center_index: torch.Tensor (long)
-        Center indices of shape [L,], used for centering operations.
+        Center indices of shape [L,], Cα
     frames_index: torch.Tensor (long)
-        Frame indices of shape [L, 3], used for frame transformations.
+        Frame indices of shape [L, 3].
+    disto_coords: torch.Tensor (float32)
+        Representative atom center coordinates of shape [L, 3].
+    center_coords: torch.Tensor (float32)
+        Center coordinates of shape [L, 3].
     disto_mask: torch.Tensor (bool)
         Mask tensor of shape [L,], indicating disto atom of tokens to be resolved.
     resolved_mask: torch.Tensor (bool)
@@ -183,7 +188,7 @@ class TokenLayout(TensorLayout):
 
     token_index: torch.Tensor  # [L,], long
     org_token_index: torch.Tensor  # [L,], long
-    res_type: torch.Tensor  # [L,], long
+    res_type: torch.Tensor  # [L, 32], float32
     chain_type: torch.Tensor  # [L,], long
     entity_id: torch.Tensor  # [L,], long
     asym_id: torch.Tensor  # [L,], long, same to sequence_id
@@ -192,6 +197,8 @@ class TokenLayout(TensorLayout):
     disto_index: torch.Tensor  # [L,], long
     center_index: torch.Tensor  # [L,], long
     frames_index: torch.Tensor  # [L, 3], long
+    disto_coords: torch.Tensor  # [L, 3], long
+    center_coords: torch.Tensor  # [L, 3], long
     resolved_mask: torch.Tensor  # [L,], bool
     disto_mask: torch.Tensor  # [L,], bool
     frames_mask: torch.Tensor  # [L,], bool
@@ -218,7 +225,9 @@ class TokenLayout(TensorLayout):
             dtype=torch.long,
             shape=(*shape,),
         )
-        check_tensor(self.res_type, name="res_type", dtype=torch.long, shape=(*shape,))
+        check_tensor(
+            self.res_type, name="res_type", dtype=torch.float32, shape=(*shape, 32)
+        )
         check_tensor(
             self.chain_type, name="chain_type", dtype=torch.long, shape=(*shape,)
         )
@@ -236,6 +245,15 @@ class TokenLayout(TensorLayout):
         )
         check_tensor(
             self.frames_index, name="frames_index", dtype=torch.long, shape=(*shape, 3)
+        )
+        check_tensor(
+            self.disto_coords, name="disto_coords", dtype=torch.float32, shape=(*shape, 3)
+        )
+        check_tensor(
+            self.center_coords,
+            name="center_coords",
+            dtype=torch.float32,
+            shape=(*shape, 3),
         )
         check_tensor(
             self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(*shape,)
@@ -324,12 +342,11 @@ class AtomLayout(TensorLayout):
 
     Attributes
     ----------
-    ref_atom_name_chars: torch.Tensor (long)
-        Encoded atom name of shape [Natom, 4].
-        To be encoded as one-hot vector of size 64.
-    ref_element: torch.Tensor (long)
-        One-hot encoded atomic numbers of shape [Natom,].
-        To be encoded as one-hot vector of size 128.
+    ref_atom_name_chars: torch.Tensor (float32)
+        Encoded atom name of shape [Natom, 4, 64].
+        One-hot vector
+    ref_element: torch.Tensor (float32)
+        One-hot encoded atomic numbers of shape [Natom, 128].
     ref_charge: torch.Tensor (float32)
         Formal charges of shape [Natom,].
     ref_pos: torch.Tensor (float32)
@@ -355,8 +372,8 @@ class AtomLayout(TensorLayout):
         for inference.
     """
 
-    ref_atom_name_chars: torch.Tensor  # [Natom, 4], long, to be encoded one-hot (64-dim)
-    ref_element: torch.Tensor  # [Natom], long, to be encoded one-hot (128-dim)
+    ref_atom_name_chars: torch.Tensor  # [Natom, 4, 64], float32
+    ref_element: torch.Tensor  # [Natom, 128], float32
     ref_charge: torch.Tensor  # [Natom,], float32
     ref_pos: torch.Tensor  # [Natom, Nholo, 3], float32
     ref_space_uid: torch.Tensor  # [Natom,], long
@@ -380,11 +397,11 @@ class AtomLayout(TensorLayout):
         check_tensor(
             self.ref_atom_name_chars,
             name="ref_atom_name_chars",
-            dtype=torch.long,
-            shape=(*shape, 4),
+            dtype=torch.float32,
+            shape=(*shape, 4, 64),
         )
         check_tensor(
-            self.ref_element, name="ref_element", dtype=torch.long, shape=(*shape,)
+            self.ref_element, name="ref_element", dtype=torch.float32, shape=(*shape, 128)
         )
         check_tensor(
             self.ref_charge, name="ref_charge", dtype=torch.float32, shape=(*shape,)

@@ -22,6 +22,9 @@ DNA_RESIDUES: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
 
 
 class ResidueName(enum.Enum):
+    # gap
+    GAP = "-"  # Maybe unused
+
     # protein
     ALA = "ALA"
     ARG = "ARG"
@@ -59,9 +62,6 @@ class ResidueName(enum.Enum):
     DT = "DT"
     DN = "DN"
 
-    # gap
-    GAP = "GAP"  # Maybe unused
-
     @property
     def index(self) -> int:
         """Get the index of the residue in the enum."""
@@ -70,6 +70,9 @@ class ResidueName(enum.Enum):
 
 residue_name_to_index: dict[ResidueName, int] = {
     atom: idx for idx, atom in enumerate(ResidueName)
+}
+residue_index_to_name: dict[int, ResidueName] = {
+    idx: atom for idx, atom in enumerate(ResidueName)
 }
 
 

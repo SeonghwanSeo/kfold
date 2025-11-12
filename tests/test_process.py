@@ -152,7 +152,8 @@ def check_structure(key: str, verbose: bool = False):
         total_keys.remove(key)
 
     for key in ["res_type"]:
-        v1 = getattr(token_layout, key)
+        # NOTE: boltz use [PAD] token (32 types + 1)
+        v1 = getattr(token_layout, key).argmax(-1) + 1
         v2 = boltz_featurized[key].argmax(-1)
         check_eq(v1, v2, key)
         total_keys.remove(key)
@@ -192,10 +193,10 @@ def check_structure(key: str, verbose: bool = False):
     )
     total_keys.remove("token_disto_mask")
 
-    disto_center1 = atom_layout.label_coords[token_layout.disto_index].squeeze(1)
-    disto_center2 = boltz_featurized["disto_center"]
-    disto_center1 = disto_center1[boltz_featurized["token_disto_mask"].bool()]
-    disto_center2 = disto_center2[boltz_featurized["token_disto_mask"].bool()]
+    disto_center1 = token_layout.disto_coords[token_layout.disto_mask]
+    disto_center2 = boltz_featurized["disto_center"][
+        boltz_featurized["token_disto_mask"].bool()
+    ]
     if len(disto_center1) > 0:
         shift = disto_center2[0] - disto_center1[0]
         disto_center1 = disto_center1 + shift  # align first point
@@ -230,16 +231,16 @@ def check_structure(key: str, verbose: bool = False):
     # ========================================= #
 
     # === Test atom features === #
-    for key in ["ref_charge", "ref_pos", "ref_space_uid"]:
+    for key in [
+        "ref_charge",
+        "ref_pos",
+        "ref_space_uid",
+        "ref_atom_name_chars",
+        "ref_element",
+    ]:
         v1 = getattr(atom_layout, key)
         v2 = boltz_featurized[key]
         check_eq(v1, v2, key)
-        total_keys.remove(key)
-
-    for key in ["ref_atom_name_chars", "ref_element"]:
-        v1 = getattr(atom_layout, key)
-        v2 = boltz_featurized[key]
-        check_eq(v1, v2.argmax(-1), key)
         total_keys.remove(key)
 
     # check remaining atom features
