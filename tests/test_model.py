@@ -4,13 +4,18 @@ import torch
 from omegaconf import OmegaConf
 
 from kfold.config import load_config
+from kfold.data.featurize import featurize_structure
 from kfold.data.model_input import FoldingInput
 from kfold.model.models.kfold import KFold
-from kfold.training.kfold.loss.diffusion import BondLoss, SmoothLDDTLoss, WeightedMSELoss
-from kfold.utils.boltz.process import parse_structure
+from kfold.training.folding.loss.diffusion import (
+    BondLoss,
+    SmoothLDDTLoss,
+    WeightedMSELoss,
+)
+from kfold.utils.boltz.process import tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 
-TEST_CONFIG_PATH = Path("./configs/af3.yaml")
+TEST_CONFIG_PATH = Path("./configs/af3-mini.yaml")
 
 DEVICE = torch.device("cuda")
 PRECISION = torch.bfloat16
@@ -21,12 +26,7 @@ BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
 BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
 if __name__ == "__main__":
-    torch.set_float32_matmul_precision("high")
     global_config = load_config(TEST_CONFIG_PATH)
-
-    # debug purpose: skip compile
-    print("Disable trunk compilation for testing")
-    # global_config.model.compile_score_model = False
 
     # print config
     print(OmegaConf.to_yaml(global_config))
@@ -48,8 +48,7 @@ if __name__ == "__main__":
 
     dummy_data_path = BOLTZ_STRUCTURE_DIR / "10gs.npz"
     boltz_structure = BoltzStructure.load(dummy_data_path)
-    chains = boltz_structure.chains[boltz_structure.mask]
-    folding_input = parse_structure(chains, boltz_structure)
+    folding_input = featurize_structure(tokenize_structure(boltz_structure))
     print(folding_input)
 
     # pad
@@ -72,16 +71,20 @@ if __name__ == "__main__":
     with torch.autocast(device_type=DEVICE.type, dtype=PRECISION):
         forward_out = model.forward(
             f_input=folding_input,
-            num_recycles=4,
+            num_cycles=4,
             num_steps=200,
+            num_diffusion_samples=1,
             diffusion_batch_size=32,
+            sample_structures=False,
+            train_structure_module=True,
+            train_confidence_module=False,
         )
-        breakpoint()
 
-        t_hat = forward_out["t_hat"]
-        x_pred = forward_out["denoised_atom_coords"]
-        x_true = forward_out["label_atom_coords"]
-        diffusion_loss_weights = forward_out["diffusion_loss_weights"]
+        diffusion_out = forward_out["diffusion"]
+        t_hat = diffusion_out["t_hat"]
+        x_pred = diffusion_out["denoised_atom_coords"]
+        x_true = diffusion_out["true_atom_coords"]
+        diffusion_loss_weights = diffusion_out["loss_weights"]
 
         # Calculate loss
         l_mse = mse_loss(

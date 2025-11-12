@@ -186,6 +186,7 @@ class BaseStructureModule(ABC):
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         diffusion_batch_size: int = 1,
+        model_cache: dict | None = None,
     ) -> dict[str, torch.Tensor]:
         """Perform a single training step for the structure module.
         See Section 5 of EDM paper.
@@ -194,17 +195,18 @@ class BaseStructureModule(ABC):
         num_diffusion_samples = diffusion_batch_size  # =N
         mask = f_input.atom.pad_mask  # [B, La]
 
-        t_hat = self.sample_noise_level(
-            batch_size, num_diffusion_samples, device=f_input.device
-        )  # [B, N]
+        with torch.no_grad():
+            t_hat = self.sample_noise_level(
+                batch_size, num_diffusion_samples, device=f_input.device
+            )  # [B, N]
 
-        # sample x0 from prior
-        prior_coords = self.sample_prior(f_input, num_diffusion_samples)
+            # sample x0 from prior
+            prior_coords = self.sample_prior(f_input, num_diffusion_samples)
 
-        # sample xt from label (In our case, there is only one holo structure per input)
-        holo_coords = self.sample_holo(f_input, num_diffusion_samples)
+            # sample xt from label (Currently, there is only one holo structure per input)
+            holo_coords = self.sample_holo(f_input, num_diffusion_samples)
 
-        noised_atom_coords = self.interpolate(prior_coords, holo_coords, t_hat, mask)
+            noised_atom_coords = self.interpolate(prior_coords, holo_coords, t_hat, mask)
 
         denoised_atom_coords = self.forward_model(
             x_noisy=noised_atom_coords,  # [B, N, La, 3]
@@ -213,17 +215,18 @@ class BaseStructureModule(ABC):
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
+            model_cache=model_cache,
         )  # [B, N, La, 3]
 
         loss_weights = self.compute_loss_weights(t_hat)  # [B, N]
 
         return {
             "t_hat": t_hat,
-            "diffusion_loss_weights": loss_weights,
+            "loss_weights": loss_weights,
             "prior_atom_coords": prior_coords,
             "noised_atom_coords": noised_atom_coords,
             "denoised_atom_coords": denoised_atom_coords,
-            "label_atom_coords": holo_coords,
+            "true_atom_coords": holo_coords,
         }
 
     @abstractmethod

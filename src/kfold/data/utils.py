@@ -3,7 +3,7 @@ from typing import TypeVar
 import numpy as np
 import torch
 
-from kfold.data import model_input
+from . import model_input
 
 ArrayT = TypeVar("ArrayT", np.ndarray, torch.Tensor)
 

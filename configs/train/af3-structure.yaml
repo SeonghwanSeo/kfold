@@ -1,0 +1,64 @@
+# Configuration for K-Fold structure module training
+
+train_structure_module: true
+train_confidence_module: false
+
+# Exponential Moving Average (EMA)
+use_ema: true
+
+train:
+  # Training step hyperparameters
+  num_cycles: 4
+  # For structure module training
+  diffusion_batch_size: 48
+  # For confidence module training
+  num_steps: 20  # Mini-diffusion rollout
+  num_diffusion_samples: 2  # Number of diffusion samples for confidence training
+
+validation:
+  # Validation step hyperparameters
+  num_cycles: 4
+  num_steps: 20
+  num_diffusion_samples: 5
+
+# TODO: add optimizer and lr scheduling
+opt: {}
+
+loss:
+  weights:
+    # global loss weights
+    distogram: 3e-2
+    diffusion: 4.0
+    confidence: 1e-4
+    # diffusion loss weights
+    smooth_lddt: 1. # 0 for fine-tuning (See Section 5.2 for the AF3 paper)
+    bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
+    # confidence loss weights
+    pae: 0.0 # 1 for final stage training
+
+  # Distogram loss
+  distogram_loss:
+    num_bins: 64
+    min_dist: 2.0
+    max_dist: 22.0
+
+  # Diffusion loss
+  diffusion_loss:
+    # Weighted MSE Loss
+    mse_loss:
+      weight_protein: 1.0
+      weight_dna: 5.0
+      weight_rna: 5.0
+      weight_ligand: 10.0
+
+    # Bond Loss
+    bond_loss: {}
+
+    # Smooth LDDT Loss
+    smooth_lddt_loss:
+      cutoff: 15.0
+      cutoff_nucleic_acid: 30.0
+
+  # Confidence loss
+  # TODO
+  confidence_loss: {}

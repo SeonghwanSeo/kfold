@@ -39,6 +39,7 @@ class ChainInfo:
     asym_id: int  # starts from 1
     sym_id: int  # starts from 1
     num_residues: int
+    cluster_id: str
     valid: bool = True
 
 
@@ -46,9 +47,10 @@ class ChainInfo:
 class InterfaceInfo:
     # NOTE(seonghwanseo): I change (asym_id1, asym_id2) to {asym_id} to
     # support multi-chain interaces (e.g., Protac)
-    asym_ids: list[int]
+    asym_ids: tuple[int, ...]
     # covalent bond interface. If True, the chains must be sampled together.
     is_bonded: bool = False
+    valid: bool = True
 
     def __post_init__(self):
         assert len(self.asym_ids) >= 2, "Interface must involve at least two chains."

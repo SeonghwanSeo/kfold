@@ -202,6 +202,7 @@ class Registry:
 DATAMODULE = Registry("datamodule")
 DATASET = Registry("dataset")
 DATA_FILTER = Registry("data_filter")
+DATA_SAMPLER = Registry("data_sampler")
 
 # K-Fold module
 MAIN_MODULE = Registry("main_module")
