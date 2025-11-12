@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from einops import rearrange
 from einops.layers.torch import Rearrange
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
@@ -278,19 +279,31 @@ class DiffusionTransformer(nn.Module):
         for i, block in enumerate(self.blocks):
             if model_cache is not None:
                 prefix_cache = "layer_" + str(i)
-                if prefix_cache not in model_cache:
-                    model_cache[prefix_cache] = {}
-                block_cache = model_cache[prefix_cache]
+                block_cache = model_cache.setdefault(prefix_cache, {})
             else:
                 block_cache = None
-            a = block(
-                a,
-                s,
-                z,
-                attn_mask=attn_mask,
-                local_attn_indexer=local_attn_indexer,
-                block_cache=block_cache,
-            )
+
+            if self.activation_checkpointing and self.training:
+                a = torch.utils.checkpoint.checkpoint(
+                    block,
+                    a,
+                    s,
+                    z,
+                    attn_mask,
+                    local_attn_indexer,
+                    use_reentrant=False,
+                )
+
+            else:
+                a = block(
+                    a,
+                    s,
+                    z,
+                    attn_mask=attn_mask,
+                    local_attn_indexer=local_attn_indexer,
+                    block_cache=block_cache,
+                )
+
         return a
 
 
@@ -475,7 +488,7 @@ class AtomTransformer(nn.Module):
         c: torch.Tensor,
         p: torch.Tensor,
         mask: torch.Tensor,
-        model_cache=None,
+        model_cache: dict | None = None,
     ) -> torch.Tensor:
         """See Section 3.2 Algorithm 7 Atom Transformer
 

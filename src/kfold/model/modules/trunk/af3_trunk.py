@@ -1,6 +1,3 @@
-import contextlib
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 
@@ -20,7 +17,6 @@ class AF3PairformerTrunk(BaseTrunk):
     See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
     """
 
-    @dataclass
     class Config(BaseTrunk.Config):
         """Configuration for the Pairformer module.
 
@@ -121,7 +117,7 @@ class AF3PairformerTrunk(BaseTrunk):
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         f_input: FoldingInput,
-        num_recycles: int,
+        num_cycles: int,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -137,7 +133,7 @@ class AF3PairformerTrunk(BaseTrunk):
             Tensor of shape (B, L, L, C_s) containing initial pair representation
         f_input : FoldingInput
             The input features.
-        num_recycles : int
+        num_cycles : int
             The number of recycling steps.
 
         Returns
@@ -158,12 +154,11 @@ class AF3PairformerTrunk(BaseTrunk):
         # Line 6, z_hat, s_hat = 0, 0
         z_hat, s_hat = z_init, s_init  # just to make sure the types are correct
 
-        for i in range(num_recycles + 1):
-            no_grad = self.training and (i < num_recycles)
+        for i in range(1, num_cycles + 1):
+            no_grad = self.training and (i < num_cycles)
 
-            with no_grad and torch.no_grad() or contextlib.nullcontext():
-                # Fixes an issue with unused parameters in autocast
-                if self.training and (i == num_recycles) and torch.is_autocast_enabled():
+            with torch.set_grad_enabled(not no_grad):
+                if (not no_grad) and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Line 8

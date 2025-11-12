@@ -1,20 +1,27 @@
+import dataclasses
+import typing
 from collections.abc import Callable
-from dataclasses import dataclass
-from functools import wraps
 from typing import Any, TypeVar
-
-from omegaconf import OmegaConf
 
 C = TypeVar("C", bound=type[Any])
 ConfigT = TypeVar("ConfigT", bound="BaseConfig")
 
 
-@dataclass
-class BaseConfig:
-    """Base configuration class for registry objects."""
+@typing.dataclass_transform(kw_only_default=True)
+class DataclassMeta(type):
+    """Metaclass that automatically applies @dataclass decorator to subclasses."""
 
-    _registry_: str
-    _class_: str
+    def __new__(mcs, name, bases, namespace, **kwargs):
+        cls = super().__new__(mcs, name, bases, namespace, **kwargs)
+        cls = dataclasses.dataclass(kw_only=True)(cls)
+        return cls
+
+
+class BaseConfig(metaclass=DataclassMeta):
+    """Base configuration class for registry modules."""
+
+    _registry_: str = ""  # placeholder for OmegaConf.merge
+    _class_: str = ""  # placeholder for OmegaConf.merge
 
 
 class Registry:
@@ -147,7 +154,7 @@ class Registry:
         )
         self._module_dict[name] = module
 
-        if hasattr(module, "Config"):
+        if config_cls is None and hasattr(module, "Config"):
             """If inner Config class exists, wrap the __init__ method to accept
             a config object and merge it with the default configuration.
             e.g.:
@@ -170,17 +177,9 @@ class Registry:
             # store the config class in the registry
             self.__config_dict__[name] = config_cls
 
-            # wrap the __init__ method
-            original_init = module.__init__
-
-            @wraps(original_init)
-            def wrapped_init(instance, config: Any, *args, **kwargs):
-                # create a default configuration from the provided config dataclass
-                merged_config = OmegaConf.merge(config_cls, config)
-                merged_config = OmegaConf.structured(merged_config)
-                return original_init(instance, merged_config, *args, **kwargs)
-
-            module.__init__ = wrapped_init
+            # Set registry and class name in the config class
+            config_cls._registry_ = self.name
+            config_cls._class_ = name
 
         return module
 
@@ -202,9 +201,8 @@ class Registry:
 DATAMODULE = Registry("datamodule")
 DATASET = Registry("dataset")
 DATA_FILTER = Registry("data_filter")
-
-# K-Fold module
-MAIN_MODULE = Registry("main_module")
+DATA_SAMPLER = Registry("data_sampler")
+DATA_CROPPER = Registry("data_cropper")
 
 # Input encoder
 SEQUENCE_ENCODER = Registry("sequence_encoder")

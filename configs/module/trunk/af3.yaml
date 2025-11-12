@@ -12,4 +12,3 @@ use_template: False
 activation_checkpointing: True
 offload_to_cpu: False
 use_kernels: False
-tri_attn_chunk_threshold: 384

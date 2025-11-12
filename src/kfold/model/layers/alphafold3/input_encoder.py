@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 import kfold.constants as C
 from kfold.data.model_input import FoldingInput
@@ -56,7 +55,8 @@ class InputFeatureEmbedder(nn.Module):
         )
 
         # residue info
-        self.num_res_types: int = C.NUM_RES_TYPES
+        self.num_res_types: int = C.NUM_RES_TYPES  # = 32
+        assert self.num_res_types == 32, "Expected num_res_types to be 32."
         self.num_profile_bins: int = 32
 
         # out projection
@@ -81,20 +81,24 @@ class InputFeatureEmbedder(nn.Module):
         a, *_ = self.encoder(f_input)  # [B, Lt, c_s]
 
         # Concatenate additional token features
-        res_type = f_input.token.res_type  # [B, Lt,]
+        res_type = f_input.token.res_type  # [B, Lt, 32]
         if False:
             # TODO: add MSA features later
             profile = f_input.msa.profile  # [B, Lt,]
             deletion_mean = f_input.msa.deletion_mean  # [B, Lt,]
         else:
-            profile = torch.zeros_like(res_type)
-            deletion_mean = torch.zeros_like(res_type).float()  # [B, Lt,]
+            profile = torch.zeros(
+                (*res_type.shape[:-1], 32), device=res_type.device
+            )  # [B, Lt, 32]
+            deletion_mean = torch.zeros(
+                (*res_type.shape[:-1], 1), device=res_type.device
+            )  # [B, Lt, 32]
         s = torch.cat(
             [
                 a,
-                F.one_hot(res_type, self.num_res_types).float(),
-                F.one_hot(profile, self.num_profile_bins).float(),
-                deletion_mean.unsqueeze(-1),
+                res_type,
+                profile,
+                deletion_mean,
             ],
             dim=-1,
         )

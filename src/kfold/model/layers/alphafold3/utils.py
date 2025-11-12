@@ -1,5 +1,6 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License,
 
+import math
 from functools import lru_cache
 from typing import TypeVar, overload
 
@@ -109,112 +110,40 @@ class LocalAttentionIndexer:
         return key.to(original_dtype)
 
 
-class ExponentialMovingAverage:
-    """from https://github.com/yang-song/score_sde_pytorch/blob/main/models/ema.py,
-    Apache-2.0 license
-    Maintains (exponential) moving average of a set of parameters."""
+def center_random_augmentation(
+    coords: torch.Tensor,
+    atom_mask: torch.Tensor,
+    s_trans: float = 1.0,
+    centering: bool = True,
+    random_rotate: bool = True,
+) -> torch.Tensor:
+    """Centering and Random Augmentation
+    See Section 3.7 Algorithm 19 CentreRandomAugmentation
+    """
 
-    def __init__(self, parameters, decay, use_num_updates=True):
-        """
-        Args:
-          parameters: Iterable of `torch.nn.Parameter`; usually the result of
-            `model.parameters()`.
-          decay: The exponential decay.
-          use_num_updates: Whether to use number of updates when computing
-            averages.
-        """
-        if decay < 0.0 or decay > 1.0:
-            raise ValueError("Decay must be between 0 and 1")
-        self.decay = decay
-        self.num_updates = 0 if use_num_updates else None
-        self.shadow_params = [p.clone().detach() for p in parameters if p.requires_grad]
-        self.collected_params = []
+    coords_shape = coords.shape
 
-    def update(self, parameters):
-        """
-        Update currently maintained parameters.
-        Call this every time the parameters are updated, such as the result of
-        the `optimizer.step()` call.
-        Args:
-          parameters: Iterable of `torch.nn.Parameter`; usually the same set of
-            parameters used to initialize this object.
-        """
-        decay = self.decay
-        if self.num_updates is not None:
-            self.num_updates += 1
-            decay = min(decay, (1 + self.num_updates) / (10 + self.num_updates))
-        one_minus_decay = 1.0 - decay
-        with torch.no_grad():
-            parameters = [p for p in parameters if p.requires_grad]
-            for s_param, param in zip(self.shadow_params, parameters, strict=True):
-                s_param.sub_(one_minus_decay * (s_param - param))
+    # Line 1
+    if centering:
+        center = torch.sum(
+            coords * atom_mask[..., None], dim=-2, keepdim=True
+        ) / torch.sum(atom_mask[..., None], dim=-2, keepdim=True).clamp(1)
+        coords = coords - center
 
-    def compatible(self, parameters):
-        if len(self.shadow_params) != len(parameters):
-            print(
-                f"Model has {len(self.shadow_params)} parameter tensors, the incoming ema"
-                f"{len(parameters)}"
-            )
-            return False
+    # Line 2,4
+    if random_rotate:
+        R = random_rotations(
+            coords_shape[:-2], coords.dtype, coords.device
+        )  # [..., 3, 3]
+        rotate = lambda x: torch.einsum("...md,...ds->...ms", x, R)  # noqa
+        coords = rotate(coords)
 
-        for s_param, param in zip(self.shadow_params, parameters, strict=True):
-            if param.data.shape != s_param.data.shape:
-                print(
-                    f"Model has parameter tensor of shape {s_param.data.shape},"
-                    f" the incoming ema {param.data.shape}"
-                )
-                return False
-        return True
+    # Line 3,4
+    if s_trans > 0.0:
+        random_trans = torch.randn_like(coords[..., 0:1, :]) * s_trans
+        coords = coords + random_trans
 
-    def copy_to(self, parameters):
-        """
-        Copy current parameters into given collection of parameters.
-        Args:
-          parameters: Iterable of `torch.nn.Parameter`; the parameters to be
-            updated with the stored moving averages.
-        """
-        parameters = [p for p in parameters if p.requires_grad]
-        for s_param, param in zip(self.shadow_params, parameters, strict=True):
-            if param.requires_grad:
-                param.data.copy_(s_param.data)
-
-    def store(self, parameters):
-        """
-        Save the current parameters for restoring later.
-        Args:
-          parameters: Iterable of `torch.nn.Parameter`; the parameters to be
-            temporarily stored.
-        """
-        self.collected_params = [param.clone() for param in parameters]
-
-    def restore(self, parameters):
-        """
-        Restore the parameters stored with the `store` method.
-        Useful to validate the model with EMA parameters without affecting the
-        original optimization process. Store the parameters before the
-        `copy_to` method. After validation (or model saving), use this to
-        restore the former parameters.
-        Args:
-          parameters: Iterable of `torch.nn.Parameter`; the parameters to be
-            updated with the stored parameters.
-        """
-        for c_param, param in zip(self.collected_params, parameters, strict=True):
-            param.data.copy_(c_param.data)
-
-    def state_dict(self):
-        return dict(
-            decay=self.decay,
-            num_updates=self.num_updates,
-            shadow_params=self.shadow_params,
-        )
-
-    def load_state_dict(self, state_dict, device):
-        self.decay = state_dict["decay"]
-        self.num_updates = state_dict["num_updates"]
-        self.shadow_params = [tensor.to(device) for tensor in state_dict["shadow_params"]]
-
-    def to(self, device):
-        self.shadow_params = [tensor.to(device) for tensor in self.shadow_params]
+    return coords
 
 
 class CenterRandomAugmentation:
@@ -285,39 +214,39 @@ class CenterRandomAugmentation:
         Parameters
         ----------
         coords : torch.Tensor
-            One or more tensors of shape (B, L, 3) representing atomic coordinates.
+            One or more tensors of shape (..., L, 3) representing atomic coordinates.
         atom_mask : torch.Tensor
-            A tensor of shape (B, L) representing the atom mask.
+            A tensor of shape (..., L) representing the atom mask.
         """
-
         coords_list: list[torch.Tensor] = list(coords)
-        ref_coords = coords_list[0]
-        B, L = atom_mask.shape
 
         # Check all input coords have the same batch size and number of atoms
+        ref_coords = coords_list[0]
+        coords_shape = ref_coords.shape
         for c in coords_list:
-            assert c.shape[0] == B and c.shape[1] == L, (
+            assert c.shape == coords_shape, (
                 "All input coordinate tensors must have the same batch size and length."
-                f" Got {c.shape} vs {(B, L)}."
+                f" Got {c.shape} vs {coords_shape}."
             )
 
         # Line 1
         if self.centering:
             center = torch.sum(
-                ref_coords * atom_mask[:, :, None], dim=-2, keepdim=True
-            ) / torch.sum(atom_mask[:, :, None], dim=-2, keepdim=True).clamp(1)
-
+                ref_coords * atom_mask[..., None], dim=-2, keepdim=True
+            ) / torch.sum(atom_mask[..., None], dim=-2, keepdim=True).clamp(1)
             coords_list = [x - center for x in coords_list]
 
         # Line 2,4
         if self.random_rotate:
-            R = random_rotations(B, ref_coords.dtype, ref_coords.device)
-            rotate = lambda x: torch.einsum("bmd,bds->bms", x, R)  # noqa
+            R = random_rotations(
+                coords_shape[:-2], ref_coords.dtype, ref_coords.device
+            )  # [..., 3, 3]
+            rotate = lambda x: torch.einsum("...md,...ds->...ms", x, R)  # noqa
             coords_list = [rotate(x) for x in coords_list]
 
         # Line 3,4
         if self.s_trans > 0.0:
-            random_trans = torch.randn_like(ref_coords[:, 0:1, :]) * self.s_trans
+            random_trans = torch.randn_like(ref_coords[..., 0:1, :]) * self.s_trans
             coords_list = [x + random_trans for x in coords_list]
 
         if len(coords) == 1:
@@ -428,19 +357,20 @@ def random_quaternions(
 
 
 def random_rotations(
-    n: int, dtype: torch.dtype | None = None, device: Device | None = None
+    shape: tuple[int, ...], dtype: torch.dtype | None = None, device: Device | None = None
 ) -> torch.Tensor:
     """
     Generate random rotations as 3x3 rotation matrices.
 
     Args:
-        n: Number of rotation matrices in a batch to return.
+        shape: Shape of rotation matrices in a batch to return.
         dtype: Type to return.
         device: Device of returned tensor. Default: if None,
             uses the current device for the default tensor type.
 
     Returns:
-        Rotation matrices as tensor of shape (n, 3, 3).
+        Rotation matrices as tensor of shape (*shape, 3, 3).
     """
+    n = math.prod(shape)
     quaternions = random_quaternions(n, dtype=dtype, device=device)
-    return quaternion_to_matrix(quaternions)
+    return quaternion_to_matrix(quaternions).reshape(*shape, 3, 3)

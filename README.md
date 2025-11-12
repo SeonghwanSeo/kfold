@@ -15,3 +15,26 @@ To ensure code quality and consistency, please run the following commands after 
 pre-commit install
 ```
 
+
+### Quick Start
+
+#### Installation
+
+```bash
+pip install -e '.[train,dev]'
+pre-commit install
+```
+
+#### Inference
+
+**TODO**
+
+#### Training
+
+```bash
+python ./scripts/train.py ./configs/af3-mini.yaml
+```
+
+#### Evaluation
+
+**TODO**

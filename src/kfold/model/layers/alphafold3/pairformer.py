@@ -4,6 +4,7 @@
 
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint
 from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 
 from .dropout import get_dropout_mask
@@ -114,7 +115,18 @@ class PairformerStack(nn.Module):
         # Line 1
         for block in self.blocks:
             # Line 2-8
-            s, z = block(s, z, mask, pair_mask, chunk_size_tri_attn)
+            if self.activation_checkpointing and self.training:
+                s, z = torch.utils.checkpoint.checkpoint(
+                    block,
+                    s,
+                    z,
+                    mask,
+                    pair_mask,
+                    chunk_size_tri_attn,
+                    use_reentrant=False,
+                )
+            else:
+                s, z = block(s, z, mask, pair_mask, chunk_size_tri_attn)
         # Line 10
         return s, z
 

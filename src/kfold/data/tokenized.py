@@ -1,0 +1,388 @@
+from dataclasses import dataclass
+from functools import cached_property
+from typing import Self
+
+import numpy as np
+
+import kfold.constants as C
+from kfold.data.layout import PlainLayout
+from kfold.data.metadata import Metadata
+from kfold.utils.misc import check_array
+
+__all__ = ["Chain", "Token", "Atom", "Bond", "TokenizedStructure"]
+
+
+# === Tokenized data structures === #
+@dataclass(frozen=True, slots=True)
+class Chain(PlainLayout[np.ndarray]):
+    """Chain information.
+
+    Shape: [Nchain, ...]
+
+    Attributes
+    ----------
+    chain_type: np.ndarray (int)
+        Chain types of shape [Nchain,], indicating the type of each chain.
+    entity_id: np.ndarray (int)
+        Entity IDs of shape [Nchain,], starting from 1.
+    asym_id: np.ndarray (int)
+        Asymmetric unit IDs of shape [Nchain,], starting from 1.
+    sym_id: np.ndarray (int)
+        Symmetry IDs of shape [Nchain,], starting from 1.
+    num_tokens: np.ndarray (int)
+        Number of tokens per chain of shape [Nchain,].
+    num_residues: np.ndarray (int)
+        Number of residues per chain of shape [Nchain,].
+    num_atoms: np.ndarray (int)
+        Number of atoms per chain of shape [Nchain,].
+    """
+
+    chain_type: np.ndarray  # [Nchain,], int
+    entity_id: np.ndarray  # [Nchain,], int
+    asym_id: np.ndarray  # [Nchain,], int
+    sym_id: np.ndarray  # [Nchain,], int
+    num_tokens: np.ndarray  # [Nchain,], int
+    num_residues: np.ndarray  # [Nchain,], int
+    num_atoms: np.ndarray  # [Nchain,], int
+
+    # === Properties === #
+    @property
+    def layout_shape(self) -> tuple[int, ...]:
+        return self.chain_type.shape  # [Nchain,] or [B, Nchain]
+
+    # === Batched layout === #
+    def __post_init__(self):
+        # shape: [Nchain,] or [B, Nchain]
+        shape = self.layout_shape
+
+        check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=(*shape,))
+        check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=(*shape,))
+        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=(*shape,))
+        check_array(self.sym_id, name="sym_id", dtype=np.integer, shape=(*shape,))
+        check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=(*shape,))
+        check_array(
+            self.num_residues, name="num_residues", dtype=np.integer, shape=(*shape,)
+        )
+        check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=(*shape,))
+
+    @cached_property
+    def is_protein(self) -> np.ndarray:
+        """Boolean tensor indicating whether the chain is protein."""
+        return self.chain_type == C.chain.ChainType.Protein.value
+
+    @cached_property
+    def is_dna(self) -> np.ndarray:
+        """Boolean tensor indicating whether the chain is dna."""
+        return self.chain_type == C.chain.ChainType.DNA.value
+
+    @cached_property
+    def is_rna(self) -> np.ndarray:
+        """Boolean tensor indicating whether the chain is rna."""
+        return self.chain_type == C.chain.ChainType.RNA.value
+
+    @cached_property
+    def is_ligand(self) -> np.ndarray:
+        """Boolean tensor indicating whether the chain is ligand."""
+        return self.chain_type == C.chain.ChainType.Ligand.value
+
+
+@dataclass(frozen=True, slots=True)
+class Token(PlainLayout[np.ndarray]):
+    """Token information.
+
+    Attributes
+    ----------
+    res_type: np.ndarray (int)
+        Sequence tokens of shape [L,] (aatype, base, atom, ...)
+    chain_type: np.ndarray (int)
+        Chain types of shape [L,], indicating the type of each token.
+    entity_id: np.ndarray (int)
+        Entity IDs of shape [L,], starting from 1.
+    asym_id: np.ndarray (int)
+        Asymmetric unit IDs of shape [L,], starting from 1.
+    sym_id: np.ndarray (int)
+        Symmetry IDs of shape [L,], starting from 1.
+    token_index: np.ndarray (int)
+        Token indices of shape [L,], used for token-level operations,
+    residue_index: np.ndarray (int)
+        Residue indices of shape [L,], used for residue-level operations,
+        starting from 1.
+    disto_index: np.ndarray (int)
+        Distogram atom index of shape [L,], used for distogram calculations.
+    center_index: np.ndarray (int)
+        Center atom index of shape [L,], used for center calculations.
+    resolved_mask: np.ndarray (bool)
+        Mask tensor of shape [L,], indicating tokens to be resolved.
+    is_standard: np.ndarray (bool)
+        Boolean tensor of shape [L,], indicating whether the token is standard.
+    """
+
+    res_type: np.ndarray  # [L,], int
+    chain_type: np.ndarray  # [L,], int
+    entity_id: np.ndarray  # [L,], int
+    asym_id: np.ndarray  # [L,], int, same to sequence_id
+    sym_id: np.ndarray  # [L,], int
+    token_index: np.ndarray  # [L,], int
+    residue_index: np.ndarray  # [L,], int
+    num_atoms: np.ndarray  # [L,], int
+    disto_index: np.ndarray  # [L,], int
+    center_index: np.ndarray  # [L,], int
+    resolved_mask: np.ndarray  # [L,], bool
+    is_standard: np.ndarray  # [L,], bool
+
+    @property
+    def layout_shape(self) -> tuple[int, ...]:
+        return self.res_type.shape  # [Nchain,]
+
+    def __post_init__(self):
+        shape = self.layout_shape
+        check_array(self.res_type, name="res_type", dtype=np.integer, shape=(*shape,))
+        check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=(*shape,))
+        check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=(*shape,))
+        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=(*shape,))
+        check_array(self.sym_id, name="sym_id", dtype=np.integer, shape=(*shape,))
+        check_array(
+            self.residue_index, name="residue_index", dtype=np.integer, shape=(*shape,)
+        )
+        check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=(*shape,))
+        check_array(
+            self.disto_index, name="disto_index", dtype=np.integer, shape=(*shape,)
+        )
+        check_array(
+            self.center_index, name="center_index", dtype=np.integer, shape=(*shape,)
+        )
+        check_array(
+            self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=(*shape,)
+        )
+        check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=(*shape,))
+
+    @cached_property
+    def is_protein(self) -> np.ndarray:
+        """Boolean tensor of shape [L,], indicating whether the token is protein."""
+        return self.chain_type == C.chain.ChainType.Protein.value
+
+    @cached_property
+    def is_dna(self) -> np.ndarray:
+        """Boolean tensor of shape [L,], indicating whether the token is dna."""
+        return self.chain_type == C.chain.ChainType.DNA.value
+
+    @cached_property
+    def is_rna(self) -> np.ndarray:
+        """Boolean tensor of shape [L,], indicating whether the token is rna."""
+        return self.chain_type == C.chain.ChainType.RNA.value
+
+    @cached_property
+    def is_ligand(self) -> np.ndarray:
+        """Boolean tensor of shape [L,], indicating whether the token is ligand."""
+        return self.chain_type == C.chain.ChainType.Ligand.value
+
+
+@dataclass(frozen=True, slots=True)
+class Atom(PlainLayout[np.ndarray]):
+    """Atom information.
+
+    Shape: [Ntoken, 24, ...]
+
+    Attributes
+    ----------
+    ref_atom_name_chars: np.ndarray (int)
+        Encoded atom name of shape [Ntoken, 24, 4].
+    ref_element: np.ndarray (int)
+        One-hot encoded atomic numbers of shape [Ntoken, 24,].
+    ref_charge: np.ndarray (float)
+        Formal charges of shape [Ntoken, 24,].
+    ref_pos: np.ndarray (float32)
+        Reference coordinates of shape [Ntoken, 24, 3].
+        Generated from ETKDG or ccd
+        (TODO (seonghwan): I think we can replace this to apo_coords)
+    apo_coords: np.ndarray (float32)
+        Apo (unbound) state coordinates of shape [Ntoken, 24, Napo, 3],
+        where Napo is the number of apo conformations.
+    resolved_mask: np.ndarray (bool)
+        Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
+    label_coords: np.ndarray (float32)
+        Holo (bound) state coordinates of shape [Ntoken, 24, Nholo, 3],
+        where Nholo is the number of ensemble holo conformations.
+        This is used as the ground truth for training, and may be set to 0
+        for inference.
+    """
+
+    ref_atom_name_chars: np.ndarray  # [Ntoken, 24, 4], int
+    ref_element: np.ndarray  # [Ntoken, 24], int
+    ref_charge: np.ndarray  # [Ntoken, 24,], float
+    ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
+    apo_coords: np.ndarray  # [Ntoken, 24, Napo, 3], float32
+    resolved_mask: np.ndarray  # [Ntoken, 24,], bool
+    label_coords: np.ndarray  # [Ntoken, 24, Nholo, 3], float32
+
+    @property
+    def layout_shape(self) -> tuple[int, ...]:
+        return self.ref_element.shape
+
+    def __post_init__(self):
+        shape = self.layout_shape
+        check_array(
+            self.ref_atom_name_chars,
+            name="ref_atom_name_chars",
+            dtype=np.integer,
+            shape=(*shape, 4),
+        )
+        check_array(
+            self.ref_element, name="ref_element", dtype=np.integer, shape=(*shape,)
+        )
+        check_array(
+            self.ref_charge, name="ref_charge", dtype=np.floating, shape=(*shape,)
+        )
+        check_array(self.ref_pos, name="ref_pos", dtype=np.floating, shape=(*shape, 3))
+        check_array(
+            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, -1, 3)
+        )
+        check_array(
+            self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=(*shape,)
+        )
+        check_array(
+            self.label_coords,
+            name="label_coords",
+            dtype=np.floating,
+            shape=(*shape, -1, 3),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Bond(PlainLayout[np.ndarray]):
+    """Bond information.
+
+    Shape: [Nbond, ...]
+
+    Attributes
+    ----------
+    asym_id: np.ndarray
+        Chain asym indices of the connecting atoms in the bond of shape [Nbond, 2].
+    token_index: np.ndarray
+        Token indices of the connecting atoms in the bond of shape [Nbond, 2].
+    atom_index: np.ndarray
+        Atom indices of the connecting atoms in the bond of shape [Nbond, 2].
+    bond_type: np.ndarray
+        Bond types of shape [Nbond,], indicating the type of each bond.
+    """
+
+    asym_id: np.ndarray  # [Nbond, 2], int
+    token_index: np.ndarray  # [Nbond, 2], int
+    atom_index: np.ndarray  # [Nbond, 2], int
+    bond_type: np.ndarray  # [Nbond,], int
+
+    @property
+    def layout_shape(self) -> tuple[int, ...]:
+        return self.bond_type.shape
+
+    def __post_init__(self):
+        shape = self.layout_shape
+        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=(*shape, 2))
+        check_array(
+            self.token_index, name="token_index", dtype=np.integer, shape=(*shape, 2)
+        )
+        check_array(
+            self.atom_index, name="atom_index", dtype=np.integer, shape=(*shape, 2)
+        )
+        check_array(self.bond_type, name="bond_type", dtype=np.integer, shape=(*shape,))
+
+
+@dataclass(frozen=True)
+class TokenizedStructure:
+    """Tokenized representation of a molecular structure.
+
+    Attributes
+    ----------
+    chain: Chain
+        Chain information.
+    token: Token
+        Token information.
+    atom: Atom
+        Atom information.
+    bond: Bond
+        Bond information.
+    metadata: Metadata
+        Metadata information.
+    """
+
+    chain: Chain
+    token: Token
+    atom: Atom
+    bond: Bond
+    metadata: Metadata | None = None
+
+    @property
+    def num_chains(self) -> int:
+        """Number of chains in the structure."""
+        return len(self.chain)
+
+    @property
+    def num_tokens(self) -> int:
+        """Number of tokens in the structure."""
+        return len(self.token)
+
+    @property
+    def num_bonds(self) -> int:
+        """Number of bonds in the structure."""
+        return len(self.bond)
+
+    def crop(self, token_indices: np.ndarray) -> Self:
+        """Crop the structure to the specified token indices.
+
+        Parameters
+        ----------
+        token_indices: np.ndarray (int)
+            Token indices to keep of shape [K,], where K is the number of tokens
+            to keep.
+
+        Returns
+        -------
+        cropped_structure: TokenizedStructure
+            Cropped tokenized structure.
+        """
+        cropped_token = self.token[token_indices]
+        cropped_atom = self.atom[token_indices]
+
+        token_bonds = self.bond.token_index
+        bond_mask = np.isin(token_bonds, token_indices).all(axis=1)
+        cropped_bond = self.bond[bond_mask]  # type: ignore
+
+        # Remove chains
+        token_asym_ids = np.unique(cropped_token.asym_id)
+        chain_mask = np.isin(self.chain.asym_id, token_asym_ids)
+        cropped_chain = self.chain[chain_mask]  # type: ignore
+        # safe update
+        cropped_chain = cropped_chain.copy(deepcopy=True)
+        for cidx in range(len(cropped_chain)):
+            asym_id = cropped_chain.asym_id[cidx]
+            token_mask = cropped_token.asym_id == asym_id
+            num_tokens = np.sum(token_mask).item()
+            num_residues = np.sum(
+                np.unique(cropped_token.residue_index[token_mask])
+            ).item()
+            num_atoms = np.sum(cropped_token.num_atoms[token_mask]).item()
+            cropped_chain.num_tokens[cidx] = num_tokens
+            cropped_chain.num_residues[cidx] = num_residues
+            cropped_chain.num_atoms[cidx] = num_atoms
+
+        return self.__class__(
+            chain=cropped_chain,
+            token=cropped_token,
+            atom=cropped_atom,
+            bond=cropped_bond,
+            metadata=self.metadata,
+        )
+
+    def __repr__(self) -> str:
+        """FoldingInput summary representation."""
+        # Summary statistics
+        num_chains = self.num_chains
+        num_tokens = self.num_tokens
+        num_bonds = len(self.bond)
+        return (
+            f"TokenizedStructure(\n"
+            f"  num_chains: {num_chains}\n"
+            f"  num_tokens: {num_tokens}\n"
+            f"  num_bonds: {num_bonds}\n"
+            f")"
+        )

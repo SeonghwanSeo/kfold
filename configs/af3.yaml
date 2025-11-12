@@ -3,15 +3,42 @@ global_hparam:
   channel_z: 128 # token pair channel
   channel_atom: 128 # atom single channel
   channel_atompair: 16 # atom pair channel
-  num_distogram_bins: 64
+  use_kernel: true # for debugging purpose
+
+train:
+  # training hparams
+  _yaml_: "train/af3-structure.yaml"
+
+  seed: 42
+
+  # pytorch lightning trainer hparams
+  trainer:
+    accelerator: 'auto'
+    strategy: 'auto'
+    devices: 'auto'
+    num_nodes: 1
+    precision: bf16-mixed
+    max_epochs: 100
+    limit_train_batches: 10_000
+    log_every_n_steps: 10
+    enable_checkpointing: true
+    accumulate_grad_batches: 32 # set according to number of GPUs
+
+  wandb:
+    use: true
+    project: "KFold"
+    name: null # set your run name
+    group: null # set your group name
+    entity: null # set your entity name
+
+  data:
+    train_batch_size: 1
+    num_workers: 4
+    max_tokens: 384
+    boltz_processed_path: /cache/wykim_lab/rcsb_processed_targets/
+    boltz_split_path: ./assets/splits/boltz1
 
 model:
-  _registry_: "main_module"
-  _class_: "KFold"
-
-  compile_trunk: false
-  compile_score_model: false
-
   input_embedder:
     _yaml_: "module/input_embedder/af3.yaml"
     channel_s: ${global_hparam.channel_s}
@@ -21,6 +48,7 @@ model:
     _yaml_: "module/trunk/af3.yaml"
     channel_s: ${global_hparam.channel_s}
     channel_z: ${global_hparam.channel_z}
+    use_kernels: ${global_hparam.use_kernel}
 
   structure_module:
     _yaml_: "module/structure_module/af3.yaml"
@@ -35,4 +63,3 @@ model:
   distogram_head:
     _yaml_: "module/distogram_head/af3.yaml"
     channel_z: ${global_hparam.channel_z}
-    num_bins: ${global_hparam.num_distogram_bins}
