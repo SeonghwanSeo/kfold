@@ -5,6 +5,8 @@ import numpy as np
 import torch
 
 from kfold.data import model_input
+from kfold.data.metadata import Metadata
+from kfold.utils.boltz.process import parse_structure
 from kfold.utils.boltz.structure import BoltzStructure
 
 
@@ -39,18 +41,27 @@ class SafeIterDataset(BaseDataset):
 
 
 class BoltzDataset(torch.utils.data.Dataset):
-    def __init__(self, boltz_processed_dir: str | Path, keys: list[str]):
+    def __init__(
+        self,
+        boltz_processed_dir: str | Path,
+        keys: list[str],
+        metadatas: dict[str, Metadata],
+    ):
         self.boltz_processed_dir: Path = Path(boltz_processed_dir)
         self.keys: list[str] = keys
+        self.metadatas: dict[str, Metadata] = metadatas
 
     def __len__(self) -> int:
         return len(self.keys)
 
     def get_item(self, index: int) -> model_input.FoldingInput:
         name = self.keys[index]
+
+        # Load BoltzStructure
         path = self.boltz_processed_dir / f"{name}.npz"
         boltz_structure = BoltzStructure.load(path)
 
         chains = boltz_structure.chains[boltz_structure.mask]
+        folding_input = parse_structure(chains, boltz_structure)
 
-        return self.parse_structure(chains, boltz_structure)
+        return folding_input

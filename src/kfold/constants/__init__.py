@@ -6,3 +6,6 @@ NUM_ATOM_ELEMENTS: int = 128  # AlphaFold3
 
 # FIXME: do we need more pocket contact types?
 NUM_POCKET_CONTACT_TYPES: int = len(pocket.ContactType)
+
+# See Section 2.7.3 of the AlphaFold3 paper
+INTERFACE_CUTOFF: float = 15.0  # Angstroms

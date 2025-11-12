@@ -1,11 +1,38 @@
 import numpy as np
-import torch
 
 import kfold.constants as C
-from kfold.data import metadata, model_input
+from kfold.data import metadata, tokenized
 
-from .process_utils import centering, compute_ligand_frames_inplace
 from .structure import BoltzStructure
+
+
+def centering(
+    coords: np.ndarray, mask: np.ndarray, mask_to_zero: bool = True
+) -> np.ndarray:
+    """Center coordinates based on the masked mean position.
+
+    Parameters
+    ----------
+    coords : np.ndarray
+        The coordinates tensor of shape (N, ..., 3).
+    mask : np.ndarray
+        The boolean mask tensor of shape (N,).
+    mask_to_zero : bool, optional
+        If True, positions where mask is False will be set to zero after centering.
+
+    Returns
+    -------
+    np.ndarray
+        The centered coordinates tensor of shape (N, ..., 3).
+    """
+    if not mask.any():
+        return coords
+    masked_coords = coords[mask]
+    center_pos = masked_coords.mean(axis=0, keepdims=True)
+    centered_coords = coords - center_pos
+    if mask_to_zero:
+        centered_coords[~mask] = 0.0
+    return centered_coords  # type: ignore
 
 
 def parse_record(record_json: dict) -> metadata.Metadata:
@@ -26,17 +53,20 @@ def parse_record(record_json: dict) -> metadata.Metadata:
         pdb_id=record_json["id"], **record_json["structure"]
     )
 
+    asym_id = 1  # starts from 1
     chain_infos = []
     for cinfo in record_json["chains"]:
         cinfo_meta = metadata.ChainInfo(
             chain_type=C.chain.ChainType(cinfo["mol_type"]),
             chain_name=cinfo["chain_name"],
             num_residues=cinfo["num_residues"],
+            cluster_id=str(cinfo["cluster_id"]),
             valid=cinfo["valid"],
-            entity_id=1,  # dummy value
-            asym_id=1,  # dummy value
-            sym_id=1,  # dummy value
+            entity_id=-1,  # dummy value
+            asym_id=asym_id,
+            sym_id=-1,  # dummy value
         )
+        asym_id += 1
         chain_infos.append(cinfo_meta)
 
     interface_infos = []
@@ -46,7 +76,8 @@ def parse_record(record_json: dict) -> metadata.Metadata:
         asym_id1 = chain_infos[iinfo["chain_1"]].asym_id
         asym_id2 = chain_infos[iinfo["chain_2"]].asym_id
         interface_meta = metadata.InterfaceInfo(
-            asym_ids=[asym_id1, asym_id2],
+            asym_ids=(asym_id1, asym_id2),
+            valid=iinfo["valid"],
             is_bonded=False,
         )
         interface_infos.append(interface_meta)
@@ -61,15 +92,11 @@ def parse_record(record_json: dict) -> metadata.Metadata:
     )
 
 
-def parse_structure(
-    chains: np.ndarray, structure: BoltzStructure
-) -> model_input.FoldingInput:
-    """Extract structure layout from BoltzStructure.
+def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructure:
+    """Tokenize structure.
 
     Parameters
     ----------
-    chains : np.ndarray (boltz.types.Chain)
-        The chain array.
     structure : BoltzStructure
         The BoltzStructure object.
 
@@ -81,40 +108,51 @@ def parse_structure(
     """
 
     # Define field types
-    boolean_fields = [
-        "frames_mask",
-        "resolved_mask",
-        "disto_mask",
-        "pad_mask",
-        "is_polymer_ligand_bond",
-        "is_ligand_ligand_bond",
-    ]
-    float_fields = [
-        "ref_charge",
-        "ref_pos",
-        "label_coords",
-        "apo_coords",
-    ]
-
-    def get_dtype(key: str) -> torch.dtype:
-        if key in boolean_fields:
-            return torch.bool
-        elif key in float_fields:
-            return torch.float32
-        else:
-            return torch.long
-
-    chain_info = {
-        "chain_type": torch.as_tensor(chains["mol_type"].copy(), dtype=torch.long),
-        "entity_id": torch.as_tensor(chains["entity_id"].copy(), dtype=torch.long) + 1,
-        "asym_id": torch.as_tensor(chains["asym_id"].copy(), dtype=torch.long) + 1,
-        "sym_id": torch.as_tensor(chains["sym_id"].copy(), dtype=torch.long) + 1,
-        "num_residues": torch.as_tensor(chains["res_num"].copy(), dtype=torch.long),
-        "num_atoms": torch.as_tensor(chains["atom_num"].copy(), dtype=torch.long),
-        # 'num_tokens' will be computed below
-        "num_tokens": torch.zeros(len(chains), dtype=torch.long),
+    token_field_dtype: dict[str, type] = {
+        "res_type": np.uint8,  # 0-31
+        "chain_type": np.uint8,  # 0-3
+        "entity_id": np.uint16,
+        "asym_id": np.uint16,
+        "sym_id": np.uint16,
+        "token_index": np.uint32,
+        "residue_index": np.uint32,
+        "disto_index": np.uint8,  # 0-23
+        "center_index": np.uint8,  # 0-23
+        "num_atoms": np.uint8,  # 0-23
+        "resolved_mask": np.bool_,
+        "is_standard": np.bool_,
+    }
+    atom_field_dtype: dict[str, type] = {
+        "resolved_mask": np.bool_,
+        "ref_charge": np.float16,
+        "ref_element": np.uint8,
+        "ref_atom_name_chars": np.uint8,
+        "ref_pos": np.float32,
+        "label_coords": np.float32,
+        "apo_coords": np.float32,
+    }
+    bond_field_dtype: dict[str, type] = {
+        "asym_id": np.uint16,
+        "token_index": np.uint32,
+        "atom_index": np.uint16,
+        "bond_type": np.uint8,
     }
 
+    chains = structure.chains[structure.mask]
+
+    # Shape: [Nchain, 24]
+    chain_info: dict[str, np.ndarray] = {
+        "chain_type": chains["mol_type"].astype(np.uint8),
+        "entity_id": chains["entity_id"].astype(np.uint16) + 1,
+        "asym_id": chains["asym_id"].astype(np.uint16) + 1,
+        "sym_id": chains["sym_id"].astype(np.uint16) + 1,
+        "num_residues": chains["res_num"].astype(np.uint32),
+        "num_atoms": chains["atom_num"].astype(np.uint32),
+        # 'num_tokens' will be computed below
+        "num_tokens": np.zeros(len(chains), dtype=np.uint32),
+    }
+
+    # Shape: [Ntoken,]
     token_info = {
         "res_type": [],
         "chain_type": [],
@@ -124,51 +162,36 @@ def parse_structure(
         "residue_index": [],
         "disto_index": [],
         "center_index": [],
-        "frames_index": [],
+        "num_atoms": [],
         "resolved_mask": [],
-        "frames_mask": [],
-        "disto_mask": [],
+        "is_standard": [],
     }
 
+    # Shape: [Ntoken, 24]
     atom_info = {
-        "ref_space_uid": [],
-        "token_index": [],
-    }
-
-    atom_info_concat = {
         "ref_atom_name_chars": [],
         "ref_element": [],
         "ref_charge": [],
         "ref_pos": [],
         "resolved_mask": [],
         "label_coords": [],
-        "apo_coords": [],
     }
 
+    # Shape: [Nbond, 24]
     bond_info = {
         "asym_id": [],
         "token_index": [],
         "atom_index": [],
         "bond_type": [],
-        "is_polymer_ligand_bond": [],
-        "is_ligand_ligand_bond": [],
     }
 
-    # Since some chains can be masked,
-    # we reindex the chain, residue, and atom indices
-    chain_index_map = {}  # starts from 0
-    res_index_map = {}  # starts from 0 for each chain
-    atom_index_map = {}  # shifted for masked chains
+    atom_index_map: dict[int, tuple[int, int]] = {}  # (token_index, atom_index)
 
-    # === Get token features and some atom features === #
-    # global index (offset)
-    global_atom_idx = 0
-    global_token_idx = 0
-    global_res_idx = 0
+    # === Get token features === #
+    global_token_index = 0
     for chain_index, chain in enumerate(chains):
         res_start = chain["res_idx"]
         res_end = res_start + chain["res_num"]
-        chain_index_map[chain["asym_id"]] = chain_index
 
         # Chain indices
         chain_type = chain_info["chain_type"][chain_index]
@@ -183,14 +206,14 @@ def parse_structure(
         for i, residue in enumerate(structure.residues[res_start:res_end]):
             # AF3 indexing rule: starts from 1
             chain_res_index = i + 1
-            # Map original residue index to reindexed residue index
-            res_index_map[residue["res_idx"]] = chain_res_index
+
+            # residue
+            is_res_present = residue["is_present"]
 
             atom_start = residue["atom_idx"]
             num_atoms_in_res = residue["atom_num"]
             atom_end = atom_start + num_atoms_in_res
             residue_atoms = structure.atoms[atom_start:atom_end]
-            is_res_present = residue["is_present"]
 
             if residue["is_standard"]:
                 # Proteins' amino acid and nucleic acids' base
@@ -203,52 +226,35 @@ def parse_structure(
                 token_info["entity_id"].append(entity_id)
                 token_info["sym_id"].append(sym_id)
                 token_info["residue_index"].append(chain_res_index)
-
-                # get center and disto atom
-                center_idx = residue["atom_center"] - atom_start
-                disto_idx = residue["atom_disto"] - atom_start
-                center_atom = residue_atoms[center_idx]
-                disto_atom = residue_atoms[disto_idx]
-
-                # shift atom indices to be relative to the entire structure
-                token_info["center_index"].append(global_atom_idx + center_idx)
-                token_info["disto_index"].append(global_atom_idx + disto_idx)
-                token_info["resolved_mask"].append(
-                    is_res_present & center_atom["is_present"]
-                )
-                token_info["disto_mask"].append(is_res_present & disto_atom["is_present"])
-
-                # === Insert frame info === #
-                if res_name is C.residue.ResidueName.UNK or (num_atoms_in_res < 3):
-                    # Unknown residue or insufficient atoms for frame
-                    frames_index = [0, 0, 0]  # placeholder
-                    is_frames = False
-                else:
-                    restype_atoms = C.atom.RESIDUE_ATOMS[res_name]
-                    n, ca, c = C.atom.RESIDUE_FRAME_ATOMS[res_name]
-                    frames_index = [restype_atoms.index(a) for a in (n, ca, c)]
-                    is_frames = residue_atoms[frames_index]["is_present"].all()
-                token_info["frames_index"].append(
-                    [v + global_atom_idx for v in frames_index]
-                )
-                token_info["frames_mask"].append(is_frames)
+                token_info["num_atoms"].append(num_atoms_in_res)
+                token_info["center_index"].append(residue["atom_center"] - atom_start)
+                token_info["disto_index"].append(residue["atom_disto"] - atom_start)
+                token_info["resolved_mask"].append(is_res_present)
+                token_info["is_standard"].append(True)
 
                 # === Insert atom info === #
-                atom_info["token_index"].extend([global_token_idx] * num_atoms_in_res)
-                atom_info["ref_space_uid"].extend([global_res_idx] * num_atoms_in_res)
+                atom_info["ref_atom_name_chars"].append(residue_atoms["name"])
+                atom_info["ref_element"].append(residue_atoms["element"])
+                atom_info["ref_charge"].append(residue_atoms["charge"])
+                atom_info["ref_pos"].append(residue_atoms["conformer"])
+                atom_info["resolved_mask"].append(residue_atoms["is_present"])
+                atom_info["label_coords"].append(residue_atoms["coords"])
+
+                # === Add mapping === #
+                for j, atom_index in enumerate(range(atom_start, atom_end)):
+                    atom_index_map[atom_index] = (global_token_index, j)
 
                 # === Update offset === #
                 num_tokens_in_chain += 1
-                global_token_idx += 1
-                global_atom_idx += num_atoms_in_res
+                global_token_index += 1
             else:
                 # Ligands, Modifications, Covalent inhibitors
                 res_name = C.residue.ResidueName("UNK")  # use unknown residue name
                 res_type = res_name.index
 
-                for atom in residue_atoms:
-                    is_present = is_res_present & atom["is_present"]
-
+                for atom_idx, atom in zip(
+                    range(atom_start, atom_end), residue_atoms, strict=True
+                ):
                     # === Insert token info === #
                     token_info["chain_type"].append(chain_type)
                     token_info["asym_id"].append(asym_id)
@@ -256,60 +262,31 @@ def parse_structure(
                     token_info["sym_id"].append(sym_id)
                     token_info["res_type"].append(res_type)
                     token_info["residue_index"].append(chain_res_index)
-
-                    token_info["disto_index"].append(global_atom_idx)
-                    token_info["center_index"].append(global_atom_idx)
-                    token_info["resolved_mask"].append(is_present)
-                    token_info["disto_mask"].append(is_present)
-
-                    # === Insert frame info === #
-                    token_info["frames_index"].append(
-                        (global_atom_idx, global_atom_idx, global_atom_idx)
-                    )  # placeholder
-                    token_info["frames_mask"].append(False)
+                    token_info["disto_index"].append(0)
+                    token_info["center_index"].append(0)
+                    token_info["num_atoms"].append(1)
+                    token_info["resolved_mask"].append(
+                        is_res_present & atom["is_present"]
+                    )
+                    token_info["is_standard"].append(False)
 
                     # === Insert atom info === #
-                    atom_info["token_index"].append(global_token_idx)
-                    atom_info["ref_space_uid"].append(global_res_idx)
+                    atom_info["ref_atom_name_chars"].append(atom["name"][None])
+                    atom_info["ref_element"].append(atom["element"][None])
+                    atom_info["ref_charge"].append(atom["charge"][None])
+                    atom_info["ref_pos"].append(atom["conformer"][None])
+                    atom_info["resolved_mask"].append(atom["is_present"][None])
+                    atom_info["label_coords"].append(atom["coords"][None])
+
+                    # === Add mapping === #
+                    atom_index_map[atom_idx] = (global_token_index, 0)
 
                     # === Update index === #
                     num_tokens_in_chain += 1
-                    global_token_idx += 1
-                    global_atom_idx += 1
-
-            # Update global residue index
-            global_res_idx += 1
+                    global_token_index += 1
 
         # Update number of tokens in the chain
         chain_info["num_tokens"][chain_index] = num_tokens_in_chain
-
-    # === Get atom features === #
-    global_atom_idx = 0
-    for chain in chains:
-        atom_start = chain["atom_idx"]
-        atom_end = atom_start + chain["atom_num"]
-        atoms = structure.atoms[atom_start:atom_end]
-        atom_info_concat["ref_atom_name_chars"].append(atoms["name"])
-        atom_info_concat["ref_element"].append(atoms["element"])
-        atom_info_concat["ref_charge"].append(atoms["charge"])
-        atom_info_concat["ref_pos"].append(atoms["conformer"])
-        atom_info_concat["label_coords"].append(atoms["coords"][:, None, :])
-
-        # FIXME: we should use actual apo coords when available
-        chain_coords = centering(atoms["coords"], atoms["is_present"])[:, None, :]
-
-        mask = atoms["is_present"]
-        chain_centers = chain_coords[mask].mean(axis=0, keepdims=True)
-        chain_apo_coords = chain_coords - chain_centers
-        atom_info_concat["apo_coords"].append(chain_apo_coords)
-        atom_info_concat["resolved_mask"].append(atoms["is_present"])
-
-        # Map original atom index to reindexed atom index
-        for i, atom_index in enumerate(range(atom_start, atom_end)):
-            atom_index_map[atom_index] = global_atom_idx + i
-
-        # Update atom offset
-        global_atom_idx += chain["atom_num"]
 
     # === Get bond features === #
     # First iterate bonds (intra-chain)
@@ -318,11 +295,15 @@ def parse_structure(
             continue
 
         # Map original atom indices to reindexed atom indices
-        atom_1 = atom_index_map[bond["atom_1"]]
-        atom_2 = atom_index_map[bond["atom_2"]]
+        token1, atom1 = atom_index_map[bond["atom_1"]]
+        token2, atom2 = atom_index_map[bond["atom_2"]]
         bond_type = bond["type"]
-        bond_info["atom_index"].append((atom_1, atom_2))
+        bond_info["token_index"].append((token1, token2))
+        bond_info["atom_index"].append((atom1, atom2))
         bond_info["bond_type"].append(bond_type)
+
+        asym_id1, asym_id2 = token_info["asym_id"][token1], token_info["asym_id"][token2]
+        bond_info["asym_id"].append((asym_id1, asym_id2))
 
     # Then iterate cross-chain bonds
     for bond in structure.connections:
@@ -330,135 +311,96 @@ def parse_structure(
             continue
 
         # Map original atom indices to reindexed atom indices
-        atom_1 = atom_index_map[bond["atom_1"]]
-        atom_2 = atom_index_map[bond["atom_2"]]
-        bond_type = C.bond.ConnectType.COVALENT.value
-        bond_info["atom_index"].append((atom_1, atom_2))
-        bond_info["bond_type"].append(bond_type)
+        token1, atom1 = atom_index_map[bond["atom_1"]]
+        token2, atom2 = atom_index_map[bond["atom_2"]]
+        bond_info["token_index"].append((token1, token2))
+        bond_info["atom_index"].append((atom1, atom2))
+        bond_info["bond_type"].append(C.bond.ConnectType.COVALENT.value)
 
-    # Add additional bond info fields
-    for atom_1, atom_2 in bond_info["atom_index"]:
-        # Get asym_id and token_index from atom_index
-        token_index_1 = atom_info["token_index"][atom_1]
-        token_index_2 = atom_info["token_index"][atom_2]
-        asym_id1 = token_info["asym_id"][token_index_1]
-        asym_id2 = token_info["asym_id"][token_index_2]
-
-        chain_type1 = token_info["chain_type"][token_index_1]
-        chain_type2 = token_info["chain_type"][token_index_2]
-        ligand_ctype = C.chain.ChainType.Ligand.value
-        _is_ligand1 = chain_type1 == ligand_ctype
-        _is_ligand2 = chain_type2 == ligand_ctype
-
-        is_ligand_ligand_bond = bool(_is_ligand1 and _is_ligand2)
-        is_polymer_ligand_bond = bool(
-            (_is_ligand1 and not _is_ligand2) or (not _is_ligand1 and _is_ligand2)
-        )
-
+        asym_id1, asym_id2 = token_info["asym_id"][token1], token_info["asym_id"][token2]
         bond_info["asym_id"].append((asym_id1, asym_id2))
-        bond_info["token_index"].append((token_index_1, token_index_2))
-        bond_info["is_ligand_ligand_bond"].append(is_ligand_ligand_bond)
-        bond_info["is_polymer_ligand_bond"].append(is_polymer_ligand_bond)
 
     # === Convert lists to tensors === #
-    token_info = {
-        key: torch.as_tensor(value, dtype=get_dtype(key))
+
+    def create_atom_array(lst: list, dtype: type = np.uint16) -> np.ndarray:
+        """Create a fixed-size atom array by padding with zeros."""
+        dim = lst[0].shape[1:]  # exclude first dimension
+        arr = np.zeros((len(lst), 24, *dim), dtype=dtype)
+        for i, v in enumerate(lst):
+            arr[i, : v.shape[0]] = v
+        return arr
+
+    chain_arr: dict[str, np.ndarray] = chain_info  # already in array format
+
+    token_arr: dict[str, np.ndarray] = {
+        key: np.array(value, dtype=token_field_dtype[key])
         for key, value in token_info.items()
     }
 
-    atom_info = {
-        key: torch.as_tensor(value, dtype=get_dtype(key))
+    atom_arr: dict[str, np.ndarray] = {
+        key: create_atom_array(value, dtype=atom_field_dtype[key])
         for key, value in atom_info.items()
-    } | {
-        key: torch.as_tensor(np.concatenate(value), dtype=get_dtype(key))
-        for key, value in atom_info_concat.items()
     }
-    # Centering the ground truth coords
-    atom_info["label_coords"] = centering(
-        atom_info["label_coords"], atom_info["resolved_mask"]
-    )
 
-    bond_info = {
-        key: torch.as_tensor(value, dtype=get_dtype(key))
+    bond_arr = {
+        key: np.array(value, dtype=bond_field_dtype[key])
         for key, value in bond_info.items()
     }
 
-    # Add additional fields
-    token_info["token_index"] = torch.arange(1, len(token_info["res_type"]) + 1)
-    # FIXME: we may change this on-the-fly like Boltz
-    # 0 means no pocket constraint, 1 means pocket contact
-    token_info["pocket_contact_type"] = torch.zeros_like(token_info["res_type"])
-    # NOTE: Boltz1 training set does not include cyclic_period info
-    token_info["cyclic_period"] = torch.zeros_like(token_info["res_type"])
+    # TODO: use actual apo coords when available
+    atom_arr["apo_coords"] = np.zeros_like(atom_arr["label_coords"])
+    for num_tokens in chain_arr["num_tokens"]:
+        start_idx = np.sum(chain_arr["num_tokens"][:num_tokens])
+        end_idx = start_idx + num_tokens
+        chain_coords = atom_arr["ref_pos"][start_idx:end_idx]
+        mask = atom_arr["resolved_mask"][start_idx:end_idx]
+        atom_arr["apo_coords"][start_idx:end_idx] = centering(chain_coords, mask)
 
-    # Add mask fields
-    chain_info["pad_mask"] = torch.ones_like(chain_info["chain_type"], dtype=torch.bool)
-    token_info["pad_mask"] = torch.ones_like(token_info["resolved_mask"])
-    atom_info["pad_mask"] = torch.ones_like(atom_info["resolved_mask"])
-    bond_info["pad_mask"] = torch.ones_like(bond_info["bond_type"], dtype=torch.bool)
-
-    Nc = chain_info["chain_type"].shape[0]
-    Nt = token_info["res_type"].shape[0]
-    Na = atom_info["ref_atom_name_chars"].shape[0]
-    Nb = bond_info["bond_type"].shape[0]
-    chain_layout = model_input.ChainLayout(
-        chain_type=chain_info["chain_type"].view(Nc),
-        entity_id=chain_info["entity_id"].view(Nc),
-        asym_id=chain_info["asym_id"].view(Nc),
-        sym_id=chain_info["sym_id"].view(Nc),
-        num_residues=chain_info["num_residues"].view(Nc),
-        num_atoms=chain_info["num_atoms"].view(Nc),
-        num_tokens=chain_info["num_tokens"].view(Nc),
-        pad_mask=chain_info["pad_mask"].view(Nc),
+    Nc = chain_arr["chain_type"].shape[0]
+    Nt = token_arr["res_type"].shape[0]
+    Nb = bond_arr["bond_type"].shape[0]
+    chain_data = tokenized.Chain(
+        chain_type=chain_arr["chain_type"].reshape(Nc),
+        entity_id=chain_arr["entity_id"].reshape(Nc),
+        asym_id=chain_arr["asym_id"].reshape(Nc),
+        sym_id=chain_arr["sym_id"].reshape(Nc),
+        num_residues=chain_arr["num_residues"].reshape(Nc),
+        num_atoms=chain_arr["num_atoms"].reshape(Nc),
+        num_tokens=chain_arr["num_tokens"].reshape(Nc),
     )
-    token_layout = model_input.TokenLayout(
-        token_index=token_info["token_index"].view(Nt),
-        res_type=token_info["res_type"].view(Nt),
-        chain_type=token_info["chain_type"].view(Nt),
-        entity_id=token_info["entity_id"].view(Nt),
-        asym_id=token_info["asym_id"].view(Nt),
-        sym_id=token_info["sym_id"].view(Nt),
-        residue_index=token_info["residue_index"].view(Nt),
-        disto_index=token_info["disto_index"].view(Nt),
-        center_index=token_info["center_index"].view(Nt),
-        frames_index=token_info["frames_index"].view(Nt, 3),
-        resolved_mask=token_info["resolved_mask"].view(Nt),
-        disto_mask=token_info["disto_mask"].view(Nt),
-        frames_mask=token_info["frames_mask"].view(Nt),
-        pad_mask=token_info["pad_mask"].view(Nt),
-        pocket_contact_type=token_info["pocket_contact_type"].view(Nt),
-        cyclic_period=token_info["cyclic_period"].view(Nt),
+    token_data = tokenized.Token(
+        res_type=token_arr["res_type"].reshape(Nt),
+        chain_type=token_arr["chain_type"].reshape(Nt),
+        entity_id=token_arr["entity_id"].reshape(Nt),
+        asym_id=token_arr["asym_id"].reshape(Nt),
+        sym_id=token_arr["sym_id"].reshape(Nt),
+        token_index=np.arange(Nt, dtype=np.uint32),
+        residue_index=token_arr["residue_index"].reshape(Nt),
+        disto_index=token_arr["disto_index"].reshape(Nt),
+        center_index=token_arr["center_index"].reshape(Nt),
+        num_atoms=token_arr["num_atoms"].reshape(Nt),
+        resolved_mask=token_arr["resolved_mask"].reshape(Nt),
+        is_standard=token_arr["is_standard"].reshape(Nt),
     )
-    atom_layout = model_input.AtomLayout(
-        ref_atom_name_chars=atom_info["ref_atom_name_chars"].view(Na, 4),
-        ref_element=atom_info["ref_element"].view(Na),
-        ref_charge=atom_info["ref_charge"].view(Na),
-        ref_pos=atom_info["ref_pos"].view(Na, 3),
-        ref_space_uid=atom_info["ref_space_uid"].view(Na),
-        token_index=atom_info["token_index"].view(Na),
-        resolved_mask=atom_info["resolved_mask"].view(Na),
-        label_coords=atom_info["label_coords"].view(Na, -1, 3),
-        apo_coords=atom_info["apo_coords"].view(Na, -1, 3),
-        pad_mask=atom_info["pad_mask"].view(Na),
+    atom_data = tokenized.Atom(
+        ref_atom_name_chars=atom_arr["ref_atom_name_chars"].reshape(Nt, 24, 4),
+        ref_element=atom_arr["ref_element"].reshape(Nt, 24),
+        ref_charge=atom_arr["ref_charge"].reshape(Nt, 24),
+        ref_pos=atom_arr["ref_pos"].reshape(Nt, 24, 3),
+        resolved_mask=atom_arr["resolved_mask"].reshape(Nt, 24),
+        label_coords=atom_arr["label_coords"].reshape(Nt, 24, -1, 3),
+        apo_coords=atom_arr["apo_coords"].reshape(Nt, 24, -1, 3),
     )
-    bond_layout = model_input.BondLayout(
-        asym_id=bond_info["asym_id"].view(Nb, 2),
-        token_index=bond_info["token_index"].view(Nb, 2),
-        atom_index=bond_info["atom_index"].view(Nb, 2),
-        bond_type=bond_info["bond_type"].view(Nb),
-        is_polymer_ligand_bond=bond_info["is_polymer_ligand_bond"].view(Nb),
-        is_ligand_ligand_bond=bond_info["is_ligand_ligand_bond"].view(Nb),
-        pad_mask=bond_info["pad_mask"].view(Nb),
+    bond_data = tokenized.Bond(
+        asym_id=bond_arr["asym_id"].reshape(Nb, 2),
+        token_index=bond_arr["token_index"].reshape(Nb, 2),
+        atom_index=bond_arr["atom_index"].reshape(Nb, 2),
+        bond_type=bond_arr["bond_type"].reshape(Nb),
     )
 
-    # Update ligand frames
-    compute_ligand_frames_inplace(token_layout, atom_layout, chain_layout)
-
-    # === Construct FoldingInput === #
-    folding_input = model_input.FoldingInput(
-        chain=chain_layout,
-        token=token_layout,
-        atom=atom_layout,
-        bond=bond_layout,
+    return tokenized.TokenizedStructure(
+        chain=chain_data,
+        token=token_data,
+        atom=atom_data,
+        bond=bond_data,
     )
-    return folding_input

@@ -26,7 +26,7 @@ def check_array(
         )
     if shape is not None:
         assert array.ndim == len(shape), (
-            f"Name {name}: Expected array shape to be {len(shape)}, got {array.shape}"
+            f"Name {name}: Expected array shape to be {shape}, got {array.shape}"
         )
         _shape = tuple(v if v != -1 else array.shape[i] for i, v in enumerate(shape))
         assert array.shape == _shape, (

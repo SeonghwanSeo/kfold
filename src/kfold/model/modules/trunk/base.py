@@ -42,7 +42,7 @@ class BaseTrunk(torch.nn.Module, ABC):
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         f_input: FoldingInput,
-        num_recycles: int,
+        num_cycles: int,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -58,7 +58,7 @@ class BaseTrunk(torch.nn.Module, ABC):
             Tensor of shape (B, L, L, C_s) containing initial pair representation
         f_input : FoldingInput
             The input features.
-        num_recycles : int
+        num_cycles : int
             The number of recycling steps.
 
         Returns

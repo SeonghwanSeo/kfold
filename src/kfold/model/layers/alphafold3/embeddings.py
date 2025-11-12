@@ -30,7 +30,11 @@ class RelativePositionEncoding(nn.Module):
         self.s_max: int = s_max
         self.linear_layer = LinearNoBias(4 * (r_max + 1) + 2 * (s_max + 1) + 1, channel_z)
 
-    def forward(self, f_input: FoldingInput, model_cache: dict | None) -> torch.Tensor:
+    def forward(
+        self,
+        f_input: FoldingInput,
+        model_cache: dict | None = None,
+    ) -> torch.Tensor:
         """See Section 3.1.2 Algorithm 3: Relative position encoding in the AF3 paper."""
         # All shape: [B, Lt]
         asym_id = f_input.token.asym_id
@@ -48,70 +52,72 @@ class RelativePositionEncoding(nn.Module):
             layer_cache = {}
 
         if len(layer_cache) == 0:
-            # Line 1
-            b_same_chain = torch.eq(asym_id[:, :, None], asym_id[:, None, :])
-            # Line 2
-            b_same_residue = torch.eq(
-                residue_index[:, :, None], residue_index[:, None, :]
-            )
-            # Line 3
-            b_same_entity = torch.eq(entity_id[:, :, None], entity_id[:, None, :])
+            with torch.no_grad():
+                # Line 1
+                b_same_chain = torch.eq(asym_id[:, :, None], asym_id[:, None, :])
+                # Line 2
+                b_same_residue = torch.eq(
+                    residue_index[:, :, None], residue_index[:, None, :]
+                )
+                # Line 3
+                b_same_entity = torch.eq(entity_id[:, :, None], entity_id[:, None, :])
 
-            # Line 4
-            d_residue = torch.clip(
-                residue_index[:, :, None] - residue_index[:, None, :] + self.r_max,
-                min=0,
-                max=2 * self.r_max,
-            )
-            d_residue = torch.where(
-                b_same_chain,
-                d_residue,
-                2 * self.r_max + 1,
-            )
-            # Line 5
-            a_rel_pos = F.one_hot(d_residue, 2 * self.r_max + 2)
+                # Line 4
+                d_residue = torch.clip(
+                    residue_index[:, :, None] - residue_index[:, None, :] + self.r_max,
+                    min=0,
+                    max=2 * self.r_max,
+                )
+                d_residue = torch.where(
+                    b_same_chain,
+                    d_residue,
+                    2 * self.r_max + 1,
+                )
+                # Line 5
+                a_rel_pos = F.one_hot(d_residue, 2 * self.r_max + 2)
 
-            # Line 6
-            d_token = torch.clip(
-                token_index[:, :, None] - token_index[:, None, :] + self.r_max,
-                min=0,
-                max=2 * self.r_max,
-            )
-            d_token = torch.where(
-                b_same_chain & b_same_residue,
-                d_token,
-                2 * self.r_max + 1,
-            )
-            # Line 7
-            a_rel_token = F.one_hot(d_token, 2 * self.r_max + 2)
+                # Line 6
+                d_token = torch.clip(
+                    token_index[:, :, None] - token_index[:, None, :] + self.r_max,
+                    min=0,
+                    max=2 * self.r_max,
+                )
+                d_token = torch.where(
+                    b_same_chain & b_same_residue,
+                    d_token,
+                    2 * self.r_max + 1,
+                )
+                # Line 7
+                a_rel_token = F.one_hot(d_token, 2 * self.r_max + 2)
 
-            # Line 8
-            d_chain = torch.clip(
-                sym_id[:, :, None] - sym_id[:, None, :] + self.s_max,
-                min=0,
-                max=2 * self.s_max,
-            )
-            # NOTE: (seonghwanseo) In the original paper and Boltz implementation,
-            # it is written as b_same_chain.
-            # However, it is implemented as b_same_entity in AF3 official implementation.
-            d_chain = torch.where(
-                b_same_entity,
-                d_chain,
-                2 * self.s_max + 1,
-            )
-            # Line 9
-            a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2)
+                # Line 8
+                d_chain = torch.clip(
+                    sym_id[:, :, None] - sym_id[:, None, :] + self.s_max,
+                    min=0,
+                    max=2 * self.s_max,
+                )
+                # NOTE: (seonghwanseo) In the original paper and Boltz implementation,
+                # it is written as b_same_chain.
+                # However, it is implemented as b_same_entity according to AF3 official
+                # implementation.
+                d_chain = torch.where(
+                    b_same_entity,
+                    d_chain,
+                    2 * self.s_max + 1,
+                )
+                # Line 9
+                a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2)
 
-            # Line 10:1 (concat)
-            rel_position_encoding = torch.cat(
-                [
-                    a_rel_pos.float(),
-                    a_rel_token.float(),
-                    b_same_entity.unsqueeze(-1).float(),
-                    a_rel_chain.float(),
-                ],
-                dim=-1,
-            )
+                # Line 10:1 (concat)
+                rel_position_encoding = torch.cat(
+                    [
+                        a_rel_pos.float(),
+                        a_rel_token.float(),
+                        b_same_entity.unsqueeze(-1).float(),
+                        a_rel_chain.float(),
+                    ],
+                    dim=-1,
+                )
             layer_cache["rel_pos_encoding"] = rel_position_encoding
         else:
             rel_position_encoding = layer_cache["rel_pos_encoding"]
@@ -143,7 +149,7 @@ class AtomEmbedding(nn.Module):
         self.embed_atom_pos = LinearNoBias(3, channel_atom)
         self.embed_atom_charge = LinearNoBias(1, channel_atom)
         self.embed_atom_mask = LinearNoBias(1, channel_atom)
-        self.embed_atom_element = nn.Embedding(self.num_atom_elements, channel_atom)
+        self.embed_atom_element = LinearNoBias(self.num_atom_elements, channel_atom)
         self.embed_atom_name_chars = LinearNoBias(
             4 * self.num_atom_name_chars, channel_atom
         )
@@ -162,10 +168,10 @@ class AtomEmbedding(nn.Module):
         ref_atom_name_chars = atom_layout.ref_atom_name_chars
 
         atom_feats = self.embed_atom_pos(ref_pos)
-        atom_feats = atom_feats + self.embed_atom_charge(ref_charge.float().unsqueeze(-1))
+        atom_feats = atom_feats + self.embed_atom_charge(ref_charge.unsqueeze(-1))
         atom_feats = atom_feats + self.embed_atom_mask(ref_mask.float().unsqueeze(-1))
         atom_feats = atom_feats + self.embed_atom_element(ref_element)
         atom_feats = atom_feats + self.embed_atom_name_chars(
-            F.one_hot(ref_atom_name_chars, self.num_atom_name_chars).flatten(-2).float()
+            ref_atom_name_chars.flatten(-2)
         )
         return atom_feats
