@@ -7,20 +7,20 @@ from kfold.utils.registry import DATA_FILTER
 
 
 @DATA_FILTER.register()
-class DataFilter(ABC):
+class BaseFilter(ABC):
     """Base class for data filters based on metadata."""
 
-    def __call__(self, metadata: Metadata) -> bool:
-        return self.filter(metadata)
+    def __call__(self, record: Metadata) -> bool:
+        return self.filter(record)
 
     @abstractmethod
-    def filter(self, metadata: Metadata) -> bool:
+    def filter(self, record: Metadata) -> bool:
         """Filter a data.
 
         Parameters
         ----------
-        metadata : Metadata
-            The object to consider filtering in / out.
+        record : Metadata
+            The record to consider filtering in / out.
 
         Returns
         -------
