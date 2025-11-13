@@ -1,109 +1,98 @@
-from dataclasses import replace
+from dataclasses import dataclass
 
 import numpy as np
-from boltz.data.crop.cropper import Cropper
-from boltz.data.types import Tokenized
 from scipy.spatial.distance import cdist
 
 import kfold.constants as C
+from kfold.data import tokenized
+from kfold.utils.registry import DATA_CROPPER, BaseConfig
 
-
-def pick_random_token(
-    tokens: np.ndarray,
-    random: np.random.RandomState,
-) -> np.ndarray:
-    """Pick a random token from the data.
-
-    Parameters
-    ----------
-    tokens : np.ndarray
-        The token data.
-    random : np.ndarray
-        The random state for reproducibility.
-
-    Returns
-    -------
-    np.ndarray
-        The selected token.
-
-    """
-    return tokens[random.randint(len(tokens))]
+from .base import BaseCropper
 
 
 def pick_chain_token(
-    tokens: np.ndarray,
-    chain_id: int,
-    random: np.random.RandomState,
-) -> np.ndarray:
+    structure: tokenized.TokenizedStructure,
+    asym_id: int,
+) -> int:
     """Pick a random token from a chain.
 
     Parameters
     ----------
-    tokens : np.ndarray
-        The token data.
+    structure : TokenizedStructure
+        The tokenized data.
     chain_id : int
         The chain ID.
-    random : np.ndarray
-        The random state for reproducibility.
 
     Returns
     -------
-    np.ndarray
-        The selected token.
-
+    token_index : int
+        The selected token index.
     """
     # Filter to chain
-    chain_tokens = tokens[tokens["asym_id"] == chain_id]
+    tokens = structure.token
+    chain_mask = tokens.asym_id == asym_id
 
     # Pick from chain, fallback to all tokens
+    token_indices = tokens.token_index
+    chain_tokens = token_indices[chain_mask & tokens.resolved_mask]
     if chain_tokens.size:
-        query = pick_random_token(chain_tokens, random)
+        return np.random.choice(chain_tokens)
     else:
-        query = pick_random_token(tokens, random)
-
-    return query
+        valid_tokens = token_indices[tokens.resolved_mask]
+        return np.random.choice(valid_tokens)
 
 
 def pick_interface_token(
-    tokens: np.ndarray,
-    interface: np.ndarray,
-    random: np.random.RandomState,
-) -> np.ndarray:
+    structure: tokenized.TokenizedStructure,
+    asym_ids: tuple[int, ...],
+    center_coords: np.ndarray,
+) -> int:
     """Pick a random token from an interface.
 
     Parameters
     ----------
-    tokens : np.ndarray
-        The token data.
-    interface : int
-        The interface ID.
-    random : np.ndarray
-        The random state for reproducibility.
+    structure : TokenizedStructure
+        The tokenized data.
+    asym_ids : tuple[int, ...]
+        The chain IDs defining the interface.
+    center_coords : np.ndarray
+        The center coordinates of all tokens.
 
     Returns
     -------
-    np.ndarray
-        The selected token.
-
+    token_index : int
+        The selected token index.
     """
-    # Sample random interface
-    chain_1 = int(interface["chain_1"])
-    chain_2 = int(interface["chain_2"])
 
-    tokens_1 = tokens[tokens["asym_id"] == chain_1]
-    tokens_2 = tokens[tokens["asym_id"] == chain_2]
+    # Sample random interface
+    if len(asym_ids) != 2:
+        raise ValueError("asym_ids must have length 2 for interface picking")
+
+    chain_1, chain_2 = asym_ids
+
+    token_indices = structure.token.token_index
+
+    tokens_1 = token_indices[
+        (structure.token.asym_id == chain_1) & structure.token.resolved_mask
+    ]
+
+    tokens_2 = token_indices[
+        (structure.token.asym_id == chain_2) & structure.token.resolved_mask
+    ]
 
     # If no interface, pick from the chains
     if tokens_1.size and (not tokens_2.size):
-        query = pick_random_token(tokens_1, random)
+        return np.random.choice(tokens_1)
     elif tokens_2.size and (not tokens_1.size):
-        query = pick_random_token(tokens_2, random)
+        return np.random.choice(tokens_2)
     elif (not tokens_1.size) and (not tokens_2.size):
-        query = pick_random_token(tokens, random)
+        # Fallback to all tokens
+        valid_tokens = token_indices[structure.token.resolved_mask]
+        return np.random.choice(valid_tokens)
     else:
-        # If we have tokens, compute distances
-        tokens_1_coords = tokens_1["center_coords"]
-        tokens_2_coords = tokens_2["center_coords"]
+        # If we have tokens, compute distances to find interface tokens
+        tokens_1_coords = center_coords[tokens_1]  # (num_tokens_1, 3)
+        tokens_2_coords = center_coords[tokens_2]  # (num_tokens_2, 3)
 
         dists = cdist(tokens_1_coords, tokens_2_coords)
         cuttoff = dists < C.INTERFACE_CUTOFF
@@ -118,20 +107,16 @@ def pick_interface_token(
 
         # Select random token
         candidates = np.concatenate([tokens_1, tokens_2])
-        query = pick_random_token(candidates, random)
-
-    return query
+        return np.random.choice(candidates)
 
 
-class BoltzCropper(Cropper):
+@DATA_CROPPER.register()
+class BoltzCropper(BaseCropper):
     """Interpolate between contiguous and spatial crops."""
 
-    def __init__(
-        self,
-        min_neighborhood: int = 0,
-        max_neighborhood: int = 40,
-    ):
-        """Initialize the cropper.
+    @dataclass
+    class Config(BaseConfig):
+        """Configuration for the BoltzCropper.
 
         Modulates the type of cropping to be performed.
         Smaller neighborhoods result in more spatial
@@ -145,102 +130,89 @@ class BoltzCropper(Cropper):
             The minimum neighborhood size, by default 0.
         max_neighborhood : int
             The maximum neighborhood size, by default 40.
-
         """
-        sizes = list(range(min_neighborhood, max_neighborhood + 1, 2))
+
+        min_neighborhood: int = 0
+        max_neighborhood: int = 40
+
+    def __init__(self, config: Config):
+        sizes = list(range(config.min_neighborhood, config.max_neighborhood + 1, 2))
         self.neighborhood_sizes = sizes
 
-    def crop(  # noqa: PLR0915
+    def get_token_indices(  # noqa: PLR0915
         self,
-        data: Tokenized,
+        structure: tokenized.TokenizedStructure,
         max_tokens: int,
-        random: np.random.RandomState,
-        max_atoms: int | None = None,
-        chain_id: int | None = None,
-        interface_id: int | None = None,
-    ) -> Tokenized:
+        asym_ids: tuple[int, ...] | None,
+    ) -> np.ndarray:
         """Crop the data to a maximum number of tokens.
 
         Parameters
         ----------
-        data : Tokenized
+        structure : TokenizedStructure
             The tokenized data.
         max_tokens : int
             The maximum number of tokens to crop.
-        random : np.random.RandomState
-            The random state for reproducibility.
-        max_atoms : int, optional
-            The maximum number of atoms to consider.
-        chain_id : int, optional
-            The chain ID to crop.
-        interface_id : int, optional
-            The interface ID to crop.
+        asym_ids : tuple[int, ...] | None
+            The chain IDs to center the crop on. If None, a random chain
 
         Returns
         -------
-        Tokenized
-            The cropped data.
-
+        token_indices: np.ndarray
+            The selected token indices.
         """
+
+        token_data = structure.token  # features: [L, ...]
+        atom_data = structure.atom  # features: [L, 24, ...]
+
         # Check inputs
-        if chain_id is not None and interface_id is not None:
-            msg = "Only one of chain_id or interface_id can be provided."
-            raise ValueError(msg)
+        resolved_mask = token_data.resolved_mask
+        if not resolved_mask.any():
+            raise ValueError("No valid tokens in structure")
+
+        # Frequently used variables
+        all_tokens = token_data.token_index
+        valid_tokens = all_tokens[resolved_mask]
+        all_asym_ids = token_data.asym_id
+        all_residue_indices = token_data.residue_index
+        # NOTE: (seonghwanseo) Here we use the first holo coordinates.
+        all_token_centers = atom_data.label_coords[
+            token_data.token_index, 0, token_data.center_index
+        ]  # (num_tokens, 3)
 
         # Randomly select a neighborhood size
-        neighborhood_size = random.choice(self.neighborhood_sizes)
-
-        # Get token data
-        token_data = data.tokens
-        token_bonds = data.bonds
-        mask = data.structure.mask
-        chains = data.structure.chains
-        interfaces = data.structure.interfaces
-
-        # Filter to valid chains
-        valid_chains = chains[mask]
-
-        # Filter to valid interfaces
-        valid_interfaces = interfaces
-        valid_interfaces = valid_interfaces[mask[valid_interfaces["chain_1"]]]
-        valid_interfaces = valid_interfaces[mask[valid_interfaces["chain_2"]]]
-
-        # Filter to resolved tokens
-        valid_tokens = token_data[token_data["resolved_mask"]]
-
-        # Check if we have any valid tokens
-        if not valid_tokens.size:
-            msg = "No valid tokens in structure"
-            raise ValueError(msg)
+        neighborhood_size = np.random.choice(self.neighborhood_sizes)
 
         # Pick a random token, chain, or interface
-        if chain_id is not None:
-            query = pick_chain_token(valid_tokens, chain_id, random)
-        elif interface_id is not None:
-            interface = interfaces[interface_id]
-            query = pick_interface_token(valid_tokens, interface, random)
-        elif valid_interfaces.size:
-            idx = random.randint(len(valid_interfaces))
-            interface = valid_interfaces[idx]
-            query = pick_interface_token(valid_tokens, interface, random)
+        if asym_ids is None:
+            valid_chain_asym_ids = np.unique(all_asym_ids[valid_tokens])
+            asym_id = np.random.choice(valid_chain_asym_ids)
+            query = pick_chain_token(structure, asym_id)
+        elif len(asym_ids) == 1:
+            query = pick_chain_token(structure, asym_ids[0])
+        elif len(asym_ids) == 2:
+            query = pick_interface_token(structure, asym_ids, all_token_centers)
         else:
-            idx = random.randint(len(valid_chains))
-            chain_id = valid_chains[idx]["asym_id"]
-            query = pick_chain_token(valid_tokens, chain_id, random)
+            raise ValueError("asym_ids must be None, length 1, or length 2")
+
+        query_coords = all_token_centers[query]  # [3,]
+        valid_coords = all_token_centers[valid_tokens]  # [num_valid_tokens, 3]
 
         # Sort all tokens by distance to query_coords
-        dists = valid_tokens["center_coords"] - query["center_coords"]
+        dists = valid_coords - query_coords  # [num_valid_tokens, 3]
         indices = np.argsort(np.linalg.norm(dists, axis=1))
+        neighbor_indices = valid_tokens[indices]
 
         # Select cropped indices
         cropped: set[int] = set()
-        total_atoms = 0
-        for idx in indices:
+        for token_idx in neighbor_indices:
             # Get the token
-            token = valid_tokens[idx]
+            asym_id = all_asym_ids[token_idx]
+            residue_idx = all_residue_indices[token_idx]
 
             # Get all tokens from this chain
-            chain_tokens = token_data[token_data["asym_id"] == token["asym_id"]]
+            chain_mask = all_asym_ids == asym_id
+            chain_tokens = all_tokens[chain_mask & resolved_mask]
 
             # Pick the whole chain if possible, otherwise select
             # a contiguous subset centered at the query token
@@ -250,50 +222,46 @@ class BoltzCropper(Cropper):
                 # First limit to the maximum set of tokens, with the
                 # neighborhood on both sides to handle edges. This
                 # is mostly for efficiency with the while loop below.
-                min_idx = token["res_idx"] - neighborhood_size
-                max_idx = token["res_idx"] + neighborhood_size
+                min_idx = residue_idx - neighborhood_size
+                max_idx = residue_idx + neighborhood_size
 
                 max_token_set = chain_tokens
-                max_token_set = max_token_set[max_token_set["res_idx"] >= min_idx]
-                max_token_set = max_token_set[max_token_set["res_idx"] <= max_idx]
+                max_token_set = max_token_set[
+                    (all_residue_indices[max_token_set] >= min_idx)
+                ]
+                max_token_set = max_token_set[
+                    (all_residue_indices[max_token_set] <= max_idx)
+                ]
 
                 # Start by adding just the query token
-                new_tokens = max_token_set[max_token_set["res_idx"] == token["res_idx"]]
+                new_tokens = max_token_set[
+                    all_residue_indices[max_token_set] == residue_idx
+                ]
 
                 # Expand the neighborhood until we have enough tokens, one
                 # by one to handle some edge cases with non-standard chains.
                 # We switch to the res_idx instead of the token_idx to always
                 # include all tokens from modified residues or from ligands.
-                min_idx = max_idx = token["res_idx"]
-                while new_tokens.size < neighborhood_size:
+                min_idx = max_idx = residue_idx
+                old_size = -1
+                while new_tokens.size < neighborhood_size and (
+                    new_tokens.size != old_size
+                ):
+                    old_size = new_tokens.size
                     min_idx = min_idx - 1
                     max_idx = max_idx + 1
                     new_tokens = max_token_set
-                    new_tokens = new_tokens[new_tokens["res_idx"] >= min_idx]
-                    new_tokens = new_tokens[new_tokens["res_idx"] <= max_idx]
+                    new_tokens = new_tokens[all_residue_indices[new_tokens] >= min_idx]
+                    new_tokens = new_tokens[all_residue_indices[new_tokens] <= max_idx]
 
             # Compute new tokens and new atoms
-            new_indices = set(new_tokens["token_idx"]) - cropped
-            new_tokens = token_data[list(new_indices)]
-            new_atoms = np.sum(new_tokens["atom_num"])
+            new_tokens = set(new_tokens) - cropped
 
             # Stop if we exceed the max number of tokens or atoms
-            if (len(new_indices) > (max_tokens - len(cropped))) or (
-                (max_atoms is not None) and ((total_atoms + new_atoms) > max_atoms)
-            ):
+            if len(new_tokens) > (max_tokens - len(cropped)):
                 break
 
             # Add new indices
-            cropped.update(new_indices)
-            total_atoms += new_atoms
+            cropped.update(new_tokens)
 
-        # Get the cropped tokens sorted by index
-        token_data = token_data[sorted(cropped)]
-
-        # Only keep bonds within the cropped tokens
-        indices = token_data["token_idx"]
-        token_bonds = token_bonds[np.isin(token_bonds["token_1"], indices)]
-        token_bonds = token_bonds[np.isin(token_bonds["token_2"], indices)]
-
-        # Return the cropped tokens
-        return replace(data, tokens=token_data, bonds=token_bonds)
+        return np.array(sorted(cropped))
