@@ -2,7 +2,6 @@
 import importlib
 from pathlib import Path
 
-from . import *  # noqa
 from .base import BaseStructureEncoder
 
 # Get all Python module names in current directory
@@ -15,3 +14,5 @@ for _module in _modules:
 
 # Clean up
 del Path, importlib, _package_dir, _modules
+
+__all__ = ["BaseStructureEncoder"]
