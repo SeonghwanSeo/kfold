@@ -6,9 +6,15 @@ from kfold.constants.residue import residue_index_to_name
 
 from . import model_input, tokenized, utils
 
+# TODO list:
+# 1. Random augmentation for each ref-pos
+# 2. Replace apo_coords with real apo structure
+# 3. Add symmetry.
+
 
 def featurize_structure(
     structure: tokenized.TokenizedStructure,
+    metadata: dict | None = None,
 ) -> model_input.FoldingInput:
     """Featurize a tokenized structure into model input features.
 
@@ -206,5 +212,6 @@ def featurize_structure(
         token=token_layout,
         atom=atom_layout,
         bond=bond_layout,
+        metadata=metadata,
     )
     return folding_input

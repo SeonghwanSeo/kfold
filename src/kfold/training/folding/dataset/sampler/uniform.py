@@ -1,24 +1,19 @@
 # Started from https://github.com/jwohlwend/boltz
-from dataclasses import dataclass
-
-import numpy as np
-
 from kfold.data.metadata import Metadata
-from kfold.utils.registry import DATA_SAMPLER, BaseConfig
+from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample
 
 
 @DATA_SAMPLER.register()
-class RandomSampler(BaseSampler):
+class UniformSampler(BaseSampler):
     """Random sampler for dataset items.
 
     This sampler randomly selects items from the dataset, either at the
     complex level or the chain level, based on the configuration.
     """
 
-    @dataclass
-    class Config(BaseConfig):
+    class Config(BaseSampler.Config):
         """Configuration for RandomSampler.
 
         Parameters
@@ -33,15 +28,17 @@ class RandomSampler(BaseSampler):
         self.config = config
         self.chain_level = config.chain_level
 
-    def setup(self, records: list[Metadata]) -> None:
-        self.items: list[Sample] = []
+    def get_samples(self, records: list[Metadata]) -> tuple[list[Sample], None]:
+        samples: list[Sample]
         if self.chain_level:
-            self.items = [Sample(record, None) for record in records]
+            samples = [Sample(m, None) for m in records]
         else:
-            for record in records:
-                for chain in record.chains:
+            samples = []
+            for m in records:
+                for chain in m.chains:
                     if not chain.valid:
                         continue
-                    self.items.append(Sample(record, (chain.asym_id,)))
+                    samples.append(Sample(m, (chain.asym_id,)))
 
-        self.weights: np.ndarray = np.ones(len(self.items)) / len(self.items)
+        weights = None  # Uniform sampling
+        return samples, weights

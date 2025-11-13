@@ -109,33 +109,33 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
 
     # Define field types
     token_field_dtype: dict[str, type] = {
-        "res_type": np.uint8,  # 0-31
-        "chain_type": np.uint8,  # 0-3
-        "entity_id": np.uint16,
-        "asym_id": np.uint16,
-        "sym_id": np.uint16,
-        "token_index": np.uint32,
-        "residue_index": np.uint32,
-        "disto_index": np.uint8,  # 0-23
-        "center_index": np.uint8,  # 0-23
-        "num_atoms": np.uint8,  # 0-23
+        "res_type": np.int8,  # 0-31
+        "chain_type": np.int8,  # 0-3
+        "entity_id": np.int16,
+        "asym_id": np.int16,
+        "sym_id": np.int16,
+        "token_index": np.int32,
+        "residue_index": np.int32,
+        "disto_index": np.int8,  # 0-23
+        "center_index": np.int8,  # 0-23
+        "num_atoms": np.int8,  # 0-23
         "resolved_mask": np.bool_,
         "is_standard": np.bool_,
     }
     atom_field_dtype: dict[str, type] = {
         "resolved_mask": np.bool_,
         "ref_charge": np.float16,
-        "ref_element": np.uint8,
-        "ref_atom_name_chars": np.uint8,
+        "ref_element": np.int8,
+        "ref_atom_name_chars": np.int8,  # 0-63
         "ref_pos": np.float32,
         "label_coords": np.float32,
         "apo_coords": np.float32,
     }
     bond_field_dtype: dict[str, type] = {
-        "asym_id": np.uint16,
-        "token_index": np.uint32,
-        "atom_index": np.uint16,
-        "bond_type": np.uint8,
+        "asym_id": np.int16,
+        "token_index": np.int32,
+        "atom_index": np.int8,  # 0-23
+        "bond_type": np.int8,
     }
 
     chains = structure.chains[structure.mask]

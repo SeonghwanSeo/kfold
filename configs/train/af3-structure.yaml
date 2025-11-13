@@ -1,19 +1,41 @@
 # Configuration for K-Fold structure module training
 
-train_structure_module: true
-train_confidence_module: false
+# Random Seed
+seed: 42
+
+# Lightning Trainer Configuration
+trainer:
+  accelerator: 'auto'
+  strategy: 'auto'
+  devices: 'auto'
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: -1
+  limit_train_batches: 100_000
+  log_every_n_steps: 1
+  enable_checkpointing: true
+  accumulate_grad_batches: 128
+  gradient_clip_val: 10.0
+
+wandb:
+  use: true
+  project: "KFold"
+  entity: null # set your entity name
+  name: null # set your run name
+  group: null # set your group name
 
 # Exponential Moving Average (EMA)
-use_ema: true
+training:
+  train_structure_module: true
+  train_confidence_module: false
 
-train:
   # Training step hyperparameters
   num_cycles: 4
   # For structure module training
   diffusion_batch_size: 48
   # For confidence module training
   num_steps: 20  # Mini-diffusion rollout
-  num_diffusion_samples: 2  # Number of diffusion samples for confidence training
+  num_diffusion_samples: 1  # Number of diffusion samples for confidence training
 
 validation:
   # Validation step hyperparameters
@@ -21,8 +43,20 @@ validation:
   num_steps: 20
   num_diffusion_samples: 5
 
-# TODO: add optimizer and lr scheduling
-opt: {}
+optimizer:
+  opt: 'adam'
+  beta_1: 0.9
+  beta_2: 0.95
+  eps: 1e-8
+  lr_scheduler: af3
+  base_lr: 0.0
+  max_lr: 0.0018
+  lr_warmup_no_steps: 1000
+  lr_start_decay_after_n_steps: 50000
+  lr_decay_every_n_steps: 50000
+  lr_decay_factor: 0.95
+  use_ema: true
+  ema_decay: 0.999
 
 loss:
   weights:
@@ -62,3 +96,39 @@ loss:
   # Confidence loss
   # TODO
   confidence_loss: {}
+
+data:
+  _registry_: "datamodule"
+  _class_: TrainingDataModule
+  train_batch_size: 1
+  val_batch_size: 1
+  num_workers: 4
+  max_tokens: 384
+  pin_memory: false
+  boltz_processed_path: /cache/wykim_lab/rcsb_processed_targets/
+  boltz_split_path: ./assets/splits/boltz1
+
+  filters:
+    - _registry_: "data_filter"
+      _class_: NumChainFilter
+      max_chains: 300
+    - _registry_: "data_filter"
+      _class_: ReleaseDateFilter
+      date: "2021-09-30"
+      ref: released
+    - _registry_: "data_filter"
+      _class_: ResolutionFilter
+      resolution: 9.0
+
+  cropper:
+    _registry_: "data_cropper"
+    _class_: BoltzCropper
+    min_neighborhood: 0
+    max_neighborhood : 40
+
+  sampler:
+    _registry_: "data_sampler"
+    _class_: ClusterSampler
+    beta_chain: 0.5
+    beta_interface: 1.0
+    allow_redundant: True

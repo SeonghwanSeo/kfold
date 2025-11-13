@@ -33,7 +33,7 @@ def weighted_rigid_align(
     """
 
     device = true_coords.device
-    with torch.autocast(device.type, enabled=False):
+    with torch.autocast(device.type, dtype=torch.float32):
         L = true_coords.shape[-2]
         weights = weights.unsqueeze(-1)  # [..., L, 1]
         weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1)  # [..., 1, 1]
@@ -371,7 +371,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        chunk_size: int | None = None,
+        chunk_size: int | None = 4,
     ) -> torch.Tensor:
         """Compute weighted alignment.
 
