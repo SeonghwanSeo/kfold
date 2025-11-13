@@ -83,6 +83,14 @@ def build_trainer(cfg, default_root_dir: Path) -> pl.Trainer:
     model_summary = pl.callbacks.ModelSummary(max_depth=2)
     callbacks.append(model_summary)
 
+    # FIXME: currently, validation is not implemented yet.
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        monitor=None,
+        save_top_k=-1,
+        filename="best-train-loss-{epoch}-{step}",
+    )
+    callbacks.append(checkpoint_callback)
+
     pl_trainer_cfg = train_cfg.trainer
     trainer = pl.Trainer(
         default_root_dir=default_root_dir,
@@ -95,6 +103,7 @@ def build_trainer(cfg, default_root_dir: Path) -> pl.Trainer:
         precision=pl_trainer_cfg.precision,
         max_epochs=pl_trainer_cfg.max_epochs,
         limit_train_batches=pl_trainer_cfg.limit_train_batches,
+        limit_val_batches=0.0,  # FIXME: validation is not implemented yet
         log_every_n_steps=pl_trainer_cfg.log_every_n_steps,
         enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
         accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
@@ -121,7 +130,7 @@ def train(args) -> None:
         cfg.train.trainer.num_nodes = args.num_nodes
     if args.num_workers is not None:
         cfg.train.data.num_workers = args.num_workers
-    if args.no_wandb is not None:
+    if args.no_wandb:
         cfg.train.wandb.use = False
 
     # Set random seed
