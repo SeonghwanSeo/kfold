@@ -1,8 +1,9 @@
-# from . import <files>
+"""Simple auto-import script for package initialization."""
+
 import importlib
 from pathlib import Path
 
-from .base import BaseFilter
+from .base import BaseCropper
 
 # Get all Python module names in current directory
 _package_dir = Path(__file__).parent

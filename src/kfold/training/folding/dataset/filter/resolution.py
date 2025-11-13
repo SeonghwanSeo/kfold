@@ -3,27 +3,27 @@
 from kfold.data.metadata import Metadata
 from kfold.utils.registry import DATA_FILTER
 
-from .filter import DataFilter
+from .base import BaseFilter
 
 
 @DATA_FILTER.register()
-class ResolutionFilter(DataFilter):
+class ResolutionFilter(BaseFilter):
     """A filter that filters complexes based on their resolution.
     NOTE: this works only for RCSB PDB entries.
     """
 
-    class Config:
+    class Config(BaseFilter.Config):
         """
         resolution (float): The maximum allowed resolution.
         """
 
-        resolution: float = 4.0
+        resolution: float = 9.0
 
     def __init__(self, config: Config):
         self.resolution: float = config.resolution
 
-    def filter(self, metadata: Metadata) -> bool:
-        record = metadata.rcsb
-        assert record is not None, "DateFilter only works for RCSB records"
-        assert record.resolution is not None, "Resolution is empty"
-        return record.resolution <= self.resolution
+    def filter(self, record: Metadata) -> bool:
+        exp_record = record.exp
+        assert exp_record is not None, "ResolutionFilter only works for RCSB records"
+        assert exp_record.resolution is not None, "Resolution is empty"
+        return exp_record.resolution <= self.resolution

@@ -3,11 +3,11 @@ from kfold.data.metadata import Metadata
 from kfold.utils.modality_utils.ligand import LIGAND_EXCLUSIONS
 from kfold.utils.registry import DATA_FILTER
 
-from .filter import DataFilter
+from .base import BaseFilter
 
 
 @DATA_FILTER.register()
-class CompositionFilter(DataFilter):
+class CompositionFilter(BaseFilter):
     """Filter the data based on the composition of biomolecular complex
 
     Rule:
@@ -20,7 +20,7 @@ class CompositionFilter(DataFilter):
       out some common molecules.
     """
 
-    class Config:
+    class Config(BaseFilter.Config):
         """
         remove_excluding_ligands (bool): Whether to remove ligands with excluded CCDs.
         """
@@ -30,17 +30,17 @@ class CompositionFilter(DataFilter):
     def __init__(self, config: Config):
         self.remove_excluding_ligands: bool = config.remove_excluding_ligands
 
-    def filter(self, metadata: Metadata) -> bool:
-        chains = metadata.chains
+    def filter(self, record: Metadata) -> bool:
+        chains = record.chains
 
         if self.remove_excluding_ligands:
             # Remove ligands with excluded CCDs
             chains = [
                 chain
-                for chain in metadata.chains
+                for chain in record.chains
                 if not (
                     chain.chain_type == C.chain.ChainType.Ligand
-                    and chain.ccd in LIGAND_EXCLUSIONS
+                    and chain.chain_name in LIGAND_EXCLUSIONS
                 )
             ]
 

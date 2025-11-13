@@ -4,6 +4,8 @@ NUM_RES_TYPES: int = len(residue.ResidueName)
 NUM_ATOM_NAME_CHARS: int = 64  # AlphaFold3
 NUM_ATOM_ELEMENTS: int = 128  # AlphaFold3
 
+MAX_NUM_ATOMS_PER_TOKEN: int = 24
+
 # FIXME: do we need more pocket contact types?
 NUM_POCKET_CONTACT_TYPES: int = len(pocket.ContactType)
 
