@@ -11,4 +11,4 @@ use_msa: False
 use_template: False
 activation_checkpointing: True
 offload_to_cpu: False
-use_kernels: True
+use_kernels: False

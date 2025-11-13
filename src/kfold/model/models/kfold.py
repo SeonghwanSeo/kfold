@@ -6,10 +6,9 @@ from omegaconf import DictConfig
 
 import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
-from kfold.utils.registry import MAIN_MODULE, Registry
+from kfold.utils.registry import Registry
 
 
-@MAIN_MODULE.register()
 class KFold(torch.nn.Module):
     def __init__(self, global_config: DictConfig):
         super().__init__()
@@ -201,7 +200,6 @@ class KFold(torch.nn.Module):
                 s_trunk,
                 z_trunk,
                 diffusion_batch_size,
-                model_cache=model_cache,
             )
 
         if train_confidence_module:

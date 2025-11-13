@@ -3,12 +3,15 @@ from abc import ABC, abstractmethod
 import numpy as np
 
 from kfold.data.tokenized import TokenizedStructure
-from kfold.utils.registry import DATA_CROPPER
+from kfold.utils.registry import DATA_CROPPER, BaseConfig
 
 
 @DATA_CROPPER.register()
 class BaseCropper(ABC):
     """Interpolate between contiguous and spatial crops."""
+
+    class Config(BaseConfig):
+        """Configuration for BaseCropper."""
 
     def crop(
         self,

@@ -312,10 +312,10 @@ class TokenLayout(TensorLayout):
             "entity_id": 0,
             "asym_id": 0,
             "sym_id": 0,
-            "residue_index": PAD_IDX,
-            "disto_index": PAD_IDX,
-            "center_index": PAD_IDX,
-            "frames_index": PAD_IDX,
+            "residue_index": -1,
+            "disto_index": -1,
+            "center_index": -1,
+            "frames_index": -1,
             "disto_coords": 0.0,
             "center_coords": 0.0,
             "resolved_mask": False,
@@ -448,7 +448,6 @@ class AtomLayout(TensorLayout):
             "ref_charge": 0.0,
             "ref_pos": 0.0,
             "ref_space_uid": -1,
-            "ref_token_index": PAD_IDX,
             "token_index": 0,
             "apo_coords": 0.0,
             "resolved_mask": False,
@@ -749,7 +748,6 @@ class FoldingInput:
                 f"  num_tokens: {num_tokens}\n"
                 f"  num_atoms: {num_atoms}\n"
                 f"  num_bonds: {num_bonds}\n"
-                f"  metadata: {self.metadata}\n"
                 f"  device: {device}\n"
                 f")"
             )
@@ -760,7 +758,6 @@ class FoldingInput:
                 f"  num_tokens: {num_tokens}\n"
                 f"  num_atoms: {num_atoms}\n"
                 f"  num_bonds: {num_bonds}\n"
-                f"  metadata: {self.metadata}\n"
                 f"  device: {device}\n"
                 f")"
             )

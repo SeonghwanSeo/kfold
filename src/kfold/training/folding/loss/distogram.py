@@ -73,7 +73,7 @@ class DistogramLoss(torch.nn.Module):
         Parameters
         ----------
         atom_coords : torch.Tensor
-            Tensor of shape (B, Nholo, Latom, 3) containing atom coordinates.
+            Tensor of shape (B, Latom, Nholo, 3) containing atom coordinates.
         disto_index : torch.Tensor
             Tensor of shape (B, Ltoken) containing the indices of atoms used for distogram
 
@@ -85,7 +85,8 @@ class DistogramLoss(torch.nn.Module):
         batch_size = atom_coords.shape[0]
         batch_indices = torch.arange(batch_size, device=atom_coords.device).unsqueeze(-1)
 
-        disto_coords = atom_coords[batch_indices, :, disto_index]  # [B, Nholo, Ltoken, 3]
+        disto_coords = atom_coords[batch_indices, disto_index]  # [B, Ltoken, Nholo, 3]
+        disto_coords = disto_coords.permute(0, 2, 1, 3)  # [B, Nholo, Ltoken, 3]
         disto_pair_dist = torch.cdist(
             disto_coords, disto_coords
         )  # [B, Nholo, Ltoken, Ltoken]

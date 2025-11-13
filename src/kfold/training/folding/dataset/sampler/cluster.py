@@ -1,17 +1,17 @@
 # Started from https://github.com/jwohlwend/boltz
 from collections import defaultdict
-from dataclasses import dataclass
 
 import numpy as np
 
 import kfold.constants as C
 from kfold.data.metadata import ChainInfo, InterfaceInfo, Metadata
-from kfold.utils.registry import DATA_SAMPLER, BaseConfig
+from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample
 
 # FIXME: (SeonghwanSeo) Currently, I restrict that only protein and ligand
 # are considered. Need to remove this restriction in the future.
+ALLOW_NUC = False
 
 
 # === Helpers to compute weights === #
@@ -68,7 +68,7 @@ def get_chain_weight(
         n_ligand += 1
 
     # FIXME: remove following lines.
-    if n_nuc > 0:
+    if not ALLOW_NUC and n_nuc > 0:
         return 0
 
     cluster_id = get_chain_cluster(chain)
@@ -127,7 +127,7 @@ def get_interface_weight(
             n_ligand += 1
 
     # FIXME: remove following lines.
-    if n_nuc > 0:
+    if not ALLOW_NUC and n_nuc > 0:
         return 0
 
     cluster_id = get_interface_cluster(interface, chain_dict)
@@ -166,8 +166,7 @@ class ClusterSampler(BaseSampler):
     if `allow_redundant` is False.
     """
 
-    @dataclass
-    class Config(BaseConfig):
+    class Config(BaseSampler.Config):
         """Initialize the sampler.
 
         Parameters
@@ -194,7 +193,7 @@ class ClusterSampler(BaseSampler):
         beta_interface: float = 1.0
         allow_redundant: bool = True
 
-    def __init__(self, config: Config, records: list[Metadata]) -> None:
+    def __init__(self, config: Config) -> None:
         self.config = config
         # weights
         self.alpha_prot = config.alpha_prot
@@ -206,14 +205,57 @@ class ClusterSampler(BaseSampler):
 
         self.allow_redundant = config.allow_redundant
 
-    def setup(self, records: list[Metadata]):
+        # Cluster sizes
+        self.chain_cluster_sizes: dict[str, int] = defaultdict(int)
+        self.interface_cluster_sizes: dict[str, int] = defaultdict(int)
+
+    def get_samples(self, records: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
+        # Estimate cluster sizes
         self.estimate_cluster_sizes(records)
-        self.compute_sampling_weights(records)
+
+        # Get samples and its weights
+        samples: list[Sample] = []
+        weights: list[float] = []
+
+        for record in records:
+            chain_dict: dict[int, ChainInfo] = {
+                chain.asym_id: chain for chain in record.chains
+            }
+            for chain in record.chains:
+                if not chain.valid:
+                    continue
+                weight = get_chain_weight(
+                    chain,
+                    self.chain_cluster_sizes,
+                    self.beta_chain,
+                    self.alpha_prot,
+                    self.alpha_nuc,
+                    self.alpha_ligand,
+                )
+                samples.append(Sample(record, (chain.asym_id,)))
+                weights.append(weight)
+
+            for interface in record.interfaces:
+                if not interface.valid:
+                    continue
+                weight = get_interface_weight(
+                    interface,
+                    chain_dict,
+                    self.interface_cluster_sizes,
+                    self.beta_interface,
+                    self.alpha_prot,
+                    self.alpha_nuc,
+                    self.alpha_ligand,
+                )
+                samples.append(Sample(record, interface.asym_ids))
+                weights.append(weight)
+
+        # Normalize weights
+        weights = np.array(weights) / np.sum(weights)
+        return samples, weights
 
     def estimate_cluster_sizes(self, records: list[Metadata]):
         # Estimate cluster sizes of chains and interfaces
-        self.chain_cluster_sizes: dict[str, int] = defaultdict(int)
-        self.interface_cluster_sizes: dict[str, int] = defaultdict(int)
 
         for record in records:
             chain_dict: dict[int, ChainInfo] = {
@@ -237,46 +279,3 @@ class ClusterSampler(BaseSampler):
                 self.chain_cluster_sizes[cluster_id] += 1
             for cluster_id in interface_clusters_in_record:
                 self.interface_cluster_sizes[cluster_id] += 1
-
-    def compute_sampling_weights(self, records: list[Metadata]):
-        """Compute sampling weights for chains and interfaces."""
-
-        # Compute weights
-        items: list[Sample] = []
-        weights: list[float] = []
-
-        for record in records:
-            chain_dict: dict[int, ChainInfo] = {
-                chain.asym_id: chain for chain in record.chains
-            }
-            for chain in record.chains:
-                if not chain.valid:
-                    continue
-                weight = get_chain_weight(
-                    chain,
-                    self.chain_cluster_sizes,
-                    self.beta_chain,
-                    self.alpha_prot,
-                    self.alpha_nuc,
-                    self.alpha_ligand,
-                )
-                items.append(Sample(record, (chain.asym_id,)))
-                weights.append(weight)
-
-            for interface in record.interfaces:
-                if not interface.valid:
-                    continue
-                weight = get_interface_weight(
-                    interface,
-                    chain_dict,
-                    self.interface_cluster_sizes,
-                    self.beta_interface,
-                    self.alpha_prot,
-                    self.alpha_nuc,
-                    self.alpha_ligand,
-                )
-                items.append(Sample(record, interface.asym_ids))
-                weights.append(weight)
-
-        self.items = items
-        self.weights = np.array(weights) / np.sum(weights)

@@ -1,7 +1,7 @@
 import kfold.constants as C
 from kfold.data.metadata import Metadata
 from kfold.utils.modality_utils.ligand import LIGAND_EXCLUSIONS
-from kfold.utils.registry import DATA_FILTER, BaseConfig
+from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
 
@@ -20,7 +20,7 @@ class CompositionFilter(BaseFilter):
       out some common molecules.
     """
 
-    class Config(BaseConfig):
+    class Config(BaseFilter.Config):
         """
         remove_excluding_ligands (bool): Whether to remove ligands with excluded CCDs.
         """

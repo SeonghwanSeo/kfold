@@ -1,10 +1,7 @@
 import dataclasses
 import typing
 from collections.abc import Callable
-from functools import wraps
-from typing import Any, ClassVar, TypeVar
-
-from omegaconf import OmegaConf
+from typing import Any, TypeVar
 
 C = TypeVar("C", bound=type[Any])
 ConfigT = TypeVar("ConfigT", bound="BaseConfig")
@@ -23,8 +20,8 @@ class DataclassMeta(type):
 class BaseConfig(metaclass=DataclassMeta):
     """Base configuration class for registry modules."""
 
-    _registry_: ClassVar[str] = ""  # placeholder for OmegaConf.merge
-    _class_: ClassVar[str] = ""  # placeholder for OmegaConf.merge
+    _registry_: str = ""  # placeholder for OmegaConf.merge
+    _class_: str = ""  # placeholder for OmegaConf.merge
 
 
 class Registry:
@@ -177,33 +174,12 @@ class Registry:
 
         # If a config class is provided, wrap the __init__ method
         if config_cls is not None:
+            # store the config class in the registry
+            self.__config_dict__[name] = config_cls
+
             # Set registry and class name in the config class
             config_cls._registry_ = self.name
             config_cls._class_ = name
-
-            original_init = module.__init__
-
-            # wrap the __init__ method
-            @wraps(original_init)
-            def wrapped_init(instance, config: Any, *args, **kwargs):
-                # create a default configuration from the provided config dataclass
-                if getattr(config, "_initialized_", False):
-                    # Prevent re-initialization, i.e., super().__init__ calls
-                    return original_init(instance, config, *args, **kwargs)
-
-                _config = OmegaConf.to_container(config)
-                _config.pop("_registry_", None)
-                _config.pop("_class_", None)
-                _config = OmegaConf.create(_config)
-                # store the config class in the registry
-                merged_config = OmegaConf.merge(config_cls, _config)
-                merged_config = OmegaConf.to_object(merged_config)
-
-                # Prevent re-initialization, i.e., super().__init__ calls
-                merged_config._initialized_ = True
-                return original_init(instance, merged_config, *args, **kwargs)
-
-            module.__init__ = wrapped_init  # type: ignore
 
         return module
 
@@ -227,9 +203,6 @@ DATASET = Registry("dataset")
 DATA_FILTER = Registry("data_filter")
 DATA_SAMPLER = Registry("data_sampler")
 DATA_CROPPER = Registry("data_cropper")
-
-# K-Fold module
-MAIN_MODULE = Registry("main_module")
 
 # Input encoder
 SEQUENCE_ENCODER = Registry("sequence_encoder")

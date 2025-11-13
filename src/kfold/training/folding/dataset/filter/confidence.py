@@ -1,7 +1,7 @@
 """Implemented from https://github.com/jwohlwend/boltz"""
 
 from kfold.data.metadata import Metadata
-from kfold.utils.registry import DATA_FILTER, BaseConfig
+from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
 
@@ -14,7 +14,7 @@ class ConfidenceFilter(BaseFilter):
     NOTE: this works only for synthetic data entries.
     """
 
-    class Config(BaseConfig):
+    class Config(BaseFilter.Config):
         """
         plddt_threshold (float): The minimum confidence score (pLDDT).
         """

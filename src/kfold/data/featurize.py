@@ -6,6 +6,11 @@ from kfold.constants.residue import residue_index_to_name
 
 from . import model_input, tokenized, utils
 
+# TODO list:
+# 1. Random augmentation for each ref-pos
+# 2. Replace apo_coords with real apo structure
+# 3. Add symmetry.
+
 
 def featurize_structure(
     structure: tokenized.TokenizedStructure,

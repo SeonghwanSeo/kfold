@@ -1,11 +1,9 @@
-from dataclasses import dataclass
-
 import numpy as np
 from scipy.spatial.distance import cdist
 
 import kfold.constants as C
 from kfold.data import tokenized
-from kfold.utils.registry import DATA_CROPPER, BaseConfig
+from kfold.utils.registry import DATA_CROPPER
 
 from .base import BaseCropper
 
@@ -114,8 +112,7 @@ def pick_interface_token(
 class BoltzCropper(BaseCropper):
     """Interpolate between contiguous and spatial crops."""
 
-    @dataclass
-    class Config(BaseConfig):
+    class Config(BaseCropper.Config):
         """Configuration for the BoltzCropper.
 
         Modulates the type of cropping to be performed.
@@ -177,7 +174,7 @@ class BoltzCropper(BaseCropper):
         all_residue_indices = token_data.residue_index
         # NOTE: (seonghwanseo) Here we use the first holo coordinates.
         all_token_centers = atom_data.label_coords[
-            token_data.token_index, 0, token_data.center_index
+            token_data.token_index, token_data.center_index, 0, :
         ]  # (num_tokens, 3)
 
         # Randomly select a neighborhood size

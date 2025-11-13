@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from kfold.data.metadata import Metadata
-from kfold.utils.registry import DATA_FILTER, BaseConfig
+from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
 
@@ -12,7 +12,7 @@ from .base import BaseFilter
 class SubsetFilter(BaseFilter):
     """Filter a data record based on a subset of the data."""
 
-    class Config(BaseConfig):
+    class Config(BaseFilter.Config):
         """
         Attributes:
             subset_path (str): The path to the subset file.

@@ -371,7 +371,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        chunk_size: int | None = None,
+        chunk_size: int | None = 4,
     ) -> torch.Tensor:
         """Compute weighted alignment.
 

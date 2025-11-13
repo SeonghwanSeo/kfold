@@ -1,7 +1,7 @@
 """Implemented from https://github.com/jwohlwend/boltz"""
 
 from kfold.data.metadata import Metadata
-from kfold.utils.registry import DATA_FILTER, BaseConfig
+from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
 
@@ -12,12 +12,12 @@ class ResolutionFilter(BaseFilter):
     NOTE: this works only for RCSB PDB entries.
     """
 
-    class Config(BaseConfig):
+    class Config(BaseFilter.Config):
         """
         resolution (float): The maximum allowed resolution.
         """
 
-        resolution: float = 4.0
+        resolution: float = 9.0
 
     def __init__(self, config: Config):
         self.resolution: float = config.resolution

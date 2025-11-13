@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 
 from kfold.data.metadata import Metadata
-from kfold.utils.registry import DATA_FILTER, BaseConfig
+from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
 
@@ -15,15 +15,15 @@ class ReleaseDateFilter(BaseFilter):
     NOTE: this works only for RCSB PDB entries.
     """
 
-    class Config(BaseConfig):
+    class Config(BaseFilter.Config):
         """
         date (str): The maximum date of PDB entries to filter
         ref (str): The reference date to use.
             Can be "deposited", "revised", or "released".
         """
 
-        date: str
-        ref: Literal["deposited", "revised", "released"] = "released"
+        date: str = "2021-09-30"
+        ref: str = "released"
 
     def __init__(self, config: Config):
         self.filter_date: datetime = datetime.fromisoformat(config.date)

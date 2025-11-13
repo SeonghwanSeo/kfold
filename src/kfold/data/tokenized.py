@@ -210,10 +210,10 @@ class Atom(PlainLayout[np.ndarray]):
     ref_atom_name_chars: np.ndarray  # [Ntoken, 24, 4], int
     ref_element: np.ndarray  # [Ntoken, 24], int
     ref_charge: np.ndarray  # [Ntoken, 24,], float
-    ref_pos: np.ndarray  # [Ntoken, 24, Nholo, 3], float32
+    ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
     apo_coords: np.ndarray  # [Ntoken, 24, Napo, 3], float32
     resolved_mask: np.ndarray  # [Ntoken, 24,], bool
-    label_coords: np.ndarray  # [Ntoken, 24, 3], float32
+    label_coords: np.ndarray  # [Ntoken, 24, Nholo, 3], float32
 
     @property
     def layout_shape(self) -> tuple[int, ...]:
@@ -371,4 +371,18 @@ class TokenizedStructure:
             atom=cropped_atom,
             bond=cropped_bond,
             metadata=self.metadata,
+        )
+
+    def __repr__(self) -> str:
+        """FoldingInput summary representation."""
+        # Summary statistics
+        num_chains = self.num_chains
+        num_tokens = self.num_tokens
+        num_bonds = len(self.bond)
+        return (
+            f"FoldingInput(\n"
+            f"  num_chains: {num_chains}\n"
+            f"  num_tokens: {num_tokens}\n"
+            f"  num_bonds: {num_bonds}\n"
+            f")"
         )
