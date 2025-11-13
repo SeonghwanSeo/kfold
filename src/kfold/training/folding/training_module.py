@@ -237,32 +237,47 @@ class KFoldTrainingModule(pl.LightningModule):
             diffusion_batch_size=training_config.diffusion_batch_size,
             mode="train",
         )
+        try:
+            loss, metrics = self.compute_losses(batch, out)
+        except Exception as e:
+            print(f"Skipping batch {batch_idx} due to error: {e}")
+            return None
 
-        # Compute losses
-        if self.train_structure_module:
-            distogram_loss, distogram_metrics = self.compute_distogram_loss(
-                logits=out["distogram"]["logits"],
-                f_input=batch,
-            )
-            try:
-                diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
-                    x_pred=out["diffusion"]["denoised_atom_coords"],
-                    x_true=out["diffusion"]["true_atom_coords"],
-                    weights=out["diffusion"]["loss_weights"],
+        metrics = {f"train/{k}": v for k, v in metrics.items()}
+        self.log_dict(metrics)
+
+        if self.global_step % 10 == 0:
+            self.log_model_state()
+
+        return loss
+
+    def compute_losses(
+        self, batch: FoldingInput, model_output: dict[str, Any]
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute losses of given the model output."""
+        with torch.autocast("cuda", dtype=torch.float32):
+            # NOTE: Compute the losses in float32 for better numerical stability
+            # Compute losses
+            if self.train_structure_module:
+                distogram_loss, distogram_metrics = self.compute_distogram_loss(
+                    logits=model_output["distogram"]["logits"],
                     f_input=batch,
                 )
-            except Exception as e:
-                print(f"Skipping batch {batch_idx} due to error: {e}")
-                return None
+                diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
+                    x_pred=model_output["diffusion"]["denoised_atom_coords"],
+                    x_true=model_output["diffusion"]["true_atom_coords"],
+                    weights=model_output["diffusion"]["loss_weights"],
+                    f_input=batch,
+                )
 
-        else:
-            distogram_loss, distogram_metrics = 0.0, {}
-            diffusion_loss, diffusion_metrics = 0.0, {}
+            else:
+                distogram_loss, distogram_metrics = 0.0, {}
+                diffusion_loss, diffusion_metrics = 0.0, {}
 
-        if self.train_confidence_module:
-            confidence_loss, confidence_metrics = self.compute_confidence_loss()
-        else:
-            confidence_loss, confidence_metrics = 0.0, {}
+            if self.train_confidence_module:
+                confidence_loss, confidence_metrics = self.compute_confidence_loss()
+            else:
+                confidence_loss, confidence_metrics = 0.0, {}
 
         # Aggregate losses
         # See Section 5.3 Equation 15
@@ -278,13 +293,7 @@ class KFoldTrainingModule(pl.LightningModule):
         all_metrics = distogram_metrics | diffusion_metrics | confidence_metrics
         all_metrics["loss"] = loss.detach()
 
-        all_metrics = {f"train/{k}": v for k, v in all_metrics.items()}
-        self.log_dict(all_metrics)
-
-        if self.global_step % 10 == 0:
-            self.log_model_state()
-
-        return loss
+        return loss, all_metrics
 
     def validation_step(self, batch, batch_idx):
         # TODO: sample molecules and compute validation metrics

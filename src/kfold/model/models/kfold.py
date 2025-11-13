@@ -172,7 +172,7 @@ class KFold(torch.nn.Module):
             # diffusion module training. Instead, we construct cache inside
             # sample_structure method if necessary.
             self.score_model.eval()
-            with torch.no_grad():
+            with torch.no_grad() and torch.autocast("cuda", dtype=torch.float32):
                 coordinates = self.structure_module.sample_structure(
                     f_input=f_input,
                     s_inputs=s_inputs.detach(),
@@ -194,13 +194,14 @@ class KFold(torch.nn.Module):
 
             # Diffusion head
             self.score_model.train()
-            dict_out["diffusion"] = self.structure_module.training_step(
-                f_input,
-                s_inputs,
-                s_trunk,
-                z_trunk,
-                diffusion_batch_size,
-            )
+            with torch.autocast("cuda", dtype=torch.float32):
+                dict_out["diffusion"] = self.structure_module.training_step(
+                    f_input,
+                    s_inputs,
+                    s_trunk,
+                    z_trunk,
+                    diffusion_batch_size,
+                )
 
         if train_confidence_module:
             # TODO: implement confidence prediction with mini-rollout

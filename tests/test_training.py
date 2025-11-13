@@ -75,7 +75,7 @@ if __name__ == "__main__":
         f_input = FoldingInput.from_list([f_input])
         # print(f_input)
 
-        with torch.autocast(device_type="cuda", dtype=torch.float32, enabled=False):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             optimizer.zero_grad()
             forward_out = model.forward(
                 f_input=f_input,
@@ -97,21 +97,25 @@ if __name__ == "__main__":
             x_pred = diffusion_out["denoised_atom_coords"]
             x_true = diffusion_out["true_atom_coords"]
             diffusion_loss_weights = diffusion_out["loss_weights"]
+            assert diffusion_out["denoised_atom_coords"].dtype == torch.float32
 
             # Calculate loss
-            l_mse = mse_loss(
-                x_pred=x_pred,
-                x_true=x_true,
-                f_input=f_input,
-            )
+            with torch.autocast(device_type="cuda", dtype=torch.float32):
+                l_mse = mse_loss(
+                    x_pred=x_pred,
+                    x_true=x_true,
+                    f_input=f_input,
+                )
 
-            l_smooth_lddt = smooth_lddt_loss(
-                x_pred=x_pred,
-                x_true=x_true,
-                f_input=f_input,
-                chunk_size=8,
-            )
-            loss = (diffusion_loss_weights * l_mse + l_smooth_lddt + l_distogram).mean()
+                l_smooth_lddt = smooth_lddt_loss(
+                    x_pred=x_pred,
+                    x_true=x_true,
+                    f_input=f_input,
+                    chunk_size=8,
+                )
+                loss = (
+                    diffusion_loss_weights * l_mse + l_smooth_lddt + l_distogram
+                ).mean()
             loss.backward()
 
             print("Iteration:", it, "Loss:", loss.item())

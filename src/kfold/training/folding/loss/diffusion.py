@@ -33,7 +33,7 @@ def weighted_rigid_align(
     """
 
     device = true_coords.device
-    with torch.autocast(device.type, enabled=False):
+    with torch.autocast(device.type, dtype=torch.float32):
         L = true_coords.shape[-2]
         weights = weights.unsqueeze(-1)  # [..., L, 1]
         weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1)  # [..., 1, 1]
