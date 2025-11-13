@@ -1,6 +1,3 @@
-import contextlib
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 
@@ -20,7 +17,6 @@ class AF3PairformerTrunk(BaseTrunk):
     See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
     """
 
-    @dataclass
     class Config(BaseTrunk.Config):
         """Configuration for the Pairformer module.
 
@@ -161,9 +157,8 @@ class AF3PairformerTrunk(BaseTrunk):
         for i in range(1, num_cycles + 1):
             no_grad = self.training and (i < num_cycles)
 
-            with no_grad and torch.no_grad() or contextlib.nullcontext():
-                # Fixes an issue with unused parameters in autocast
-                if self.training and (i == num_cycles) and torch.is_autocast_enabled():
+            with torch.set_grad_enabled(not no_grad):
+                if (not no_grad) and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Line 8

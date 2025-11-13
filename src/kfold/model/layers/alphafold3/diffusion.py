@@ -224,7 +224,6 @@ class DiffusionModule(nn.Module):
         x_update : torch.Tensor
             The updated atom positions, shape [B, N, La, 3].
         """
-
         # B: batch size, N: number of diffusion samples
 
         # Line 1

@@ -1,3 +1,4 @@
+import time
 import warnings
 
 import torch
@@ -5,10 +6,9 @@ from omegaconf import DictConfig
 
 import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
-from kfold.utils.registry import MAIN_MODULE, Registry
+from kfold.utils.registry import Registry
 
 
-@MAIN_MODULE.register()
 class KFold(torch.nn.Module):
     def __init__(self, global_config: DictConfig):
         super().__init__()
@@ -172,7 +172,7 @@ class KFold(torch.nn.Module):
             # diffusion module training. Instead, we construct cache inside
             # sample_structure method if necessary.
             self.score_model.eval()
-            with torch.no_grad():
+            with torch.no_grad() and torch.autocast("cuda", dtype=torch.float32):
                 coordinates = self.structure_module.sample_structure(
                     f_input=f_input,
                     s_inputs=s_inputs.detach(),
@@ -194,14 +194,14 @@ class KFold(torch.nn.Module):
 
             # Diffusion head
             self.score_model.train()
-            dict_out["diffusion"] = self.structure_module.training_step(
-                f_input,
-                s_inputs,
-                s_trunk,
-                z_trunk,
-                diffusion_batch_size,
-                model_cache=model_cache,
-            )
+            with torch.autocast("cuda", dtype=torch.float32):
+                dict_out["diffusion"] = self.structure_module.training_step(
+                    f_input,
+                    s_inputs,
+                    s_trunk,
+                    z_trunk,
+                    diffusion_batch_size,
+                )
 
         if train_confidence_module:
             # TODO: implement confidence prediction with mini-rollout
@@ -218,7 +218,7 @@ class KFold(torch.nn.Module):
         num_cycles: int,
         num_steps: int,
         num_diffusion_samples: int,
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         """Forward pass of KFold model for model training.
 
         Parameters
@@ -232,6 +232,9 @@ class KFold(torch.nn.Module):
         num_diffusion_samples : int
             Number of diffusion samples for training.
         """
+        dict_out: dict[str, torch.Tensor] = {}
+        time_logs: dict[str, float] = {}
+
         # Indicate whether to return batched output
         return_batched_output = f_input.is_batched
 
@@ -239,9 +242,13 @@ class KFold(torch.nn.Module):
         f_input = self.ensure_batched_input(f_input)
 
         # Embed inputs
+        st = time.time()
         s_inputs, s_init, z_init = self.input_embedder(f_input)
+        et = time.time()
+        time_logs["input_embedder"] = et - st
 
         # Trunk with recycling
+        st = time.time()
         s_trunk, z_trunk = self.trunk(
             s_inputs,
             s_init,
@@ -249,16 +256,23 @@ class KFold(torch.nn.Module):
             f_input,
             num_cycles,
         )
+        et = time.time()
+        time_logs["trunk"] = et - st
+
         dict_out = {
             "s_trunk": s_trunk,
             "z_trunk": z_trunk,
         }
 
         # Distogram head
+        st = time.time()
         dict_out["distogram_logits"] = self.distogram_head(z_trunk)
+        et = time.time()
+        time_logs["distogram_head"] = et - st
 
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
+        st = time.time()
         dict_out["coordinates"] = self.structure_module.sample_structure(
             f_input,
             s_inputs,
@@ -267,6 +281,8 @@ class KFold(torch.nn.Module):
             num_steps,
             num_diffusion_samples,
         )
+        et = time.time()
+        time_logs["diffusion_head"] = et - st
 
         # TODO: Confidence head
 
@@ -274,7 +290,7 @@ class KFold(torch.nn.Module):
         if not return_batched_output:
             for key in dict_out:
                 dict_out[key] = dict_out[key].squeeze(0)
-        return dict_out
+        return dict_out, time_logs
 
     # === Helper functions === #
     def ensure_batched_input(

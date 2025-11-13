@@ -312,10 +312,10 @@ class TokenLayout(TensorLayout):
             "entity_id": 0,
             "asym_id": 0,
             "sym_id": 0,
-            "residue_index": PAD_IDX,
-            "disto_index": PAD_IDX,
-            "center_index": PAD_IDX,
-            "frames_index": PAD_IDX,
+            "residue_index": -1,
+            "disto_index": -1,
+            "center_index": -1,
+            "frames_index": -1,
             "disto_coords": 0.0,
             "center_coords": 0.0,
             "resolved_mask": False,
@@ -448,7 +448,6 @@ class AtomLayout(TensorLayout):
             "ref_charge": 0.0,
             "ref_pos": 0.0,
             "ref_space_uid": -1,
-            "ref_token_index": PAD_IDX,
             "token_index": 0,
             "apo_coords": 0.0,
             "resolved_mask": False,
@@ -749,7 +748,6 @@ class FoldingInput:
                 f"  num_tokens: {num_tokens}\n"
                 f"  num_atoms: {num_atoms}\n"
                 f"  num_bonds: {num_bonds}\n"
-                f"  metadata: {self.metadata}\n"
                 f"  device: {device}\n"
                 f")"
             )
@@ -760,7 +758,52 @@ class FoldingInput:
                 f"  num_tokens: {num_tokens}\n"
                 f"  num_atoms: {num_atoms}\n"
                 f"  num_bonds: {num_bonds}\n"
-                f"  metadata: {self.metadata}\n"
                 f"  device: {device}\n"
                 f")"
             )
+
+    # === Padding functions for preparing model inputs === #
+    def pad_to_multiple_of(self, multiple: int = 64) -> Self:
+        """Pad all layouts to the multiple of 64 tokens for LocalAtomAttention and
+        model efficiency."""
+        assert multiple > 0, f"multiple must be a positive integer, but got {multiple}."
+        assert multiple % 32 == 0, (
+            f"multiple must be a multiple of 32 for LocalAttention, but got {multiple}."
+        )
+        max_tokens = ((self.num_tokens + multiple - 1) // multiple) * multiple
+        return self.pad_to_max_token(max_tokens)
+
+    def pad_to_max_token(self, max_tokens: int) -> Self:
+        """Pad all layouts based on the given max_tokens."""
+        # Determine max_chains, max_atoms, max_bonds based on max_tokens
+        max_chains = max_tokens // 4  # min 4 tokens per chain
+        max_atoms = max_tokens * 24  # max 24 atoms per token
+        max_bonds = max_tokens * 10  # max 10 bonds per token
+
+        return self.pad(
+            max_chains=max_chains,
+            max_tokens=max_tokens,
+            max_atoms=max_atoms,
+            max_bonds=max_bonds,
+        )
+
+    def pad(
+        self,
+        max_tokens: int | None = None,
+        max_chains: int | None = None,
+        max_atoms: int | None = None,
+        max_bonds: int | None = None,
+    ) -> Self:
+        """Pad all layouts to the specified maximum sizes."""
+        max_tokens = max_tokens if max_tokens is not None else len(self.token)
+        max_chains = max_chains if max_chains is not None else len(self.chain)
+        max_atoms = max_atoms if max_atoms is not None else len(self.atom)
+        max_bonds = max_bonds if max_bonds is not None else len(self.bond)
+
+        return self.__class__(
+            chain=self.chain.pad(max_chains),
+            token=self.token.pad(max_tokens),
+            atom=self.atom.pad(max_atoms),
+            bond=self.bond.pad(max_bonds),
+            metadata=self.metadata,
+        )
