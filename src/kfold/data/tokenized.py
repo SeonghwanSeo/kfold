@@ -6,6 +6,7 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.layout import PlainLayout
+from kfold.data.metadata import Metadata
 from kfold.utils.misc import check_array
 
 __all__ = ["Chain", "Token", "Atom", "Bond", "TokenizedStructure"]
@@ -286,7 +287,7 @@ class Bond(PlainLayout[np.ndarray]):
         check_array(self.bond_type, name="bond_type", dtype=np.integer, shape=(*shape,))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TokenizedStructure:
     """Tokenized representation of a molecular structure.
 
@@ -300,12 +301,30 @@ class TokenizedStructure:
         Atom information.
     bond: Bond
         Bond information.
+    metadata: Metadata
+        Metadata information.
     """
 
     chain: Chain
     token: Token
     atom: Atom
     bond: Bond
+    metadata: Metadata | None = None
+
+    @property
+    def num_chains(self) -> int:
+        """Number of chains in the structure."""
+        return len(self.chain)
+
+    @property
+    def num_tokens(self) -> int:
+        """Number of tokens in the structure."""
+        return len(self.token)
+
+    @property
+    def num_bonds(self) -> int:
+        """Number of bonds in the structure."""
+        return len(self.bond)
 
     def crop(self, token_indices: np.ndarray) -> Self:
         """Crop the structure to the specified token indices.
@@ -351,4 +370,5 @@ class TokenizedStructure:
             token=cropped_token,
             atom=cropped_atom,
             bond=cropped_bond,
+            metadata=self.metadata,
         )

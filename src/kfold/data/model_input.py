@@ -764,3 +764,49 @@ class FoldingInput:
                 f"  device: {device}\n"
                 f")"
             )
+
+    # === Padding functions for preparing model inputs === #
+    def pad_to_multiple_of(self, multiple: int = 64) -> Self:
+        """Pad all layouts to the multiple of 64 tokens for LocalAtomAttention and
+        model efficiency."""
+        assert multiple > 0, f"multiple must be a positive integer, but got {multiple}."
+        assert multiple % 32 == 0, (
+            f"multiple must be a multiple of 32 for LocalAttention, but got {multiple}."
+        )
+        max_tokens = ((self.num_tokens + multiple - 1) // multiple) * multiple
+        return self.pad_to_max_token(max_tokens)
+
+    def pad_to_max_token(self, max_tokens: int) -> Self:
+        """Pad all layouts based on the given max_tokens."""
+        # Determine max_chains, max_atoms, max_bonds based on max_tokens
+        max_chains = max_tokens // 4  # min 4 tokens per chain
+        max_atoms = max_tokens * 24  # max 24 atoms per token
+        max_bonds = max_tokens * 10  # max 10 bonds per token
+
+        return self.pad(
+            max_chains=max_chains,
+            max_tokens=max_tokens,
+            max_atoms=max_atoms,
+            max_bonds=max_bonds,
+        )
+
+    def pad(
+        self,
+        max_tokens: int | None = None,
+        max_chains: int | None = None,
+        max_atoms: int | None = None,
+        max_bonds: int | None = None,
+    ) -> Self:
+        """Pad all layouts to the specified maximum sizes."""
+        max_tokens = max_tokens if max_tokens is not None else len(self.token)
+        max_chains = max_chains if max_chains is not None else len(self.chain)
+        max_atoms = max_atoms if max_atoms is not None else len(self.atom)
+        max_bonds = max_bonds if max_bonds is not None else len(self.bond)
+
+        return self.__class__(
+            chain=self.chain.pad(max_chains),
+            token=self.token.pad(max_tokens),
+            atom=self.atom.pad(max_atoms),
+            bond=self.bond.pad(max_bonds),
+            metadata=self.metadata,
+        )

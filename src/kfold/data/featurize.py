@@ -9,6 +9,7 @@ from . import model_input, tokenized, utils
 
 def featurize_structure(
     structure: tokenized.TokenizedStructure,
+    metadata: dict | None = None,
 ) -> model_input.FoldingInput:
     """Featurize a tokenized structure into model input features.
 
@@ -206,5 +207,6 @@ def featurize_structure(
         token=token_layout,
         atom=atom_layout,
         bond=bond_layout,
+        metadata=metadata,
     )
     return folding_input
