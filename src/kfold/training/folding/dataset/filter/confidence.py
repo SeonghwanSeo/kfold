@@ -27,6 +27,8 @@ class ConfidenceFilter(BaseFilter):
 
     def filter(self, record: Metadata) -> bool:
         pred_record = record.prediction
-        assert pred_record is not None, "DateFilter only works for synthetic data records"
+        assert pred_record is not None, (
+            "ConfidenceFilter only works for synthetic data records"
+        )
         assert pred_record.plddt is not None, "Confidence score is empty"
         return pred_record.plddt >= self.plddt_threshold

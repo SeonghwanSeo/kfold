@@ -45,7 +45,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def get_item_safe(self, index: int, num_trials: int = 10) -> model_input.FoldingInput:
         trials = []
-        for i in range(num_trials):
+        for _ in range(num_trials):
             sample = self.records[index]
             try:
                 return self.get_item(sample)
@@ -53,13 +53,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 raise e
             except Exception as e:
                 print(f"Error loading index {index}: {e}. Retrying...")
-                if i < num_trials - 1:
-                    index = np.random.randint(0, len(self))
-                    trials.append(sample)
-        else:
-            raise RuntimeError(
-                f"Failed to load data after {num_trials} attempts. Tried: {trials}"
-            )
+                index = np.random.randint(0, len(self))
+                trials.append(sample)
+        raise RuntimeError(
+            f"Failed to load data after {num_trials} attempts. Tried: {trials}"
+        )
 
     def get_item(self, record: metadata.Metadata, **kwargs) -> model_input.FoldingInput:
         """Get the folding input for the given sample."""
@@ -134,14 +132,12 @@ class TrainingDataset(SafeLoadingDataset):
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
-                raise e
                 print(f"Error loading index {index}: {e}. Retrying...")
                 index = np.random.randint(0, len(self))
                 trials.append(sample)
-        else:
-            raise RuntimeError(
-                f"Failed to load data after {num_trials} attempts. Tried: {trials}"
-            )
+        raise RuntimeError(
+            f"Failed to load data after {num_trials} attempts. Tried: {trials}"
+        )
 
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
         return f_input.pad_to_max_token(max_tokens=self.max_tokens)

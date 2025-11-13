@@ -42,7 +42,7 @@ class BoltzDataModuleConfig(DataModuleConfig):
     max_tokens: int  # Used for cropping and padding
     filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config = dataclasses.field(
-        default_factory=lambda: BaseSampler.Config()
+        default_factory=BaseSampler.Config
     )  # Default: uniform sampler
 
 

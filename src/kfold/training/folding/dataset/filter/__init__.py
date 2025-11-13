@@ -2,7 +2,6 @@
 import importlib
 from pathlib import Path
 
-from . import *  # noqa
 from .base import BaseFilter
 
 # Get all Python module names in current directory

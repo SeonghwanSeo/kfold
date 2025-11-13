@@ -380,7 +380,7 @@ class TokenizedStructure:
         num_tokens = self.num_tokens
         num_bonds = len(self.bond)
         return (
-            f"FoldingInput(\n"
+            f"TokenizedStructure(\n"
             f"  num_chains: {num_chains}\n"
             f"  num_tokens: {num_tokens}\n"
             f"  num_bonds: {num_bonds}\n"
