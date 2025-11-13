@@ -62,3 +62,26 @@ loss:
   # Confidence loss
   # TODO
   confidence_loss: {}
+
+data:
+  train_dataset:
+    - name: 'WeightedPDB'
+      class:
+        _registry_: "dataset"
+        _class_: "BoltzDataset"
+        key_path: ???
+        processed_path: ???
+      cropper:
+        _registry_: "data_cropper"
+        _class_: "BoltzCropper"
+        min_neighborhood: 0
+        max_neighborhood: 40
+      sampler:
+        _registry_: "data_sampler"
+        _class_: "ClusterSampler"
+        alpha_prot: 3.0
+        alpha_nucl: 1.0
+        alpha_lig: 0.5
+        beta_chain: 0.5
+        beta_interface: 1.0
+        allow_redundant: true

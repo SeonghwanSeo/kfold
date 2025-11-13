@@ -314,10 +314,9 @@ if __name__ == "__main__":
         """Multi-processing test"""
         test_keys = []
         for key in keys:
-            record = manifest[key]
-            metadata = parse_record(record)
+            record = parse_record(manifest[key])
 
-            if metadata.num_chains > 50:
+            if record.num_chains > 50:
                 continue
             test_keys.append(key)
 
@@ -332,12 +331,9 @@ if __name__ == "__main__":
         print(sum(results), len(results))
     else:
         for key in tqdm(keys):
-            record = manifest[key]
-            metadata = parse_record(record)
-            # print(record)
-            # print(metadata)
+            record = parse_record(manifest[key])
 
-            if metadata.num_chains > 20:
+            if record.num_chains > 20:
                 continue
             check_structure(key, verbose=True)
             # breakpoint()

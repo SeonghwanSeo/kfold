@@ -68,7 +68,13 @@ def _resolve_registry_defaults(config: DictConfig) -> DictConfig:
             try:
                 if config_cls is not None:
                     # Merge with registry defaults
-                    obj = OmegaConf.to_container(OmegaConf.merge(config_cls, obj))
+                    default_cfg = OmegaConf.structured(config_cls)
+                    # add _registry_ and _class_ (ClassVar)
+                    OmegaConf.set_struct(default_cfg, False)
+                    default_cfg._registry_ = config_cls._registry_
+                    default_cfg._class_ = config_cls._class_
+                    OmegaConf.set_struct(default_cfg, True)  # avoid invalid override
+                    obj = OmegaConf.to_container(OmegaConf.merge(default_cfg, obj))
             except Exception as e:
                 raise Exception(
                     f"Failed to merge defaults for {registry_name}.{type_name} - {e}"

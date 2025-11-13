@@ -11,5 +11,4 @@ use_msa: False
 use_template: False
 activation_checkpointing: True
 offload_to_cpu: False
-use_kernels: False
-tri_attn_chunk_threshold: 384
+use_kernels: True
