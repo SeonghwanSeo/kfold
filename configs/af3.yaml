@@ -20,7 +20,7 @@ train:
     precision: bf16-mixed
     max_epochs: 100
     limit_train_batches: 10_000
-    log_every_n_steps: 10
+    log_every_n_steps: 1 # `1` means: log per `accumulate_grad_batches`
     enable_checkpointing: true
     accumulate_grad_batches: 32 # set according to number of GPUs
 
