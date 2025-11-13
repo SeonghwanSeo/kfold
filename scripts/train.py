@@ -70,6 +70,7 @@ def build_trainer(cfg, default_root_dir: Path) -> pl.Trainer:
             group=train_cfg.wandb.group,
             entity=train_cfg.wandb.entity,
             config=to_dict(cfg),
+            save_dir=default_root_dir,
         )
         loggers = [wandb_logger]
     else:

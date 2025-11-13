@@ -3,8 +3,6 @@
 import importlib
 from pathlib import Path
 
-from . import *  # noqa
-
 # Get all Python module names in current directory
 _package_dir = Path(__file__).parent
 _modules = [f.stem for f in _package_dir.glob("*.py") if f.stem != "__init__"]
