@@ -460,6 +460,15 @@ class KFoldTrainingModule(pl.LightningModule):
     def ema(self, value: ExponentialMovingAverage):
         self._ema = value
 
+    def on_fit_start(self) -> None:
+        if self.use_ema:
+            if not self.is_ema_initialized:
+                ema_decay = self.optimizer_config.ema_decay
+                self.ema = ExponentialMovingAverage(
+                    parameters=self.parameters(), decay=ema_decay
+                )
+            self.ema.to(self.device)
+
     def on_train_start(self):
         if self.use_ema:
             if not self.is_ema_initialized:
