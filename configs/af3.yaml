@@ -33,7 +33,7 @@ train:
 
   data:
     train_batch_size: 1
-    num_workers: 4
+    num_workers: 4 # more 4 workers per batch is not recommended
     max_tokens: 384
     boltz_processed_path: /cache/wykim_lab/rcsb_processed_targets/
     boltz_split_path: ./assets/splits/boltz1
