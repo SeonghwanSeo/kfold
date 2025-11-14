@@ -1,7 +1,6 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 
 import math
-from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -20,7 +19,6 @@ class AF3SampleDiffusion(BaseStructureModule):
     See Section 3.7 Algorithm 18: SampleDiffusion in the AF3 paper.
     """
 
-    @dataclass
     class Config(BaseConfig):
         """Configuration for the Structure module.
 
@@ -105,11 +103,15 @@ class AF3SampleDiffusion(BaseStructureModule):
     def c_noise(self, sigma: torch.Tensor) -> torch.Tensor:
         return (sigma / self.sigma_data).clamp(1e-20).log() * 0.25
 
-    def compute_loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
+    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
         """Compute loss weights based on noise levels t_hat.
         See Section 3.7.1 Equation 6 of AlphaFold3 paper.
+
+        NOTE: We replace `+` with `*` in the denominator compared to the AlphaFold3 paper.
+        This matches the implementation in Boltz1, Protenix, and Openfold-3, and provides
+        better training stability.
         """
-        return (t_hat**2 + self.sigma_data**2) / (t_hat + self.sigma_data) ** 2
+        return (t_hat**2 + self.sigma_data**2) / ((t_hat * self.sigma_data) ** 2)
 
     def forward_model(
         self,
@@ -143,23 +145,37 @@ class AF3SampleDiffusion(BaseStructureModule):
 
         Returns
         -------
-        denoised_coords : torch.Tensor
+        x_out : torch.Tensor
             Denoised atom coordinates. Shape (B, N, L, 3).
         """
         if not isinstance(t_hat, torch.Tensor):
             t_hat = torch.full(
                 x_noisy.shape[:2], t_hat, device=x_noisy.device, dtype=x_noisy.dtype
             )  # [B, N]
+        t_hat_reshaped = t_hat[..., None, None]  # [B, N, 1, 1]
 
-        x_out = self.score_model(
-            x_noisy=x_noisy,  # [B, N, La, 3]
-            t_hat=t_hat,  # [B, N]
+        # Line 2 of Algorithm 20
+        r_noisy = self.c_in(t_hat_reshaped) * x_noisy
+
+        # Line 8 of Algorithm 21
+        c_noise = self.c_noise(t_hat)  # [B, N]
+
+        r_update = self.score_model(
+            r_noisy=r_noisy,  # [B, N, La, 3]
+            c_noise=c_noise,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
             model_cache=model_cache,
         )
+
+        # Line 8 of Algorithm 20
+        x_out = (
+            self.c_skip(t_hat_reshaped) * x_noisy
+            + self.c_out(t_hat_reshaped) * r_update  # [B, N, La, 3]
+        )
+
         return x_out
 
     def sample_structure(
@@ -189,6 +205,8 @@ class AF3SampleDiffusion(BaseStructureModule):
         gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
         sigmas, gammas = sigmas.tolist(), gammas.tolist()
 
+        # NOTE: for sampling, there is no unresolved atoms.
+        # Therefore, we can use pad_mask here.
         atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
 
         # Line 1
@@ -201,7 +219,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         # Line 2: gradually denoise
         for step_idx in range(1, num_steps):
             # Line 3
-            atom_coords = self.random_augmentation(atom_coords, atom_mask=atom_mask)
+            atom_coords = self.random_augmentation(atom_coords, mask=atom_mask)
 
             # Line 4
             sigma_tm, sigma_t, gamma = (
@@ -267,7 +285,7 @@ class AF3SampleDiffusion(BaseStructureModule):
 
         if self.synchronize_sigmas:
             # synchronize sigmas across diffusion samples
-            return _sample(batch_size, 1).expand(1, num_diffusion_samples)
+            return _sample(batch_size, 1).repeat(1, num_diffusion_samples)
         else:
             # use different sigmas for each diffusion sample
             return _sample(batch_size, num_diffusion_samples)
@@ -317,13 +335,13 @@ class AF3SampleDiffusion(BaseStructureModule):
         holo_coords = super().sample_holo(
             f_input, num_diffusion_samples
         )  # [B, N, Latom, 3]
-        atom_mask = f_input.atom.pad_mask.float()  # (B, Latom)
+        atom_mask = f_input.atom.resolved_mask.float()  # (B, Latom)
 
         # Apply coordinate augmentation
-        holo_coords = self.random_augmentation(holo_coords, atom_mask=atom_mask)
-
-        # Mask out the padding atoms
-        holo_coords = holo_coords * atom_mask[:, None, :, None]  # (B, N, Latom, 3)
+        holo_coords = self.random_augmentation(
+            holo_coords,
+            mask=atom_mask.unsqueeze(1),  # (B, 1, Latom)
+        )
 
         return holo_coords
 
@@ -357,7 +375,4 @@ class AF3SampleDiffusion(BaseStructureModule):
         noised_atom_coords = (
             label_coords + t_hat[:, :, None, None] * noise_coords
         )  # (B, N, Latom, 3)
-
-        # Mask out the padding atoms
-        noised_atom_coords = noised_atom_coords * mask[:, None, :, None]
         return noised_atom_coords

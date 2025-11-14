@@ -1,6 +1,4 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
-from dataclasses import dataclass
-
 import torch
 
 from kfold.data.model_input import FoldingInput
@@ -16,7 +14,6 @@ class AF3DiffusionModule(BaseScoreModel):
     Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
     """
 
-    @dataclass
     class Config(BaseConfig):
         """Initialize the diffusion module.
 
@@ -34,8 +31,6 @@ class AF3DiffusionModule(BaseScoreModel):
             The number of atoms per window for queries, by default 32.
         atoms_per_window_keys : int, optional
             The number of atoms per window for keys, by default 128.
-        sigma_data : int, optional
-            The standard deviation of the data distribution, by default 16.
         dim_fourier : int, optional
             The dimension of the fourier embedding, by default 256.
         atom_encoder_blocks : int, optional
@@ -52,11 +47,8 @@ class AF3DiffusionModule(BaseScoreModel):
             The number of heads in the atom decoder, by default 4.
         conditioning_transition_layers : int, optional
             The number of transition layers for conditioning, by default 2.
-        activation_checkpointing : bool, optional
-            Whether to use activation checkpointing, by default False.
-        offload_to_cpu : bool, optional
-            Whether to offload the activations to CPU, by default False.
-
+        blocks_per_ckpt : int | None, optional
+            The number of blocks per checkpoint, by default None.
         """
 
         channel_s: int = 384
@@ -65,7 +57,6 @@ class AF3DiffusionModule(BaseScoreModel):
         channel_atompair: int = 16
         atoms_per_window_queries: int = 32
         atoms_per_window_keys: int = 128
-        sigma_data: int = 16
         dim_fourier: int = 256
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
@@ -74,8 +65,7 @@ class AF3DiffusionModule(BaseScoreModel):
         atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
         conditioning_transition_layers: int = 2
-        activation_checkpointing: bool = False
-        offload_to_cpu: bool = False
+        blocks_per_ckpt: int | None = None
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
@@ -87,7 +77,6 @@ class AF3DiffusionModule(BaseScoreModel):
             channel_atompair=cfg.channel_atompair,
             atoms_per_window_queries=cfg.atoms_per_window_queries,
             atoms_per_window_keys=cfg.atoms_per_window_keys,
-            sigma_data=cfg.sigma_data,
             dim_fourier=cfg.dim_fourier,
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
@@ -96,30 +85,31 @@ class AF3DiffusionModule(BaseScoreModel):
             atom_decoder_blocks=cfg.atom_decoder_blocks,
             atom_decoder_heads=cfg.atom_decoder_heads,
             conditioning_transition_layers=cfg.conditioning_transition_layers,
-            activation_checkpointing=cfg.activation_checkpointing,
-            offload_to_cpu=cfg.offload_to_cpu,
+            blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
     def forward(
         self,
-        x_noisy: torch.Tensor,
-        t_hat: torch.Tensor,
+        r_noisy: torch.Tensor,
+        c_noise: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache=None,
+        model_cache: dict | None = None,
     ) -> torch.Tensor:
         """Forward pass of the AF3 diffusion module.
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
 
         Parameters
         ----------
-        x_noisy : torch.Tensor
+        r_noisy : torch.Tensor
             The noisy atom positions, shape [B, N, La, 3],
             where N is number of diffusion samples and La is number of atoms.
-        t_hat : torch.Tensor
+        c_noise : torch.Tensor
             The diffusion noise level (or sigmas), shape [B, N].
+            c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm 21.)
+            c_noise is computed outside of this class (See StructureModule).
         f_input : FoldingInput
             The folding input.
         s_inputs : torch.Tensor
@@ -131,16 +121,15 @@ class AF3DiffusionModule(BaseScoreModel):
 
         Returns
         -------
-        x_out : torch.Tensor
+        r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """
-        x_out = self.diffusion_stack(
-            x_noisy,
-            t_hat,
+        return self.diffusion_stack(
+            r_noisy,
+            c_noise,
             f_input,
             s_inputs,
             s_trunk,
             z_trunk,
-            model_cache=model_cache,
+            model_cache,
         )
-        return x_out

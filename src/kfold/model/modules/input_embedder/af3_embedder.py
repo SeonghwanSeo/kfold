@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 import torch
 
 from kfold.data.model_input import FoldingInput
@@ -18,7 +16,6 @@ class AF3InputEmbedder(BaseInputEmbedder):
     Algorithm 1 Line[1-5]
     """
 
-    @dataclass
     class Config(BaseConfig):
         """Configuration for the Input embedding module.
 
@@ -88,7 +85,9 @@ class AF3InputEmbedder(BaseInputEmbedder):
         self.linear_no_bias_bond = LinearNoBias(1, cfg.channel_z)
 
     def forward(
-        self, f_input: FoldingInput, model_cache: dict | None = None
+        self,
+        f_input: FoldingInput,
+        **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of embedding module.
 
@@ -118,13 +117,13 @@ class AF3InputEmbedder(BaseInputEmbedder):
 
         # Line 3
         z_init = (
-            self.linear_no_bias_z_init1(s_inputs)[None, :, :]
-            + self.linear_no_bias_z_init2(s_inputs)[:, None, :]
+            self.linear_no_bias_z_init1(s_inputs)[:, None, :, :]
+            + self.linear_no_bias_z_init2(s_inputs)[:, :, None, :]
         )  # [B, L, L, c_z]
 
         # Line 4
         # NOTE: cache the relative position encoding if possible for efficiency
-        z_init = z_init + self.relative_pos_encoding(f_input, model_cache)  # [B, L, c_z]
+        z_init = z_init + self.relative_pos_encoding(f_input)  # [B, L, c_z]
 
         # Line 5
         z_init = z_init + self.linear_no_bias_bond(

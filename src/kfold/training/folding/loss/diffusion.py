@@ -5,9 +5,9 @@ import warnings
 import einops
 import torch
 import torch.nn.functional as F
-from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 
 from kfold.data.model_input import FoldingInput
+from kfold.utils.checkpointing import checkpoint_section
 
 
 def weighted_rigid_align(
@@ -31,73 +31,69 @@ def weighted_rigid_align(
     torch.Tensor
         Aligned coordinates of shape (..., L, 3)
     """
+    L = true_coords.shape[-2]
+    weights = weights.unsqueeze(-1)  # [..., L, 1]
+    # all weights is 1.0, 5.0, and 10.0 in our use case, so no risk of clamping.
+    weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1)  # [..., 1, 1]
 
-    device = true_coords.device
-    with torch.autocast(device.type, dtype=torch.float32):
-        L = true_coords.shape[-2]
-        weights = weights.unsqueeze(-1)  # [..., L, 1]
-        weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1)  # [..., 1, 1]
-
-        if L < 4:
-            print(
-                "Warning: The size of one of the point clouds is <= dim+1. "
-                + "`WeightedRigidAlign` cannot return a unique rotation."
-            )
-
-        # Compute weighted centroids
-        true_centroid = (true_coords * weights).sum(
-            dim=-2, keepdim=True
-        ) / weight_sum  # [..., 1, 3]
-        pred_centroid = (pred_coords * weights).sum(
-            dim=-2, keepdim=True
-        ) / weight_sum  # [..., 1, 3]
-
-        # Center the coordinates
-        true_coords_centered = true_coords - true_centroid  # [..., L, 3]
-        pred_coords_centered = pred_coords - pred_centroid  # [..., L, 3]
-
-        # Compute the weighted covariance matrix
-        cov_matrix = einops.einsum(
-            weights * pred_coords_centered,
-            true_coords_centered,
-            "... n i, ... n j -> ... i j",
+    if L < 4:
+        print(
+            "Warning: The size of one of the point clouds is <= dim+1. "
+            + "`WeightedRigidAlign` cannot return a unique rotation."
         )
 
-        # Compute the SVD of the covariance matrix, required float32 for svd and det
-        original_dtype = cov_matrix.dtype
-        cov_matrix_32 = cov_matrix.to(dtype=torch.float32)
-        U, S, V = torch.linalg.svd(
-            cov_matrix_32, driver="gesvd" if cov_matrix_32.is_cuda else None
+    # Compute weighted centroids
+    true_centroid = (true_coords * weights).sum(
+        dim=-2, keepdim=True
+    ) / weight_sum  # [..., 1, 3]
+    pred_centroid = (pred_coords * weights).sum(
+        dim=-2, keepdim=True
+    ) / weight_sum  # [..., 1, 3]
+
+    # Center the coordinates
+    true_coords_centered = true_coords - true_centroid  # [..., L, 3]
+    pred_coords_centered = pred_coords - pred_centroid  # [..., L, 3]
+
+    # Compute the weighted covariance matrix
+    cov_matrix = einops.einsum(
+        weights * pred_coords_centered,
+        true_coords_centered,
+        "... n i, ... n j -> ... i j",
+    )
+
+    # Compute the SVD of the covariance matrix, required float32 for svd and det
+    original_dtype = cov_matrix.dtype
+    cov_matrix_32 = cov_matrix.to(dtype=torch.float32)
+    U, S, V = torch.linalg.svd(
+        cov_matrix_32, driver="gesvd" if cov_matrix_32.is_cuda else None
+    )
+    V = V.mH
+
+    # Catch ambiguous rotation by checking the magnitude of singular values
+    if (S.abs() <= 1e-15).any() and not (L < 4):
+        warnings.warn(
+            "Warning: Excessively low rank of "
+            + "cross-correlation between aligned point clouds. "
+            + "`WeightedRigidAlign` cannot return a unique rotation.",
+            stacklevel=2,
         )
-        V = V.mH
 
-        # Catch ambiguous rotation by checking the magnitude of singular values
-        if (S.abs() <= 1e-15).any() and not (L < 4):
-            warnings.warn(
-                "Warning: Excessively low rank of "
-                + "cross-correlation between aligned point clouds. "
-                + "`WeightedRigidAlign` cannot return a unique rotation.",
-                stacklevel=2,
-            )
+    # Compute the rotation matrix
+    rot_matrix = torch.einsum("... i j, ... k j -> ... i k", U, V).to(dtype=torch.float32)
 
-        # Compute the rotation matrix
-        rot_matrix = torch.einsum("... i j, ... k j -> ... i k", U, V).to(
-            dtype=torch.float32
-        )
+    # Ensure proper rotation matrix with determinant 1
+    F = torch.eye(3, dtype=torch.float32, device=cov_matrix.device)  # [3, 3]
+    F = F.unsqueeze(0).expand(*rot_matrix.shape[:-2], 3, 3).clone()  # [..., 3, 3]
+    F[..., -1, -1] = torch.det(rot_matrix)  # Now broadcasts correctly
 
-        # Ensure proper rotation matrix with determinant 1
-        F = torch.eye(3, dtype=torch.float32, device=cov_matrix.device)  # [3, 3]
-        F = F.unsqueeze(0).expand(*rot_matrix.shape[:-2], 3, 3).clone()  # [..., 3, 3]
-        F[..., -1, -1] = torch.det(rot_matrix)  # Now broadcasts correctly
+    rot_matrix = einops.einsum(U, F, V, "... i j, ... j k, ... l k -> ... i l")
+    rot_matrix = rot_matrix.to(dtype=original_dtype)
 
-        rot_matrix = einops.einsum(U, F, V, "... i j, ... j k, ... l k -> ... i l")
-        rot_matrix = rot_matrix.to(dtype=original_dtype)
-
-        # Apply the rotation and translation
-        aligned_coords = (
-            einops.einsum(true_coords_centered, rot_matrix, "... n i, ... j i -> ... n j")
-            + pred_centroid
-        )
+    # Apply the rotation and translation
+    aligned_coords = (
+        einops.einsum(true_coords_centered, rot_matrix, "... n i, ... j i -> ... n j")
+        + pred_centroid
+    )
     return aligned_coords
 
 
@@ -125,7 +121,7 @@ class WeightedMSELoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        align: bool = True,
+        loss_weights: torch.Tensor,
     ) -> torch.Tensor:
         """Compute the weighted MSE loss.
 
@@ -135,32 +131,40 @@ class WeightedMSELoss(torch.nn.Module):
             Predicted coordinates from the model. Shape (B, N, L, 3).
         x_true : torch.Tensor
             Ground truth coordinates. Shape (B, N, L, 3).
-        align : bool, optional
-            Whether to perform weighted rigid alignment before computing loss,
+        f_input : FoldingInput
+            The FoldingInput object containing model inputs.
+        loss_weights : torch.Tensor
+            The per-sample loss weights. Shape (B, N).
 
         Returns
         -------
         torch.Tensor
-            Computed MSE loss. Shape (B, N)
+            Computed MSE loss.
         """
-        weights = self.get_atom_weights(f_input)  # [B, L]
-        weights = weights.unsqueeze(-2)  # [B, 1, L]
+        assert x_pred.ndim == 4  # [B, N, L, 3]
+        assert x_pred.shape == x_true.shape
+
+        w = self.get_atom_weights(f_input)  # [B, L]
+        w = w.unsqueeze(-2)  # [B, 1, L]
 
         # See Section 3.7.1 Equation 2
-        if align or self.align:
-            with torch.no_grad():
+        if self.align:
+            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float32):
                 x_true = weighted_rigid_align(
                     true_coords=x_true.float(),  # [B, N, L, 3]
                     pred_coords=x_pred.float(),  # [B, N, L, 3]
-                    weights=weights.float(),  # [B, 1, L], broadcasted over N
+                    weights=w.float(),  # [B, 1, L], broadcasted over N
                 )  # [B, N, L, 3]
 
-                x_true = x_true.to(dtype=x_true.dtype)
-
         # See Section 3.7.1 Equation 3
+        mask = f_input.atom.resolved_mask  # [B, L]
+        n_atoms = mask.sum(dim=-1, keepdim=True).clamp(min=1)  # [B, 1]
         d_sq = ((x_pred - x_true) ** 2).sum(dim=-1)  # [B, N, L]
-        mse_loss = (1 / 3) * (weights * d_sq).mean(-1)  # [B, N]
-        return mse_loss
+        mse_loss = (1 / 3) * (w * d_sq).sum(-1) / n_atoms  # [B, N]
+
+        mse_loss = mse_loss * loss_weights  # [B, N]
+
+        return mse_loss.mean()
 
     @torch.no_grad()
     def get_atom_weights(self, f_input: FoldingInput) -> torch.Tensor:
@@ -198,6 +202,7 @@ class BondLoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
+        per_sample_weights: torch.Tensor,
     ) -> torch.Tensor:
         """Compute the bond loss.
         See Section 3.7.1 Equation 5
@@ -262,87 +267,20 @@ class BondLoss(torch.nn.Module):
         num_bonds = mask.sum(dim=-1, keepdim=True).clamp(min=1)  # [B, 1]
 
         bond_loss = (d_diff * mask[:, None, :]).sum(dim=-1) / num_bonds  # [B, N]
-        return bond_loss
+
+        # Apply per-sample weights
+        bond_loss = bond_loss * per_sample_weights  # [B, N]
+        return bond_loss.mean()
 
 
 class SmoothLDDTLoss(torch.nn.Module):
     """Smooth LDDT loss of denoised atom positions
     See Section 3.7.1 Algorithm 27 Smooth LDDT Loss of the AlphaFold 3 paper."""
 
-    class ChunkedSmoothLDDTLoss(torch.nn.Module):
-        """Chunked Smooth LDDT Loss for memory efficiency."""
-
-        def __init__(self, cutoff: float = 15.0, cutoff_nucleic_acid: float = 30.0):
-            super().__init__()
-            self.cutoff: float = cutoff
-            self.cutoff_nucleic_acid: float = cutoff_nucleic_acid
-
-        def forward(
-            self,
-            x_pred: torch.Tensor,
-            x_true: torch.Tensor,
-            is_nucleotide: torch.Tensor,
-            pair_mask: torch.Tensor,
-        ) -> torch.Tensor:
-            """Compute weighted alignment.
-
-            Parameters
-            ----------
-            x_pred : torch.Tensor
-                Predicted coordinates from the model. Shape (B, L, 3).
-            x_true : torch.Tensor
-                Ground truth coordinates. Shape (B, L, 3).
-            is_nucleotide : torch.Tensor
-                The nucleotide mask for LDDT calculation. Shape (B, L).
-            pair_mask : torch.Tensor
-                The pair mask for LDDT calculation. Shape (B, L, L).
-
-            Returns
-            -------
-            lddt_loss: torch.Tensor
-                Computed LDDT Loss. Shape (B,)
-            """
-            # Line 1
-            d_pred = torch.cdist(x_pred, x_pred)  # [B, L, L]
-
-            # Line 2
-            with torch.no_grad():
-                d_true = torch.cdist(x_true, x_true)  # [B, L, L]
-
-            # Line 3
-            d_diff = torch.abs(d_true - d_pred)  # [B, L, L]
-
-            # Line 4
-            eps = (1 / 4) * (
-                F.sigmoid(0.5 - d_diff)
-                + F.sigmoid(1.0 - d_diff)
-                + F.sigmoid(2.0 - d_diff)
-                + F.sigmoid(4.0 - d_diff)
-            )  # [B, L, L]
-
-            # Line 5: outside function (is_nucleotide = is_dna | is_rna)
-
-            # Line 6
-            with torch.no_grad():
-                c = ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
-                    (d_true < self.cutoff) & (~is_nucleotide[..., None])
-                )  # [B, L, L]
-                # Mask out invalid distances and self-term (see Line 7)
-                c &= pair_mask  # [B, L, L]
-            c = c.to(dtype=x_pred.dtype)
-
-            # Line 7
-            lddt = (eps * c).sum((-1, -2)) / c.sum((-1, -2)).clamp(1)  # [B,]
-
-            # Line 8
-            lddt_loss = 1.0 - lddt  # [B,]
-            return lddt_loss
-
     def __init__(
         self,
         cutoff: float = 15.0,
         cutoff_nucleic_acid: float = 30.0,
-        memory_efficient: bool = True,
     ):
         """Initialize SmoothLDDTLoss.
 
@@ -352,26 +290,61 @@ class SmoothLDDTLoss(torch.nn.Module):
             The cutoff for non-nucleic acid atoms
         cutoff_nucleic_acid: float
             The cutoff for nucleic acid atoms
-        memory_efficient: bool
-            Whether to use memory efficient implementation
         """
 
         super().__init__()
         self.cutoff: float = cutoff
         self.cutoff_nucleic_acid: float = cutoff_nucleic_acid
 
-        # Initialize chunked smooth LDDT loss
-        lddt_loss = self.ChunkedSmoothLDDTLoss(cutoff, cutoff_nucleic_acid)
-        if memory_efficient:
-            lddt_loss = checkpoint_wrapper(lddt_loss)
-        self.lddt_loss = lddt_loss
+    def _chunk_forward(
+        self,
+        x_pred: torch.Tensor,
+        x_true: torch.Tensor,
+        is_nucleotide: torch.Tensor,
+        pair_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        # Line 1
+        d_pred = torch.cdist(x_pred, x_pred)  # [B, L, L]
+
+        # Line 2
+        with torch.no_grad():
+            d_true = torch.cdist(x_true, x_true)  # [B, L, L]
+
+        # Line 3
+        d_diff = torch.abs(d_true - d_pred)  # [B, L, L]
+
+        # Line 4
+        eps = (1 / 4) * (
+            F.sigmoid(0.5 - d_diff)
+            + F.sigmoid(1.0 - d_diff)
+            + F.sigmoid(2.0 - d_diff)
+            + F.sigmoid(4.0 - d_diff)
+        )  # [B, L, L]
+
+        # Line 5: outside function (is_nucleotide = is_dna | is_rna)
+
+        # Line 6
+        with torch.no_grad():
+            c = ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
+                (d_true < self.cutoff) & (~is_nucleotide[..., None])
+            )  # [B, L, L]
+            # Mask out invalid distances and self-term (see Line 7)
+            c &= pair_mask  # [B, L, L]
+        c = c.to(dtype=x_pred.dtype)
+
+        # Line 7
+        lddt = (eps * c).sum((-1, -2)) / c.sum((-1, -2)).clamp(1)  # [B,]
+
+        # Line 8
+        lddt_loss = 1.0 - lddt  # [B,]
+        return lddt_loss
 
     def forward(
         self,
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        chunk_size: int | None = 4,
+        chunk_size: int | None = 1,
     ) -> torch.Tensor:
         """Compute weighted alignment.
 
@@ -389,54 +362,61 @@ class SmoothLDDTLoss(torch.nn.Module):
         Returns
         -------
         lddt_loss: torch.Tensor
-            Computed LDDT loss. Shape (B, N)
+            Computed LDDT loss.
         """
 
         # NOTE: Due to the memory constraint, we change the order of operations
         # from the original paper implementation.
 
+        assert x_pred.ndim == 4  # [B, N, L, 3]
         B, N, L = x_pred.shape[:3]
 
-        with torch.no_grad():
-            # Line 5: is_nucleotide = is_dna | is_rna
-            is_nucleotide = f_input.token.is_dna | f_input.token.is_rna  # [B, Ltoken]
-            is_nucleotide = einops.einsum(
-                f_input.atom_to_token,  # [B, Latom, Ltoken]
-                is_nucleotide.float(),  # [B, Ltoken]
-                "b l1 l2, b l2 -> b l1",
-            ).bool()  # [B, Latom]
-            is_nucleotide = is_nucleotide.unsqueeze(1).repeat(1, N, 1)  # [B, N, L]
+        # Line 5: is_nucleotide = is_dna | is_rna
+        is_nucleotide = f_input.token.is_dna | f_input.token.is_rna  # [B, Ltoken]
+        is_nucleotide = einops.einsum(
+            f_input.atom_to_token,  # [B, Latom, Ltoken]
+            is_nucleotide.float(),  # [B, Ltoken]
+            "b l1 l2, b l2 -> b l1",
+        ).bool()  # [B, Latom]
 
-            # Prepare masking
-            mask = f_input.atom.resolved_mask  # [B, Latom]
-            pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, L, L]
-            # mask self-distances
-            pair_mask.diagonal(dim1=-2, dim2=-1).fill_(0)
-            pair_mask = pair_mask.unsqueeze(1).repeat(1, N, 1, 1)  # [B, N, L, L]
+        # Prepare masking
+        mask = f_input.atom.resolved_mask  # [B, Latom]
+        pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, L, L]
+        # mask self-distances
+        pair_mask.diagonal(dim1=-2, dim2=-1).fill_(0)
 
-        # Reshape inputs
+        # Reshape inputs for chunking
         x_pred = x_pred.view(B * N, L, 3)  # [B*N, L, 3]
         x_true = x_true.view(B * N, L, 3)  # [B*N, L, 3]
-        is_nucleotide = is_nucleotide.view(B * N, L)  # [B*N, L]
-        pair_mask = pair_mask.view(B * N, L, L)  # [B*N, L, L]
+        is_nucleotide = is_nucleotide.repeat_interleave(N, dim=0)  # [B*N, L]
+        pair_mask = pair_mask.repeat_interleave(N, dim=0)  # [B*N, L, L]
 
-        if chunk_size is not None and chunk_size < (B * N):
+        BN = x_pred.shape[0]
+        if chunk_size is not None:
             losses = []
-            BN = x_pred.shape[0]
             for i in range(0, BN, chunk_size):
-                st, end = i, min(i + chunk_size, BN)
-                loss_chunk = self.lddt_loss(
-                    x_pred[st:end],
-                    x_true[st:end],
-                    is_nucleotide[st:end],
-                    pair_mask[st:end],
-                )  # [chunk_size,]
+                st, end = i, i + chunk_size
+                loss_chunk = checkpoint_section(
+                    self._chunk_forward,
+                    (
+                        x_pred[st:end],
+                        x_true[st:end],
+                        is_nucleotide[st:end],
+                        pair_mask[st:end],
+                    ),
+                    apply_ckpt=True,
+                    use_reentrant=False,
+                )
                 losses.append(loss_chunk)
-
             lddt_loss = torch.cat(losses, dim=0)  # [B*N]
         else:
-            lddt_loss = self.lddt_loss(x_pred, x_true, is_nucleotide, pair_mask)  # [B*N]
+            lddt_loss = self._chunk_forward(
+                x_pred,
+                x_true,
+                is_nucleotide,
+                pair_mask,
+            )  # [B*N]
 
         lddt_loss = lddt_loss.view(B, N)  # [B, N]
 
-        return lddt_loss
+        return lddt_loss.mean()

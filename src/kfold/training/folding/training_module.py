@@ -266,7 +266,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
                     x_pred=model_output["diffusion"]["denoised_atom_coords"],
                     x_true=model_output["diffusion"]["true_atom_coords"],
-                    weights=model_output["diffusion"]["loss_weights"],
+                    per_sample_weights=model_output["diffusion"]["loss_weights"],
                     f_input=batch,
                 )
 
@@ -334,10 +334,11 @@ class KFoldTrainingModule(pl.LightningModule):
         self,
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
-        weights: torch.Tensor,
+        per_sample_weights: torch.Tensor,
         f_input: FoldingInput,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute diffusion structure loss.
+        See Section 3.7.1 Diffusion Training.
 
         Parameters
         ----------
@@ -345,7 +346,7 @@ class KFoldTrainingModule(pl.LightningModule):
             The predicted atom coordinates of shape (B, Nsample, Latom, 3).
         x_true : torch.Tensor
             The ground truth atom coordinates of shape (B, Nsample, Latom, 3).
-        weights : torch.Tensor
+        per_sample_weights : torch.Tensor
             The per-sample loss weights of shape (B, Nsample),
             which is computed from the diffusion noise scale.
         f_input : FoldingInput
@@ -360,30 +361,32 @@ class KFoldTrainingModule(pl.LightningModule):
         """
         metrics: dict[str, torch.Tensor] = {}
 
-        # Equation 3
-        L_mse = self.weighted_mse_loss(x_pred, x_true, f_input)  # [B, Nsample]
-        metrics["mse_loss"] = L_mse.mean().detach()
+        # Equations 3-4
+        L_mse = self.weighted_mse_loss(
+            x_pred, x_true, f_input, per_sample_weights
+        )  # [B, Nsample]
+        metrics["mse_loss"] = L_mse.detach()
 
         # Equation 5
         alpha_bond = self.loss_weights["bond"]
         if alpha_bond > 0:
-            L_bond = self.bond_loss(x_pred, x_true, f_input)  # [B, Nsample]
-            metrics["bond_loss"] = L_bond.mean().detach()
+            L_bond = self.bond_loss(x_pred, x_true, f_input, per_sample_weights)
+            metrics["bond_loss"] = L_bond.detach()
         else:
             L_bond = 0.0
 
-        # Algorithm 27; Section 5.2
+        # Algorithm 27
         alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
         if alpha_smooth_lddt > 0:
-            L_smooth_lddt = self.smooth_lddt_loss(
-                x_pred, x_true, f_input
-            ).mean()  # scalar
+            L_smooth_lddt = self.smooth_lddt_loss(x_pred, x_true, f_input)
             metrics["smooth_lddt_loss"] = L_smooth_lddt.detach()
         else:
             L_smooth_lddt = 0.0
 
-        # See Section 3.7.1 Equation 6
-        L_diffusion = (weights * (L_mse + alpha_bond * L_bond)).mean() + L_smooth_lddt
+        # Equation 6
+        # NOTE: per-sample weights are already applied in L_mse and L_bond
+        # L_diff = loss_weights(L_mse + α_bond * L_bond) + L_smooth_lddt
+        L_diffusion = L_mse + alpha_bond * L_bond + L_smooth_lddt
         metrics["diffusion_loss"] = L_diffusion.detach()
 
         return L_diffusion, metrics

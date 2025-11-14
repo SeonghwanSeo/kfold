@@ -1,20 +1,16 @@
-from dataclasses import dataclass
-
 import torch
 
 from kfold.config import _resolve_registry_defaults
 from kfold.model.modules.sequence_encoder import BaseSequenceEncoder
-from kfold.utils.registry import SEQUNECE_ENCODER, BaseConfig, Registry
+from kfold.utils.registry import SEQUENCE_ENCODER, BaseConfig, Registry
 
 
-@dataclass
-class Config(BaseConfig):
-    d_model: int = 128
-    n_layers: int = 4
-
-
-@SEQUNECE_ENCODER.register(config_cls=Config)
+@SEQUENCE_ENCODER.register()
 class ExampleSequenceEncoder(BaseSequenceEncoder):
+    class Config(BaseConfig):
+        d_model: int = 128
+        n_layers: int = 4
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
 

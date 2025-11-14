@@ -18,10 +18,7 @@ class BaseInputEmbedder(torch.nn.Module, ABC):
 
     @abstractmethod
     def forward(
-        self,
-        f_input: FoldingInput,
-        model_cache: dict | None = None,
-        **kwargs,
+        self, f_input: FoldingInput, **kwargs
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of embedding module.
 
@@ -29,8 +26,6 @@ class BaseInputEmbedder(torch.nn.Module, ABC):
         ----------
         f_input : FoldingInput
             FoldingInput object containing model inputs.
-        model_cache : dict, optional
-            Dictionary for caching intermediate results, by default None.
         **kwargs : dict
             Additional keyword arguments.
 
