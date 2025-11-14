@@ -1,19 +1,21 @@
 # Started from code from https://github.com/jwohlwend/boltz, MIT License
 
+import math
+from functools import partial
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint
 from einops import rearrange
 from einops.layers.torch import Rearrange
-from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 
 from kfold.data.model_input import FoldingInput
+from kfold.utils.checkpointing import checkpoint_blocks
 
 from . import initialize as init
 from .embeddings import AtomEmbedding
-from .primitives import AdaLN, LinearNoBias
-from .utils import LocalAttentionIndexer, expand_dim
+from .primitives import AdaLN, LinearNoBias, attention
+from .utils import LocalAttentionIndex, expand_dim
 
 # === Helper functions for local atom attention === #
 
@@ -85,7 +87,7 @@ class AttentionPairBias(nn.Module):
         self.proj_z = nn.Sequential(
             nn.LayerNorm(channel_z),
             LinearNoBias(channel_z, num_heads),
-            Rearrange("... l1 l2 h -> ... h l1 l2"),
+            Rearrange("b ... l1 l2 h -> b ... h l1 l2"),
         )
 
         self.proj_out = LinearNoBias(channel_a, channel_a)
@@ -102,9 +104,9 @@ class AttentionPairBias(nn.Module):
         s: torch.Tensor | None,
         z: torch.Tensor,
         attn_mask: torch.Tensor,
-        local_attn_indexer: LocalAttentionIndexer | None = None,
-        model_cache=None,
-        use_kernels: bool = True,
+        local_attn_index: LocalAttentionIndex | None = None,
+        use_high_precision: bool = False,
+        inplace: bool = False,
     ) -> torch.Tensor:
         """Forward pass.
         See Section 3.7 Algorithm 24 of AlphaFold3 paper.
@@ -118,9 +120,12 @@ class AttentionPairBias(nn.Module):
         z : torch.Tensor
             The input pairwise tensor (..., Lq, Lk, c_z)
         attn_mask : torch.Tensor
-            The pairwise mask tensor (..., Lq, Lk)
-        local_attn_indexer : LocalAttentionIndexer | None
+            The attention mask tensor (..., Lk)
+            NOTE: We only mask key positions as in the official implementation.
+        local_attn_index : LocalAttentionIndex | None
             The local attention indexer, by default None
+        use_high_precision : bool
+            Whether to use high precision for attention computation, by default True
 
         Returns
         -------
@@ -138,9 +143,9 @@ class AttentionPairBias(nn.Module):
             assert s is None, "s must be None if use_s is False"
             a = self.norm_a(a)
 
-        if local_attn_indexer is not None:
-            q_in = local_attn_indexer.to_query(a)  # [..., W, Lq, c_a]
-            k_in = local_attn_indexer.to_key(a)  # [..., W, Lk, c_a]
+        if local_attn_index is not None:
+            q_in = local_attn_index.to_query(a)  # [..., W, Lq, c_a]
+            k_in = local_attn_index.to_key(a)  # [..., W, Lk, c_a]
         else:
             q_in = a  # [..., L, C_a]
             k_in = a  # [..., L, C_a]
@@ -153,44 +158,24 @@ class AttentionPairBias(nn.Module):
         v = self.proj_v(k_in)  # [..., H, Lk, Dh]
 
         # Line 8
-        # Caching attention bias during diffusion roll-out
-        if model_cache is None or "attn_bias" not in model_cache:
-            attn_bias = self.proj_z(z)
-
-            # The pairwise mask (..., Lq, Lk) is broadcasted to (..., H, Lq, Lk)
-            attn_bias = attn_bias - self.inf * (1.0 - attn_mask.unsqueeze(-3))
-
-            if model_cache is not None:
-                model_cache["attn_bias"] = attn_bias
-        else:
-            attn_bias = model_cache["attn_bias"]
+        attn_bias = self.proj_z(z)  # [..., H, Lq, Lk]
+        attn_bias = attn_bias - self.inf * (1 - attn_mask)[..., None, None, :]
 
         # Line 9
         g = self.proj_g(a).sigmoid()
 
         # === Attention === #
         # Line 10-11
-        if use_kernels:
-            # Use torch scaled_dot_product_attention for efficiency
-            Av = F.scaled_dot_product_attention(
-                query=q,
-                key=k,
-                value=v,
-                attn_mask=attn_bias,
-            )
-        else:
-            with torch.autocast("cuda", enabled=False):
-                # Compute attention weights
-                attn = torch.einsum("bhid,bhjd->bhij", q.float(), k.float())
-                # Add attention bias
-                attn = attn / (self.head_dim**0.5) + attn_bias
-                attn = attn.softmax(dim=-1)
-
-                # Compute output
-                Av = torch.einsum("bhij,bhjd->bhid", attn, v.float()).to(v.dtype)
-
+        Av = attention(
+            q,
+            k,
+            v,
+            bias=attn_bias,
+            scale=math.sqrt(self.head_dim),
+            use_high_precision=use_high_precision,
+        )
         Av = rearrange(Av, "... h l d -> ... l (h d)")
-        Av = Av.reshape(a.shape)  # [..., L, c_a]
+        Av = Av.reshape_as(a)
 
         # Line 11
         a = self.proj_out(g * Av)
@@ -215,8 +200,7 @@ class DiffusionTransformer(nn.Module):
         channel_z: int,  # c_atompair (atom-attn) or c_z (token-attn)
         num_blocks: int,
         num_heads: int,
-        activation_checkpointing: bool = False,
-        offload_to_cpu: bool = False,
+        blocks_per_ckpt: int | None = None,
     ):
         """Initialize the diffusion transformer.
 
@@ -232,38 +216,22 @@ class DiffusionTransformer(nn.Module):
             The number of blocks.
         num_heads : int
             The number of heads.
-        activation_checkpointing : bool, optional
-            Whether to use activation checkpointing, by default False
-        offload_to_cpu : bool, optional
-            Whether to offload to CPU, by default False
+        blocks_per_ckpt : int | None, optional
+            The number of blocks per checkpoint
 
         """
         super().__init__()
-        self.activation_checkpointing = activation_checkpointing
-
         self.blocks = nn.ModuleList()
+        self.blocks_per_ckpt: int | None = blocks_per_ckpt
         for _ in range(num_blocks):
-            if activation_checkpointing:
-                self.blocks.append(
-                    checkpoint_wrapper(
-                        DiffusionTransformerBlock(
-                            channel_a,
-                            channel_s,
-                            channel_z,
-                            num_heads,
-                        ),
-                        offload_to_cpu=offload_to_cpu,
-                    )
+            self.blocks.append(
+                DiffusionTransformerBlock(
+                    channel_a,
+                    channel_s,
+                    channel_z,
+                    num_heads,
                 )
-            else:
-                self.blocks.append(
-                    DiffusionTransformerBlock(
-                        channel_a,
-                        channel_s,
-                        channel_z,
-                        num_heads,
-                    )
-                )
+            )
 
     def forward(
         self,
@@ -271,38 +239,46 @@ class DiffusionTransformer(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         attn_mask: torch.Tensor,
-        local_attn_indexer: LocalAttentionIndexer | None = None,
-        model_cache=None,
+        local_attn_index: LocalAttentionIndex | None = None,
     ):
-        """See Section 3.7 Algorithm 23 Diffusion Transformer"""
+        """See Section 3.7 Algorithm 23 Diffusion Transformer
+
+        Parameters
+        ----------
+        a : torch.Tensor
+            The input single representation tensor (..., L, c_a)
+        s : torch.Tensor
+            The input single condition tensor (..., L, c_s)
+        z : torch.Tensor
+            The input pair representation tensor (..., Lq, Lk, c_z)
+        attn_mask : torch.Tensor
+            The pairwise mask tensor (..., Lk)
+            NOTE: We only mask key positions as in the official implementation.
+        """
         # Line 1, 4
-        for i, block in enumerate(self.blocks):
-            if model_cache is not None:
-                prefix_cache = "layer_" + str(i)
-                block_cache = model_cache.setdefault(prefix_cache, {})
-            else:
-                block_cache = None
 
-            if self.activation_checkpointing and self.training:
-                a = torch.utils.checkpoint.checkpoint(
-                    block,
-                    a,
-                    s,
-                    z,
-                    attn_mask,
-                    local_attn_indexer,
-                    use_reentrant=False,
-                )
+        blocks = [
+            partial(
+                b,
+                s=s,
+                z=z,
+                attn_mask=attn_mask,
+                local_attn_index=local_attn_index,
+                block_cache=None,
+            )
+            for b in self.blocks
+        ]
 
-            else:
-                a = block(
-                    a,
-                    s,
-                    z,
-                    attn_mask=attn_mask,
-                    local_attn_indexer=local_attn_indexer,
-                    block_cache=block_cache,
-                )
+        blocks_per_ckpt = self.blocks_per_ckpt
+        if not torch.is_grad_enabled():
+            blocks_per_ckpt = None
+
+        a = checkpoint_blocks(  # type: ignore
+            blocks,
+            args=(a,),
+            blocks_per_ckpt=blocks_per_ckpt,
+            use_reentrant=False,
+        )[0]
 
         return a
 
@@ -348,7 +324,7 @@ class DiffusionTransformerBlock(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         attn_mask: torch.Tensor,
-        local_attn_indexer: LocalAttentionIndexer | None = None,
+        local_attn_index: LocalAttentionIndex | None = None,
         block_cache: dict | None = None,
     ) -> torch.Tensor:
         """See Section 3.7 Algorithm 23 Diffusion Transformer
@@ -388,8 +364,8 @@ class DiffusionTransformerBlock(nn.Module):
             s=s,
             z=z,
             attn_mask=attn_mask,
-            local_attn_indexer=local_attn_indexer,
-            model_cache=block_cache,
+            local_attn_index=local_attn_index,
+            use_high_precision=True,
         )
         # Line 3
         a = a + self.transition(a, s)
@@ -454,8 +430,7 @@ class AtomTransformer(nn.Module):
         num_heads: int,
         attn_window_queries: int,
         attn_window_keys: int,
-        activation_checkpointing: bool = False,
-        offload_to_cpu: bool = False,
+        blocks_per_ckpt: int | None = None,
     ):
         """Initialize the atom transformer.
 
@@ -478,8 +453,7 @@ class AtomTransformer(nn.Module):
             channel_z=channel_z,
             num_blocks=num_blocks,
             num_heads=num_heads,
-            activation_checkpointing=activation_checkpointing,
-            offload_to_cpu=offload_to_cpu,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
 
     def forward(
@@ -488,7 +462,6 @@ class AtomTransformer(nn.Module):
         c: torch.Tensor,
         p: torch.Tensor,
         mask: torch.Tensor,
-        model_cache: dict | None = None,
     ) -> torch.Tensor:
         """See Section 3.2 Algorithm 7 Atom Transformer
 
@@ -510,35 +483,25 @@ class AtomTransformer(nn.Module):
             The output single representation, shape [..., La, c_atom].
         """
 
-        original_shape = q.shape  # [..., La, D]
-
-        q = q.flatten(0, -3)  # [B, L, c_atom]
-        c = c.flatten(0, -3)  # [B, L, c_atom]
-        p = p.flatten(0, -5)  # [B, W, Lq, Lk, c_atompair]
-        mask = mask.flatten(0, -2)  # [B, La]
-
-        local_attn_indexer = LocalAttentionIndexer(
+        local_attn_index = LocalAttentionIndex(
             num_atoms=mask.shape[-1],
             atoms_per_window_queries=self.attn_window_queries,
             atoms_per_window_keys=self.attn_window_keys,
             device=q.device,
         )
 
-        mask = mask.float().unsqueeze(-1)  # [B, La, 1]
-        attn_mask = local_attn_indexer.to_key(mask).squeeze(-1)  # [B, W, Lk]
-        attn_mask = attn_mask.unsqueeze(-2)  # [B, W, 1, Lk]
+        # NOTE: (SeonghwanSeo) mask the key positions only (masking query is not required)
+        mask = mask.float()  # [B, La, 1]
+        attn_mask = local_attn_index.to_key(mask[..., None]).squeeze(-1)  # [B, W, Lk]
 
         # main transformer
         q = self.diffusion_transformer(
             a=q,  # [B, L, c_atom]
             s=c,  # [B, L, c_atom]
             z=p,  # [B, W, Lq, Lk, c_atompair]
-            attn_mask=attn_mask,  # [B, W, Lq, Lk], broadcastable(Lq=1)
-            local_attn_indexer=local_attn_indexer,
-            model_cache=model_cache,
+            attn_mask=attn_mask,  # [B, W, Lk]
+            local_attn_index=local_attn_index,
         )
-
-        q = q.view(original_shape)
 
         return q
 
@@ -560,7 +523,7 @@ class AtomAttentionEncoder(nn.Module):
         atoms_per_window_queries: int = 32,
         atoms_per_window_keys: int = 128,
         use_structure: bool = True,
-        activation_checkpointing=False,
+        blocks_per_ckpt: int | None = None,
     ):
         """Initialize the atom attention encoder.
 
@@ -586,8 +549,8 @@ class AtomAttentionEncoder(nn.Module):
             The number of atoms per window for keys.
         use_structure : bool, optional
             Whether to use structure information, by default True.
-        activation_checkpointing : bool, optional
-            Whether to use activation checkpointing, by default False.
+        blocks_per_ckpt : int | None, optional
+            The number of blocks per checkpoint, by default None.
 
         """
         super().__init__()
@@ -645,7 +608,7 @@ class AtomAttentionEncoder(nn.Module):
             num_heads=num_heads,
             attn_window_queries=atoms_per_window_queries,
             attn_window_keys=atoms_per_window_keys,
-            activation_checkpointing=activation_checkpointing,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
 
         self.atom_to_token_trans = nn.Sequential(
@@ -709,7 +672,7 @@ class AtomAttentionEncoder(nn.Module):
             # Cache the representation for structure-independent components
 
             # Get indexing matrix for single to keys conversion
-            local_attn_indexer = LocalAttentionIndexer(
+            local_attn_index = LocalAttentionIndex(
                 num_atoms=f_input.num_atoms,
                 atoms_per_window_queries=self.atoms_per_window_queries,
                 atoms_per_window_keys=self.atoms_per_window_keys,
@@ -722,14 +685,14 @@ class AtomAttentionEncoder(nn.Module):
 
             # Line 2
             ref_pos = f_input.atom.ref_pos  # [B, La, 3]
-            ref_pos_q = local_attn_indexer.to_query(ref_pos)  # [B, W, Lq, 3]
-            ref_pos_k = local_attn_indexer.to_key(ref_pos)  # [B, W, Lk, 3]
+            ref_pos_q = local_attn_index.to_query(ref_pos)  # [B, W, Lq, 3]
+            ref_pos_k = local_attn_index.to_key(ref_pos)  # [B, W, Lk, 3]
             d = ref_pos_q.unsqueeze(-2) - ref_pos_k.unsqueeze(-3)  # [B, W, Lq, Lk, 3]
 
             # Line 3
             residue_uid = f_input.atom.ref_space_uid.unsqueeze(-1)  # [B, La, 1]
-            uid_q = local_attn_indexer.to_query(residue_uid)  # [B, W, Lq, 1]
-            uid_k = local_attn_indexer.to_key(residue_uid)  # [B, W, Lk, 1]
+            uid_q = local_attn_index.to_query(residue_uid)  # [B, W, Lq, 1]
+            uid_k = local_attn_index.to_key(residue_uid)  # [B, W, Lk, 1]
             v = (uid_q.unsqueeze(-2) == uid_k.unsqueeze(-3)).float()  # [B, W, Lq, Lk, 1]
 
             # Line 4, skip masking
@@ -757,12 +720,12 @@ class AtomAttentionEncoder(nn.Module):
                 c = self.add_trunk_single_conditioning(c, s_trunk, f_input.atom_to_token)
                 # Line 10
                 p = self.add_trunk_pair_embedding(
-                    p, z, f_input.atom_to_token, local_attn_indexer
+                    p, z, f_input.atom_to_token, local_attn_index
                 )
 
             # Line 13-14
-            c_q = local_attn_indexer.to_query(c)  # [B, W, Lq, c_atom]
-            c_k = local_attn_indexer.to_key(c)  # [B, W, Lk, c_atom]
+            c_q = local_attn_index.to_query(c)  # [B, W, Lq, c_atom]
+            c_k = local_attn_index.to_key(c)  # [B, W, Lk, c_atom]
             p = p + self.c_to_p_trans_q(c_q).unsqueeze(-2)
             p = p + self.c_to_p_trans_k(c_k).unsqueeze(-3)
             p = p + self.p_mlp(p)  # [B, W, Lq, Lk, c_atompair]
@@ -807,13 +770,7 @@ class AtomAttentionEncoder(nn.Module):
             q = self.add_noise_position(q, r)
 
         # Line 15
-        q = self.atom_encoder(
-            q=q,
-            c=c,
-            p=p,
-            mask=mask,
-            model_cache=layer_cache,
-        )
+        q = self.atom_encoder(q, c, p, mask)
 
         # Aggregate atom representations to token representations
         # [B, N, La, c_atom] -> [B, N, Lt, c_token]
@@ -859,7 +816,7 @@ class AtomAttentionEncoder(nn.Module):
         p: torch.Tensor,
         z_trunk: torch.Tensor,
         atom_to_token: torch.Tensor,
-        local_attn_indexer: LocalAttentionIndexer,
+        local_attn_index: LocalAttentionIndex,
     ) -> torch.Tensor:
         """Algorithm 5, Line 10
         Add trunk pair embedding to atom pair representation.
@@ -872,13 +829,13 @@ class AtomAttentionEncoder(nn.Module):
             The trunk pair representation, shape [B, Lt, c_z].
         atom_to_token : torch.Tensor
             The atom to token mapping, shape [B, La, Lt].
-        local_attn_indexer : LocalAttentionIndexer
+        local_attn_index : LocalAttentionIndex
             The local attention indexer for atom attention.
         """
         # [B, Lt, Lt, c_z] -> [B, W, Lq, Lk, c_atompair]
 
-        atom_to_token_q = local_attn_indexer.to_query(atom_to_token)  # [B, W, Lq, Lt]
-        atom_to_token_k = local_attn_indexer.to_key(atom_to_token)  # [B, W, Lk, Lt]
+        atom_to_token_q = local_attn_index.to_query(atom_to_token)  # [B, W, Lq, Lt]
+        atom_to_token_k = local_attn_index.to_key(atom_to_token)  # [B, W, Lk, Lt]
 
         z_to_p = self.z_to_p_trans(z_trunk)  # [B, Lt, Lt, c_atompair]
         z_to_p = torch.einsum(
@@ -922,7 +879,7 @@ class AtomAttentionDecoder(nn.Module):
         num_heads: int = 4,
         attn_window_queries: int = 32,
         attn_window_keys: int = 128,
-        activation_checkpointing=False,
+        blocks_per_ckpt: int | None = None,
     ):
         """Initialize the atom attention decoder.
 
@@ -942,8 +899,8 @@ class AtomAttentionDecoder(nn.Module):
             The number of atoms per window for queries.
         attn_window_keys : int
             The number of atoms per window for keys.
-        activation_checkpointing : bool, optional
-            Whether to use activation checkpointing, by default False.
+        blocks_per_ckpt : int | None, optional
+            The number of blocks per checkpoint, by default None.
 
         """
         super().__init__()
@@ -959,7 +916,7 @@ class AtomAttentionDecoder(nn.Module):
             num_heads=num_heads,
             attn_window_queries=attn_window_queries,
             attn_window_keys=attn_window_keys,
-            activation_checkpointing=activation_checkpointing,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
 
         self.atom_feat_to_atom_pos_update = nn.Sequential(
@@ -974,7 +931,6 @@ class AtomAttentionDecoder(nn.Module):
         c_skip: torch.Tensor,
         p_skip: torch.Tensor,
         f_input: FoldingInput,
-        model_cache=None,
     ):
         """Forward pass of the atom attention decoder.
         See Algorithm 6 in the AF3 paper for more details.
@@ -1004,21 +960,13 @@ class AtomAttentionDecoder(nn.Module):
         )  # [B, N, La, c_atom]
         q = q_skip + a_to_q  # [B, N, La, c_atom]
 
-        mask = f_input.atom.pad_mask.float().unsqueeze(-2)  # [B, N, La]
-
-        layer_cache = None
-        if model_cache is not None:
-            cache_prefix = "atom_attn_decoder"
-            if cache_prefix not in model_cache:
-                model_cache[cache_prefix] = {}
-            layer_cache = model_cache[cache_prefix]
+        mask = f_input.atom.pad_mask.float().unsqueeze(-2)  # [B, 1, La]
 
         q = self.atom_decoder(
             q=q,  # [B, N, La, c_atom]
             c=c_skip,  # [B, N, La, c_atom]
             p=p_skip,  # [B, N, W, Lq, Lk, c_atompair]
-            mask=mask,  # [B, N, La], where N is broadcastable(=1)
-            model_cache=layer_cache,
+            mask=mask,  # [B, 1, La], broadcasted to [B, N, La]
         )
 
         r_update = self.atom_feat_to_atom_pos_update(q)

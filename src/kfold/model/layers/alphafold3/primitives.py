@@ -1,5 +1,4 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License,
-
+import math
 from functools import partial
 
 import torch
@@ -9,6 +8,34 @@ import torch.nn.functional as F
 from . import initialize as init
 
 LinearNoBias = partial(nn.Linear, bias=False)
+
+
+def add(x: torch.Tensor, y: float | torch.Tensor, inplace: bool = False) -> torch.Tensor:
+    if inplace:
+        return x.add_(y)
+    else:
+        return x + y
+
+
+def sub(x: torch.Tensor, y: float | torch.Tensor, inplace: bool = False) -> torch.Tensor:
+    if inplace:
+        return x.sub_(y)
+    else:
+        return x - y
+
+
+def div(x: torch.Tensor, y: float | torch.Tensor, inplace: bool = False) -> torch.Tensor:
+    if inplace:
+        return x.div_(y)
+    else:
+        return x / y
+
+
+def mul(x: torch.Tensor, y: float | torch.Tensor, inplace: bool = False) -> torch.Tensor:
+    if inplace:
+        return x.mul_(y)
+    else:
+        return x * y
 
 
 class Transition(nn.Module):
@@ -122,3 +149,37 @@ class AdaLN(nn.Module):
         # Line 3
         a = torch.sigmoid(self.s_scale(s)) * a + self.s_bias(s)
         return a
+
+
+def attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    scale: float | bool | None = None,
+    use_high_precision: bool = False,
+    inplace: bool = False,
+) -> torch.Tensor:
+    dtype = query.dtype if not use_high_precision else torch.float32
+
+    if scale is True:
+        scale = math.sqrt(query.shape[-1])
+    if scale is not None:
+        query = div(query, scale, inplace=inplace)
+
+    with torch.autocast("cuda", dtype=dtype):
+        # Compute attention weights
+        attn = torch.einsum("...qc,...kc->...qk", query, key)
+
+        # Add attention bias
+        if bias is not None:
+            attn = add(attn, bias, inplace=inplace)
+
+        # Softmax normalization
+        with torch.autocast("cuda", dtype=torch.float32):
+            attn = attn.softmax(dim=-1)
+
+        # Compute output
+    out = torch.einsum("...qk,...kc->...qc", attn.to(value.dtype), value)
+
+    return out

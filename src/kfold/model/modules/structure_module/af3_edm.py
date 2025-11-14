@@ -1,7 +1,6 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 
 import math
-from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
@@ -20,7 +19,6 @@ class AF3SampleDiffusion(BaseStructureModule):
     See Section 3.7 Algorithm 18: SampleDiffusion in the AF3 paper.
     """
 
-    @dataclass
     class Config(BaseConfig):
         """Configuration for the Structure module.
 
@@ -201,7 +199,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         # Line 2: gradually denoise
         for step_idx in range(1, num_steps):
             # Line 3
-            atom_coords = self.random_augmentation(atom_coords, atom_mask=atom_mask)
+            atom_coords = self.random_augmentation(atom_coords, mask=atom_mask)
 
             # Line 4
             sigma_tm, sigma_t, gamma = (
@@ -320,10 +318,10 @@ class AF3SampleDiffusion(BaseStructureModule):
         atom_mask = f_input.atom.pad_mask.float()  # (B, Latom)
 
         # Apply coordinate augmentation
-        holo_coords = self.random_augmentation(holo_coords, atom_mask=atom_mask)
-
-        # Mask out the padding atoms
-        holo_coords = holo_coords * atom_mask[:, None, :, None]  # (B, N, Latom, 3)
+        holo_coords = self.random_augmentation(
+            holo_coords,
+            mask=atom_mask.unsqueeze(1),  # (B, 1, Latom),
+        )
 
         return holo_coords
 

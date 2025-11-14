@@ -36,7 +36,7 @@ class BaseScoreModel(torch.nn.Module, ABC):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache=None,
+        model_cache: dict | None = None,
     ) -> torch.Tensor:
         """Forward pass of the AF3 diffusion module.
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.

@@ -1,9 +1,17 @@
-global_hparam:
+_hparam_:
   channel_s: 384 # token single channel
   channel_z: 128 # token pair channel
   channel_atom: 128 # atom single channel
   channel_atompair: 16 # atom pair channel
-  use_kernel: true # for debugging purpose
+  use_cuequiv_kernels: true # cu-equivariance kernel for triangle attention/multiplicative
+
+  # common hparams
+  batch_size: 4
+  num_gpus: auto # number of gpus
+  accumulate_grad_batches: 8 # 256 / num_gpus / batch_size
+  num_workers: 8 # NOTE: please set `< 4 * batch_size`
+  max_tokens: 384 # AF3 first stage
+  limit_train_batches: 1000
 
 train:
   # training hparams
@@ -15,51 +23,51 @@ train:
   trainer:
     accelerator: 'auto'
     strategy: 'auto'
-    devices: 'auto'
+    devices: ${_hparam_.num_gpus}
     num_nodes: 1
     precision: bf16-mixed
     max_epochs: 100
-    limit_train_batches: 10_000
+    limit_train_batches: ${_hparam_.limit_train_batches}
     log_every_n_steps: 1 # log per each accumulate_grad_batches
     enable_checkpointing: true
-    accumulate_grad_batches: 32 # set according to number of GPUs
+    accumulate_grad_batches: ${_hparam_.accumulate_grad_batches}
 
   wandb:
     use: true
-    project: "KFold"
+    project: "KFold-edm"
     name: null # set your run name
-    group: null # set your group name
-    entity: null # set your entity name
+    group: structure-only # set your group name
+    entity: K-Fold # set your entity name
 
   data:
-    train_batch_size: 1
-    num_workers: 4 # more 4 workers per batch is not recommended
-    max_tokens: 384
+    train_batch_size: ${_hparam_.batch_size}
+    num_workers: ${_hparam_.num_workers}
+    max_tokens: ${_hparam_.max_tokens}
     boltz_processed_path: /cache/wykim_lab/rcsb_processed_targets/
     boltz_split_path: ./assets/splits/boltz1
 
 model:
   input_embedder:
     _yaml_: "module/input_embedder/af3.yaml"
-    channel_s: ${global_hparam.channel_s}
-    channel_z: ${global_hparam.channel_z}
+    channel_s: ${_hparam_.channel_s}
+    channel_z: ${_hparam_.channel_z}
 
   trunk:
     _yaml_: "module/trunk/af3.yaml"
-    channel_s: ${global_hparam.channel_s}
-    channel_z: ${global_hparam.channel_z}
-    use_kernels: ${global_hparam.use_kernel}
+    channel_s: ${_hparam_.channel_s}
+    channel_z: ${_hparam_.channel_z}
+    use_cuequiv_kernels: ${_hparam_.use_cuequiv_kernels}
 
   structure_module:
     _yaml_: "module/structure_module/af3.yaml"
 
   score_model:
     _yaml_: "module/score_model/af3.yaml"
-    channel_s: ${global_hparam.channel_s}
-    channel_z: ${global_hparam.channel_z}
-    channel_atom: ${global_hparam.channel_atom}
-    channel_atompair: ${global_hparam.channel_atompair}
+    channel_s: ${_hparam_.channel_s}
+    channel_z: ${_hparam_.channel_z}
+    channel_atom: ${_hparam_.channel_atom}
+    channel_atompair: ${_hparam_.channel_atompair}
 
   distogram_head:
     _yaml_: "module/distogram_head/af3.yaml"
-    channel_z: ${global_hparam.channel_z}
+    channel_z: ${_hparam_.channel_z}

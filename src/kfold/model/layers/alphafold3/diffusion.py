@@ -86,8 +86,7 @@ class DiffusionModule(nn.Module):
         atom_decoder_blocks: int = 3,
         atom_decoder_heads: int = 4,
         conditioning_transition_layers: int = 2,
-        activation_checkpointing: bool = False,
-        offload_to_cpu: bool = False,
+        blocks_per_ckpt: int | None = None,
     ) -> None:
         """Initialize the diffusion module.
 
@@ -123,10 +122,9 @@ class DiffusionModule(nn.Module):
             The number of heads in the atom decoder, by default 4.
         conditioning_transition_layers : int, optional
             The number of transition layers for conditioning, by default 2.
-        activation_checkpointing : bool, optional
-            Whether to use activation checkpointing, by default False.
-        offload_to_cpu : bool, optional
-            Whether to offload the activations to CPU, by default False.
+        blocks_per_ckpt : int | None, optional
+            The number of blocks per checkpoint for gradient checkpointing,
+            by default None.
 
         """
         super().__init__()
@@ -157,7 +155,7 @@ class DiffusionModule(nn.Module):
             num_heads=atom_encoder_heads,
             atoms_per_window_queries=atoms_per_window_queries,
             atoms_per_window_keys=atoms_per_window_keys,
-            activation_checkpointing=activation_checkpointing,
+            blocks_per_ckpt=blocks_per_ckpt,
             use_structure=True,
         )
 
@@ -172,8 +170,7 @@ class DiffusionModule(nn.Module):
             channel_z=channel_z,
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
-            activation_checkpointing=activation_checkpointing,
-            offload_to_cpu=offload_to_cpu,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
 
         self.layernorm_a = nn.LayerNorm(2 * channel_s)
@@ -187,7 +184,7 @@ class DiffusionModule(nn.Module):
             num_heads=atom_decoder_heads,
             attn_window_queries=atoms_per_window_queries,
             attn_window_keys=atoms_per_window_keys,
-            activation_checkpointing=activation_checkpointing,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
 
     def forward(
@@ -234,7 +231,11 @@ class DiffusionModule(nn.Module):
             z_trunk=z_trunk,
             t_hat=t_hat,
             model_cache=model_cache,
-        )  # [B, Lt, c_s], [B, Lt, Lt, c_z]
+        )  # [B, N, Lt, c_s], [B, Lt, Lt, c_z]
+
+        # Shape:
+        # - s: [B, N, Lt, c_s] where N is number of diffusion samples
+        # - z: [B, Lt, Lt, c_z] (time-independent)
 
         # Line 2
         # Scale positions
@@ -261,13 +262,13 @@ class DiffusionModule(nn.Module):
         a = a + self.trans_s_to_a(self.layernorm_s(s))  # [Nsample, La, c_token]
 
         # Line 5
-        mask = f_input.token.pad_mask.float()  # [B, Lt]
+        z = z.unsqueeze(-4)  # [B, 1, Lt, Lt, c_z]
+        token_mask = f_input.token.pad_mask.float().unsqueeze(-2)  # [B, 1, Lt]
         a = self.token_transformer(
             a,  # [B, N, Lt, c_token]
             s=s,  # [B, N, Lt, c_s]
-            z=z,  # [B, Lt, Lt, c_z]
-            attn_mask=mask[:, None, None],  # [B, 1, 1, Lt], broadcasted to [B, N, Lt, Lt]
-            model_cache=model_cache,
+            z=z,  # [B, 1, Lt, Lt, c_z], broadcasted to [B, N, Lt, Lt, c_z]
+            attn_mask=token_mask,  # [B, 1, Lt], broadcasted to [B, N, Lt]
         )
 
         # Line 6
@@ -281,7 +282,6 @@ class DiffusionModule(nn.Module):
             c_skip=c_skip,
             p_skip=p_skip,
             f_input=f_input,
-            model_cache=model_cache,
         )
 
         # === Rescale positions and update === #

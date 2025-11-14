@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 import torch
 
 from kfold.data.model_input import FoldingInput
@@ -18,7 +16,6 @@ class AF3InputEmbedder(BaseInputEmbedder):
     Algorithm 1 Line[1-5]
     """
 
-    @dataclass
     class Config(BaseConfig):
         """Configuration for the Input embedding module.
 
@@ -118,8 +115,8 @@ class AF3InputEmbedder(BaseInputEmbedder):
 
         # Line 3
         z_init = (
-            self.linear_no_bias_z_init1(s_inputs)[None, :, :]
-            + self.linear_no_bias_z_init2(s_inputs)[:, None, :]
+            self.linear_no_bias_z_init1(s_inputs)[:, None, :, :]
+            + self.linear_no_bias_z_init2(s_inputs)[:, :, None, :]
         )  # [B, L, L, c_z]
 
         # Line 4

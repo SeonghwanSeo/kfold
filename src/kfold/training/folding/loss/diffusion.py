@@ -5,10 +5,9 @@ import warnings
 import einops
 import torch
 import torch.nn.functional as F
-import torch.utils.checkpoint
-from fairscale.nn.checkpoint.checkpoint_activations import checkpoint_wrapper
 
 from kfold.data.model_input import FoldingInput
+from kfold.utils.checkpointing import checkpoint_section
 
 
 def weighted_rigid_align(
@@ -283,15 +282,13 @@ class SmoothLDDTLoss(torch.nn.Module):
             The cutoff for non-nucleic acid atoms
         cutoff_nucleic_acid: float
             The cutoff for nucleic acid atoms
-        memory_efficient: bool
-            Whether to use memory efficient implementation
         """
 
         super().__init__()
         self.cutoff: float = cutoff
         self.cutoff_nucleic_acid: float = cutoff_nucleic_acid
 
-    def compute_lddt_loss(
+    def _chunk_forward(
         self,
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
@@ -363,49 +360,54 @@ class SmoothLDDTLoss(torch.nn.Module):
         # NOTE: Due to the memory constraint, we change the order of operations
         # from the original paper implementation.
 
+        assert x_pred.ndim == 4  # [B, N, L, 3]
         B, N, L = x_pred.shape[:3]
 
-        with torch.no_grad():
-            # Line 5: is_nucleotide = is_dna | is_rna
-            is_nucleotide = f_input.token.is_dna | f_input.token.is_rna  # [B, Ltoken]
-            is_nucleotide = einops.einsum(
-                f_input.atom_to_token,  # [B, Latom, Ltoken]
-                is_nucleotide.float(),  # [B, Ltoken]
-                "b l1 l2, b l2 -> b l1",
-            ).bool()  # [B, Latom]
-            is_nucleotide = is_nucleotide.unsqueeze(1).repeat(1, N, 1)  # [B, N, L]
+        # Line 5: is_nucleotide = is_dna | is_rna
+        is_nucleotide = f_input.token.is_dna | f_input.token.is_rna  # [B, Ltoken]
+        is_nucleotide = einops.einsum(
+            f_input.atom_to_token,  # [B, Latom, Ltoken]
+            is_nucleotide.float(),  # [B, Ltoken]
+            "b l1 l2, b l2 -> b l1",
+        ).bool()  # [B, Latom]
 
-            # Prepare masking
-            mask = f_input.atom.resolved_mask  # [B, Latom]
-            pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, L, L]
-            # mask self-distances
-            pair_mask.diagonal(dim1=-2, dim2=-1).fill_(0)
-            pair_mask = pair_mask.unsqueeze(1).repeat(1, N, 1, 1)  # [B, N, L, L]
+        # Prepare masking
+        mask = f_input.atom.resolved_mask  # [B, Latom]
+        pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, L, L]
+        # mask self-distances
+        pair_mask.diagonal(dim1=-2, dim2=-1).fill_(0)
 
-        # Reshape inputs
+        # Reshape inputs for chunking
         x_pred = x_pred.view(B * N, L, 3)  # [B*N, L, 3]
         x_true = x_true.view(B * N, L, 3)  # [B*N, L, 3]
-        is_nucleotide = is_nucleotide.view(B * N, L)  # [B*N, L]
-        pair_mask = pair_mask.view(B * N, L, L)  # [B*N, L, L]
-
-        if chunk_size is None:
-            chunk_size = B * N
+        is_nucleotide = is_nucleotide.repeat_interleave(N, dim=0)  # [B*N, L]
+        pair_mask = pair_mask.repeat_interleave(N, dim=0)  # [B*N, L, L]
 
         BN = x_pred.shape[0]
-        losses = []
-        for i in range(0, BN, chunk_size):
-            st, end = i, min(i + chunk_size, BN)
-            loss_chunk = torch.utils.checkpoint.checkpoint(
-                self.compute_lddt_loss,
-                x_pred[st:end],
-                x_true[st:end],
-                is_nucleotide[st:end],
-                pair_mask[st:end],
-                use_reentrant=False,
-            )
-            losses.append(loss_chunk)
-
-        lddt_loss = torch.cat(losses, dim=0)  # [B*N]
+        if chunk_size is not None:
+            losses = []
+            for i in range(0, BN, chunk_size):
+                st, end = i, i + chunk_size
+                loss_chunk = checkpoint_section(
+                    self._chunk_forward,
+                    (
+                        x_pred[st:end],
+                        x_true[st:end],
+                        is_nucleotide[st:end],
+                        pair_mask[st:end],
+                    ),
+                    apply_ckpt=True,
+                    use_reentrant=False,
+                )
+                losses.append(loss_chunk)
+            lddt_loss = torch.cat(losses, dim=0)  # [B*N]
+        else:
+            lddt_loss = self._chunk_forward(
+                x_pred,
+                x_true,
+                is_nucleotide,
+                pair_mask,
+            )  # [B*N]
 
         lddt_loss = lddt_loss.view(B, N)  # [B, N]
 

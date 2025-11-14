@@ -15,12 +15,13 @@ from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 
 BOLTZ_PATH = Path("/cache/wykim_lab/rcsb_processed_targets/")
-TEST_CONFIG_PATH = Path("./configs/af3-mini.yaml")
+TEST_CONFIG_PATH = Path("./configs/af3.yaml")
 BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
 BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
 
 if __name__ == "__main__":
+    # Load keys
     global_config = load_config(TEST_CONFIG_PATH)
 
     with open(BOLTZ_MANIFEST_PATH) as f:
@@ -30,6 +31,18 @@ if __name__ == "__main__":
     keys = sorted(list(manifest.keys()))
     random.seed(42)
     random.shuffle(keys)
+    keys = keys[:10000]
+
+    # Train settings
+    batch_size = 4
+    use_mse_loss = False
+    use_smooth_lddt_loss = True
+    use_distogram_loss = False
+
+    # instantiate model
+    model = KFold(global_config)
+    model = model.to("cuda")
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     # data cropping
     cropper = BoltzCropper(BoltzCropper.Config())
@@ -39,48 +52,44 @@ if __name__ == "__main__":
     smooth_lddt_loss = losses.diffusion.SmoothLDDTLoss()
     distogram_loss = losses.distogram.DistogramLoss(2.0, 22.0, 64).cuda()
 
-    w_diffusion = 4.0
-    w_distogram = 3e-2
+    for it in tqdm(range(10000)):
+        in_batch = []
+        for key in keys[it * batch_size : (it + 1) * batch_size]:
+            record = parse_record(manifest[key])
+            if record.num_chains > 20:
+                # Skip large structures for testing
+                continue
 
-    # instantiate model
-    model = KFold(global_config)
-    model = model.to("cuda")
+            # Set random seed for reproducibility
+            random.seed(key)
+            path = BOLTZ_STRUCTURE_DIR / f"{key}.npz"
+            boltz_structure = BoltzStructure.load(path)
+            try:
+                tokenized = tokenize_structure(boltz_structure)
+            except Exception as e:
+                print(f"Error tokenizing structure {key}: {e}")
+                continue
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+            # Crop structure
+            tokenized = cropper.crop(tokenized, 384, None)
+            # print(tokenized)
 
-    keys = keys[:10000]
-    for it, key in enumerate(tqdm(keys)):
-        record = parse_record(manifest[key])
-        if record.num_chains > 20:
-            # Skip large structures for testing
-            continue
+            # Featurize
+            f_input = featurize_structure(tokenized)
+            f_input = f_input.pad_to_max_token(384)
+            in_batch.append(f_input)
 
-        # Set random seed for reproducibility
-        random.seed(key)
-        path = BOLTZ_STRUCTURE_DIR / f"{key}.npz"
-        boltz_structure = BoltzStructure.load(path)
-        try:
-            tokenized = tokenize_structure(boltz_structure)
-        except Exception as e:
-            print(f"Error tokenizing structure {key}: {e}")
-            continue
+        # Collate
+        f_input = FoldingInput.from_list(in_batch)
 
-        # Crop structure
-        tokenized = cropper.crop(tokenized, 384, None)
-        # print(tokenized)
-
-        # Featurize
-        f_input = featurize_structure(tokenized)
-        f_input = f_input.pad_to_max_token(384)
+        # Move to GPU
         f_input = f_input.to(device="cuda")
-        f_input = FoldingInput.from_list([f_input])
-        # print(f_input)
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             optimizer.zero_grad()
             forward_out = model.forward(
                 f_input=f_input,
-                num_cycles=1,
+                num_cycles=4,
                 num_steps=20,
                 num_diffusion_samples=1,
                 diffusion_batch_size=16,
@@ -89,49 +98,60 @@ if __name__ == "__main__":
                 train_confidence_module=False,
             )
 
-            distogram_out = forward_out["distogram"]
-            distogram_pred = distogram_out["logits"]
+        distogram_out = forward_out["distogram"]
+        distogram_pred = distogram_out["logits"]
 
-            diffusion_out = forward_out["diffusion"]
-            t_hat = diffusion_out["t_hat"]
-            x_pred = diffusion_out["denoised_atom_coords"]
-            x_true = diffusion_out["true_atom_coords"]
-            diffusion_loss_weights = diffusion_out["loss_weights"]
-            assert diffusion_out["denoised_atom_coords"].dtype == torch.float32
+        diffusion_out = forward_out["diffusion"]
+        t_hat = diffusion_out["t_hat"]
+        x_pred = diffusion_out["denoised_atom_coords"]
+        x_true = diffusion_out["true_atom_coords"]
+        diffusion_loss_weights = diffusion_out["loss_weights"]
 
-            # Calculate loss
-            with torch.autocast(device_type="cuda", dtype=torch.float32):
+        # Calculate loss
+        with torch.autocast(device_type="cuda", dtype=torch.float32):
+            if use_distogram_loss:
                 l_distogram = distogram_loss(distogram_pred, f_input).mean()
+            else:
+                l_distogram = torch.tensor(0.0).to(x_pred.device)
 
+            if use_mse_loss:
                 l_mse = mse_loss(
                     x_pred=x_pred,
                     x_true=x_true,
                     f_input=f_input,
                 )
+            else:
+                l_mse = torch.tensor(0.0).to(x_pred.device)
 
+            if use_smooth_lddt_loss:
                 l_smooth_lddt = smooth_lddt_loss(
                     x_pred=x_pred,
                     x_true=x_true,
                     f_input=f_input,
                     chunk_size=8,
                 ).mean()
-                l_diffusion = (diffusion_loss_weights * l_mse).mean() + l_smooth_lddt
+            else:
+                l_smooth_lddt = torch.tensor(0.0).to(x_pred.device)
 
-                loss = w_diffusion * l_diffusion + w_distogram * l_distogram
+            l_diffusion = (diffusion_loss_weights * l_mse).mean() + l_smooth_lddt
 
-            loss.backward()
+            # AF3 loss weights
+            w_diffusion = 4.0
+            w_distogram = 3e-2
+            loss = w_diffusion * l_diffusion + w_distogram * l_distogram
 
-            print("Iteration:", it, "Loss:", loss.item())
+        loss.backward()
 
-            # Check for unused parameters
-            unused_params = []
-            for name, p in model.named_parameters():
-                if p.grad is None:
-                    if p.requires_grad:
-                        unused_params.append(name)
-            if len(unused_params) > 0:
-                print("Warning: Unused parameters detected:")
-                for name in unused_params:
-                    print(f" - {name}")
+        print("Iteration:", it, "Loss:", loss.item())
 
-            optimizer.step()
+        # Check for unused parameters
+        unused_params = []
+        for name, p in model.named_parameters():
+            if p.grad is None:
+                if p.requires_grad:
+                    unused_params.append(name)
+        if len(unused_params) > 0:
+            print("Warning: Unused parameters detected:")
+            for name in unused_params:
+                print(f" - {name}")
+        optimizer.step()
