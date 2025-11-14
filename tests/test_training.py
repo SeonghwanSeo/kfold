@@ -9,14 +9,8 @@ from kfold.config import load_config
 from kfold.data.featurize import featurize_structure
 from kfold.data.model_input import FoldingInput
 from kfold.model.models.kfold import KFold
+from kfold.training.folding import loss as losses
 from kfold.training.folding.dataset.cropper.boltz import BoltzCropper
-from kfold.training.folding.loss.diffusion import (
-    SmoothLDDTLoss,
-    WeightedMSELoss,
-)
-from kfold.training.folding.loss.distogram import (
-    DistogramLoss,
-)
 from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 
@@ -41,9 +35,12 @@ if __name__ == "__main__":
     cropper = BoltzCropper(BoltzCropper.Config())
 
     # loss functions
-    mse_loss = WeightedMSELoss(align=True)
-    distogram_loss = DistogramLoss(2.0, 22.0, 64).cuda()
-    smooth_lddt_loss = SmoothLDDTLoss()
+    mse_loss = losses.diffusion.WeightedMSELoss(align=True)
+    smooth_lddt_loss = losses.diffusion.SmoothLDDTLoss()
+    distogram_loss = losses.distogram.DistogramLoss(2.0, 22.0, 64).cuda()
+
+    w_diffusion = 4.0
+    w_distogram = 3e-2
 
     # instantiate model
     model = KFold(global_config)
@@ -62,7 +59,11 @@ if __name__ == "__main__":
         random.seed(key)
         path = BOLTZ_STRUCTURE_DIR / f"{key}.npz"
         boltz_structure = BoltzStructure.load(path)
-        tokenized = tokenize_structure(boltz_structure)
+        try:
+            tokenized = tokenize_structure(boltz_structure)
+        except Exception as e:
+            print(f"Error tokenizing structure {key}: {e}")
+            continue
 
         # Crop structure
         tokenized = cropper.crop(tokenized, 384, None)
@@ -90,7 +91,6 @@ if __name__ == "__main__":
 
             distogram_out = forward_out["distogram"]
             distogram_pred = distogram_out["logits"]
-            l_distogram = distogram_loss.forward(distogram_pred, f_input)
 
             diffusion_out = forward_out["diffusion"]
             t_hat = diffusion_out["t_hat"]
@@ -101,6 +101,8 @@ if __name__ == "__main__":
 
             # Calculate loss
             with torch.autocast(device_type="cuda", dtype=torch.float32):
+                l_distogram = distogram_loss(distogram_pred, f_input).mean()
+
                 l_mse = mse_loss(
                     x_pred=x_pred,
                     x_true=x_true,
@@ -112,10 +114,11 @@ if __name__ == "__main__":
                     x_true=x_true,
                     f_input=f_input,
                     chunk_size=8,
-                )
-                loss = (
-                    diffusion_loss_weights * l_mse + l_smooth_lddt + l_distogram
                 ).mean()
+                l_diffusion = (diffusion_loss_weights * l_mse).mean() + l_smooth_lddt
+
+                loss = w_diffusion * l_diffusion + w_distogram * l_distogram
+
             loss.backward()
 
             print("Iteration:", it, "Loss:", loss.item())

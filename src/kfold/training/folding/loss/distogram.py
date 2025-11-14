@@ -33,21 +33,18 @@ class DistogramLoss(torch.nn.Module):
             The computed distogram loss of shape (B,).
         """
 
-        target_distogram = self.compute_distogram(
-            atom_coords=f_input.atom.label_coords,
-            disto_index=f_input.token.disto_index,
-        )  # [B, Nholo, Lt, Lt]
+        dist_repr_atoms = torch.cdist(
+            f_input.token.disto_coords,
+            f_input.token.disto_coords,
+        )  # [B, Lt, Lt]
 
-        B, Nholo, L, L = target_distogram.shape
-        assert Nholo == 1, "Currently only supports single holo coordinates."
+        target_distogram = (
+            (dist_repr_atoms.unsqueeze(-1) > self.boundaries).sum(dim=-1).long()
+        )
+
+        B, L, L = target_distogram.shape
 
         target_distogram = target_distogram.squeeze(1)  # [B, Lt, Lt]
-
-        # Get mask
-        mask = f_input.token.disto_mask  # [B, Lt]
-        pair_mask = mask[:, None, :] * mask[:, :, None]  # [B, Lt, Lt]
-        pair_mask.diagonal(dim1=-2, dim2=-1).zero_()  # zero out diagonal
-        pair_mask = pair_mask.to(dtype=logits.dtype)
 
         # Compute the distogram loss
         disto_loss = torch.nn.functional.cross_entropy(
@@ -56,41 +53,13 @@ class DistogramLoss(torch.nn.Module):
             reduction="none",
         ).view(B, L, L)
 
-        # Mask out invalid positions
+        # Mask out invalid distogram
+        mask = f_input.token.disto_mask  # [B, Lt]
+        pair_mask = mask[:, None, :] * mask[:, :, None]  # [B, Lt, Lt]
+        pair_mask.diagonal(dim1=-2, dim2=-1).zero_()  # zero out diagonal
+        pair_mask = pair_mask.to(dtype=logits.dtype)
         disto_loss = disto_loss * pair_mask  # [B, Lt, Lt]
 
         # Compute mean loss
         disto_loss = disto_loss.sum((-1, -2)) / pair_mask.sum((-1, -2)).clamp(1)
         return disto_loss  # [B,]
-
-    def compute_distogram(
-        self,
-        atom_coords: torch.Tensor,
-        disto_index: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute the target distogram from pairwise distances.
-
-        Parameters
-        ----------
-        atom_coords : torch.Tensor
-            Tensor of shape (B, Latom, Nholo, 3) containing atom coordinates.
-        disto_index : torch.Tensor
-            Tensor of shape (B, Ltoken) containing the indices of atoms used for distogram
-
-        Returns
-        -------
-        target_distogram : torch.Tensor
-            Tensor of shape (B, Nholo, Lt, Lt) containing the target distogram.
-        """
-        batch_size = atom_coords.shape[0]
-        batch_indices = torch.arange(batch_size, device=atom_coords.device).unsqueeze(-1)
-
-        disto_coords = atom_coords[batch_indices, disto_index]  # [B, Ltoken, Nholo, 3]
-        disto_coords = disto_coords.permute(0, 2, 1, 3)  # [B, Nholo, Ltoken, 3]
-        disto_pair_dist = torch.cdist(
-            disto_coords, disto_coords
-        )  # [B, Nholo, Ltoken, Ltoken]
-        target_distogram = (
-            (disto_pair_dist.unsqueeze(-1) > self.boundaries).sum(dim=-1).long()
-        )
-        return target_distogram
