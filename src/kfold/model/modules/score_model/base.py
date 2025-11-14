@@ -30,24 +30,27 @@ class BaseScoreModel(torch.nn.Module, ABC):
     @abstractmethod
     def forward(
         self,
-        x_noisy: torch.Tensor,
-        t_hat: torch.Tensor,
+        r_noisy: torch.Tensor,
+        c_noise: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache=None,
+        model_cache: dict | None = None,
     ) -> torch.Tensor:
         """Forward pass of the AF3 diffusion module.
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
+        Notes: The scaling of x_noisy is handled outside this module.
 
         Parameters
         ----------
-        x_noisy : torch.Tensor
+        r_noisy : torch.Tensor
             The noisy atom positions, shape [B, N, La, 3],
             where N is number of diffusion samples and La is number of atoms.
-        t_hat : torch.Tensor
+        c_noise : torch.Tensor
             The diffusion noise level (or sigmas), shape [B, N].
+            c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm 21.)
+            c_noise is computed outside of this class (See StructureModule).
         f_input : FoldingInput
             The folding input.
         s_inputs : torch.Tensor
@@ -60,6 +63,6 @@ class BaseScoreModel(torch.nn.Module, ABC):
 
         Returns
         -------
-        x_out : torch.Tensor
+        r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """

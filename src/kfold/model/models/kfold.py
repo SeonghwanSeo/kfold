@@ -146,13 +146,9 @@ class KFold(torch.nn.Module):
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
-        # Initialize model cache
-        model_cache: dict = {}
-
         # Embed inputs
         s_inputs, s_init, z_init = self.input_embedder(
             f_input=f_input,
-            model_cache=model_cache,
         )
 
         # Trunk with recycling
@@ -164,7 +160,6 @@ class KFold(torch.nn.Module):
             f_input,
             num_cycles,
         )
-
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.
             # NOTE: We do not pass cache here to prevent that detached tensors
@@ -172,7 +167,7 @@ class KFold(torch.nn.Module):
             # diffusion module training. Instead, we construct cache inside
             # sample_structure method if necessary.
             self.score_model.eval()
-            with torch.no_grad() and torch.autocast("cuda", dtype=torch.float32):
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.float32):
                 coordinates = self.structure_module.sample_structure(
                     f_input=f_input,
                     s_inputs=s_inputs.detach(),

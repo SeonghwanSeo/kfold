@@ -40,12 +40,8 @@ class AF3PairformerTrunk(BaseTrunk):
             Whether to use template, by default False
         use_msa: bool, optional
             Whether to use MSA, by default False
-        activation_checkpointing : bool, optional
-            Whether to use activation checkpointing, by default False
-        offload_to_cpu : bool, optional
-            Whether to offload to CPU, by default False
-        use_kernels : bool, optional
-            Whether to use custom kernels, by default False
+        use_cuequiv_kernels : bool, optional
+            Whether to use cuequivariance kernels, by default False
         tri_attn_chunk_threshold : int, optional
             The threshold for chunking in triangle attention, by default 384
         """
@@ -59,9 +55,8 @@ class AF3PairformerTrunk(BaseTrunk):
         pairwise_num_heads: int = 4
         use_msa: bool = False
         use_template: bool = False
-        activation_checkpointing: bool = False
-        offload_to_cpu: bool = False
-        use_kernels: bool = False
+        use_cuequiv_kernels: bool = False
+        blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
     def __init__(self, cfg: Config):
@@ -69,7 +64,7 @@ class AF3PairformerTrunk(BaseTrunk):
         super().__init__(cfg)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_kernels: bool = cfg.use_kernels
+        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
         if self.use_template:
@@ -88,9 +83,7 @@ class AF3PairformerTrunk(BaseTrunk):
             dropout=cfg.dropout,
             pairwise_head_width=cfg.pairwise_head_width,
             pairwise_num_heads=cfg.pairwise_num_heads,
-            activation_checkpointing=cfg.activation_checkpointing,
-            offload_to_cpu=cfg.offload_to_cpu,
-            use_kernels=self.use_kernels,
+            blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
         # For recycling
@@ -186,8 +179,10 @@ class AF3PairformerTrunk(BaseTrunk):
                 s, z = pairformer_module(
                     s,
                     z,
-                    mask=f_input.token.pad_mask.float(),
+                    mask=f_input.token.pad_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
+                    use_cuequiv_attn=self.use_cuequiv_kernels,
+                    use_cuequiv_mul=self.use_cuequiv_kernels,
                 )
 
                 # Line 13

@@ -55,7 +55,7 @@ def get_indexing_matrix(W: int, Lq: int, Lk: int, device: torch.device) -> torch
     return onehot.reshape(2 * W, h * W).float()
 
 
-class LocalAttentionIndexer:
+class LocalAttentionIndex:
     def __init__(
         self,
         num_atoms: int,
@@ -96,7 +96,7 @@ class LocalAttentionIndexer:
         """
         # if dtype is not float, convert to float for einsum
         original_dtype = x.dtype
-        if original_dtype == torch.long:
+        if original_dtype in (torch.bool, torch.long):
             x = x.float()
 
         original_shape = x.shape  # [..., L, D]
@@ -112,7 +112,7 @@ class LocalAttentionIndexer:
 
 def center_random_augmentation(
     coords: torch.Tensor,
-    atom_mask: torch.Tensor,
+    mask: torch.Tensor,
     s_trans: float = 1.0,
     centering: bool = True,
     random_rotate: bool = True,
@@ -120,23 +120,16 @@ def center_random_augmentation(
     """Centering and Random Augmentation
     See Section 3.7 Algorithm 19 CentreRandomAugmentation
     """
-
-    coords_shape = coords.shape
-
     # Line 1
     if centering:
-        center = torch.sum(
-            coords * atom_mask[..., None], dim=-2, keepdim=True
-        ) / torch.sum(atom_mask[..., None], dim=-2, keepdim=True).clamp(1)
-        coords = coords - center
+        coords = do_centering(coords, mask)
 
     # Line 2,4
     if random_rotate:
         R = random_rotations(
-            coords_shape[:-2], coords.dtype, coords.device
+            coords.shape[:-2], coords.dtype, coords.device
         )  # [..., 3, 3]
-        rotate = lambda x: torch.einsum("...md,...ds->...ms", x, R)  # noqa
-        coords = rotate(coords)
+        coords = torch.einsum("...md,...ds->...ms", coords, R)  # noqa
 
     # Line 3,4
     if s_trans > 0.0:
@@ -153,8 +146,8 @@ class CenterRandomAugmentation:
     Usage)
     ```python
     augment = CenterRandomAugmentation(...)
-    x = augment(x, atom_mask=mask)
-    x, y = augment(x, y, atom_mask=mask)
+    x = augment(x, mask=mask)
+    x, y = augment(x, y, mask=mask)
     ```
     """
 
@@ -169,7 +162,7 @@ class CenterRandomAugmentation:
     def __call__(
         self,
         coords: torch.Tensor,
-        atom_mask: torch.Tensor,
+        mask: torch.Tensor,
     ) -> torch.Tensor: ...
 
     @overload
@@ -178,21 +171,21 @@ class CenterRandomAugmentation:
         coords1: torch.Tensor,
         coords2: torch.Tensor,
         *others: torch.Tensor,
-        atom_mask: torch.Tensor,
+        mask: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]: ...
 
     def __call__(  # type: ignore[override]
         self,
         *coords: torch.Tensor,
-        atom_mask: torch.Tensor,
+        mask: torch.Tensor,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
-        return self.augment(*coords, atom_mask=atom_mask)
+        return self.augment(*coords, mask=mask)
 
     @overload
     def augment(
         self,
         coords: torch.Tensor,
-        atom_mask: torch.Tensor,
+        mask: torch.Tensor,
     ) -> torch.Tensor: ...
 
     @overload
@@ -201,13 +194,13 @@ class CenterRandomAugmentation:
         coords1: torch.Tensor,
         coords2: torch.Tensor,
         *others: torch.Tensor,
-        atom_mask: torch.Tensor,
+        mask: torch.Tensor,
     ) -> tuple[torch.Tensor, ...]: ...
 
     def augment(  # type: ignore[override]
         self,
         *coords: torch.Tensor,
-        atom_mask: torch.Tensor,
+        mask: torch.Tensor,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """See Section 3.7 Algorithm 19 CentreRandomAugmentation
 
@@ -215,11 +208,10 @@ class CenterRandomAugmentation:
         ----------
         coords : torch.Tensor
             One or more tensors of shape (..., L, 3) representing atomic coordinates.
-        atom_mask : torch.Tensor
+        mask : torch.Tensor
             A tensor of shape (..., L) representing the atom mask.
         """
         coords_list: list[torch.Tensor] = list(coords)
-
         # Check all input coords have the same batch size and number of atoms
         ref_coords = coords_list[0]
         coords_shape = ref_coords.shape
@@ -231,10 +223,7 @@ class CenterRandomAugmentation:
 
         # Line 1
         if self.centering:
-            center = torch.sum(
-                ref_coords * atom_mask[..., None], dim=-2, keepdim=True
-            ) / torch.sum(atom_mask[..., None], dim=-2, keepdim=True).clamp(1)
-            coords_list = [x - center for x in coords_list]
+            coords_list = [do_centering(x, mask) for x in coords_list]
 
         # Line 2,4
         if self.random_rotate:
@@ -249,6 +238,9 @@ class CenterRandomAugmentation:
             random_trans = torch.randn_like(ref_coords[..., 0:1, :]) * self.s_trans
             coords_list = [x + random_trans for x in coords_list]
 
+        # Mask out
+        coords_list = [x * mask[..., None] for x in coords_list]
+
         if len(coords) == 1:
             # Single tensor input, return tensor
             return coords_list[0]
@@ -257,25 +249,22 @@ class CenterRandomAugmentation:
             return tuple(coords_list)
 
 
-def center(atom_coords: torch.Tensor, atom_mask: torch.Tensor) -> torch.Tensor:
-    atom_mean = torch.sum(
-        atom_coords * atom_mask[:, :, None], dim=1, keepdim=True
-    ) / torch.sum(atom_mask[:, :, None], dim=1, keepdim=True)
-    atom_coords = atom_coords - atom_mean
-    return atom_coords
+def do_centering(coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Centering of atom coordinates
+    Parameters
+    ----------
+    coords : torch.Tensor
+        Coordinates, shape (..., L, 3)
+    mask : torch.Tensor
+        Mask, shape (..., L)
+    """
 
-
-def compute_random_augmentation(
-    num_diffusion_samples: int,
-    s_trans: float = 1.0,
-    device: torch.device | None = None,
-    dtype: torch.dtype = torch.float32,
-):
-    R = random_rotations(num_diffusion_samples, dtype=dtype, device=device)
-    random_trans = (
-        torch.randn((num_diffusion_samples, 1, 3), dtype=dtype, device=device) * s_trans
+    total_mass = mask.sum(dim=-1, keepdim=True).clamp(1)
+    center = (
+        torch.sum(coords * mask[..., None], dim=-2, keepdim=True) / total_mass[..., None]
     )
-    return R, random_trans
+    centered_coords = coords - center
+    return centered_coords
 
 
 # the following is copied from Torch3D, BSD License,

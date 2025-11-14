@@ -7,7 +7,6 @@ channel_atom: 128
 channel_atompair: 16
 atoms_per_window_queries: 32
 atoms_per_window_keys: 128
-sigma_data: 16
 dim_fourier: 256
 atom_encoder_blocks: 3
 atom_encoder_heads: 4
@@ -16,5 +15,4 @@ token_transformer_heads: 16
 atom_decoder_blocks: 3
 atom_decoder_heads: 4
 conditioning_transition_layers: 2
-activation_checkpointing: True
-offload_to_cpu: False
+blocks_per_ckpt: 1
