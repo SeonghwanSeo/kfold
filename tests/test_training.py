@@ -112,9 +112,9 @@ if __name__ == "__main__":
         # Calculate loss
         with torch.autocast(device_type="cuda", dtype=torch.float32):
             if use_distogram_loss:
-                l_distogram = distogram_loss(distogram_pred, f_input).mean()
+                l_distogram = distogram_loss(distogram_pred, f_input)
             else:
-                l_distogram = torch.tensor(0.0).to(x_pred.device)
+                l_distogram = torch.tensor(0.0, device=x_pred.device)
 
             if use_mse_loss:
                 l_mse = mse_loss(
@@ -124,7 +124,7 @@ if __name__ == "__main__":
                     loss_weights=diffusion_loss_weights,
                 )
             else:
-                l_mse = torch.tensor(0.0).to(x_pred.device)
+                l_mse = torch.tensor(0.0, device=x_pred.device)
 
             if use_smooth_lddt_loss:
                 l_smooth_lddt = smooth_lddt_loss(
@@ -132,9 +132,9 @@ if __name__ == "__main__":
                     x_true=x_true,
                     f_input=f_input,
                     chunk_size=8,
-                ).mean()
+                )
             else:
-                l_smooth_lddt = torch.tensor(0.0).to(x_pred.device)
+                l_smooth_lddt = torch.tensor(0.0, device=x_pred.device)
 
             l_diffusion = l_mse + l_smooth_lddt
 

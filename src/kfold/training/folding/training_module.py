@@ -361,7 +361,7 @@ class KFoldTrainingModule(pl.LightningModule):
         """
         metrics: dict[str, torch.Tensor] = {}
 
-        # Equation 3-4
+        # Equations 3-4
         L_mse = self.weighted_mse_loss(
             x_pred, x_true, f_input, per_sample_weights
         )  # [B, Nsample]

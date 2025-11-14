@@ -106,7 +106,10 @@ class AF3SampleDiffusion(BaseStructureModule):
     def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
         """Compute loss weights based on noise levels t_hat.
         See Section 3.7.1 Equation 6 of AlphaFold3 paper.
-        NOTE: We replace `+` with `*` in the denominator compared to the AlphaFold3 paper. This matches the implementation in Boltz1, Protenix, and Openfold-3, and provides better numerical stability.
+
+        NOTE: We replace `+` with `*` in the denominator compared to the AlphaFold3 paper.
+        This matches the implementation in Boltz1, Protenix, and Openfold-3, and provides
+        better training stability.
         """
         return (t_hat**2 + self.sigma_data**2) / ((t_hat * self.sigma_data) ** 2)
 
@@ -337,7 +340,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         # Apply coordinate augmentation
         holo_coords = self.random_augmentation(
             holo_coords,
-            mask=atom_mask.unsqueeze(1),  # (B, 1, Latom),
+            mask=atom_mask.unsqueeze(1),  # (B, 1, Latom)
         )
 
         return holo_coords

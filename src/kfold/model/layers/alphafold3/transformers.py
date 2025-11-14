@@ -175,7 +175,7 @@ class AttentionPairBias(nn.Module):
             use_high_precision=use_high_precision,
         )
         Av = rearrange(Av, "... h l d -> ... l (h d)")
-        Av = Av.reshape_as(a)
+        Av = Av.reshape(a.shape)
 
         # Line 11
         a = self.proj_out(g * Av)
@@ -365,7 +365,7 @@ class DiffusionTransformerBlock(nn.Module):
             z=z,
             attn_mask=attn_mask,
             local_attn_index=local_attn_index,
-            use_high_precision=True,
+            use_high_precision=True,  # High precision for attention computation
         )
         # Line 3
         a = a + self.transition(a, s)
@@ -490,7 +490,7 @@ class AtomTransformer(nn.Module):
             device=q.device,
         )
 
-        # NOTE: (SeonghwanSeo) mask the key positions only (masking query is not required)
+        # NOTE: mask the key positions only (masking query is not required)
         mask = mask.float()  # [B, La, 1]
         attn_mask = local_attn_index.to_key(mask[..., None]).squeeze(-1)  # [B, W, Lk]
 

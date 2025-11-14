@@ -33,7 +33,8 @@ def weighted_rigid_align(
     """
     L = true_coords.shape[-2]
     weights = weights.unsqueeze(-1)  # [..., L, 1]
-    weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1e-10)  # [..., 1, 1]
+    # all weights is 1.0, 5.0, and 10.0 in our use case, so no risk of clamping.
+    weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1)  # [..., 1, 1]
 
     if L < 4:
         print(
@@ -145,7 +146,6 @@ class WeightedMSELoss(torch.nn.Module):
 
         w = self.get_atom_weights(f_input)  # [B, L]
         w = w.unsqueeze(-2)  # [B, 1, L]
-        mask = f_input.atom.resolved_mask[:, None, :]  # [B, 1, L]
 
         # See Section 3.7.1 Equation 2
         if self.align:
@@ -157,9 +157,7 @@ class WeightedMSELoss(torch.nn.Module):
                 )  # [B, N, L, 3]
 
         # See Section 3.7.1 Equation 3
-
-        mask = f_input.atom.resolved_mask  # [B, Latom]
-
+        mask = f_input.atom.resolved_mask  # [B, L]
         n_atoms = mask.sum(dim=-1, keepdim=True).clamp(min=1)  # [B, 1]
         d_sq = ((x_pred - x_true) ** 2).sum(dim=-1)  # [B, N, L]
         mse_loss = (1 / 3) * (w * d_sq).sum(-1) / n_atoms  # [B, N]
