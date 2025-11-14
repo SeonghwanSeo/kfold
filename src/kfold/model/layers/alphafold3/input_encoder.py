@@ -160,8 +160,8 @@ class AtomAttentionEncoderWithoutStructure(AtomAttentionEncoder):
         a, q, c, p = super().forward(f_input, s_trunk, z, r)
 
         assert a.shape[1] == 1, (
-            "Number of diffusion batches must be 1 for input embedding."
+            "Number of diffusion samples (dimension 1) must be 1 for input embedding."
         )
-        # Squeeze batch dimension
+        # Squeeze diffusion sample dimension (N)
         a, q, c, p = a.squeeze(1), q.squeeze(1), c.squeeze(1), p.squeeze(1)
         return a, q, c, p
