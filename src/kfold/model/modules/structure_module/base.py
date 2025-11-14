@@ -218,7 +218,7 @@ class BaseStructureModule(ABC):
             model_cache=model_cache,
         )  # [B, N, La, 3]
 
-        loss_weights = self.compute_loss_weights(t_hat)  # [B, N]
+        loss_weights = self.loss_weights(t_hat)  # [B, N]
 
         return {
             "t_hat": t_hat,
@@ -230,7 +230,7 @@ class BaseStructureModule(ABC):
         }
 
     @abstractmethod
-    def compute_loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
+    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
         """Compute loss weights based on noise levels t_hat.
         See Section 3.7.1 Equation 6 of AlphaFold3 paper.
         """
@@ -269,19 +269,3 @@ class BaseStructureModule(ABC):
             # sample holo indices
             raise NotImplementedError("sample not implemented")
         return holo_coords  # [B, N, L, 3]
-
-    def sample_noise_structure(
-        self, f_input: FoldingInput, num_diffusion_samples: int = 1
-    ):
-        """Sample noised structures from input for model training."""
-        sigma = self.sample_sigma(num_diffusion_samples, device=f_input.device)
-        prior_coords = self.sample_prior(f_input, num_diffusion_samples)
-        holo_coords = self.sample_holo(f_input, num_diffusion_samples)
-        mask = f_input.atom.pad_mask  # [B, La]
-        noised_atom_coords = self.interpolate(prior_coords, holo_coords, sigma, mask)
-        return {
-            "sigmas": sigma,
-            "prior_atom_coords": prior_coords,
-            "noised_atom_coords": noised_atom_coords,
-            "label_atom_coords": holo_coords,
-        }

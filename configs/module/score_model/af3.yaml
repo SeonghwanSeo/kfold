@@ -7,7 +7,6 @@ channel_atom: 128
 channel_atompair: 16
 atoms_per_window_queries: 32
 atoms_per_window_keys: 128
-sigma_data: 16
 dim_fourier: 256
 atom_encoder_blocks: 3
 atom_encoder_heads: 4

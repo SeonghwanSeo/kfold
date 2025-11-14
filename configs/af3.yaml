@@ -1,21 +1,29 @@
 _hparam_:
+  # model size
   channel_s: 384 # token single channel
   channel_z: 128 # token pair channel
   channel_atom: 128 # atom single channel
   channel_atompair: 16 # atom pair channel
   use_cuequiv_kernels: true # cu-equivariance kernel for triangle attention/multiplicative
 
-  # common hparams
-  batch_size: 4
+  # train hparams
+  name: debug-${_hparam_.max_tokens}
   num_gpus: auto # number of gpus
-  accumulate_grad_batches: 8 # 256 / num_gpus / batch_size
+  accumulate_grad_batches: 16 # 256 / num_gpus / batch_size
   num_workers: 8 # NOTE: please set `< 4 * batch_size`
-  max_tokens: 384 # AF3 first stage
+
+  # data hparams
+  diffusion_batch_size: 48
+  max_tokens: 512
+
+  batch_size: 2
   limit_train_batches: 1000
 
 train:
   # training hparams
   _yaml_: "train/af3-structure.yaml"
+
+  name: ${_hparam_.name}
 
   seed: 42
 
@@ -35,7 +43,6 @@ train:
   wandb:
     use: true
     project: "KFold-edm"
-    name: null # set your run name
     group: structure-only # set your group name
     entity: K-Fold # set your entity name
 
@@ -45,6 +52,9 @@ train:
     max_tokens: ${_hparam_.max_tokens}
     boltz_processed_path: /cache/wykim_lab/rcsb_processed_targets/
     boltz_split_path: ./assets/splits/boltz1
+
+  training:
+    diffusion_batch_size: ${_hparam_.diffusion_batch_size}
 
 model:
   input_embedder:

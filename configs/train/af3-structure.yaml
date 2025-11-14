@@ -1,5 +1,8 @@
 # Configuration for K-Fold structure module training
 
+# Training Configuration
+name: ???
+
 # Random Seed
 seed: 42
 
@@ -21,7 +24,6 @@ wandb:
   use: true
   project: "KFold"
   entity: null # set your entity name
-  name: null # set your run name
   group: null # set your group name
 
 # Exponential Moving Average (EMA)

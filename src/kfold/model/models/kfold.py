@@ -167,7 +167,7 @@ class KFold(torch.nn.Module):
             # diffusion module training. Instead, we construct cache inside
             # sample_structure method if necessary.
             self.score_model.eval()
-            with torch.no_grad() and torch.autocast("cuda", dtype=torch.float32):
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.float32):
                 coordinates = self.structure_module.sample_structure(
                     f_input=f_input,
                     s_inputs=s_inputs.detach(),

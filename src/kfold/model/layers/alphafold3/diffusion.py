@@ -77,7 +77,6 @@ class DiffusionModule(nn.Module):
         channel_atompair: int = 16,
         atoms_per_window_queries: int = 32,
         atoms_per_window_keys: int = 128,
-        sigma_data: int = 16,
         dim_fourier: int = 256,
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
@@ -104,8 +103,6 @@ class DiffusionModule(nn.Module):
             The number of atoms per window for queries, by default 32.
         atoms_per_window_keys : int, optional
             The number of atoms per window for keys, by default 128.
-        sigma_data : int, optional
-            The standard deviation of the data distribution, by default 16.
         dim_fourier : int, optional
             The dimension of the fourier embedding, by default 256.
         atom_encoder_blocks : int, optional
@@ -131,7 +128,6 @@ class DiffusionModule(nn.Module):
 
         self.atoms_per_window_queries: int = atoms_per_window_queries
         self.atoms_per_window_keys: int = atoms_per_window_keys
-        self.sigma_data: int = sigma_data
 
         channel_token = channel_s * 2
 
@@ -139,7 +135,6 @@ class DiffusionModule(nn.Module):
         self.diffusion_conditioning = DiffusionConditioning(
             channel_s=channel_s,
             channel_z=channel_z,
-            sigma_data=sigma_data,
             dim_fourier=dim_fourier,
             num_transitions=conditioning_transition_layers,
         )
@@ -189,8 +184,8 @@ class DiffusionModule(nn.Module):
 
     def forward(
         self,
-        x_noisy: torch.Tensor,
-        t_hat: torch.Tensor,
+        r_noisy: torch.Tensor,
+        c_noise: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
@@ -202,11 +197,13 @@ class DiffusionModule(nn.Module):
 
         Parameters
         ----------
-        x_noisy : torch.Tensor
-            The noisy atom positions, shape [B, N, La, 3],
+        r_noisy : torch.Tensor
+            The scaled noisy atom positions, shape [B, N, La, 3],
             where B is the batch size and Nsample is the number of diffusion samples.
-        t_hat : torch.Tensor
+        c_noise : torch.Tensor
             The diffusion noise level (or sigmas), shape [B, N].
+            c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm 21.)
+            c_noise is computed outside of this class (See StructureModule).
         f_input : FoldingInput
             The folding input.
         s_inputs : torch.Tensor
@@ -218,18 +215,18 @@ class DiffusionModule(nn.Module):
 
         Returns
         -------
-        x_update : torch.Tensor
-            The updated atom positions, shape [B, N, La, 3].
+        r_update : torch.Tensor
+            The scaled updated atom positions, shape [B, N, La, 3].
         """
         # B: batch size, N: number of diffusion samples
 
         # Line 1
         s, z = self.diffusion_conditioning(
+            c_noise=c_noise,
             f_input=f_input,
             s_inputs=s_inputs,
             s_trunk=s_trunk,
             z_trunk=z_trunk,
-            t_hat=t_hat,
             model_cache=model_cache,
         )  # [B, N, Lt, c_s], [B, Lt, Lt, c_z]
 
@@ -237,10 +234,8 @@ class DiffusionModule(nn.Module):
         # - s: [B, N, Lt, c_s] where N is number of diffusion samples
         # - z: [B, Lt, Lt, c_z] (time-independent)
 
-        # Line 2
-        # Scale positions
-        c_in = 1 / torch.sqrt(t_hat**2 + self.sigma_data**2)  # [B, N]
-        r_noisy = x_noisy * c_in[..., None, None]  # [B, N, La, 3]
+        # Line 2: x_noisy -> r_noisy
+        # Already given as input
 
         # === Local attention on atom-level and aggregate to coarse-grained token === #
         # Line 3
@@ -284,16 +279,9 @@ class DiffusionModule(nn.Module):
             f_input=f_input,
         )
 
-        # === Rescale positions and update === #
-        # NOTE: I simply use AF3 formula instead of Boltz1's
-        # TODO: add hparams to control.
+        # Line 8: Performed on StructureModule side.
 
-        # Line 8
-        c_skip = (self.sigma_data**2) / (self.sigma_data**2 + t_hat**2)
-        c_out = self.sigma_data * t_hat / torch.sqrt(self.sigma_data**2 + t_hat**2)
-        x_out = c_skip[..., None, None] * x_noisy + c_out[..., None, None] * r_update
-
-        return x_out
+        return r_update
 
 
 class DiffusionConditioning(nn.Module):
@@ -322,7 +310,6 @@ class DiffusionConditioning(nn.Module):
         self,
         channel_s: int = 384,
         channel_z: int = 128,
-        sigma_data: float = 16.0,
         dim_fourier: int = 256,
         num_transitions: int = 2,
         transition_expansion_factor: int = 2,
@@ -336,8 +323,6 @@ class DiffusionConditioning(nn.Module):
             The single representation dimension, by default 384.
         channel_z : int
         The pair representation dimension, by default 128.
-        sigma_data : float
-            The data sigma.
         dim_fourier : int
             The fourier embeddings dimension, by default 256.
         num_transitions : int
@@ -346,7 +331,6 @@ class DiffusionConditioning(nn.Module):
             The transition expansion factor, by default 2.
         """
         super().__init__()
-        self.sigma_data = sigma_data
 
         # Pair representation conditioning
         self.rel_pos_encoding = RelativePositionEncoding(channel_z=channel_z)
@@ -377,7 +361,7 @@ class DiffusionConditioning(nn.Module):
 
     def forward(
         self,
-        t_hat: torch.Tensor,
+        c_noise: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
@@ -388,8 +372,9 @@ class DiffusionConditioning(nn.Module):
 
         Parameters
         ----------
-        t_hat : torch.Tensor
+        c_noise : torch.Tensor
             Tensor of shape (B, N) containing diffusion noise level (or sigma).
+            c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm.)
         f_input : FoldingInput
             The folding input.
         s_inputs : torch.Tensor
@@ -441,8 +426,9 @@ class DiffusionConditioning(nn.Module):
         # Line 7
         s = self.linear_no_bias_single(self.layernorm_single(s))  # [B, Lt, c_s]
 
-        # Line 8
-        c_noise = (t_hat / self.sigma_data).clamp(1e-20).log() * 0.25
+        # Line 8:
+        # NOTE: 1/4 log(t_hat / sigma_data) is computed outside of this class.
+        # See StructureModule for more details.
         fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]
 
         # Line 9

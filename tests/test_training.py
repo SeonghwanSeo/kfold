@@ -2,6 +2,7 @@ import json
 import random
 from pathlib import Path
 
+import lightning.pytorch as pl
 import torch
 from tqdm import tqdm
 
@@ -21,6 +22,17 @@ BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
 
 if __name__ == "__main__":
+    # Train settings
+    batch_size = 2
+    diffusion_batch_size = 32
+    max_tokens = 512
+
+    use_mse_loss = True
+    use_smooth_lddt_loss = True
+    use_distogram_loss = True
+
+    pl.seed_everything(42)
+
     # Load keys
     global_config = load_config(TEST_CONFIG_PATH)
 
@@ -29,15 +41,8 @@ if __name__ == "__main__":
 
     manifest = {v["id"]: v for v in manifest}
     keys = sorted(list(manifest.keys()))
-    random.seed(42)
     random.shuffle(keys)
     keys = keys[:10000]
-
-    # Train settings
-    batch_size = 4
-    use_mse_loss = False
-    use_smooth_lddt_loss = True
-    use_distogram_loss = False
 
     # instantiate model
     model = KFold(global_config)
@@ -60,8 +65,6 @@ if __name__ == "__main__":
                 # Skip large structures for testing
                 continue
 
-            # Set random seed for reproducibility
-            random.seed(key)
             path = BOLTZ_STRUCTURE_DIR / f"{key}.npz"
             boltz_structure = BoltzStructure.load(path)
             try:
@@ -71,12 +74,11 @@ if __name__ == "__main__":
                 continue
 
             # Crop structure
-            tokenized = cropper.crop(tokenized, 384, None)
-            # print(tokenized)
+            tokenized = cropper.crop(tokenized, max_tokens, None)
 
             # Featurize
             f_input = featurize_structure(tokenized)
-            f_input = f_input.pad_to_max_token(384)
+            f_input = f_input.pad_to_max_token(max_tokens)
             in_batch.append(f_input)
 
         # Collate
@@ -87,12 +89,12 @@ if __name__ == "__main__":
 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             optimizer.zero_grad()
-            forward_out = model.forward(
+            forward_out = model(
                 f_input=f_input,
                 num_cycles=4,
                 num_steps=20,
                 num_diffusion_samples=1,
-                diffusion_batch_size=16,
+                diffusion_batch_size=diffusion_batch_size,
                 sample_structures=False,
                 train_structure_module=True,
                 train_confidence_module=False,
@@ -119,6 +121,7 @@ if __name__ == "__main__":
                     x_pred=x_pred,
                     x_true=x_true,
                     f_input=f_input,
+                    loss_weights=diffusion_loss_weights,
                 )
             else:
                 l_mse = torch.tensor(0.0).to(x_pred.device)
@@ -133,12 +136,18 @@ if __name__ == "__main__":
             else:
                 l_smooth_lddt = torch.tensor(0.0).to(x_pred.device)
 
-            l_diffusion = (diffusion_loss_weights * l_mse).mean() + l_smooth_lddt
+            l_diffusion = l_mse + l_smooth_lddt
 
             # AF3 loss weights
             w_diffusion = 4.0
             w_distogram = 3e-2
             loss = w_diffusion * l_diffusion + w_distogram * l_distogram
+
+            print("Loss breakdown:")
+            print("  Diffusion Loss:", l_diffusion.item())
+            print("    MSE Loss:", l_mse.item())
+            print("    Smooth LDDT Loss:", l_smooth_lddt.item())
+            print("  Distogram Loss:", l_distogram.item())
 
         loss.backward()
 

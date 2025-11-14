@@ -19,7 +19,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--experiment_name",
         type=str,
-        default="debug",
         help="Name of the experiment for logging purposes.",
     )
     parser.add_argument(
@@ -57,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_trainer(cfg, default_root_dir: Path) -> pl.Trainer:
+def build_trainer(cfg, save_dir: Path) -> pl.Trainer:
     train_cfg = cfg.train
 
     callbacks = []
@@ -65,12 +64,12 @@ def build_trainer(cfg, default_root_dir: Path) -> pl.Trainer:
         from lightning.pytorch.loggers import WandbLogger
 
         wandb_logger = WandbLogger(
-            name=train_cfg.wandb.name,
+            name=train_cfg.name,
             project=train_cfg.wandb.project,
             group=train_cfg.wandb.group,
             entity=train_cfg.wandb.entity,
             config=to_dict(cfg),
-            save_dir=default_root_dir,
+            save_dir=save_dir,
         )
         loggers = [wandb_logger]
     else:
@@ -94,7 +93,7 @@ def build_trainer(cfg, default_root_dir: Path) -> pl.Trainer:
 
     pl_trainer_cfg = train_cfg.trainer
     trainer = pl.Trainer(
-        default_root_dir=default_root_dir,
+        default_root_dir=save_dir,
         logger=loggers,
         callbacks=callbacks,
         accelerator=pl_trainer_cfg.accelerator,
@@ -119,12 +118,9 @@ def train(args) -> None:
 
     cfg = load_config(args.config)
 
-    out_dir = args.out_dir
-    experiment_name = args.experiment_name
-    root_dir = Path(out_dir) / experiment_name
-
     # Override some config options with command line args
-    cfg.train.wandb.name = args.experiment_name
+    if args.experiment_name is not None:
+        cfg.train.name = args.experiment_name
     if args.num_gpus is not None:
         cfg.train.trainer.devices = args.num_gpus
     if args.num_nodes is not None:
@@ -137,7 +133,9 @@ def train(args) -> None:
     # Set random seed
     pl.seed_everything(cfg.train.seed)
 
-    trainer = build_trainer(cfg, root_dir)
+    save_dir = Path(args.out_dir) / cfg.train.name
+
+    trainer = build_trainer(cfg, save_dir)
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
 
