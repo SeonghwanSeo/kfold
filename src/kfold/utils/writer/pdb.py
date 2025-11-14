@@ -1,12 +1,11 @@
+import numpy as np
 from rdkit import Chem
 
 import kfold.constants as C
 from kfold.data.tokenized import TokenizedStructure
 
 
-def to_pdb(
-    structure: TokenizedStructure,
-) -> str:  # noqa: PLR0915
+def to_pdb(structure: TokenizedStructure) -> str:  # noqa: PLR0915
     """Write a structure into a PDB file.
 
     Parameters
@@ -94,6 +93,9 @@ def to_pdb(
     bonds = structure.bond  # [Nbond, ...]
     for bidx in range(len(bonds)):
         i1, i2 = bonds.token_index[bidx]
+        # Remap
+        i1 = np.argmax(tokens.token_index == i1).item()
+        i2 = np.argmax(tokens.token_index == i2).item()
         j1, j2 = bonds.atom_index[bidx]
         if not atoms.resolved_mask[i1, j1] or not atoms.resolved_mask[i2, j2]:
             continue
