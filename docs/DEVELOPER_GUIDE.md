@@ -32,6 +32,10 @@ pre-commit install
 
 ### Core Components
 
+- **`configs/`**: Configuration files for training and model settings.
+  - `model/`: Model architecture configurations.
+  - `train/`: Training pipeline configurations.
+
 - **`src/kfold/`**: Core package containing the model implementation
   - **`constants/`**: Constants used across the codebase
     - `chain.py`: Chain type definitions
@@ -59,7 +63,7 @@ pre-commit install
 ## Training Pipeline
 
 ```bash
-python scripts/train.py configs/af3.yaml
+python scripts/train.py configs/train-af3.yaml --wandb
 ```
 
 ## Inference Framework
@@ -75,7 +79,7 @@ I introduce `Registry` to manage different implementations of modules such as se
 When you want to add a new module, please cite the following code snippets:
 
 #### Implementing a new Structure Module
-- Separate Config class style
+- Separate config class style
   ```python
   from kfold.models.modules.registry import STRUCTURE_MODULES, BaseConfig
 
@@ -87,15 +91,15 @@ When you want to add a new module, please cite the following code snippets:
     param1: int = 128
     param2: float = 0.1
 
-  @STRUCTURE_MODULES.register_module()
+  @STRUCTURE_MODULES.register(config_cls=MyStructureModuleConfig)
   class MyStructureModule(BaseStructureModule):
     def __init__(self, config: MyStructureModuleConfig):
       super().__init__(config)
   ```
 
-- Nested Config class style
+- Nested config class style
   ```python
-  @STRUCTURE_MODULES.register_module()
+  @STRUCTURE_MODULES.register()
   class MyStructureModule(BaseStructureModule):
     class Config(BaseConfig):
       param1: int = 128

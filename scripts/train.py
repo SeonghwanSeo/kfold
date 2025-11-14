@@ -24,8 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out_dir",
         type=str,
-        default="./experiments/",
-        help="Output directory for saving logs and checkpoints.",
+        help="Output root directory for saving logs and checkpoints.",
     )
     # Easy overrides
     parser.add_argument(
@@ -49,15 +48,17 @@ def parse_args() -> argparse.Namespace:
         help="Path to a checkpoint file to resume training from.",
     )
     parser.add_argument(
-        "--no_wandb",
+        "--wandb",
         action="store_true",
-        help="Disable Weights & Biases logging.",
+        help="Enable Weights & Biases logging.",
     )
     return parser.parse_args()
 
 
-def build_trainer(cfg, save_dir: Path) -> pl.Trainer:
+def build_trainer(cfg) -> pl.Trainer:
     train_cfg = cfg.train
+
+    save_dir = Path(train_cfg.out_dir) / train_cfg.name
 
     callbacks = []
     if train_cfg.wandb.use:
@@ -119,6 +120,8 @@ def train(args) -> None:
     cfg = load_config(args.config)
 
     # Override some config options with command line args
+    if args.out_dir is not None:
+        cfg.train.out_dir = args.out_dir
     if args.experiment_name is not None:
         cfg.train.name = args.experiment_name
     if args.num_gpus is not None:
@@ -127,15 +130,13 @@ def train(args) -> None:
         cfg.train.trainer.num_nodes = args.num_nodes
     if args.num_workers is not None:
         cfg.train.data.num_workers = args.num_workers
-    if args.no_wandb:
-        cfg.train.wandb.use = False
+    if args.wandb:
+        cfg.train.wandb.use = True
 
     # Set random seed
     pl.seed_everything(cfg.train.seed)
 
-    save_dir = Path(args.out_dir) / cfg.train.name
-
-    trainer = build_trainer(cfg, save_dir)
+    trainer = build_trainer(cfg)
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
 

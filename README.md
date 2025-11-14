@@ -32,7 +32,7 @@ pre-commit install
 #### Training
 
 ```bash
-python ./scripts/train.py ./configs/af3-mini.yaml
+python ./scripts/train.py ./configs/train-af3.yaml --wandb
 ```
 
 #### Evaluation

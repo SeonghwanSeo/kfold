@@ -16,7 +16,7 @@ from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 
 BOLTZ_PATH = Path("/cache/wykim_lab/rcsb_processed_targets/")
-TEST_CONFIG_PATH = Path("./configs/af3.yaml")
+TEST_CONFIG_PATH = Path("./configs/train-af3.yaml")
 BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
 BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
@@ -24,7 +24,7 @@ BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 if __name__ == "__main__":
     # Train settings
     batch_size = 2
-    diffusion_batch_size = 32
+    diffusion_batch_size = 48
     max_tokens = 512
 
     use_mse_loss = True
