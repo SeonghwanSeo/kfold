@@ -82,7 +82,7 @@ class WeightedMSELoss(torch.nn.Module):
         weight_dna: float = 5.0,
         weight_rna: float = 5.0,
         weight_ligand: float = 10.0,
-        scale: bool = True,
+        scale: bool = False,
     ):
         """Initialize WeightedMSELoss.
         Parameters
