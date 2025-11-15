@@ -143,8 +143,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
             # Diffusion loss
             self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(
-                **diffusion_loss_config.mse_loss,
-                align=True,
+                **diffusion_loss_config.mse_loss
             )
 
             if self.loss_weights["bond"] > 0:
@@ -285,8 +284,11 @@ class KFoldTrainingModule(pl.LightningModule):
             loss_weights["confidence"] * confidence_loss
             + loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
-        )
+        )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
+
+        # Mean over batch
+        loss = loss.mean()
 
         # Log loss and metrics
         all_metrics = distogram_metrics | diffusion_metrics | confidence_metrics
@@ -321,12 +323,12 @@ class KFoldTrainingModule(pl.LightningModule):
         Returns
         -------
         disto_loss : torch.Tensor
-            The computed distogram loss.
+            The computed distogram loss of shape (B,).
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
-        loss = self.distogram_loss(logits, f_input).mean()
-        metrics = {"distogram_loss": loss.detach()}
+        loss = self.distogram_loss(logits, f_input)
+        metrics = {"distogram_loss": loss.detach().mean()}
         return loss, metrics
 
     def compute_diffusion_loss(
@@ -354,23 +356,23 @@ class KFoldTrainingModule(pl.LightningModule):
         Returns
         -------
         diffusion_loss : torch.Tensor
-            The computed diffusion loss.
+            The computed diffusion loss of shape (B,).
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
         metrics: dict[str, torch.Tensor] = {}
 
         # Equations 3-4
-        L_mse = self.weighted_mse_loss(
-            x_pred, x_true, f_input, per_sample_weights
-        )  # [B, Nsample]
-        metrics["mse_loss"] = L_mse.detach()
+        L_mse = self.weighted_mse_loss(x_pred, x_true, f_input)  # [B, Nsample]
+        L_mse = L_mse * per_sample_weights  # [B, Nsample]
+        metrics["mse_loss"] = L_mse.detach().mean()
 
         # Equation 5
         alpha_bond = self.loss_weights["bond"]
         if alpha_bond > 0:
-            L_bond = self.bond_loss(x_pred, x_true, f_input, per_sample_weights)
-            metrics["bond_loss"] = L_bond.detach()
+            L_bond = self.bond_loss(x_pred, x_true, f_input)
+            L_bond = L_bond * per_sample_weights  # [B, Nsample]
+            metrics["bond_loss"] = L_bond.detach().mean()
         else:
             L_bond = 0.0
 
@@ -378,15 +380,18 @@ class KFoldTrainingModule(pl.LightningModule):
         alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
         if alpha_smooth_lddt > 0:
             L_smooth_lddt = self.smooth_lddt_loss(x_pred, x_true, f_input)
-            metrics["smooth_lddt_loss"] = L_smooth_lddt.detach()
+            metrics["smooth_lddt_loss"] = L_smooth_lddt.detach().mean()
         else:
             L_smooth_lddt = 0.0
 
         # Equation 6
         # NOTE: per-sample weights are already applied in L_mse and L_bond
         # L_diff = loss_weights(L_mse + α_bond * L_bond) + L_smooth_lddt
-        L_diffusion = L_mse + alpha_bond * L_bond + L_smooth_lddt
-        metrics["diffusion_loss"] = L_diffusion.detach()
+        L_diffusion = (L_mse + alpha_bond * L_bond) + L_smooth_lddt
+
+        # Mean over diffusion samples
+        L_diffusion = L_diffusion.mean(-1)  # [B, L] -> [B,]
+        metrics["diffusion_loss"] = L_diffusion.detach().mean()
 
         return L_diffusion, metrics
 

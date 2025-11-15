@@ -1,5 +1,6 @@
 import dataclasses
 import json
+from functools import lru_cache
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -22,6 +23,14 @@ from .filter import BaseFilter
 from .sampler import BaseSampler
 
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
+
+
+@lru_cache(maxsize=1)
+def load_records_from_json(json_path: Path) -> list[Metadata]:
+    with open(json_path) as f:
+        manifest = json.load(f)
+    all_records: list[Metadata] = [parse_record(r) for r in manifest]
+    return all_records
 
 
 class DataModuleConfig(BaseConfig):
@@ -93,8 +102,7 @@ class TrainingDataModule(pl.LightningDataModule):
         boltz_structure_path = boltz_processed_path / "structures"
 
         # Load records
-        with open(boltz_manifest_path) as f:
-            all_records: list[Metadata] = [parse_record(r) for r in json.load(f)]
+        all_records: list[Metadata] = load_records_from_json(boltz_manifest_path)
 
         # Apply filters
         train_records = [r for r in all_records if do_filter(r)]
@@ -115,8 +123,7 @@ class TrainingDataModule(pl.LightningDataModule):
         boltz_structure_path = boltz_processed_path / "structures"
 
         # Load records
-        with open(boltz_manifest_path) as f:
-            all_records: list[Metadata] = [parse_record(r) for r in json.load(f)]
+        all_records: list[Metadata] = load_records_from_json(boltz_manifest_path)
 
         # get validation records
         validation_split = self.boltz_split_path / "validation_ids.txt"
