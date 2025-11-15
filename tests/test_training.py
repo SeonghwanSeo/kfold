@@ -16,7 +16,7 @@ from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 
 BOLTZ_PATH = Path("/cache/wykim_lab/rcsb_processed_targets/")
-TEST_CONFIG_PATH = Path("./configs/train-af3.yaml")
+TEST_CONFIG_PATH = Path("./configs/train-af3-mini.yaml")
 BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
 BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
@@ -53,7 +53,7 @@ if __name__ == "__main__":
     cropper = BoltzCropper(BoltzCropper.Config())
 
     # loss functions
-    mse_loss = losses.diffusion.WeightedMSELoss(align=True)
+    mse_loss = losses.diffusion.WeightedMSELoss()
     smooth_lddt_loss = losses.diffusion.SmoothLDDTLoss()
     distogram_loss = losses.distogram.DistogramLoss(2.0, 22.0, 64).cuda()
 
@@ -113,6 +113,7 @@ if __name__ == "__main__":
         with torch.autocast(device_type="cuda", dtype=torch.float32):
             if use_distogram_loss:
                 l_distogram = distogram_loss(distogram_pred, f_input)
+                l_distogram = l_distogram.mean()
             else:
                 l_distogram = torch.tensor(0.0, device=x_pred.device)
 
@@ -121,8 +122,8 @@ if __name__ == "__main__":
                     x_pred=x_pred,
                     x_true=x_true,
                     f_input=f_input,
-                    loss_weights=diffusion_loss_weights,
                 )
+                l_mse = (l_mse * diffusion_loss_weights).mean()
             else:
                 l_mse = torch.tensor(0.0, device=x_pred.device)
 
@@ -133,6 +134,7 @@ if __name__ == "__main__":
                     f_input=f_input,
                     chunk_size=8,
                 )
+                l_smooth_lddt = l_smooth_lddt.mean()
             else:
                 l_smooth_lddt = torch.tensor(0.0, device=x_pred.device)
 

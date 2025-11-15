@@ -2,14 +2,13 @@
 #
 _yaml_: "af3.yaml"
 
-model:
-  trunk:
-    num_blocks: 16
+trunk:
+  num_blocks: 16
 
-  score_model:
-    atom_encoder_blocks: 1
-    token_transformer_blocks: 8
-    atom_decoder_blocks: 1
+score_model:
+  atom_encoder_blocks: 1
+  token_transformer_blocks: 8
+  atom_decoder_blocks: 1
 
-  structure_module:
-    num_steps: 5
+structure_module:
+  num_steps: 5

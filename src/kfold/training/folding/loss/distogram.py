@@ -30,7 +30,7 @@ class DistogramLoss(torch.nn.Module):
         Returns
         -------
         disto_loss : torch.Tensor
-            The computed distogram loss of shape.
+            The computed distogram loss of shape (B,).
         """
 
         dist_repr_atoms = torch.cdist(
@@ -60,4 +60,4 @@ class DistogramLoss(torch.nn.Module):
 
         # Compute mean loss
         disto_loss = disto_loss.sum((-1, -2)) / pair_mask.sum((-1, -2)).clamp(1)  # [B,]
-        return disto_loss.mean()
+        return disto_loss

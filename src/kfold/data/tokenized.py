@@ -200,7 +200,7 @@ class Atom(PlainLayout[np.ndarray]):
         where Napo is the number of apo conformations.
     resolved_mask: np.ndarray (bool)
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
-    label_coords: np.ndarray (float32)
+    coords: np.ndarray (float32)
         Holo (bound) state coordinates of shape [Ntoken, 24, Nholo, 3],
         where Nholo is the number of ensemble holo conformations.
         This is used as the ground truth for training, and may be set to 0
@@ -213,7 +213,7 @@ class Atom(PlainLayout[np.ndarray]):
     ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
     apo_coords: np.ndarray  # [Ntoken, 24, Napo, 3], float32
     resolved_mask: np.ndarray  # [Ntoken, 24,], bool
-    label_coords: np.ndarray  # [Ntoken, 24, Nholo, 3], float32
+    coords: np.ndarray  # [Ntoken, 24, Nholo, 3], float32
 
     @property
     def layout_shape(self) -> tuple[int, ...]:
@@ -241,8 +241,8 @@ class Atom(PlainLayout[np.ndarray]):
             self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=(*shape,)
         )
         check_array(
-            self.label_coords,
-            name="label_coords",
+            self.coords,
+            name="coords",
             dtype=np.floating,
             shape=(*shape, -1, 3),
         )
