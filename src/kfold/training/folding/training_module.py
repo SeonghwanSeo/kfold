@@ -246,8 +246,7 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics = {f"train/{k}": v for k, v in metrics.items()}
         self.log_dict(metrics)
 
-        if self.global_step % 10 == 0:
-            self.log_model_state()
+        self.log_model_state()
 
         return loss
 
