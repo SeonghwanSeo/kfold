@@ -70,7 +70,7 @@ def to_pdb(structure: TokenizedStructure) -> str:  # noqa: PLR0915
             atom_name = "".join(atom_name_chars)
             charge = atoms.ref_charge[i, j].item()
             element = periodic_table.GetElementSymbol(atoms.ref_element[i, j].item())
-            pos = atoms.label_coords[i, j, 0]
+            pos = atoms.coords[i, j, 0]
             occupancy = 1.00
             b_factor = 1.0
             alt_loc = ""

@@ -73,6 +73,7 @@ def featurize_structure(
         k: cast(v)[atom_to_token, atom_in_token_idx]  # Fancy indexing - no loop!
         for k, v in atom_data.to_dict().items()
     }
+    atom_dict["label_coords"] = atom_dict.pop("coords")  # Rename for clarity
     atom_dict["token_index"] = atom_to_token
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)
 
