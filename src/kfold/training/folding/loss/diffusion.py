@@ -82,7 +82,7 @@ class WeightedMSELoss(torch.nn.Module):
         weight_dna: float = 5.0,
         weight_rna: float = 5.0,
         weight_ligand: float = 10.0,
-        use_weighted_loss: bool = True,
+        scale: bool = True,
     ):
         """Initialize WeightedMSELoss.
         Parameters
@@ -95,18 +95,18 @@ class WeightedMSELoss(torch.nn.Module):
             The weight for RNA atoms
         weight_ligand: float
             The weight for ligand atoms
-        use_weighted_loss: bool
-            Whether to use weighted loss or not
-            The original AlphaFold3 paper use weighted loss, while does not.
-            AlphaFold3, Protenix, OpenFold-3 use weighted loss.
-            NOTE: loss value is higher when using weighted loss.
+        scale: bool
+            Whether to divide by the sum of weights.
+            Boltz1: scale.
+            AlphaFold3, Protenix, OpenFold-3: do not scale.
+            NOTE: loss value is lower when scale=True.
         """
         super().__init__()
         self.weight_protein: float = weight_protein
         self.weight_dna: float = weight_dna
         self.weight_rna: float = weight_rna
         self.weight_ligand: float = weight_ligand
-        self.use_weighted_loss: bool = use_weighted_loss
+        self.scale: bool = scale
 
     def forward(
         self,
@@ -147,12 +147,12 @@ class WeightedMSELoss(torch.nn.Module):
             )  # [B, N, L, 3]
 
         d_sq = ((x_pred - x_true_aligned) ** 2).sum(dim=-1)  # [B, N, L]
-        if self.use_weighted_loss:
-            mask_sum = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
-        else:
+        if self.scale:
             weight_sum = (mask * w).sum(-1).clamp(min=1)  # [B, 1]
             mse_loss = (1 / 3) * (w * d_sq).sum(-1) / weight_sum  # [B, N]
+        else:
+            mask_sum = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
+            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
 
         return mse_loss
 
