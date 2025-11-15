@@ -128,7 +128,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         "ref_element": np.int8,
         "ref_atom_name_chars": np.int8,  # 0-63
         "ref_pos": np.float32,
-        "label_coords": np.float32,
+        "coords": np.float32,
         "apo_coords": np.float32,
     }
     bond_field_dtype: dict[str, type] = {
@@ -174,7 +174,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         "ref_charge": [],
         "ref_pos": [],
         "resolved_mask": [],
-        "label_coords": [],
+        "coords": [],
     }
 
     # Shape: [Nbond, 24]
@@ -238,7 +238,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
                 atom_info["ref_charge"].append(residue_atoms["charge"])
                 atom_info["ref_pos"].append(residue_atoms["conformer"])
                 atom_info["resolved_mask"].append(residue_atoms["is_present"])
-                atom_info["label_coords"].append(residue_atoms["coords"])
+                atom_info["coords"].append(residue_atoms["coords"])
 
                 # === Add mapping === #
                 for j, atom_index in enumerate(range(atom_start, atom_end)):
@@ -276,7 +276,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
                     atom_info["ref_charge"].append(atom["charge"][None])
                     atom_info["ref_pos"].append(atom["conformer"][None])
                     atom_info["resolved_mask"].append(atom["is_present"][None])
-                    atom_info["label_coords"].append(atom["coords"][None])
+                    atom_info["coords"].append(atom["coords"][None])
 
                     # === Add mapping === #
                     atom_index_map[atom_idx] = (global_token_index, 0)
@@ -348,7 +348,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
     }
 
     # TODO: use actual apo coords when available
-    atom_arr["apo_coords"] = np.zeros_like(atom_arr["label_coords"])
+    atom_arr["apo_coords"] = np.zeros_like(atom_arr["coords"])
     for num_tokens in chain_arr["num_tokens"]:
         start_idx = np.sum(chain_arr["num_tokens"][:num_tokens])
         end_idx = start_idx + num_tokens
@@ -388,7 +388,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         ref_charge=atom_arr["ref_charge"].reshape(Nt, 24),
         ref_pos=atom_arr["ref_pos"].reshape(Nt, 24, 3),
         resolved_mask=atom_arr["resolved_mask"].reshape(Nt, 24),
-        label_coords=atom_arr["label_coords"].reshape(Nt, 24, -1, 3),
+        coords=atom_arr["coords"].reshape(Nt, 24, -1, 3),
         apo_coords=atom_arr["apo_coords"].reshape(Nt, 24, -1, 3),
     )
     bond_data = tokenized.Bond(

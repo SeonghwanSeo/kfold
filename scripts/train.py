@@ -109,6 +109,7 @@ def build_trainer(cfg) -> pl.Trainer:
         enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
         accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
         gradient_clip_val=pl_trainer_cfg.gradient_clip_val,
+        reload_dataloaders_every_n_epochs=1,
     )
     return trainer
 

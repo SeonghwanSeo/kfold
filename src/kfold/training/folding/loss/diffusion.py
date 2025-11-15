@@ -11,90 +11,91 @@ from kfold.utils.checkpointing import checkpoint_section
 
 
 def weighted_rigid_align(
-    true_coords: torch.Tensor,
-    pred_coords: torch.Tensor,
+    coords: torch.Tensor,
+    target: torch.Tensor,
     weights: torch.Tensor,
+    mask: torch.Tensor,
+    eps: float = 1e-8,
 ):
-    """Compute weighted alignment.
+    """
+    Performs weighted rigid alignment of a set of coordinates to a target set using SVD.
+
+    This function computes the optimal rigid transformation (rotation and translation)
+    that aligns `coords` to `target`, minimizing the weighted mean squared error,
+    with optional masking and numerical stability.
 
     Parameters
     ----------
-    true_coords: torch.Tensor
-        The ground truth atom coordinates of shape (..., L, 3)
-    pred_coords: torch.Tensor
-        The predicted atom coordinates of shape (..., L, 3)
-    weights: torch.Tensor
-        The weights for alignment of shape (..., L)
+    coords : torch.Tensor
+        Tensor of shape (..., N, 3) representing the coordinates to be aligned.
+    target : torch.Tensor
+        Tensor of shape (..., N, 3) representing the target coordinates.
+    weights : torch.Tensor
+        Tensor of shape (..., N) containing weights for each point.
+    mask : torch.Tensor
+        Tensor of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
+    eps : float, optional
+        Small value added for numerical stability (default: 1e-8).
 
     Returns
     -------
-    torch.Tensor
-        Aligned coordinates of shape (..., L, 3)
+    aligned_coords : torch.Tensor
+        Tensor of shape (..., N, 3) containing the aligned coordinates.
+
+    Notes
+    -----
+    - If the number of points N < 4, a warning is issued as the rotation may not be unique.
+    - If SVD fails, the identity rotation is used and a warning is issued.
     """
-    L = true_coords.shape[-2]
-    weights = weights.unsqueeze(-1)  # [..., L, 1]
-    # all weights is 1.0, 5.0, and 10.0 in our use case, so no risk of clamping.
-    weight_sum = weights.sum(dim=-2, keepdim=True).clamp(1)  # [..., 1, 1]
-
     if L < 4:
-        print(
-            "Warning: The size of one of the point clouds is <= dim+1. "
-            + "`WeightedRigidAlign` cannot return a unique rotation."
-        )
-
-    # Compute weighted centroids
-    true_centroid = (true_coords * weights).sum(
-        dim=-2, keepdim=True
-    ) / weight_sum  # [..., 1, 3]
-    pred_centroid = (pred_coords * weights).sum(
-        dim=-2, keepdim=True
-    ) / weight_sum  # [..., 1, 3]
-
-    # Center the coordinates
-    true_coords_centered = true_coords - true_centroid  # [..., L, 3]
-    pred_coords_centered = pred_coords - pred_centroid  # [..., L, 3]
-
-    # Compute the weighted covariance matrix
-    cov_matrix = einops.einsum(
-        weights * pred_coords_centered,
-        true_coords_centered,
-        "... n i, ... n j -> ... i j",
-    )
-
-    # Compute the SVD of the covariance matrix, required float32 for svd and det
-    original_dtype = cov_matrix.dtype
-    cov_matrix_32 = cov_matrix.to(dtype=torch.float32)
-    U, S, V = torch.linalg.svd(
-        cov_matrix_32, driver="gesvd" if cov_matrix_32.is_cuda else None
-    )
-    V = V.mH
-
-    # Catch ambiguous rotation by checking the magnitude of singular values
-    if (S.abs() <= 1e-15).any() and not (L < 4):
         warnings.warn(
-            "Warning: Excessively low rank of "
-            + "cross-correlation between aligned point clouds. "
-            + "`WeightedRigidAlign` cannot return a unique rotation.",
+            f"Point cloud has only {L} points (< 4). "
+            "Weighted rigid alignment may not produce a unique rotation.",
             stacklevel=2,
         )
 
-    # Compute the rotation matrix
-    rot_matrix = torch.einsum("... i j, ... k j -> ... i k", U, V).to(dtype=torch.float32)
+    weights = weights * mask
+    w_sum = weights.sum(dim=-1, keepdim=True) + eps
 
-    # Ensure proper rotation matrix with determinant 1
-    F = torch.eye(3, dtype=torch.float32, device=cov_matrix.device)  # [3, 3]
-    F = F.unsqueeze(0).expand(*rot_matrix.shape[:-2], 3, 3).clone()  # [..., 3, 3]
-    F[..., -1, -1] = torch.det(rot_matrix)  # Now broadcasts correctly
+    coords_center = (coords * weights[..., None]).sum(dim=-2, keepdim=True) / w_sum[
+        ..., None
+    ]
+    target_center = (target * weights[..., None]).sum(dim=-2, keepdim=True) / w_sum[
+        ..., None
+    ]
 
-    rot_matrix = einops.einsum(U, F, V, "... i j, ... j k, ... l k -> ... i l")
-    rot_matrix = rot_matrix.to(dtype=original_dtype)
+    coords = coords - coords_center
+    target = target - target_center
 
-    # Apply the rotation and translation
-    aligned_coords = (
-        einops.einsum(true_coords_centered, rot_matrix, "... n i, ... j i -> ... n j")
-        + pred_centroid
+    H = torch.einsum(
+        "...ni, ...nj -> ...ij",
+        coords * weights[..., None],
+        target,
     )
-    return aligned_coords
+
+    with torch.autocast(device_type="cuda", dtype=torch.float32):
+        try:
+            U, _, V = torch.linalg.svd(H)
+
+            # Fixed reflection removal
+            F = torch.eye(3, dtype=torch.float32, device=H.device)
+            F = F.tile(*H.shape[:-2], 1, 1)
+            F[..., -1, -1] = torch.sign(torch.linalg.det(U @ V))
+
+            # Transposed rotation matrix
+            RT = torch.einsum("...ij, ...jk, ...kl -> ...il", U, F, V)
+        except RuntimeError as e:
+            warnings.warn(
+                f"SVD failed during weighted rigid alignment: {e}. "
+                "Returning identity rotation.",
+                stacklevel=2,
+            )
+            RT = torch.eye(3, dtype=torch.float32, device=coords.device)
+            RT = RT.tile(*coords.shape[:-2], 1, 1)
+
+        aligned_coords = coords @ RT + target_center
+
+    return aligned_coords.to(original_dtype)
 
 
 class WeightedMSELoss(torch.nn.Module):
@@ -107,21 +108,37 @@ class WeightedMSELoss(torch.nn.Module):
         weight_dna: float = 5.0,
         weight_rna: float = 5.0,
         weight_ligand: float = 10.0,
-        align: bool = True,
+        scale: bool = False,
     ):
+        """Initialize WeightedMSELoss.
+        Parameters
+        ----------
+        weight_protein: float
+            The weight for protein atoms
+        weight_dna: float
+            The weight for DNA atoms
+        weight_rna: float
+            The weight for RNA atoms
+        weight_ligand: float
+            The weight for ligand atoms
+        scale: bool
+            Whether to divide by the sum of weights.
+            Boltz1: scale.
+            AlphaFold3, Protenix, OpenFold-3: do not scale.
+            NOTE: loss value is lower when scale=True.
+        """
         super().__init__()
         self.weight_protein: float = weight_protein
         self.weight_dna: float = weight_dna
         self.weight_rna: float = weight_rna
         self.weight_ligand: float = weight_ligand
-        self.align: bool = align
+        self.scale: bool = scale
 
     def forward(
         self,
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        loss_weights: torch.Tensor,
     ) -> torch.Tensor:
         """Compute the weighted MSE loss.
 
@@ -133,38 +150,37 @@ class WeightedMSELoss(torch.nn.Module):
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
-        loss_weights : torch.Tensor
-            The per-sample loss weights. Shape (B, N).
 
         Returns
         -------
         torch.Tensor
-            Computed MSE loss.
+            Computed MSE loss. Shape (B, N).
         """
         assert x_pred.ndim == 4  # [B, N, L, 3]
         assert x_pred.shape == x_true.shape
 
         w = self.get_atom_weights(f_input)  # [B, L]
         w = w.unsqueeze(-2)  # [B, 1, L]
+        mask = f_input.atom.resolved_mask.unsqueeze(-2)  # [B, 1, L]
 
         # See Section 3.7.1 Equation 2
-        if self.align:
-            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float32):
-                x_true = weighted_rigid_align(
-                    true_coords=x_true.float(),  # [B, N, L, 3]
-                    pred_coords=x_pred.float(),  # [B, N, L, 3]
-                    weights=w.float(),  # [B, 1, L], broadcasted over N
-                )  # [B, N, L, 3]
+        with torch.no_grad():
+            x_true_aligned = weighted_rigid_align(
+                coords=x_true.float(),  # [B, N, L, 3]
+                target=x_pred.float(),  # [B, N, L, 3]
+                weights=w,  # [B, 1, L], broadcasted over N
+                mask=mask,  # [B, 1, L]
+            )  # [B, N, L, 3]
 
-        # See Section 3.7.1 Equation 3
-        mask = f_input.atom.resolved_mask  # [B, L]
-        n_atoms = mask.sum(dim=-1, keepdim=True).clamp(min=1)  # [B, 1]
-        d_sq = ((x_pred - x_true) ** 2).sum(dim=-1)  # [B, N, L]
-        mse_loss = (1 / 3) * (w * d_sq).sum(-1) / n_atoms  # [B, N]
+        d_sq = ((x_pred - x_true_aligned) ** 2).sum(dim=-1)  # [B, N, L]
+        if self.scale:
+            weight_sum = (mask * w).sum(-1).clamp(min=1)  # [B, 1]
+            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / weight_sum  # [B, N]
+        else:
+            mask_sum = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
+            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
 
-        mse_loss = mse_loss * loss_weights  # [B, N]
-
-        return mse_loss.mean()
+        return mse_loss
 
     @torch.no_grad()
     def get_atom_weights(self, f_input: FoldingInput) -> torch.Tensor:
@@ -189,11 +205,7 @@ class WeightedMSELoss(torch.nn.Module):
             "b l1 l2, b l2 -> b l1",
         )  # [B, Latom]
 
-        # Masking
-        # NOTE: this process
-        mask = f_input.atom.resolved_mask  # [B, Latom]
-
-        return atom_weights * mask  # [B, Latom]
+        return atom_weights
 
 
 class BondLoss(torch.nn.Module):
@@ -202,7 +214,6 @@ class BondLoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        per_sample_weights: torch.Tensor,
     ) -> torch.Tensor:
         """Compute the bond loss.
         See Section 3.7.1 Equation 5
@@ -267,10 +278,7 @@ class BondLoss(torch.nn.Module):
         num_bonds = mask.sum(dim=-1, keepdim=True).clamp(min=1)  # [B, 1]
 
         bond_loss = (d_diff * mask[:, None, :]).sum(dim=-1) / num_bonds  # [B, N]
-
-        # Apply per-sample weights
-        bond_loss = bond_loss * per_sample_weights  # [B, N]
-        return bond_loss.mean()
+        return bond_loss
 
 
 class SmoothLDDTLoss(torch.nn.Module):
@@ -362,7 +370,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         Returns
         -------
         lddt_loss: torch.Tensor
-            Computed LDDT loss.
+            Computed LDDT loss. Shape (B, N).
         """
 
         # NOTE: Due to the memory constraint, we change the order of operations
@@ -419,4 +427,4 @@ class SmoothLDDTLoss(torch.nn.Module):
 
         lddt_loss = lddt_loss.view(B, N)  # [B, N]
 
-        return lddt_loss.mean()
+        return lddt_loss

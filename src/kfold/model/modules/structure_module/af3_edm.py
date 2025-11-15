@@ -103,16 +103,18 @@ class AF3SampleDiffusion(BaseStructureModule):
     def c_noise(self, sigma: torch.Tensor) -> torch.Tensor:
         return (sigma / self.sigma_data).clamp(1e-20).log() * 0.25
 
-    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
-        """Compute loss weights based on noise levels t_hat.
-        See Section 3.7.1 Equation 6 of AlphaFold3 paper.
+    def sample_prior(
+        self,
+        f_input: FoldingInput,
+        num_diffusion_samples: int = 1,
+    ) -> torch.Tensor:
+        """Sample from the prior distribution."""
+        B = f_input.batch_size
+        N = num_diffusion_samples
+        La = f_input.num_atoms
+        return torch.randn((B, N, La, 3), device=f_input.device)
 
-        NOTE: We replace `+` with `*` in the denominator compared to the AlphaFold3 paper.
-        This matches the implementation in Boltz1, Protenix, and Openfold-3, and provides
-        better training stability.
-        """
-        return (t_hat**2 + self.sigma_data**2) / ((t_hat * self.sigma_data) ** 2)
-
+    # === For model training === #
     def forward_model(
         self,
         x_noisy: torch.Tensor,
@@ -175,9 +177,96 @@ class AF3SampleDiffusion(BaseStructureModule):
             self.c_skip(t_hat_reshaped) * x_noisy
             + self.c_out(t_hat_reshaped) * r_update  # [B, N, La, 3]
         )
-
         return x_out
 
+    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
+        """Compute loss weights based on noise levels t_hat.
+        See Section 3.7.1 Equation 6 of AlphaFold3 paper.
+
+        NOTE: We replace `+` with `*` in the denominator compared to the AlphaFold3 paper.
+        This matches the implementation in Boltz1, Protenix, and Openfold-3, and provides
+        better training stability.
+        """
+        return (t_hat**2 + self.sigma_data**2) / ((t_hat * self.sigma_data) ** 2)
+
+    def sample_noise_level(
+        self,
+        batch_size: int,
+        num_diffusion_samples: int,
+        device: torch.device | None = None,
+    ) -> torch.Tensor:
+        """Sample from the prior distribution.
+        Return shape: [B, N, La, 3], where N is number of diffusion samples
+        and La is number of atoms.
+        """
+
+        # See Section 3.7 of AlphaFold3 paper.
+        # t_hat = sigma_data * exp(-1.2 + 1.5 * N(0, 1)),
+        # where -1.2 is P_mean and 1.5 is P_std.
+        def _sample(*shape: int) -> torch.Tensor:
+            return self.sigma_data * torch.exp(
+                self.P_mean + self.P_std * torch.randn(shape, device=device)
+            )
+
+        if self.synchronize_sigmas:
+            # synchronize sigmas across diffusion samples
+            return _sample(batch_size, 1).repeat(1, num_diffusion_samples)
+        else:
+            # use different sigmas for each diffusion sample
+            return _sample(batch_size, num_diffusion_samples)
+
+    def sample_holo(
+        self,
+        f_input: FoldingInput,
+        num_diffusion_samples: int = 1,
+    ) -> torch.Tensor:
+        """Sample from the prior distribution."""
+        holo_coords = super().sample_holo(
+            f_input, num_diffusion_samples
+        )  # [B, N, Latom, 3]
+        atom_mask = f_input.atom.resolved_mask.float()  # (B, Latom)
+
+        # Apply coordinate augmentation
+        holo_coords = self.random_augmentation(
+            holo_coords,
+            mask=atom_mask.unsqueeze(1),  # (B, 1, Latom)
+        )
+
+        return holo_coords
+
+    def interpolate(
+        self,
+        noise_coords: torch.Tensor,
+        label_coords: torch.Tensor,
+        t_hat: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Interpolate between noise and label coordinates.
+
+        EDM equation:
+        sigma = t_hat
+        x_noised = x_label + sigma * noise
+        where noise ~ N(0, I)
+
+        We may want to perform kabsch alignment here before interpolation.
+
+        Parameters
+        ----------
+        noise_coords : torch.Tensor
+            The noisy coordinates. Shape (B, N, La, 3).
+        label_coords : torch.Tensor
+            The label coordinates. Shape (B, N, La, 3).
+        sigma : torch.Tensor
+            The sigma values. Shape (B, N).
+        mask : torch.Tensor
+            The atom mask. Shape (B, La).
+        """
+        noised_atom_coords = (
+            label_coords + t_hat[:, :, None, None] * noise_coords
+        )  # (B, N, Latom, 3)
+        return noised_atom_coords
+
+    # === For sampling === #
     def sample_structure(
         self,
         f_input: FoldingInput,
@@ -264,32 +353,6 @@ class AF3SampleDiffusion(BaseStructureModule):
 
         return atom_coords
 
-    def sample_noise_level(
-        self,
-        batch_size: int,
-        num_diffusion_samples: int,
-        device: torch.device | None = None,
-    ) -> torch.Tensor:
-        """Sample from the prior distribution.
-        Return shape: [B, N, La, 3], where N is number of diffusion samples
-        and La is number of atoms.
-        """
-
-        # See Section 3.7 of AlphaFold3 paper.
-        # t_hat = sigma_data * exp(-1.2 + 1.5 * N(0, 1)),
-        # where -1.2 is P_mean and 1.5 is P_std.
-        def _sample(*shape: int) -> torch.Tensor:
-            return self.sigma_data * torch.exp(
-                self.P_mean + self.P_std * torch.randn(shape, device=device)
-            )
-
-        if self.synchronize_sigmas:
-            # synchronize sigmas across diffusion samples
-            return _sample(batch_size, 1).repeat(1, num_diffusion_samples)
-        else:
-            # use different sigmas for each diffusion sample
-            return _sample(batch_size, num_diffusion_samples)
-
     def get_sampling_schedule(
         self,
         num_steps: int | None = None,
@@ -314,65 +377,3 @@ class AF3SampleDiffusion(BaseStructureModule):
 
         sigmas = F.pad(sigmas, (0, 1), value=0.0)  # last step is sigma value of 0.
         return sigmas
-
-    def sample_prior(
-        self,
-        f_input: FoldingInput,
-        num_diffusion_samples: int = 1,
-    ) -> torch.Tensor:
-        """Sample from the prior distribution."""
-        B = f_input.batch_size
-        N = num_diffusion_samples
-        La = f_input.num_atoms
-        return torch.randn((B, N, La, 3), device=f_input.device)
-
-    def sample_holo(
-        self,
-        f_input: FoldingInput,
-        num_diffusion_samples: int = 1,
-    ) -> torch.Tensor:
-        """Sample from the prior distribution."""
-        holo_coords = super().sample_holo(
-            f_input, num_diffusion_samples
-        )  # [B, N, Latom, 3]
-        atom_mask = f_input.atom.resolved_mask.float()  # (B, Latom)
-
-        # Apply coordinate augmentation
-        holo_coords = self.random_augmentation(
-            holo_coords,
-            mask=atom_mask.unsqueeze(1),  # (B, 1, Latom)
-        )
-
-        return holo_coords
-
-    def interpolate(
-        self,
-        noise_coords: torch.Tensor,
-        label_coords: torch.Tensor,
-        t_hat: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """Interpolate between noise and label coordinates.
-
-        EDM equation:
-        sigma = t_hat
-        x_noised = x_label + sigma * noise
-        where noise ~ N(0, I)
-
-        We may want to perform kabsch alignment here before interpolation.
-
-        Parameters
-        ----------
-        noise_coords : torch.Tensor
-            The noisy coordinates. Shape (B, N, La, 3).
-        label_coords : torch.Tensor
-            The label coordinates. Shape (B, N, La, 3).
-        sigma : torch.Tensor
-            The sigma values. Shape (B, N).
-        mask : torch.Tensor
-            The atom mask. Shape (B, La).
-        """
-        noised_atom_coords = (
-            label_coords + t_hat[:, :, None, None] * noise_coords
-        )  # (B, N, Latom, 3)
-        return noised_atom_coords

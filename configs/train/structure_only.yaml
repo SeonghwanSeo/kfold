@@ -89,6 +89,7 @@ loss:
       weight_dna: 5.0
       weight_rna: 5.0
       weight_ligand: 10.0
+      scale: false
 
     # Bond Loss
     bond_loss: {}
