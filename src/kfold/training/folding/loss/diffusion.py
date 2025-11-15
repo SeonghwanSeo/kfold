@@ -17,10 +17,36 @@ def weighted_rigid_align(
     mask: torch.Tensor,
     eps: float = 1e-8,
 ):
-    """..."""
-    original_dtype = coords.dtype
-    L = coords.shape[-2]
+    """
+    Performs weighted rigid alignment of a set of coordinates to a target set using SVD.
 
+    This function computes the optimal rigid transformation (rotation and translation)
+    that aligns `coords` to `target`, minimizing the weighted mean squared error,
+    with optional masking and numerical stability.
+
+    Parameters
+    ----------
+    coords : torch.Tensor
+        Tensor of shape (..., N, 3) representing the coordinates to be aligned.
+    target : torch.Tensor
+        Tensor of shape (..., N, 3) representing the target coordinates.
+    weights : torch.Tensor
+        Tensor of shape (..., N) containing weights for each point.
+    mask : torch.Tensor
+        Tensor of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
+    eps : float, optional
+        Small value added for numerical stability (default: 1e-8).
+
+    Returns
+    -------
+    aligned_coords : torch.Tensor
+        Tensor of shape (..., N, 3) containing the aligned coordinates.
+
+    Notes
+    -----
+    - If the number of points N < 4, a warning is issued as the rotation may not be unique.
+    - If SVD fails, the identity rotation is used and a warning is issued.
+    """
     if L < 4:
         warnings.warn(
             f"Point cloud has only {L} points (< 4). "

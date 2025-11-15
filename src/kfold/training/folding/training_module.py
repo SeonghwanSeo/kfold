@@ -390,7 +390,7 @@ class KFoldTrainingModule(pl.LightningModule):
         L_diffusion = (L_mse + alpha_bond * L_bond) + L_smooth_lddt
 
         # Mean over diffusion samples
-        L_diffusion = L_diffusion.mean(-1)  # [B, L] -> [B,]
+        L_diffusion = L_diffusion.mean(-1)  # [B, Nsample] -> [B,]
         metrics["diffusion_loss"] = L_diffusion.detach().mean()
 
         return L_diffusion, metrics
