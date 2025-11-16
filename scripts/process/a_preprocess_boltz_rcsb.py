@@ -67,7 +67,7 @@ def parse_args():
         "--output_dir",
         type=Path,
         help="Path to the output directory to save Tokenized structure.",
-        default="/cache/wykim_lab/kfold_processed_v251116/",
+        default="/cache/wykim_lab/kfold_rcsb_processed_v251116/",
     )
     parser.add_argument(
         "--cpus",
@@ -280,17 +280,19 @@ def parse_structure_safe(
     output_dir: Path,
     allow_large_complex: bool = False,
     force: bool = False,
-) -> tuple[bool, str]:
+) -> bool:
     """Wrapper with better error handling."""
+    pdb_id = boltz_npz_file.stem
+    output_path = output_dir / f"{pdb_id}.npz"
+    apo_path = apo_structure_dir / pdb_id
     try:
-        output_path = output_dir / f"{boltz_npz_file.stem}.npz"
         success = parse_structure(
-            boltz_npz_file, apo_structure_dir, output_path, allow_large_complex, force
+            boltz_npz_file, apo_path, output_path, allow_large_complex, force
         )
-        return success, ""
+        return success
     except Exception as e:
-        logger.error(f"Failed to process {boltz_npz_file.stem}: {e}")
-        return False, str(e)
+        logger.error(f"Failed to process {pdb_id}: {e}")
+        return False
 
 
 def main(args):
@@ -327,7 +329,7 @@ def main(args):
                 total=len(all_boltz_npz_files),
             )
         )
-    num_success = sum(1 for success, _ in results if success)
+    num_success = sum(results)
     num_failed = len(results) - num_success
     logger.info(
         f"Processing completed: {num_success} succeeded, "
