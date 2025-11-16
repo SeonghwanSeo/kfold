@@ -1,5 +1,7 @@
 # AlphaFold3 Implementation
 
+Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
+
 ## Mapping of Algorithms to Code
 
 ### Layer Implementations

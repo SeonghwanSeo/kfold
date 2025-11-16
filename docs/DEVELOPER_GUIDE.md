@@ -1,5 +1,7 @@
 # K-Fold Developer Guide
 
+Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
+
 This document provides a comprehensive overview of the K-Fold project, including its architecture, training pipeline, and inference procedures.
 It serves as a reference for developers and contributors working with the K-Fold framework.
 

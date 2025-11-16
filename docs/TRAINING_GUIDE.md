@@ -1,5 +1,7 @@
 # K-Fold Training Guide
 
+Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
+
 This document provides detailed instructions on setting up the environment, preparing the dataset, and running training using the K-Fold framework.
 
 ## Contents
