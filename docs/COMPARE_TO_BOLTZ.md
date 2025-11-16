@@ -1,5 +1,7 @@
 # Compare to Boltz
 
+Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
+
 This document provides a comparison between our implementation and the Boltz.
 
 ## Feature name
