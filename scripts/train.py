@@ -158,7 +158,7 @@ def train(args) -> None:
     # Set random seed
     pl.seed_everything(cfg.train.seed)
 
-    trainer = build_trainer(cfg, debug=args.debug)
+    trainer = build_trainer(cfg)
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
 

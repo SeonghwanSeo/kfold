@@ -130,7 +130,7 @@ To create the manifest file, run the following commands.
     --output_path $KFOLD_DATA_DIR/manifests/pp_pl_manifest.pkl \
     --exclude_large_complex \
     --exclude_single_chain \
-    --exclude_nucleic_acid
+    --exclude_nucleic_acids
   ```
 
 

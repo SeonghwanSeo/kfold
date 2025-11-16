@@ -98,7 +98,7 @@ class Metadata:
         )
 
     def __post_init__(self):
-        # FIXME: we may wand to add more sources later
+        # FIXME: we may want to add more sources later
         assert self.source in {"rcsb"}, f"Unsupported source: {self.source}"
 
     @property

@@ -141,9 +141,9 @@ class TrainingDataset(SafeLoadingDataset):
             except Exception as e:
                 print(f"Error loading index {index}: {e}. Retrying...")
                 index = np.random.randint(0, len(self))
-                trials.append(sample)
                 if not self.safe_load:
                     raise e
+                trials.append(sample)
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
@@ -249,6 +249,14 @@ class BoltzValidationDataset(ValidationDataset, BoltzDatabase):
 
 
 class LMDBDatabase:
+    """
+    Provides LMDB-backed access to tokenized structures.
+    The `lmdb_env` property lazily initializes and caches the LMDB environment
+    on first access, ensuring efficient resource usage. The `load_from_lmdb`
+    method retrieves a tokenized structure from the LMDB database using a
+    record's ID as the key.
+    """
+
     lmdb_path: Path
 
     @property
@@ -265,7 +273,7 @@ class LMDBDatabase:
         return self._lmdb_env
 
     def load_from_lmdb(self, record: metadata.Metadata) -> tokenized.TokenizedStructure:
-        """Load the tokenized structure from BoltzStructure."""
+        """Load the tokenized structure from LMDB."""
         name = record.id
         key_bytes = name.encode("utf-8")
         with self.lmdb_env.begin(write=False) as txn:

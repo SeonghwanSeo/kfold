@@ -97,7 +97,7 @@ def main(args):
         st_time = time.time()
         logger.info("Excluding NA-NA, NA-ligand complex structures.")
 
-        def has_nucleic_acid(record: Metadata) -> int:
+        def has_nucleic_acid(record: Metadata) -> bool:
             return any(
                 chain.chain_type in {C.chain.ChainType.DNA, C.chain.ChainType.RNA}
                 for chain in record.chains
