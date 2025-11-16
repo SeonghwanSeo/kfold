@@ -1,5 +1,7 @@
+import io
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from typing import Self
 
 import numpy as np
@@ -68,7 +70,7 @@ class Chain(PlainLayout[np.ndarray]):
     @cached_property
     def is_protein(self) -> np.ndarray:
         """Boolean tensor indicating whether the chain is protein."""
-        return self.chain_type == C.chain.ChainType.Protein.value
+        return self.chain_type == C.chain.ChainType.PROTEIN.value
 
     @cached_property
     def is_dna(self) -> np.ndarray:
@@ -83,7 +85,7 @@ class Chain(PlainLayout[np.ndarray]):
     @cached_property
     def is_ligand(self) -> np.ndarray:
         """Boolean tensor indicating whether the chain is ligand."""
-        return self.chain_type == C.chain.ChainType.Ligand.value
+        return self.chain_type == C.chain.ChainType.LIGAND.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +161,7 @@ class Token(PlainLayout[np.ndarray]):
     @cached_property
     def is_protein(self) -> np.ndarray:
         """Boolean tensor of shape [L,], indicating whether the token is protein."""
-        return self.chain_type == C.chain.ChainType.Protein.value
+        return self.chain_type == C.chain.ChainType.PROTEIN.value
 
     @cached_property
     def is_dna(self) -> np.ndarray:
@@ -174,7 +176,7 @@ class Token(PlainLayout[np.ndarray]):
     @cached_property
     def is_ligand(self) -> np.ndarray:
         """Boolean tensor of shape [L,], indicating whether the token is ligand."""
-        return self.chain_type == C.chain.ChainType.Ligand.value
+        return self.chain_type == C.chain.ChainType.LIGAND.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,9 +213,10 @@ class Atom(PlainLayout[np.ndarray]):
     ref_element: np.ndarray  # [Ntoken, 24], int
     ref_charge: np.ndarray  # [Ntoken, 24,], float
     ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
-    apo_coords: np.ndarray  # [Ntoken, 24, Napo, 3], float32
-    resolved_mask: np.ndarray  # [Ntoken, 24,], bool
     coords: np.ndarray  # [Ntoken, 24, Nholo, 3], float32
+    apo_coords: np.ndarray  # [Ntoken, 24, Napo, 3], float32
+    resolved_mask: np.ndarray  # [Ntoken, 24], bool
+    apo_mask: np.ndarray  # [Ntoken, 24, Napo], bool
 
     @property
     def layout_shape(self) -> tuple[int, ...]:
@@ -235,17 +238,18 @@ class Atom(PlainLayout[np.ndarray]):
         )
         check_array(self.ref_pos, name="ref_pos", dtype=np.floating, shape=(*shape, 3))
         check_array(
-            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, -1, 3)
-        )
-        check_array(
-            self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=(*shape,)
-        )
-        check_array(
             self.coords,
             name="coords",
             dtype=np.floating,
             shape=(*shape, -1, 3),
         )
+        check_array(
+            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, -1, 3)
+        )
+        check_array(
+            self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=(*shape,)
+        )
+        check_array(self.apo_mask, name="apo_mask", dtype=np.bool_, shape=(*shape, -1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +330,134 @@ class TokenizedStructure:
         """Number of bonds in the structure."""
         return len(self.bond)
 
+    def __repr__(self) -> str:
+        """FoldingInput summary representation."""
+        # Summary statistics
+        num_chains = self.num_chains
+        num_tokens = self.num_tokens
+        num_bonds = len(self.bond)
+        return (
+            f"TokenizedStructure(\n"
+            f"  num_chains: {num_chains}\n"
+            f"  num_tokens: {num_tokens}\n"
+            f"  num_bonds: {num_bonds}\n"
+            f")"
+        )
+
+    # === PDB/MMCIF writing === #
+    def write(
+        self,
+        path: Path | str,
+        conformer_id: int = 0,
+        is_predicted: bool = True,
+        save_apo: bool = False,
+    ) -> None:
+        """Write to PDB or MMCIF file based on the file extension."""
+        from kfold.utils.writer import KFoldWriter
+
+        KFoldWriter.write(self, path, conformer_id, is_predicted, save_apo)
+
+    def to_pdb(
+        self,
+        path: Path | str,
+        conformer_id: int = 0,
+        is_predicted: bool = True,
+        save_apo: bool = False,
+    ) -> None:
+        """Write to PDB file."""
+        from kfold.utils.writer import KFoldWriter
+
+        KFoldWriter.write_pdb(self, path, conformer_id, is_predicted, save_apo)
+
+    def to_mmcif(
+        self,
+        path: Path | str,
+        conformer_id: int = 0,
+        is_predicted: bool = True,
+        save_apo: bool = False,
+    ) -> None:
+        """Write to MMCIF file."""
+        from kfold.utils.writer import KFoldWriter
+
+        KFoldWriter.write_mmcif(self, path, conformer_id, is_predicted, save_apo)
+
+    # === Numpy serialization for model training === #
+    def to_npz_dict(self) -> dict[str, np.ndarray]:
+        """Convert to a flat dictionary for NPZ storage.
+
+        Returns a dictionary where tensor fields are converted to numpy arrays
+        with hierarchical keys like 'chain.asym_id', 'token.token_type', etc.
+        """
+        chain_dict = self.chain.to_dict()
+        token_dict = self.token.to_dict()
+        atom_dict = self.atom.to_dict()
+        bond_dict = self.bond.to_dict()
+
+        result = {
+            **{f"chain.{key}": value for key, value in chain_dict.items()},
+            **{f"token.{key}": value for key, value in token_dict.items()},
+            **{f"atom.{key}": value for key, value in atom_dict.items()},
+            **{f"bond.{key}": value for key, value in bond_dict.items()},
+        }
+        return result
+
+    @classmethod
+    def from_npz_dict(cls, data: dict[str, np.ndarray]) -> Self:
+        """Reconstruct from NPZ dictionary."""
+        reconstructed = {}
+        for prefix, struct_cls in [
+            ("chain.", Chain),
+            ("token.", Token),
+            ("atom.", Atom),
+            ("bond.", Bond),
+        ]:
+            struct_data = {
+                key[len(prefix) :]: value
+                for key, value in data.items()
+                if key.startswith(prefix)
+            }
+            reconstructed[prefix[:-1]] = struct_cls(**struct_data)
+        return cls(**reconstructed)
+
+    def dump_npz(self, path: Path | str) -> None:
+        """Save to compressed NPZ file."""
+        path = Path(path)
+        data = self.to_npz_dict()
+        np.savez_compressed(path, **data)
+
+    def save_npz(self, path: Path | str) -> None:
+        """Save to compressed NPZ file."""
+        self.dump_npz(path)
+
+    @classmethod
+    def load_npz(cls, path: Path | str | io.BytesIO) -> Self:
+        """Load from NPZ file."""
+        with np.load(path) as data:
+            return cls.from_npz_dict(dict(data))
+
+    # === Utility functions === #
+
+    def copy_with(self, **kwargs) -> Self:
+        """Create a copy of the structure with updated fields.
+
+        Parameters
+        ----------
+        **kwargs
+            Fields to update. Can include 'chain', 'token', 'atom', 'bond', 'metadata'.
+
+        Returns
+        -------
+        copied_structure: TokenizedStructure
+            Copied tokenized structure with updated fields.
+        """
+        return self.__class__(
+            chain=kwargs.get("chain", self.chain),
+            token=kwargs.get("token", self.token),
+            atom=kwargs.get("atom", self.atom),
+            bond=kwargs.get("bond", self.bond),
+            metadata=kwargs.get("metadata", self.metadata),
+        )
+
     def crop(self, token_indices: np.ndarray) -> Self:
         """Crop the structure to the specified token indices.
 
@@ -371,18 +503,4 @@ class TokenizedStructure:
             atom=cropped_atom,
             bond=cropped_bond,
             metadata=self.metadata,
-        )
-
-    def __repr__(self) -> str:
-        """FoldingInput summary representation."""
-        # Summary statistics
-        num_chains = self.num_chains
-        num_tokens = self.num_tokens
-        num_bonds = len(self.bond)
-        return (
-            f"TokenizedStructure(\n"
-            f"  num_chains: {num_chains}\n"
-            f"  num_tokens: {num_tokens}\n"
-            f"  num_bonds: {num_bonds}\n"
-            f")"
         )

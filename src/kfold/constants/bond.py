@@ -2,7 +2,7 @@ from enum import IntEnum
 
 
 # Same to Boltz's order
-class ConnectType(IntEnum):
+class ConnectionType(IntEnum):
     OTHER = 0
     SINGLE = 1
     DOUBLE = 2

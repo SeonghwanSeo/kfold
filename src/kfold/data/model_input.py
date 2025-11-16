@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, Self
+from typing import Self
 
 import torch
 
@@ -124,7 +124,7 @@ class ChainLayout(TensorLayout):
     @cached_property
     def is_protein(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is protein."""
-        return self.chain_type == C.chain.ChainType.Protein.value
+        return self.chain_type == C.chain.ChainType.PROTEIN.value
 
     @cached_property
     def is_dna(self) -> torch.Tensor:
@@ -139,7 +139,7 @@ class ChainLayout(TensorLayout):
     @cached_property
     def is_ligand(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is ligand."""
-        return self.chain_type == C.chain.ChainType.Ligand.value
+        return self.chain_type == C.chain.ChainType.LIGAND.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,7 +275,7 @@ class TokenLayout(TensorLayout):
     @cached_property
     def is_protein(self) -> torch.Tensor:
         """Boolean tensor of shape [L,], indicating whether the token is protein."""
-        return self.chain_type == C.chain.ChainType.Protein.value
+        return self.chain_type == C.chain.ChainType.PROTEIN.value
 
     @cached_property
     def is_dna(self) -> torch.Tensor:
@@ -290,7 +290,7 @@ class TokenLayout(TensorLayout):
     @cached_property
     def is_ligand(self) -> torch.Tensor:
         """Boolean tensor of shape [L,], indicating whether the token is ligand."""
-        return self.chain_type == C.chain.ChainType.Ligand.value
+        return self.chain_type == C.chain.ChainType.LIGAND.value
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -366,6 +366,8 @@ class AtomLayout(TensorLayout):
         where Napo is the number of apo conformations.
     resolved_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating atoms to be resolved.
+    apo_mask: torch.Tensor (bool)
+        Boolean mask of shape [Natom,] indicating atoms with apo coordinates.
     pad_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating valid (non-padded) atoms.
     label_coords: torch.Tensor (float32)
@@ -381,10 +383,11 @@ class AtomLayout(TensorLayout):
     ref_pos: torch.Tensor  # [Natom, Nholo, 3], float32
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
+    label_coords: torch.Tensor  # [Natom, Nholo, 3], float32
     apo_coords: torch.Tensor  # [Natom, Napo, 3], float32
     resolved_mask: torch.Tensor  # [Natom,], bool
+    apo_mask: torch.Tensor  # [Natom, Napo], bool
     pad_mask: torch.Tensor  # [Natom,], bool
-    label_coords: torch.Tensor  # [Natom, 3], float32
 
     @property
     def layout_shape(self) -> tuple[int, ...]:
@@ -417,18 +420,19 @@ class AtomLayout(TensorLayout):
             self.token_index, name="token_index", dtype=torch.long, shape=(*shape,)
         )
         check_tensor(
-            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, -1, 3)
-        )
-        check_tensor(
-            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(*shape,)
-        )
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
-        check_tensor(
             self.label_coords,
             name="label_coords",
             dtype=torch.float32,
             shape=(*shape, -1, 3),
         )
+        check_tensor(
+            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, -1, 3)
+        )
+        check_tensor(
+            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(*shape,)
+        )
+        check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=(*shape, -1))
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -451,6 +455,7 @@ class AtomLayout(TensorLayout):
             "token_index": 0,
             "apo_coords": 0.0,
             "resolved_mask": False,
+            "apo_mask": False,
             "pad_mask": False,
             "label_coords": 0.0,
         }
@@ -577,7 +582,6 @@ class FoldingInput:
     token: TokenLayout
     atom: AtomLayout
     bond: BondLayout
-    metadata: Any = None
 
     def __post_init__(self):
         # check all layouts are on the same device
@@ -617,7 +621,6 @@ class FoldingInput:
             token=self.token.to(device),
             atom=self.atom.to(device),
             bond=self.bond.to(device),
-            metadata=self.metadata,
         )
 
     @property
@@ -663,14 +666,12 @@ class FoldingInput:
         batched_token = TokenLayout.from_list([data.token for data in data_list])
         batched_atom = AtomLayout.from_list([data.atom for data in data_list])
         batched_bond = BondLayout.from_list([data.bond for data in data_list])
-        batched_metadata = [data.metadata for data in data_list]
 
         return cls(
             chain=batched_chain,
             token=batched_token,
             atom=batched_atom,
             bond=batched_bond,
-            metadata=batched_metadata,
         )
 
     def to_list(self, deepcopy: bool = False) -> list[Self]:
@@ -688,7 +689,6 @@ class FoldingInput:
                     token=token_list[b],
                     atom=atom_list[b],
                     bond=bond_list[b],
-                    metadata=self.metadata[b] if self.metadata else None,
                 )
             )
         return data_list
@@ -805,5 +805,4 @@ class FoldingInput:
             token=self.token.pad(max_tokens),
             atom=self.atom.pad(max_atoms),
             bond=self.bond.pad(max_bonds),
-            metadata=self.metadata,
         )

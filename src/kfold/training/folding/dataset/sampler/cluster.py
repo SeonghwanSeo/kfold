@@ -60,7 +60,7 @@ def get_chain_weight(
         The weight of the chain.
     """
     n_prot, n_nuc, n_ligand = 0, 0, 0
-    if chain.chain_type is C.chain.ChainType.Protein:
+    if chain.chain_type is C.chain.ChainType.PROTEIN:
         n_prot += 1
     elif chain.chain_type in (C.chain.ChainType.DNA, C.chain.ChainType.RNA):
         n_nuc += 1
@@ -119,7 +119,7 @@ def get_interface_weight(
     n_prot, n_nuc, n_ligand = 0, 0, 0
     for asym_id in interface.asym_ids:
         chain = chain_dict[asym_id]
-        if chain.chain_type is C.chain.ChainType.Protein:
+        if chain.chain_type is C.chain.ChainType.PROTEIN:
             n_prot += 1
         elif chain.chain_type in (C.chain.ChainType.DNA, C.chain.ChainType.RNA):
             n_nuc += 1

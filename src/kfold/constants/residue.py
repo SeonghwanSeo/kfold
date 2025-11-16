@@ -118,7 +118,7 @@ dna_one_letter_to_residue_name: dict[str, ResidueName] = {
 @lru_cache(100)
 def map_one_letter_to_residue_name(chain_type: ChainType, one_letter: str) -> ResidueName:
     """Map one-letter code to ResidueName enum based on chain type."""
-    if chain_type == ChainType.Protein:
+    if chain_type == ChainType.PROTEIN:
         return protein_one_letter_to_residue_name.get(one_letter, ResidueName.UNK)
     elif chain_type == ChainType.RNA:
         return rna_one_letter_to_residue_name.get(one_letter, ResidueName.N)
@@ -126,3 +126,24 @@ def map_one_letter_to_residue_name(chain_type: ChainType, one_letter: str) -> Re
         return dna_one_letter_to_residue_name.get(one_letter, ResidueName.DN)
     else:
         raise ValueError(f"Unsupported chain type: {chain_type}")
+
+
+@lru_cache(100)
+def get_one_letter(residue_name: str | ResidueName) -> str:
+    """Get the one-letter code for a given residue name."""
+    if isinstance(residue_name, ResidueName):
+        residue_name = residue_name.name
+
+    assert residue_name != "-", "Gap character does not have a one-letter code."
+
+    if residue_name in PROTEIN_RESIDUES:
+        idx = PROTEIN_RESIDUES.index(residue_name)
+        return PROTEIN_AMINO_ACIDS[idx]
+    elif residue_name in RNA_RESIDUES:
+        idx = RNA_RESIDUES.index(residue_name)
+        return RNA_BASES[idx]
+    elif residue_name in DNA_RESIDUES:
+        idx = DNA_RESIDUES.index(residue_name)
+        return DNA_BASES[idx]
+    else:
+        return "X"  # Unknown residue

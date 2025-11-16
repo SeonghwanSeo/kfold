@@ -44,9 +44,13 @@ def weighted_rigid_align(
 
     Notes
     -----
-    - If the number of points N < 4, a warning is issued as the rotation may not be unique.
+    - If the number of points N < 4, a warning is issued since the rotation may not be
+      unique.
     - If SVD fails, the identity rotation is used and a warning is issued.
     """
+    original_dtype = coords.dtype
+
+    L = coords.shape[-2]
     if L < 4:
         warnings.warn(
             f"Point cloud has only {L} points (< 4). "

@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import pickle
 from functools import lru_cache
 from pathlib import Path
 
@@ -9,13 +10,12 @@ from torch.utils.data.sampler import WeightedRandomSampler
 
 from kfold.data import model_input
 from kfold.data.metadata import Metadata
-from kfold.utils.boltz.process import parse_record
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
 
 from .cropper import BaseCropper
 from .dataset import (
-    BoltzTrainingDataset,
-    BoltzValidationDataset,
+    LMDBTrainingDataset,
+    LMDBValidationDataset,
     TrainingDataset,
     ValidationDataset,
 )
@@ -25,11 +25,18 @@ from .sampler import BaseSampler
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
 
 
-@lru_cache(maxsize=1)
-def load_records_from_json(json_path: Path) -> list[Metadata]:
-    with open(json_path) as f:
-        manifest = json.load(f)
-    all_records: list[Metadata] = [parse_record(r) for r in manifest]
+@lru_cache
+def load_manifest(manifest_path: Path) -> list[Metadata]:
+    format = manifest_path.suffix.lower()
+    if format == ".json":
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+    elif format == ".pkl":
+        with open(manifest_path, "rb") as f:
+            manifest = pickle.load(f)
+    else:
+        raise ValueError(f"Unsupported manifest format: {format}")
+    all_records: list[Metadata] = [Metadata.from_dict(d) for d in manifest]
     return all_records
 
 
@@ -39,15 +46,17 @@ class DataModuleConfig(BaseConfig):
     val_batch_size: int = 1
     num_workers: int = 0
     pin_memory: bool = True
+    safe_load: bool = True
     # Cropper config
     cropper: BaseCropper.Config
 
 
 # FIXME: remove this (hard-coded)
-class BoltzDataModuleConfig(DataModuleConfig):
+class LMDBDataModuleConfig(DataModuleConfig):
     # Dataset specific (TODO: move to dataset config)
-    boltz_processed_path: str | Path
-    boltz_split_path: str | Path
+    lmdb_path: str | Path
+    manifest_path: str | Path
+    split_path: str | Path
     max_tokens: int  # Used for cropping and padding
     filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config = dataclasses.field(
@@ -59,14 +68,14 @@ def collate(f_inputs: list[model_input.FoldingInput]) -> model_input.FoldingInpu
     return model_input.FoldingInput.from_list(f_inputs)
 
 
-@DATAMODULE.register(config_cls=BoltzDataModuleConfig)
+@DATAMODULE.register(config_cls=LMDBDataModuleConfig)
 class TrainingDataModule(pl.LightningDataModule):
     # HACK: (SeonghwanSeo): currently only supports a single Boltz dataset
     # I'll remove this datamodule and make it better (multiple dataset)
     _train_ds: TrainingDataset
     _val_ds: ValidationDataset
 
-    def __init__(self, config: BoltzDataModuleConfig) -> None:
+    def __init__(self, config: LMDBDataModuleConfig) -> None:
         super().__init__()
         assert config.max_tokens % 128 == 0, "max_tokens must be a multiple of 128."
 
@@ -78,8 +87,9 @@ class TrainingDataModule(pl.LightningDataModule):
         ]
         self.cropper = Registry.instantiate(config=config.cropper)
 
-        self.boltz_processed_path: Path = Path(config.boltz_processed_path)
-        self.boltz_split_path: Path = Path(config.boltz_split_path)
+        self.lmdb_path: Path = Path(config.lmdb_path)
+        self.manifest_path: Path = Path(config.manifest_path)
+        self.split_path: Path = Path(config.split_path)
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -91,51 +101,44 @@ class TrainingDataModule(pl.LightningDataModule):
             raise NotImplementedError("Not implemented yet.")
 
     def construct_train_dataset(self) -> TrainingDataset:
-        # HACK: (SeonghwanSeo): hard-coded path to boltz manifest; single dataset
+        # HACK: (SeonghwanSeo): hard-coded path to rcsb set; single dataset
         # NOTE: (SeonghwanSeo): validation set is excluded during date-filtering.
-
         def do_filter(r: Metadata) -> bool:
             return all(filt(r) for filt in self.filters)
 
-        boltz_processed_path = self.boltz_processed_path
-        boltz_manifest_path = boltz_processed_path / "manifest.json"
-        boltz_structure_path = boltz_processed_path / "structures"
-
         # Load records
-        all_records: list[Metadata] = load_records_from_json(boltz_manifest_path)
+        all_records: list[Metadata] = load_manifest(self.manifest_path)
 
         # Apply filters
         train_records = [r for r in all_records if do_filter(r)]
 
-        return BoltzTrainingDataset(
+        return LMDBTrainingDataset(
             records=train_records,
-            structure_dir=boltz_structure_path,
+            lmdb_path=self.lmdb_path,
             max_tokens=self.max_tokens,
             cropper=self.cropper,
             sampler_config=self.config.sampler,
+            safe_load=self.config.safe_load,
         )
 
     def construct_val_dataset(self) -> ValidationDataset:
-        # HACK: (SeonghwanSeo): hard-coded path to boltz manifest; single dataset
-
-        boltz_processed_path = self.boltz_processed_path
-        boltz_manifest_path = boltz_processed_path / "manifest.json"
-        boltz_structure_path = boltz_processed_path / "structures"
+        # HACK: (SeonghwanSeo): hard-coded path to rcsb set; single dataset
 
         # Load records
-        all_records: list[Metadata] = load_records_from_json(boltz_manifest_path)
+        all_records: list[Metadata] = load_manifest(self.manifest_path)
 
         # get validation records
-        validation_split = self.boltz_split_path / "validation_ids.txt"
+        validation_split = self.split_path / "validation_ids.txt"
         with open(validation_split) as f:
             val_ids = set([line.strip().lower() for line in f])
 
         # Apply filters
         val_records = [r for r in all_records if r.id.lower() in val_ids]
 
-        return BoltzValidationDataset(
+        return LMDBValidationDataset(
             records=val_records,
-            structure_dir=boltz_structure_path,
+            lmdb_path=self.lmdb_path,
+            safe_load=self.config.safe_load,
         )
 
     def train_dataloader(self):
