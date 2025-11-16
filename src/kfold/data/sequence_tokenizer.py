@@ -159,7 +159,7 @@ class SequenceTokenizer:
     def get_id_to_token(self, chain_type: C.chain.ChainType) -> dict[int, str]:
         """Get the mapping from token ID to token for a given chain type."""
         match chain_type:
-            case C.chain.ChainType.Protein:
+            case C.chain.ChainType.PROTEIN:
                 return self.protein_id_to_token
             case C.chain.ChainType.RNA:
                 return self.rna_id_to_token
@@ -178,7 +178,7 @@ class SequenceTokenizer:
         """Encode a chain sequence into a list of token IDs."""
         token_ids: list[int] = []
         match chain_type:
-            case C.chain.ChainType.Protein:
+            case C.chain.ChainType.PROTEIN:
                 vocab = self.protein_vocab
                 unk_token_id = self.protein_unk_token_id
             case C.chain.ChainType.RNA:
@@ -235,7 +235,7 @@ class SequenceTokenizer:
             # First, determine the chain type from the token IDs
             for v in token_ids:
                 if v in self.protein_id_to_token:
-                    chain_type = C.chain.ChainType.Protein
+                    chain_type = C.chain.ChainType.PROTEIN
                     break
                 elif v in self.rna_id_to_token:
                     chain_type = C.chain.ChainType.RNA

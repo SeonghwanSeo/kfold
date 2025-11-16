@@ -64,10 +64,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Tokenization
         tokenized_structure = self.load_tokenized_structure(record)
         # Featurization
-        f_input = featurize.featurize_structure(
-            structure=tokenized_structure,
-            metadata={"metadata": record},
-        )
+        f_input = featurize.featurize_structure(tokenized_structure)
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
         return f_input
@@ -156,10 +153,7 @@ class TrainingDataset(SafeLoadingDataset):
             )
 
         # Featurization
-        f_input = featurize.featurize_structure(
-            structure=tokenized_structure,
-            metadata={"metadata": record},
-        )
+        f_input = featurize.featurize_structure(tokenized_structure)
         # Pad the folding input to max_tokens for LocalAtomAttention.
         f_input = self.pad_input(f_input)
         return f_input

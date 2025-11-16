@@ -39,7 +39,7 @@ class CompositionFilter(BaseFilter):
                 chain
                 for chain in record.chains
                 if not (
-                    chain.chain_type == C.chain.ChainType.Ligand
+                    chain.chain_type == C.chain.ChainType.LIGAND
                     and chain.chain_name in LIGAND_EXCLUSIONS
                 )
             ]
@@ -49,7 +49,7 @@ class CompositionFilter(BaseFilter):
             return False
 
         has_protein = any(
-            chain.chain_type == C.chain.ChainType.Protein for chain in chains
+            chain.chain_type == C.chain.ChainType.PROTEIN for chain in chains
         )
         if not has_protein:
             return False
