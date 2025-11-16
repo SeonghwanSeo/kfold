@@ -44,4 +44,4 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
-train = ['lightning', 'wandb']
+train = ['lightning', 'wandb', 'lmdb']

@@ -455,6 +455,7 @@ class AtomLayout(TensorLayout):
             "token_index": 0,
             "apo_coords": 0.0,
             "resolved_mask": False,
+            "apo_mask": False,
             "pad_mask": False,
             "label_coords": 0.0,
         }

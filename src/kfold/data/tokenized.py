@@ -1,3 +1,4 @@
+import io
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -429,10 +430,9 @@ class TokenizedStructure:
         self.dump_npz(path)
 
     @classmethod
-    def load_npz(cls, path: Path | str) -> Self:
+    def load_npz(cls, path: Path | str | io.BytesIO) -> Self:
         """Load from NPZ file."""
-        path = Path(path)
-        with np.load(str(path), allow_pickle=True) as data:
+        with np.load(path) as data:
             return cls.from_npz_dict(dict(data))
 
     # === Utility functions === #

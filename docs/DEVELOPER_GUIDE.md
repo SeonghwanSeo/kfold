@@ -17,14 +17,14 @@ TODO write...
 #### Conda Environment
 ```bash
 conda create -n kfold python=3.11
-pip install -e .
+pip install -e '.[train,dev]'
 pre-commit install
 ```
 
 #### UV Environment
 ```bash
 uv venv --python 3.11
-uv pip install -e .
+uv pip install -e '.[train,dev]'
 pre-commit install
 ```
 

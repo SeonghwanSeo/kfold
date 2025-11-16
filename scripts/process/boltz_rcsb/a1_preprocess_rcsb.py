@@ -61,16 +61,16 @@ def parse_args():
         "--apo_structure_dir",
         type=Path,
         help="Path to the input file containing apo protein structures.",
-        default="/cache/wykim_lab/rcsb_apo_esmfold/",
+        default="/cache/wykim_lab/kfold_data/rcsb_apo_esmfold/",
     )
     parser.add_argument(
         "--output_dir",
         type=Path,
         help="Path to the output directory to save Tokenized structure.",
-        default="/cache/wykim_lab/kfold_rcsb_processed_v251116/",
+        default="/cache/wykim_lab/kfold_data/structures/kfold_rcsb_processed_v251116_npz/",
     )
     parser.add_argument(
-        "--cpus",
+        "--num_cpus",
         type=int,
         default=len(os.sched_getaffinity(0)),
         help="Number of workers for parallel processing.",
@@ -301,7 +301,7 @@ def main(args):
     output_dir = Path(args.output_dir)
     allow_large_complex = args.allow_large_complex
 
-    cpus = args.cpus
+    num_cpus = args.num_cpus
     force = args.force
 
     assert boltz_structure_dir.exists(), (
@@ -313,7 +313,7 @@ def main(args):
 
     all_boltz_npz_files = sorted(list(boltz_structure_dir.glob("*.npz")))
 
-    with multiprocessing.Pool(cpus) as pool:
+    with multiprocessing.Pool(num_cpus) as pool:
         results = list(
             tqdm(
                 pool.imap_unordered(

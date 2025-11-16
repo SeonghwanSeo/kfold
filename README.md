@@ -31,6 +31,8 @@ pre-commit install
 
 #### Training
 
+See [`docs/TRAINING_GUIDE.md`](./docs/TRAINING_GUIDE.md) for detailed training instructions.
+
 ```bash
 python ./scripts/train.py ./configs/train-af3.yaml --wandb
 ```
