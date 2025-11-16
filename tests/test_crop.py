@@ -7,7 +7,6 @@ from tqdm import tqdm
 from kfold.training.folding.dataset.cropper.boltz import BoltzCropper
 from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
-from kfold.utils.writer.pdb import to_pdb
 
 BOLTZ_PATH = Path("/cache/wykim_lab/rcsb_processed_targets/")
 BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
@@ -38,13 +37,9 @@ if __name__ == "__main__":
         path = BOLTZ_STRUCTURE_DIR / f"{key}.npz"
         boltz_structure = BoltzStructure.load(path)
         tokenized = tokenize_structure(boltz_structure)
-
-        with open(f"./tmp/{key}-full.pdb", "w") as f:
-            f.write(to_pdb(tokenized))
-
         # Crop structure
-        tokenized = cropper.crop(tokenized, 384, None)
-        # print(tokenized)
+        cropped_tokenized = cropper.crop(tokenized, 384, None)
 
-        with open(f"./tmp/{key}-crop.pdb", "w") as f:
-            f.write(to_pdb(tokenized))
+        # Save full and cropped structures
+        tokenized.to_pdb(f"./tmp/{key}-full.pdb")
+        cropped_tokenized.to_pdb(f"./tmp/{key}-crop.pdb")

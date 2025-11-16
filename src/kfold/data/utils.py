@@ -8,7 +8,7 @@ from . import model_input
 ArrayT = TypeVar("ArrayT", np.ndarray, torch.Tensor)
 
 
-def centering(coords: ArrayT, mask: ArrayT, mask_to_zero: bool = True) -> ArrayT:
+def do_centering(coords: ArrayT, mask: ArrayT, mask_to_zero: bool = True) -> ArrayT:
     """Center coordinates based on the masked mean position.
 
     Parameters

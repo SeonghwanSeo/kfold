@@ -52,11 +52,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable Weights & Biases logging.",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode.",
+    )
     return parser.parse_args()
 
 
 def build_trainer(cfg) -> pl.Trainer:
     train_cfg = cfg.train
+    pl_trainer_cfg = train_cfg.trainer
 
     save_dir = Path(train_cfg.out_dir) / train_cfg.name
 
@@ -84,6 +90,13 @@ def build_trainer(cfg) -> pl.Trainer:
     model_summary = pl.callbacks.ModelSummary(max_depth=2)
     callbacks.append(model_summary)
 
+    if not train_cfg.wandb.use:
+        # Progress bar (use when not using wandb)
+        progress_bar = pl.callbacks.TQDMProgressBar(
+            refresh_rate=pl_trainer_cfg.log_every_n_steps
+        )
+        callbacks.append(progress_bar)
+
     # FIXME: currently, validation is not implemented yet.
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor=None,
@@ -92,7 +105,6 @@ def build_trainer(cfg) -> pl.Trainer:
     )
     callbacks.append(checkpoint_callback)
 
-    pl_trainer_cfg = train_cfg.trainer
     trainer = pl.Trainer(
         default_root_dir=save_dir,
         logger=loggers,
@@ -133,6 +145,15 @@ def train(args) -> None:
         cfg.train.data.num_workers = args.num_workers
     if args.wandb:
         cfg.train.wandb.use = True
+
+    if args.debug:
+        print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
+        cfg.train.trainer.devices = 1
+        cfg.train.data.num_workers = 0
+        cfg.train.wandb.use = False
+        cfg.train.data.safe_load = False
+        cfg.train.trainer.accumulate_grad_batches = 1
+        cfg.train.trainer.log_every_n_steps = 1
 
     # Set random seed
     pl.seed_everything(cfg.train.seed)

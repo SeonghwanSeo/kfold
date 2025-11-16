@@ -2,6 +2,7 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data import metadata, tokenized
+from kfold.utils.errors import BoltzDataProcessingError
 
 from .structure import BoltzStructure
 
@@ -123,13 +124,13 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         "is_standard": np.bool_,
     }
     atom_field_dtype: dict[str, type] = {
-        "resolved_mask": np.bool_,
         "ref_charge": np.float16,
         "ref_element": np.int8,
         "ref_atom_name_chars": np.int8,  # 0-63
         "ref_pos": np.float32,
         "coords": np.float32,
         "apo_coords": np.float32,
+        "resolved_mask": np.bool_,
     }
     bond_field_dtype: dict[str, type] = {
         "asym_id": np.int16,
@@ -137,6 +138,9 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         "atom_index": np.int8,  # 0-23
         "bond_type": np.int8,
     }
+
+    if not structure.mask.any():
+        raise BoltzDataProcessingError("No valid chains in the structure.")
 
     chains = structure.chains[structure.mask]
 
@@ -315,15 +319,17 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         token2, atom2 = atom_index_map[bond["atom_2"]]
         bond_info["token_index"].append((token1, token2))
         bond_info["atom_index"].append((atom1, atom2))
-        bond_info["bond_type"].append(C.bond.ConnectType.COVALENT.value)
+        bond_info["bond_type"].append(C.bond.ConnectionType.COVALENT.value)
 
         asym_id1, asym_id2 = token_info["asym_id"][token1], token_info["asym_id"][token2]
         bond_info["asym_id"].append((asym_id1, asym_id2))
 
     # === Convert lists to tensors === #
 
-    def create_atom_array(lst: list, dtype: type = np.uint16) -> np.ndarray:
+    def create_atom_array(key: str, lst: list, dtype: type = np.uint16) -> np.ndarray:
         """Create a fixed-size atom array by padding with zeros."""
+        if len(lst) == 0:
+            raise ValueError(f"No data for atom field: {key}")
         dim = lst[0].shape[1:]  # exclude first dimension
         arr = np.zeros((len(lst), 24, *dim), dtype=dtype)
         for i, v in enumerate(lst):
@@ -338,7 +344,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
     }
 
     atom_arr: dict[str, np.ndarray] = {
-        key: create_atom_array(value, dtype=atom_field_dtype[key])
+        key: create_atom_array(key, value, dtype=atom_field_dtype[key])
         for key, value in atom_info.items()
     }
 
@@ -347,14 +353,10 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         for key, value in bond_info.items()
     }
 
-    # TODO: use actual apo coords when available
-    atom_arr["apo_coords"] = np.zeros_like(atom_arr["coords"])
-    for num_tokens in chain_arr["num_tokens"]:
-        start_idx = np.sum(chain_arr["num_tokens"][:num_tokens])
-        end_idx = start_idx + num_tokens
-        chain_coords = atom_arr["ref_pos"][start_idx:end_idx]
-        mask = atom_arr["resolved_mask"][start_idx:end_idx]
-        atom_arr["apo_coords"][start_idx:end_idx] = centering(chain_coords, mask)
+    # replace actual apo coords when available
+    Ntoken = token_arr["res_type"].shape[0]
+    atom_arr["apo_coords"] = np.zeros((Ntoken, 24, 1, 3), dtype=np.float32)
+    atom_arr["apo_mask"] = np.zeros((Ntoken, 24, 1), dtype=bool)
 
     Nc = chain_arr["chain_type"].shape[0]
     Nt = token_arr["res_type"].shape[0]
@@ -387,9 +389,10 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         ref_element=atom_arr["ref_element"].reshape(Nt, 24),
         ref_charge=atom_arr["ref_charge"].reshape(Nt, 24),
         ref_pos=atom_arr["ref_pos"].reshape(Nt, 24, 3),
-        resolved_mask=atom_arr["resolved_mask"].reshape(Nt, 24),
         coords=atom_arr["coords"].reshape(Nt, 24, -1, 3),
-        apo_coords=atom_arr["apo_coords"].reshape(Nt, 24, -1, 3),
+        apo_coords=atom_arr["apo_coords"].reshape(Nt, 24, 1, 3),
+        resolved_mask=atom_arr["resolved_mask"].reshape(Nt, 24),
+        apo_mask=atom_arr["apo_mask"].reshape(Nt, 24, 1),
     )
     bond_data = tokenized.Bond(
         asym_id=bond_arr["asym_id"].reshape(Nb, 2),

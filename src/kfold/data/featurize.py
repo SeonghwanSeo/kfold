@@ -14,7 +14,6 @@ from . import model_input, tokenized, utils
 
 def featurize_structure(
     structure: tokenized.TokenizedStructure,
-    metadata: dict | None = None,
 ) -> model_input.FoldingInput:
     """Featurize a tokenized structure into model input features.
 
@@ -132,9 +131,12 @@ def featurize_structure(
 
     # === Atom-level features ===
     # Centering the ground truth coords
-    atom_dict["label_coords"] = utils.centering(
+    atom_dict["label_coords"] = utils.do_centering(
         atom_dict["label_coords"], atom_dict["resolved_mask"]
     )
+
+    # TODO: data augmentation for ref_pos
+    # TODO: data augmentation for apo_coords
 
     # Make one-hot vector for atom types
     ref_element_one_hot = np.eye(128, dtype=np.float32)
@@ -182,8 +184,8 @@ def featurize_structure(
     # Indicate whether the bond atoms belong to polymer or ligand
     token1, token2 = bond_dict["token_index"][:, 0], bond_dict["token_index"][:, 1]
 
-    is_ligand1 = token_dict["chain_type"][token1] == C.chain.ChainType.Ligand
-    is_ligand2 = token_dict["chain_type"][token2] == C.chain.ChainType.Ligand
+    is_ligand1 = token_dict["chain_type"][token1] == C.chain.ChainType.LIGAND
+    is_ligand2 = token_dict["chain_type"][token2] == C.chain.ChainType.LIGAND
     bond_dict["is_polymer_ligand"] = ((~is_ligand1) & is_ligand2) | (
         is_ligand1 & (~is_ligand2)
     )
@@ -213,6 +215,5 @@ def featurize_structure(
         token=token_layout,
         atom=atom_layout,
         bond=bond_layout,
-        metadata=metadata,
     )
     return folding_input

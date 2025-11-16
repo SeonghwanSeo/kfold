@@ -30,6 +30,7 @@ ref_pos = atom_layout.ref_pos  # (Natom, 3)
 | `atom_resolved_mask` | `resolved_mask` | `(Natom,)` | Mask for resolved atoms |
 | `coords` | `label_coords` | `(Nholo, Natom, 3)` vs `(Natom, Nholo, 3)` | Target coordinates for training, `Nholo` is the number of ensemble (Always 1). |
 | - | `apo_coords` | `(Natom, Napo, 3)` | Apo structure coordinates |
+| - | `apo_mask` | `(Natom, Napo)` | Apo structure mask |
 
 
 * \*1: `atom_to_token` in Boltz can be accessed via `FoldingInput` instead of `AtomLayout`: `model_input.atom_to_token`.
