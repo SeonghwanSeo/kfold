@@ -145,13 +145,14 @@ class AF3PairformerTrunk(BaseTrunk):
             chunk_size_tri_attn = None
 
         # Line 6, z_hat, s_hat = 0, 0
-        z_hat, s_hat = z_init, s_init  # just to make sure the types are correct
+        s_hat = torch.zeros_like(s_init)
+        z_hat = torch.zeros_like(z_init)
 
         for i in range(1, num_cycles + 1):
-            no_grad = self.training and (i < num_cycles)
+            enable_grad = self.training and i == num_cycles
 
-            with torch.set_grad_enabled(not no_grad):
-                if (not no_grad) and torch.is_autocast_enabled():
+            with torch.set_grad_enabled(enable_grad):
+                if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Line 8

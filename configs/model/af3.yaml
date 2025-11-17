@@ -1,4 +1,7 @@
 # === Model Configuration === #
+_registry_: "main_module"
+_class_: AlphaFold3
+
 input_embedder:
   _yaml_: "module/input_embedder/af3.yaml"
 

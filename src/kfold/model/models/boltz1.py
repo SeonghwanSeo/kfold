@@ -5,6 +5,7 @@ import torch
 from omegaconf import DictConfig
 
 import kfold.model.modules as submodules
+from kfold.data.model_input import FoldingInput
 from kfold.model.modules.distogram_head.boltz1 import Boltz1DistogramHead
 from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedder
 from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk
@@ -18,10 +19,9 @@ class Boltz1(KFold):
     def __init__(self, global_config: DictConfig):
         torch.nn.Module.__init__(self)
         self.config = global_config
-
-        # Initialize sub-modules here using the config
         model_config = global_config.model
 
+        # === Boltz-1 pretrained modules === #
         self.input_embedder: Boltz1InputEmbedder = Registry.instantiate(
             model_config.input_embedder
         )
@@ -30,24 +30,30 @@ class Boltz1(KFold):
         self.trunk: Boltz1PairformerTrunk = Registry.instantiate(model_config.trunk)
         assert isinstance(self.trunk, Boltz1PairformerTrunk)
 
+        self.distogram_head: Boltz1DistogramHead = Registry.instantiate(
+            model_config.distogram_head
+        )
+        assert isinstance(self.distogram_head, Boltz1DistogramHead)
+
+        # === For custom diffusion structure module === #
         self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
             model_config.score_model
         )
-
-        # NOTE: structure module is not a torch.nn.Module
-        # This handles diffusion sampling as well
         self.structure_module: submodules.structure_module.BaseStructureModule = (
             Registry.instantiate(
                 model_config.structure_module, score_model=self.score_model
             )
         )
 
-        # Heads
-        self.distogram_head: Boltz1DistogramHead = Registry.instantiate(
-            model_config.distogram_head
+        # NOTE: additional projection layers for compatibility with KFold
+        c_input_boltz = 384 + 33 * 2 + 1 + 4  # 459
+        self.proj_s_inputs = torch.nn.Linear(
+            c_input_boltz,
+            model_config.score_model.channel_s,
+            bias=False,
         )
-        assert isinstance(self.distogram_head, Boltz1DistogramHead)
 
+        # Load Boltz-1 pretrained weights
         self.load_boltz_weights()
 
     def load_boltz_weights(self):
@@ -120,4 +126,105 @@ class Boltz1(KFold):
 
         # Check that all keys have been used
         assert len(state_dict) == 0, f"Unused keys in state dict: {state_dict.keys()}"
-        return
+
+    def forward(
+        self,
+        f_input: FoldingInput,
+        num_cycles: int = 4,
+        num_steps: int = 20,
+        num_diffusion_samples: int = 1,
+        diffusion_batch_size: int = 48,
+        sample_structures: bool = True,
+        train_structure_module: bool = True,
+        train_confidence_module: bool = True,
+    ) -> dict[str, dict[str, torch.Tensor]]:
+        """Override forward pass of Boltz1 pretrained model for
+        compatibility with KFold structure module input dimensions"""
+
+        # Ensure batched input
+        f_input = self.ensure_batched_input(f_input, do_warning=True)
+
+        if train_confidence_module:
+            assert sample_structures, (
+                "To train confidence module, "
+                "sample_structures must be True to provide sampled structures."
+            )
+
+        if not train_structure_module:
+            # Set trunk and structure module to eval mode
+            self.input_embedder.eval()
+            self.trunk.eval()
+            self.score_model.eval()
+
+        # Output dictionary
+        dict_out: dict[str, dict[str, torch.Tensor]] = {}
+
+        s_inputs, s_init, z_init = self.input_embedder(f_input)
+
+        # Trunk with recycling
+        s_trunk, z_trunk = self.trunk(
+            s_inputs,
+            s_init,
+            z_init,
+            f_input,
+            num_cycles,
+        )
+
+        # NOTE: Project single features to match structure module input dim
+        s_inputs = self.proj_s_inputs(s_inputs)
+
+        if sample_structures:
+            # Sample structures with Diffusion mini-rollout.
+            # NOTE: We do not pass cache here to prevent that detached tensors
+            # are stored in the model cache, which may lead to unexpected bugs with
+            # diffusion module training. Instead, we construct cache inside
+            # sample_structure method if necessary.
+            self.score_model.eval()
+            with torch.no_grad(), torch.autocast("cuda", dtype=torch.float32):
+                coordinates = self.structure_module.sample_structure(
+                    f_input=f_input,
+                    s_inputs=s_inputs.detach(),
+                    s_trunk=s_trunk.detach(),
+                    z_trunk=z_trunk.detach(),
+                    num_steps=num_steps,
+                    num_diffusion_samples=num_diffusion_samples,
+                    max_parallel_samples=None,
+                )  # [B, N_samples, Ltoken, 3]
+            dict_out["sample"] = {
+                "coordinates": coordinates,
+            }
+
+        if train_structure_module:
+            # Distogram head
+            dict_out["distogram"] = {
+                "logits": self.distogram_head(z_trunk),
+            }
+
+            # Diffusion head
+            self.score_model.train()
+            with torch.autocast("cuda", dtype=torch.float32):
+                dict_out["diffusion"] = self.structure_module.training_step(
+                    f_input,
+                    s_inputs,
+                    s_trunk,
+                    z_trunk,
+                    diffusion_batch_size,
+                )
+
+        if train_confidence_module:
+            # TODO: implement confidence prediction with mini-rollout
+            coordinates = dict_out["sample"]["coordinates"]
+            s_trunk_detached = s_trunk.detach()  # noqa
+            z_trunk_detached = z_trunk.detach()  # noqa
+            raise NotImplementedError("Confidence module is not implemented yet.")
+
+        return dict_out
+
+    def freeze_modules(self):
+        """Freeze Boltz-1 pretrained modules."""
+        for param in self.input_embedder.parameters():
+            param.requires_grad_(False)
+        for param in self.trunk.parameters():
+            param.requires_grad_(False)
+        for param in self.distogram_head.parameters():
+            param.requires_grad_(False)

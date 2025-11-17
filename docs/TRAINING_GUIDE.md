@@ -148,9 +148,7 @@ Modify `config file` to match your training environment.
 
 - Debug mode (single GPU, no workers, no safe data-loading):
   ```bash
-  python scripts/train.py \
-    --config ./configs/train-af3-mini.yaml \
-    --debug
+  python scripts/train.py --config ./configs/train-af3-mini.yaml --debug
   ```
 
 - Full training mode

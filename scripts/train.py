@@ -100,13 +100,6 @@ def build_trainer(cfg) -> pl.Trainer:
     model_summary = pl.callbacks.ModelSummary(max_depth=2)
     callbacks.append(model_summary)
 
-    if not train_cfg.wandb.use:
-        # Progress bar (use when not using wandb)
-        progress_bar = pl.callbacks.TQDMProgressBar(
-            refresh_rate=pl_trainer_cfg.log_every_n_steps
-        )
-        callbacks.append(progress_bar)
-
     # FIXME: currently, validation is not implemented yet.
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor=None,
@@ -164,7 +157,7 @@ def train(args) -> None:
         print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
         cfg.train.trainer.devices = 1
         cfg.train.trainer.num_nodes = 1
-        cfg.train.trainer.batch_size = 2
+        cfg.train.data.train_batch_size = 1
         cfg.train.trainer.accumulate_grad_batches = 1
         cfg.train.trainer.log_every_n_steps = 1
         cfg.train.data.num_workers = 0

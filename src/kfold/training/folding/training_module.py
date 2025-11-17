@@ -11,6 +11,7 @@ from omegaconf import DictConfig
 from kfold.config import to_dict
 from kfold.data.model_input import FoldingInput
 from kfold.model.models.kfold import KFold
+from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
 from .optim.ema import ExponentialMovingAverage
@@ -56,9 +57,11 @@ class OptimizerConfig:
 class TrainingConfig:
     """Training step configuration."""
 
-    # Whether to train structure and confidence modules
+    # Whether to train each submodules
+    train_trunk: bool = True
+    train_distogram_head: bool = True
     train_structure_module: bool = True
-    train_confidence_module: bool = False
+    train_confidence_head: bool = False
 
     # trunk recycling
     num_cycles: int = 4
@@ -101,11 +104,15 @@ class KFoldTrainingModule(pl.LightningModule):
         self.loss_config: LossConfig = self.config.loss
 
         # Whether to train structure and confidence modules
+        self.train_trunk: bool = self.training_config.train_trunk
+        self.train_distogram_head: bool = self.training_config.train_distogram_head
         self.train_structure_module: bool = self.training_config.train_structure_module
-        self.train_confidence_module: bool = self.training_config.train_confidence_module
+        self.train_confidence_head: bool = self.training_config.train_confidence_head
 
         # Initialize model here
-        self.model: KFold = KFold(self.global_config)
+        self.model: KFold
+        model_cls = MAIN_MODULE[self.global_config.model._class_]
+        self.model = model_cls(self.global_config)
 
         # Freeze parts of the model if needed
         self.freeze_submodules()
@@ -119,14 +126,33 @@ class KFoldTrainingModule(pl.LightningModule):
         """Freeze submodules based on the training configuration."""
         # FIXME: (SeonghwanSeo) I did not test this function yet.
         # This is required when we train the confidence module only (Final-training-stage)
+
+        self.frozen_modules = []
+        if self.train_trunk is False:
+            self.frozen_modules += ["input_embedder", "trunk"]
+
+        if self.train_distogram_head is False:
+            self.frozen_modules += ["distogram_head"]
+
         if self.train_structure_module is False:
-            self.model.trunk.eval()
-            self.model.score_model.eval()
-            self.model.trunk.requires_grad_(False)
-            self.model.score_model.requires_grad_(False)
-        if self.train_confidence_module is False:
+            self.frozen_modules += ["score_model"]
+
+        if self.train_confidence_head is False:
             # TODO: freeze confidence module after they are implemented
             pass
+
+        for module_name in self.frozen_modules:
+            module = getattr(self.model, module_name)
+            for param in module.parameters():
+                param.requires_grad_(False)
+
+    def train(self, mode: bool = True):
+        """Override train() to set sub-modules to eval mode if frozen."""
+        out = super().train(mode)
+        for module_name in self.frozen_modules:
+            module = getattr(self.model, module_name)
+            module.eval()
+        return out
 
     def setup_losses(self):
         """Setup loss functions for training"""
@@ -135,28 +161,26 @@ class KFoldTrainingModule(pl.LightningModule):
 
         if self.train_structure_module:
             # Distogram loss
-            self.distogram_loss = loss_fn.distogram.DistogramLoss(
-                **loss_config.distogram_loss
-            )
-
-            diffusion_loss_config = loss_config.diffusion_loss
+            if self.loss_weights["distogram"] > 0:
+                self.distogram_loss = loss_fn.distogram.DistogramLoss(
+                    **loss_config.distogram_loss
+                )
 
             # Diffusion loss
+            diffusion_loss_config = loss_config.diffusion_loss
             self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(
                 **diffusion_loss_config.mse_loss
             )
-
             if self.loss_weights["bond"] > 0:
                 # Only used in fine-tuning stage
                 self.bond_loss = loss_fn.diffusion.BondLoss()
-
             if self.loss_weights["smooth_lddt"] > 0:
                 # Only used in regular training stage
                 self.smooth_lddt_loss = loss_fn.diffusion.SmoothLDDTLoss(
                     **diffusion_loss_config.smooth_lddt_loss
                 )
 
-        if self.train_confidence_module:
+        if self.train_confidence_head:
             raise NotImplementedError("Confidence loss not implemented yet.")
 
     def setup_metrics(self):
@@ -207,8 +231,8 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_diffusion_samples=num_diffusion_samples,
                 diffusion_batch_size=diffusion_batch_size,
                 train_structure_module=self.train_structure_module,
-                train_confidence_module=self.train_confidence_module,
-                sample_structures=self.train_confidence_module,
+                train_confidence_module=self.train_confidence_head,
+                sample_structures=self.train_confidence_head,
             )
         elif mode == "validation":
             dict_out, _ = self.model.sample(
@@ -272,7 +296,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 distogram_loss, distogram_metrics = 0.0, {}
                 diffusion_loss, diffusion_metrics = 0.0, {}
 
-            if self.train_confidence_module:
+            if self.train_confidence_head:
                 confidence_loss, confidence_metrics = self.compute_confidence_loss()
             else:
                 confidence_loss, confidence_metrics = 0.0, {}
@@ -431,18 +455,18 @@ class KFoldTrainingModule(pl.LightningModule):
                 prog_bar=False,
             )
 
-        if self.train_confidence_module:
+        if self.train_confidence_head:
             raise NotImplementedError(
                 "Logging for confidence module not implemented yet."
             )
             # self.log(
-            #     "train/grad_norm_confidence_module",
-            #     gradient_norm(model.confidence_module),
+            #     "train/grad_norm_confidence_head",
+            #     gradient_norm(model.confidence_head),
             #     prog_bar=False,
             # )
             # self.log(
-            #     "train/param_norm_confidence_module",
-            #     parameter_norm(model.confidence_module),
+            #     "train/param_norm_confidence_head",
+            #     parameter_norm(model.confidence_head),
             #     prog_bar=False,
             # )
 

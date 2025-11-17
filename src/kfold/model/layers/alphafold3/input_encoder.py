@@ -90,9 +90,7 @@ class InputFeatureEmbedder(nn.Module):
             profile = f_input.msa.profile  # [B, Lt,]
             deletion_mean = f_input.msa.deletion_mean  # [B, Lt,]
         else:
-            profile = torch.zeros(
-                (*res_type.shape[:-1], 32), device=res_type.device
-            )  # [B, Lt, 32]
+            profile = res_type  # Same when MSA features are not used
             deletion_mean = torch.zeros(
                 (*res_type.shape[:-1], 1), device=res_type.device
             )  # [B, Lt, 32]

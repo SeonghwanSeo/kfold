@@ -321,6 +321,11 @@ class TokenizedStructure:
         return len(self.chain)
 
     @property
+    def num_residues(self) -> int:
+        """Number of residues in the structure."""
+        return self.chain.num_residues.sum().item()
+
+    @property
     def num_tokens(self) -> int:
         """Number of tokens in the structure."""
         return len(self.token)
