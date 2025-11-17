@@ -4,7 +4,6 @@ on:
   pull_request:
     branches:
       - main # main 브랜치로 들어오는 PR에 대해서만 실행
-      - develop # develop 브랜치로 바꿀 때 refresh
 
 jobs:
   check_source_branch:

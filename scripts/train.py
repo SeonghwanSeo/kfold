@@ -12,7 +12,7 @@ from kfold.training.folding.training_module import KFoldTrainingModule
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a Boltzmann Generator model.")
     parser.add_argument(
-        "config",
+        "--config",
         type=str,
         help="Path to the yaml configuration file.",
     )
@@ -36,6 +36,16 @@ def parse_args() -> argparse.Namespace:
         "--num_nodes",
         type=int,
         help="Number of nodes to use for training.",
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        help="Batch size for training",
+    )
+    parser.add_argument(
+        "--accumulate_grad_batches",
+        type=int,
+        help="Number of batches for gradient accumulation.",
     )
     parser.add_argument(
         "--num_workers",
@@ -90,13 +100,6 @@ def build_trainer(cfg) -> pl.Trainer:
     model_summary = pl.callbacks.ModelSummary(max_depth=2)
     callbacks.append(model_summary)
 
-    if not train_cfg.wandb.use:
-        # Progress bar (use when not using wandb)
-        progress_bar = pl.callbacks.TQDMProgressBar(
-            refresh_rate=pl_trainer_cfg.log_every_n_steps
-        )
-        callbacks.append(progress_bar)
-
     # FIXME: currently, validation is not implemented yet.
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor=None,
@@ -141,6 +144,10 @@ def train(args) -> None:
         cfg.train.trainer.devices = args.num_gpus
     if args.num_nodes is not None:
         cfg.train.trainer.num_nodes = args.num_nodes
+    if args.batch_size is not None:
+        cfg.train.data.train_batch_size = args.batch_size
+    if args.accumulate_grad_batches is not None:
+        cfg.train.trainer.accumulate_grad_batches = args.accumulate_grad_batches
     if args.num_workers is not None:
         cfg.train.data.num_workers = args.num_workers
     if args.wandb:
@@ -149,11 +156,13 @@ def train(args) -> None:
     if args.debug:
         print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
         cfg.train.trainer.devices = 1
+        cfg.train.trainer.num_nodes = 1
+        cfg.train.data.train_batch_size = 1
+        cfg.train.trainer.accumulate_grad_batches = 1
+        cfg.train.trainer.log_every_n_steps = 1
         cfg.train.data.num_workers = 0
         cfg.train.wandb.use = False
         cfg.train.data.safe_load = False
-        cfg.train.trainer.accumulate_grad_batches = 1
-        cfg.train.trainer.log_every_n_steps = 1
 
     # Set random seed
     pl.seed_everything(cfg.train.seed)

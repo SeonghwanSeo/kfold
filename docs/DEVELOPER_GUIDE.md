@@ -65,7 +65,7 @@ pre-commit install
 ## Training Pipeline
 
 ```bash
-python scripts/train.py configs/train-af3.yaml --wandb
+python scripts/train.py --config configs/train-af3.yaml --wandb
 ```
 
 ## Inference Framework

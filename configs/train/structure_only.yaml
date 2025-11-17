@@ -72,8 +72,10 @@ wandb:
 # Exponential Moving Average (EMA)
 training:
   # Training step hyperparameters
+  train_trunk: true
+  train_distogram_head: true
   train_structure_module: true
-  train_confidence_module: false
+  train_confidence_head: false
 
   num_cycles: 4
 

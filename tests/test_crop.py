@@ -41,5 +41,5 @@ if __name__ == "__main__":
         cropped_tokenized = cropper.crop(tokenized, 384, None)
 
         # Save full and cropped structures
-        tokenized.to_pdb(f"./tmp/{key}-full.pdb")
-        cropped_tokenized.to_pdb(f"./tmp/{key}-crop.pdb")
+        tokenized.to_pdb(f"./tmp/pdb-crop/{key}-full.pdb")
+        cropped_tokenized.to_pdb(f"./tmp/pdb-crop/{key}-crop.pdb")
