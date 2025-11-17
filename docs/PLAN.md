@@ -28,9 +28,13 @@ If the features listed below are completed, I will include the corresponding PR 
 - [ ] Include symmetry information in the input features for validation.
 - [ ] Implement pocket conditioning features as in Boltz1.
 
+### Model implementation
+
+- [ ] Add Boltz1 layers
+
 ### Training
 
-- [ ] Test **multi-node training**.
+- [x] Test **multi-node training**.
 - [ ] Add **validation pipeline** including symmetry-aware LDDT calculation.
 
 ### Benchmark
