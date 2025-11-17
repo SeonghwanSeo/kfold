@@ -204,6 +204,9 @@ DATA_FILTER = Registry("data_filter")
 DATA_SAMPLER = Registry("data_sampler")
 DATA_CROPPER = Registry("data_cropper")
 
+# Main class
+MAIN_MODULE = Registry("main_module")
+
 # Input encoder
 SEQUENCE_ENCODER = Registry("sequence_encoder")
 STRUCTURE_ENCODER = Registry("structure_encoder")
