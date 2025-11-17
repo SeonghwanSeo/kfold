@@ -170,7 +170,9 @@ class TrainingDataset(SafeLoadingDataset):
             )
 
         # Featurization
-        f_input = featurize.featurize_structure(tokenized_structure)
+        f_input = featurize.featurize_structure(
+            tokenized_structure, **self.featurization_args
+        )
         # Pad the folding input to max_tokens for LocalAtomAttention.
         f_input = self.pad_input(f_input)
         return f_input

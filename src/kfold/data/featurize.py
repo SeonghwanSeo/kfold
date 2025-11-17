@@ -189,14 +189,14 @@ def featurize_structure(
     # TODO: rotate conformers for each residue.
     # TODO: random sample from multiple ETKDG conformers.
     if synchronize_ref_pos_augmentation:
-        print(123)
         atom_dict["ref_pos"] = augmentation.center_random_augmentation(
             atom_dict["ref_pos"], atom_dict["pad_mask"], rng=rng
         )
     else:
         new_ref_pos_list = np.zeros_like(atom_dict["ref_pos"])
         start_idx = 0
-        for uid in range(len(ref_space_natoms)):
+        # UID is incremental
+        for uid in sorted(ref_space_natoms.keys()):
             end_idx = start_idx + ref_space_natoms[uid]
             ref_pos_residue = atom_dict["ref_pos"][start_idx:end_idx]
             # Apply random augmentation per residue
