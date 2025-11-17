@@ -41,7 +41,7 @@ Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/b
 
 ### Loss Implementations
 
-The directory [`src/kfold/training/kfold/loss`](src/kfold/model/training/kfold/loss) contains the implementation of the loss functions described in the AlphaFold3 paper.
+The directory [`src/kfold/training/folding/loss`](src/kfold/model/training/folding/loss) contains the implementation of the loss functions described in the AlphaFold3 paper.
 
 Below is a mapping of the algorithms of loss functions.
 | Section | Algorithm | Class | File |
