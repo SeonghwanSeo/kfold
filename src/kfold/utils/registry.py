@@ -45,6 +45,9 @@ class Registry:
     def __len__(self):
         return len(self._module_dict)
 
+    def get_class(self, name: str) -> Any:
+        return self[name]
+
     def __getitem__(self, name: str) -> Any:
         module = self._module_dict.get(name, None)
         if module is None:
@@ -203,6 +206,9 @@ DATASET = Registry("dataset")
 DATA_FILTER = Registry("data_filter")
 DATA_SAMPLER = Registry("data_sampler")
 DATA_CROPPER = Registry("data_cropper")
+
+# Main class
+MAIN_MODULE = Registry("main_module")
 
 # Input encoder
 SEQUENCE_ENCODER = Registry("sequence_encoder")

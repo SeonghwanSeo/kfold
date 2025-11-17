@@ -30,7 +30,7 @@ If the features listed below are completed, I will include the corresponding PR 
 
 ### Model implementation
 
-- [ ] Add Boltz1 layers
+- [x] Add Boltz1 layers
 
 ### Training
 

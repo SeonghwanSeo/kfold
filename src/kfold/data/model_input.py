@@ -763,12 +763,12 @@ class FoldingInput:
             )
 
     # === Padding functions for preparing model inputs === #
-    def pad_to_multiple_of(self, multiple: int = 64) -> Self:
-        """Pad all layouts to the multiple of 64 tokens for LocalAtomAttention and
+    def pad_to_multiple_of(self, multiple: int = 32) -> Self:
+        """Pad all layouts to the multiple of 32 tokens for LocalAtomAttention and
         model efficiency."""
         assert multiple > 0, f"multiple must be a positive integer, but got {multiple}."
-        assert multiple % 32 == 0, (
-            f"multiple must be a multiple of 32 for LocalAttention, but got {multiple}."
+        assert multiple % 8 == 0, (
+            f"multiple must be a multiple of 8 for LocalAttention, but got {multiple}."
         )
         max_tokens = ((self.num_tokens + multiple - 1) // multiple) * multiple
         return self.pad_to_max_token(max_tokens)

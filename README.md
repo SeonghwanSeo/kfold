@@ -35,7 +35,12 @@ See [`docs/TRAINING_GUIDE.md`](./docs/TRAINING_GUIDE.md) for detailed training i
 
 ```bash
 python ./scripts/train.py -h
-python ./scripts/train.py --config ./configs/train-af3.yaml --wandb
+
+# Run first with deug mode
+python ./scripts/train.py --config ./configs/train-af3-mini.yaml --debug
+
+# If everything works well, run full training
+python ./scripts/train.py --config ./configs/train-af3.yaml --wandb --num_gpus ...
 ```
 
 #### Evaluation
