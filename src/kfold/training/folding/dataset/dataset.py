@@ -27,9 +27,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         records: list[metadata.Metadata],
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
         self.records: list[metadata.Metadata] = records
         self.safe_load: bool = safe_load
+        self.featurization_args = featurization_args or {}
 
     def __len__(self) -> int:
         return len(self.records)
@@ -68,12 +70,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
 
-    def get_item(self, record: metadata.Metadata, **kwargs) -> model_input.FoldingInput:
+    def get_item(self, record: metadata.Metadata) -> model_input.FoldingInput:
         """Get the folding input for the given sample."""
         # Tokenization
         tokenized_structure = self.load_tokenized_structure(record)
         # Featurization
-        f_input = featurize.featurize_structure(tokenized_structure)
+        f_input = featurize.featurize_structure(
+            tokenized_structure, **self.featurization_args
+        )
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
         return f_input
@@ -87,6 +91,7 @@ class TrainingDataset(SafeLoadingDataset):
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
         """
         Parameters
@@ -109,7 +114,7 @@ class TrainingDataset(SafeLoadingDataset):
         2. During data loading, samples are cropped to fit within `max_tokens`
            using the provided `cropper`.
         """
-        super().__init__(records, safe_load=safe_load)
+        super().__init__(records, safe_load, featurization_args)
         self.max_tokens: int = max_tokens
         self.cropper: BaseCropper = cropper
         assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
@@ -177,6 +182,7 @@ class ValidationDataset(SafeLoadingDataset):
         records: list[metadata.Metadata],
         max_tokens: int | None,
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
         """
         Parameters
@@ -187,7 +193,7 @@ class ValidationDataset(SafeLoadingDataset):
             Maximum number of tokens per sample. If None, padding is done to
             the nearest multiple of 64.
         """
-        super().__init__(records, safe_load=safe_load)
+        super().__init__(records, safe_load, featurization_args)
         self.max_tokens: int | None = max_tokens
         if self.max_tokens is not None:
             assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
@@ -296,9 +302,16 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
         TrainingDataset.__init__(
-            self, records, max_tokens, cropper, sampler_config, safe_load
+            self,
+            records,
+            max_tokens,
+            cropper,
+            sampler_config,
+            safe_load,
+            featurization_args,
         )
         self.lmdb_path: Path = lmdb_path
 
@@ -316,8 +329,11 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         lmdb_path: Path,
         max_tokens: int | None = None,
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
-        ValidationDataset.__init__(self, records, max_tokens, safe_load)
+        ValidationDataset.__init__(
+            self, records, max_tokens, safe_load, featurization_args
+        )
         self.lmdb_path: Path = lmdb_path
 
     def load_tokenized_structure(

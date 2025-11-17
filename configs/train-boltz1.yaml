@@ -34,6 +34,9 @@ train:
     split_path: ./assets/splits/boltz1
     num_workers: 8 # set to batch_size * 4.
 
+    featurization_args:
+      synchronize_ref_pos_augmentation: true
+
   wandb:
     use: false
     project: "KFold-edm"

@@ -49,6 +49,10 @@ data:
     beta_interface: 1.0
     allow_redundant: True
 
+  # Featurizer configurations:
+  featurization_args:
+    synchronize_ref_pos_augmentation: true
+
 # Lightning Trainer Configuration
 trainer:
   accelerator: 'auto'
