@@ -1,7 +1,6 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 # adapted with DDBM bridge diffusion approach
 
-import math
 from dataclasses import dataclass
 
 import torch
@@ -96,7 +95,6 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         sigma_data: float = 16.0
         sigma_data_end: float = 16.0
         cov_xy: float = 128.0  # sigma_data^2 / 2
-        c: float = 1.0
         rho: int = 7
         P_mean: float = -1.2
         P_std: float = 1.5
@@ -115,7 +113,6 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         self.sigma_data: float = cfg.sigma_data
         self.sigma_data_end: float = cfg.sigma_data_end
         self.cov_xy: float = cfg.cov_xy
-        self.c: float = cfg.c
         self.rho: int = cfg.rho
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
@@ -142,12 +139,11 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         Based on DDBM formulation for image-to-image translation,
         adapted for biomolecular structure prediction (apo -> holo).
         Note that alpha_t=1, sigma_t=sigma for bridge VE diffusion.
-        Also, self.c is only introduced in DDBM code level, which is 1 by default.
 
         Parameters
         ----------
         sigma : torch.Tensor
-            Noise levels. Shape (B, N) or scalar.
+            Noise levels. Shape (B, N) or scalar. (\sigma_t in DDBM paper)
 
         Returns
         -------
@@ -162,18 +158,17 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         # A = (sigma^4/sigma_max^4)sigma_end^2 + (1-sigma^2/sigma_max^2)^2sigma_data^2
         #     + 2(sigma^2/sigma_max^2)(1-sigma^2/sigma_max^2)cov_xy
         #     + c^2sigma^2(1-sigma^2/sigma_max^2)
-        sigma_ratio_sq = sigma**2 / self.sigma_max**2  # a_t in DDDBM (p. 19)
-        sigma_ratio_4th = sigma_ratio_sq**2  # need this to compute c_t in DDBM (p. 19)
-        one_minus_ratio_sq = 1 - sigma_ratio_sq  # b_t in DDDBM (p. 19)
-        sigma_sq_one_minus_ratio_sq = sigma**2 * one_minus_ratio_sq  # c_t in DDBM (p. 19)
+        a_t = sigma**2 / self.sigma_max**2  # a_t in DDBM (p. 19)
+        b_t = 1 - a_t  # b_t in DDBM (p. 19)
+        c_t = sigma**2 * b_t  # c_t in DDBM (p. 19)
 
         # square of denominator of c_in
-        # a_t^2 * sigma_end^2 + b_t^2 * sigma_data^2 + c_t
+        # a_t^2 * sigma_T^2 + b_t^2 * sigma_0^2 + 2 * a_t * b_t * sigma_0T + c_t
         A = (
-            sigma_ratio_4th * self.sigma_data_end**2
-            + one_minus_ratio_sq**2 * self.sigma_data**2
-            + 2 * sigma_ratio_sq * one_minus_ratio_sq * self.cov_xy
-            + self.c**2 * sigma_sq_one_minus_ratio_sq
+            a_t**2 * self.sigma_data_end**2
+            + b_t**2 * self.sigma_data**2
+            + 2 * a_t * b_t * self.cov_xy
+            + c_t
         )
 
         # c_in: input normalization (Eq. 81)
@@ -181,17 +176,14 @@ class KFoldBridgeDiffusion(BaseStructureModule):
 
         # c_skip: skip connection weight (Eq. 82)
         # Controls how much of the input x_t is passed through
-        numerator_skip = (
-            one_minus_ratio_sq * self.sigma_data**2 + sigma_ratio_sq * self.cov_xy
-        )
+        numerator_skip = b_t * self.sigma_data**2 + a_t * self.cov_xy
         c_skip = numerator_skip / A
 
         # c_out: output scaling (Eq. 83)
         # Controls the magnitude of the network output
         numerator_out_sq = (
-            sigma_ratio_4th
-            * (self.sigma_data_end**2 * self.sigma_data**2 - self.cov_xy**2)
-            + self.sigma_data**2 * self.c**2 * sigma_sq_one_minus_ratio_sq**2
+            a_t**2 * (self.sigma_data_end**2 * self.sigma_data**2 - self.cov_xy**2)
+            + self.sigma_data**2 * c_t
         )
         c_out = torch.sqrt(numerator_out_sq) * c_in
 
@@ -216,7 +208,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         """Noise level conditioning coefficient (same as EDM)."""
         return (sigma / self.sigma_data).clamp(1e-20).log() * 0.25
 
-    def compute_loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
+    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
         """Compute loss weights based on noise levels t_hat.
 
         Uses bridge Karras weighting that accounts for the correlation
@@ -233,8 +225,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         weights : torch.Tensor
             Loss weights. Shape (B, N).
         """
-        sigma = t_hat
-        _, c_out, _ = self._get_bridge_scalings(sigma)
+        c_out = self.c_out(t_hat)
         weights = 1 / c_out**2
         return weights
 
@@ -279,15 +270,29 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             t_hat = torch.full(
                 x_noisy.shape[:2], t_hat, device=x_noisy.device, dtype=x_noisy.dtype
             )  # [B, N]
+        t_hat_reshaped = t_hat[..., None, None]  # [B, N, 1, 1]
 
-        x_out = self.score_model(
-            x_noisy=x_noisy,  # [B, N, La, 3]
-            t_hat=t_hat,  # [B, N]
+        # Line 2 of Algorithm 20: Input preconditioning
+        r_noisy = self.c_in(t_hat_reshaped) * x_noisy
+
+        # Line 8 of Algorithm 21: Noise level conditioning
+        c_noise = self.c_noise(t_hat)  # [B, N]
+
+        # Call the score model with correct interface
+        r_update = self.score_model(
+            r_noisy=r_noisy,  # [B, N, La, 3]
+            c_noise=c_noise,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
             model_cache=model_cache,
+        )
+
+        # Line 8 of Algorithm 20: Output preconditioning
+        x_out = (
+            self.c_skip(t_hat_reshaped) * x_noisy
+            + self.c_out(t_hat_reshaped) * r_update  # [B, N, La, 3]
         )
         return x_out
 
@@ -342,16 +347,15 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         if max_parallel_samples is None:
             max_parallel_samples = num_diffusion_samples
 
+        model_cache = {}
+
         # Get noise schedule
         sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device)
         sigmas = sigmas.tolist()
 
         atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
 
-        # Model cache for efficiency
-        model_cache: dict = {}
-
-        # Line 1: Initialize from apo structure (source)
+        # Line 1: Initialize from apo structure (x_N \sim q_data(y))
         x_apo = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
         atom_coords = x_apo.clone()
 
@@ -558,7 +562,9 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         else:
             # Training mode: model predicts x_0 (apo), x_holo is fixed ground truth
             if x_holo is None:
-                raise ValueError("x_holo is required when use_progressive_refinement=False")
+                raise ValueError(
+                    "x_holo is required when use_progressive_refinement=False"
+                )
             x_holo_estimate = x_holo  # Ground truth target
             x_apo_fixed = denoised  # Model's prediction of source
 
@@ -573,7 +579,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         sigma_ratio_sq = sigma_tensor**2 / (self.sigma_max**2)
         at = sigma_ratio_sq  # weight for x_holo (xT)
         bt = 1 - sigma_ratio_sq  # weight for x_apo (x0)
-        ct = sigma_tensor**2 * (1 - sigma_ratio_sq)  # bridge variance \hat{sigma}^2t
+        # bridge variance \hat{sigma}^2t
+        ct = sigma_tensor**2 * (1 - sigma_ratio_sq)
 
         # Mean of bridge distribution
         mu_t = at * x_holo_estimate + bt * x_apo_fixed
@@ -627,7 +634,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
     ) -> torch.Tensor:
         """Sample noise levels for training.
 
-        Uses log-normal distribution as in EDM.
+        Uses uniform distribution.
 
         Parameters
         ----------
@@ -644,17 +651,12 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             Sampled noise levels. Shape (B, N).
         """
 
-        def _sample(*shape: int) -> torch.Tensor:
-            return self.sigma_data * torch.exp(
-                self.P_mean + self.P_std * torch.randn(shape, device=device)
-            )
-
-        if self.synchronize_sigmas:
-            # synchronize sigmas across diffusion samples
-            return _sample(batch_size, 1).expand(-1, num_diffusion_samples)
-        else:
-            # use different sigmas for each diffusion sample
-            return _sample(batch_size, num_diffusion_samples)
+        ts = (
+            torch.rand(batch_size, num_diffusion_samples, device=device)
+            * (self.sigma_max - self.sigma_min)
+            + self.sigma_min
+        )
+        return ts
 
     def get_sampling_schedule(
         self,
@@ -662,6 +664,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         device: torch.device | None = None,
     ) -> torch.Tensor:
         """Get the Karras noise schedule for diffusion sampling.
+        See Supp. A.6 of DDBM paper for details.
 
         Parameters
         ----------
@@ -673,7 +676,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         Returns
         -------
         sigmas : torch.Tensor
-            Noise schedule. Shape (num_steps + 1,), ending with 0.
+            Noise schedule. Shape (num_steps + 1,), starting with sigma_data (t_N) and ending with 0 (t_0).
         """
 
         if num_steps is None:
@@ -682,6 +685,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         inv_rho = 1 / self.rho
 
         steps = torch.arange(num_steps, dtype=torch.float32, device=device)
+        # sigma_max = T, sigma_min = t_min
         sigmas = (
             self.sigma_max**inv_rho
             + steps
@@ -689,9 +693,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
         ) ** self.rho
 
-        sigmas = sigmas * self.sigma_data
-
-        sigmas = F.pad(sigmas, (0, 1), value=0.0)  # last step is sigma value of 0.
+        # last step is sigma value of 0.
+        sigmas = F.pad(sigmas, (0, 1), value=0.0)
         return sigmas
 
     def sample_prior(
