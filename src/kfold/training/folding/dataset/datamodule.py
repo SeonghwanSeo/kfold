@@ -8,8 +8,8 @@ import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.sampler import WeightedRandomSampler
 
-from kfold.data import model_input
 from kfold.data.metadata import Metadata
+from kfold.data.model_input import FoldingInput
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
 
 from .cropper import BaseCropper
@@ -23,6 +23,12 @@ from .filter import BaseFilter
 from .sampler import BaseSampler
 
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
+
+
+def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
+    f_input_batched = FoldingInput.from_list([b[0] for b in batches])
+    meta_infos = [b[1] for b in batches]
+    return f_input_batched, meta_infos
 
 
 @lru_cache
@@ -66,10 +72,6 @@ class LMDBDataModuleConfig(DataModuleConfig):
     sampler: BaseSampler.Config = dataclasses.field(
         default_factory=BaseSampler.Config
     )  # Default: uniform sampler
-
-
-def collate(f_inputs: list[model_input.FoldingInput]) -> model_input.FoldingInput:
-    return model_input.FoldingInput.from_list(f_inputs)
 
 
 @DATAMODULE.register(config_cls=LMDBDataModuleConfig)

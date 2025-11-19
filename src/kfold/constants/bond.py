@@ -8,5 +8,3 @@ class ConnectionType(IntEnum):
     DOUBLE = 2
     TRIPLE = 3
     AROMATIC = 4
-    # additional types for covalent bonds
-    COVALENT = 5

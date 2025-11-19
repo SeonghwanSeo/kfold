@@ -19,6 +19,10 @@ from .sampler import BaseSampler, Sample
 This dataset implementation includes a safe loading mechanism that retries
 """
 
+# Type alias
+SymmetryInfo = dict | None
+# FIXME: add symmetry info for validation set
+
 
 class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     """A dataset that safely retries loading data on failure."""
@@ -48,11 +52,15 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Pad the folding input to multiple of 64 for LocalAtomAttention."""
         return f_input.pad_to_multiple_of(64)
 
-    def __getitem__(self, index: int) -> model_input.FoldingInput:
+    def __getitem__(self, index: int) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
         return self.get_item_safe(index, num_trials=10)
 
-    def get_item_safe(self, index: int, num_trials: int = 10) -> model_input.FoldingInput:
+    def get_item_safe(
+        self,
+        index: int,
+        num_trials: int = 10,
+    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         trials = []
         for _ in range(num_trials):
             sample: metadata.Metadata = self.records[index]
@@ -70,7 +78,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
 
-    def get_item(self, record: metadata.Metadata) -> model_input.FoldingInput:
+    def get_item(
+        self,
+        record: metadata.Metadata,
+        **kwargs,
+    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given sample."""
         # Tokenization
         tokenized_structure = self.load_tokenized_structure(record)
@@ -80,7 +92,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         )
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
-        return f_input
+
+        symmetry = {}
+        # TODO: add symmetry info
+        symmetry["id"] = record.id
+        symmetry["structure"] = tokenized_structure
+
+        return f_input, symmetry
 
 
 class TrainingDataset(SafeLoadingDataset):
@@ -131,8 +149,15 @@ class TrainingDataset(SafeLoadingDataset):
     def __len__(self) -> int:
         return len(self.samples)
 
+    def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
+        return f_input.pad_to_max_token(max_tokens=self.max_tokens)
+
     @override
-    def get_item_safe(self, index: int, num_trials: int = 10) -> model_input.FoldingInput:
+    def get_item_safe(
+        self,
+        index: int,
+        num_trials: int = 10,
+    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure.
         NOTE: This is overridden to use `self.samples` instead of `self.records`.
         """
@@ -153,10 +178,11 @@ class TrainingDataset(SafeLoadingDataset):
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
 
-    def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        return f_input.pad_to_max_token(max_tokens=self.max_tokens)
-
-    def get_item(self, record: metadata.Metadata, **kwargs) -> model_input.FoldingInput:
+    def get_item(
+        self,
+        record: metadata.Metadata,
+        **kwargs,
+    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
 
         tokenized_structure = self.load_tokenized_structure(record)
@@ -175,7 +201,9 @@ class TrainingDataset(SafeLoadingDataset):
         )
         # Pad the folding input to max_tokens for LocalAtomAttention.
         f_input = self.pad_input(f_input)
-        return f_input
+
+        # NOTE: do not return symmetry info for training set (reduce overhead)
+        return f_input, None
 
 
 class ValidationDataset(SafeLoadingDataset):
