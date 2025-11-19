@@ -2,6 +2,11 @@
 import torch
 from torch import nn
 
+try:
+    from cuequivariance_torch.primitives.triangle import triangle_multiplicative_update
+except ImportError:
+    triangle_multiplicative_update = None
+
 from . import initialize as init
 
 
@@ -20,8 +25,11 @@ def kernel_triangular_mult(
     g_out_weight: torch.Tensor,
     eps: float,
 ):
-    from cuequivariance_torch.primitives.triangle import triangle_multiplicative_update
-
+    if triangle_multiplicative_update is None:
+        raise ImportError(
+            "cuequivariance_torch is not installed. "
+            "Please install cuequivariance_torch to use the kernel implementation."
+        )
     return triangle_multiplicative_update(
         x,
         direction=direction,
