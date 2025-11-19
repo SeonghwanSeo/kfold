@@ -40,7 +40,7 @@ data:
     _registry_: "data_cropper"
     _class_: BoltzCropper
     min_neighborhood: 0
-    max_neighborhood : 40
+    max_neighborhood: 40
 
   sampler:
     _registry_: "data_sampler"
@@ -51,10 +51,10 @@ data:
 
 # Lightning Trainer Configuration
 trainer:
-  accelerator: 'auto'
-  strategy: 'auto'
-  devices: 'auto'
-  num_nodes: 'auto'
+  accelerator: "auto"
+  strategy: "auto"
+  devices: "auto"
+  num_nodes: "auto"
   precision: bf16-mixed
   max_epochs: -1
   limit_train_batches: 100_000
@@ -83,8 +83,8 @@ training:
   diffusion_batch_size: 48
 
   # For confidence module training
-  num_steps: 20  # Mini-diffusion rollout
-  num_diffusion_samples: 1  # Number of diffusion samples for confidence training
+  num_steps: 20 # Mini-diffusion rollout
+  num_diffusion_samples: 1 # Number of diffusion samples for confidence training
 
 validation:
   # Validation step hyperparameters
@@ -92,9 +92,10 @@ validation:
   num_steps: 20
   num_diffusion_samples: 5
   symmetry_correction: false # TODO: fix get_true_coordinates function to use symmetry correction
+  save_structure_path: null # if given, save structure
 
 optimizer:
-  opt: 'adam'
+  opt: "adam"
   beta_1: 0.9
   beta_2: 0.95
   eps: 1e-8
@@ -140,9 +141,7 @@ loss:
     bond_loss: {}
 
     # Smooth LDDT Loss
-    smooth_lddt_loss:
-      cutoff: 15.0
-      cutoff_nucleic_acid: 30.0
+    smooth_lddt_loss: {}
 
   # Confidence loss
   # TODO

@@ -1,24 +1,24 @@
 """Define training modules for k-fold"""
 
 import gc
+import pathlib
 import random
 from dataclasses import dataclass
 from typing import Any
 
 import lightning.pytorch as pl
 import torch
-from torch import nn
-from torchmetrics import MeanMetric
 from omegaconf import DictConfig
+from torchmetrics import MeanMetric
 
-from kfold import constants as const
+from kfold import constants as C
 from kfold.config import to_dict
 from kfold.data.model_input import FoldingInput
 from kfold.model.models.kfold import KFold
 from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
-from .loss import validation as val_fn
+from . import metrics as validation_metrics
 from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
 from .utils import gradient_norm, parameter_norm
@@ -84,7 +84,8 @@ class ValidationConfig:
     num_cycles: int = 4
     num_steps: int = 20
     num_diffusion_samples: int = 5
-    symmetry_correction: bool = False 
+    symmetry_correction: bool = False
+    save_structure_path: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -123,24 +124,11 @@ class KFoldTrainingModule(pl.LightningModule):
         # Freeze parts of the model if needed
         self.freeze_submodules()
 
-        # Setup losses
+        # Setup losses and metrics
         self.setup_losses()
+        self.setup_metrics()
 
         self.save_hyperparameters(to_dict(self.global_config))
-
-        # (MingyeongShin) validation ----------------------------------
-        self.lddt = nn.ModuleDict()
-        self.disto_lddt = nn.ModuleDict()
-        self.complex_lddt = nn.ModuleDict()
-        
-        for m in const.chain.OutType:
-            self.lddt[m] = MeanMetric()
-            self.disto_lddt[m] = MeanMetric()
-            self.complex_lddt[m] = MeanMetric()
-
-        self.rmsd = MeanMetric()
-        self.best_rmsd = MeanMetric()
-        # -------------------------------------------------------------
 
     def freeze_submodules(self):
         """Freeze submodules based on the training configuration."""
@@ -205,9 +193,22 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def setup_metrics(self):
         """Setup metrics for validation"""
-        pass
+        metrics = {}
 
-    def configure_optimizers(self):
+        # RMSD
+        metrics["rmsd"] = MeanMetric()
+        metrics["best/rmsd"] = MeanMetric()
+
+        # LDDT
+        metrics["lddt"] = MeanMetric()
+        metrics["best/lddt"] = MeanMetric()
+        for m in C.training.LDDTType:
+            metrics[f"lddt_{m.value}"] = MeanMetric()
+            metrics[f"best/lddt_{m.value}"] = MeanMetric()
+            metrics[f"best_complex/lddt_{m.value}"] = MeanMetric()
+        self.valid_metrics: dict[str, MeanMetric] = torch.nn.ModuleDict(metrics)  # type: ignore
+
+    def configure_optimizers(self):  # type: ignore
         config = self.optimizer_config
         parameters = [p for p in self.parameters() if p.requires_grad]
 
@@ -265,15 +266,21 @@ class KFoldTrainingModule(pl.LightningModule):
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
-    def training_step(self, batch: FoldingInput, batch_idx: int) -> torch.Tensor:
+    def training_step(
+        self,
+        batch: tuple[FoldingInput, list[dict]],
+        batch_idx: int,
+    ) -> torch.Tensor:
         training_config = self.training_config
+
+        f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
         # Sample recycling steps
         num_cycles = random.randint(1, training_config.num_cycles)
 
         # Compute the forward pass
         out: dict[str, torch.Tensor] = self(
-            f_input=batch,
+            f_input=f_input,
             num_cycles=num_cycles,
             num_steps=training_config.num_steps,
             num_diffusion_samples=training_config.num_diffusion_samples,
@@ -284,32 +291,33 @@ class KFoldTrainingModule(pl.LightningModule):
             loss, metrics = self.compute_losses(batch, out)
         except Exception as e:
             print(f"Skipping batch {batch_idx} due to error: {e}")
-            return None
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
 
-        metrics = {f"train/{k}": v for k, v in metrics.items()}
-        self.log_dict(metrics)
+        for k, v in metrics.items():
+            self.log(f"train/{k}", v, prog_bar=(k == "loss"))
 
         self.log_model_state()
 
         return loss
 
     def compute_losses(
-        self, batch: FoldingInput, model_output: dict[str, Any]
+        self, batch: tuple[FoldingInput, list[dict]], model_output: dict[str, Any]
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute losses of given the model output."""
+        f_input, _ = batch
         with torch.autocast("cuda", dtype=torch.float32):
             # NOTE: Compute the losses in float32 for better numerical stability
             # Compute losses
             if self.train_structure_module:
                 distogram_loss, distogram_metrics = self.compute_distogram_loss(
                     logits=model_output["distogram"]["logits"],
-                    f_input=batch,
+                    f_input=f_input,
                 )
                 diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
                     x_pred=model_output["diffusion"]["denoised_atom_coords"],
                     x_true=model_output["diffusion"]["true_atom_coords"],
                     per_sample_weights=model_output["diffusion"]["loss_weights"],
-                    f_input=batch,
+                    f_input=f_input,
                 )
 
             else:
@@ -340,236 +348,85 @@ class KFoldTrainingModule(pl.LightningModule):
 
         return loss, all_metrics
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(
+        self,
+        batch: tuple[FoldingInput, list[dict]],
+        batch_idx: int,
+    ):
         # TODO: sample molecules and compute validation metrics
         val_config = self.validation_config
         num_diffusion_samples = val_config.num_diffusion_samples
+
+        f_input, full_structure_dict = batch
+        assert f_input.batch_size == 1, "Validation batch size should be 1"
+
         try:
             out = self(
-                f_input=batch,
+                f_input=f_input,
                 num_cycles=val_config.num_cycles,
                 num_steps=val_config.num_steps,
                 num_diffusion_samples=num_diffusion_samples,
                 mode="validation",
             )
-
+            sample_coords = out["sample"]["coordinates"]
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
-                print("| WARNING: ran out of memory, skipping batch")
+                print("**WARNING**: ran out of memory, skipping batch")
                 torch.cuda.empty_cache()
                 gc.collect()
                 return
             else:
                 raise e
 
-        try:
-            # Compute distogram LDDT --------------------------------
-            boundaries = torch.linspace(2, 22.0, 63)
-            lower = torch.tensor([1.0])
-            upper = torch.tensor([22.0 + 5.0])
-            exp_boundaries = torch.cat((lower, boundaries, upper))
-            mid_points = ((exp_boundaries[:-1] + exp_boundaries[1:]) / 2).to(
-                out["sample"]["distogram_logits"]
-            )
-
-            # Compute predicted dists
-            preds = out["sample"]["distogram_logits"] # (B, T, T, num_bins)
-            pred_softmax = torch.softmax(preds, dim=-1)
-            pred_softmax = pred_softmax.argmax(dim=-1) # why argmax? # TODO: delete
-            pred_softmax = torch.nn.functional.one_hot( 
-                pred_softmax, num_classes=preds.shape[-1]
-            ) # why argmax? # TODO: delete
-            pred_dist = (pred_softmax * mid_points).sum(dim=-1)
-            true_center = batch["disto_coords"]
-            true_dists = torch.cdist(true_center, true_center)
-
-            # Compute lddt's
-            # batch["disto_mask"] = batch["disto_mask"] #? # TODO: delete
-            disto_lddt_dict, disto_total_dict = val_fn.factored_token_lddt_dist_loss(
-                f_input=batch,
-                true_d=true_dists,
-                pred_d=pred_dist,
-            )
-            # -------------------------------------------------------------
-
+        with torch.autocast("cuda", torch.float32):
             # symmetry correction
-            # TODO: fix get_true_coordinates function to use symmetry correction
-            true_coords, rmsds, best_rmsds, true_coords_resolved_mask = (
-                val_fn.get_true_coordinates(
-                    batch=batch,
-                    out=out,
-                    num_diffusion_samples=num_diffusion_samples,
-                    symmetry_correction=val_config.symmetry_correction,
-                )
+            # TODO: get_true_coordinates function to use symmetry correction
+            true_coords, atom_mask = validation_metrics.permute_label_coordinates(
+                f_input=f_input,
+                pred_coords=sample_coords,
+                full_structure_dict=full_structure_dict,
+                symmetry_correction=val_config.symmetry_correction,
             )
-            all_lddt_dict, all_total_dict = val_fn.factored_lddt_loss(
-                f_input=batch,
-                atom_mask=true_coords_resolved_mask,
-                true_atom_coords=true_coords,
-                pred_atom_coords=out["sample"]["coordinates"],
-                num_diffusion_samples=num_diffusion_samples,
+            metrics = validation_metrics.compute_validation_metrics(
+                f_input=f_input,
+                true_coords=true_coords,
+                pred_coords=sample_coords,
+                atom_mask=atom_mask,
             )
+        for k in self.valid_metrics.keys():
+            v, w = metrics[k]
+            self.valid_metrics[k].update(v, w)
 
-        except RuntimeError as e:  # catch out of memory exceptions
-            if "out of memory" in str(e):
-                print("| WARNING: ran out of memory, skipping batch")
-                torch.cuda.empty_cache()
-                gc.collect()
-                return
-            else:
-                raise e
-
-        # if the multiplicity used is > 1 then we take the best lddt of the different samples
-        # AF3 combines this with the confidence based filtering
-        best_lddt_dict, best_total_dict = {}, {}
-        best_complex_lddt_dict, best_complex_total_dict = {}, {}
-        B = true_coords.shape[0] // num_diffusion_samples
-
-        if num_diffusion_samples > 1:
-            # NOTE: we can change the way we aggregate the lddt
-            complex_total = 0
-            complex_lddt = 0
-            
-            for key in all_lddt_dict.keys():
-                complex_lddt += all_lddt_dict[key] * all_total_dict[key]
-                complex_total += all_total_dict[key]
-            
-            complex_lddt /= complex_total + 1e-7
-            best_complex_idx = complex_lddt.reshape(-1, num_diffusion_samples).argmax(dim=1) # (B, M)
-            
-            for key in all_lddt_dict:
-                best_idx = all_lddt_dict[key].reshape(-1, num_diffusion_samples).argmax(dim=1)
-                best_lddt_dict[key] = all_lddt_dict[key].reshape(-1, num_diffusion_samples)[
-                    torch.arange(B), best_idx
-                ]
-                best_total_dict[key] = all_total_dict[key].reshape(-1, num_diffusion_samples)[
-                    torch.arange(B), best_idx
-                ]
-                best_complex_lddt_dict[key] = all_lddt_dict[key].reshape(-1, num_diffusion_samples)[
-                    torch.arange(B), best_complex_idx
-                ]
-                best_complex_total_dict[key] = all_total_dict[key].reshape(
-                    -1, num_diffusion_samples
-                )[torch.arange(B), best_complex_idx]
-        
-        else:
-            best_lddt_dict = all_lddt_dict # (B*M,)
-            best_total_dict = all_total_dict
-            best_complex_lddt_dict = all_lddt_dict
-            best_complex_total_dict = all_total_dict
-
-        # -------------------------------------------------------------
-        # TODO: confidence module validation loss
-        # -------------------------------------------------------------
-
-        for m in const.chain.OutType:
-            # 기존 코드 -------------------------------------------------------------
-            # ligand_protein interface lddt의 경우 pocket feature가 2(POCKET)로 지정된 원자가 하나라도 있으면 pocket_ligand_protein이라는 특별 category에 기록    
-            # boltz only (AF3 X)
-            # TODO: Remain it. There would be pocket information somewhere in the future...
-            # if m == "ligand_protein":
-            #     if torch.any(
-            #         batch["pocket_contact_type"][
-            #             :, :, const.pocket.PocketContactType.POCKET
-            #         ].bool()
-            #     ):
-            #         self.lddt["pocket_ligand_protein"].update(
-            #             best_lddt_dict[m], best_total_dict[m]
-            #      ㅣ   )
-            #         self.disto_lddt["pocket_ligand_protein"].update(
-            #             disto_lddt_dict[m], disto_total_dict[m]
-            #         )
-            #         self.complex_lddt["pocket_ligand_protein"].update(
-            #             best_complex_lddt_dict[m], best_complex_total_dict[m]
-            #         )
-            #     else:
-            #         self.lddt["ligand_protein"].update(
-            #             best_lddt_dict[m], best_total_dict[m]
-            #         )
-            #         self.disto_lddt["ligand_protein"].update(
-            #             disto_lddt_dict[m], disto_total_dict[m]
-            #         )
-            #         self.complex_lddt["ligand_protein"].update(
-            #             best_complex_lddt_dict[m], best_complex_total_dict[m]
-            #         )
-            # else:
-            #     self.lddt[m].update(best_lddt_dict[m], best_total_dict[m])
-            #     self.disto_lddt[m].update(disto_lddt_dict[m], disto_total_dict[m])
-            #     self.complex_lddt[m].update(
-            #         best_complex_lddt_dict[m], best_complex_total_dict[m]
-            #     )
-            # -------------------------------------------------------------
-        
-            self.lddt[m].update(best_lddt_dict[m], best_total_dict[m])
-            self.disto_lddt[m].update(disto_lddt_dict[m], disto_total_dict[m])
-            self.complex_lddt[m].update(
-                best_complex_lddt_dict[m], best_complex_total_dict[m]
+        if val_config.save_structure_path is not None:
+            save_dir = pathlib.Path(
+                val_config.save_structure_path, f"it-{self.global_step}"
             )
-        
-        self.rmsd.update(rmsds)
-        self.best_rmsd.update(best_rmsds)
+            self.save_structure(f_input, sample_coords, full_structure_dict[0], save_dir)
 
     def on_validation_epoch_end(self):
-        # TODO: confidence module loss
-        avg_lddt = {}
-        avg_disto_lddt = {}
-        avg_complex_lddt = {}
+        """Aggregate and log validation metrics at the end of the epoch."""
+        # Aggregate validation metrics
+        avg_values: dict[str, torch.Tensor] = {}
+        for k, m in self.valid_metrics.items():
+            v = m.compute()
+            if v.isfinite().all():
+                # Ignore non-finite values (after sanity check)
+                avg_values[f"{k}"] = v
+            m.reset()
 
-        # for m in const.out_types + ["pocket_ligand_protein"]: # when use "pocket_ligand_protein"
-        for m in const.chain.OutType:   
-            avg_lddt[m] = self.lddt[m].compute()
-            avg_lddt[m] = 0.0 if torch.isnan(avg_lddt[m]) else avg_lddt[m].item()
-            self.lddt[m].reset()
-            self.log(f"val/lddt_{m}", avg_lddt[m], prog_bar=False, sync_dist=True)
+        # Compute weighted lddt scores (Monitored metrics)
+        # NOTE: this is equivalent to Boltz1's `lddt` metric.
+        lddt_weights = C.training.LDDTWeightsBoltz
+        sum_weights = sum(lddt_weights.values())
 
-            avg_disto_lddt[m] = self.disto_lddt[m].compute()
-            avg_disto_lddt[m] = (
-                0.0 if torch.isnan(avg_disto_lddt[m]) else avg_disto_lddt[m].item()
-            )
-            self.disto_lddt[m].reset()
-            self.log(
-                f"val/disto_lddt_{m}", avg_disto_lddt[m], prog_bar=False, sync_dist=True
-            )
+        weighted_lddt = 0
+        for m, w in lddt_weights.items():
+            weighted_lddt += avg_values.get(f"lddt_{m.value}", 0.0) * w
+        weighted_lddt /= sum_weights
+        avg_values["weighted_lddt"] = weighted_lddt  # type: ignore
 
-            avg_complex_lddt[m] = self.complex_lddt[m].compute()
-            avg_complex_lddt[m] = (
-                0.0 if torch.isnan(avg_complex_lddt[m]) else avg_complex_lddt[m].item()
-            )
-            self.complex_lddt[m].reset()
-            self.log(
-                f"val/complex_lddt_{m}",
-                avg_complex_lddt[m],
-                prog_bar=False,
-                sync_dist=True,
-            )
-
-        # NOTE: 3 options for weights (boltz, AF3_Initial, AF3_Finetune)
-        overall_disto_lddt = sum(
-        avg_disto_lddt[m] * w for (m, w) in const.chain.OutTypeWeightsBoltz.items() 
-        ) / sum(const.chain.OutTypeWeightsBoltz.values())
-        self.log("val/disto_lddt", overall_disto_lddt, prog_bar=True, sync_dist=True)
-
-        overall_lddt = sum(
-            avg_lddt[m] * w for (m, w) in const.chain.OutTypeWeightsBoltz.items()
-        ) / sum(const.chain.OutTypeWeightsBoltz.values())
-        self.log("val/lddt", overall_lddt, prog_bar=True, sync_dist=True)
-
-        overall_complex_lddt = sum(
-            avg_complex_lddt[m] * w for (m, w) in const.chain.OutTypeWeightsBoltz.items()
-        ) / sum(const.chain.OutTypeWeightsBoltz.values())
-        self.log(
-            "val/complex_lddt", overall_complex_lddt, prog_bar=True, sync_dist=True
-        )
-
-        # RMSD
-        self.log("val/rmsd", self.rmsd.compute(), prog_bar=True, sync_dist=True)
-        self.rmsd.reset()
-
-        self.log(
-            "val/best_rmsd", self.best_rmsd.compute(), prog_bar=True, sync_dist=True
-        )
-        self.best_rmsd.reset()
-
+        avg_values = {f"val/{k}": v for k, v in avg_values.items()}
+        self.log_dict(avg_values)
 
     # === Loss functions === #
     def compute_distogram_loss(
@@ -662,8 +519,6 @@ class KFoldTrainingModule(pl.LightningModule):
     def compute_confidence_loss(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         raise NotImplementedError("Confidence loss not implemented yet.")
 
-    # === Validation metric functions === #
-
     # === Training logs === #
     def log_model_state(self):
         """Log model parameter and gradient norms."""
@@ -739,10 +594,9 @@ class KFoldTrainingModule(pl.LightningModule):
                     parameters=self.parameters(), decay=ema_decay
                 )
             self.ema.to(self.device)
-            self.ema.store(self.parameters())
 
-    def on_train_batch_end(self, outputs, batch: Any, batch_idx: int) -> None:
-        # Updates EMA parameters after optimizer.step()
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
+        optimizer.step(closure=optimizer_closure)
         if self.use_ema:
             self.ema.update(self.parameters())
 
@@ -765,3 +619,44 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def on_validation_end(self) -> None:
         self.prepare_train()
+
+    # === Helper functions === #
+    def save_structure(
+        self,
+        f_input: FoldingInput,
+        pred_coords: torch.Tensor,
+        full_dict: dict,
+        save_dir: pathlib.Path,
+    ):
+        import numpy as np
+
+        from kfold.data.tokenized import TokenizedStructure
+
+        _, Nsample, _, _ = pred_coords.shape
+
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        name: str = full_dict["id"]
+        structure: TokenizedStructure = full_dict["structure"]
+
+        save_path = save_dir / f"{name}-gt.pdb"
+        structure.write(save_path, 0, is_predicted=False)
+
+        x = pred_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
+        # match the shape
+        x = x.transpose(1, 0, 2)  # [Natom, Nsample, 3]
+
+        # Make the array
+        pred_coords_arr = np.zeros((structure.num_tokens, 24, Nsample, 3))
+        atom_st = 0
+        for i in range(structure.num_tokens):
+            atom_num = int(structure.token.num_atoms[i])
+            pred_coords_arr[i, :atom_num, :, :] = x[atom_st : atom_st + atom_num]
+            atom_st += atom_num
+
+        atom_structure = structure.atom.copy_with(coords=pred_coords_arr)
+        structure = structure.copy_with(atom=atom_structure)
+
+        for i in range(Nsample):
+            save_path = save_dir / f"{name}-{i}.pdb"
+            structure.write(save_path, i, is_predicted=True)

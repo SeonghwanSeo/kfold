@@ -6,6 +6,8 @@ from kfold.utils.errors import BoltzDataProcessingError
 
 from .structure import BoltzStructure
 
+# TODO: Move to connections to constraint.
+
 
 def centering(
     coords: np.ndarray, mask: np.ndarray, mask_to_zero: bool = True
@@ -310,6 +312,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         bond_info["asym_id"].append((asym_id1, asym_id2))
 
     # Then iterate cross-chain bonds
+    # TODO: Move connections from "bond" to "constraints".
     for bond in structure.connections:
         if bond["atom_1"] not in atom_index_map or bond["atom_2"] not in atom_index_map:
             continue
@@ -319,7 +322,7 @@ def tokenize_structure(structure: BoltzStructure) -> tokenized.TokenizedStructur
         token2, atom2 = atom_index_map[bond["atom_2"]]
         bond_info["token_index"].append((token1, token2))
         bond_info["atom_index"].append((atom1, atom2))
-        bond_info["bond_type"].append(C.bond.ConnectionType.COVALENT.value)
+        bond_info["bond_type"].append(C.bond.ConnectionType.SINGLE.value)
 
         asym_id1, asym_id2 = token_info["asym_id"][token1], token_info["asym_id"][token2]
         bond_info["asym_id"].append((asym_id1, asym_id2))
