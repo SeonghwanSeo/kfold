@@ -119,6 +119,7 @@ def build_trainer(cfg) -> pl.Trainer:
         precision=pl_trainer_cfg.precision,
         max_epochs=pl_trainer_cfg.max_epochs,
         limit_train_batches=pl_trainer_cfg.limit_train_batches,
+        limit_val_batches=pl_trainer_cfg.limit_val_batches,
         log_every_n_steps=pl_trainer_cfg.log_every_n_steps,
         enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
         accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
@@ -159,6 +160,7 @@ def train(args) -> None:
         cfg.train.trainer.accumulate_grad_batches = 1
         cfg.train.trainer.log_every_n_steps = 1
         cfg.train.trainer.limit_train_batches = 10
+        cfg.train.trainer.limit_val_batches = 100
         cfg.train.data.train_batch_size = 1
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False

@@ -136,8 +136,6 @@ class TrainingDataModule(pl.LightningDataModule):
 
         # Apply filters
         val_records = [r for r in all_records if r.id.lower() in val_ids]
-        # Sort validation records by the length of sequences (for efficient)
-        val_records.sort(key=lambda r: r.num_residues)
 
         return LMDBValidationDataset(
             records=val_records,
