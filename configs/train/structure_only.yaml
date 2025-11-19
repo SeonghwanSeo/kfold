@@ -62,6 +62,7 @@ trainer:
   precision: bf16-mixed
   max_epochs: -1
   limit_train_batches: 100_000
+  limit_val_batches: null
   log_every_n_steps: 1
   enable_checkpointing: true
   accumulate_grad_batches: 256 # 256 // batch_size // num_gpus

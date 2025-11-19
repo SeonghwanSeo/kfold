@@ -298,7 +298,7 @@ class LMDBDatabase:
         if not hasattr(self, "_lmdb_env"):
             self._lmdb_env = lmdb.open(
                 str(self.lmdb_path),
-                map_size=100 * 1024**3,  # 100 GB
+                map_size=1024**4,  # 1 TB
                 readonly=True,
                 lock=False,
                 readahead=False,

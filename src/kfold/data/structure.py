@@ -471,12 +471,14 @@ class TokenizedStructure:
         with hierarchical keys like 'chain.asym_id', 'token.token_type', etc.
         """
         chain_dict = self.chain.to_dict()
+        residue_dict = self.residue.to_dict()
         token_dict = self.token.to_dict()
         atom_dict = self.atom.to_dict()
         bond_dict = self.bond.to_dict()
 
         result = {
             **{f"chain.{key}": value for key, value in chain_dict.items()},
+            **{f"residue.{key}": value for key, value in residue_dict.items()},
             **{f"token.{key}": value for key, value in token_dict.items()},
             **{f"atom.{key}": value for key, value in atom_dict.items()},
             **{f"bond.{key}": value for key, value in bond_dict.items()},

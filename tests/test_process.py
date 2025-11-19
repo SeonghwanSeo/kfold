@@ -70,11 +70,16 @@ def check_structure(key: str, verbose: bool = False):
         boltz_tokenized: Tokenized = boltz_tokenize(boltz_structure)
     except Exception as e:
         raise Exception(f"Fail during Boltz tokenization - {e}") from e
+
     print_(f"Boltz: Tokenize structure in {time.time() - st:.2f} seconds")
 
     st = time.time()
     kfold_tokenized: TokenizedStructure = tokenize_structure(boltz_structure)
     print_(f"KFold: Tokenize structure in {time.time() - st:.2f} seconds")
+
+    # Check data save/load consistency
+    npz_dict = kfold_tokenized.to_npz_dict()
+    kfold_tokenized = TokenizedStructure.from_npz_dict(npz_dict)
 
     # Random cropping
     v = random.random()
