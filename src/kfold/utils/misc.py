@@ -15,11 +15,11 @@ def set_seed(seed: int):
 def check_array(
     array: np.ndarray,
     name: str,
-    dtype: type | list[type] | tuple[type, ...] | None = None,
+    dtype: type | np.dtype | Sequence[type | np.dtype] | None = None,
     shape: tuple[int, ...] | None = None,
 ):
     if dtype is not None:
-        if isinstance(dtype, type):
+        if isinstance(dtype, type | np.dtype):
             dtype = [dtype]
         assert any(np.issubdtype(array.dtype, dt) for dt in dtype), (
             f"Name {name}: Expected array dtype to be one of {dtype}, got {array.dtype}"

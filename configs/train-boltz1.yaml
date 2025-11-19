@@ -10,7 +10,7 @@ train:
 
   # pytorch lightning trainer hparams
   trainer:
-    strategy: 'auto'
+    strategy: "auto"
     devices: 8
     num_nodes: 1
     precision: 32
@@ -29,10 +29,13 @@ train:
   data:
     train_batch_size: 1
     max_tokens: 512
-    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251116.lmdb/
+    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     split_path: ./assets/splits/boltz1
     num_workers: 8 # set to batch_size * 4.
+
+    featurization_args:
+      synchronize_ref_pos_augmentation: true
 
   wandb:
     use: false

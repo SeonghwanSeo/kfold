@@ -47,14 +47,18 @@ def load_manifest(manifest_path: Path) -> list[Metadata]:
 
 
 class DataModuleConfig(BaseConfig):
-    # Common config for data modules
+    # === Common config for data modules === #
     train_batch_size: int = 1
     val_batch_size: int = 1
     num_workers: int = 0
     pin_memory: bool = True
     safe_load: bool = True
-    # Cropper config
+
+    # === Cropping arguments === #
     cropper: BaseCropper.Config
+
+    # === Featurization arguments === #
+    featurization_args: dict
 
 
 # FIXME: remove this (hard-coded)
@@ -93,6 +97,8 @@ class TrainingDataModule(pl.LightningDataModule):
         self.manifest_path: Path = Path(config.manifest_path)
         self.split_path: Path = Path(config.split_path)
 
+        self.featurization_args = config.featurization_args
+
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
             self._train_ds = self.construct_train_dataset()
@@ -121,6 +127,7 @@ class TrainingDataModule(pl.LightningDataModule):
             cropper=self.cropper,
             sampler_config=self.config.sampler,
             safe_load=self.config.safe_load,
+            featurization_args=self.featurization_args,
         )
 
     def construct_val_dataset(self) -> ValidationDataset:
@@ -141,6 +148,7 @@ class TrainingDataModule(pl.LightningDataModule):
             records=val_records,
             lmdb_path=self.lmdb_path,
             safe_load=self.config.safe_load,
+            featurization_args=self.featurization_args,
         )
 
     def train_dataloader(self):

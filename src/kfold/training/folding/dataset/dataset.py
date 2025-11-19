@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from typing_extensions import override
 
-from kfold.data import featurize, metadata, model_input, tokenized
+from kfold.data import featurize, metadata, model_input, structure
 from kfold.utils.boltz.process import tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.registry import Registry
@@ -31,9 +31,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         records: list[metadata.Metadata],
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
         self.records: list[metadata.Metadata] = records
         self.safe_load: bool = safe_load
+        self.featurization_args = featurization_args or {}
 
     def __len__(self) -> int:
         return len(self.records)
@@ -42,7 +44,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     @abstractmethod
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Get the tokenized structure for the given index."""
 
     # === Optional to-override in subclasses === #
@@ -85,7 +87,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Tokenization
         tokenized_structure = self.load_tokenized_structure(record)
         # Featurization
-        f_input = featurize.featurize_structure(tokenized_structure)
+        f_input = featurize.featurize_structure(
+            tokenized_structure, **self.featurization_args
+        )
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
 
@@ -105,6 +109,7 @@ class TrainingDataset(SafeLoadingDataset):
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
         """
         Parameters
@@ -127,7 +132,7 @@ class TrainingDataset(SafeLoadingDataset):
         2. During data loading, samples are cropped to fit within `max_tokens`
            using the provided `cropper`.
         """
-        super().__init__(records, safe_load=safe_load)
+        super().__init__(records, safe_load, featurization_args)
         self.max_tokens: int = max_tokens
         self.cropper: BaseCropper = cropper
         assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
@@ -191,11 +196,11 @@ class TrainingDataset(SafeLoadingDataset):
             )
 
         # Featurization
-        f_input = featurize.featurize_structure(tokenized_structure)
+        f_input = featurize.featurize_structure(
+            tokenized_structure, **self.featurization_args
+        )
         # Pad the folding input to max_tokens for LocalAtomAttention.
         f_input = self.pad_input(f_input)
-
-        # NOTE: do not return symmetry info for training set (reduce overhead)
         return f_input, None
 
 
@@ -205,6 +210,7 @@ class ValidationDataset(SafeLoadingDataset):
         records: list[metadata.Metadata],
         max_tokens: int | None,
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
         """
         Parameters
@@ -215,7 +221,7 @@ class ValidationDataset(SafeLoadingDataset):
             Maximum number of tokens per sample. If None, padding is done to
             the nearest multiple of 64.
         """
-        super().__init__(records, safe_load=safe_load)
+        super().__init__(records, safe_load, featurization_args)
         self.max_tokens: int | None = max_tokens
         if self.max_tokens is not None:
             assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
@@ -231,7 +237,7 @@ class ValidationDataset(SafeLoadingDataset):
 class BoltzDatabase:
     structure_dir: Path
 
-    def load_from_boltz(self, record: metadata.Metadata) -> tokenized.TokenizedStructure:
+    def load_from_boltz(self, record: metadata.Metadata) -> structure.TokenizedStructure:
         """Load the tokenized structure from BoltzStructure."""
         name = record.id
         path = self.structure_dir / f"{name}.npz"
@@ -254,7 +260,7 @@ class BoltzTrainingDataset(TrainingDataset, BoltzDatabase):
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Load the tokenized structure from BoltzStructure."""
         return self.load_from_boltz(record)
 
@@ -271,7 +277,7 @@ class BoltzValidationDataset(ValidationDataset, BoltzDatabase):
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Load the tokenized structure from BoltzStructure."""
         return self.load_from_boltz(record)
 
@@ -292,7 +298,7 @@ class LMDBDatabase:
         if not hasattr(self, "_lmdb_env"):
             self._lmdb_env = lmdb.open(
                 str(self.lmdb_path),
-                map_size=100 * 1024**3,  # 100 GB
+                map_size=1024**4,  # 1 TB
                 readonly=True,
                 lock=False,
                 readahead=False,
@@ -300,7 +306,7 @@ class LMDBDatabase:
             )
         return self._lmdb_env
 
-    def load_from_lmdb(self, record: metadata.Metadata) -> tokenized.TokenizedStructure:
+    def load_from_lmdb(self, record: metadata.Metadata) -> structure.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         name = record.id
         key_bytes = name.encode("utf-8")
@@ -311,7 +317,7 @@ class LMDBDatabase:
 
         # Use io.BytesIO to wrap the raw bytes
         with io.BytesIO(value_bytes) as byte_stream:
-            tokenized_structure = tokenized.TokenizedStructure.load_npz(byte_stream)
+            tokenized_structure = structure.TokenizedStructure.load_npz(byte_stream)
         return tokenized_structure
 
 
@@ -324,15 +330,22 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
         TrainingDataset.__init__(
-            self, records, max_tokens, cropper, sampler_config, safe_load
+            self,
+            records,
+            max_tokens,
+            cropper,
+            sampler_config,
+            safe_load,
+            featurization_args,
         )
         self.lmdb_path: Path = lmdb_path
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         return self.load_from_lmdb(record)
 
@@ -344,12 +357,15 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         lmdb_path: Path,
         max_tokens: int | None = None,
         safe_load: bool = True,
+        featurization_args: dict | None = None,
     ) -> None:
-        ValidationDataset.__init__(self, records, max_tokens, safe_load)
+        ValidationDataset.__init__(
+            self, records, max_tokens, safe_load, featurization_args
+        )
         self.lmdb_path: Path = lmdb_path
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         return self.load_from_lmdb(record)

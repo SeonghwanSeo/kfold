@@ -22,8 +22,8 @@ DNA_RESIDUES: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
 
 
 class ResidueName(enum.Enum):
-    # gap
-    GAP = "-"  # Maybe unused
+    # pad
+    PAD = "[PAD]"  # We use padint token instead of gap ("-") of MSA.
 
     # protein
     ALA = "ALA"
@@ -74,6 +74,14 @@ residue_name_to_index: dict[ResidueName, int] = {
 residue_index_to_name: dict[int, ResidueName] = {
     idx: atom for idx, atom in enumerate(ResidueName)
 }
+
+
+def get_residue_name_with_unk(residue_name: str) -> ResidueName:
+    """Get the ResidueName enum, defaulting to UNK if not found."""
+    try:
+        return ResidueName[residue_name]
+    except KeyError:
+        return ResidueName.UNK
 
 
 protein_one_letter_to_residue_name: dict[str, ResidueName] = {

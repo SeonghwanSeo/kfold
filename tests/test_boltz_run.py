@@ -7,7 +7,7 @@ import torch
 
 from kfold.config import load_config
 from kfold.data.featurize import featurize_structure
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.structure import TokenizedStructure
 from kfold.model.models.boltz1 import Boltz1
 
 TEST_CONFIG_PATH = Path("./configs/train-boltz1.yaml")

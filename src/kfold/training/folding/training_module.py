@@ -426,7 +426,7 @@ class KFoldTrainingModule(pl.LightningModule):
         avg_values["weighted_lddt"] = weighted_lddt  # type: ignore
 
         avg_values = {f"val/{k}": v for k, v in avg_values.items()}
-        self.log_dict(avg_values)
+        self.log_dict(avg_values, sync_dist=True)
 
     # === Loss functions === #
     def compute_distogram_loss(
@@ -630,7 +630,7 @@ class KFoldTrainingModule(pl.LightningModule):
     ):
         import numpy as np
 
-        from kfold.data.tokenized import TokenizedStructure
+        from kfold.data.structure import TokenizedStructure
 
         _, Nsample, _, _ = pred_coords.shape
 

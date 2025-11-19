@@ -186,7 +186,7 @@ def compute_validation_metric_singles(
     # TODO: do we consider all interface types here?
     # Currently, we use partial types only.
     overall_lddt = 0
-    overall_weights = torch.tensor(sum(weights.values()), device=true_coords.device)
+    overall_weights = sum(weights.values())
     for k in metrics.keys():
         overall_lddt += metrics[k] * weights[k]
     overall_lddt /= overall_weights
