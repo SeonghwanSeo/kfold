@@ -1,13 +1,12 @@
 # === Model Configuration === #
 _registry_: "main_module"
-_class_: AlphaFold3
+_class_: Boltz1
 
 input_embedder:
-  _yaml_: "module/input_embedder/af3.yaml"
+  _yaml_: "module/input_embedder/boltz1.yaml"
 
 trunk:
-  _yaml_: "module/trunk/af3.yaml"
-  use_cuequiv_kernels: true
+  _yaml_: "module/trunk/boltz1.yaml"
 
 structure_module:
   _yaml_: "module/structure_module/af3.yaml"
@@ -16,4 +15,4 @@ score_model:
   _yaml_: "module/score_model/af3.yaml"
 
 distogram_head:
-  _yaml_: "module/distogram_head/af3.yaml"
+  _yaml_: "module/distogram_head/boltz1.yaml"

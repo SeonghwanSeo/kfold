@@ -34,7 +34,13 @@ pre-commit install
 See [`docs/TRAINING_GUIDE.md`](./docs/TRAINING_GUIDE.md) for detailed training instructions.
 
 ```bash
-python ./scripts/train.py ./configs/train-af3.yaml --wandb
+python ./scripts/train.py -h
+
+# Run first with deug mode
+python ./scripts/train.py --config ./configs/train-af3-mini.yaml --debug
+
+# If everything works well, run full training
+python ./scripts/train.py --config ./configs/train-af3.yaml --wandb --num_gpus ...
 ```
 
 #### Evaluation

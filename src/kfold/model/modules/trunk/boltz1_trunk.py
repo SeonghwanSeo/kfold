@@ -2,20 +2,16 @@ import torch
 import torch.nn as nn
 
 from kfold.data.model_input import FoldingInput
-from kfold.model.layers.alphafold3 import initialize as init
-from kfold.model.layers.alphafold3.pairformer import PairformerStack
-from kfold.model.layers.alphafold3.primitives import LinearNoBias
+from kfold.model.layers.boltz1 import initialize as init
+from kfold.model.layers.boltz1.trunk import PairformerModule
 from kfold.utils.registry import TRUNK
 
 from .base import BaseTrunk
 
 
 @TRUNK.register()
-class AF3PairformerTrunk(BaseTrunk):
-    """AlphaFold3 pairformer module.
-
-    See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
-    """
+class Boltz1PairformerTrunk(BaseTrunk):
+    """Boltz1 pairformer module."""
 
     class Config(BaseTrunk.Config):
         """Configuration for the Pairformer module.
@@ -40,8 +36,6 @@ class AF3PairformerTrunk(BaseTrunk):
             Whether to use template, by default False
         use_msa: bool, optional
             Whether to use MSA, by default False
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuequivariance kernels, by default False
         tri_attn_chunk_threshold : int, optional
             The threshold for chunking in triangle attention, by default 384
         """
@@ -55,8 +49,6 @@ class AF3PairformerTrunk(BaseTrunk):
         pairwise_num_heads: int = 4
         use_msa: bool = False
         use_template: bool = False
-        use_cuequiv_kernels: bool = False
-        blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
     def __init__(self, cfg: Config):
@@ -64,7 +56,6 @@ class AF3PairformerTrunk(BaseTrunk):
         super().__init__(cfg)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
         if self.use_template:
@@ -75,24 +66,26 @@ class AF3PairformerTrunk(BaseTrunk):
             # TODO: Implement MSA Module
             raise NotImplementedError("MSA Module is not implemented yet")
 
-        self.pairformer_module: PairformerStack = PairformerStack(
-            channel_s=cfg.channel_s,
-            channel_z=cfg.channel_z,
+        self.pairformer_module = PairformerModule(
+            token_s=cfg.channel_s,
+            token_z=cfg.channel_z,
             num_blocks=cfg.num_blocks,
             num_heads=cfg.num_heads,
             dropout=cfg.dropout,
             pairwise_head_width=cfg.pairwise_head_width,
             pairwise_num_heads=cfg.pairwise_num_heads,
-            blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
         # For recycling
-        self.layernorm_s = nn.LayerNorm(cfg.channel_s)
-        self.layernorm_z = nn.LayerNorm(cfg.channel_z)
-        self.linear_no_bias_s = LinearNoBias(cfg.channel_s, cfg.channel_s)
-        self.linear_no_bias_z = LinearNoBias(cfg.channel_z, cfg.channel_z)
-        init.gating_init_(self.linear_no_bias_s.weight)
-        init.gating_init_(self.linear_no_bias_z.weight)
+        # Normalization layers
+        self.s_norm = nn.LayerNorm(cfg.channel_s)
+        self.z_norm = nn.LayerNorm(cfg.channel_z)
+
+        # Recycling projections
+        self.s_recycle = nn.Linear(cfg.channel_s, cfg.channel_s, bias=False)
+        self.z_recycle = nn.Linear(cfg.channel_z, cfg.channel_z, bias=False)
+        init.gating_init_(self.s_recycle.weight)
+        init.gating_init_(self.z_recycle.weight)
 
     def do_compile(self):
         """Compile the trunk module."""
@@ -136,17 +129,12 @@ class AF3PairformerTrunk(BaseTrunk):
         z_trunk: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        if not self.training:
-            if z_init.shape[1] > self.chunk_threshold:
-                chunk_size_tri_attn = 128
-            else:
-                chunk_size_tri_attn = 512
-        else:
-            chunk_size_tri_attn = None
 
-        # Line 6, z_hat, s_hat = 0, 0
-        s_hat = torch.zeros_like(s_init)
-        z_hat = torch.zeros_like(z_init)
+        mask = f_input.token.pad_mask.float()
+        pair_mask = mask[:, :, None] * mask[:, None, :]
+
+        s = torch.zeros_like(s_init)
+        z = torch.zeros_like(z_init)
 
         for i in range(1, num_cycles + 1):
             enable_grad = self.training and i == num_cycles
@@ -155,39 +143,10 @@ class AF3PairformerTrunk(BaseTrunk):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
-                # Line 8
-                z = z_init + self.linear_no_bias_z(self.layernorm_z(z_hat))
+                s = s_init + self.s_recycle(self.s_norm(s))
+                z = z_init + self.z_recycle(self.z_norm(z))
 
-                # Line 9: TemplateEmbedder
-                if self.use_template:
-                    raise NotImplementedError("Template Embedder is not implemented yet")
-
-                # Line 10: MSAModule
-                if self.use_msa:
-                    raise NotImplementedError("MSA Module is not implemented yet")
-
-                # Line 11
-                s = s_init + self.linear_no_bias_s(self.layernorm_s(s_hat))
-
-                # Line 12
                 # Revert to uncompiled version for validation
-                pairformer_module: PairformerStack
-                if self.is_compiled and not self.training:
-                    pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
-                else:
-                    pairformer_module = self.pairformer_module
+                s, z = self.pairformer_module(s, z, mask, pair_mask)
 
-                s, z = pairformer_module(
-                    s,
-                    z,
-                    mask=f_input.token.pad_mask,
-                    chunk_size_tri_attn=chunk_size_tri_attn,
-                    use_cuequiv_attn=self.use_cuequiv_kernels,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
-                )
-
-                # Line 13
-                s_hat, z_hat = s, z
-
-        s_trunk, z_trunk = s_hat, z_hat
-        return s_trunk, z_trunk
+        return s, z

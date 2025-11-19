@@ -6,9 +6,10 @@ from omegaconf import DictConfig
 
 import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
-from kfold.utils.registry import Registry
+from kfold.utils.registry import MAIN_MODULE, Registry
 
 
+@MAIN_MODULE.register()
 class KFold(torch.nn.Module):
     def __init__(self, global_config: DictConfig):
         super().__init__()
@@ -146,10 +147,7 @@ class KFold(torch.nn.Module):
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
-        # Embed inputs
-        s_inputs, s_init, z_init = self.input_embedder(
-            f_input=f_input,
-        )
+        s_inputs, s_init, z_init = self.input_embedder(f_input)
 
         # Trunk with recycling
         # NOTE: In trunk, we do not use cache.
@@ -160,6 +158,7 @@ class KFold(torch.nn.Module):
             f_input,
             num_cycles,
         )
+
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.
             # NOTE: We do not pass cache here to prevent that detached tensors
