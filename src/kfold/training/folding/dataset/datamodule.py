@@ -8,8 +8,8 @@ import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.sampler import WeightedRandomSampler
 
-from kfold.data import model_input
 from kfold.data.metadata import Metadata
+from kfold.data.model_input import FoldingInput
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
 
 from .cropper import BaseCropper
@@ -64,8 +64,10 @@ class LMDBDataModuleConfig(DataModuleConfig):
     )  # Default: uniform sampler
 
 
-def collate(f_inputs: list[model_input.FoldingInput]) -> model_input.FoldingInput:
-    return model_input.FoldingInput.from_list(f_inputs)
+def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
+    f_input_batched = FoldingInput.from_list([b[0] for b in batches])
+    meta_infos = [b[1] for b in batches]
+    return f_input_batched, meta_infos
 
 
 @DATAMODULE.register(config_cls=LMDBDataModuleConfig)
@@ -134,6 +136,8 @@ class TrainingDataModule(pl.LightningDataModule):
 
         # Apply filters
         val_records = [r for r in all_records if r.id.lower() in val_ids]
+        # Sort validation records by the length of sequences (for efficient)
+        val_records.sort(key=lambda r: r.num_residues)
 
         return LMDBValidationDataset(
             records=val_records,

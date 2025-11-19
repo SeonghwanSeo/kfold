@@ -94,7 +94,7 @@ def featurize_structure(
     token_dict["org_token_index"] = token_dict["token_index"]
     token_dict["token_index"] = np.arange(num_tokens, dtype=np.long)
     token_dict["pocket_contact_type"] = np.full(
-        (num_tokens,), C.pocket.ContactType.UNSPECIFIED, dtype=np.long
+        (num_tokens,), C.constraint.ConstraintType.UNSPECIFIED, dtype=np.long
     )
 
     # Add frame information

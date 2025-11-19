@@ -202,12 +202,7 @@ class WeightedMSELoss(torch.nn.Module):
             + is_rna.float() * self.weight_rna
             + is_ligand.float() * self.weight_ligand
         )  # [B, Ltoken]
-
-        atom_weights = einops.einsum(
-            f_input.atom_to_token,  # [B, Latom, Ltoken]
-            token_weights,  # [B, Ltoken]
-            "b l1 l2, b l2 -> b l1",
-        )  # [B, Latom]
+        atom_weights = token_weights[f_input.atom.token_index]  # [B, Latom]
 
         return atom_weights
 
@@ -385,11 +380,7 @@ class SmoothLDDTLoss(torch.nn.Module):
 
         # Line 5: is_nucleotide = is_dna | is_rna
         is_nucleotide = f_input.token.is_dna | f_input.token.is_rna  # [B, Ltoken]
-        is_nucleotide = einops.einsum(
-            f_input.atom_to_token,  # [B, Latom, Ltoken]
-            is_nucleotide.float(),  # [B, Ltoken]
-            "b l1 l2, b l2 -> b l1",
-        ).bool()  # [B, Latom]
+        is_nucleotide = is_nucleotide[f_input.atom.token_index]  # [B, Latom]
 
         # Prepare masking
         mask = f_input.atom.resolved_mask  # [B, Latom]
