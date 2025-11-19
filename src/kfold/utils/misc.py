@@ -54,3 +54,33 @@ def check_tensor(
         assert tensor.shape == _shape, (
             f"Name {name}: Expected tensor shape to be {_shape}, got {tensor.shape}"
         )
+
+
+def expand_dim(
+    tensor: torch.Tensor,
+    dim: int,
+    n_repeat: int,
+    add_new_dim: bool = True,
+) -> torch.Tensor:
+    """Expanding a tensor with new shape"""
+    if add_new_dim:
+        tensor = tensor.unsqueeze(dim)
+    shape = tensor.shape
+    to_expand = [-1] * len(shape)
+    to_expand[dim] = n_repeat
+    return tensor.expand(*to_expand)
+
+
+def repeat_dim(
+    tensor: torch.Tensor,
+    dim: int,
+    n_repeat: int,
+    add_new_dim: bool = True,
+) -> torch.Tensor:
+    """Repeat a tensor with new shape"""
+    if add_new_dim:
+        tensor = tensor.unsqueeze(dim)
+    shape = tensor.shape
+    to_repeat = [1] * len(shape)
+    to_repeat[dim] = n_repeat
+    return tensor.repeat(*to_repeat)
