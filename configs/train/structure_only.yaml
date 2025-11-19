@@ -89,6 +89,7 @@ validation:
   num_cycles: 4
   num_steps: 20
   num_diffusion_samples: 5
+  symmetry_correction: false # TODO: fix get_true_coordinates function to use symmetry correction
 
 optimizer:
   opt: 'adam'

@@ -21,7 +21,7 @@ out_types = [
     "intra_rna",
     "intra_protein",
     "protein_protein",
-    "modified",
+    # "modified",
 ]
 
 out_types_weights_af3 = {
