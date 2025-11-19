@@ -441,6 +441,8 @@ class TokenizedStructure:
             return cls.from_npz_dict(dict(data))
 
     # === Utility functions === #
+    def to(self, *args, **kwargs) -> Self:
+        return self
 
     def copy_with(self, **kwargs) -> Self:
         """Create a copy of the structure with updated fields.

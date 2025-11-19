@@ -25,6 +25,12 @@ from .sampler import BaseSampler
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
 
 
+def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
+    f_input_batched = FoldingInput.from_list([b[0] for b in batches])
+    meta_infos = [b[1] for b in batches]
+    return f_input_batched, meta_infos
+
+
 @lru_cache
 def load_manifest(manifest_path: Path) -> list[Metadata]:
     format = manifest_path.suffix.lower()
@@ -62,12 +68,6 @@ class LMDBDataModuleConfig(DataModuleConfig):
     sampler: BaseSampler.Config = dataclasses.field(
         default_factory=BaseSampler.Config
     )  # Default: uniform sampler
-
-
-def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
-    f_input_batched = FoldingInput.from_list([b[0] for b in batches])
-    meta_infos = [b[1] for b in batches]
-    return f_input_batched, meta_infos
 
 
 @DATAMODULE.register(config_cls=LMDBDataModuleConfig)

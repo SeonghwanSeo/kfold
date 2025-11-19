@@ -14,6 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
+        required=True,
         help="Path to the yaml configuration file.",
     )
     parser.add_argument(

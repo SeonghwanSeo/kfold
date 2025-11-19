@@ -3,6 +3,8 @@ from collections.abc import Sequence
 import torch
 
 from kfold.data.model_input import FoldingInput
+from kfold.training.folding.loss.diffusion import get_atom_weights, weighted_rigid_align
+from kfold.utils.misc import expand_dim
 
 
 def compute_pair_lddt(
@@ -95,6 +97,7 @@ def compute_validation_metric_singles(
     dict[str, dict[str, torch.Tensor]]
         The metrics for each modality
     """
+
     metrics: dict[str, torch.Tensor] = {}
     weights: dict[str, torch.Tensor] = {}
 
@@ -179,6 +182,17 @@ def compute_validation_metric_singles(
         metrics[metric_name] = lddt
         weights[metric_name] = total_pairs
 
+    # Compute complex lddt
+    # TODO: do we consider all interface types here?
+    # Currently, we use partial types only.
+    overall_lddt = 0
+    overall_weights = torch.tensor(sum(weights.values()), device=true_coords.device)
+    for k in metrics.keys():
+        overall_lddt += metrics[k] * weights[k]
+    overall_lddt /= overall_weights
+    metrics["lddt"] = overall_lddt  # type: ignore
+    weights["lddt"] = overall_weights
+
     return metrics, weights
 
 
@@ -222,10 +236,9 @@ def compute_validation_metrics(
     is_ligand = f_input.token.is_ligand[batch_indices, token_idx]
     asym_id = f_input.token.asym_id[batch_indices, token_idx]
 
-    atom_mask = f_input.atom.resolved_mask
-
     metric_keys = [
         ("rmsd", "min"),
+        ("lddt", "max"),
         ("lddt_protein_protein", "max"),
         ("lddt_dna_protein", "max"),
         ("lddt_rna_protein", "max"),
@@ -276,10 +289,10 @@ def compute_validation_metrics(
             all_metrics[k].extend([v[k] for v in values])
             all_weights[k].extend([w[k] for w in weights])
 
-        # Find best value/weight across samples
+        # Store best values across samples for each metrics
         for k, agg in metric_keys:
-            stacked_values = torch.stack([v[k] for v in values], dim=0)
-            stacked_weights = torch.stack([w[k] for w in weights], dim=0)
+            stacked_values = torch.stack([v[k] for v in values])
+            stacked_weights = torch.stack([w[k] for w in weights])
             if agg == "max":
                 best_idx = torch.argmax(stacked_values)
             else:
@@ -287,24 +300,12 @@ def compute_validation_metrics(
             all_best_metrics[k].append(stacked_values[best_idx])
             all_best_weights[k].append(stacked_weights[best_idx])
 
-        # Find best sample (highest-lddt)
-        complex_lddts = []
-        for v, w in zip(values, weights, strict=True):
-            sample_lddt = torch.tensor(0.0, device=device)
-            for k, _ in metric_keys:
-                if "lddt" in k:
-                    sample_lddt += v[k] * w[k]
-            complex_lddts.append(sample_lddt)
-        complex_lddts = torch.stack(complex_lddts, dim=0)
+        # Store the values of the best sample (highest-lddt)
+        complex_lddts = torch.stack([v["lddt"] for v in values])
         best_complex_idx = torch.argmax(complex_lddts)
         for k, _ in metric_keys:
             all_best_complex_metrics[k].append(values[best_complex_idx][k])
             all_best_complex_weights[k].append(weights[best_complex_idx][k])
-
-        # Also store overall lddt of the best sample
-        # NOTE: this value is different to Boltz's `complex_lddt`, which is weighted.
-        all_best_complex_metrics["lddt"].append(complex_lddts[best_complex_idx])
-        all_best_complex_weights["lddt"].append(torch.tensor(1.0, device=device))
 
     # Store as tensors
     validation_metrics: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
@@ -315,11 +316,15 @@ def compute_validation_metrics(
     for k in all_best_metrics.keys():
         v = torch.stack(all_best_metrics[k], dim=0)
         w = torch.stack(all_best_weights[k], dim=0)
-        validation_metrics[f"best_{k}"] = (v, w)
+        validation_metrics[f"best/{k}"] = (v, w)
     for k in all_best_complex_metrics.keys():
         v = torch.stack(all_best_complex_metrics[k], dim=0)
         w = torch.stack(all_best_complex_weights[k], dim=0)
-        validation_metrics[f"complex_{k}"] = (v, w)
+        validation_metrics[f"best_complex/{k}"] = (v, w)
+
+    # Remove unused metrics
+    validation_metrics["best_complex/rmsd"]
+    validation_metrics["best_complex/lddt"]
 
     return validation_metrics
 
@@ -329,12 +334,50 @@ def permute_label_coordinates(
     pred_coords: torch.Tensor,
     full_structure_dict: dict,
     symmetry_correction: bool = True,
-    lddt_minimization: bool = True,
+    minimize_metric: str = "lddt",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Get the best matching true coordinates to the predicted coordinates.
     Chain permutation and atom swaps.
-    """
-    if not symmetry_correction:
-        return f_input.atom.label_coords, f_input.atom.resolved_mask
 
-    raise NotImplementedError("Symmetry correction is not implemented yet.")
+    Parameters
+    ----------
+    f_input : FoldingInput
+        Input features
+    pred_coords : torch.Tensor
+        Predicted atom coordinates, Shape of [B, Nsample, Natom, 3]
+    full_structure_dict : dict
+        Full structure dictionary containing symmetry information
+    symmetry_correction : bool
+        Whether to apply symmetry correction
+    minimize_metric : str
+        Metric to minimize when finding the best permutation during symmetry correction
+        "lddt" or "rmsd"
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        The true coordinates after permutation and the corresponding mask
+    """
+    B, Nsample, Natom, _ = pred_coords.shape
+    if not symmetry_correction:
+        """Perform weighted rigid alignment without symmetry correction."""
+
+        true_coords = f_input.atom.label_coords  # [B, Natom, Nholo, 3]
+        # HACK: we only consider the first bio-assembly
+        true_coords = f_input.atom.label_coords[:, :, 0, :]
+        mask = f_input.atom.resolved_mask  # [B, Natom]
+
+        # Weighted rigid alignment for best permutation
+        weights = get_atom_weights(f_input)  # [B, Natom]
+
+        # Expand to match pred_coords shape
+        true_coords = expand_dim(
+            true_coords, dim=1, n_repeat=Nsample
+        )  # [B, Nsample, Natom, 3]
+        weights = expand_dim(weights, 1, Nsample)  # [B, Nsample, Natom]
+        mask = expand_dim(mask, 1, Nsample)  # [B, Nsample, Natom]
+        aligned_coords = weighted_rigid_align(true_coords, pred_coords, weights, mask)
+    else:
+        raise NotImplementedError("Symmetry correction is not implemented yet.")
+
+    return aligned_coords, mask

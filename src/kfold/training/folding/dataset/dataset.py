@@ -88,7 +88,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         f_input = featurize.featurize_structure(tokenized_structure)
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
-        return f_input, None
+
+        symmetry = {}
+        # TODO: add symmetry info
+        symmetry["id"] = record.id
+        symmetry["structure"] = tokenized_structure
+
+        return f_input, symmetry
 
 
 class TrainingDataset(SafeLoadingDataset):
@@ -188,6 +194,8 @@ class TrainingDataset(SafeLoadingDataset):
         f_input = featurize.featurize_structure(tokenized_structure)
         # Pad the folding input to max_tokens for LocalAtomAttention.
         f_input = self.pad_input(f_input)
+
+        # NOTE: do not return symmetry info for training set (reduce overhead)
         return f_input, None
 
 
