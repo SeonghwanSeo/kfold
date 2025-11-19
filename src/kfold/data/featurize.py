@@ -6,17 +6,17 @@ import torch
 import kfold.constants as C
 from kfold.constants.residue import residue_index_to_name
 
-from . import model_input, tokenized
+from . import model_input, structure
 from .utils import augmentation, frame_utils
 
 # TODO list:
 # 1. Random augmentation for each ref-pos
-# 2. Replace apo_coords with real apo structure
-# 3. Add symmetry.
+# 2. Add symmetry.
 
 
 def featurize_structure(
-    structure: tokenized.TokenizedStructure,
+    struct: structure.TokenizedStructure,
+    augment_ref_pos: bool = True,
     synchronize_ref_pos_augmentation: bool = False,
     rng: np.random.Generator | None = None,
 ) -> model_input.FoldingInput:
@@ -24,8 +24,10 @@ def featurize_structure(
 
     Parameters
     ----------
-    structure : tokenized.TokenizedStructure
+    struct : structure.TokenizedStructure
         The tokenized structure to featurize.
+    augment_ref_pos : bool, optional
+        Whether to apply random augmentation to ref_pos,
     synchronize_ref_pos_augmentation : bool, optional
         Whether to synchronize the random augmentation for ref_pos across all atoms,
 
@@ -47,10 +49,10 @@ def featurize_structure(
     # ====== Extract raw features and cast ====== #
     # =========================================== #
 
-    chain_data = structure.chain
-    token_data = structure.token
-    atom_data = structure.atom
-    bond_data = structure.bond
+    chain_data = struct.chain
+    token_data = struct.token
+    atom_data = struct.atom
+    bond_data = struct.bond
 
     # === Chain-level features ===
     num_chains = chain_data.length
@@ -83,7 +85,7 @@ def featurize_structure(
     }
     atom_dict["label_coords"] = atom_dict.pop("coords")  # Rename for clarity
     atom_dict["token_index"] = atom_to_token
-    atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)
+    atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
     # Centering the ground truth coords
     atom_dict["label_coords"] = augmentation.do_centering(
@@ -188,7 +190,10 @@ def featurize_structure(
 
     # TODO: rotate conformers for each residue.
     # TODO: random sample from multiple ETKDG conformers.
-    if synchronize_ref_pos_augmentation:
+    if not augment_ref_pos:
+        # No augmentation
+        pass
+    elif synchronize_ref_pos_augmentation:
         atom_dict["ref_pos"] = augmentation.center_random_augmentation(
             atom_dict["ref_pos"], atom_dict["pad_mask"], rng=rng
         )

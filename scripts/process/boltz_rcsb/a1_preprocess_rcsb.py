@@ -33,8 +33,8 @@ from tqdm import tqdm
 
 import kfold.constants as C
 from kfold.constants.chain import ChainType
-from kfold.data import utils
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.structure import TokenizedStructure
+from kfold.data.utils.augmentation import do_centering
 from kfold.utils import errors
 from kfold.utils.boltz.process import tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
@@ -67,7 +67,7 @@ def parse_args():
         "--output_dir",
         type=Path,
         help="Path to the output directory to save Tokenized structure.",
-        default="/cache/wykim_lab/kfold_data/structures/kfold_rcsb_processed_v251116_npz/",
+        default="/cache/wykim_lab/kfold_data/structures/kfold_rcsb_processed_v251120_npz/",
     )
     parser.add_argument(
         "--num_cpus",
@@ -241,7 +241,7 @@ def parse_structure(
                     # Use centered holo structure as apo structure
                     holo_coords = atom_data.coords[token_start:token_end, :, 0]
                     mask = atom_data.resolved_mask[token_start:token_end]
-                    chain_apo_coords = utils.do_centering(holo_coords, mask)
+                    chain_apo_coords = do_centering(holo_coords, mask)
                     chain_apo_mask = mask
                 else:
                     chain_apo_coords, chain_apo_mask = extract_apo_coords(

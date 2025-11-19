@@ -9,6 +9,7 @@ import torch
 from tqdm import tqdm
 
 from kfold.data.featurize import featurize_structure
+from kfold.data.structure import TokenizedStructure
 from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.boltz.utils.featurizer import featurize as boltz_featurize
@@ -51,7 +52,7 @@ def check_structure(key: str, verbose: bool = False):
     print_(f"Processed {key}")
     st = time.time()
     path = BOLTZ_STRUCTURE_DIR / f"{key}.npz"
-    boltz_structure = BoltzStructure.load(path)
+    boltz_structure: BoltzStructure = BoltzStructure.load(path)
     print_(f"Loaded structure in {time.time() - st:.2f} seconds")
 
     if not 0 < len(boltz_structure.chains) < 100:
@@ -66,13 +67,13 @@ def check_structure(key: str, verbose: bool = False):
 
     st = time.time()
     try:
-        boltz_tokenized = boltz_tokenize(boltz_structure)
+        boltz_tokenized: Tokenized = boltz_tokenize(boltz_structure)
     except Exception as e:
         raise Exception(f"Fail during Boltz tokenization - {e}") from e
     print_(f"Boltz: Tokenize structure in {time.time() - st:.2f} seconds")
 
     st = time.time()
-    kfold_tokenized = tokenize_structure(boltz_structure)
+    kfold_tokenized: TokenizedStructure = tokenize_structure(boltz_structure)
     print_(f"KFold: Tokenize structure in {time.time() - st:.2f} seconds")
 
     # Random cropping
@@ -123,7 +124,7 @@ def check_structure(key: str, verbose: bool = False):
     print_(f"Boltz: Featurize structure in {time.time() - st:.2f} seconds")
 
     st = time.time()
-    folding_input = featurize_structure(kfold_tokenized)
+    folding_input = featurize_structure(kfold_tokenized, augment_ref_pos=False)
     print_(f"KFold: Featurize structure in {time.time() - st:.2f} seconds")
 
     # Check the input is the same

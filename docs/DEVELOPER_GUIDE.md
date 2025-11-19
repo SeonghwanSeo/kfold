@@ -45,7 +45,7 @@ pre-commit install
     - `atom.py`: Atom type definitions and mappings
 
   - **`data/`**: Core data structures and representations
-    - `tokenized.py`: High-level tokenized numpy array interfaces (`TokenizedStructure`).
+    - `structure.py`: High-level numpy array interfaces (`TokenizedStructure`).
     - `model_input.py`: High-level (batched) tensor interfaces (`FoldingInput`).
     - `metadata.py`: Metadata structures for datasets.
     - `featurize.py`: Functions to convert tokenized representations and model inputs.
@@ -61,6 +61,7 @@ pre-commit install
 
 - **`scripts/`**: Utility scripts for data processing, training, and evaluation.
   - **`train.py`**: Script to train the K-Fold model.
+  - **`validate.py`**: Script to validate the trained model.
 
 ## Training Pipeline
 

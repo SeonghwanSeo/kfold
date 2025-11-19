@@ -53,9 +53,8 @@ class DistogramLoss(torch.nn.Module):
 
         # Mask out invalid distogram
         mask = f_input.token.disto_mask  # [B, Lt]
-        pair_mask = mask[:, None, :] * mask[:, :, None]  # [B, Lt, Lt]
+        pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, Lt, Lt]
         pair_mask.diagonal(dim1=-2, dim2=-1).zero_()  # zero out diagonal
-        pair_mask = pair_mask.to(dtype=logits.dtype)
         disto_loss = disto_loss * pair_mask  # [B, Lt, Lt]
 
         # Compute mean loss

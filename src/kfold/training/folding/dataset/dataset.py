@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from typing_extensions import override
 
-from kfold.data import featurize, metadata, model_input, tokenized
+from kfold.data import featurize, metadata, model_input, structure
 from kfold.utils.boltz.process import tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.registry import Registry
@@ -44,7 +44,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     @abstractmethod
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Get the tokenized structure for the given index."""
 
     # === Optional to-override in subclasses === #
@@ -201,8 +201,6 @@ class TrainingDataset(SafeLoadingDataset):
         )
         # Pad the folding input to max_tokens for LocalAtomAttention.
         f_input = self.pad_input(f_input)
-
-        # NOTE: do not return symmetry info for training set (reduce overhead)
         return f_input, None
 
 
@@ -239,7 +237,7 @@ class ValidationDataset(SafeLoadingDataset):
 class BoltzDatabase:
     structure_dir: Path
 
-    def load_from_boltz(self, record: metadata.Metadata) -> tokenized.TokenizedStructure:
+    def load_from_boltz(self, record: metadata.Metadata) -> structure.TokenizedStructure:
         """Load the tokenized structure from BoltzStructure."""
         name = record.id
         path = self.structure_dir / f"{name}.npz"
@@ -262,7 +260,7 @@ class BoltzTrainingDataset(TrainingDataset, BoltzDatabase):
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Load the tokenized structure from BoltzStructure."""
         return self.load_from_boltz(record)
 
@@ -279,7 +277,7 @@ class BoltzValidationDataset(ValidationDataset, BoltzDatabase):
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Load the tokenized structure from BoltzStructure."""
         return self.load_from_boltz(record)
 
@@ -308,7 +306,7 @@ class LMDBDatabase:
             )
         return self._lmdb_env
 
-    def load_from_lmdb(self, record: metadata.Metadata) -> tokenized.TokenizedStructure:
+    def load_from_lmdb(self, record: metadata.Metadata) -> structure.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         name = record.id
         key_bytes = name.encode("utf-8")
@@ -319,7 +317,7 @@ class LMDBDatabase:
 
         # Use io.BytesIO to wrap the raw bytes
         with io.BytesIO(value_bytes) as byte_stream:
-            tokenized_structure = tokenized.TokenizedStructure.load_npz(byte_stream)
+            tokenized_structure = structure.TokenizedStructure.load_npz(byte_stream)
         return tokenized_structure
 
 
@@ -347,7 +345,7 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         return self.load_from_lmdb(record)
 
@@ -368,6 +366,6 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> tokenized.TokenizedStructure:
+    ) -> structure.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         return self.load_from_lmdb(record)
