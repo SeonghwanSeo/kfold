@@ -322,10 +322,6 @@ def compute_validation_metrics(
         w = torch.stack(all_best_complex_weights[k], dim=0)
         validation_metrics[f"best_complex/{k}"] = (v, w)
 
-    # Remove unused metrics
-    validation_metrics["best_complex/rmsd"]
-    validation_metrics["best_complex/lddt"]
-
     return validation_metrics
 
 
@@ -364,7 +360,7 @@ def permute_label_coordinates(
 
         true_coords = f_input.atom.label_coords  # [B, Natom, Nholo, 3]
         # HACK: we only consider the first bio-assembly
-        true_coords = f_input.atom.label_coords[:, :, 0, :]
+        true_coords = true_coords[:, :, 0, :]
         mask = f_input.atom.resolved_mask  # [B, Natom]
 
         # Weighted rigid alignment for best permutation

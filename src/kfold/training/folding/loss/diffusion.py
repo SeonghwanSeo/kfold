@@ -190,8 +190,11 @@ class WeightedMSELoss(torch.nn.Module):
         assert x_pred.shape == x_true.shape
 
         w = self.get_atom_weights(f_input)  # [B, L]
+        mask = f_input.atom.resolved_mask  # [B, L]
+        w = w * mask  # [B, L]
+
         w = w.unsqueeze(-2)  # [B, 1, L]
-        mask = f_input.atom.resolved_mask.unsqueeze(-2)  # [B, 1, L]
+        mask = mask.unsqueeze(-2)  # [B, 1, L]
 
         # See Section 3.7.1 Equation 2
         with torch.no_grad():
@@ -204,11 +207,11 @@ class WeightedMSELoss(torch.nn.Module):
 
         d_sq = ((x_pred - x_true_aligned) ** 2).sum(dim=-1)  # [B, N, L]
         if self.scale:
-            weight_sum = (mask * w).sum(-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * mask * d_sq).sum(-1) / weight_sum  # [B, N]
+            weight_sum = w.sum(-1).clamp(min=1)  # [B, 1]
+            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / weight_sum  # [B, N]
         else:
             mask_sum = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * mask * d_sq).sum(-1) / mask_sum  # [B, N]
+            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
 
         return mse_loss
 
