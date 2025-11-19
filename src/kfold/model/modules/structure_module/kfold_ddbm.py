@@ -371,7 +371,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
 
             # TODO: Check random augmentation in our setting is valid
             if self.coordinate_augmentation and step_idx > 0:
-                atom_coords = self.random_augmentation(atom_coords, atom_mask=atom_mask)
+                atom_coords = self.random_augmentation(atom_coords, mask=atom_mask)
 
             # === Churn step: stochastic Euler-Maruyama step for exploration ===
             if self.churn_step_ratio > 0:
@@ -730,7 +730,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             atom_mask = atom_mask.repeat_interleave(N, dim=0)  # (B * N, La)
 
             # Apply coordinate augmentation
-            apo_coords = self.random_augmentation(apo_coords, atom_mask=atom_mask)
+            apo_coords = self.random_augmentation(apo_coords, mask=atom_mask)
 
             # Mask out the padding atoms
             apo_coords = apo_coords * atom_mask[:, :, None]  # (B*N, La, 3)
@@ -773,7 +773,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             atom_mask = atom_mask.repeat_interleave(N, dim=0)  # (B * N, Latom)
 
             # Apply coordinate augmentation
-            holo_coords = self.random_augmentation(holo_coords, atom_mask=atom_mask)
+            holo_coords = self.random_augmentation(holo_coords, mask=atom_mask)
 
             # Mask out the padding atoms
             holo_coords = holo_coords * atom_mask[:, :, None]  # (B*N, Latom, 3)
