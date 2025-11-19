@@ -349,7 +349,7 @@ class AF3SampleDiffusion(BaseStructureModule):
             dt = sigma_t - t_hat
 
             # Line 11
-            atom_coords = atom_coords + self.step_scale * dt * delta_coords
+            atom_coords = atom_coords_noisy + self.step_scale * dt * delta_coords
 
         return atom_coords
 
