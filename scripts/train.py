@@ -102,9 +102,9 @@ def build_trainer(cfg) -> pl.Trainer:
     callbacks.append(model_summary)
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val/weighted_lddt",
+        monitor="val/best/weighted_lddt",
         save_top_k=-1,
-        filename="epoch{epoch:04d}_step{step:08d}_lddt{val/weighted_lddt:.4f}",
+        filename="epoch{epoch:04d}_step{step:08d}_lddt{val/best/weighted_lddt:.4f}",
         auto_insert_metric_name=False,
     )
     callbacks.append(checkpoint_callback)
