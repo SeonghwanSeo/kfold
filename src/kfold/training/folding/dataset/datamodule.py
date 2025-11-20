@@ -8,8 +8,8 @@ import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.sampler import WeightedRandomSampler
 
-from kfold.data import model_input
 from kfold.data.metadata import Metadata
+from kfold.data.model_input import FoldingInput
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
 
 from .cropper import BaseCropper
@@ -23,6 +23,12 @@ from .filter import BaseFilter
 from .sampler import BaseSampler
 
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
+
+
+def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
+    f_input_batched = FoldingInput.from_list([b[0] for b in batches])
+    meta_infos = [b[1] for b in batches]
+    return f_input_batched, meta_infos
 
 
 @lru_cache
@@ -41,14 +47,18 @@ def load_manifest(manifest_path: Path) -> list[Metadata]:
 
 
 class DataModuleConfig(BaseConfig):
-    # Common config for data modules
+    # === Common config for data modules === #
     train_batch_size: int = 1
     val_batch_size: int = 1
     num_workers: int = 0
     pin_memory: bool = True
     safe_load: bool = True
-    # Cropper config
+
+    # === Cropping arguments === #
     cropper: BaseCropper.Config
+
+    # === Featurization arguments === #
+    featurization_args: dict
 
 
 # FIXME: remove this (hard-coded)
@@ -62,10 +72,6 @@ class LMDBDataModuleConfig(DataModuleConfig):
     sampler: BaseSampler.Config = dataclasses.field(
         default_factory=BaseSampler.Config
     )  # Default: uniform sampler
-
-
-def collate(f_inputs: list[model_input.FoldingInput]) -> model_input.FoldingInput:
-    return model_input.FoldingInput.from_list(f_inputs)
 
 
 @DATAMODULE.register(config_cls=LMDBDataModuleConfig)
@@ -90,6 +96,8 @@ class TrainingDataModule(pl.LightningDataModule):
         self.lmdb_path: Path = Path(config.lmdb_path)
         self.manifest_path: Path = Path(config.manifest_path)
         self.split_path: Path = Path(config.split_path)
+
+        self.featurization_args = config.featurization_args
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -119,6 +127,7 @@ class TrainingDataModule(pl.LightningDataModule):
             cropper=self.cropper,
             sampler_config=self.config.sampler,
             safe_load=self.config.safe_load,
+            featurization_args=self.featurization_args,
         )
 
     def construct_val_dataset(self) -> ValidationDataset:
@@ -139,6 +148,7 @@ class TrainingDataModule(pl.LightningDataModule):
             records=val_records,
             lmdb_path=self.lmdb_path,
             safe_load=self.config.safe_load,
+            featurization_args=self.featurization_args,
         )
 
     def train_dataloader(self):

@@ -2,12 +2,38 @@
 
 import warnings
 
-import einops
 import torch
 import torch.nn.functional as F
 
 from kfold.data.model_input import FoldingInput
 from kfold.utils.checkpointing import checkpoint_section
+
+
+def get_atom_weights(
+    f_input: FoldingInput,
+    weight_protein: float = 1.0,
+    weight_dna: float = 5.0,
+    weight_rna: float = 5.0,
+    weight_ligand: float = 10.0,
+) -> torch.Tensor:
+    """Compute atom weights for loss calculation.
+    See Section 3.7.1 Equation 4 of the AlphaFold 3 paper.
+    """
+    is_protein = f_input.token.is_protein  # [B, Ltoken]
+    is_dna = f_input.token.is_dna  # [B, Ltoken]
+    is_rna = f_input.token.is_rna  # [B, Ltoken]
+    is_ligand = f_input.token.is_ligand  # [B, Ltoken]
+
+    token_weights = (
+        is_protein.float() * weight_protein
+        + is_dna.float() * weight_dna
+        + is_rna.float() * weight_rna
+        + is_ligand.float() * weight_ligand
+    )  # [B, Ltoken]
+    batch_indices = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
+    atom_weights = token_weights[batch_indices, f_input.atom.token_index]  # [B, Latom]
+
+    return atom_weights
 
 
 def weighted_rigid_align(
@@ -164,8 +190,11 @@ class WeightedMSELoss(torch.nn.Module):
         assert x_pred.shape == x_true.shape
 
         w = self.get_atom_weights(f_input)  # [B, L]
+        mask = f_input.atom.resolved_mask  # [B, L]
+        w = w * mask  # [B, L]
+
         w = w.unsqueeze(-2)  # [B, 1, L]
-        mask = f_input.atom.resolved_mask.unsqueeze(-2)  # [B, 1, L]
+        mask = mask.unsqueeze(-2)  # [B, 1, L]
 
         # See Section 3.7.1 Equation 2
         with torch.no_grad():
@@ -178,7 +207,7 @@ class WeightedMSELoss(torch.nn.Module):
 
         d_sq = ((x_pred - x_true_aligned) ** 2).sum(dim=-1)  # [B, N, L]
         if self.scale:
-            weight_sum = (mask * w).sum(-1).clamp(min=1)  # [B, 1]
+            weight_sum = w.sum(-1).clamp(min=1)  # [B, 1]
             mse_loss = (1 / 3) * (w * d_sq).sum(-1) / weight_sum  # [B, N]
         else:
             mask_sum = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
@@ -191,25 +220,13 @@ class WeightedMSELoss(torch.nn.Module):
         """Compute atom weights for loss calculation.
         See Section 3.7.1 Equation 4 of the AlphaFold 3 paper.
         """
-        is_protein = f_input.token.is_protein  # [B, Ltoken]
-        is_dna = f_input.token.is_dna  # [B, Ltoken]
-        is_rna = f_input.token.is_rna  # [B, Ltoken]
-        is_ligand = f_input.token.is_ligand  # [B, Ltoken]
-
-        token_weights = (
-            is_protein.float() * self.weight_protein
-            + is_dna.float() * self.weight_dna
-            + is_rna.float() * self.weight_rna
-            + is_ligand.float() * self.weight_ligand
-        )  # [B, Ltoken]
-
-        atom_weights = einops.einsum(
-            f_input.atom_to_token,  # [B, Latom, Ltoken]
-            token_weights,  # [B, Ltoken]
-            "b l1 l2, b l2 -> b l1",
-        )  # [B, Latom]
-
-        return atom_weights
+        return get_atom_weights(
+            f_input,
+            weight_protein=self.weight_protein,
+            weight_dna=self.weight_dna,
+            weight_rna=self.weight_rna,
+            weight_ligand=self.weight_ligand,
+        )
 
 
 class BondLoss(torch.nn.Module):
@@ -385,11 +402,9 @@ class SmoothLDDTLoss(torch.nn.Module):
 
         # Line 5: is_nucleotide = is_dna | is_rna
         is_nucleotide = f_input.token.is_dna | f_input.token.is_rna  # [B, Ltoken]
-        is_nucleotide = einops.einsum(
-            f_input.atom_to_token,  # [B, Latom, Ltoken]
-            is_nucleotide.float(),  # [B, Ltoken]
-            "b l1 l2, b l2 -> b l1",
-        ).bool()  # [B, Latom]
+        # [B, Ntoken] -> [B, Natom]
+        batch_indices = torch.arange(B, device=f_input.device)[:, None]
+        is_nucleotide = is_nucleotide[batch_indices, f_input.atom.token_index]
 
         # Prepare masking
         mask = f_input.atom.resolved_mask  # [B, Latom]

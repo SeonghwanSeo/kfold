@@ -207,6 +207,7 @@ class BaseStructureModule(ABC):
             holo_coords = self.sample_holo(f_input, num_diffusion_samples)
 
             noised_atom_coords = self.interpolate(prior_coords, holo_coords, t_hat, mask)
+            noised_atom_coords = noised_atom_coords * mask[:, None, :, None]
 
         denoised_atom_coords = self.forward_model(
             x_noisy=noised_atom_coords,  # [B, N, La, 3]

@@ -14,6 +14,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
+        required=True,
         help="Path to the yaml configuration file.",
     )
     parser.add_argument(
@@ -100,11 +101,11 @@ def build_trainer(cfg) -> pl.Trainer:
     model_summary = pl.callbacks.ModelSummary(max_depth=2)
     callbacks.append(model_summary)
 
-    # FIXME: currently, validation is not implemented yet.
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        monitor=None,
+        monitor="val/weighted_lddt",
         save_top_k=-1,
-        filename="best-train-loss-{epoch}-{step}",
+        filename="epoch{epoch:04d}_step{step:08d}_lddt{val/weighted_lddt:.4f}",
+        auto_insert_metric_name=False,
     )
     callbacks.append(checkpoint_callback)
 
@@ -119,7 +120,7 @@ def build_trainer(cfg) -> pl.Trainer:
         precision=pl_trainer_cfg.precision,
         max_epochs=pl_trainer_cfg.max_epochs,
         limit_train_batches=pl_trainer_cfg.limit_train_batches,
-        limit_val_batches=0.0,  # FIXME: validation is not implemented yet
+        limit_val_batches=pl_trainer_cfg.limit_val_batches,
         log_every_n_steps=pl_trainer_cfg.log_every_n_steps,
         enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
         accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
@@ -157,12 +158,14 @@ def train(args) -> None:
         print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
         cfg.train.trainer.devices = 1
         cfg.train.trainer.num_nodes = 1
-        cfg.train.data.train_batch_size = 1
         cfg.train.trainer.accumulate_grad_batches = 1
         cfg.train.trainer.log_every_n_steps = 1
+        cfg.train.trainer.limit_train_batches = 10
+        cfg.train.trainer.limit_val_batches = 100
+        cfg.train.data.train_batch_size = 1
         cfg.train.data.num_workers = 0
-        cfg.train.wandb.use = False
         cfg.train.data.safe_load = False
+        cfg.train.wandb.use = False
 
     # Set random seed
     pl.seed_everything(cfg.train.seed)

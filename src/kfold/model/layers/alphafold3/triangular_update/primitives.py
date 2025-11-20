@@ -21,6 +21,11 @@ from collections.abc import Callable
 import torch
 from torch import nn
 
+try:
+    from cuequivariance_torch.primitives.triangle import triangle_attention
+except ImportError:
+    triangle_attention = None
+
 from . import initialize
 from .utils import flatten_final_dims, permute_final_dims
 
@@ -201,8 +206,11 @@ def kernel_triangular_attn(
     mask: torch.Tensor,
     scale: float,
 ) -> torch.Tensor:
-    from cuequivariance_torch.primitives.triangle import triangle_attention
-
+    if triangle_attention is None:
+        raise ImportError(
+            "cuequivariance_torch is not installed. "
+            "Please install cuequivariance_torch to use the kernel implementation."
+        )
     return triangle_attention(q, k, v, tri_bias, mask=mask, scale=scale)
 
 
