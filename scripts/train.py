@@ -105,6 +105,7 @@ def build_trainer(cfg) -> pl.Trainer:
         monitor="val/best/weighted_lddt",
         save_top_k=-1,
         filename="epoch{epoch:04d}_step{step:08d}_lddt{val/best/weighted_lddt:.4f}",
+        mode="max",
         auto_insert_metric_name=False,
     )
     callbacks.append(checkpoint_callback)

@@ -296,7 +296,8 @@ class KFoldTrainingModule(pl.LightningModule):
         for k, v in metrics.items():
             self.log(f"train/{k}", v, prog_bar=(k == "loss"))
 
-        self.log_model_state()
+        if batch_idx % 10 == 0:
+            self.log_model_state()
 
         return loss
 
@@ -424,6 +425,12 @@ class KFoldTrainingModule(pl.LightningModule):
             weighted_lddt += avg_values.get(f"lddt_{m.value}", 0.0) * w
         weighted_lddt /= sum_weights
         avg_values["weighted_lddt"] = weighted_lddt  # type: ignore
+
+        weighted_lddt = 0
+        for m, w in lddt_weights.items():
+            weighted_lddt += avg_values.get(f"best/lddt_{m.value}", 0.0) * w
+        weighted_lddt /= sum_weights
+        avg_values["best/weighted_lddt"] = weighted_lddt  # type: ignore
 
         avg_values = {f"val/{k}": v for k, v in avg_values.items()}
         self.log_dict(avg_values, sync_dist=True)
@@ -626,8 +633,9 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         if self.use_ema and "ema" in checkpoint:
+            ema_decay = self.optimizer_config.ema_decay
             self.ema = ExponentialMovingAverage(
-                parameters=self.parameters(), decay=self.ema_decay
+                parameters=self.parameters(), decay=ema_decay
             )
             if self.ema.compatible(checkpoint["ema"]["shadow_params"]):
                 self.ema.load_state_dict(checkpoint["ema"], device=torch.device("cpu"))
@@ -635,6 +643,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 print(
                     "Warning: EMA state not loaded due to incompatible model parameters."
                 )
+            self.ema.to(self.device)
 
     # === Helper functions === #
     def save_structure(
