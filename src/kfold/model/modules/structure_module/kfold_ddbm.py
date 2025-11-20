@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from kfold.data.model_input import FoldingInput
 from kfold.model.layers.alphafold3.utils import CenterRandomAugmentation
 from kfold.model.modules.score_model.base import BaseScoreModel
+from kfold.utils.geometry.random_augment import do_centering
+from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseStructureModule
@@ -522,6 +524,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         self,
         f_input: FoldingInput,
         num_diffusion_samples: int = 1,
+        label_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Sample from the prior distribution (apo structures).
 
@@ -540,23 +543,27 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         apo_coords : torch.Tensor
             Apo coordinates. Shape (B, N, La, 3).
         """
-        # Use apo structures as the source/prior
-        apo_coords = self.sample_apo(f_input, num_diffusion_samples)  # [B, N, La, 3]
 
-        # Apply coordinate augmentation if enabled
-        if self.coordinate_augmentation:
-            atom_mask = f_input.atom.pad_mask.float()  # (B, La)
-            B, N, L = apo_coords.shape[:3]
-            apo_coords = apo_coords.view(B * N, L, 3)  # (B*N, La, 3)
-            atom_mask = atom_mask.repeat_interleave(N, dim=0)  # (B * N, La)
+        # We skip random rotation when label_coords is given since the apo coords
+        # would be aligned to holo.
+        do_random_augment = label_coords is None
+        apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
 
-            # Apply coordinate augmentation
-            apo_coords = self.random_augmentation(apo_coords, mask=atom_mask)
+        if label_coords is not None:
+            # Align to label coordinates
+            # NOTE (SeonghwanSeo): Actually, this masking is not rigorous since
+            # the apo coordinates of single ions are always zeros(0,0,0). However,
+            # this does not harm the performance.
+            apo_mask = ~(apo_coords == 0.0).all(-1)
+            label_mask = ~(label_coords == 0.0).all(-1)
 
-            # Mask out the padding atoms
-            apo_coords = apo_coords * atom_mask[:, :, None]  # (B*N, La, 3)
-
-            apo_coords = apo_coords.view(B, N, L, 3)
+            apo_coords = rigid_align(
+                coords=apo_coords,
+                target=label_coords,
+                mask=apo_mask & label_mask,
+            )
+            # Centering to zero
+            apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
 
         return apo_coords
 
@@ -585,21 +592,15 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         holo_coords = super().sample_holo(
             f_input, num_diffusion_samples
         )  # [B, N, Latom, 3]
+        atom_mask = f_input.atom.resolved_mask  # (B, Latom)
+        atom_mask = atom_mask.to(holo_coords.dtype)[:, None, :]
 
         if self.coordinate_augmentation:
-            atom_mask = f_input.atom.pad_mask.float()  # (B, Latom)
-
-            B, N, L = holo_coords.shape[:3]
-            holo_coords = holo_coords.view(B * N, L, 3)  # (B*N, Latom, 3)
-            atom_mask = atom_mask.repeat_interleave(N, dim=0)  # (B * N, Latom)
-
             # Apply coordinate augmentation
             holo_coords = self.random_augmentation(holo_coords, mask=atom_mask)
 
-            # Mask out the padding atoms
-            holo_coords = holo_coords * atom_mask[:, :, None]  # (B*N, Latom, 3)
-
-            holo_coords = holo_coords.view(B, N, L, 3)
+        # Mask out the unresolved atoms
+        holo_coords = holo_coords * atom_mask[..., None]  # (B, N, Latom, 3)
 
         return holo_coords
 
@@ -658,9 +659,6 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         noise = torch.randn_like(x_apo)
         noised_coords = mu_t + std_t * noise
 
-        # Mask out the padding atoms
-        noised_coords = noised_coords * mask[:, None, :, None]
-
         return noised_coords
 
     # === Sampling === #
@@ -674,7 +672,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         num_diffusion_samples: int = 1,
         max_parallel_samples: int | None = None,
         use_ground_truth_holo: bool = False,
-    ) -> torch.Tensor:
+        return_traj: bool = False,
+    ) -> dict[str, torch.Tensor]:
         """Sample structures via bridge diffusion sampling using Heun's method.
 
         Implements a bridge diffusion process that transitions from apo structures
@@ -709,6 +708,9 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             Sampled atom coordinates. Shape (B, N, Latom, 3).
         """
 
+        sample_out: dict[str, torch.Tensor] = {}
+        traj: list[torch.Tensor] = []
+
         if num_steps is None:
             num_steps = self.num_steps
 
@@ -721,11 +723,14 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device)
         sigmas = sigmas.tolist()
 
-        atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
+        atom_mask = f_input.atom.pad_mask.float()[:, None, :]  # (B, 1, Latom)
 
         # Line 1: Initialize from apo structure (x_N \sim q_data(y))
         x_apo = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
         atom_coords = x_apo.clone()
+
+        if return_traj:
+            traj.append(atom_coords.cpu())
 
         # Store target (holo) structure for bridge conditioning (training mode only)
         x_holo = None
@@ -850,4 +855,12 @@ class KFoldBridgeDiffusion(BaseStructureModule):
                 # NOTE: DDBM used step_scale=1.0
                 atom_coords = atom_coords + self.step_scale * d_avg * dt
 
-        return atom_coords
+            if return_traj:
+                traj.append(atom_coords.cpu())
+
+        sample_out["init_coordinates"] = x_apo
+        sample_out["sample_coordinates"] = atom_coords
+        if return_traj:
+            sample_out["traj"] = torch.stack(traj)
+
+        return sample_out

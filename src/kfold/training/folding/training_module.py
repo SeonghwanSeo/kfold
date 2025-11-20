@@ -368,7 +368,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_diffusion_samples=num_diffusion_samples,
                 mode="validation",
             )
-            sample_coords = out["sample"]["coordinates"]
+            sample_coords = out["sample"]["sample_coordinates"]
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -632,21 +632,19 @@ class KFoldTrainingModule(pl.LightningModule):
 
         from kfold.data.structure import TokenizedStructure
 
-        _, Nsample, _, _ = pred_coords.shape
-
-        save_dir.mkdir(parents=True, exist_ok=True)
-
         name: str = full_dict["id"]
         structure: TokenizedStructure = full_dict["structure"]
 
+        save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / f"{name}-gt.pdb"
         structure.write(save_path, 0, is_predicted=False)
 
+        # [B, Nsample, Natom, 3] -> [Nsample, Natom, 3] -> [Natom, Nsample, 3]
         x = pred_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
-        # match the shape
         x = x.transpose(1, 0, 2)  # [Natom, Nsample, 3]
 
         # Make the array
+        _, Nsample, _ = x.shape
         pred_coords_arr = np.zeros((structure.num_tokens, 24, Nsample, 3))
         atom_st = 0
         for i in range(structure.num_tokens):

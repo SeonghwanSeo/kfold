@@ -328,7 +328,7 @@ def compute_validation_metrics(
 def permute_label_coordinates(
     f_input: FoldingInput,
     pred_coords: torch.Tensor,
-    full_structure_dict: dict,
+    full_structure_dict: list[dict],
     symmetry_correction: bool = True,
     minimize_metric: str = "lddt",
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -341,7 +341,7 @@ def permute_label_coordinates(
         Input features
     pred_coords : torch.Tensor
         Predicted atom coordinates, Shape of [B, Nsample, Natom, 3]
-    full_structure_dict : dict
+    full_structure_dict : list[dict]
         Full structure dictionary containing symmetry information
     symmetry_correction : bool
         Whether to apply symmetry correction

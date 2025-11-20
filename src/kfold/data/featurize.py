@@ -5,18 +5,111 @@ import torch
 
 import kfold.constants as C
 from kfold.constants.residue import residue_index_to_name
+from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
 from . import model_input, structure
-from .utils import augmentation, frame_utils
+from .utils import frame_utils
 
 # TODO list:
-# 1. Random augmentation for each ref-pos
-# 2. Add symmetry.
+# - Add symmetry.
+
+
+# === Helper functions === #
+def do_augment_ref_pos(
+    ref_pos: np.ndarray,
+    mask: np.ndarray,
+    conformer_sizes: list[int] | None = None,
+    rng: np.random.Generator | None = None,
+    synchronize: bool = False,
+) -> np.ndarray:
+    """Augment reference positions with random translation and rotation.
+
+    Parameters
+    ----------
+    ref_pos : np.ndarray
+        Reference positions of shape [Natom, 3].
+    mask : np.ndarray
+        Mask indicating valid atoms of shape [Natom,].
+    conformer_sizes : list[int] | None
+        List of number of atoms per each conformer.
+    rng : np.random.Generator | None
+        Random number generator for augmentation.
+    synchronize : bool
+        Whether to synchronize the random augmentation across all atoms.
+
+    Returns
+    -------
+    augmented_ref_pos : np.ndarray
+        Augmented reference positions of shape [Natom, 3].
+
+    """
+
+    if synchronize:
+        # NOTE: Just for comparison with Boltz. This flag should be False.
+        return center_random_augmentation(ref_pos, mask, rng=rng)
+    else:
+        assert conformer_sizes is not None
+
+        new_ref_pos = np.zeros_like(ref_pos)
+        start_idx = 0
+        # Apply random augmentation per residue
+        for natom in conformer_sizes:
+            end_idx = start_idx + natom
+            new_ref_pos[start_idx:end_idx] = center_random_augmentation(
+                ref_pos[start_idx:end_idx],  # =residue_conf
+                mask[start_idx:end_idx],  # =residue_mask
+                rng=rng,
+            )
+            start_idx = end_idx
+        return new_ref_pos
+
+
+def do_augment_apo_structure(
+    apo_coords: np.ndarray,
+    mask: np.ndarray,
+    chain_sizes: np.ndarray,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Augment apo structure coordinates with random rotation.
+    Parameters
+    ----------
+    apo_coords : np.ndarray
+        Apo structure coordinates of shape [Napo, Natom, 3].
+    mask : np.ndarray
+        Mask indicating valid atoms of shape [Napo, Natom].
+    chain_sizes : np.ndarray
+        Array of number of atoms per each chain.
+    rng : np.random.Generator | None
+        Random number generator for augmentation.
+
+    Returns
+    -------
+    augmented_apo_coords : np.ndarray
+        Augmented apo structure coordinates of shape [Napo, Natom, 3].
+    """
+    # Apply random rotation per apo coords
+    # NOTE: Unlike holo structure, apo structure is input so that
+    # random translation is not applied.
+
+    new_coords = np.zeros_like(apo_coords)
+    start_idx = 0
+    for natom in chain_sizes:
+        end_idx = start_idx + natom
+        new_coords[:, start_idx:end_idx] = center_random_augmentation(
+            apo_coords[:, start_idx:end_idx],  # =apo_chain_coords
+            mask[:, start_idx:end_idx],  # =apo_chain_mask
+            random_rotate=True,
+            s_trans=0.0,
+            rng=rng,
+        )
+        start_idx = end_idx
+    return new_coords
 
 
 def featurize_structure(
     struct: structure.TokenizedStructure,
     augment_ref_pos: bool = True,
+    augment_apo: bool = True,
     synchronize_ref_pos_augmentation: bool = False,
     rng: np.random.Generator | None = None,
 ) -> model_input.FoldingInput:
@@ -28,6 +121,8 @@ def featurize_structure(
         The tokenized structure to featurize.
     augment_ref_pos : bool, optional
         Whether to apply random augmentation to ref_pos,
+    augment_apo : bool, optional
+        Whether to apply random augmentation to apo_coords,
     synchronize_ref_pos_augmentation : bool, optional
         Whether to synchronize the random augmentation for ref_pos across all atoms,
 
@@ -88,14 +183,10 @@ def featurize_structure(
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
     # Centering the ground truth coords
-    atom_dict["label_coords"] = augmentation.do_centering(
-        atom_dict["label_coords"], atom_dict["resolved_mask"]
-    )
-    # TODO: if we use multiple apo structures, randomly sample one apo structure here.
-    # TODO: If we use CCD, use random ETKDG conformers here.
-    atom_dict["apo_coords"] = augmentation.do_centering(
-        atom_dict["apo_coords"], atom_dict["apo_mask"]
-    )
+    atom_dict["label_coords"] = do_centering(
+        atom_dict["label_coords"].transpose(1, 0, 2),
+        atom_dict["resolved_mask"].reshape(1, -1),
+    ).transpose(1, 0, 2)  # [Natom, Nholo, 3] -> [Nholo, Natom, 3] -> [Natom, Nholo, 3]
 
     # === Bond-level features ===
     num_bonds = bond_data.length
@@ -188,32 +279,36 @@ def featurize_structure(
         ref_space_natoms[v] += token_dict["num_atoms"][tidx]
     atom_dict["ref_space_uid"] = np.array(ref_space_uid, dtype=np.long)
 
-    # TODO: rotate conformers for each residue.
+    # Random augmentation (stochasticity)
     # TODO: random sample from multiple ETKDG conformers.
-    if not augment_ref_pos:
-        # No augmentation
-        pass
-    elif synchronize_ref_pos_augmentation:
-        atom_dict["ref_pos"] = augmentation.center_random_augmentation(
-            atom_dict["ref_pos"], atom_dict["pad_mask"], rng=rng
+    if augment_ref_pos:
+        # Compute the number of atoms per each conformer
+        num_atoms_per_conformer = [
+            ref_space_natoms[uid] for uid in sorted(ref_space_natoms.keys())
+        ]
+        atom_dict["ref_pos"] = do_augment_ref_pos(
+            ref_pos=atom_dict["ref_pos"],
+            mask=atom_dict["pad_mask"],  # Same to np.ones(...)
+            conformer_sizes=num_atoms_per_conformer,
+            synchronize=synchronize_ref_pos_augmentation,
+            rng=rng,
         )
+
+    # TODO: if we use multiple apo structures, randomly sample one apo structure here.
+    # TODO: If we use CCD, use random ETKDG conformers here.
+    if augment_apo:
+        num_atoms_per_chains = chain_dict["num_atoms"]
+        atom_dict["apo_coords"] = do_augment_apo_structure(
+            apo_coords=atom_dict["apo_coords"].transpose(1, 0, 2),
+            mask=atom_dict["apo_mask"].transpose(1, 0),
+            chain_sizes=num_atoms_per_chains,
+            rng=rng,
+        ).transpose(1, 0, 2)  # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
     else:
-        new_ref_pos_list = np.zeros_like(atom_dict["ref_pos"])
-        start_idx = 0
-        # UID is incremental
-        for uid in sorted(ref_space_natoms.keys()):
-            end_idx = start_idx + ref_space_natoms[uid]
-            ref_pos_residue = atom_dict["ref_pos"][start_idx:end_idx]
-            # Apply random augmentation per residue
-            ref_pos_residue = augmentation.center_random_augmentation(
-                ref_pos_residue,
-                atom_dict["pad_mask"][start_idx:end_idx],
-                rng=rng,
-            )
-            # Store back
-            new_ref_pos_list[start_idx:end_idx] = ref_pos_residue
-            start_idx = end_idx
-        atom_dict["ref_pos"] = new_ref_pos_list
+        atom_dict["apo_coords"] = do_centering(
+            atom_dict["apo_coords"].transpose(1, 0, 2),
+            atom_dict["apo_mask"].transpose(1, 0),
+        ).transpose(1, 0, 2)  # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
 
     # === Bond-level features ===
     # TODO: Remap token indices to cropped tokens

@@ -405,6 +405,11 @@ class TokenizedStructure:
         """Number of tokens in the structure."""
         return len(self.token)
 
+    @cached_property
+    def num_atoms(self) -> int:
+        """Number of tokens in the structure."""
+        return int(self.token.num_atoms.sum())
+
     @property
     def num_bonds(self) -> int:
         """Number of bonds in the structure."""
@@ -625,3 +630,60 @@ class TokenizedStructure:
             bond=cropped_bond,
             metadata=self.metadata,
         )
+
+    def replace_atom_coords(
+        self,
+        atom_coords: np.ndarray,
+        is_apo: bool = False,
+    ) -> Self:
+        """Replace coordinates in structure
+
+        Parameters
+        ----------
+        atom_coords: np.ndarray
+            Shape: [Nsample, Natom, 3] or [Nsample, Ntoken, 24, 3]
+
+        Returns
+        -------
+        new_struct: TokenizedStructure
+            Structure with replaced coordinates
+
+        """
+        Nsample = atom_coords.shape[0]
+        num_tokens = self.num_tokens
+        num_atoms = self.num_atoms
+        max_atoms_per_token = 24
+
+        if atom_coords.ndim == 3:
+            assert num_atoms <= atom_coords.shape[1], (
+                f"Coordinate atom count ({atom_coords.shape[1]}) should be same or "
+                f"larger than total atoms ({num_atoms})"
+            )
+            # Create new coords array [num_tokens, 24, Nsample, 3]
+            new_coords = np.zeros(
+                (num_tokens, max_atoms_per_token, Nsample, 3), dtype=atom_coords.dtype
+            )
+            coords_to_assign = atom_coords[:, :num_atoms].transpose(1, 0, 2)
+            new_coords[self.atom.pad_mask] = coords_to_assign
+        else:
+            assert atom_coords.shape[1] <= num_tokens, (
+                f"Coordinate token count ({atom_coords.shape[1]}) should be same or "
+                f"smaller than total tokens ({num_tokens})"
+            )
+            assert atom_coords.shape[2] == max_atoms_per_token, (
+                f"Coordinate atom per token count ({atom_coords.shape[2]}) should be "
+                f"same to max atoms per token (24)"
+            )
+            # [Nsample, Ntoken_with_pad, 24, 3] -> [Ntoken, 24, Nsample, 3]
+            new_coords = np.ascontiguousarray(
+                atom_coords[:, :num_tokens].transpose(1, 2, 0, 3)
+            )
+
+        # Update structure
+        atom_struct = self.atom
+        if is_apo:
+            new_atom_struct = atom_struct.copy_with(apo_coords=new_coords)
+        else:
+            new_atom_struct = atom_struct.copy_with(coords=new_coords)
+        new_struct = self.copy_with(atom=new_atom_struct)
+        return new_struct
