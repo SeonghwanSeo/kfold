@@ -15,8 +15,8 @@ from kfold.training.folding.dataset.cropper.boltz import BoltzCropper
 from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 
-BOLTZ_PATH = Path("/cache/wykim_lab/rcsb_processed_targets/")
 TEST_CONFIG_PATH = Path("./configs/train-af3-mini.yaml")
+BOLTZ_PATH = Path("/cache/wykim_lab/rcsb_processed_targets/")
 BOLTZ_MANIFEST_PATH = BOLTZ_PATH / "manifest.json"
 BOLTZ_STRUCTURE_DIR = BOLTZ_PATH / "structures"
 
