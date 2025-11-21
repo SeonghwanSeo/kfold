@@ -200,10 +200,10 @@ class BaseStructureModule(ABC):
                 batch_size, num_diffusion_samples, device=f_input.device
             )  # [B, N]
 
-            # sample x0 from prior
+            # sample xT from prior
             prior_coords = self.sample_prior(f_input, num_diffusion_samples)
 
-            # sample xt from label (Currently, there is only one holo structure per input)
+            # sample x0 from label (Currently, there is only one holo structure per input)
             holo_coords = self.sample_holo(f_input, num_diffusion_samples)
 
             noised_atom_coords = self.interpolate(prior_coords, holo_coords, t_hat, mask)

@@ -179,10 +179,10 @@ class WeightedMSELoss(torch.nn.Module):
         d_sq = ((x_pred - x_true_aligned) ** 2).sum(dim=-1)  # [B, N, L]
         if self.scale:
             weight_sum = (mask * w).sum(-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / weight_sum  # [B, N]
+            mse_loss = (1 / 3) * (w * d_sq * mask).sum(-1) / weight_sum  # [B, N]
         else:
             mask_sum = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
+            mse_loss = (1 / 3) * (w * d_sq * mask).sum(-1) / mask_sum  # [B, N]
 
         return mse_loss
 

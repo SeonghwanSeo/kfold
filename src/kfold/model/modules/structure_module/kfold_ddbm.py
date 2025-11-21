@@ -40,9 +40,9 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         sigma_max : float, optional
             The maximum sigma value, by default 160.0.
         sigma_data : float, optional
-            The standard deviation of the source data distribution (apo structures), by default 16.0.
-        sigma_data_end : float, optional
             The standard deviation of the target data distribution (holo structures), by default 16.0.
+        sigma_data_end : float, optional
+            The standard deviation of the source data distribution (apo structures), by default 16.0.
         cov_xy : float, optional
             The covariance between source and target (sigma_0T in paper), by default 128.0 (= sigma_data^2 / 2).
             This controls the c_skip coefficient: 0 means no correlation (pure exploration),
@@ -155,9 +155,9 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             Input scaling coefficient.
         """
         # Compute A: total variance at noise level sigma
-        # A = (sigma^4/sigma_max^4)sigma_end^2 + (1-sigma^2/sigma_max^2)^2sigma_data^2
-        #     + 2(sigma^2/sigma_max^2)(1-sigma^2/sigma_max^2)cov_xy
-        #     + c^2sigma^2(1-sigma^2/sigma_max^2)
+        # A = (sigma^4/sigma_data_end^4)sigma_data_end^2 + (1-sigma^2/sigma_data_end^2)^2sigma_data^2
+        #     + 2(sigma^2/sigma_data_end^2)(1-sigma^2/sigma_data_end^2)cov_xy
+        #     + sigma^2(1-sigma^2/sigma_data_end^2)
         a_t = sigma**2 / self.sigma_max**2  # a_t in DDBM (p. 19)
         b_t = 1 - a_t  # b_t in DDBM (p. 19)
         c_t = sigma**2 * b_t  # c_t in DDBM (p. 19)
@@ -296,367 +296,32 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         )
         return x_out
 
-    def sample_structure(
-        self,
-        f_input: FoldingInput,
-        s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
-        num_steps: int | None = None,
-        num_diffusion_samples: int = 1,
-        max_parallel_samples: int | None = None,
-        use_ground_truth_holo: bool = False,
-    ) -> torch.Tensor:
-        """Sample structures via bridge diffusion sampling using Heun's method.
-
-        Implements a bridge diffusion process that transitions from apo structures
-        to holo structures, using the DDBM ODE formulation.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            FoldingInput object containing model inputs.
-        s_inputs : torch.Tensor
-            Input sequence embeddings. Shape (B, Lt, c_s).
-        s_trunk : torch.Tensor
-            Trunk sequence embeddings. Shape (B, Lt, c_s).
-        z_trunk : torch.Tensor
-            Trunk pairwise embeddings. Shape (B, Lt, Lt, c_z).
-        num_steps : int, optional
-            Number of sampling steps. If None, uses self.num_steps.
-        num_diffusion_samples : int, optional
-            Number of diffusion samples, by default 1.
-        max_parallel_samples : int, optional
-            Maximum number of parallel samples for memory efficiency.
-            If None, processes all samples in parallel.
-        use_ground_truth_holo : bool, optional
-            Whether to use ground truth holo structures (training mode) or
-            progressive refinement (inference mode). By default False.
-            - If True (training): Uses ground truth holo from f_input as fixed target.
-            - If False (inference): Uses progressive refinement with denoised predictions.
-
-        Returns
-        -------
-        atom_coords : torch.Tensor
-            Sampled atom coordinates. Shape (B, N, Latom, 3).
-        """
-
-        if num_steps is None:
-            num_steps = self.num_steps
-
-        if max_parallel_samples is None:
-            max_parallel_samples = num_diffusion_samples
-
-        model_cache = {}
-
-        # Get noise schedule
-        sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device)
-        sigmas = sigmas.tolist()
-
-        atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
-
-        # Line 1: Initialize from apo structure (x_N \sim q_data(y))
-        x_apo = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
-        atom_coords = x_apo.clone()
-
-        # Store target (holo) structure for bridge conditioning (training mode only)
-        x_holo = None
-        if use_ground_truth_holo:
-            x_holo = self.sample_holo(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
-
-        # Line 2: Heun sampling loop
-        for step_idx in range(len(sigmas) - 1):
-            sigma_curr = sigmas[step_idx]
-            sigma_next = sigmas[step_idx + 1]
-
-            # TODO: Check random augmentation in our setting is valid
-            if self.coordinate_augmentation and step_idx > 0:
-                atom_coords = self.random_augmentation(atom_coords, mask=atom_mask)
-
-            # === Churn step: stochastic Euler-Maruyama step for exploration ===
-            if self.churn_step_ratio > 0:
-                # Compute intermediate noise level
-                sigma_hat = (sigma_next - sigma_curr) * self.churn_step_ratio + sigma_curr
-
-                # Get denoised prediction at current sigma
-                atom_coords_denoised_churn = torch.zeros_like(atom_coords)
-                for st in range(0, num_diffusion_samples, max_parallel_samples):
-                    end = min(st + max_parallel_samples, num_diffusion_samples)
-                    atom_coords_denoised_churn[:, st:end] = self.forward_model(
-                        x_noisy=atom_coords[:, st:end],
-                        t_hat=sigma_curr,
-                        f_input=f_input,
-                        s_inputs=s_inputs,
-                        s_trunk=s_trunk,
-                        z_trunk=z_trunk,
-                        model_cache=model_cache,
-                    )
-
-                # Compute drift and diffusion with stochastic=True
-                d_churn, gt2 = self._to_d_bridge(
-                    x=atom_coords,
-                    sigma=sigma_curr,
-                    denoised=atom_coords_denoised_churn,
-                    x_apo=x_apo,
-                    x_holo=x_holo,
-                    guidance_weight=self.guidance_weight,
-                    use_progressive_refinement=not use_ground_truth_holo,
-                    stochastic=True,
-                )
-
-                # Euler-Maruyama step: deterministic drift + stochastic diffusion
-                dt_churn = sigma_hat - sigma_curr
-                noise = torch.randn_like(atom_coords)
-                atom_coords = (
-                    atom_coords
-                    + d_churn * dt_churn
-                    + noise * torch.sqrt(torch.abs(dt_churn)) * torch.sqrt(gt2)
-                )
-
-                # Update sigma_curr for Heun step
-                sigma_curr = sigma_hat
-
-            # First-order estimate
-            # Process in chunks for memory efficiency
-            atom_coords_denoised = torch.zeros_like(atom_coords)
-            for st in range(0, num_diffusion_samples, max_parallel_samples):
-                end = min(st + max_parallel_samples, num_diffusion_samples)
-                atom_coords_denoised[:, st:end] = self.forward_model(
-                    x_noisy=atom_coords[:, st:end],
-                    t_hat=sigma_curr,
-                    f_input=f_input,
-                    s_inputs=s_inputs,
-                    s_trunk=s_trunk,
-                    z_trunk=z_trunk,
-                    model_cache=model_cache,
-                )
-
-            # Compute ODE derivative using bridge formulation
-            d = self._to_d_bridge(
-                x=atom_coords,
-                sigma=sigma_curr,
-                denoised=atom_coords_denoised,
-                x_apo=x_apo,
-                x_holo=x_holo,
-                guidance_weight=self.guidance_weight,
-                use_progressive_refinement=not use_ground_truth_holo,
-            )
-
-            dt = sigma_next - sigma_curr
-
-            if sigma_next == 0:
-                # Final step: Euler step
-                atom_coords = atom_coords + d * dt
-            else:
-                # Heun's method: second-order correction
-                atom_coords_euler = atom_coords + d * dt
-
-                # Second-order estimate
-                atom_coords_denoised_2 = torch.zeros_like(atom_coords_euler)
-                for st in range(0, num_diffusion_samples, max_parallel_samples):
-                    end = min(st + max_parallel_samples, num_diffusion_samples)
-                    atom_coords_denoised_2[:, st:end] = self.forward_model(
-                        x_noisy=atom_coords_euler[:, st:end],
-                        t_hat=sigma_next,
-                        f_input=f_input,
-                        s_inputs=s_inputs,
-                        s_trunk=s_trunk,
-                        z_trunk=z_trunk,
-                        model_cache=model_cache,
-                    )
-
-                d_2 = self._to_d_bridge(
-                    x=atom_coords_euler,
-                    sigma=sigma_next,
-                    denoised=atom_coords_denoised_2,
-                    x_apo=x_apo,
-                    x_holo=x_holo,
-                    guidance_weight=self.guidance_weight,
-                    use_progressive_refinement=not use_ground_truth_holo,
-                )
-
-                # Average derivatives
-                d_avg = (d + d_2) / 2
-
-                # Update with averaged derivative
-                # NOTE: DDBM used step_scale=1.0
-                atom_coords = atom_coords + self.step_scale * d_avg * dt
-
-        return atom_coords
-
-    def _to_d_bridge(
-        self,
-        x: torch.Tensor,
-        sigma: float | torch.Tensor,
-        denoised: torch.Tensor,
-        x_apo: torch.Tensor | None = None,
-        x_holo: torch.Tensor | None = None,
-        guidance_weight: float = 1.0,
-        use_progressive_refinement: bool = False,
-        stochastic: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        """Convert denoiser output to bridge ODE derivative.
-
-        Implements the bridge diffusion ODE that balances:
-        1. Denoising towards predicted structure (grad w.r.t. x_0)
-        2. Guidance towards target holo structure (grad w.r.t. x_T)
-
-        This implements Theorem 1 (Eq. 7) from DDBM paper:
-        dxt = [f(xt,t) - g^2(t)(0.5s(xt,t,y,T) - h(xt,t,y,T))]dt
-
-        where s(xt,t,y,T) is the bridge score \nabla_xt log q(xt | xT) and
-        h(xt,t,y,T) is Doob's h-transform \nabla_xt log p(xT | xt).
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Current state. Shape (B, N, La, 3).
-        sigma : float or torch.Tensor
-            Current noise level.
-        denoised : torch.Tensor
-            Denoised prediction. Shape (B, N, La, 3).
-            - If use_progressive_refinement=False: approximates x_0 (apo/source)
-            - If use_progressive_refinement=True: approximates x_T (holo/target)
-        x_apo : torch.Tensor, optional
-            Source apo structure (x_0 endpoint). Required if use_progressive_refinement=True.
-            Shape (B, N, La, 3).
-        x_holo : torch.Tensor, optional
-            Target holo structure (x_T endpoint). Required if use_progressive_refinement=False.
-            Shape (B, N, La, 3).
-        guidance_weight : float, optional
-            Weight for guidance towards target, by default 1.0.
-        use_progressive_refinement : bool, optional
-            If True, use denoised as progressive x_holo estimate (inference mode).
-            If False, use fixed x_holo ground truth (training mode).
-            By default False.
-        stochastic : bool, optional
-            If True, use stochastic mode for Euler-Maruyama churn step.
-            In stochastic mode: guidance is disabled (w=0), full coefficient (1.0),
-            and returns both drift and diffusion coefficient.
-            By default False.
-
-        Returns
-        -------
-        d : torch.Tensor or tuple[torch.Tensor, torch.Tensor]
-            If stochastic=False: ODE derivative d. Shape (B, N, La, 3).
-            If stochastic=True: Tuple of (drift d, diffusion gt2). Both Shape (B, N, La, 3).
-        """
-        if isinstance(sigma, float):
-            sigma_tensor = torch.tensor(sigma, device=x.device, dtype=x.dtype)
-        else:
-            sigma_tensor = sigma
-
-        # Expand sigma to match x dimensions if needed
-        if sigma_tensor.ndim < x.ndim:
-            # sigma is (B, N), x is (B, N, La, 3)
-            while sigma_tensor.ndim < x.ndim:
-                sigma_tensor = sigma_tensor.unsqueeze(-1)
-
-        # Determine endpoints based on mode
-        if use_progressive_refinement:
-            # Inference mode: model predicts x_T (holo), x_apo is fixed
-            if x_apo is None:
-                raise ValueError("x_apo is required when use_progressive_refinement=True")
-            x_holo_estimate = denoised  # Progressive estimate of target
-            x_apo_fixed = x_apo  # Known source
-        else:
-            # Training mode: model predicts x_0 (apo), x_holo is fixed ground truth
-            if x_holo is None:
-                raise ValueError(
-                    "x_holo is required when use_progressive_refinement=False"
-                )
-            x_holo_estimate = x_holo  # Ground truth target
-            x_apo_fixed = denoised  # Model's prediction of source
-
-        # === Bridge score: \nabla_xt log q(xt | x0, xT) ===
-        # From Eq. 8 in DDBM paper, the bridge distribution is:
-        # q(xt | x0, xT) = N(\hat{mu}t, \hat{sigma}^2t I) where:
-        #   \hat{mu}t = (sigma^2/sigma^2_max)*xT + (1 - sigma^2/sigma^2_max)*x0
-        #   \hat{sigma}^2t = sigma^2(1 - sigma^2/sigma^2_max)
-        # Therefore: \nabla_xt log q(xt | x0, xT) = -(xt - \hat{mu}t) / \hat{sigma}^2t
-
-        # Compute bridge coefficients
-        sigma_ratio_sq = sigma_tensor**2 / (self.sigma_max**2)
-        at = sigma_ratio_sq  # weight for x_holo (xT)
-        bt = 1 - sigma_ratio_sq  # weight for x_apo (x0)
-        # bridge variance \hat{sigma}^2t
-        ct = sigma_tensor**2 * (1 - sigma_ratio_sq)
-
-        # Mean of bridge distribution
-        mu_t = at * x_holo_estimate + bt * x_apo_fixed
-
-        # Bridge score (gradient w.r.t. bridge mean)
-        grad_pxtlx0 = -(x - mu_t) / ct
-
-        # === Doob's h-transform: \nabla_xt log p(xT | xt) ===
-        # From Table 1 (VE bridge): \nabla_xt log p(xT | xt) = (xT - xt)/(sigma^2_T - sigma^2_t)
-        grad_pxTlxt = (x_holo_estimate - x) / (self.sigma_max**2 - sigma_tensor**2)
-
-        # === Bridge ODE derivative ===
-        # THEORETICAL NOTE: g^2(sigma) parameterization in sigma-space
-        #
-        # The DDBM paper formulates the ODE in time t (Eq. 7):
-        #   dxt = [f(xt,t) - g^2(t)(0.5s - h)]dt
-        #
-        # For VE bridges: f(xt,t) = 0, g^2(t) = d/dt sigma^2t
-        #
-        # We use sigma as the integration variable instead of t (Karras et al., EDM).
-        # With the change of variables dt -> dsigma:
-        #   dxt/dsigma = (dxt/dt) * (dt/dsigma) = [- g^2(t)(0.5s - h)] * (dt/dsigma)
-        #
-        # For variance-exploding SDE: dsigma^2t = g^2(t)dt
-        # Therefore: g^2(t) = dsigma^2t/dt = 2sigmat * dsigmat/dt
-        # And: dt/dsigma = 1/(dsigma/dt), so: (dt/dsigma) * g^2(t) = 2sigmat
-        #
-        # This gives: dxt/dsigma = -2sigmat * (0.5s - w*h) = -sigmat * (s - 2w*h)
-        # Rearranging: d = -0.5 * 2sigmat * (s - w*h)
-        #
-        # In sigma-parameterization with dsigma as integration variable:
-        gt2 = 2 * sigma_tensor
-
-        # Stochastic mode for Euler-Maruyama churn step
-        if stochastic:
-            # Stochastic Euler step: disable guidance, use full coefficient
-            # DDBM formulation: d = -gt2 * grad_pxtlx0 (no Doob's h-transform term)
-            d = -gt2 * grad_pxtlx0
-            return d, gt2
-        else:
-            # Deterministic ODE step: standard bridge formulation
-            # Final ODE derivative: d = -0.5 * g^2(sigma) * (s - w*h)
-            d = -0.5 * gt2 * (grad_pxtlx0 - guidance_weight * grad_pxTlxt)
-            return d
-
     def sample_noise_level(
         self,
         batch_size: int,
         num_diffusion_samples: int,
         device: torch.device | None = None,
     ) -> torch.Tensor:
-        """Sample noise levels for training.
-
-        Uses uniform distribution.
-
-        Parameters
-        ----------
-        batch_size : int
-            Batch size.
-        num_diffusion_samples : int
-            Number of diffusion samples.
-        device : torch.device, optional
-            Device for tensor allocation.
-
-        Returns
-        -------
-        t_hat : torch.Tensor
-            Sampled noise levels. Shape (B, N).
+        """Sample from the prior distribution.
+        Return shape: [B, N, La, 3], where N is number of diffusion samples
+        and La is number of atoms.
         """
 
-        ts = (
-            torch.rand(batch_size, num_diffusion_samples, device=device)
-            * (self.sigma_max - self.sigma_min)
-            + self.sigma_min
-        )
-        return ts
+        # See Section 3.7 of AlphaFold3 paper.
+        # t_hat = sigma_data * exp(-1.2 + 1.5 * N(0, 1)),
+        # where -1.2 is P_mean and 1.5 is P_std.
+        def _sample(*shape: int) -> torch.Tensor:
+            return torch.exp(
+                self.P_mean + self.P_std * torch.randn(shape, device=device)
+            ).clamp(max=self.sigma_max) * self.sigma_data       # only do max clamp; 0 <= sigma_t < sigma_min is valid
+
+        if self.synchronize_sigmas:
+            # synchronize sigmas across diffusion samples
+            return _sample(batch_size, 1).repeat(1, num_diffusion_samples)
+        else:
+            # use different sigmas for each diffusion sample
+            return _sample(batch_size, num_diffusion_samples)
+
 
     def get_sampling_schedule(
         self,
@@ -692,6 +357,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             / (num_steps - 1)
             * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
         ) ** self.rho
+
+        sigmas = sigmas * self.sigma_data
 
         # last step is sigma value of 0.
         sigmas = F.pad(sigmas, (0, 1), value=0.0)
@@ -822,16 +489,13 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         t_expanded = t_hat[:, :, None, None]  # (B, N, 1, 1)
 
         # Compute interpolation weights
-        sigma_ratio_sq = t_expanded**2 / self.sigma_max**2
-        weight_holo = sigma_ratio_sq
-        weight_apo = 1 - sigma_ratio_sq
+        a_t = t_expanded**2 / self.sigma_max**2  # a_t
+        b_t = 1 - a_t  # b_t (weight for x_0)
 
         # Mean of bridge distribution
-        mu_t = weight_holo * x_holo + weight_apo * x_apo
+        mu_t = a_t * x_apo + b_t * x_holo  # a_t x_T + b_t x_0
 
-        # Standard deviation of bridge distribution
-        # std_t = t * sqrt(1 - t^2/sigma_max^2)
-        std_t = t_expanded * torch.sqrt(1 - sigma_ratio_sq)
+        std_t = t_expanded * torch.sqrt(b_t)  # sqrt(c_t) = sigma_t * sqrt(b_t)
 
         # Sample from bridge distribution
         noise = torch.randn_like(x_apo)

@@ -3,9 +3,9 @@ _class_: "KFoldBridgeDiffusion"
 num_steps: 200
 sigma_min: 0.0004
 sigma_max: 160.0
-sigma_data: 16.0
-sigma_data_end: 16.0
-cov_xy: 128.0  # sigma_data^2 / 2
+sigma_data: 16.0          # holo structures
+sigma_data_end: 16.0      # apo structures
+cov_xy: 128.0  # sigma_data * sigma_data_end / 2
 rho: 7
 P_mean: -1.2
 P_std: 1.5
