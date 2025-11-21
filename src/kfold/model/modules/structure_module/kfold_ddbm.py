@@ -158,7 +158,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         # A = (sigma^4/sigma_data_end^4)sigma_data_end^2 + (1-sigma^2/sigma_data_end^2)^2sigma_data^2
         #     + 2(sigma^2/sigma_data_end^2)(1-sigma^2/sigma_data_end^2)cov_xy
         #     + sigma^2(1-sigma^2/sigma_data_end^2)
-        a_t = sigma**2 / self.sigma_max**2  # a_t in DDBM (p. 19)
+        T = self.sigma_max * self.sigma_data
+        a_t = sigma**2 / T**2  # a_t in DDBM (p. 19)
         b_t = 1 - a_t  # b_t in DDBM (p. 19)
         c_t = sigma**2 * b_t  # c_t in DDBM (p. 19)
 
@@ -313,7 +314,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         def _sample(*shape: int) -> torch.Tensor:
             return torch.exp(
                 self.P_mean + self.P_std * torch.randn(shape, device=device)
-            ).clamp(max=self.sigma_max) * self.sigma_data       # only do max clamp; 0 <= sigma_t < sigma_min is valid
+            ).clamp(max=self.sigma_max) * self.sigma_data
 
         if self.synchronize_sigmas:
             # synchronize sigmas across diffusion samples
@@ -489,7 +490,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         t_expanded = t_hat[:, :, None, None]  # (B, N, 1, 1)
 
         # Compute interpolation weights
-        a_t = t_expanded**2 / self.sigma_max**2  # a_t
+        T = self.sigma_max * self.sigma_data
+        a_t = t_expanded**2 / T**2  # a_t
         b_t = 1 - a_t  # b_t (weight for x_0)
 
         # Mean of bridge distribution
@@ -505,3 +507,10 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         noised_coords = noised_coords * mask[:, None, :, None]
 
         return noised_coords
+
+    def sample_structure(self, *args, **kwargs) -> torch.Tensor:
+        """Sample structures via diffusion sampling.
+        See Section 3.7: Algorithm 18 of AlphaFold3 paper.
+        """
+        # TODO: Implement this
+        pass
