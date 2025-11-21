@@ -24,10 +24,6 @@ train:
 
   training:
     diffusion_batch_size: 16
-    loss:
-      diffusion_loss:
-        mse_loss:
-          scale: true
 
   data:
     train_batch_size: 4
@@ -39,6 +35,11 @@ train:
 
     featurization_args:
       synchronize_ref_pos_augmentation: true
+
+  loss:
+    diffusion_loss:
+      mse_loss:
+        scale: true
 
   wandb:
     use: false

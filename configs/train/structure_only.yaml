@@ -47,7 +47,7 @@ data:
     _class_: ClusterSampler
     beta_chain: 0.5
     beta_interface: 1.0
-    allow_redundant: True
+    allow_redundant: True # Same to Boltz1
 
   # Featurizer configurations:
   featurization_args:
