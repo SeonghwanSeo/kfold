@@ -620,6 +620,22 @@ class KFoldTrainingModule(pl.LightningModule):
     def on_validation_end(self) -> None:
         self.prepare_train()
 
+    def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        if self.use_ema:
+            checkpoint["ema"] = self.ema.state_dict()
+
+    def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        if self.use_ema and "ema" in checkpoint:
+            self.ema = ExponentialMovingAverage(
+                parameters=self.parameters(), decay=self.ema_decay
+            )
+            if self.ema.compatible(checkpoint["ema"]["shadow_params"]):
+                self.ema.load_state_dict(checkpoint["ema"], device=torch.device("cpu"))
+            else:
+                print(
+                    "Warning: EMA state not loaded due to incompatible model parameters."
+                )
+
     # === Helper functions === #
     def save_structure(
         self,
