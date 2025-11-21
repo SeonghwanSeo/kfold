@@ -3,6 +3,7 @@ import torch
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.layers.boltz1.diffusion import DiffusionModule
+from kfold.model.layers.boltz1.encoders import RelativePositionEncoder
 from kfold.utils.registry import SCORE_MODEL, BaseConfig
 
 from .base import BaseScoreModel
@@ -86,6 +87,8 @@ class Boltz1DiffusionModule(BaseScoreModel):
             conditioning_transition_layers=cfg.conditioning_transition_layers,
         )
 
+        self.rel_pos_encoding = RelativePositionEncoder(cfg.channel_z)
+
     def forward(
         self,
         r_noisy: torch.Tensor,
@@ -122,12 +125,24 @@ class Boltz1DiffusionModule(BaseScoreModel):
         r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """
-        return self.diffusion_stack(
-            r_noisy,
-            c_noise,
-            f_input,
-            s_inputs,
-            s_trunk,
-            z_trunk,
-            model_cache,
-        )
+        B, N, La, _ = r_noisy.shape
+        r_noisy = r_noisy.view(B * N, La, 3)
+        c_noise = c_noise.view(B * N)
+        # s_inputs = s_inputs
+        # s_trunk = s_trunk.repeat_interleave(N, dim=0)
+        # z_trunk = z_trunk.repeat_interleave(N, dim=0)
+
+        rel_pos_encoding = self.rel_pos_encoding(f_input)
+
+        r_update = self.diffusion_stack(
+            s_inputs=s_inputs,
+            s_trunk=s_trunk,
+            z_trunk=z_trunk,
+            r_noisy=r_noisy,
+            times=c_noise,
+            relative_position_encoding=rel_pos_encoding,
+            multiplicity=N,
+            f_input=f_input,
+            model_cache=model_cache,
+        )["r_update"]
+        return r_update.view(B, N, La, 3)

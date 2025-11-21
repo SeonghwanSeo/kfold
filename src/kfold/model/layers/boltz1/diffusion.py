@@ -6,6 +6,8 @@ from __future__ import annotations
 from torch import nn
 from torch.nn import Module
 
+from kfold.data.model_input import FoldingInput
+
 from . import initialize as init
 from .encoders import (
     AtomAttentionDecoder,
@@ -150,7 +152,7 @@ class DiffusionModule(Module):
         r_noisy,
         times,
         relative_position_encoding,
-        feats,
+        f_input: FoldingInput,
         multiplicity=1,
         model_cache=None,
     ):
@@ -169,7 +171,7 @@ class DiffusionModule(Module):
 
         # Compute Atom Attention Encoder and aggregation to coarse-grained tokens
         a, q_skip, c_skip, p_skip, to_keys = self.atom_attention_encoder(
-            feats=feats,
+            f_input=f_input,
             s_trunk=s_trunk,
             z=z,
             r=r_noisy,
@@ -180,7 +182,7 @@ class DiffusionModule(Module):
         # Full self-attention on token level
         a = a + self.s_to_a_linear(s)
 
-        mask = feats["token_pad_mask"].repeat_interleave(multiplicity, 0)
+        mask = f_input.token.pad_mask.repeat_interleave(multiplicity, 0)
         a = self.token_transformer(
             a,
             mask=mask.float(),
@@ -197,7 +199,7 @@ class DiffusionModule(Module):
             q=q_skip,
             c=c_skip,
             p=p_skip,
-            feats=feats,
+            f_input=f_input,
             multiplicity=multiplicity,
             to_keys=to_keys,
             model_cache=model_cache,

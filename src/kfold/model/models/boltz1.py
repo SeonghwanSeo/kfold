@@ -46,14 +46,6 @@ class Boltz1(KFold):
         )
         assert isinstance(self.structure_module, Boltz1SampleDiffusion)
 
-        # NOTE: additional projection layers for compatibility with KFold
-        c_input_boltz = 384 + 33 * 2 + 1 + 4  # 459
-        self.proj_s_inputs = torch.nn.Linear(
-            c_input_boltz,
-            model_config.score_model.channel_s,
-            bias=False,
-        )
-
         # Load Boltz-1 pretrained weights
         if model_config.load_weight:
             self.load_boltz_weights()
@@ -122,13 +114,18 @@ class Boltz1(KFold):
             state_dict.pop("distogram_module." + k)
 
         structure_module_state_dict = {
-            k.replace("structure_module.score_model", ""): v
+            k.replace("structure_module.score_model.", ""): v
             for k, v in state_dict.items()
             if k.startswith("structure_module.score_model")
         }
-        self.score_model.load_state_dict(structure_module_state_dict, strict=True)
+        self.score_model.diffusion_stack.load_state_dict(
+            structure_module_state_dict, strict=True
+        )
         for k in list(structure_module_state_dict.keys()):
             state_dict.pop("structure_module.score_model." + k)
+        self.score_model.rel_pos_encoding.load_state_dict(
+            self.input_embedder.rel_pos.state_dict(), strict=True
+        )
 
         # Remove unused keys
         for k in list(state_dict.keys()):
@@ -186,9 +183,6 @@ class Boltz1(KFold):
             f_input,
             num_cycles,
         )
-
-        # NOTE: Project single features to match structure module input dim
-        s_inputs = self.proj_s_inputs(s_inputs)
 
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.

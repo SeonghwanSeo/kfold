@@ -581,15 +581,15 @@ class AtomAttentionDecoder(Module):
         q,
         c,
         p,
-        feats,
+        f_input: FoldingInput,
         to_keys,
         multiplicity=1,
         model_cache=None,
     ):
-        atom_mask = feats["atom_pad_mask"]
+        atom_mask = f_input.atom.pad_mask
         atom_mask = atom_mask.repeat_interleave(multiplicity, 0)
 
-        atom_to_token = feats["atom_to_token"].float()
+        atom_to_token = f_input.atom_to_token.float()
         atom_to_token = atom_to_token.repeat_interleave(multiplicity, 0)
 
         a_to_q = self.a_to_q_trans(a)

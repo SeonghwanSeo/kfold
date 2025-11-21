@@ -1,5 +1,6 @@
 model:
   _yaml_: "model/boltz1.yaml"
+  load_weight: false
 
 train:
   _yaml_: "train/structure_only.yaml"
@@ -19,13 +20,13 @@ train:
     accumulate_grad_batches: 32 # 256 // batch_size // num_gpus
 
   training:
-    diffusion_batch_size: 48
+    diffusion_batch_size: 16
 
   data:
     train_batch_size: 1
     max_tokens: 512
-    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
-    manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
+    lmdb_path: ../data/kfold_rcsb_processed_v251120.lmdb/
+    manifest_path: ../data/manifests/af3_manifest.pkl
     split_path: ./assets/splits/boltz1
     num_workers: 4
 
@@ -34,6 +35,6 @@ train:
 
   wandb:
     use: false
-    project: "KFold-boltz1-trunk"
-    group: ddbm-score-model-only
+    project: "Boltz1"
+    group: boltz-scratch
     entity: K-Fold
