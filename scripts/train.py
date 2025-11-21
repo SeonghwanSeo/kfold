@@ -68,10 +68,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable debug mode.",
     )
+    parser.add_argument(
+        "--overfit",
+        action="store_true",
+        help="Enable overfitting mode.",
+    )
     return parser.parse_args()
 
 
-def build_trainer(cfg) -> pl.Trainer:
+def build_trainer(cfg, debug: bool = True) -> pl.Trainer:
     train_cfg = cfg.train
     pl_trainer_cfg = train_cfg.trainer
 
@@ -101,6 +106,11 @@ def build_trainer(cfg) -> pl.Trainer:
     model_summary = pl.callbacks.ModelSummary(max_depth=2)
     callbacks.append(model_summary)
 
+    # TQDM
+    refresh_rate = 5 if debug else 1
+    tqdm_callback = pl.callbacks.TQDMProgressBar(refresh_rate=refresh_rate)
+    callbacks.append(tqdm_callback)
+
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor="val/best/weighted_lddt",
         save_top_k=-1,
@@ -126,7 +136,7 @@ def build_trainer(cfg) -> pl.Trainer:
         enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
         accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
         gradient_clip_val=pl_trainer_cfg.gradient_clip_val,
-        reload_dataloaders_every_n_epochs=1,
+        # reload_dataloaders_every_n_epochs=1,
     )
     return trainer
 
@@ -167,6 +177,10 @@ def train(args) -> None:
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False
         cfg.train.wandb.use = False
+
+    if args.overfit:
+        # Enable overfitting mode (use only validation set for training and validation)
+        cfg.train.data.overfit_val = True
 
     # Set random seed
     pl.seed_everything(cfg.train.seed)
