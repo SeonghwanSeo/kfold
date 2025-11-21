@@ -407,7 +407,7 @@ class TokenizedStructure:
 
     @cached_property
     def num_atoms(self) -> int:
-        """Number of tokens in the structure."""
+        """Number of atoms in the structure."""
         return int(self.token.num_atoms.sum())
 
     @property

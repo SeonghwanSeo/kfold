@@ -52,7 +52,7 @@ def do_augment_ref_pos(
 
         new_ref_pos = np.zeros_like(ref_pos)
         start_idx = 0
-        # Apply random augmentation per residue
+        # Apply random augmentation per residue(conformer)
         for natom in conformer_sizes:
             end_idx = start_idx + natom
             new_ref_pos[start_idx:end_idx] = center_random_augmentation(
@@ -183,10 +183,12 @@ def featurize_structure(
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
     # Centering the ground truth coords
+    # [Natom, Nholo, 3] -> [Nholo, Natom, 3] -> [Natom, Nholo, 3]
     atom_dict["label_coords"] = do_centering(
         atom_dict["label_coords"].transpose(1, 0, 2),
         atom_dict["resolved_mask"].reshape(1, -1),
-    ).transpose(1, 0, 2)  # [Natom, Nholo, 3] -> [Nholo, Natom, 3] -> [Natom, Nholo, 3]
+        mask_to_zero=True,
+    ).transpose(1, 0, 2)
 
     # === Bond-level features ===
     num_bonds = bond_data.length
@@ -298,17 +300,19 @@ def featurize_structure(
     # TODO: If we use CCD, use random ETKDG conformers here.
     if augment_apo:
         num_atoms_per_chains = chain_dict["num_atoms"]
+        # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
         atom_dict["apo_coords"] = do_augment_apo_structure(
             apo_coords=atom_dict["apo_coords"].transpose(1, 0, 2),
             mask=atom_dict["apo_mask"].transpose(1, 0),
             chain_sizes=num_atoms_per_chains,
             rng=rng,
-        ).transpose(1, 0, 2)  # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
+        ).transpose(1, 0, 2)
     else:
+        # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
         atom_dict["apo_coords"] = do_centering(
             atom_dict["apo_coords"].transpose(1, 0, 2),
             atom_dict["apo_mask"].transpose(1, 0),
-        ).transpose(1, 0, 2)  # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
+        ).transpose(1, 0, 2)
 
     # === Bond-level features ===
     # TODO: Remap token indices to cropped tokens
