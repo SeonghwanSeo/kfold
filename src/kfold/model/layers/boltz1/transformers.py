@@ -1,6 +1,7 @@
 # started from code from https://github.com/lucidrains/alphafold3-pytorch, MIT License,
 # Copyright (c) 2024 Phil Wang
 
+import torch.utils.checkpoint
 from torch import nn, sigmoid
 from torch.nn import (
     LayerNorm,
@@ -145,15 +146,28 @@ class DiffusionTransformer(Module):
                 if prefix_cache not in model_cache:
                     model_cache[prefix_cache] = {}
                 layer_cache = model_cache[prefix_cache]
-            a = layer(
-                a,
-                s,
-                z,
-                mask=mask,
-                to_keys=to_keys,
-                multiplicity=multiplicity,
-                layer_cache=layer_cache,
-            )
+            if self.training:
+                a = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    a,
+                    s,
+                    z,
+                    mask,
+                    to_keys,
+                    multiplicity,
+                    layer_cache,
+                    use_reentrant=False,
+                )
+            else:
+                a = layer(
+                    a,
+                    s,
+                    z,
+                    mask=mask,
+                    to_keys=to_keys,
+                    multiplicity=multiplicity,
+                    layer_cache=layer_cache,
+                )
         return a
 
 

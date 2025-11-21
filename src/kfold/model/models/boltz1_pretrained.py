@@ -4,11 +4,10 @@ from pathlib import Path
 import torch
 from omegaconf import DictConfig
 
+import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
 from kfold.model.modules.distogram_head.boltz1 import Boltz1DistogramHead
 from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedder
-from kfold.model.modules.score_model.boltz1_diffusion import Boltz1DiffusionModule
-from kfold.model.modules.structure_module.boltz1_edm import Boltz1SampleDiffusion
 from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk
 from kfold.utils.registry import MAIN_MODULE, Registry
 
@@ -16,7 +15,7 @@ from .kfold import KFold
 
 
 @MAIN_MODULE.register()
-class Boltz1(KFold):
+class Boltz1Pretrained(KFold):
     def __init__(self, global_config: DictConfig):
         torch.nn.Module.__init__(self)
         self.config = global_config
@@ -37,14 +36,14 @@ class Boltz1(KFold):
         assert isinstance(self.distogram_head, Boltz1DistogramHead)
 
         # === For custom diffusion structure module === #
-        self.score_model: Boltz1DiffusionModule = Registry.instantiate(
+        self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
             model_config.score_model
         )
-        assert isinstance(self.score_model, Boltz1DiffusionModule)
-        self.structure_module: Boltz1SampleDiffusion = Registry.instantiate(
-            model_config.structure_module, score_model=self.score_model
+        self.structure_module: submodules.structure_module.BaseStructureModule = (
+            Registry.instantiate(
+                model_config.structure_module, score_model=self.score_model
+            )
         )
-        assert isinstance(self.structure_module, Boltz1SampleDiffusion)
 
         # NOTE: additional projection layers for compatibility with KFold
         c_input_boltz = 384 + 33 * 2 + 1 + 4  # 459
@@ -55,8 +54,7 @@ class Boltz1(KFold):
         )
 
         # Load Boltz-1 pretrained weights
-        if model_config.load_weight:
-            self.load_boltz_weights()
+        self.load_boltz_weights()
 
     def load_boltz_weights(self):
         cache_dir = Path("/cache/wykim_lab/boltz1_weights")
@@ -121,24 +119,9 @@ class Boltz1(KFold):
         for k in list(distogram_module_state_dict.keys()):
             state_dict.pop("distogram_module." + k)
 
-        structure_module_state_dict = {
-            k.replace("structure_module.score_model", ""): v
-            for k, v in state_dict.items()
-            if k.startswith("structure_module.score_model")
-        }
-        self.score_model.load_state_dict(structure_module_state_dict, strict=True)
-        for k in list(structure_module_state_dict.keys()):
-            state_dict.pop("structure_module.score_model." + k)
-
         # Remove unused keys
         for k in list(state_dict.keys()):
-            if k.startswith(
-                (
-                    "msa_module",
-                    "confidence_module",
-                    "structure_module.out_token_feat_update",
-                )
-            ):
+            if k.startswith(("msa_module", "structure_module", "confidence_module")):
                 state_dict.pop(k)
 
         # Check that all keys have been used

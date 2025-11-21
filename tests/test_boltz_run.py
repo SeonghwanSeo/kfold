@@ -5,7 +5,7 @@ import torch
 from kfold.config import load_config
 from kfold.data.model_input import FoldingInput
 from kfold.data.structure import TokenizedStructure
-from kfold.model.models.boltz1 import Boltz1
+from kfold.model.models.boltz1_pretrained import Boltz1Pretrained
 from kfold.training.folding.dataset.datamodule import TrainingDataModule
 
 TEST_CONFIG_PATH = Path("./configs/train-boltz1.yaml")
@@ -21,7 +21,7 @@ if __name__ == "__main__":
     dataloader = data_module.val_dataloader()
 
     # === Load Model === #
-    model = Boltz1(global_config)
+    model = Boltz1Pretrained(global_config)
     model = model.eval()
     model = model.cuda()
 
