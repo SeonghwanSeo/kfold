@@ -201,7 +201,8 @@ class BaseStructureModule(ABC):
 
         B, Napo, L = all_apo_mask.shape  # noqa
         assert Napo == 1
-
+        # TODO(SeonghwanSeo): Currently only supports a single apo structure (Napo == 1).
+        # Update this code to support multiple apo structures in the future.
         sampled_apo_coords = all_apo_coords.repeat(1, num_diffusion_samples, 1, 1)
         sampled_apo_mask = all_apo_mask.repeat(1, num_diffusion_samples, 1)
 

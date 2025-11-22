@@ -7,6 +7,7 @@ import kfold.model.modules as submodules
 from kfold.config import load_config
 from kfold.data.model_input import FoldingInput
 from kfold.data.structure import TokenizedStructure
+from kfold.model.modules.structure_module.kfold_ddbm import KFoldBridgeDiffusion
 from kfold.training.folding.dataset.datamodule import TrainingDataModule
 from kfold.utils import errors
 from kfold.utils.registry import Registry
@@ -37,11 +38,10 @@ if __name__ == "__main__":
     score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
         model_config.score_model
     )
-    structure_module: submodules.structure_module.BaseStructureModule = (
-        Registry.instantiate(model_config.structure_module, score_model=score_model)
+    structure_module: KFoldBridgeDiffusion = Registry.instantiate(
+        model_config.structure_module, score_model=score_model
     )
-    score_model = score_model.to(device="cuda")
-    score_model.eval()
+    assert isinstance(structure_module, KFoldBridgeDiffusion)
 
     # Turn off gradient
     torch.set_grad_enabled(False)
@@ -54,7 +54,7 @@ if __name__ == "__main__":
     for iter, (f_input, full_dict_list) in enumerate(dataloader):
         assert f_input.batch_size == 1
 
-        if iter < 10:
+        if iter == 10:
             break
 
         full_dict = full_dict_list[0]
@@ -63,7 +63,7 @@ if __name__ == "__main__":
 
         print(f"Test {name} with {num_samples} samples")
 
-        # Save structure
+        # ====== Save original structure ====== #
         try:
             struct.to_pdb(
                 SAVE_PATH / f"{name}-original-gt.pdb",
@@ -76,13 +76,13 @@ if __name__ == "__main__":
         except errors.PDBWriterMaxChainError:
             print(f"Skipping {name} due to PDB writing error.")
 
-        # Save structure with data augmentation during featurization
+        # ====== Save augmented structure ====== #
         # Replace coords
         struct = struct.replace_atom_coords(
-            atom_coords=f_input.atom.label_coords[0].cpu().numpy().transpose(1, 0, 2),
+            atom_coords=f_input.atom.label_coords[0].numpy().transpose(1, 0, 2),
         )
         struct = struct.replace_atom_coords(
-            atom_coords=f_input.atom.apo_coords[0].cpu().numpy().transpose(1, 0, 2),
+            atom_coords=f_input.atom.apo_coords[0].numpy().transpose(1, 0, 2),
             is_apo=True,
         )
         struct.to_pdb(
@@ -94,20 +94,37 @@ if __name__ == "__main__":
             save_apo=True,
         )
 
-        # Move to GPU
-        f_input = f_input.to(device="cuda")
-
-        # Get sigmas
-        t_hat = structure_module.sample_noise_level(1, num_samples, f_input.device)
-        t_hat = torch.sort(t_hat, dim=-1).values  # [1, num_samples]
-        t_hat = t_hat / 5
+        # ====== Save kabsch-aligned structures ====== #
+        # Compared to augmented coords, apo structure must be
+        # aligned to the holo structure.
 
         # Get label coords # [1, num_samples, Natom, 3]
         label_coords = structure_module.sample_holo(f_input, num_samples)
-
         # Get apo coords # [1, num_samples, Natom, 3]
         apo_coords = structure_module.sample_prior(f_input, num_samples, label_coords)
 
+        # Replace coords and save
+        struct = struct.replace_atom_coords(
+            atom_coords=label_coords[0].numpy(),
+        )
+        struct = struct.replace_atom_coords(
+            atom_coords=apo_coords[0].numpy(),
+            is_apo=True,
+        )
+        struct.to_pdb(
+            SAVE_PATH / f"{name}-ddbm-x0.pdb",
+            is_predicted=False,
+        )
+        struct.to_pdb(
+            SAVE_PATH / f"{name}-ddbm-xT.pdb",
+            save_apo=True,
+        )
+
+        # ====== Save interpolated structures ====== #
+        # Get sigmas
+        t_hat = torch.linspace(
+            structure_module.sigma_min, structure_module.sigma_max, num_samples
+        )
         noisy_coords = structure_module.interpolate(
             apo_coords,
             label_coords,
@@ -115,29 +132,8 @@ if __name__ == "__main__":
             f_input.atom.resolved_mask,
         )
 
-        # Replace coords
         struct = struct.replace_atom_coords(
-            atom_coords=label_coords[0].cpu().numpy(),
-        )
-        struct = struct.replace_atom_coords(
-            atom_coords=apo_coords[0].cpu().numpy(),
-            is_apo=True,
-        )
-
-        for i in range(num_samples):
-            # Save struct
-            struct.to_pdb(
-                SAVE_PATH / f"{name}-gt-{i}.pdb",
-                is_predicted=False,
-            )
-            struct.to_pdb(
-                SAVE_PATH / f"{name}-apo-{i}.pdb",
-                save_apo=True,
-            )
-            break
-
-        struct = struct.replace_atom_coords(
-            atom_coords=noisy_coords[0].cpu().numpy(),
+            atom_coords=noisy_coords[0].numpy(),
         )
         for i in range(num_samples):
             # Save struct
@@ -146,4 +142,3 @@ if __name__ == "__main__":
                 conformer_id=i,
                 is_predicted=False,
             )
-        break

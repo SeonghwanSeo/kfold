@@ -75,7 +75,7 @@ def weighted_rigid_align(
     original_dtype = coords.dtype
 
     if not mask.any():
-        # If there is no valid atoms, return identical coords
+        # If there are no valid atoms, return identical coords
         return coords
 
     L = coords.shape[-2]

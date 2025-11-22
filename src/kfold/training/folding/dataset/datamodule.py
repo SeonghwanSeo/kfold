@@ -54,6 +54,9 @@ class DataModuleConfig(BaseConfig):
     pin_memory: bool = True
     safe_load: bool = True
 
+    # === For debugging === #
+    overfit_val: bool = False
+
     # === Cropping arguments === #
     cropper: BaseCropper.Config
 
@@ -97,6 +100,9 @@ class TrainingDataModule(pl.LightningDataModule):
         self.manifest_path: Path = Path(config.manifest_path)
         self.split_path: Path = Path(config.split_path)
 
+        if not self.lmdb_path.exists():
+            raise FileNotFoundError(f"LMDB path not found: {self.lmdb_path}")
+
         self.featurization_args = config.featurization_args
 
     def setup(self, stage: str | None = None) -> None:
@@ -117,8 +123,16 @@ class TrainingDataModule(pl.LightningDataModule):
         # Load records
         all_records: list[Metadata] = load_manifest(self.manifest_path)
 
-        # Apply filters
-        train_records = [r for r in all_records if do_filter(r)]
+        if self.config.overfit_val:
+            # use only validation set for overfitting
+            validation_split = self.split_path / "validation_ids.txt"
+            with open(validation_split) as f:
+                val_ids = set([line.strip().lower() for line in f])
+            train_records = [r for r in all_records if r.id.lower() in val_ids]
+            train_records = train_records * 100  # repeat to have enough samples
+        else:
+            # Apply filters
+            train_records = [r for r in all_records if do_filter(r)]
 
         return LMDBTrainingDataset(
             records=train_records,
@@ -173,6 +187,7 @@ class TrainingDataModule(pl.LightningDataModule):
             pin_memory=self.config.pin_memory,
             drop_last=True,
             collate_fn=collate,
+            persistent_workers=True,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -185,4 +200,5 @@ class TrainingDataModule(pl.LightningDataModule):
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
             collate_fn=collate,
+            persistent_workers=True,
         )

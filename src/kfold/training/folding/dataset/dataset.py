@@ -320,6 +320,10 @@ class LMDBDatabase:
             tokenized_structure = structure.TokenizedStructure.load_npz(byte_stream)
         return tokenized_structure
 
+    def __del__(self):
+        if hasattr(self, "_lmdb_env"):
+            self._lmdb_env.close()
+
 
 class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
     def __init__(

@@ -203,7 +203,7 @@ def _center_random_augmentation_torch(
         R = random_rotations_torch(
             coords.shape[:-2], coords.dtype, coords.device, rng=rng
         )  # [..., 3, 3]
-        coords = torch.einsum("...md,...ds->...ms", coords, R)  # noqa
+        coords = torch.einsum("...md,...ds->...ms", coords, R)
 
     # Line 3,4
     if s_trans > 0.0:
@@ -223,7 +223,7 @@ def _center_random_augmentation_torch(
 
 def _copysign(a: ArrayT, b: ArrayT) -> ArrayT:
     """
-    Return a array where each element has the absolute value taken from the,
+    Return an array where each element has the absolute value taken from the,
     corresponding element of a, with sign taken from the corresponding
     element of b. This is like the standard copysign floating-point operation,
     but is not careful about negative 0 and NaN.
@@ -276,7 +276,6 @@ def random_rotations_torch(
     """
     # Get random quaternions
     n = math.prod(shape)
-    print(n)
 
     o = torch.randn((n, 4), dtype=dtype, device=device, generator=rng)
     s = (o * o).sum(1)

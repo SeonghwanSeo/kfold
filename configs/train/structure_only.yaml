@@ -15,6 +15,7 @@ data:
   lmdb_path: <LMDB_PATH_PLACEHOLDER>
   manifest_path: <MANIFEST_PATH_PLACEHOLDER>
   split_path: ./assets/splits/boltz1
+  overfit_val: false
 
   # DataLoader
   train_batch_size: 1
