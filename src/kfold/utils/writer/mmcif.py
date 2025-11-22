@@ -14,8 +14,14 @@ from rdkit import Chem
 import kfold.constants as C
 from kfold.data.structure import TokenizedStructure
 
-# TODO: check what is simple wrapper and implement it
 # === Simple wrappers === #
+def to_mmcifstring_apo(
+    structure: TokenizedStructure,
+    conformer_id: int = 0,
+) -> str:
+    return to_mmcifstring(
+        structure, conformer_id=conformer_id, is_predicted=False, save_apo=True
+    )
 
 # === Core implementation === #
 @lru_cache(maxsize=1)
@@ -125,7 +131,7 @@ def to_mmcifstring(
         # Handle Ligands
         if chain_type == C.chain.ChainType.LIGAND:
              seq_objs = [chem_comp(item) for item in sequence]
-             entity = Entity(seq_objs, description=f"Ligand {ent_id}")
+             entity = Entity(seq_objs, description=f"Ligand {ent_id}") # add description
         else:
             seq_objs = [
                 alphabet[item] if item in alphabet else chem_comp(item)
@@ -133,14 +139,23 @@ def to_mmcifstring(
             ]
             entity = Entity(seq_objs, description=f"Polymer {ent_id}")
             
-        entity_map[ent_id] = entity
+        entity_map[ent_id] = entity 
 
     # --- 2. Create AsymUnits (Chains) ---
     asym_unit_map = {} # asym_id -> ihm.AsymUnit
     
     unique_asym_ids = np.unique(tokens.asym_id)
-    chain_id_iter = [chr(i) for i in range(65, 91)] # A-Z
-    
+    # Generate chain tag helper
+    def _get_chain_tag(idx: int) -> str:
+        chars = []
+        while True:
+            idx, rem = divmod(idx, 26)
+            chars.append(chr(65 + rem))
+            if idx == 0:
+                break
+            idx -= 1
+        return "".join(reversed(chars))
+
     for asym_id in unique_asym_ids:
         # Get entity_id for this chain
         chain_mask = tokens.asym_id == asym_id
@@ -150,16 +165,25 @@ def to_mmcifstring(
         entity = entity_map[ent_id]
         
         # Generate chain tag
-        if asym_id <= 26:
-            chain_tag = chain_id_iter[asym_id - 1]
-        else:
-            chain_tag = f"Chain{asym_id}"
+        # mmCIF supports arbitrary string IDs. We generate A-Z, AA-ZZ, etc.
+        # asym_id is 1-based in kfold.
+        chain_tag = _get_chain_tag(asym_id - 1)
 
-        asym = AsymUnit(
-            entity,
-            details=f"Model subunit {chain_tag}",
-            id=chain_tag,
-        )
+        # Handle Water Entities
+        # If the entity represents water (e.g. HOH), ihm detects it and sets entity.type to 'water'.
+        if entity.type == "water":
+            asym = ihm.WaterAsymUnit(
+                entity,
+                1, # count, usually 1 for asym unit
+                details=f"Model subunit {chain_tag}",
+                id=chain_tag,
+            )
+        else:
+            asym = AsymUnit(
+                entity,
+                details=f"Model subunit {chain_tag}",
+                id=chain_tag,
+            )
         asym_unit_map[asym_id] = asym
 
     modeled_assembly = Assembly(asym_unit_map.values(), name="Modeled assembly")
@@ -196,7 +220,7 @@ def to_mmcifstring(
                     # Coords
                     pos = atom_coords[i, j]
                     
-                    # B-factor (Fixed to 1.0 as per kfold style)
+                    # B-factor (Fixed to 1.0 (no plddt factor))
                     biso = 1.00
                     
                     yield Atom(
