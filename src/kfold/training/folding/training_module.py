@@ -425,6 +425,12 @@ class KFoldTrainingModule(pl.LightningModule):
         weighted_lddt /= sum_weights
         avg_values["weighted_lddt"] = weighted_lddt  # type: ignore
 
+        weighted_lddt = 0
+        for m, w in lddt_weights.items():
+            weighted_lddt += avg_values.get(f"best/lddt_{m.value}", 0.0) * w
+        weighted_lddt /= sum_weights
+        avg_values["best/weighted_lddt"] = weighted_lddt  # type: ignore
+
         avg_values = {f"val/{k}": v for k, v in avg_values.items()}
         self.log_dict(avg_values, sync_dist=True)
 
