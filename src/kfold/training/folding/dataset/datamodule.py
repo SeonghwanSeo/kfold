@@ -187,7 +187,7 @@ class TrainingDataModule(pl.LightningDataModule):
             pin_memory=self.config.pin_memory,
             drop_last=True,
             collate_fn=collate,
-            persistent_workers=True,
+            persistent_workers=True if self.config.num_workers > 0 else False,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -200,5 +200,5 @@ class TrainingDataModule(pl.LightningDataModule):
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
             collate_fn=collate,
-            persistent_workers=True,
+            persistent_workers=True if self.config.num_workers > 0 else False,
         )

@@ -21,7 +21,7 @@ if __name__ == "__main__":
     SAVE_PATH.mkdir(parents=True, exist_ok=True)
 
     # Validation settings
-    num_samples = 10
+    num_samples = 20
 
     global_config = load_config(TEST_CONFIG_PATH)
     global_config.train.data.val_batch_size = 1
@@ -124,7 +124,7 @@ if __name__ == "__main__":
         # Get sigmas
         t_hat = torch.linspace(
             structure_module.sigma_min, structure_module.sigma_max, num_samples
-        )
+        )[None, :]  # [1, num_samples]
         noisy_coords = structure_module.interpolate(
             apo_coords,
             label_coords,
@@ -138,7 +138,7 @@ if __name__ == "__main__":
         for i in range(num_samples):
             # Save struct
             struct.to_pdb(
-                SAVE_PATH / f"{name}-int-{i}.pdb",
+                SAVE_PATH / f"{name}-ddbm-t{i}.pdb",
                 conformer_id=i,
                 is_predicted=False,
             )
