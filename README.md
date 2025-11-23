@@ -36,8 +36,11 @@ See [`docs/TRAINING_GUIDE.md`](./docs/TRAINING_GUIDE.md) for detailed training i
 ```bash
 python ./scripts/train.py -h
 
-# Run first with deug mode
-python ./scripts/train.py --config ./configs/train-af3-mini.yaml --debug
+# Run first with debug mode
+python ./scripts/train.py --config ./configs/train-af3-mini.yaml --debug 'on'
+
+# If you want to skip validation (e.g., validation not implemented yet), use:
+python ./scripts/train.py --config ./configs/train-af3-mini.yaml --debug 'skip-val'
 
 # If everything works well, run full training
 python ./scripts/train.py --config ./configs/train-af3.yaml --wandb --num_gpus ...
