@@ -159,7 +159,7 @@ class AttentionPairBias(nn.Module):
 
         # Line 8
         attn_bias = self.proj_z(z)  # [..., H, Lq, Lk]
-        attn_bias = attn_bias - self.inf * (1 - attn_mask)[..., None, None, :]
+        attn_bias = attn_bias - self.inf * (1 - attn_mask.float())[..., None, None, :]
 
         # Line 9
         g = self.proj_g(a).sigmoid()
@@ -260,8 +260,6 @@ class DiffusionTransformer(nn.Module):
         blocks = [
             partial(
                 b,
-                s=s,
-                z=z,
                 attn_mask=attn_mask,
                 local_attn_index=local_attn_index,
                 block_cache=None,
@@ -273,12 +271,12 @@ class DiffusionTransformer(nn.Module):
         if not torch.is_grad_enabled():
             blocks_per_ckpt = None
 
-        a = checkpoint_blocks(  # type: ignore
+        a, s, z = checkpoint_blocks(
             blocks,
-            args=(a,),
+            args=(a, s, z),
             blocks_per_ckpt=blocks_per_ckpt,
             use_reentrant=False,
-        )[0]
+        )
 
         return a
 
@@ -326,7 +324,7 @@ class DiffusionTransformerBlock(nn.Module):
         attn_mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex | None = None,
         block_cache: dict | None = None,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """See Section 3.7 Algorithm 23 Diffusion Transformer
 
         Parameters
@@ -369,7 +367,10 @@ class DiffusionTransformerBlock(nn.Module):
         )
         # Line 3
         a = a + self.transition(a, s)
-        return a
+
+        # Return updated a, s, z (s and z are unchanged)
+        # This is to maintain compatibility with checkpoint_blocks
+        return a, s, z
 
 
 class ConditionedTransitionBlock(nn.Module):
@@ -691,9 +692,14 @@ class AtomAttentionEncoder(nn.Module):
 
             # Line 3
             residue_uid = f_input.atom.ref_space_uid.unsqueeze(-1)  # [B, La, 1]
+            mask = f_input.atom.pad_mask.unsqueeze(-1)  # [B, La, 1]
             uid_q = local_attn_index.to_query(residue_uid)  # [B, W, Lq, 1]
             uid_k = local_attn_index.to_key(residue_uid)  # [B, W, Lk, 1]
-            v = (uid_q.unsqueeze(-2) == uid_k.unsqueeze(-3)).float()  # [B, W, Lq, Lk, 1]
+            mask_q = local_attn_index.to_query(mask)  # [B, W, Lq, 1]
+            mask_k = local_attn_index.to_key(mask)  # [B, W, Lk, 1]
+            v = uid_q[..., :, None, :] == uid_k[..., None, :, :]  # [B, W, Lq, Lk, 1]
+            v = v & mask_q[..., :, None, :] & mask_k[..., None, :, :]  # [B, W, Lq, Lk, 1]
+            v = v.float()
 
             # Line 4, skip masking
             p = self.embed_atompair_ref_pos(d)
@@ -711,8 +717,6 @@ class AtomAttentionEncoder(nn.Module):
             # Line 7
             q = c  # [B, La, c_atom]
 
-            mask = f_input.atom.pad_mask.float()  # [B, La]
-
             if self.use_structure:
                 # Add trunk embedding
                 assert s_trunk is not None and z is not None and r is not None
@@ -726,25 +730,22 @@ class AtomAttentionEncoder(nn.Module):
             # Line 13-14
             c_q = local_attn_index.to_query(c)  # [B, W, Lq, c_atom]
             c_k = local_attn_index.to_key(c)  # [B, W, Lk, c_atom]
-            p = p + self.c_to_p_trans_q(c_q).unsqueeze(-2)
-            p = p + self.c_to_p_trans_k(c_k).unsqueeze(-3)
+            p = p + self.c_to_p_trans_q(c_q)[..., :, None, :]
+            p = p + self.c_to_p_trans_k(c_k)[..., None, :, :]
             p = p + self.p_mlp(p)  # [B, W, Lq, Lk, c_atompair]
 
             layer_cache["q"] = q  # [B, La, c_atom]
             layer_cache["c"] = c  # [B, La, c_atom]
             layer_cache["p"] = p  # [B, W, Lq, Lk, c_atompair]
-            layer_cache["mask"] = mask  # [B, La]
         else:
             q = layer_cache["q"]
             c = layer_cache["c"]
             p = layer_cache["p"]
-            mask = layer_cache["mask"]
 
         # Shapes at this point:
         # q: [B, La, c_atom]
         # c: [B, La, c_atom]
         # p: [B, W, Lq, Lk, c_atompair]
-        # mask: [B, La]
 
         # Repeat for diffusion samples
         if self.use_structure:
@@ -753,6 +754,8 @@ class AtomAttentionEncoder(nn.Module):
         else:
             N = 1
 
+        # [B, ...] -> [B, N, ...]
+        mask = f_input.atom.pad_mask
         q = expand_dim(q, dim=1, n=N, add_dim=True)
         c = expand_dim(c, dim=1, n=N, add_dim=True)
         p = expand_dim(p, dim=1, n=N, add_dim=True)
@@ -960,7 +963,7 @@ class AtomAttentionDecoder(nn.Module):
         )  # [B, N, La, c_atom]
         q = q_skip + a_to_q  # [B, N, La, c_atom]
 
-        mask = f_input.atom.pad_mask.float().unsqueeze(-2)  # [B, 1, La]
+        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, La]
 
         q = self.atom_decoder(
             q=q,  # [B, N, La, c_atom]

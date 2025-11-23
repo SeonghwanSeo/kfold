@@ -1,16 +1,20 @@
 model:
   _yaml_: "model/boltz1.yaml"
+  trunk:
+    use_cuequiv_kernels: false
+  load_weight: false
+  freeze_weight: false
 
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: debug-512
+  name: boltz1
   out_dir: ./experiments/
   seed: 42
 
   # pytorch lightning trainer hparams
   trainer:
-    strategy: 'auto'
+    strategy: "auto"
     devices: 8
     num_nodes: 1
     precision: 32
@@ -21,21 +25,19 @@ train:
   training:
     diffusion_batch_size: 16
 
-    train_trunk: false
-    train_distogram_head: false
-    train_structure_module: true
-    train_confidence_head: false
-
   data:
     train_batch_size: 1
     max_tokens: 512
-    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251116.lmdb/
+    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     split_path: ./assets/splits/boltz1
-    num_workers: 8 # set to batch_size * 4.
+    num_workers: 4
+
+    featurization_args:
+      synchronize_ref_pos_augmentation: true
 
   wandb:
     use: false
-    project: "KFold-edm"
-    group: structure-only # set your group name
-    entity: K-Fold # set your entity name
+    project: "Boltz1"
+    group: boltz-scratch
+    entity: K-Fold

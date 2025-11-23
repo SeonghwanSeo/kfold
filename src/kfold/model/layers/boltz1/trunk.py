@@ -1,4 +1,5 @@
 import torch
+import torch.utils.checkpoint
 from torch import Tensor, nn
 
 from kfold.data.model_input import FoldingInput
@@ -188,6 +189,7 @@ class PairformerModule(nn.Module):
         z: Tensor,
         mask: Tensor,
         pair_mask: Tensor,
+        use_kernels: bool = False,
     ) -> tuple[Tensor, Tensor]:
         """Perform the forward pass.
 
@@ -209,8 +211,20 @@ class PairformerModule(nn.Module):
             The updated pairwise embeddings.
 
         """
-        for layer in self.layers:
-            s, z = layer(s, z, mask, pair_mask)
+        if self.training:
+            for layer in self.layers:
+                s, z = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    s,
+                    z,
+                    mask,
+                    pair_mask,
+                    use_kernels,
+                    use_reentrant=False,
+                )
+        else:
+            for layer in self.layers:
+                s, z = layer(s, z, mask, pair_mask, use_kernels)
         return s, z
 
 
@@ -280,20 +294,22 @@ class PairformerLayer(nn.Module):
         z: Tensor,
         mask: Tensor,
         pair_mask: Tensor,
+        use_kernels: bool = False,
     ) -> tuple[Tensor, Tensor]:
         """Perform the forward pass."""
         # Compute pairwise stack
         dropout = get_dropout_mask(self.dropout, z, self.training)
-        z = z + dropout * self.tri_mul_out(z, mask=pair_mask)
+        z = z + dropout * self.tri_mul_out(z, mask=pair_mask, use_kernels=use_kernels)
 
         dropout = get_dropout_mask(self.dropout, z, self.training)
-        z = z + dropout * self.tri_mul_in(z, mask=pair_mask)
+        z = z + dropout * self.tri_mul_in(z, mask=pair_mask, use_kernels=use_kernels)
 
         dropout = get_dropout_mask(self.dropout, z, self.training)
         z = z + dropout * self.tri_att_start(
             z,
             mask=pair_mask,
             chunk_size=self.chunk_size_tri_attn if not self.training else None,
+            use_kernels=use_kernels,
         )
 
         dropout = get_dropout_mask(self.dropout, z, self.training, columnwise=True)
@@ -301,6 +317,7 @@ class PairformerLayer(nn.Module):
             z,
             mask=pair_mask,
             chunk_size=self.chunk_size_tri_attn if not self.training else None,
+            use_kernels=use_kernels,
         )
 
         z = z + self.transition_z(z)

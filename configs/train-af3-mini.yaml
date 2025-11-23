@@ -12,8 +12,8 @@ train:
 
   # pytorch lightning trainer hparams
   trainer:
-    strategy: 'auto'
-    devices: 'auto'
+    strategy: "auto"
+    devices: "auto"
     num_nodes: 1
     precision: bf16-mixed
     max_epochs: 100
@@ -21,15 +21,20 @@ train:
     accumulate_grad_batches: 16 # 256 // batch_size // num_gpus
 
   training:
-    diffusion_batch_size: 48
+    diffusion_batch_size: 32
+    num_steps: 2 # Mini-diffusion rollout
+
+  validation:
+    # Validation step hyperparameters
+    num_steps: 2 # Mini-diffusion rollout
 
   data:
-    train_batch_size: 2
+    train_batch_size: 4
     max_tokens: 512
-    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251116.lmdb/
+    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     split_path: ./assets/splits/boltz1
-    num_workers: 8 # set to batch_size * 4.
+    num_workers: 4 # recommended value=4-8
 
   wandb:
     use: false

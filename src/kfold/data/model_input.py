@@ -73,19 +73,15 @@ class ChainLayout(TensorLayout):
         # shape: [Nchain,] or [B, Nchain]
         shape = self.layout_shape
 
+        check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
+        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
+        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=shape)
+        check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=shape)
+        check_tensor(self.num_tokens, name="num_tokens", dtype=torch.long, shape=shape)
         check_tensor(
-            self.chain_type, name="chain_type", dtype=torch.long, shape=(*shape,)
+            self.num_residues, name="num_residues", dtype=torch.long, shape=shape
         )
-        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=(*shape,))
-        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=(*shape,))
-        check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=(*shape,))
-        check_tensor(
-            self.num_tokens, name="num_tokens", dtype=torch.long, shape=(*shape,)
-        )
-        check_tensor(
-            self.num_residues, name="num_residues", dtype=torch.long, shape=(*shape,)
-        )
-        check_tensor(self.num_atoms, name="num_atoms", dtype=torch.long, shape=(*shape,))
+        check_tensor(self.num_atoms, name="num_atoms", dtype=torch.long, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -216,32 +212,26 @@ class TokenLayout(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(
-            self.token_index, name="token_index", dtype=torch.long, shape=(*shape,)
-        )
+        check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
         check_tensor(
             self.org_token_index,
             name="org_token_index",
             dtype=torch.long,
-            shape=(*shape,),
+            shape=shape,
         )
         check_tensor(
             self.res_type, name="res_type", dtype=torch.float32, shape=(*shape, 32)
         )
+        check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
+        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
+        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=shape)
+        check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=shape)
         check_tensor(
-            self.chain_type, name="chain_type", dtype=torch.long, shape=(*shape,)
+            self.residue_index, name="residue_index", dtype=torch.long, shape=shape
         )
-        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=(*shape,))
-        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=(*shape,))
-        check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=(*shape,))
+        check_tensor(self.disto_index, name="disto_index", dtype=torch.long, shape=shape)
         check_tensor(
-            self.residue_index, name="residue_index", dtype=torch.long, shape=(*shape,)
-        )
-        check_tensor(
-            self.disto_index, name="disto_index", dtype=torch.long, shape=(*shape,)
-        )
-        check_tensor(
-            self.center_index, name="center_index", dtype=torch.long, shape=(*shape,)
+            self.center_index, name="center_index", dtype=torch.long, shape=shape
         )
         check_tensor(
             self.frames_index, name="frames_index", dtype=torch.long, shape=(*shape, 3)
@@ -256,20 +246,16 @@ class TokenLayout(TensorLayout):
             shape=(*shape, 3),
         )
         check_tensor(
-            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(*shape,)
+            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=shape
         )
-        check_tensor(
-            self.disto_mask, name="disto_mask", dtype=torch.bool, shape=(*shape,)
-        )
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
-        check_tensor(
-            self.frames_mask, name="frames_mask", dtype=torch.bool, shape=(*shape,)
-        )
+        check_tensor(self.disto_mask, name="disto_mask", dtype=torch.bool, shape=shape)
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
+        check_tensor(self.frames_mask, name="frames_mask", dtype=torch.bool, shape=shape)
         check_tensor(
             self.pocket_contact_type,
             name="pocket_contact_type",
             dtype=torch.long,
-            shape=(*shape,),
+            shape=shape,
         )
 
     @cached_property
@@ -409,16 +395,12 @@ class AtomLayout(TensorLayout):
         check_tensor(
             self.ref_element, name="ref_element", dtype=torch.float32, shape=(*shape, 128)
         )
-        check_tensor(
-            self.ref_charge, name="ref_charge", dtype=torch.float32, shape=(*shape,)
-        )
+        check_tensor(self.ref_charge, name="ref_charge", dtype=torch.float32, shape=shape)
         check_tensor(self.ref_pos, name="ref_pos", dtype=torch.float32, shape=(*shape, 3))
         check_tensor(
-            self.ref_space_uid, name="ref_space_uid", dtype=torch.long, shape=(*shape,)
+            self.ref_space_uid, name="ref_space_uid", dtype=torch.long, shape=shape
         )
-        check_tensor(
-            self.token_index, name="token_index", dtype=torch.long, shape=(*shape,)
-        )
+        check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
         check_tensor(
             self.label_coords,
             name="label_coords",
@@ -429,10 +411,10 @@ class AtomLayout(TensorLayout):
             self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, -1, 3)
         )
         check_tensor(
-            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=(*shape,)
+            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=shape
         )
         check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=(*shape, -1))
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -522,19 +504,19 @@ class BondLayout(TensorLayout):
         check_tensor(
             self.atom_index, name="atom_index", dtype=torch.long, shape=(*shape, 2)
         )
-        check_tensor(self.bond_type, name="bond_type", dtype=torch.long, shape=(*shape,))
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=(*shape,))
+        check_tensor(self.bond_type, name="bond_type", dtype=torch.long, shape=shape)
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
         check_tensor(
             self.is_ligand_ligand,
             name="is_ligand_ligand",
             dtype=torch.bool,
-            shape=(*shape,),
+            shape=shape,
         )
         check_tensor(
             self.is_polymer_ligand,
             name="is_polymer_ligand",
             dtype=torch.bool,
-            shape=(*shape,),
+            shape=shape,
         )
 
     def pad(self, *pad_shape: int) -> Self:

@@ -1,99 +1,136 @@
-import io
-import random
 from pathlib import Path
 
-import lmdb
+import pytorch_lightning as pl
 import torch
 
 from kfold.config import load_config
-from kfold.data.featurize import featurize_structure
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.model_input import FoldingInput
+from kfold.data.structure import TokenizedStructure
 from kfold.model.models.boltz1 import Boltz1
+from kfold.training.folding.dataset.datamodule import TrainingDataModule
 
 TEST_CONFIG_PATH = Path("./configs/train-boltz1.yaml")
-VALIDATION_ID_PATH = Path("./assets/splits/boltz1/validation_ids.txt")
-LMDB_PATH = Path(
-    "/mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251116.lmdb/"
-)
-SAVE_FEATURE_PATH = Path("./tmp/features.pt")
+BOLTZ_FEATURE_PATH = Path("../boltz/tmp/")
+SAVE_STRUCTURE_PATH = Path("./tmp/boltz-validate/")
+SAVE_STRUCTURE_PATH.mkdir(parents=True, exist_ok=True)
 
 if __name__ == "__main__":
-    # === Get data samples === #
-    # load validation ids
-    with open(VALIDATION_ID_PATH) as f:
-        validation_ids = [line.strip().lower() for line in f.readlines()]
-    validation_ids.sort()
-    random.seed(42)
-    random.shuffle(validation_ids)
+    # Turn off gradient
+    torch.set_grad_enabled(False)
+    pl.seed_everything(42)
 
-    # Load LMDB
-    lmdb_env = lmdb.open(
-        str(LMDB_PATH),
-        map_size=100 * 1024 * 1024 * 1024,  # 100 GB
-        readonly=True,
-        lock=False,
-        readahead=False,
-        meminit=False,
-    )
-    # Get first 10 validation samples
-    data: list[tuple[str, TokenizedStructure]] = []
-    with lmdb_env.begin(write=False) as txn:
-        for pdb_id in validation_ids[:100]:
-            data_bytes = txn.get(pdb_id.lower().encode("utf-8"))
-            if data_bytes is None:
-                print(f"Data for {pdb_id} not found in LMDB.")
-                continue
+    # Load Config
+    global_config = load_config(TEST_CONFIG_PATH)
 
-            with io.BytesIO(data_bytes) as byte_stream:
-                tokenized_structure = TokenizedStructure.load_npz(byte_stream)
-                data.append((pdb_id, tokenized_structure))
+    # Modify config for testing
+    global_config.model.load_weight = True
+    global_config.model.freeze_weight = True
+    global_config.train.data.featurization_args.augment_ref_pos = False
 
     # === Load Model === #
-    global_config = load_config(TEST_CONFIG_PATH)
     model = Boltz1(global_config)
     model = model.eval()
     model = model.cuda()
 
+    # === Get data loader === #
+    data_module = TrainingDataModule(global_config.train.data)
+    data_module.setup("validate")
+
+    # Only use keys with Boltz features
+    val_pdb_ids = [
+        f.name.replace("_features.pt", "")
+        for f in BOLTZ_FEATURE_PATH.glob("*_features.pt")
+    ]
+    print(val_pdb_ids)
+    data_module._val_ds.records = [
+        r for r in data_module._val_ds.records if r.id in val_pdb_ids
+    ]
+
+    dataloader = data_module.val_dataloader()
+
     # === Get Embeddings and Save === #
-    SAVE_FEATURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with torch.no_grad():
-        for pdb_id, sample in data:
-            print(
-                f"Loaded sample {pdb_id}: {sample.num_chains} chains and "
-                f"{sample.num_residues} residues."
-            )
 
-            # store token count before padding
-            n_tokens = sample.num_tokens
+    f_input: FoldingInput
+    for f_input, full_dict_list in dataloader:
+        assert f_input.batch_size == 1
 
-            # Featurization
-            f_input = featurize_structure(sample)
-            f_input = f_input.pad_to_multiple_of(8)  # Make input size compatible
-            f_input = f_input.from_list([f_input])  # Add batch dimension
-            f_input = f_input.to(device="cuda")
+        full_dict = full_dict_list[0]
+        pdb_id: str = full_dict["id"]
+        struct: TokenizedStructure = full_dict["structure"]
+        print(
+            f"Loaded sample {pdb_id}: {struct.num_chains} chains and "
+            f"{struct.num_residues} residues."
+        )
 
-            print(f_input)
+        # Move to GPU
+        f_input = f_input.to(device="cuda")
 
-            s_inputs, s_init, z_init = model.input_embedder(f_input)
+        # === Check Embeddings === #
+        s_inputs, s_init, z_init = model.input_embedder(f_input)
+        s_trunk, z_trunk = model.trunk(
+            s_inputs,
+            s_init,
+            z_init,
+            f_input,
+            num_cycles=4,
+        )
+        p_distogram = model.distogram_head(z_trunk)
 
-            s_trunk, z_trunk = model.trunk(
-                s_inputs,
-                s_init,
-                z_init,
-                f_input,
-                num_cycles=2,
-            )
+        # Sample structures
+        sample_coords = model.structure_module.sample_structure(
+            f_input,
+            s_inputs,
+            s_trunk,
+            z_trunk,
+            num_steps=200,
+            num_diffusion_samples=5,
+        )["sample_coordinates"][0]  # (Nsamples, N, 3)
 
-            p_distogram = model.distogram_head(z_trunk)
+        # Remove paddings and move to cpu
+        n_tokens = struct.num_tokens
+        features = {
+            "s_inputs": s_inputs.cpu()[0, :n_tokens],
+            "s_init": s_init.cpu()[0, :n_tokens],
+            "z_init": z_init.cpu()[0, :n_tokens, :n_tokens],
+            "s_trunk": s_trunk.cpu()[0, :n_tokens],
+            "z_trunk": z_trunk.cpu()[0, :n_tokens, :n_tokens],
+            "p_distogram": p_distogram.cpu()[0, :n_tokens, :n_tokens],
+        }
+        sample_coords = sample_coords.cpu()
 
-            feature_save_path = SAVE_FEATURE_PATH.parent / f"{pdb_id}_features.pt"
-            features = {
-                "s_inputs": s_inputs.cpu()[0, :n_tokens],
-                "s_init": s_init.cpu()[0, :n_tokens],
-                "z_init": z_init.cpu()[0, :n_tokens, :n_tokens],
-                "s_trunk": s_trunk.cpu()[0, :n_tokens],
-                "z_trunk": z_trunk.cpu()[0, :n_tokens, :n_tokens],
-                "p_distogram": p_distogram.cpu()[0, :n_tokens, :n_tokens],
-            }
-            torch.save(features, feature_save_path)
-            print(f"Saved features for {pdb_id} to {feature_save_path}")
+        # Compare with Boltz features
+        feature_path = BOLTZ_FEATURE_PATH / f"{pdb_id}_features.pt"
+        with open(feature_path, "rb") as f:
+            boltz_features = torch.load(f)
+        all_close = True
+        for key in features:
+            if not torch.allclose(
+                features[key], boltz_features[key], rtol=1e-3, atol=1e-4
+            ):
+                diff = torch.abs(features[key] - boltz_features[key]).max()
+                print(f"Feature {key} does not match for {pdb_id}, max diff: {diff}")
+                all_close = False
+        if all_close:
+            print(f"All features match for {pdb_id}!")
+
+        # === Save Structures === #
+        # Save structures generated by KFold
+        kfold_struct = struct.replace_atom_coords(sample_coords.numpy())
+        try:
+            for i in range(sample_coords.shape[0]):
+                save_path = SAVE_STRUCTURE_PATH / f"{pdb_id}-kfold-{i}.pdb"
+                kfold_struct.to_pdb(save_path, i)
+        except Exception as e:
+            print(f"Failed to save kfold structure for {pdb_id}: {e}")
+            continue
+
+        # Save structures generated by Boltz
+        coords = boltz_features["sample_coords"].numpy()
+        boltz_struct = struct.replace_atom_coords(coords)
+        try:
+            for i in range(coords.shape[0]):
+                save_path = SAVE_STRUCTURE_PATH / f"{pdb_id}-boltz-{i}.pdb"
+                boltz_struct.to_pdb(save_path, i)
+        except Exception as e:
+            print(f"Failed to save boltz structure for {pdb_id}: {e}")
+            continue

@@ -45,9 +45,12 @@ You can use this path as an argument for the training script directly and skip t
 export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 
 cd $KFOLD_DATA_DIR
-cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251116.lmdb ./
+cp -r --sparse always /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251120.lmdb ./
 cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/ ./
+chmod 775 -R .
 ```
+
+- NOTE: To copy lmdb file, use `--sparse always` option to avoid copying empty space in the lmdb file.
 
 #### Option B: Create New Dataset
 
@@ -81,20 +84,20 @@ To create the dataset, execute the following commands.
   python ./scripts/process/boltz_rcsb/a1_preprocess_rcsb.py \
     --boltz_structure_dir $CACHE_DIR/rcsb_processed_targets/structures/ \
     --apo_structure_dir $CACHE_DIR/rcsb_apo_esmfold/ \
-    --output_dir $KFOLD_DATA_DIR/kfold_rcsb_processed_v251116_npz/ \
+    --output_dir $KFOLD_DATA_DIR/kfold_rcsb_processed_v251120_npz/ \
     --num_cpus 192
   ```
 
 3. Combine NPZ files into an LMDB database:
   ```bash
   python ./scripts/process/boltz_rcsb/a2_combine_lmdb.py \
-    --npz_dir $KFOLD_DATA_DIR/kfold_rcsb_processed_v251116_npz/ \
-    --lmdb_path $KFOLD_DATA_DIR/kfold_rcsb_processed_v251116.lmdb
+    --npz_dir $KFOLD_DATA_DIR/kfold_rcsb_processed_v251120_npz/ \
+    --lmdb_path $KFOLD_DATA_DIR/kfold_rcsb_processed_v251120.lmdb
   ```
 
 4. Copy the final LMDB file from cache storage to persistent storage:
   ```bash
-  cp $KFOLD_DATA_DIR/kfold_rcsb_processed_v251116.lmdb /scratch/<YOUR_DIRECTORY>/
+  cp $KFOLD_DATA_DIR/kfold_rcsb_processed_v251120.lmdb /scratch/<YOUR_DIRECTORY>/
   ```
 
 ##### Manifest Creation Steps:
@@ -148,12 +151,23 @@ Modify `config file` to match your training environment.
 
 - Debug mode (single GPU, no workers, no safe data-loading):
   ```bash
-  python scripts/train.py --config ./configs/train-af3-mini.yaml --debug
+  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug on
+
+  # Use skip-val when validation is not implemented yet.
+  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug skip-val
   ```
 
-- Full training mode
+- Full training mode with prepared config file:
   ```bash
   python scripts/train.py \
     --config ./configs/train-af3.yaml \
     --wandb
+  ```
+
+- Advanced training using `--override` flag:
+  ```bash
+  python scripts/train.py \
+    --config ./configs/train-af3.yaml \
+    --wandb \
+    --override train.trainer.max_epochs=-1 train.data.max_tokens=512 ...
   ```

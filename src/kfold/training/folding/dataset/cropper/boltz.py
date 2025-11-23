@@ -2,14 +2,14 @@ import numpy as np
 from scipy.spatial.distance import cdist
 
 import kfold.constants as C
-from kfold.data import tokenized
+from kfold.data.structure import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
 from .base import BaseCropper
 
 
 def pick_chain_token(
-    structure: tokenized.TokenizedStructure,
+    structure: TokenizedStructure,
     asym_id: int,
 ) -> int:
     """Pick a random token from a chain.
@@ -41,7 +41,7 @@ def pick_chain_token(
 
 
 def pick_interface_token(
-    structure: tokenized.TokenizedStructure,
+    structure: TokenizedStructure,
     asym_ids: tuple[int, ...],
     center_coords: np.ndarray,
 ) -> int:
@@ -138,7 +138,7 @@ class BoltzCropper(BaseCropper):
 
     def get_token_indices(  # noqa: PLR0915
         self,
-        structure: tokenized.TokenizedStructure,
+        structure: TokenizedStructure,
         max_tokens: int,
         asym_ids: tuple[int, ...] | None,
     ) -> np.ndarray:

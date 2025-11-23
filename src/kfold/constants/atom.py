@@ -1,16 +1,10 @@
 import enum
+from functools import lru_cache
 
 from . import residue
 from .residue import ResidueName
 
-
-def encode_atom_name(atom_name: str) -> tuple[int, int, int, int]:
-    """Expand atom names to standard format."""
-    name = atom_name.strip()
-    name_int = [ord(c) - 32 for c in name]
-    name_int = name_int + [0] * (4 - len(name_int))  # pad to 4 characters
-    return tuple(name_int)  # pyright: ignore
-
+# === Constants lists === #
 
 protein_atom37: tuple[str, ...] = (
     "N",   "CA",  "C",   "CB",  "O",   "CG",  "CG1", "CG2", "OG",  "OG1",
@@ -245,3 +239,37 @@ PSEUDO_BETA_ATOM: dict[ResidueName, AtomName] = {
     ResidueName.DT: AtomName.C2,
     ResidueName.DN: AtomName.C1_PRIME,
 }
+
+# NOTE: There are no name-swap for RNA/DNA in AlphaFold3 paper and its implementation.
+# Therefore, I have just implemented name-swap for protein residues here.
+RESIDUE_AMBIGUOUS_ATOMS: dict[ResidueName, dict[AtomName, AtomName]] = {
+    ResidueName.ASP: {AtomName.OD1: AtomName.OD2},
+    ResidueName.GLU: {AtomName.OE1: AtomName.OE2},
+    ResidueName.PHE: {AtomName.CD1: AtomName.CD2, AtomName.CE1: AtomName.CE2},
+    ResidueName.TYR: {AtomName.CD1: AtomName.CD2, AtomName.CE1: AtomName.CE2},
+}
+
+
+# === Function lists === #
+@lru_cache(1000)
+def encode_atom_name(atom_name: str) -> tuple[int, int, int, int]:
+    """Expand atom names to standard format."""
+    name = atom_name.strip()
+    name_int = [ord(c) - 32 for c in name]
+    name_int = name_int + [0] * (4 - len(name_int))  # pad to 4 characters
+    return tuple(name_int)  # pyright: ignore
+
+
+@lru_cache(2000)
+def get_residue_atom_index(
+    res_name: ResidueName,
+    atom_name: AtomName,
+) -> int:
+    """Get the index of the atom in the residue atom list."""
+    atoms = RESIDUE_ATOMS.get(res_name)
+    if atoms is None:
+        raise ValueError(f"Unknown residue name: {res_name}")
+    try:
+        return atoms.index(atom_name)
+    except ValueError as e:
+        raise ValueError(f"Atom {atom_name} not found in residue {res_name}") from e

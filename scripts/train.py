@@ -2,7 +2,9 @@ import argparse
 from pathlib import Path
 
 import lightning.pytorch as pl
+import lightning.pytorch.callbacks as pl_callbacks
 import torch
+from omegaconf import DictConfig
 
 from kfold.config import load_config, print_config, to_dict
 from kfold.training.folding.dataset.datamodule import TrainingDataModule
@@ -65,74 +67,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--debug",
-        action="store_true",
-        help="Enable debug mode.",
+        type=str,
+        choices=["off", "on", "default", "skip-val"],
+        default="off",
+        help="Enable debug mode",
+    )
+    parser.add_argument(
+        "--override",
+        type=str,
+        nargs="+",
+        help="Override configuration options using 'key=value' format.",
     )
     return parser.parse_args()
 
 
-def build_trainer(cfg) -> pl.Trainer:
-    train_cfg = cfg.train
-    pl_trainer_cfg = train_cfg.trainer
-
-    save_dir = Path(train_cfg.out_dir) / train_cfg.name
-
-    callbacks = []
-    if train_cfg.wandb.use:
-        from lightning.pytorch.loggers import WandbLogger
-
-        wandb_logger = WandbLogger(
-            name=train_cfg.name,
-            project=train_cfg.wandb.project,
-            group=train_cfg.wandb.group,
-            entity=train_cfg.wandb.entity,
-            config=to_dict(cfg),
-            save_dir=save_dir,
-        )
-        loggers = [wandb_logger]
-    else:
-        loggers = None  # use default logger
-
-    # Learning rate monitor
-    lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step")
-    callbacks.append(lr_monitor)
-
-    # Model summary
-    model_summary = pl.callbacks.ModelSummary(max_depth=2)
-    callbacks.append(model_summary)
-
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val/weighted_lddt",
-        save_top_k=-1,
-        filename="epoch{epoch:04d}_step{step:08d}_lddt{val/weighted_lddt:.4f}",
-    )
-    callbacks.append(checkpoint_callback)
-
-    trainer = pl.Trainer(
-        default_root_dir=save_dir,
-        logger=loggers,
-        callbacks=callbacks,
-        accelerator=pl_trainer_cfg.accelerator,
-        strategy=pl_trainer_cfg.strategy,
-        devices=pl_trainer_cfg.devices,
-        num_nodes=pl_trainer_cfg.num_nodes,
-        precision=pl_trainer_cfg.precision,
-        max_epochs=pl_trainer_cfg.max_epochs,
-        limit_train_batches=pl_trainer_cfg.limit_train_batches,
-        limit_val_batches=pl_trainer_cfg.limit_val_batches,
-        log_every_n_steps=pl_trainer_cfg.log_every_n_steps,
-        enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
-        accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
-        gradient_clip_val=pl_trainer_cfg.gradient_clip_val,
-        reload_dataloaders_every_n_epochs=1,
-    )
-    return trainer
-
-
-def train(args) -> None:
-    # To ignore warning
-    torch.set_float32_matmul_precision("high")
-
+def parse_config(args) -> DictConfig:
     cfg = load_config(args.config)
 
     # Override some config options with command line args
@@ -153,23 +102,129 @@ def train(args) -> None:
     if args.wandb:
         cfg.train.wandb.use = True
 
-    if args.debug:
+    if args.debug != "off":
         print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
         cfg.train.trainer.devices = 1
         cfg.train.trainer.num_nodes = 1
         cfg.train.trainer.accumulate_grad_batches = 1
         cfg.train.trainer.log_every_n_steps = 1
         cfg.train.trainer.limit_train_batches = 10
-        cfg.train.trainer.limit_val_batches = 100
+        cfg.train.trainer.limit_val_batches = 50
         cfg.train.data.train_batch_size = 1
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False
         cfg.train.wandb.use = False
 
+        if args.debug == "skip-val":
+            # Skip validation steps, use when validation process is not yet ready
+            cfg.train.trainer.num_sanity_val_steps = 0
+            cfg.train.trainer.limit_val_batches = 0
+        else:
+            raise NotImplementedError(f"Unknown debug mode: {args.debug}")
+
+    # Override configuration options from command line
+    if args.override is not None:
+        for override_arg in args.override:
+            key, value = override_arg.split("=", 1)
+            # Navigate through nested attributes
+            keys = key.split(".")
+            d = cfg
+            for k in keys[:-1]:
+                d = getattr(d, k)
+            # Convert value to appropriate type
+            attr_type = type(getattr(d, keys[-1]))
+            if attr_type is bool:
+                value = value.lower() == "true"
+            else:
+                value = attr_type(value)
+            setattr(d, keys[-1], value)
+
+    return cfg
+
+
+def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
+    train_cfg = cfg.train
+    pl_trainer_cfg = train_cfg.trainer
+    save_dir = Path(train_cfg.out_dir) / train_cfg.name
+
+    callbacks = []
+    if train_cfg.wandb.use:
+        from lightning.pytorch.loggers import WandbLogger
+
+        wandb_logger = WandbLogger(
+            name=train_cfg.name,
+            project=train_cfg.wandb.project,
+            group=train_cfg.wandb.group,
+            entity=train_cfg.wandb.entity,
+            config=to_dict(cfg),
+            save_dir=save_dir,
+        )
+        loggers = [wandb_logger]
+    else:
+        loggers = None  # use default logger
+
+    # Learning rate monitor
+    lr_monitor = pl_callbacks.LearningRateMonitor(logging_interval="step")
+    callbacks.append(lr_monitor)
+
+    # Model summary
+    model_summary = pl_callbacks.ModelSummary(max_depth=2)
+    callbacks.append(model_summary)
+
+    # TQDM
+    tqdm_refresh_rate = 5 if debug_mode == "off" else 1
+    tqdm_callback = pl_callbacks.TQDMProgressBar(refresh_rate=tqdm_refresh_rate)
+    callbacks.append(tqdm_callback)
+
+    if debug_mode == "skip-val":
+        checkpoint_callback = pl_callbacks.ModelCheckpoint(
+            monitor="train/loss",
+            save_top_k=-1,
+            filename="epoch{epoch:04d}_step{step:08d}_loss{train/loss:.4f}",
+            mode="min",
+            auto_insert_metric_name=False,
+        )
+    else:
+        checkpoint_callback = pl_callbacks.ModelCheckpoint(
+            monitor="val/lddt",
+            save_top_k=-1,
+            filename="epoch{epoch:04d}_step{step:08d}_lddt{val/lddt:.4f}",
+            mode="max",
+            auto_insert_metric_name=False,
+        )
+    callbacks.append(checkpoint_callback)
+
+    trainer = pl.Trainer(
+        default_root_dir=save_dir,
+        logger=loggers,
+        callbacks=callbacks,
+        accelerator=pl_trainer_cfg.accelerator,
+        strategy=pl_trainer_cfg.strategy,
+        devices=pl_trainer_cfg.devices,
+        num_nodes=pl_trainer_cfg.num_nodes,
+        precision=pl_trainer_cfg.precision,
+        max_epochs=pl_trainer_cfg.max_epochs,
+        limit_train_batches=pl_trainer_cfg.limit_train_batches,
+        limit_val_batches=pl_trainer_cfg.limit_val_batches,
+        log_every_n_steps=pl_trainer_cfg.log_every_n_steps,
+        enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
+        accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
+        gradient_clip_val=pl_trainer_cfg.gradient_clip_val,
+        # reload_dataloaders_every_n_epochs=1,
+    )
+    return trainer
+
+
+def train(args) -> None:
+    # To ignore warning
+    torch.set_float32_matmul_precision("high")
+
+    cfg = parse_config(args)
+
     # Set random seed
     pl.seed_everything(cfg.train.seed)
 
-    trainer = build_trainer(cfg)
+    trainer = build_trainer(cfg, args.debug)
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
 

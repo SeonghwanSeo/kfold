@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.layers.boltz1 import initialize as init
+from kfold.model.layers.boltz1.msa_module import MSAModule
 from kfold.model.layers.boltz1.trunk import PairformerModule
 from kfold.utils.registry import TRUNK
 
@@ -50,6 +51,7 @@ class Boltz1PairformerTrunk(BaseTrunk):
         use_msa: bool = False
         use_template: bool = False
         tri_attn_chunk_threshold: int = 384
+        use_cuequiv_kernels: bool = False
 
     def __init__(self, cfg: Config):
         """Initialize the Pairformer module."""
@@ -57,6 +59,7 @@ class Boltz1PairformerTrunk(BaseTrunk):
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
+        self.use_kernels: bool = cfg.use_cuequiv_kernels
 
         if self.use_template:
             raise NotImplementedError(
@@ -74,6 +77,17 @@ class Boltz1PairformerTrunk(BaseTrunk):
             dropout=cfg.dropout,
             pairwise_head_width=cfg.pairwise_head_width,
             pairwise_num_heads=cfg.pairwise_num_heads,
+        )
+
+        self.msa_module: MSAModule = MSAModule(
+            msa_s=64,
+            token_z=128,
+            s_input_dim=455,
+            msa_blocks=4,
+            msa_dropout=0.15,
+            z_dropout=0.25,
+            pairwise_head_width=32,
+            pairwise_num_heads=4,
         )
 
         # For recycling
@@ -146,7 +160,13 @@ class Boltz1PairformerTrunk(BaseTrunk):
                 s = s_init + self.s_recycle(self.s_norm(s))
                 z = z_init + self.z_recycle(self.z_norm(z))
 
+                z = z + self.msa_module(
+                    z, s_inputs, f_input, use_kernels=self.use_kernels
+                )
+
                 # Revert to uncompiled version for validation
-                s, z = self.pairformer_module(s, z, mask, pair_mask)
+                s, z = self.pairformer_module(
+                    s, z, mask, pair_mask, use_kernels=self.use_kernels
+                )
 
         return s, z

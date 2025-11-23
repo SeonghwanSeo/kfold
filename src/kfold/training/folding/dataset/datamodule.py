@@ -47,14 +47,21 @@ def load_manifest(manifest_path: Path) -> list[Metadata]:
 
 
 class DataModuleConfig(BaseConfig):
-    # Common config for data modules
+    # === Common config for data modules === #
     train_batch_size: int = 1
     val_batch_size: int = 1
     num_workers: int = 0
     pin_memory: bool = True
     safe_load: bool = True
-    # Cropper config
+
+    # === For debugging === #
+    overfit_val: bool = False
+
+    # === Cropping arguments === #
     cropper: BaseCropper.Config
+
+    # === Featurization arguments === #
+    featurization_args: dict
 
 
 # FIXME: remove this (hard-coded)
@@ -93,6 +100,11 @@ class TrainingDataModule(pl.LightningDataModule):
         self.manifest_path: Path = Path(config.manifest_path)
         self.split_path: Path = Path(config.split_path)
 
+        if not self.lmdb_path.exists():
+            raise FileNotFoundError(f"LMDB path not found: {self.lmdb_path}")
+
+        self.featurization_args = config.featurization_args
+
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
             self._train_ds = self.construct_train_dataset()
@@ -111,8 +123,16 @@ class TrainingDataModule(pl.LightningDataModule):
         # Load records
         all_records: list[Metadata] = load_manifest(self.manifest_path)
 
-        # Apply filters
-        train_records = [r for r in all_records if do_filter(r)]
+        if self.config.overfit_val:
+            # use only validation set for overfitting
+            validation_split = self.split_path / "validation_ids.txt"
+            with open(validation_split) as f:
+                val_ids = set([line.strip().lower() for line in f])
+            train_records = [r for r in all_records if r.id.lower() in val_ids]
+            train_records = train_records * 100  # repeat to have enough samples
+        else:
+            # Apply filters
+            train_records = [r for r in all_records if do_filter(r)]
 
         return LMDBTrainingDataset(
             records=train_records,
@@ -121,18 +141,19 @@ class TrainingDataModule(pl.LightningDataModule):
             cropper=self.cropper,
             sampler_config=self.config.sampler,
             safe_load=self.config.safe_load,
+            featurization_args=self.featurization_args,
         )
 
     def construct_val_dataset(self) -> ValidationDataset:
         # HACK: (SeonghwanSeo): hard-coded path to rcsb set; single dataset
 
-        # Load records
-        all_records: list[Metadata] = load_manifest(self.manifest_path)
-
         # get validation records
         validation_split = self.split_path / "validation_ids.txt"
         with open(validation_split) as f:
             val_ids = set([line.strip().lower() for line in f])
+
+        # Load records
+        all_records: list[Metadata] = load_manifest(self.manifest_path)
 
         # Apply filters
         val_records = [r for r in all_records if r.id.lower() in val_ids]
@@ -141,6 +162,7 @@ class TrainingDataModule(pl.LightningDataModule):
             records=val_records,
             lmdb_path=self.lmdb_path,
             safe_load=self.config.safe_load,
+            featurization_args=self.featurization_args,
         )
 
     def train_dataloader(self):
@@ -165,6 +187,7 @@ class TrainingDataModule(pl.LightningDataModule):
             pin_memory=self.config.pin_memory,
             drop_last=True,
             collate_fn=collate,
+            persistent_workers=True if self.config.num_workers > 0 else False,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -177,4 +200,5 @@ class TrainingDataModule(pl.LightningDataModule):
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
             collate_fn=collate,
+            persistent_workers=True if self.config.num_workers > 0 else False,
         )

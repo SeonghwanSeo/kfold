@@ -33,18 +33,16 @@ class DistogramLoss(torch.nn.Module):
             The computed distogram loss of shape (B,).
         """
 
-        dist_repr_atoms = torch.cdist(
-            f_input.token.disto_coords,
-            f_input.token.disto_coords,
-        )  # [B, Lt, Lt]
-
-        target_distogram = (
-            (dist_repr_atoms.unsqueeze(-1) > self.boundaries).sum(dim=-1).long()
-        )
-
-        B, L, L = target_distogram.shape
+        with torch.autocast("cuda", enabled=False):
+            boundaries: torch.Tensor = self.boundaries  # [num_bins - 1] # type: ignore
+            pdist_disto = torch.cdist(
+                f_input.token.disto_coords,
+                f_input.token.disto_coords,
+            )  # [B, Lt, Lt]
+            target_distogram = (pdist_disto.unsqueeze(-1) > boundaries).sum(dim=-1).long()
 
         # Compute the distogram loss
+        B, L, L = target_distogram.shape
         disto_loss = torch.nn.functional.cross_entropy(
             logits.view(B * L * L, self.num_bins),
             target_distogram.view(B * L * L),
@@ -53,9 +51,8 @@ class DistogramLoss(torch.nn.Module):
 
         # Mask out invalid distogram
         mask = f_input.token.disto_mask  # [B, Lt]
-        pair_mask = mask[:, None, :] * mask[:, :, None]  # [B, Lt, Lt]
+        pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, Lt, Lt]
         pair_mask.diagonal(dim1=-2, dim2=-1).zero_()  # zero out diagonal
-        pair_mask = pair_mask.to(dtype=logits.dtype)
         disto_loss = disto_loss * pair_mask  # [B, Lt, Lt]
 
         # Compute mean loss

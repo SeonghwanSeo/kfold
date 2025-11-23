@@ -7,28 +7,31 @@ It serves as a reference for developers and contributors working with the K-Fold
 
 **Note:** The notations and variable names used in this codebase largely follow those in the Alphafold3 paper for consistency.
 
-## Quick Start
+## Contents
+- [Installation](#installation)
+- [Project Architecture](#project-architecture)
+- [Training Pipeline](#training-pipeline)
+- [Inference Framework](#inference-framework) (TODO)
+- [Implementation Guidelines](#implementation-guidelines)
 
-### Installation
+## Installation
 
-#### Docker
-
-TODO write...
-
-
-#### Conda Environment
-```bash
-conda create -n kfold python=3.11
-pip install -e '.[train,dev]'
-pre-commit install
-```
-
-#### UV Environment
-```bash
-uv venv --python 3.11
-uv pip install -e '.[train,dev]'
-pre-commit install
-```
+- **Docker**
+    ```bash
+    TODO write...
+    ```
+- **Conda**
+  ```bash
+  conda create -n kfold python=3.11
+  pip install -e '.[train,dev]'
+  pre-commit install
+  ```
+- **UV Virtual Python Environment**
+  ```bash
+  uv venv --python 3.11
+  uv pip install -e '.[train,dev]'
+  pre-commit install
+  ```
 
 ## Project Architecture
 
@@ -43,9 +46,12 @@ pre-commit install
     - `chain.py`: Chain type definitions
     - `residue.py`: Residue type definitions and mappings
     - `atom.py`: Atom type definitions and mappings
+    - `bond.py`: Bond type definitions and mappings
+    - `training.py`: Training-related constants
+    - `constraint.py`: TODO: Constraint-related constants
 
   - **`data/`**: Core data structures and representations
-    - `tokenized.py`: High-level tokenized numpy array interfaces (`TokenizedStructure`).
+    - `structure.py`: High-level numpy array interfaces (`TokenizedStructure`).
     - `model_input.py`: High-level (batched) tensor interfaces (`FoldingInput`).
     - `metadata.py`: Metadata structures for datasets.
     - `featurize.py`: Functions to convert tokenized representations and model inputs.
@@ -56,16 +62,28 @@ pre-commit install
   - **`models/`**: Core K-Fold model implementations
     - `models/`: Main K-Fold model classes
     - `modules/`: Submodules used in the K-Fold model (e.g., sequence encoder, ...)
+    - `layers/`: Layer implementations for co-folding
+      - `alphafold3/`: Layers based on the Alphafold3 architecture
+      - `boltz1/`: Fork of Boltz1 layers adapted for K-Fold compatibility
 
   - **`training/`**: Training pipeline components (pytorch-lightning)
 
 - **`scripts/`**: Utility scripts for data processing, training, and evaluation.
   - **`train.py`**: Script to train the K-Fold model.
+  - **`validate.py`**: Script to validate the trained model.
 
 ## Training Pipeline
 
+### Model Training Command
+
 ```bash
 python scripts/train.py --config configs/train-af3.yaml --wandb
+```
+
+### Model Validaiton Command
+
+```bash
+python scripts/validate.py --config configs/train-af3.yaml --checkpoint /path/to/checkpoint.ckpt
 ```
 
 ## Inference Framework
