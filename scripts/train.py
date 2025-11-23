@@ -2,7 +2,9 @@ import argparse
 from pathlib import Path
 
 import lightning.pytorch as pl
+import lightning.pytorch.callbacks as pl_callbacks
 import torch
+from omegaconf import DictConfig
 
 from kfold.config import load_config, print_config, to_dict
 from kfold.training.folding.dataset.datamodule import TrainingDataModule
@@ -65,21 +67,84 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--debug",
-        action="store_true",
-        help="Enable debug mode.",
+        type=str,
+        choices=["off", "on", "default", "skip-val"],
+        default="off",
+        help="Enable debug mode",
     )
     parser.add_argument(
-        "--overfit",
-        action="store_true",
-        help="Enable overfitting mode.",
+        "--override",
+        type=str,
+        nargs="+",
+        help="Override configuration options using 'key=value' format.",
     )
     return parser.parse_args()
 
 
-def build_trainer(cfg, debug: bool = False) -> pl.Trainer:
+def parse_config(args) -> DictConfig:
+    cfg = load_config(args.config)
+
+    # Override some config options with command line args
+    if args.out_dir is not None:
+        cfg.train.out_dir = args.out_dir
+    if args.experiment_name is not None:
+        cfg.train.name = args.experiment_name
+    if args.num_gpus is not None:
+        cfg.train.trainer.devices = args.num_gpus
+    if args.num_nodes is not None:
+        cfg.train.trainer.num_nodes = args.num_nodes
+    if args.batch_size is not None:
+        cfg.train.data.train_batch_size = args.batch_size
+    if args.accumulate_grad_batches is not None:
+        cfg.train.trainer.accumulate_grad_batches = args.accumulate_grad_batches
+    if args.num_workers is not None:
+        cfg.train.data.num_workers = args.num_workers
+    if args.wandb:
+        cfg.train.wandb.use = True
+
+    if args.debug != "off":
+        print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
+        cfg.train.trainer.devices = 1
+        cfg.train.trainer.num_nodes = 1
+        cfg.train.trainer.accumulate_grad_batches = 1
+        cfg.train.trainer.log_every_n_steps = 1
+        cfg.train.trainer.limit_train_batches = 10
+        cfg.train.trainer.limit_val_batches = 50
+        cfg.train.data.train_batch_size = 1
+        cfg.train.data.num_workers = 0
+        cfg.train.data.safe_load = False
+        cfg.train.wandb.use = False
+
+        if args.debug == "skip-val":
+            # Skip validation steps, use when validation process is not yet ready
+            cfg.train.trainer.num_sanity_val_steps = 0
+            cfg.train.trainer.limit_val_batches = 0
+        else:
+            raise NotImplementedError(f"Unknown debug mode: {args.debug}")
+
+    # Override configuration options from command line
+    if args.override is not None:
+        for override_arg in args.override:
+            key, value = override_arg.split("=", 1)
+            # Navigate through nested attributes
+            keys = key.split(".")
+            d = cfg
+            for k in keys[:-1]:
+                d = getattr(d, k)
+            # Convert value to appropriate type
+            attr_type = type(getattr(d, keys[-1]))
+            if attr_type is bool:
+                value = value.lower() == "true"
+            else:
+                value = attr_type(value)
+            setattr(d, keys[-1], value)
+
+    return cfg
+
+
+def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
     train_cfg = cfg.train
     pl_trainer_cfg = train_cfg.trainer
-
     save_dir = Path(train_cfg.out_dir) / train_cfg.name
 
     callbacks = []
@@ -99,25 +164,34 @@ def build_trainer(cfg, debug: bool = False) -> pl.Trainer:
         loggers = None  # use default logger
 
     # Learning rate monitor
-    lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step")
+    lr_monitor = pl_callbacks.LearningRateMonitor(logging_interval="step")
     callbacks.append(lr_monitor)
 
     # Model summary
-    model_summary = pl.callbacks.ModelSummary(max_depth=2)
+    model_summary = pl_callbacks.ModelSummary(max_depth=2)
     callbacks.append(model_summary)
 
     # TQDM
-    refresh_rate = 1 if debug else 5
-    tqdm_callback = pl.callbacks.TQDMProgressBar(refresh_rate=refresh_rate)
+    tqdm_refresh_rate = 5 if debug_mode == "off" else 1
+    tqdm_callback = pl_callbacks.TQDMProgressBar(refresh_rate=tqdm_refresh_rate)
     callbacks.append(tqdm_callback)
 
-    checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val/lddt",
-        save_top_k=-1,
-        filename="epoch{epoch:04d}_step{step:08d}_lddt{val/lddt:.4f}",
-        mode="max",
-        auto_insert_metric_name=False,
-    )
+    if debug_mode == "skip-val":
+        checkpoint_callback = pl_callbacks.ModelCheckpoint(
+            monitor="train/loss",
+            save_top_k=-1,
+            filename="epoch{epoch:04d}_step{step:08d}_loss{train/loss:.4f}",
+            mode="min",
+            auto_insert_metric_name=False,
+        )
+    else:
+        checkpoint_callback = pl_callbacks.ModelCheckpoint(
+            monitor="val/lddt",
+            save_top_k=-1,
+            filename="epoch{epoch:04d}_step{step:08d}_lddt{val/lddt:.4f}",
+            mode="max",
+            auto_insert_metric_name=False,
+        )
     callbacks.append(checkpoint_callback)
 
     trainer = pl.Trainer(
@@ -145,42 +219,7 @@ def train(args) -> None:
     # To ignore warning
     torch.set_float32_matmul_precision("high")
 
-    cfg = load_config(args.config)
-
-    # Override some config options with command line args
-    if args.out_dir is not None:
-        cfg.train.out_dir = args.out_dir
-    if args.experiment_name is not None:
-        cfg.train.name = args.experiment_name
-    if args.num_gpus is not None:
-        cfg.train.trainer.devices = args.num_gpus
-    if args.num_nodes is not None:
-        cfg.train.trainer.num_nodes = args.num_nodes
-    if args.batch_size is not None:
-        cfg.train.data.train_batch_size = args.batch_size
-    if args.accumulate_grad_batches is not None:
-        cfg.train.trainer.accumulate_grad_batches = args.accumulate_grad_batches
-    if args.num_workers is not None:
-        cfg.train.data.num_workers = args.num_workers
-    if args.wandb:
-        cfg.train.wandb.use = True
-
-    if args.debug:
-        print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
-        cfg.train.trainer.devices = 1
-        cfg.train.trainer.num_nodes = 1
-        cfg.train.trainer.accumulate_grad_batches = 1
-        cfg.train.trainer.log_every_n_steps = 1
-        cfg.train.trainer.limit_train_batches = 10
-        cfg.train.trainer.limit_val_batches = 50
-        cfg.train.data.train_batch_size = 1
-        cfg.train.data.num_workers = 0
-        cfg.train.data.safe_load = False
-        cfg.train.wandb.use = False
-
-    if args.overfit:
-        # Enable overfitting mode (use only validation set for training and validation)
-        cfg.train.data.overfit_val = True
+    cfg = parse_config(args)
 
     # Set random seed
     pl.seed_everything(cfg.train.seed)
