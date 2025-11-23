@@ -1,11 +1,55 @@
+# started from code from https://github.com/jwohlwend/boltz, MIT License,
 import torch
-from torch import Tensor, nn
+from torch import nn
+
+try:
+    from cuequivariance_torch.primitives.triangle import triangle_multiplicative_update
+except ImportError:
+    triangle_multiplicative_update = None
 
 from . import initialize as init
 
 
+@torch.compiler.disable
+def kernel_triangular_mult(
+    x: torch.Tensor,
+    direction: str,
+    mask: torch.Tensor,
+    norm_in_weight: torch.Tensor,
+    norm_in_bias: torch.Tensor,
+    p_in_weight: torch.Tensor,
+    g_in_weight: torch.Tensor,
+    norm_out_weight: torch.Tensor,
+    norm_out_bias: torch.Tensor,
+    p_out_weight: torch.Tensor,
+    g_out_weight: torch.Tensor,
+    eps: float,
+):
+    if triangle_multiplicative_update is None:
+        raise ImportError(
+            "cuequivariance_torch is not installed. "
+            "Please install cuequivariance_torch to use the kernel implementation."
+        )
+    return triangle_multiplicative_update(
+        x,
+        direction=direction,
+        mask=mask,
+        norm_in_weight=norm_in_weight,
+        norm_in_bias=norm_in_bias,
+        p_in_weight=p_in_weight,
+        g_in_weight=g_in_weight,
+        norm_out_weight=norm_out_weight,
+        norm_out_bias=norm_out_bias,
+        p_out_weight=p_out_weight,
+        g_out_weight=g_out_weight,
+        eps=eps,
+    )
+
+
 class TriangleMultiplicationOutgoing(nn.Module):
-    """TriangleMultiplicationOutgoing."""
+    """TriangleMultiplicationOutgoing.
+    See Section 3.4 Algorithm 12
+    """
 
     def __init__(self, dim: int = 128) -> None:
         """Initialize the TriangularUpdate module.
@@ -38,7 +82,9 @@ class TriangleMultiplicationOutgoing(nn.Module):
         init.final_init_(self.p_out.weight)
         init.gating_init_(self.g_out.weight)
 
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor, use_kernels: bool = False
+    ) -> torch.Tensor:
         """Perform a forward pass.
 
         Parameters
@@ -47,6 +93,8 @@ class TriangleMultiplicationOutgoing(nn.Module):
             The input data of shape (B, N, N, D)
         mask: torch.Tensor
             The input mask of shape (B, N, N)
+        use_kernels: bool
+            Whether to use the kernel
 
         Returns
         -------
@@ -54,6 +102,22 @@ class TriangleMultiplicationOutgoing(nn.Module):
             The output data of shape (B, N, N, D)
 
         """
+        if use_kernels:
+            return kernel_triangular_mult(
+                x,
+                direction="outgoing",
+                mask=mask,
+                norm_in_weight=self.norm_in.weight,
+                norm_in_bias=self.norm_in.bias,
+                p_in_weight=self.p_in.weight,
+                g_in_weight=self.g_in.weight,
+                norm_out_weight=self.norm_out.weight,
+                norm_out_bias=self.norm_out.bias,
+                p_out_weight=self.p_out.weight,
+                g_out_weight=self.g_out.weight,
+                eps=1e-5,
+            )
+
         # Input gating: D -> D
         x = self.norm_in(x)
         x_in = x
@@ -75,7 +139,9 @@ class TriangleMultiplicationOutgoing(nn.Module):
 
 
 class TriangleMultiplicationIncoming(nn.Module):
-    """TriangleMultiplicationIncoming."""
+    """TriangleMultiplicationIncoming.
+    See Section 3.4 Algorithm 13
+    """
 
     def __init__(self, dim: int = 128) -> None:
         """Initialize the TriangularUpdate module.
@@ -108,7 +174,9 @@ class TriangleMultiplicationIncoming(nn.Module):
         init.final_init_(self.p_out.weight)
         init.gating_init_(self.g_out.weight)
 
-    def forward(self, x: Tensor, mask: Tensor) -> Tensor:
+    def forward(
+        self, x: torch.Tensor, mask: torch.Tensor, use_kernels: bool = False
+    ) -> torch.Tensor:
         """Perform a forward pass.
 
         Parameters
@@ -117,6 +185,8 @@ class TriangleMultiplicationIncoming(nn.Module):
             The input data of shape (B, N, N, D)
         mask: torch.Tensor
             The input mask of shape (B, N, N)
+        use_kernels: bool
+            Whether to use the kernel
 
         Returns
         -------
@@ -124,6 +194,22 @@ class TriangleMultiplicationIncoming(nn.Module):
             The output data of shape (B, N, N, D)
 
         """
+        if use_kernels:
+            return kernel_triangular_mult(
+                x,
+                direction="incoming",
+                mask=mask,
+                norm_in_weight=self.norm_in.weight,
+                norm_in_bias=self.norm_in.bias,
+                p_in_weight=self.p_in.weight,
+                g_in_weight=self.g_in.weight,
+                norm_out_weight=self.norm_out.weight,
+                norm_out_bias=self.norm_out.bias,
+                p_out_weight=self.p_out.weight,
+                g_out_weight=self.g_out.weight,
+                eps=1e-5,
+            )
+
         # Input gating: D -> D
         x = self.norm_in(x)
         x_in = x

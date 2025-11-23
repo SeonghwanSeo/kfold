@@ -51,6 +51,7 @@ class Boltz1PairformerTrunk(BaseTrunk):
         use_msa: bool = False
         use_template: bool = False
         tri_attn_chunk_threshold: int = 384
+        use_cuequiv_kernels: bool = False
 
     def __init__(self, cfg: Config):
         """Initialize the Pairformer module."""
@@ -58,6 +59,7 @@ class Boltz1PairformerTrunk(BaseTrunk):
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
+        self.use_kernels: bool = cfg.use_cuequiv_kernels
 
         if self.use_template:
             raise NotImplementedError(
@@ -158,9 +160,13 @@ class Boltz1PairformerTrunk(BaseTrunk):
                 s = s_init + self.s_recycle(self.s_norm(s))
                 z = z_init + self.z_recycle(self.z_norm(z))
 
-                z = z + self.msa_module(z, s_inputs, f_input)
+                z = z + self.msa_module(
+                    z, s_inputs, f_input, use_kernels=self.use_kernels
+                )
 
                 # Revert to uncompiled version for validation
-                s, z = self.pairformer_module(s, z, mask, pair_mask)
+                s, z = self.pairformer_module(
+                    s, z, mask, pair_mask, use_kernels=self.use_kernels
+                )
 
         return s, z

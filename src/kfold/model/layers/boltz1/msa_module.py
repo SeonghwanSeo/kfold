@@ -321,6 +321,7 @@ class MSAModule(nn.Module):
         z: Tensor,
         emb: Tensor,
         f_input: FoldingInput,
+        use_kernels: bool = False,
     ) -> Tensor:
         """Perform the forward pass.
 
@@ -394,6 +395,7 @@ class MSAModule(nn.Module):
                     m,
                     token_mask,
                     msa_mask,
+                    use_kernels,
                     chunk_heads_pwa,
                     chunk_size_transition_z,
                     chunk_size_transition_msa,
@@ -408,6 +410,7 @@ class MSAModule(nn.Module):
                     m,
                     token_mask,
                     msa_mask,
+                    use_kernels,
                     chunk_heads_pwa,
                     chunk_size_transition_z,
                     chunk_size_transition_msa,
@@ -483,6 +486,7 @@ class MSALayer(nn.Module):
         m: Tensor,
         token_mask: Tensor,
         msa_mask: Tensor,
+        use_kernels: bool = False,
         chunk_heads_pwa: bool = False,
         chunk_size_transition_z: int | None = None,
         chunk_size_transition_msa: int | None = None,
@@ -522,16 +526,17 @@ class MSALayer(nn.Module):
 
         # Compute pairwise stack
         dropout = get_dropout_mask(self.z_dropout, z, self.training)
-        z = z + dropout * self.tri_mul_out(z, mask=token_mask)
+        z = z + dropout * self.tri_mul_out(z, mask=token_mask, use_kernels=use_kernels)
 
         dropout = get_dropout_mask(self.z_dropout, z, self.training)
-        z = z + dropout * self.tri_mul_in(z, mask=token_mask)
+        z = z + dropout * self.tri_mul_in(z, mask=token_mask, use_kernels=use_kernels)
 
         dropout = get_dropout_mask(self.z_dropout, z, self.training)
         z = z + dropout * self.tri_att_start(
             z,
             mask=token_mask,
             chunk_size=chunk_size_tri_attn,
+            use_kernels=use_kernels,
         )
 
         dropout = get_dropout_mask(self.z_dropout, z, self.training, columnwise=True)
@@ -539,6 +544,7 @@ class MSALayer(nn.Module):
             z,
             mask=token_mask,
             chunk_size=chunk_size_tri_attn,
+            use_kernels=use_kernels,
         )
 
         z = z + self.z_transition(z, chunk_size_transition_z)
