@@ -1,5 +1,7 @@
 model:
   _yaml_: "model/boltz1.yaml"
+  trunk:
+    use_cuequiv_kernels: false
   load_weight: false
   freeze_weight: false
 

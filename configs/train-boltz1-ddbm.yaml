@@ -1,5 +1,7 @@
 model:
   _yaml_: "model/boltz1-ddbm.yaml"
+  trunk:
+    use_cuequiv_kernels: false
 
 train:
   _yaml_: "train/structure_only.yaml"
