@@ -119,8 +119,6 @@ def parse_config(args) -> DictConfig:
             # Skip validation steps, use when validation process is not yet ready
             cfg.train.trainer.num_sanity_val_steps = 0
             cfg.train.trainer.limit_val_batches = 0
-        else:
-            raise NotImplementedError(f"Unknown debug mode: {args.debug}")
 
     # Override configuration options from command line
     if args.override is not None:
