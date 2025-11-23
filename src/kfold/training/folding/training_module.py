@@ -611,14 +611,8 @@ class KFoldTrainingModule(pl.LightningModule):
                 )
             self.ema.to(self.device)
 
-    # FIXME: To match the Boltz's implementation, I update EMA for each `batch`
-    # instead of `optimizer_step`.
-    # def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):
-    #     optimizer.step(closure=optimizer_closure)
-    #     if self.use_ema:
-    #         self.ema.update(self.parameters())
-
-    def on_train_batch_end(self, outputs, batch: Any, batch_idx: int) -> None:
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
+        optimizer.step(closure=optimizer_closure)
         if self.use_ema:
             self.ema.update(self.parameters())
 
