@@ -1,7 +1,10 @@
 model:
   _yaml_: "model/boltz1.yaml"
   trunk:
-    use_cuequiv_kernels: false
+    use_cuequiv_kernels: true
+    use_msa: false # Include MSAModule or not
+  structure_module:
+    synchronize_sigmas: true
   load_weight: false
   freeze_weight: false
 
@@ -19,8 +22,8 @@ train:
     num_nodes: 1
     precision: 32
     max_epochs: 100
-    limit_train_batches: 1000
-    accumulate_grad_batches: 32 # 256 // batch_size // num_gpus
+    limit_train_batches: 3000 # 3 hours
+    accumulate_grad_batches: 16
 
   training:
     diffusion_batch_size: 16
@@ -36,8 +39,13 @@ train:
     featurization_args:
       synchronize_ref_pos_augmentation: true
 
+  loss:
+    diffusion_loss:
+      mse_loss:
+        scale: true
+
   wandb:
     use: false
-    project: "Boltz1"
-    group: boltz-scratch
+    project: "Boltz1-compare"
+    group: boltz-kfold
     entity: K-Fold

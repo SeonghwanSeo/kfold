@@ -8,25 +8,25 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: debug-512
+  name: af3-edm
   out_dir: ./experiments/
   seed: 42
 
   # pytorch lightning trainer hparams
   trainer:
     strategy: "auto"
-    devices: "auto"
+    devices: 8
     num_nodes: 1
-    precision: bf16-mixed
+    precision: 32
     max_epochs: 100
-    limit_train_batches: 1000
-    accumulate_grad_batches: 8 # 256 // batch_size // num_gpus
+    limit_train_batches: 3000 # 3 hours
+    accumulate_grad_batches: 16 # 256 // batch_size // num_gpus
 
   training:
     diffusion_batch_size: 16
 
   data:
-    train_batch_size: 4
+    train_batch_size: 1
     max_tokens: 512
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/all_manifest.pkl
@@ -43,6 +43,6 @@ train:
 
   wandb:
     use: false
-    project: "Boltz1"
-    group: seonghwanseo # set your group name
+    project: "Boltz1-compare"
+    group: kfold-af3-edm
     entity: K-Fold # set your entity name
