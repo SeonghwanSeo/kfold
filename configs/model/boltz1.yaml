@@ -10,6 +10,7 @@ input_embedder:
 
 trunk:
   _yaml_: "module/trunk/boltz1.yaml"
+  usa_msa: true
   use_cuequiv_kernels: false
 
 structure_module:

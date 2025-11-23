@@ -2,7 +2,6 @@ model:
   _yaml_: "model/boltz1.yaml"
   trunk:
     use_cuequiv_kernels: false # true can return slightly different results.
-    use_msa: true
   load_weight: true
   freeze_weight: true
 
