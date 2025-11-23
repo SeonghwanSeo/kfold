@@ -358,7 +358,7 @@ class KFoldTrainingModule(pl.LightningModule):
         val_config = self.validation_config
         num_diffusion_samples = val_config.num_diffusion_samples
 
-        f_input, full_structure_dict = batch
+        f_input, full_struct_list = batch
         assert f_input.batch_size == 1, "Validation batch size should be 1"
 
         try:
@@ -369,7 +369,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_diffusion_samples=num_diffusion_samples,
                 mode="validation",
             )
-            sample_coords = out["sample"]["coordinates"]
+            sample_coords = out["sample"]["sample_coordinates"]
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -385,7 +385,7 @@ class KFoldTrainingModule(pl.LightningModule):
             true_coords, atom_mask = validation_metrics.permute_label_coordinates(
                 f_input=f_input,
                 pred_coords=sample_coords,
-                full_structure_dict=full_structure_dict,
+                full_structure_list=full_struct_list,
                 symmetry_correction=val_config.symmetry_correction,
             )
             metrics = validation_metrics.compute_validation_metrics(
@@ -402,7 +402,10 @@ class KFoldTrainingModule(pl.LightningModule):
             save_dir = pathlib.Path(
                 val_config.save_structure_path, f"it-{self.global_step}"
             )
-            self.save_structure(f_input, sample_coords, full_structure_dict[0], save_dir)
+            try:
+                self.save_structure(f_input, sample_coords, full_struct_list, save_dir)
+            except Exception as e:
+                print(f"Failed to save structure for batch {batch_idx}: {e}")
 
     def on_validation_epoch_end(self):
         """Aggregate and log validation metrics at the end of the epoch."""
@@ -650,38 +653,24 @@ class KFoldTrainingModule(pl.LightningModule):
         self,
         f_input: FoldingInput,
         pred_coords: torch.Tensor,
-        full_dict: dict,
+        full_struct_list: list[dict],
         save_dir: pathlib.Path,
     ):
-        import numpy as np
-
         from kfold.data.structure import TokenizedStructure
 
-        _, Nsample, _, _ = pred_coords.shape
+        full_dict = full_struct_list[0]
+        name: str = full_dict["id"]
+        struct: TokenizedStructure = full_dict["structure"]
 
         save_dir.mkdir(parents=True, exist_ok=True)
-
-        name: str = full_dict["id"]
-        structure: TokenizedStructure = full_dict["structure"]
-
         save_path = save_dir / f"{name}-gt.pdb"
-        structure.write(save_path, 0, is_predicted=False)
+        struct.write(save_path, 0, is_predicted=False)
 
-        x = pred_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
-        # match the shape
-        x = x.transpose(1, 0, 2)  # [Natom, Nsample, 3]
+        # [B, Nsample, Natom, 3] -> [Nsample, Natom, 3]
+        assert f_input.batch_size == 1, "Saving structure only supports batch size of 1."
+        pred_coords_arr = pred_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
 
-        # Make the array
-        pred_coords_arr = np.zeros((structure.num_tokens, 24, Nsample, 3))
-        atom_st = 0
-        for i in range(structure.num_tokens):
-            atom_num = int(structure.token.num_atoms[i])
-            pred_coords_arr[i, :atom_num, :, :] = x[atom_st : atom_st + atom_num]
-            atom_st += atom_num
-
-        atom_structure = structure.atom.copy_with(coords=pred_coords_arr)
-        structure = structure.copy_with(atom=atom_structure)
-
-        for i in range(Nsample):
+        new_struct = struct.replace_atom_coords(pred_coords_arr)
+        for i in range(pred_coords_arr.shape[0]):
             save_path = save_dir / f"{name}-{i}.pdb"
-            structure.write(save_path, i, is_predicted=True)
+            new_struct.write(save_path, i, is_predicted=True)

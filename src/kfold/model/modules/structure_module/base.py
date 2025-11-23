@@ -4,6 +4,7 @@ import torch
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.modules.score_model import BaseScoreModel
+from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 
@@ -52,7 +53,8 @@ class BaseStructureModule(ABC):
         num_steps: int | None = None,
         num_diffusion_samples: int = 1,
         max_parallel_samples: int | None = None,
-    ) -> torch.Tensor:
+        return_traj: bool = False,
+    ) -> dict[str, torch.Tensor]:
         """Sample structures via diffusion sampling."""
 
     @abstractmethod
@@ -72,17 +74,35 @@ class BaseStructureModule(ABC):
     ) -> torch.Tensor:
         """Get the noise schedule for diffusion sampling."""
 
-    @abstractmethod
     def sample_prior(
-        self, f_input: FoldingInput, num_diffusion_samples: int = 1
+        self,
+        f_input: FoldingInput,
+        num_diffusion_samples: int = 1,
+        label_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Sample from the prior distribution.
         Return shape: [B, N, La, 3], where N is number of diffusion samples
         and La is number of atoms.
+
+        Parameters
+        -----------
+        f_input: FoldingInput
+            Input features
+        num_diffusion_samples:
+            Number of diffusion samples
+        label_coords: torch.Tensor
+            Label coordinates. Shape: [B, N, La, 3]
+            where N is the number of diffusion samples
         """
-        apo_coords = self.sample_apo(f_input, num_diffusion_samples)  # noqa
-        # do apo perturbation according to prior distribution
-        raise NotImplementedError("sample not implemented")
+
+        # if the model is equivariance, skip augment
+        random_augment = True
+
+        # Sample apo coordinates
+        apo_coords = self.sample_apo(f_input, num_diffusion_samples, random_augment)
+
+        # If required, align to label coordinates
+        return apo_coords
 
     @abstractmethod
     def interpolate(
@@ -147,7 +167,10 @@ class BaseStructureModule(ABC):
         """
 
     def sample_apo(
-        self, f_input: FoldingInput, num_diffusion_samples: int = 1
+        self,
+        f_input: FoldingInput,
+        num_diffusion_samples: int = 1,
+        random_augment: bool = False,
     ) -> torch.Tensor:
         """Sample apo structures from input for model training/inference.
 
@@ -157,6 +180,10 @@ class BaseStructureModule(ABC):
             FoldingInput object containing model inputs.
         num_diffusion_samples : int, optional
             Number of diffusion samples to generate, by default 1.
+        random_augment:
+            Whether to apply random augmentation to apo coordinates.
+            NOTE: the apo coordinates should be already randomly augmented per
+            each chain during featurization. (See `do_augment_apo_structure`)
 
         Returns
         -------
@@ -165,18 +192,32 @@ class BaseStructureModule(ABC):
             where N is number of diffusion samples and L is the number of atoms.
         """
 
-        apo_coords = f_input.atom.apo_coords  # [B, L, Napo, 3]
-        apo_coords = apo_coords.permute(0, 2, 1, 3)  # [B, Napo, L, 3]
-        Napo = apo_coords.shape[1]
+        all_apo_coords = f_input.atom.apo_coords  # [B, L, Napo, 3]
+        all_apo_coords = all_apo_coords.permute(
+            0, 2, 1, 3
+        ).contiguous()  # [B, Napo, L, 3]
+        all_apo_mask = f_input.atom.apo_mask  # [B, L, Napo, 3]
+        all_apo_mask = all_apo_mask.permute(0, 2, 1).contiguous()  # [B, Napo, L]
 
-        if Napo == 1:
-            apo_coords = apo_coords.repeat(1, num_diffusion_samples, 1, 1)
-        else:
-            # sample apo indices
-            # FIXME: sample independently for each batch element
-            apo_indices = torch.randint(0, Napo, (num_diffusion_samples,))
-            apo_coords = apo_coords[:, apo_indices, :, :]  # [B, N, L, 3]
-        return apo_coords  # [B, N, L, 3]
+        B, Napo, L = all_apo_mask.shape  # noqa
+        assert Napo == 1
+        # TODO(SeonghwanSeo): Currently only supports a single apo structure (Napo == 1).
+        # Update this code to support multiple apo structures in the future.
+
+        sampled_apo_coords = all_apo_coords.repeat(1, num_diffusion_samples, 1, 1)
+        sampled_apo_mask = all_apo_mask.repeat(1, num_diffusion_samples, 1)
+
+        if random_augment:
+            sampled_apo_coords = center_random_augmentation(
+                sampled_apo_coords,
+                sampled_apo_mask,
+                s_trans=0.0,  # Keep center to zero.
+            )
+
+        # Mask out to zero
+        sampled_apo_coords = sampled_apo_coords * sampled_apo_mask[..., None]
+
+        return sampled_apo_coords  # [B, N, L, 3]
 
     # === For model training === #
     def training_step(
@@ -200,11 +241,11 @@ class BaseStructureModule(ABC):
                 batch_size, num_diffusion_samples, device=f_input.device
             )  # [B, N]
 
-            # sample x0 from prior
-            prior_coords = self.sample_prior(f_input, num_diffusion_samples)
-
             # sample xt from label (Currently, there is only one holo structure per input)
             holo_coords = self.sample_holo(f_input, num_diffusion_samples)
+
+            # sample x0 from prior
+            prior_coords = self.sample_prior(f_input, num_diffusion_samples, holo_coords)
 
             noised_atom_coords = self.interpolate(prior_coords, holo_coords, t_hat, mask)
             noised_atom_coords = noised_atom_coords * mask[:, None, :, None]
@@ -269,4 +310,10 @@ class BaseStructureModule(ABC):
         else:
             # sample holo indices
             raise NotImplementedError("sample not implemented")
+
+        # Mask out unresolved atoms
+        atom_mask = f_input.atom.resolved_mask  # (B, Latom)
+        atom_mask = atom_mask.to(holo_coords.dtype)[:, None, :, None]
+        holo_coords = holo_coords * atom_mask
+
         return holo_coords  # [B, N, L, 3]

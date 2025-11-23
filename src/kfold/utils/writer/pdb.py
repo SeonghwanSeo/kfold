@@ -53,6 +53,12 @@ def to_pdbstring(
     tokens = structure.token  # [Ntoken, ...]
     atoms = structure.atom  # [Ntoken, 24, ...]
 
+    if structure.num_chains > 52:
+        raise errors.PDBWriterMaxChainError(
+            "PDB format supports a maximum of 52 chains (A-Z, a-z). "
+            f"Found {structure.num_chains} chains."
+        )
+
     # Atom informations
     ref_atom_name_chars = atoms.ref_atom_name_chars  # [Ntoken, 24, max_name_length]
     ref_atom_charges = atoms.ref_charge  # [Ntoken, 24]
@@ -80,7 +86,10 @@ def to_pdbstring(
     pdb_lines = []
     last_asym_id = -1
     atom_map: dict[tuple[int, int], int] = {}
-    chain_id_iter = [chr(i) for i in range(65, 91)]  # 'A' to 'Z'
+
+    # A-Z + a-z for chain IDs
+    chain_id_iter = [chr(i) for i in range(65, 91)] + [chr(i) for i in range(97, 123)]
+
     for i in range(len(tokens)):
         # Check for chain termination.
         should_terminate = i > 0 and last_asym_id != tokens.asym_id[i]
@@ -101,11 +110,6 @@ def to_pdbstring(
 
         # Chain Information
         asym_id = tokens.asym_id[i]
-        if asym_id > 26:
-            raise errors.PDBWriterMaxChainError(
-                "PDB format supports a maximum of 26 chains (A-Z). "
-                f"Found asym_id={asym_id} at token index {i}."
-            )
         chain_tag = chain_id_iter[asym_id - 1]
 
         # Residue Information

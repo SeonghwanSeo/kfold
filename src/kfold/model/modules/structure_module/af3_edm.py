@@ -107,6 +107,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         self,
         f_input: FoldingInput,
         num_diffusion_samples: int = 1,
+        label_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Sample from the prior distribution."""
         B = f_input.batch_size
@@ -276,10 +277,14 @@ class AF3SampleDiffusion(BaseStructureModule):
         num_steps: int | None = None,
         num_diffusion_samples: int = 1,
         max_parallel_samples: int | None = None,
-    ) -> torch.Tensor:
+        return_traj: bool = False,
+    ) -> dict[str, torch.Tensor]:
         """Sample structures via diffusion sampling.
         See Section 3.7: Algorithm 18 of AlphaFold3 paper.
         """
+
+        sample_out: dict[str, torch.Tensor] = {}
+        traj: list[torch.Tensor] = []
 
         if num_steps is None:
             num_steps = self.num_steps
@@ -303,7 +308,11 @@ class AF3SampleDiffusion(BaseStructureModule):
         prior_coords = self.sample_prior(
             f_input, num_diffusion_samples
         )  # (B, N, Latom, 3)
-        atom_coords = init_sigma * prior_coords  # (B, N, Latom, 3)
+        atom_coords: torch.Tensor = init_sigma * prior_coords  # (B, N, Latom, 3)
+        start_coords = atom_coords
+
+        if return_traj:
+            traj.append(atom_coords.cpu())  # Move to cpu to save memory
 
         # Line 2: gradually denoise
         for step_idx in range(1, num_steps):
@@ -351,7 +360,15 @@ class AF3SampleDiffusion(BaseStructureModule):
             # Line 11
             atom_coords = atom_coords_noisy + self.step_scale * dt * delta_coords
 
-        return atom_coords
+            if return_traj:
+                traj.append(atom_coords.cpu())  # Move to cpu to save memory
+
+        sample_out["init_coordinates"] = start_coords
+        sample_out["sample_coordinates"] = atom_coords
+        if return_traj:
+            sample_out["traj"] = torch.stack(traj)
+
+        return sample_out
 
     def get_sampling_schedule(
         self,
