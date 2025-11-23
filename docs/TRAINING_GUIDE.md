@@ -157,9 +157,17 @@ Modify `config file` to match your training environment.
   python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug skip-val
   ```
 
-- Full training mode
+- Full training mode with prepared config file:
   ```bash
   python scripts/train.py \
     --config ./configs/train-af3.yaml \
     --wandb
+  ```
+
+- Advanced training using `--override` flag:
+  ```bash
+  python scripts/train.py \
+    --config ./configs/train-af3.yaml \
+    --wandb \
+    --override train.trainer.max_epochs=-1 train.data.max_tokens=512 ...
   ```

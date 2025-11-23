@@ -33,6 +33,8 @@ This section explains how we implement AlphaFold3 algorithm and compares it to B
 
 Compared to the AlphaFold3 article, Boltz1 modified some layers and architectures. In this repository, we revert these modifications to match the original algorithm as described in the AlphaFold3 paper. However, if the official AlphaFold3 implementation differs from the main article (e.g., due to typos), we prioritize the official repository's implementation.
 
+NOTE: If you want to use Boltz1's original implementation, please refer to [`src/kfold/model/models/boltz.py`](src/kfold/model/models/boltz.py), which contains Boltz1's original architecture and pre-trained weights.
+
 1. **InputFeatureEmbedder (Algorithm 2)**: This module is **implemented slightly differently** from the official algorithm. The official implementation simply has an `s_input` dimension of `c_s + 32 (residue) + 32 (profile) + 1`, but we add a Linear layer to project the feature dimension to `s_token`. This may cause minor differences in the model size of modules that take `s_input` as input. (Dimensions of `s_input`, `s_init`, `s_trunk`: `c_s=384`)
 - AF3/Protenix/OpenFold3: `c_s + 32 + 32 + 1`
 - Boltz: `2 * c_s + 32 + 32 + 1` (See point 2)
@@ -59,6 +61,10 @@ Compared to the AlphaFold3 article, Boltz1 modified some layers and architecture
 3. **Diffusion Loss (Equation 6)**: Unlike AlphaFold3, all other reference codes calculate the weight differently based on the loss scale. Using the official AlphaFold3 implementation prevents the model from training effectively.
     - AF3 (Paper): $w_{\text{diffusion}} = \left(\hat{t}^2 + \sigma_\text{data}^2\right) / \left(\hat{t} + \sigma_\text{data}\right)^2$
     - Boltz1, Protenix, OpenFold3: $w_{\text{diffusion}} = \left(\hat{t}^2 + \sigma_\text{data}^2\right) / \left(\hat{t} \times \sigma_\text{data}\right)^2$
+
+### Validation Metrics
+
+1. **LDDT Calculation**: We follow the official AlphaFold3 explanation for LDDT calculation during validation. However, **symmetry correction is not yet implemented**.
 
 ## Implementation for K-Fold Foundation Model.
 
@@ -91,13 +97,13 @@ The following items require future implementation.
 
 ### Data Processing
 
-1. **Symmetry**: Addition of symmetry information is required for **LDDT** calculation during the validation process.
+1. **Symmetry**: Addition of symmetry information is required for accurate **LDDT** calculation during the validation process.
 2. **Pocket Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
 3. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
 
 ### Model Training
 
-1. **Validation**: Implementation of symmetry calculation and **LDDT** metric is required.
+1. **Validation**: Implementation of symmetry correction for accurate LDDT calculation during validation.
 
 ### Benchmark
 

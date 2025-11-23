@@ -17,9 +17,9 @@ If the features listed below are completed, I will include the corresponding PR 
     - [x] Ligand (ETKDG; single conformer): 251116 - [#23](https://github.com/SeonghwanSeo/kfold/pull/23)
 - [ ] **Multiple apo structures** if possible (in particular, ligand)
     - AlphaFold uses different conformers for each seed. (Boltz2: uses 10 different conformers as `ref_pos` for ligands)
-- [ ] Parse **multiple bioassembly structures** from RCSB (optional).
+- [ ] Parse **multiple bioassembly structures** from RCSB (optional, less-priority).
     - Some structures have multiple valid biological assemblies.
-    - Need to select one assembly for training. (AF3: first assembly is used)
+    - Need to select one assembly for training. (AF3/Boltz1/Boltz2/Protenix/OpenFold-3: first assembly is used)
 
 ### Data featurization
 
@@ -36,7 +36,12 @@ If the features listed below are completed, I will include the corresponding PR 
 
 - [x] Test **multi-node training**.
 - [ ] Add **validation pipeline** including symmetry-aware LDDT calculation.
+    - [x] Add **validation metrics**.
+    - [ ] Add chain-permutation and atom-swapping for symmetry correction.
 
 ### Benchmark
 
+- [ ] Implement PDB/mmCIF writer
+    - [x] PDB writer
+    - [ ] mmCIF writer
 - [ ] Implement benchmark pipeline for K-Fold.
