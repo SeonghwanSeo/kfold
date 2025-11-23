@@ -97,13 +97,10 @@ The following items require future implementation.
 
 ### Data Processing
 
-1. **Symmetry**: Addition of symmetry information is required for accurate **LDDT** calculation during the validation process.
-2. **Pocket Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
-3. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
-
-### Model Training
-
-1. **Validation**: Implementation of symmetry correction for accurate LDDT calculation during validation.
+1. **Sequence Layout**: To be added for integrating with pre-trained language models.
+2. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
+3. **Symmetry**: Addition of symmetry information is required for accurate **LDDT** calculation during the validation process.
+4. **Pocket Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
 
 ### Benchmark
 
