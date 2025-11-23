@@ -424,6 +424,49 @@ class KFoldBridgeDiffusion(BaseStructureModule):
 
         return apo_coords
 
+    def sample_holo(
+        self,
+        f_input: FoldingInput,
+        num_diffusion_samples: int = 1,
+    ) -> torch.Tensor:
+        """Sample holo structures (target for bridge diffusion).
+
+        In bridge diffusion, the holo (bound) structure is the target
+        that we condition on during sampling.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+        num_diffusion_samples : int, optional
+            Number of diffusion samples, by default 1.
+
+        Returns
+        -------
+        holo_coords : torch.Tensor
+            Holo coordinates. Shape (B, N, La, 3).
+        """
+        holo_coords = super().sample_holo(
+            f_input, num_diffusion_samples
+        )  # [B, N, Latom, 3]
+
+        if self.coordinate_augmentation:
+            atom_mask = f_input.atom.pad_mask.float()  # (B, Latom)
+
+            B, N, L = holo_coords.shape[:3]
+            holo_coords = holo_coords.view(B * N, L, 3)  # (B*N, Latom, 3)
+            atom_mask = atom_mask.repeat_interleave(N, dim=0)  # (B * N, Latom)
+
+            # Apply coordinate augmentation
+            holo_coords = self.random_augmentation(holo_coords, mask=atom_mask)
+
+            # Mask out the padding atoms
+            holo_coords = holo_coords * atom_mask[:, :, None]  # (B*N, Latom, 3)
+
+            holo_coords = holo_coords.view(B, N, L, 3)
+
+        return holo_coords
+
     def interpolate(
         self,
         noise_coords: torch.Tensor,
