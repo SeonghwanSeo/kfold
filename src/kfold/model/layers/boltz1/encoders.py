@@ -13,6 +13,7 @@ from kfold.data.model_input import FoldingInput
 
 from . import initialize as init
 from .transformers import AtomTransformer
+from .transition import Transition
 from .utils import LinearNoBias
 
 
@@ -124,6 +125,131 @@ class RelativePositionEncoder(Module):
             )
         )
         return p
+
+
+class SingleConditioning(Module):
+    """Single conditioning layer."""
+
+    def __init__(
+        self,
+        sigma_data: float,
+        token_s=384,
+        dim_fourier=256,
+        num_transitions=2,
+        transition_expansion_factor=2,
+        eps=1e-20,
+    ):
+        """Initialize the single conditioning layer.
+
+        Parameters
+        ----------
+        sigma_data : float
+            The data sigma.
+        token_s : int, optional
+            The single representation dimension, by default 384.
+        dim_fourier : int, optional
+            The fourier embeddings dimension, by default 256.
+        num_transitions : int, optional
+            The number of transitions layers, by default 2.
+        transition_expansion_factor : int, optional
+            The transition expansion factor, by default 2.
+        eps : float, optional
+            The epsilon value, by default 1e-20.
+
+        """
+        super().__init__()
+        self.eps = eps
+        self.sigma_data = sigma_data
+
+        input_dim = 2 * token_s + 2 * 33 + 1 + 4
+        self.norm_single = nn.LayerNorm(input_dim)
+        self.single_embed = nn.Linear(input_dim, 2 * token_s)
+        self.fourier_embed = FourierEmbedding(dim_fourier)
+        self.norm_fourier = nn.LayerNorm(dim_fourier)
+        self.fourier_to_single = LinearNoBias(dim_fourier, 2 * token_s)
+
+        transitions = nn.ModuleList([])
+        for _ in range(num_transitions):
+            transition = Transition(
+                dim=2 * token_s, hidden=transition_expansion_factor * 2 * token_s
+            )
+            transitions.append(transition)
+
+        self.transitions = transitions
+
+    def forward(
+        self,
+        *,
+        times,
+        s_trunk,
+        s_inputs,
+    ):
+        s = torch.cat((s_trunk, s_inputs), dim=-1)
+        s = self.single_embed(self.norm_single(s))
+        fourier_embed = self.fourier_embed(times)
+        normed_fourier = self.norm_fourier(fourier_embed)
+        fourier_to_single = self.fourier_to_single(normed_fourier)
+
+        s = rearrange(fourier_to_single, "b d -> b 1 d") + s
+
+        for transition in self.transitions:
+            s = transition(s) + s
+
+        return s, normed_fourier
+
+
+class PairwiseConditioning(Module):
+    """Pairwise conditioning layer."""
+
+    def __init__(
+        self,
+        token_z,
+        dim_token_rel_pos_feats,
+        num_transitions=2,
+        transition_expansion_factor=2,
+    ):
+        """Initialize the pairwise conditioning layer.
+
+        Parameters
+        ----------
+        token_z : int
+            The pair representation dimension.
+        dim_token_rel_pos_feats : int
+            The token relative position features dimension.
+        num_transitions : int, optional
+            The number of transitions layers, by default 2.
+        transition_expansion_factor : int, optional
+            The transition expansion factor, by default 2.
+
+        """
+        super().__init__()
+
+        self.dim_pairwise_init_proj = nn.Sequential(
+            nn.LayerNorm(token_z + dim_token_rel_pos_feats),
+            LinearNoBias(token_z + dim_token_rel_pos_feats, token_z),
+        )
+
+        transitions = nn.ModuleList([])
+        for _ in range(num_transitions):
+            transition = Transition(
+                dim=token_z, hidden=transition_expansion_factor * token_z
+            )
+            transitions.append(transition)
+
+        self.transitions = transitions
+
+    def forward(
+        self,
+        z_trunk,
+        token_rel_pos_feats,
+    ):
+        z = torch.cat((z_trunk, token_rel_pos_feats), dim=-1)
+        z = self.dim_pairwise_init_proj(z)
+
+        for transition in self.transitions:
+            z = transition(z) + z
+
+        return z
 
 
 def get_indexing_matrix(K, W, H, device):
@@ -394,3 +520,98 @@ class AtomAttentionEncoder(Module):
         a = torch.bmm(atom_to_token_mean.transpose(1, 2), q_to_a)
 
         return a, q, c, p, to_keys
+
+
+class AtomAttentionDecoder(Module):
+    """Atom attention decoder."""
+
+    def __init__(
+        self,
+        atom_s,
+        atom_z,
+        token_s,
+        attn_window_queries,
+        attn_window_keys,
+        atom_decoder_depth=3,
+        atom_decoder_heads=4,
+    ):
+        """Initialize the atom attention decoder.
+
+        Parameters
+        ----------
+        atom_s : int
+            The atom single representation dimension.
+        atom_z : int
+            The atom pair representation dimension.
+        token_s : int
+            The single representation dimension.
+        attn_window_queries : int
+            The number of atoms per window for queries.
+        attn_window_keys : int
+            The number of atoms per window for keys.
+        atom_decoder_depth : int, optional
+            The number of transformer layers, by default 3.
+        atom_decoder_heads : int, optional
+            The number of transformer heads, by default 4.
+
+        """
+        super().__init__()
+
+        self.a_to_q_trans = LinearNoBias(2 * token_s, atom_s)
+        init.final_init_(self.a_to_q_trans.weight)
+
+        self.atom_decoder = AtomTransformer(
+            dim=atom_s,
+            dim_single_cond=atom_s,
+            dim_pairwise=atom_z,
+            attn_window_queries=attn_window_queries,
+            attn_window_keys=attn_window_keys,
+            depth=atom_decoder_depth,
+            heads=atom_decoder_heads,
+        )
+
+        self.atom_feat_to_atom_pos_update = nn.Sequential(
+            nn.LayerNorm(atom_s), LinearNoBias(atom_s, 3)
+        )
+        init.final_init_(self.atom_feat_to_atom_pos_update[1].weight)
+
+    def forward(
+        self,
+        a,
+        q,
+        c,
+        p,
+        f_input: FoldingInput,
+        to_keys,
+        multiplicity=1,
+        model_cache=None,
+    ):
+        atom_mask = f_input.atom.pad_mask
+        atom_mask = atom_mask.repeat_interleave(multiplicity, 0)
+
+        atom_to_token = f_input.atom_to_token.float()
+        atom_to_token = atom_to_token.repeat_interleave(multiplicity, 0)
+
+        a_to_q = self.a_to_q_trans(a)
+        a_to_q = torch.bmm(atom_to_token, a_to_q)
+        q = q + a_to_q
+
+        layer_cache = None
+        if model_cache is not None:
+            cache_prefix = "atomdecoder"
+            if cache_prefix not in model_cache:
+                model_cache[cache_prefix] = {}
+            layer_cache = model_cache[cache_prefix]
+
+        q = self.atom_decoder(
+            q=q,
+            mask=atom_mask,
+            c=c,
+            p=p,
+            multiplicity=multiplicity,
+            to_keys=to_keys,
+            model_cache=layer_cache,
+        )
+
+        r_update = self.atom_feat_to_atom_pos_update(q)
+        return r_update

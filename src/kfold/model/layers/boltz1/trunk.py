@@ -1,4 +1,5 @@
 import torch
+import torch.utils.checkpoint
 from torch import Tensor, nn
 
 from kfold.data.model_input import FoldingInput
@@ -209,8 +210,19 @@ class PairformerModule(nn.Module):
             The updated pairwise embeddings.
 
         """
-        for layer in self.layers:
-            s, z = layer(s, z, mask, pair_mask)
+        if self.training:
+            for layer in self.layers:
+                s, z = torch.utils.checkpoint.checkpoint(
+                    layer,
+                    s,
+                    z,
+                    mask,
+                    pair_mask,
+                    use_reentrant=False,
+                )
+        else:
+            for layer in self.layers:
+                s, z = layer(s, z, mask, pair_mask)
         return s, z
 
 

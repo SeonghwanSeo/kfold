@@ -258,7 +258,7 @@ class DiffusionModule(nn.Module):
 
         # Line 5
         z = z.unsqueeze(-4)  # [B, 1, Lt, Lt, c_z]
-        token_mask = f_input.token.pad_mask.float().unsqueeze(-2)  # [B, 1, Lt]
+        token_mask = f_input.token.pad_mask.unsqueeze(-2)  # [B, 1, Lt]
         a = self.token_transformer(
             a,  # [B, N, Lt, c_token]
             s=s,  # [B, N, Lt, c_s]

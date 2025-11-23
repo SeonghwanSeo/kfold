@@ -48,10 +48,12 @@ data:
     _class_: ClusterSampler
     beta_chain: 0.5
     beta_interface: 1.0
-    allow_redundant: True
+    allow_redundant: True # Same to Boltz1
 
   # Featurizer configurations:
   featurization_args:
+    augment_ref_pos: true
+    augment_apo: true
     synchronize_ref_pos_augmentation: false
 
 # Lightning Trainer Configuration
@@ -95,7 +97,7 @@ training:
 validation:
   # Validation step hyperparameters
   num_cycles: 4
-  num_steps: 20
+  num_steps: 200
   num_diffusion_samples: 5
   symmetry_correction: false # TODO: fix get_true_coordinates function to use symmetry correction
   save_structure_path: null # if given, save structure

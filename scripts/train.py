@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_trainer(cfg, debug: bool = True) -> pl.Trainer:
+def build_trainer(cfg, debug: bool = False) -> pl.Trainer:
     train_cfg = cfg.train
     pl_trainer_cfg = train_cfg.trainer
 
@@ -107,14 +107,14 @@ def build_trainer(cfg, debug: bool = True) -> pl.Trainer:
     callbacks.append(model_summary)
 
     # TQDM
-    refresh_rate = 5 if debug else 1
+    refresh_rate = 1 if debug else 5
     tqdm_callback = pl.callbacks.TQDMProgressBar(refresh_rate=refresh_rate)
     callbacks.append(tqdm_callback)
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val/best/weighted_lddt",
+        monitor="val/lddt",
         save_top_k=-1,
-        filename="epoch{epoch:04d}_step{step:08d}_lddt{val/best/weighted_lddt:.4f}",
+        filename="epoch{epoch:04d}_step{step:08d}_lddt{val/lddt:.4f}",
         mode="max",
         auto_insert_metric_name=False,
     )
@@ -172,7 +172,7 @@ def train(args) -> None:
         cfg.train.trainer.accumulate_grad_batches = 1
         cfg.train.trainer.log_every_n_steps = 1
         cfg.train.trainer.limit_train_batches = 10
-        cfg.train.trainer.limit_val_batches = 100
+        cfg.train.trainer.limit_val_batches = 50
         cfg.train.data.train_batch_size = 1
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False
@@ -185,7 +185,7 @@ def train(args) -> None:
     # Set random seed
     pl.seed_everything(cfg.train.seed)
 
-    trainer = build_trainer(cfg)
+    trainer = build_trainer(cfg, args.debug)
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
 

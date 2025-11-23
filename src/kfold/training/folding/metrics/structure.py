@@ -308,19 +308,30 @@ def compute_validation_metrics(
             all_best_complex_weights[k].append(weights[best_complex_idx][k])
 
     # Store as tensors
+    # FIXME: to match the Boltz's validation metric naming, I add prefixes here,
+    # though they are bit ambiguous.
+    # No prefix: best values for each metric across samples.
+    # "avg_" prefix: average over all samples
+    # "complex_" prefix: values of the highest-lddt sample.
     validation_metrics: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
     for k in all_metrics.keys():
         v = torch.stack(all_metrics[k], dim=0)
         w = torch.stack(all_weights[k], dim=0)
-        validation_metrics[k] = (v, w)
+        validation_metrics[f"avg_{k}"] = (v, w)
     for k in all_best_metrics.keys():
         v = torch.stack(all_best_metrics[k], dim=0)
         w = torch.stack(all_best_weights[k], dim=0)
-        validation_metrics[f"best/{k}"] = (v, w)
+        validation_metrics[k] = (v, w)
     for k in all_best_complex_metrics.keys():
         v = torch.stack(all_best_complex_metrics[k], dim=0)
         w = torch.stack(all_best_complex_weights[k], dim=0)
-        validation_metrics[f"best_complex/{k}"] = (v, w)
+        validation_metrics[f"complex_{k}"] = (v, w)
+
+    # HACK: Boltz1 called 'weighted_lddt' as 'lddt'.
+    # Therefore, following values are not used
+    validation_metrics.pop("avg_lddt")
+    validation_metrics.pop("lddt")
+    validation_metrics.pop("complex_lddt")
 
     return validation_metrics
 

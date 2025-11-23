@@ -45,9 +45,12 @@ You can use this path as an argument for the training script directly and skip t
 export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 
 cd $KFOLD_DATA_DIR
-cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251116.lmdb ./
+cp -r --sparse always /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251120.lmdb ./
 cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/ ./
+chmod 775 -R .
 ```
+
+- NOTE: To copy lmdb file, use `--sparse always` option to avoid copying empty space in the lmdb file.
 
 #### Option B: Create New Dataset
 

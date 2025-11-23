@@ -11,7 +11,7 @@ from .base import BaseSampler, Sample
 
 # FIXME: (SeonghwanSeo) Currently, I restrict that only protein and ligand
 # are considered. Need to remove this restriction in the future.
-ALLOW_NUC = False
+ALLOW_NUC = True
 
 
 # === Helpers to compute weights === #

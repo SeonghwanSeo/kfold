@@ -147,13 +147,13 @@ class TrainingDataModule(pl.LightningDataModule):
     def construct_val_dataset(self) -> ValidationDataset:
         # HACK: (SeonghwanSeo): hard-coded path to rcsb set; single dataset
 
-        # Load records
-        all_records: list[Metadata] = load_manifest(self.manifest_path)
-
         # get validation records
         validation_split = self.split_path / "validation_ids.txt"
         with open(validation_split) as f:
             val_ids = set([line.strip().lower() for line in f])
+
+        # Load records
+        all_records: list[Metadata] = load_manifest(self.manifest_path)
 
         # Apply filters
         val_records = [r for r in all_records if r.id.lower() in val_ids]
@@ -187,7 +187,7 @@ class TrainingDataModule(pl.LightningDataModule):
             pin_memory=self.config.pin_memory,
             drop_last=True,
             collate_fn=collate,
-            persistent_workers=True,
+            persistent_workers=True if self.config.num_workers > 0 else False,
         )
 
     def val_dataloader(self) -> DataLoader:
@@ -200,5 +200,5 @@ class TrainingDataModule(pl.LightningDataModule):
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
             collate_fn=collate,
-            persistent_workers=True,
+            persistent_workers=True if self.config.num_workers > 0 else False,
         )
