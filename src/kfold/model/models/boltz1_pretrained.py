@@ -1,3 +1,4 @@
+import time
 import urllib.request
 from pathlib import Path
 
@@ -103,7 +104,14 @@ class Boltz1Pretrained(KFold):
             k: v
             for k, v in state_dict.items()
             if k.startswith(
-                ("pairformer_module", "s_norm", "z_norm", "s_recycle", "z_recycle")
+                (
+                    "pairformer_module",
+                    "s_norm",
+                    "z_norm",
+                    "s_recycle",
+                    "z_recycle",
+                    "msa_module",
+                )
             )
         }
         self.trunk.load_state_dict(trunk_state_dict, strict=True)
@@ -121,7 +129,7 @@ class Boltz1Pretrained(KFold):
 
         # Remove unused keys
         for k in list(state_dict.keys()):
-            if k.startswith(("msa_module", "structure_module", "confidence_module")):
+            if k.startswith(("structure_module", "confidence_module")):
                 state_dict.pop(k)
 
         # Check that all keys have been used
@@ -189,7 +197,7 @@ class Boltz1Pretrained(KFold):
                     num_steps=num_steps,
                     num_diffusion_samples=num_diffusion_samples,
                     max_parallel_samples=None,
-                )  # [B, N_samples, Ltoken, 3]
+                )["sample_coordinates"]  # [B, N_samples, Ltoken, 3]
             dict_out["sample"] = {
                 "coordinates": coordinates,
             }
@@ -219,6 +227,93 @@ class Boltz1Pretrained(KFold):
             raise NotImplementedError("Confidence module is not implemented yet.")
 
         return dict_out
+
+    def sample(
+        self,
+        f_input: FoldingInput,
+        num_cycles: int,
+        num_steps: int,
+        num_diffusion_samples: int,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+        """Forward pass of KFold model for model training.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            Input data for folding model.
+        num_cycles : int
+            Number of recycling cycles in trunk.
+        num_steps : int
+            Number of diffusion steps for training.
+        num_diffusion_samples : int
+            Number of diffusion samples for training.
+        """
+        dict_out: dict[str, torch.Tensor] = {}
+        time_logs: dict[str, float] = {}
+
+        # Indicate whether to return batched output
+        return_batched_output = f_input.is_batched
+
+        # Ensure batched input
+        f_input = self.ensure_batched_input(f_input)
+
+        # Embed inputs
+        st = time.time()
+        s_inputs, s_init, z_init = self.input_embedder(f_input)
+        et = time.time()
+        time_logs["input_embedder"] = et - st
+
+        # Trunk with recycling
+        st = time.time()
+        s_trunk, z_trunk = self.trunk(
+            s_inputs,
+            s_init,
+            z_init,
+            f_input,
+            num_cycles,
+        )
+        et = time.time()
+        time_logs["trunk"] = et - st
+
+        dict_out = {
+            "s_trunk": s_trunk,
+            "z_trunk": z_trunk,
+        }
+
+        # Distogram head
+        st = time.time()
+        dict_out["distogram_logits"] = self.distogram_head(z_trunk)
+        et = time.time()
+        time_logs["distogram_head"] = et - st
+
+        # ====================================================== #
+        # NOTE: Only the difference is here: Project single features to match
+        s_inputs = self.proj_s_inputs(s_inputs)
+        # ====================================================== #
+
+        # Diffusion head
+        # pred_atom_coords: [B, Nsample, La, 3]
+        st = time.time()
+        dict_out.update(
+            self.structure_module.sample_structure(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                num_steps,
+                num_diffusion_samples,
+            )
+        )
+        et = time.time()
+        time_logs["diffusion_head"] = et - st
+
+        # TODO: Confidence head
+
+        # If the input was not batched, remove the batch dimension
+        if not return_batched_output:
+            for key in dict_out:
+                dict_out[key] = dict_out[key].squeeze(0)
+        return dict_out, time_logs
 
     def freeze_modules(self):
         """Freeze Boltz-1 pretrained modules."""

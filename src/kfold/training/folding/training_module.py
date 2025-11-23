@@ -196,16 +196,14 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics = {}
 
         # RMSD
+        metrics["avg_rmsd"] = MeanMetric()
         metrics["rmsd"] = MeanMetric()
-        metrics["best/rmsd"] = MeanMetric()
 
         # LDDT
-        metrics["lddt"] = MeanMetric()
-        metrics["best/lddt"] = MeanMetric()
         for m in C.training.LDDTType:
+            metrics[f"avg_lddt_{m.value}"] = MeanMetric()
             metrics[f"lddt_{m.value}"] = MeanMetric()
-            metrics[f"best/lddt_{m.value}"] = MeanMetric()
-            metrics[f"best_complex/lddt_{m.value}"] = MeanMetric()
+            metrics[f"complex_lddt_{m.value}"] = MeanMetric()
         self.valid_metrics: dict[str, MeanMetric] = torch.nn.ModuleDict(metrics)  # type: ignore
 
     def configure_optimizers(self):  # type: ignore
@@ -415,7 +413,7 @@ class KFoldTrainingModule(pl.LightningModule):
             v = m.compute()
             if v.isfinite().all():
                 # Ignore non-finite values (after sanity check)
-                avg_values[f"{k}"] = v
+                avg_values[k] = v
             m.reset()
 
         # Compute weighted lddt scores (Monitored metrics)
@@ -427,13 +425,21 @@ class KFoldTrainingModule(pl.LightningModule):
         for m, w in lddt_weights.items():
             weighted_lddt += avg_values.get(f"lddt_{m.value}", 0.0) * w
         weighted_lddt /= sum_weights
-        avg_values["weighted_lddt"] = weighted_lddt  # type: ignore
+        avg_values["lddt"] = weighted_lddt  # type: ignore
 
         weighted_lddt = 0
         for m, w in lddt_weights.items():
-            weighted_lddt += avg_values.get(f"best/lddt_{m.value}", 0.0) * w
+            weighted_lddt += avg_values.get(f"avg_lddt_{m.value}", 0.0) * w
         weighted_lddt /= sum_weights
-        avg_values["best/weighted_lddt"] = weighted_lddt  # type: ignore
+        avg_values["avg_lddt"] = weighted_lddt  # type: ignore
+
+        # NOTE: to match the boltz's metric naming, I swap the name
+        if "rmsd" in avg_values:
+            avg_values["rmsd"], avg_values["best_rmsd"] = (
+                avg_values["avg_rmsd"],
+                avg_values["rmsd"],
+            )
+            avg_values.pop("avg_rmsd")
 
         avg_values = {f"val/{k}": v for k, v in avg_values.items()}
         self.log_dict(avg_values, sync_dist=True)
@@ -605,8 +611,14 @@ class KFoldTrainingModule(pl.LightningModule):
                 )
             self.ema.to(self.device)
 
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
-        optimizer.step(closure=optimizer_closure)
+    # FIXME: To match the Boltz's implementation, I update EMA for each `batch`
+    # instead of `optimizer_step`.
+    # def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):
+    #     optimizer.step(closure=optimizer_closure)
+    #     if self.use_ema:
+    #         self.ema.update(self.parameters())
+
+    def on_train_batch_end(self, outputs, batch: Any, batch_idx: int) -> None:
         if self.use_ema:
             self.ema.update(self.parameters())
 

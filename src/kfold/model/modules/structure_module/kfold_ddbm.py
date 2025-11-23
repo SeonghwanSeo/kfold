@@ -778,7 +778,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
                 )
 
                 # Euler-Maruyama step: deterministic drift + stochastic diffusion
-                dt_churn = sigma_hat - sigma_curr
+                dt_churn = torch.tensor(sigma_hat - sigma_curr, device=atom_coords.device)
                 noise = torch.randn_like(atom_coords)
                 atom_coords = (
                     atom_coords

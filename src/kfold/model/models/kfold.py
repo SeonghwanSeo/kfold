@@ -175,7 +175,7 @@ class KFold(torch.nn.Module):
                     num_steps=num_steps,
                     num_diffusion_samples=num_diffusion_samples,
                     max_parallel_samples=None,
-                )  # [B, N_samples, Ltoken, 3]
+                )["sample_coordinates"]  # [B, N_samples, Ltoken, 3]
             dict_out["sample"] = {
                 "coordinates": coordinates,
             }

@@ -28,8 +28,8 @@ train:
   data:
     train_batch_size: 4
     max_tokens: 512
-    lmdb_path: /cache/wykim_lab/kfold_data1/kfold_rcsb_processed_v251120.lmdb/
-    manifest_path: /cache/wykim_lab/kfold_data1/manifests/all_manifest.pkl
+    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
+    manifest_path: /cache/wykim_lab/kfold_data/manifests/all_manifest.pkl
     split_path: ./assets/splits/boltz1
     num_workers: 4
 

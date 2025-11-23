@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.layers.boltz1 import initialize as init
+from kfold.model.layers.boltz1.msa_module import MSAModule
 from kfold.model.layers.boltz1.trunk import PairformerModule
 from kfold.utils.registry import TRUNK
 
@@ -76,6 +77,17 @@ class Boltz1PairformerTrunk(BaseTrunk):
             pairwise_num_heads=cfg.pairwise_num_heads,
         )
 
+        self.msa_module: MSAModule = MSAModule(
+            msa_s=64,
+            token_z=128,
+            s_input_dim=455,
+            msa_blocks=4,
+            msa_dropout=0.15,
+            z_dropout=0.25,
+            pairwise_head_width=32,
+            pairwise_num_heads=4,
+        )
+
         # For recycling
         # Normalization layers
         self.s_norm = nn.LayerNorm(cfg.channel_s)
@@ -145,6 +157,8 @@ class Boltz1PairformerTrunk(BaseTrunk):
 
                 s = s_init + self.s_recycle(self.s_norm(s))
                 z = z_init + self.z_recycle(self.z_norm(z))
+
+                z = z + self.msa_module(z, s_inputs, f_input)
 
                 # Revert to uncompiled version for validation
                 s, z = self.pairformer_module(s, z, mask, pair_mask)

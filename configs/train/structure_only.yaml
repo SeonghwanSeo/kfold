@@ -52,6 +52,8 @@ data:
 
   # Featurizer configurations:
   featurization_args:
+    augment_ref_pos: true
+    augment_apo: true
     synchronize_ref_pos_augmentation: false
 
 # Lightning Trainer Configuration
