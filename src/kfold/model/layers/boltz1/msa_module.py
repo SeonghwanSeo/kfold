@@ -85,7 +85,7 @@ class OuterProductMean(nn.Module):
                     ).sum(1)
             num_mask = num_mask.clamp(min=1)
 
-            # Compute squentially in chunks
+            # Compute sequentially in chunks
             for i in range(0, self.c_hidden, chunk_size):
                 a_chunk = a[:, :, :, i : i + chunk_size]
                 sliced_weight_proj_o = self.proj_o.weight[
@@ -160,7 +160,11 @@ class PairWeightedAveraging(nn.Module):
         init.final_init_(self.proj_o.weight)
 
     def forward(
-        self, m: Tensor, z: Tensor, mask: Tensor, chunk_heads: False = bool
+        self,
+        m: Tensor,
+        z: Tensor,
+        mask: Tensor,
+        chunk_heads: bool = False,
     ) -> Tensor:
         """Forward pass.
 
@@ -433,7 +437,7 @@ class MSALayer(nn.Module):
         msa_s : int
             The MSA embedding size.
         token_z : int
-            The pair representation dimention.
+            The pair representation dimension.
         msa_dropout : float
             The MSA dropout.
         z_dropout : float
