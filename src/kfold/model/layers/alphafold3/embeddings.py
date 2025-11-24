@@ -5,8 +5,7 @@ from torch import nn
 
 import kfold.constants as C
 from kfold.data.model_input import FoldingInput
-
-from .primitives import LinearNoBias
+from kfold.model.layers.primitives import LinearNoBias
 
 
 class RelativePositionEncoding(nn.Module):
@@ -28,7 +27,9 @@ class RelativePositionEncoding(nn.Module):
         super().__init__()
         self.r_max: int = r_max
         self.s_max: int = s_max
-        self.linear_layer = LinearNoBias(4 * (r_max + 1) + 2 * (s_max + 1) + 1, channel_z)
+        self.linear_layer = LinearNoBias(
+            4 * (r_max + 1) + 2 * (s_max + 1) + 1, channel_z, init="default"
+        )
 
     def forward(
         self,
@@ -122,7 +123,7 @@ class RelativePositionEncoding(nn.Module):
         else:
             rel_position_encoding = layer_cache["rel_pos_encoding"]
 
-        # Line 10:2 (lienar)
+        # Line 10:2 (linear)
         p = self.linear_layer(rel_position_encoding)  # [B, L, L, c_z]
 
         return p  # [L, L, c_z]
@@ -142,16 +143,19 @@ class AtomEmbedding(nn.Module):
             The atom single representation dimension.
         """
         super().__init__()
-        self.num_atom_elements: int = C.NUM_ATOM_ELEMENTS
-        self.num_atom_name_chars: int = C.NUM_ATOM_NAME_CHARS
+        num_atom_elements: int = C.NUM_ATOM_ELEMENTS
+        num_atom_name_chars: int = C.NUM_ATOM_NAME_CHARS
+        atom_name_dim = 4 * num_atom_name_chars
 
         # Atom feature embeddings
-        self.embed_atom_pos = LinearNoBias(3, channel_atom)
-        self.embed_atom_charge = LinearNoBias(1, channel_atom)
-        self.embed_atom_mask = LinearNoBias(1, channel_atom)
-        self.embed_atom_element = LinearNoBias(self.num_atom_elements, channel_atom)
+        self.embed_atom_pos = LinearNoBias(3, channel_atom, init="default")
+        self.embed_atom_charge = LinearNoBias(1, channel_atom, init="default")
+        self.embed_atom_mask = LinearNoBias(1, channel_atom, init="default")
+        self.embed_atom_element = LinearNoBias(
+            num_atom_elements, channel_atom, init="default"
+        )
         self.embed_atom_name_chars = LinearNoBias(
-            4 * self.num_atom_name_chars, channel_atom
+            atom_name_dim, channel_atom, init="default"
         )
 
     def forward(self, f_input: FoldingInput) -> torch.Tensor:

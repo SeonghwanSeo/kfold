@@ -21,7 +21,7 @@ Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/b
 | **3.3** MSA Module        | Algorithm 8  | MsaModule | N/A |
 |                           | Algorithm 9  | OuterProductMean | N/A |
 |                           | Algorithm 10 | MSAPairWeightedAveraging | N/A |
-|                           | Algorithm 11 | Transition | `primitives.py` |
+|                           | Algorithm 11 | Transition | `transition.py` |
 | **3.4** Triangle updates  | Algorithm 12 | TriangleMultiplicationOutgoing | `triangular_update/` |
 |                           | Algorithm 13 | TriangleMultiplicationIncoming | `triangular_update/` |
 |                           | Algorithm 14 | TriangleAttentionStartingNode | `triangular_update/` |

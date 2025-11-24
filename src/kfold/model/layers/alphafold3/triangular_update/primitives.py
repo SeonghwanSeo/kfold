@@ -17,6 +17,7 @@
 
 import math
 from collections.abc import Callable
+from functools import partial
 
 import torch
 from torch import nn
@@ -122,6 +123,9 @@ class Linear(nn.Linear):
                 return nn.functional.linear(input, self.weight.to(dtype=d), bias)
 
         return nn.functional.linear(input, self.weight, self.bias)
+
+
+LinearNoBias = partial(Linear, bias=False)
 
 
 class LayerNorm(nn.Module):

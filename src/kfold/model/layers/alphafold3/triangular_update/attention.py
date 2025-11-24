@@ -20,7 +20,7 @@ from functools import partial, partialmethod
 import torch
 import torch.nn as nn
 
-from .primitives import Attention, LayerNorm, Linear
+from .primitives import Attention, LayerNorm, LinearNoBias
 from .utils import chunk_layer, permute_final_dims
 
 
@@ -45,7 +45,7 @@ class TriangleAttention(nn.Module):
 
         self.layer_norm = LayerNorm(self.c_in)
 
-        self.linear = Linear(c_in, self.no_heads, bias=False, init="normal")
+        self.linear = LinearNoBias(c_in, self.no_heads, init="normal")
 
         self.mha = Attention(
             self.c_in, self.c_in, self.c_in, self.c_hidden, self.no_heads

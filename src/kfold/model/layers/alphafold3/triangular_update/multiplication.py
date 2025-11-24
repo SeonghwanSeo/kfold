@@ -7,7 +7,7 @@ try:
 except ImportError:
     triangle_multiplicative_update = None
 
-from . import initialize as init
+from .primitives import LayerNorm, LinearNoBias
 
 
 @torch.compiler.disable
@@ -62,25 +62,13 @@ class TriangleMultiplicationOutgoing(nn.Module):
         """
         super().__init__()
 
-        self.norm_in = nn.LayerNorm(dim, eps=1e-5)
-        self.p_in = nn.Linear(dim, 2 * dim, bias=False)
-        self.g_in = nn.Linear(dim, 2 * dim, bias=False)
+        self.norm_in = LayerNorm(dim, eps=1e-5)
+        self.p_in = LinearNoBias(dim, 2 * dim, init="default")
+        self.g_in = LinearNoBias(dim, 2 * dim, init="gating")
 
-        self.norm_out = nn.LayerNorm(dim)
-        self.p_out = nn.Linear(dim, dim, bias=False)
-        self.g_out = nn.Linear(dim, dim, bias=False)
-
-        init.bias_init_one_(self.norm_in.weight)
-        init.bias_init_zero_(self.norm_in.bias)
-
-        init.lecun_normal_init_(self.p_in.weight)
-        init.gating_init_(self.g_in.weight)
-
-        init.bias_init_one_(self.norm_out.weight)
-        init.bias_init_zero_(self.norm_out.bias)
-
-        init.final_init_(self.p_out.weight)
-        init.gating_init_(self.g_out.weight)
+        self.norm_out = LayerNorm(dim)
+        self.p_out = LinearNoBias(dim, dim, init="final")
+        self.g_out = LinearNoBias(dim, dim, init="gating")
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor, use_kernels: bool = False
@@ -154,25 +142,13 @@ class TriangleMultiplicationIncoming(nn.Module):
         """
         super().__init__()
 
-        self.norm_in = nn.LayerNorm(dim, eps=1e-5)
-        self.p_in = nn.Linear(dim, 2 * dim, bias=False)
-        self.g_in = nn.Linear(dim, 2 * dim, bias=False)
+        self.norm_in = LayerNorm(dim, eps=1e-5)
+        self.p_in = LinearNoBias(dim, 2 * dim, init="default")
+        self.g_in = LinearNoBias(dim, 2 * dim, init="gating")
 
-        self.norm_out = nn.LayerNorm(dim)
-        self.p_out = nn.Linear(dim, dim, bias=False)
-        self.g_out = nn.Linear(dim, dim, bias=False)
-
-        init.bias_init_one_(self.norm_in.weight)
-        init.bias_init_zero_(self.norm_in.bias)
-
-        init.lecun_normal_init_(self.p_in.weight)
-        init.gating_init_(self.g_in.weight)
-
-        init.bias_init_one_(self.norm_out.weight)
-        init.bias_init_zero_(self.norm_out.bias)
-
-        init.final_init_(self.p_out.weight)
-        init.gating_init_(self.g_out.weight)
+        self.norm_out = LayerNorm(dim)
+        self.p_out = LinearNoBias(dim, dim, init="final")
+        self.g_out = LinearNoBias(dim, dim, init="gating")
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor, use_kernels: bool = False

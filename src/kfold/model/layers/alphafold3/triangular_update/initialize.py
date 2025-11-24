@@ -44,7 +44,7 @@ def _calculate_fan(linear_weight_shape, fan="fan_in"):
     return f
 
 
-def trunc_normal_init_(weights, scale=1.0, fan="fan_in"):
+def trunc_normal_init_openfold_(weights, scale=1.0, fan="fan_in"):
     shape = weights.shape
     f = _calculate_fan(shape, fan)
     scale = scale / max(1, f)
@@ -56,6 +56,26 @@ def trunc_normal_init_(weights, scale=1.0, fan="fan_in"):
     samples = np.reshape(samples, shape)
     with torch.no_grad():
         weights.copy_(torch.tensor(samples, device=weights.device))
+
+
+def trunc_normal_init_(weights, scale=1.0, fan="fan_in"):
+    with torch.no_grad():
+        shape = weights.shape
+        f = _calculate_fan(shape, fan)
+        scale = scale / max(1, f)
+
+        # Same to truncnorm.std with a=-2, b=2, loc=0, scale=1
+        correction_factor = 0.87962566103423978
+
+        std = math.sqrt(scale) / correction_factor
+
+        torch.nn.init.trunc_normal_(
+            weights,
+            mean=0.0,
+            std=std,
+            a=-2.0 * std,
+            b=2.0 * std,
+        )
 
 
 def lecun_normal_init_(weights):

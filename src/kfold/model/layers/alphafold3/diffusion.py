@@ -7,15 +7,15 @@ import torch
 import torch.nn as nn
 
 from kfold.data.model_input import FoldingInput
+from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 
-from . import initialize as init
 from .embeddings import RelativePositionEncoding
-from .primitives import LinearNoBias, Transition
 from .transformers import (
     AtomAttentionDecoder,
     AtomAttentionEncoder,
     DiffusionTransformer,
 )
+from .transition import Transition
 
 
 class FourierEmbedding(nn.Module):
@@ -145,7 +145,7 @@ class DiffusionModule(nn.Module):
             channel_z=channel_z,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
-            channel_token=channel_token,
+            channel_token=channel_s,
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
             atoms_per_window_queries=atoms_per_window_queries,
@@ -155,20 +155,19 @@ class DiffusionModule(nn.Module):
         )
 
         # === Full token-level attention === #
-        self.layernorm_s = nn.LayerNorm(channel_s)
-        self.trans_s_to_a = LinearNoBias(channel_s, channel_token)
-        init.final_init_(self.trans_s_to_a.weight)
+        self.layernorm_s = LayerNorm(channel_s * 2, bias=False)
+        self.linear_s_to_a = LinearNoBias(channel_s * 2, channel_token, init="final")
 
         self.token_transformer = DiffusionTransformer(
             channel_a=channel_token,
-            channel_s=channel_s,
+            channel_s=channel_s * 2,
             channel_z=channel_z,
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             blocks_per_ckpt=blocks_per_ckpt,
         )
 
-        self.layernorm_a = nn.LayerNorm(2 * channel_s)
+        self.layernorm_a = LayerNorm(channel_token, bias=False)
 
         # === Local token-level attention decoder === #
         self.atom_attention_decoder = AtomAttentionDecoder(
@@ -254,7 +253,7 @@ class DiffusionModule(nn.Module):
 
         # === Full attention on token-level === #
         # Line 4
-        a = a + self.trans_s_to_a(self.layernorm_s(s))  # [Nsample, La, c_token]
+        a = a + self.linear_s_to_a(self.layernorm_s(s))  # [Nsample, La, c_token]
 
         # Line 5
         z = z.unsqueeze(-4)  # [B, 1, Lt, Lt, c_z]
@@ -334,10 +333,10 @@ class DiffusionConditioning(nn.Module):
 
         # Pair representation conditioning
         self.rel_pos_encoding = RelativePositionEncoding(channel_z=channel_z)
-        self.layernorm_pair = nn.LayerNorm(channel_z * 2)
-        self.linear_no_bias_pair = LinearNoBias(channel_z * 2, channel_z)
+        self.layernorm_z = LayerNorm(channel_z * 2, bias=False)
+        self.linear_z = LinearNoBias(channel_z * 2, channel_z, init="default")
 
-        self.transitions_pair = nn.ModuleList(
+        self.transitions_z = nn.ModuleList(
             [
                 Transition(channel_z, expansion_factor=transition_expansion_factor)
                 for _ in range(num_transitions)
@@ -345,16 +344,16 @@ class DiffusionConditioning(nn.Module):
         )
 
         # Single representation conditioning
-        self.layernorm_single = nn.LayerNorm(channel_s * 2)
-        self.linear_no_bias_single = LinearNoBias(channel_s * 2, channel_s)
+        self.layernorm_s = LayerNorm(channel_s * 3, bias=False)
+        self.linear_s = LinearNoBias(channel_s * 3, channel_s * 2, init="default")
 
         self.fourier_embed = FourierEmbedding(dim_fourier)
-        self.layernorm_fourier = nn.LayerNorm(dim_fourier)
-        self.linear_no_bias_fourier = LinearNoBias(dim_fourier, channel_s)
+        self.layernorm_fourier = LayerNorm(dim_fourier, bias=False)
+        self.linear_fourier = LinearNoBias(dim_fourier, channel_s * 2, init="default")
 
-        self.transitions_single = nn.ModuleList(
+        self.transitions_s = nn.ModuleList(
             [
-                Transition(channel_s, expansion_factor=transition_expansion_factor)
+                Transition(channel_s * 2, expansion_factor=transition_expansion_factor)
                 for _ in range(num_transitions)
             ]
         )
@@ -411,10 +410,10 @@ class DiffusionConditioning(nn.Module):
             z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
 
             # Line 2
-            z = self.linear_no_bias_pair(self.layernorm_pair(z))  # [B, Lt, Lt, c_z]
+            z = self.linear_z(self.layernorm_z(z))  # [B, Lt, Lt, c_z]
 
             # Line 3-5
-            for transition in self.transitions_pair:
+            for transition in self.transitions_z:
                 z = z + transition(z)
             layer_cache["z"] = z
         else:
@@ -424,7 +423,7 @@ class DiffusionConditioning(nn.Module):
         s = torch.cat((s_trunk, s_inputs), dim=-1)  # [B, Lt, 2*c_s]
 
         # Line 7
-        s = self.linear_no_bias_single(self.layernorm_single(s))  # [B, Lt, c_s]
+        s = self.linear_s(self.layernorm_s(s))  # [B, Lt, c_s]
 
         # Line 8:
         # NOTE: 1/4 log(t_hat / sigma_data) is computed outside of this class.
@@ -432,11 +431,11 @@ class DiffusionConditioning(nn.Module):
         fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]
 
         # Line 9
-        fourier_embed = self.linear_no_bias_fourier(self.layernorm_fourier(fourier_embed))
+        fourier_embed = self.linear_fourier(self.layernorm_fourier(fourier_embed))
         s = s[:, None, :, :] + fourier_embed[:, :, None, :]  # [B, N, Lt, c_s]
 
         # Line 10-12
-        for transition in self.transitions_single:
+        for transition in self.transitions_s:
             s = transition(s) + s
 
         # Line 13
