@@ -302,9 +302,6 @@ class KFoldTrainingModule(pl.LightningModule):
         for k, v in metrics.items():
             self.log(f"train/{k}", v, prog_bar=(k == "loss"))
 
-        if batch_idx % 10 == 0:
-            self.log_model_state()
-
         return loss
 
     def compute_losses(
@@ -546,6 +543,11 @@ class KFoldTrainingModule(pl.LightningModule):
         raise NotImplementedError("Confidence loss not implemented yet.")
 
     # === Training logs === #
+    def on_before_optimizer_step(self, optimizer) -> None:
+        # FIXME: we may want to log less frequently
+        if self.trainer.global_step % 1 == 0:
+            self.log_model_state()
+
     def log_model_state(self):
         """Log model parameter and gradient norms."""
 
