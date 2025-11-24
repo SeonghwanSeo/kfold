@@ -123,6 +123,7 @@ class Boltz1SampleDiffusion(BaseStructureModule):
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         model_cache=None,
+        prior_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model.
         See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3 paper.

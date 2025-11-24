@@ -489,10 +489,12 @@ class AtomAttentionEncoder(Module):
             to_keys = layer_cache["to_keys"]
 
         if self.structure_prediction:
+            assert r is not None, "r must be provided for structure prediction"
             # only here the multiplicity kicks in because we use the different positions r
             q = q.repeat_interleave(multiplicity, 0)
+            pad_size = self.r_to_q_trans.in_features - r.size(-1)
             r_input = torch.cat(
-                [r, torch.zeros((B * multiplicity, N, 7)).to(r)],
+                [r, torch.zeros((B * multiplicity, N, pad_size)).to(r)],
                 dim=-1,
             )
             r_to_q = self.r_to_q_trans(r_input)
