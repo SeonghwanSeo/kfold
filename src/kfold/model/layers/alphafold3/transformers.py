@@ -405,9 +405,6 @@ class ConditionedTransitionBlock(nn.Module):
         model_dim = int(channel_a * expansion_factor)  # Line 2
         self.swiglu = SwiGLU(channel_a, model_dim)
 
-        # FIXME: this is not used in AF3, Only Boltz1.
-        self.linear_a = LinearNoBias(channel_a, model_dim)
-
         self.linear_g = Linear(channel_s, channel_a, init="gating_ada_zero")
         self.linear_out = LinearNoBias(model_dim, channel_a, init="default")
         self.sigmoid = nn.Sigmoid()
@@ -418,8 +415,7 @@ class ConditionedTransitionBlock(nn.Module):
         a = self.adaln(a, s)
 
         # Line 2
-        # FIXME: This line is not used in AF3, Only Boltz1.
-        b = self.swiglu(a) * self.linear_a(a)
+        b = self.swiglu(a)
 
         # Line 3
         a = self.sigmoid(self.linear_g(s)) * self.linear_out(b)
@@ -528,6 +524,7 @@ class AtomAttentionEncoder(nn.Module):
         channel_atom: int,  # 128 in AF3
         channel_atompair: int,  # 16 in AF3
         channel_token: int,  # 384 (InputEmbedder) or 768 (Diffusion) in AF3
+        channel_coords: int = 3,
         num_blocks=3,
         num_heads=4,
         atoms_per_window_queries: int = 32,
@@ -582,7 +579,9 @@ class AtomAttentionEncoder(nn.Module):
                 LayerNorm(channel_z, bias=False),
                 LinearNoBias(channel_z, channel_atompair, init="final"),
             )
-            self.linear_r_to_q = LinearNoBias(3, channel_atom, init="default")
+            self.linear_r_to_q = LinearNoBias(
+                channel_coords, channel_atom, init="default"
+            )
 
         self.linear_key = nn.Sequential(
             nn.ReLU(),
@@ -615,7 +614,7 @@ class AtomAttentionEncoder(nn.Module):
         )
 
         self.linear_q_to_a = nn.Sequential(
-            LinearNoBias(channel_atom, channel_token * 2, init="default"),
+            LinearNoBias(channel_atom, channel_token, init="default"),
             nn.ReLU(),
         )
 

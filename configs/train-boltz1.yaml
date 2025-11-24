@@ -1,7 +1,7 @@
 model:
   _yaml_: "model/boltz1.yaml"
   trunk:
-    use_cuequiv_kernels: false
+    use_cuequiv_kernels: true
     use_msa: false # Include MSAModule or not
   structure_module:
     synchronize_sigmas: true

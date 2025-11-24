@@ -69,8 +69,6 @@ class Boltz1DiffusionModule(BaseScoreModel):
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
 
-        self.rel_pos_encoding = RelativePositionEncoder(cfg.channel_z)
-
         self.diffusion_stack = DiffusionModule(
             token_s=cfg.channel_s,
             token_z=cfg.channel_z,
@@ -88,6 +86,8 @@ class Boltz1DiffusionModule(BaseScoreModel):
             atom_feature_dim=389,
             conditioning_transition_layers=cfg.conditioning_transition_layers,
         )
+
+        self.rel_pos_encoding = RelativePositionEncoder(cfg.channel_z)
 
     def forward(
         self,

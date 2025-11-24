@@ -64,8 +64,8 @@ class InputFeatureEmbedder(nn.Module):
 
         # out projection
         # NOTE: (SeonghwanSeo) I introduce additional linear layer to unify the dimension.
-        s_input_dim = channel_s * 2 + self.num_res_types
-        self.proj_s = LinearNoBias(s_input_dim, channel_s * 2, init="default")
+        s_input_dim = channel_s + self.num_res_types
+        self.proj_s = LinearNoBias(s_input_dim, channel_s, init="default")
 
     def forward(self, f_input: FoldingInput) -> torch.Tensor:
         """Perform the forward pass.

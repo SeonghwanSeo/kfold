@@ -145,7 +145,7 @@ class DiffusionModule(nn.Module):
             channel_z=channel_z,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
-            channel_token=channel_s,
+            channel_token=channel_token,
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
             atoms_per_window_queries=atoms_per_window_queries,
@@ -155,12 +155,12 @@ class DiffusionModule(nn.Module):
         )
 
         # === Full token-level attention === #
-        self.layernorm_s = LayerNorm(channel_s * 2, bias=False)
-        self.linear_s_to_a = LinearNoBias(channel_s * 2, channel_token, init="final")
+        self.layernorm_s = LayerNorm(channel_s, bias=False)
+        self.linear_s_to_a = LinearNoBias(channel_s, channel_token, init="final")
 
         self.token_transformer = DiffusionTransformer(
             channel_a=channel_token,
-            channel_s=channel_s * 2,
+            channel_s=channel_s,
             channel_z=channel_z,
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
@@ -344,16 +344,16 @@ class DiffusionConditioning(nn.Module):
         )
 
         # Single representation conditioning
-        self.layernorm_s = LayerNorm(channel_s * 3, bias=False)
-        self.linear_s = LinearNoBias(channel_s * 3, channel_s * 2, init="default")
+        self.layernorm_s = LayerNorm(channel_s * 2, bias=False)
+        self.linear_s = LinearNoBias(channel_s * 2, channel_s, init="default")
 
         self.fourier_embed = FourierEmbedding(dim_fourier)
         self.layernorm_fourier = LayerNorm(dim_fourier, bias=False)
-        self.linear_fourier = LinearNoBias(dim_fourier, channel_s * 2, init="default")
+        self.linear_fourier = LinearNoBias(dim_fourier, channel_s, init="default")
 
         self.transitions_s = nn.ModuleList(
             [
-                Transition(channel_s * 2, expansion_factor=transition_expansion_factor)
+                Transition(channel_s, expansion_factor=transition_expansion_factor)
                 for _ in range(num_transitions)
             ]
         )
