@@ -223,7 +223,18 @@ def train(args) -> None:
     trainer = build_trainer(cfg, args.debug)
 
     # Set random seed
-    pl.seed_everything(cfg.train.seed + trainer.global_rank, workers=True, verbose=False)
+    # TODO: let's discuss to use different seeds for different ranks or not
+    # Pros: when we use `synchronize_sigma` option, use different seeds is essential to
+    #       train the model on various time steps.
+    # Cons: it makes the training less reproducible.
+    if cfg.train.synchronize_seed:
+        # Same seed for all ranks
+        pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
+    else:
+        # Different seed for each rank
+        pl.seed_everything(
+            cfg.train.seed + trainer.global_rank, workers=True, verbose=False
+        )
 
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)

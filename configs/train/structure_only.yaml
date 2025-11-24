@@ -6,6 +6,7 @@ out_dir: ./experiments/
 
 # Random Seed
 seed: 42
+synchronize_seed: false # Use synchronized seed across DDP processes
 
 data:
   _registry_: "datamodule"
