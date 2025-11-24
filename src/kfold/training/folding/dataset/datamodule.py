@@ -174,6 +174,7 @@ class TrainingDataModule(pl.LightningDataModule):
                 weights=weights,  # type: ignore
                 rank=self.trainer.global_rank if self.trainer else 0,
                 world_size=self.trainer.world_size if self.trainer else 1,
+                epoch=self.trainer.current_epoch if self.trainer else 0,
                 replacement=True,
             )
             shuffle = False

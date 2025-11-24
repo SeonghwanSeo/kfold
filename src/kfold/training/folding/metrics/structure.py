@@ -50,8 +50,6 @@ def compute_rmsd(
         Ground truth atom coordinates, Shape of [Natom, 3]
     mask : torch.Tensor
         Boolean mask for resolved atoms, Shape of [Natom]
-    weights : torch.Tensor | None
-        Weights for each atom, Shape of [Natom]
 
     Returns
     -------
@@ -165,6 +163,7 @@ def compute_validation_metric_singles(
         1.0, dtype=pred_coords.dtype, device=pred_coords.device
     )
 
+    # Use AF3-style weighted RMSD (default weights)
     atom_weights = compute_modality_weights(is_protein, is_dna, is_rna, is_ligand)
     weighted_rmsd = compute_weighted_rmsd(
         pred_coords, true_coords, atom_mask, atom_weights

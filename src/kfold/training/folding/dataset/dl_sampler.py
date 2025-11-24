@@ -18,6 +18,7 @@ class DistributedWeightedSampler(Sampler[int]):
         replacement: bool = True,
         rank: int | None = None,
         world_size: int | None = None,
+        epoch: int = 0,
         seed: int = 0,
     ) -> None:
         is_dist_initialized = dist.is_available() and dist.is_initialized()
@@ -42,7 +43,7 @@ class DistributedWeightedSampler(Sampler[int]):
 
         self.rank: int = rank
         self.world_size: int = world_size
-        self.epoch: int = 0
+        self.epoch: int = epoch
         self.seed: int = seed
         self.replacement: bool = replacement
 
@@ -90,12 +91,13 @@ class DistributedWeightedSampler(Sampler[int]):
         return self.num_samples
 
     def set_epoch(self, epoch: int) -> None:
-        r"""
+        """
         Set the epoch for this sampler.
 
-        When :attr:`shuffle=True`, this ensures all replicas
-        use a different random ordering for each epoch. Otherwise, the next iteration of
-        this sampler will yield the same ordering.
+        Changing the epoch ensures all replicas use a different random ordering for each
+        epoch, as the random seed is determined by the combination of the `seed` and
+        `epoch` attributes. If the epoch is not changed, the next iteration of this
+        sampler will yield the same ordering.
 
         Args:
             epoch (int): Epoch number.
