@@ -193,20 +193,26 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def setup_metrics(self):
         """Setup metrics for validation"""
-        metrics = {}
+        val_metrics = {}
 
         # RMSD
-        metrics["avg_rmsd"] = MeanMetric()
-        metrics["rmsd"] = MeanMetric()
-        metrics["avg_weighted_rmsd"] = MeanMetric()
-        metrics["weighted_rmsd"] = MeanMetric()
+        val_metrics["avg_rmsd"] = MeanMetric()
+        val_metrics["rmsd"] = MeanMetric()
+        val_metrics["avg_weighted_rmsd"] = MeanMetric()
+        val_metrics["weighted_rmsd"] = MeanMetric()
 
         # LDDT
         for m in C.training.LDDTType:
-            metrics[f"avg_lddt_{m.value}"] = MeanMetric()
-            metrics[f"lddt_{m.value}"] = MeanMetric()
-            metrics[f"complex_lddt_{m.value}"] = MeanMetric()
-        self.valid_metrics: dict[str, MeanMetric] = torch.nn.ModuleDict(metrics)  # type: ignore
+            val_metrics[f"avg_lddt_{m.value}"] = MeanMetric()
+            val_metrics[f"lddt_{m.value}"] = MeanMetric()
+            val_metrics[f"complex_lddt_{m.value}"] = MeanMetric()
+
+        self.metrics = torch.nn.ModuleDict(
+            {
+                "train_metrics": torch.nn.ModuleDict(),
+                "val_metrics": torch.nn.ModuleDict(val_metrics),
+            }
+        )
 
     def configure_optimizers(self):  # type: ignore
         config = self.optimizer_config
@@ -355,6 +361,8 @@ class KFoldTrainingModule(pl.LightningModule):
         batch_idx: int,
     ):
         # TODO: sample molecules and compute validation metrics
+        val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
+
         val_config = self.validation_config
         num_diffusion_samples = val_config.num_diffusion_samples
 
@@ -394,9 +402,9 @@ class KFoldTrainingModule(pl.LightningModule):
                 pred_coords=sample_coords,
                 atom_mask=atom_mask,
             )
-        for k in self.valid_metrics.keys():
+        for k in val_metrics.keys():
             v, w = metrics[k]
-            self.valid_metrics[k].update(v, w)
+            val_metrics[k].update(v, w)
 
         if val_config.save_structure_path is not None:
             save_dir = pathlib.Path(
@@ -409,9 +417,11 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """Aggregate and log validation metrics at the end of the epoch."""
+        val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
+
         # Aggregate validation metrics
         avg_values: dict[str, torch.Tensor] = {}
-        for k, m in self.valid_metrics.items():
+        for k, m in val_metrics.items():
             v = m.compute()
             if v.isfinite().all():
                 # Ignore non-finite values (after sanity check)

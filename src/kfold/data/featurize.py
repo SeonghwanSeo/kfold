@@ -98,8 +98,6 @@ def do_augment_apo_structure(
         new_coords[:, start_idx:end_idx] = center_random_augmentation(
             apo_coords[:, start_idx:end_idx],  # =apo_chain_coords
             mask[:, start_idx:end_idx],  # =apo_chain_mask
-            random_rotate=True,
-            s_trans=0.0,
             rng=rng,
         )
         start_idx = end_idx

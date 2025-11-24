@@ -208,6 +208,7 @@ def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
         enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
         accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
         gradient_clip_val=pl_trainer_cfg.gradient_clip_val,
+        use_distributed_sampler=False,
         # reload_dataloaders_every_n_epochs=1,
     )
     return trainer
@@ -219,10 +220,11 @@ def train(args) -> None:
 
     cfg = parse_config(args)
 
-    # Set random seed
-    pl.seed_everything(cfg.train.seed)
-
     trainer = build_trainer(cfg, args.debug)
+
+    # Set random seed
+    pl.seed_everything(cfg.train.seed + trainer.global_rank, workers=True, verbose=False)
+
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
 

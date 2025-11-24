@@ -82,11 +82,11 @@ class Boltz1SampleDiffusion(BaseStructureModule):
         self.coordinate_augmentation: bool = cfg.coordinate_augmentation
         self.synchronize_sigmas: bool = cfg.synchronize_sigmas
 
-        if self.coordinate_augmentation:
-            self.random_augmentation = CenterRandomAugmentation(
-                centering=True,
-                random_rotate=self.coordinate_augmentation,
-            )
+        self.random_augmentation = CenterRandomAugmentation(
+            centering=True,
+            augmentation=self.coordinate_augmentation,
+            s_trans=1.0,  # not used when augmentation is False
+        )
 
     # === EDM diffusion coefficients === #
     def c_skip(self, sigma: torch.Tensor) -> torch.Tensor:
