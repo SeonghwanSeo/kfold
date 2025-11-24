@@ -198,6 +198,8 @@ class KFoldTrainingModule(pl.LightningModule):
         # RMSD
         metrics["avg_rmsd"] = MeanMetric()
         metrics["rmsd"] = MeanMetric()
+        metrics["avg_weighted_rmsd"] = MeanMetric()
+        metrics["weighted_rmsd"] = MeanMetric()
 
         # LDDT
         for m in C.training.LDDTType:
@@ -434,12 +436,10 @@ class KFoldTrainingModule(pl.LightningModule):
         avg_values["avg_lddt"] = weighted_lddt  # type: ignore
 
         # NOTE: to match the boltz's metric naming, I swap the name
-        if "rmsd" in avg_values:
-            avg_values["rmsd"], avg_values["best_rmsd"] = (
-                avg_values["avg_rmsd"],
-                avg_values["rmsd"],
-            )
-            avg_values.pop("avg_rmsd")
+        for key in ["rmsd", "weighted_rmsd"]:
+            if key in avg_values:
+                v1, v2 = avg_values.pop(key), avg_values.pop(f"avg_{key}")
+                avg_values[key], avg_values[f"best_{key}"] = v2, v1
 
         avg_values = {f"val/{k}": v for k, v in avg_values.items()}
         self.log_dict(avg_values, sync_dist=True)

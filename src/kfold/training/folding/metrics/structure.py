@@ -3,7 +3,11 @@ from collections.abc import Sequence
 import torch
 
 from kfold.data.model_input import FoldingInput
-from kfold.training.folding.loss.diffusion import get_atom_weights, weighted_rigid_align
+from kfold.training.folding.loss.diffusion import (
+    compute_modality_weights,
+    get_atom_weights,
+    weighted_rigid_align,
+)
 from kfold.utils.misc import expand_dim
 
 
@@ -32,31 +36,82 @@ def compute_pair_lddt(
 
 
 def compute_rmsd(
-    coords_pred: torch.Tensor,
-    coords_true: torch.Tensor,
+    pred_coords: torch.Tensor,
+    true_coords: torch.Tensor,
     mask: torch.Tensor,
 ):
     """Compute the rmsd score from predicted and true distances.
 
     Parameters
     ----------
-    coords_pred : torch.Tensor
+    pred_coords : torch.Tensor
         Predicted atom coordinates, Shape of [Natom, 3]
-    coords_true : torch.Tensor
+    true_coords : torch.Tensor
         Ground truth atom coordinates, Shape of [Natom, 3]
     mask : torch.Tensor
         Boolean mask for resolved atoms, Shape of [Natom]
+    weights : torch.Tensor | None
+        Weights for each atom, Shape of [Natom]
 
     Returns
     -------
     torch.Tensor
         The rmsd score between predicted and true coordinates
     """
-    diff = ((coords_pred - coords_true) ** 2).sum(-1)
+    diff = ((pred_coords - true_coords) ** 2).sum(-1)
     masked_diff = diff * mask
     mse = masked_diff.sum() / mask.sum()
     rmsd = torch.sqrt(mse)
     return rmsd
+
+
+def compute_weighted_rmsd(
+    pred_coords: torch.Tensor,
+    true_coords: torch.Tensor,
+    mask: torch.Tensor,
+    weights: torch.Tensor | None = None,
+    scale: bool = True,
+):
+    """Compute the weighted mse score from predicted and true distances.
+
+    Parameters
+    ----------
+    pred_coords : torch.Tensor
+        Predicted atom coordinates, Shape of [Natom, 3]
+    true_coords : torch.Tensor
+        Ground truth atom coordinates, Shape of [Natom, 3]
+    mask : torch.Tensor
+        Boolean mask for resolved atoms, Shape of [Natom]
+    weights : torch.Tensor | None
+        Weights for each atom, Shape of [Natom]
+
+    Returns
+    -------
+    torch.Tensor
+        The rmsd score between predicted and true coordinates
+    """
+    if weights is None:
+        weights = mask.float()
+    else:
+        weights = weights * mask.float()
+
+    aligned_coords_true = weighted_rigid_align(
+        coords=true_coords.float(),  # [B, N, L, 3]
+        target=pred_coords.float(),  # [B, N, L, 3]
+        weights=weights,  # [B, 1, L], broadcasted over N
+        mask=mask,  # [B, 1, L]
+    )  # [B, N, L, 3]
+
+    d_sq = ((pred_coords - aligned_coords_true) ** 2).sum(dim=-1)  # [B, N, L]
+    if scale:
+        weight_sum = weights.sum(-1).clamp(min=1)  # [B, 1]
+        mse_loss = (weights * d_sq).sum(-1) / weight_sum  # [B, N]
+    else:
+        mask_sum = mask.sum(-1).clamp(min=1)  # [B, 1]
+        mse_loss = (weights * d_sq).sum(-1) / mask_sum  # [B, N]
+    weighted_rmsd = torch.sqrt(mse_loss)
+
+    return weighted_rmsd
 
 
 def compute_validation_metric_singles(
@@ -105,7 +160,19 @@ def compute_validation_metric_singles(
     rmsd = compute_rmsd(pred_coords, true_coords, atom_mask)
     metrics["rmsd"] = rmsd
     # TODO: to be discussed, should we weight by number of atoms?
-    weights["rmsd"] = atom_mask.sum()
+    # weights["rmsd"] = atom_mask.sum()
+    weights["rmsd"] = torch.tensor(
+        1.0, dtype=pred_coords.dtype, device=pred_coords.device
+    )
+
+    atom_weights = compute_modality_weights(is_protein, is_dna, is_rna, is_ligand)
+    weighted_rmsd = compute_weighted_rmsd(
+        pred_coords, true_coords, atom_mask, atom_weights
+    )
+    metrics["weighted_rmsd"] = weighted_rmsd
+    # TODO: to be discussed, should we weight by number of atoms?
+    # weights["rmsd"] = atom_mask.sum()
+    weights["weighted_rmsd"] = weights["rmsd"]
 
     # === Compute LDDT per modality === #
     modality_mask = {
@@ -238,6 +305,7 @@ def compute_validation_metrics(
 
     metric_keys = [
         ("rmsd", "min"),
+        ("weighted_rmsd", "min"),
         ("lddt", "max"),
         ("lddt_protein_protein", "max"),
         ("lddt_dna_protein", "max"),
