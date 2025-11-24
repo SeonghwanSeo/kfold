@@ -9,10 +9,6 @@ from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample
 
-# FIXME: (SeonghwanSeo) Currently, I restrict that only protein and ligand
-# are considered. Need to remove this restriction in the future.
-ALLOW_NUC = True
-
 
 # === Helpers to compute weights === #
 def get_chain_cluster(chain: ChainInfo) -> str:
@@ -66,10 +62,6 @@ def get_chain_weight(
         n_nuc += 1
     else:
         n_ligand += 1
-
-    # FIXME: remove following lines.
-    if not ALLOW_NUC and n_nuc > 0:
-        return 0
 
     cluster_id = get_chain_cluster(chain)
     n_cluster = cluster_sizes[cluster_id]
@@ -125,10 +117,6 @@ def get_interface_weight(
             n_nuc += 1
         else:
             n_ligand += 1
-
-    # FIXME: remove following lines.
-    if not ALLOW_NUC and n_nuc > 0:
-        return 0
 
     cluster_id = get_interface_cluster(interface, chain_dict)
     n_cluster = cluster_sizes[cluster_id]
@@ -251,8 +239,8 @@ class ClusterSampler(BaseSampler):
                 weights.append(weight)
 
         # Normalize weights
-        weights = np.array(weights) / np.sum(weights)
-        return samples, weights
+        weights_arr = np.array(weights) / np.sum(weights)
+        return samples, weights_arr
 
     def estimate_cluster_sizes(self, records: list[Metadata]):
         # Estimate cluster sizes of chains and interfaces

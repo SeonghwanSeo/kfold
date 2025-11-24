@@ -1,7 +1,10 @@
 model:
   _yaml_: "model/boltz1.yaml"
   trunk:
-    use_cuequiv_kernels: true
+    use_cuequiv_kernels: false
+    use_msa: false # Include MSAModule or not
+  structure_module:
+    synchronize_sigmas: true
   load_weight: false
   freeze_weight: false
 
@@ -15,11 +18,11 @@ train:
   # pytorch lightning trainer hparams
   trainer:
     strategy: "auto"
-    devices: "auto"
+    devices: 8
     num_nodes: 1
     precision: 32
     max_epochs: 100
-    limit_train_batches: 3000
+    limit_train_batches: 3000 # 3 hours
     accumulate_grad_batches: 16
 
   training:

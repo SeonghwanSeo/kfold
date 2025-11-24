@@ -7,27 +7,48 @@ from kfold.utils.checkpointing import checkpoint_section
 from kfold.utils.geometry.rigid_align import weighted_rigid_align
 
 
+def compute_modality_weights(
+    is_protein: torch.Tensor,
+    is_dna: torch.Tensor,
+    is_rna: torch.Tensor,
+    is_ligand: torch.Tensor,
+    upweight_protein: float = 0.0,
+    upweight_dna: float = 5.0,
+    upweight_rna: float = 5.0,
+    upweight_ligand: float = 10.0,
+) -> torch.Tensor:
+    """Compute weights for loss calculation.
+    See Section 3.7.1 Equation 4 of the AlphaFold 3 paper.
+    """
+    return (
+        1.0
+        + is_protein.float() * upweight_protein
+        + is_dna.float() * upweight_dna
+        + is_rna.float() * upweight_rna
+        + is_ligand.float() * upweight_ligand
+    )  # [B, Ltoken]
+
+
 def get_atom_weights(
     f_input: FoldingInput,
-    weight_protein: float = 1.0,
-    weight_dna: float = 5.0,
-    weight_rna: float = 5.0,
-    weight_ligand: float = 10.0,
+    upweight_protein: float = 0.0,
+    upweight_dna: float = 5.0,
+    upweight_rna: float = 5.0,
+    upweight_ligand: float = 10.0,
 ) -> torch.Tensor:
     """Compute atom weights for loss calculation.
     See Section 3.7.1 Equation 4 of the AlphaFold 3 paper.
     """
-    is_protein = f_input.token.is_protein  # [B, Ltoken]
-    is_dna = f_input.token.is_dna  # [B, Ltoken]
-    is_rna = f_input.token.is_rna  # [B, Ltoken]
-    is_ligand = f_input.token.is_ligand  # [B, Ltoken]
-
-    token_weights = (
-        is_protein.float() * weight_protein
-        + is_dna.float() * weight_dna
-        + is_rna.float() * weight_rna
-        + is_ligand.float() * weight_ligand
-    )  # [B, Ltoken]
+    token_weights = compute_modality_weights(
+        f_input.token.is_protein,
+        f_input.token.is_dna,
+        f_input.token.is_rna,
+        f_input.token.is_ligand,
+        upweight_protein,
+        upweight_dna,
+        upweight_rna,
+        upweight_ligand,
+    )
     batch_indices = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
     atom_weights = token_weights[batch_indices, f_input.atom.token_index]  # [B, Latom]
 
@@ -40,10 +61,10 @@ class WeightedMSELoss(torch.nn.Module):
 
     def __init__(
         self,
-        weight_protein: float = 1.0,
-        weight_dna: float = 5.0,
-        weight_rna: float = 5.0,
-        weight_ligand: float = 10.0,
+        upweight_protein: float = 0.0,
+        upweight_dna: float = 5.0,
+        upweight_rna: float = 5.0,
+        upweight_ligand: float = 10.0,
         scale: bool = False,
     ):
         """Initialize WeightedMSELoss.
@@ -64,10 +85,10 @@ class WeightedMSELoss(torch.nn.Module):
             NOTE: loss value is lower when scale=True.
         """
         super().__init__()
-        self.weight_protein: float = weight_protein
-        self.weight_dna: float = weight_dna
-        self.weight_rna: float = weight_rna
-        self.weight_ligand: float = weight_ligand
+        self.upweight_protein: float = upweight_protein
+        self.upweight_dna: float = upweight_dna
+        self.upweight_rna: float = upweight_rna
+        self.upweight_ligand: float = upweight_ligand
         self.scale: bool = scale
 
     def forward(
@@ -128,10 +149,10 @@ class WeightedMSELoss(torch.nn.Module):
         """
         return get_atom_weights(
             f_input,
-            weight_protein=self.weight_protein,
-            weight_dna=self.weight_dna,
-            weight_rna=self.weight_rna,
-            weight_ligand=self.weight_ligand,
+            upweight_protein=self.upweight_protein,
+            upweight_dna=self.upweight_dna,
+            upweight_rna=self.upweight_rna,
+            upweight_ligand=self.upweight_ligand,
         )
 
 

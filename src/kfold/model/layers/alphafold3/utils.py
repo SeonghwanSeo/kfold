@@ -293,28 +293,33 @@ class LocalAttentionIndex:
 def center_random_augmentation(
     coords: torch.Tensor,
     mask: torch.Tensor,
-    s_trans: float = 1.0,
     centering: bool = True,
-    random_rotate: bool = True,
+    augmentation: bool = True,
+    s_trans: float = 1.0,
+    mask_to_zero: bool = True,
 ) -> torch.Tensor:
     """Centering and Random Augmentation
     See Section 3.7 Algorithm 19 CentreRandomAugmentation
     """
     # Line 1
     if centering:
-        coords = do_centering(coords, mask)
+        coords = do_centering(coords, mask, mask_to_zero=False)
 
-    # Line 2,4
-    if random_rotate:
+    if augmentation:
+        # Line 2,4
         R = random_rotations(
             coords.shape[:-2], coords.dtype, coords.device
         )  # [..., 3, 3]
         coords = torch.einsum("...md,...ds->...ms", coords, R)  # noqa
 
-    # Line 3,4
-    if s_trans > 0.0:
-        random_trans = torch.randn_like(coords[..., 0:1, :]) * s_trans
-        coords = coords + random_trans
+        # Line 3,4
+        if s_trans > 0.0:
+            random_trans = torch.randn_like(coords[..., 0:1, :]) * s_trans
+            coords = coords + random_trans
+
+    # Mask out
+    if mask_to_zero:
+        coords = coords * mask[..., None]
 
     return coords
 
@@ -332,11 +337,16 @@ class CenterRandomAugmentation:
     """
 
     def __init__(
-        self, s_trans: float = 1.0, centering: bool = True, random_rotate: bool = True
+        self,
+        augmentation: bool = True,
+        centering: bool = True,
+        s_trans: float = 1.0,
+        mask_to_zero: bool = True,
     ):
-        self.s_trans: float = s_trans
+        self.augmentation: bool = augmentation
         self.centering: bool = centering
-        self.random_rotate: bool = random_rotate
+        self.s_trans: float = s_trans
+        self.mask_to_zero: bool = mask_to_zero
 
     @overload
     def __call__(
@@ -403,23 +413,24 @@ class CenterRandomAugmentation:
 
         # Line 1
         if self.centering:
-            coords_list = [do_centering(x, mask) for x in coords_list]
+            coords_list = [do_centering(x, mask, mask_to_zero=False) for x in coords_list]
 
-        # Line 2,4
-        if self.random_rotate:
+        if self.augmentation:
+            # Line 2,4
             R = random_rotations(
                 coords_shape[:-2], ref_coords.dtype, ref_coords.device
             )  # [..., 3, 3]
             rotate = lambda x: torch.einsum("...md,...ds->...ms", x, R)  # noqa
             coords_list = [rotate(x) for x in coords_list]
 
-        # Line 3,4
-        if self.s_trans > 0.0:
-            random_trans = torch.randn_like(ref_coords[..., 0:1, :]) * self.s_trans
-            coords_list = [x + random_trans for x in coords_list]
+            # Line 3,4
+            if self.s_trans > 0.0:
+                random_trans = torch.randn_like(ref_coords[..., 0:1, :]) * self.s_trans
+                coords_list = [x + random_trans for x in coords_list]
 
         # Mask out
-        coords_list = [x * mask[..., None] for x in coords_list]
+        if self.mask_to_zero:
+            coords_list = [x * mask[..., None] for x in coords_list]
 
         if len(coords) == 1:
             # Single tensor input, return tensor
@@ -429,7 +440,9 @@ class CenterRandomAugmentation:
             return tuple(coords_list)
 
 
-def do_centering(coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def do_centering(
+    coords: torch.Tensor, mask: torch.Tensor, mask_to_zero: bool = True
+) -> torch.Tensor:
     """Centering of atom coordinates
     Parameters
     ----------
@@ -444,6 +457,8 @@ def do_centering(coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         torch.sum(coords * mask[..., None], dim=-2, keepdim=True) / total_mass[..., None]
     )
     centered_coords = coords - center
+    if mask_to_zero:
+        centered_coords = centered_coords * mask[..., None]
     return centered_coords
 
 
@@ -465,8 +480,7 @@ def _copysign(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     Returns:
         Tensor of the same shape as a with the signs of b.
     """
-    signs_differ = (a < 0) != (b < 0)
-    return torch.where(signs_differ, -a, a)
+    return torch.copysign(a, b)
 
 
 def quaternion_to_matrix(quaternions: torch.Tensor) -> torch.Tensor:
