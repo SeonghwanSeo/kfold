@@ -6,7 +6,6 @@ from pathlib import Path
 
 import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
-from torch.utils.data.sampler import WeightedRandomSampler
 
 from kfold.data.metadata import Metadata
 from kfold.data.model_input import FoldingInput
@@ -19,6 +18,7 @@ from .dataset import (
     TrainingDataset,
     ValidationDataset,
 )
+from .dl_sampler import DistributedWeightedSampler
 from .filter import BaseFilter
 from .sampler import BaseSampler
 
@@ -170,23 +170,27 @@ class TrainingDataModule(pl.LightningDataModule):
 
         weights = dataset.weights
         if weights is not None:
-            sampler = WeightedRandomSampler(
+            sampler = DistributedWeightedSampler(
                 weights=weights,  # type: ignore
-                num_samples=len(weights),
+                rank=self.trainer.global_rank if self.trainer else 0,
+                world_size=self.trainer.world_size if self.trainer else 1,
+                epoch=self.trainer.current_epoch if self.trainer else 0,
                 replacement=True,
             )
+            shuffle = False
         else:
             sampler = None
+            shuffle = True
 
         return DataLoader(
             dataset,
             batch_size=self.config.train_batch_size,
-            shuffle=True if sampler is None else False,
+            shuffle=shuffle,
             sampler=sampler,
-            num_workers=self.config.num_workers,
-            pin_memory=self.config.pin_memory,
             drop_last=True,
             collate_fn=collate,
+            num_workers=self.config.num_workers,
+            pin_memory=self.config.pin_memory,
             persistent_workers=True if self.config.num_workers > 0 else False,
         )
 
@@ -197,8 +201,9 @@ class TrainingDataModule(pl.LightningDataModule):
             dataset,
             batch_size=self.config.val_batch_size,
             shuffle=False,
+            drop_last=True,
+            collate_fn=collate,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
-            collate_fn=collate,
             persistent_workers=True if self.config.num_workers > 0 else False,
         )

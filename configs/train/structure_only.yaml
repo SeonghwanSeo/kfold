@@ -6,6 +6,7 @@ out_dir: ./experiments/
 
 # Random Seed
 seed: 42
+synchronize_seed: false # Use synchronized seed across DDP processes
 
 data:
   _registry_: "datamodule"
@@ -139,10 +140,12 @@ loss:
   diffusion_loss:
     # Weighted MSE Loss
     mse_loss:
-      weight_protein: 1.0
-      weight_dna: 5.0
-      weight_rna: 5.0
-      weight_ligand: 10.0
+      # NOTE: these are same to AlphaFold3:
+      # w = 1 + 5 * is_dna + 5 * is_rna + 10 * is_ligand
+      upweight_protein: 0.0
+      upweight_dna: 5.0
+      upweight_rna: 5.0
+      upweight_ligand: 10.0
       scale: false
 
     # Bond Loss
