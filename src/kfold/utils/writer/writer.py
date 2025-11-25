@@ -3,8 +3,7 @@ from pathlib import Path
 from kfold.data.structure import TokenizedStructure
 
 from .pdb import to_pdbstring
-
-# TODO: add mmCIF writer
+from .mmcif import to_mmcifstring
 
 
 class KFoldWriter:
@@ -32,7 +31,7 @@ class KFoldWriter:
         is_predicted: bool = True,
         save_apo: bool = False,
     ) -> str:
-        raise NotImplementedError("mmCIF format is not yet supported.")
+        return to_mmcifstring(structure, conformer_id, is_predicted, save_apo)
 
     @classmethod
     def write_mmcif(
@@ -69,7 +68,7 @@ class KFoldWriter:
         with open(save_path, "w") as f:
             f.write(cls.write_pdbstring(structure, conformer_id, is_predicted, save_apo))
 
-    # === Simple wrappers === #
+    # === Simple wrappers (PDB)=== #
     @classmethod
     def write_pdbstring_apo(
         cls,
@@ -120,3 +119,55 @@ class KFoldWriter:
         conformer_id: int = 0,
     ):
         cls.write_pdb(structure, save_path, conformer_id, is_predicted=True)
+
+    # === Simple wrappers (mmCIF) === #
+    @classmethod
+    def write_mmcifstring_apo(
+        cls,
+        structure: TokenizedStructure,
+        conformer_id: int = 0,
+    ) -> str:
+        return cls.write_mmcifstring(structure, conformer_id, save_apo=True)
+
+    @classmethod
+    def write_mmcif_apo(
+        cls,
+        structure: TokenizedStructure,
+        save_path: str | Path,
+        conformer_id: int = 0,
+    ):
+        cls.write_mmcif(structure, save_path, conformer_id, save_apo=True)
+
+    @classmethod
+    def write_mmcifstring_label(
+        cls,
+        structure: TokenizedStructure,
+        conformer_id: int = 0,
+    ) -> str:
+        return cls.write_mmcifstring(structure, conformer_id, is_predicted=False)
+
+    @classmethod
+    def write_mmcif_label(
+        cls,
+        structure: TokenizedStructure,
+        save_path: str | Path,
+        conformer_id: int = 0,
+    ):
+        cls.write_mmcif(structure, save_path, conformer_id, is_predicted=False)
+
+    @classmethod
+    def write_mmcifstring_predicted(
+        cls,
+        structure: TokenizedStructure,
+        conformer_id: int = 0,
+    ) -> str:
+        return cls.write_mmcifstring(structure, conformer_id, is_predicted=True)
+
+    @classmethod
+    def write_mmcif_predicted(
+        cls,
+        structure: TokenizedStructure,
+        save_path: str | Path,
+        conformer_id: int = 0,
+    ):
+        cls.write_mmcif(structure, save_path, conformer_id, is_predicted=True)
