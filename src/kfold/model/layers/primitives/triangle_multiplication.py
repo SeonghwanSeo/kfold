@@ -66,11 +66,11 @@ class TriangleMultiplicationOutgoing(nn.Module):
 
         self.layernorm_in = LayerNorm(dim)
         self.linear_p_in = LinearNoBias(dim, 2 * dim, init="default")
-        self.linear_g_in = LinearNoBias(dim, 2 * dim, init="final")
+        self.linear_g_in = LinearNoBias(dim, 2 * dim, init="gating")
 
         self.layernorm_out = LayerNorm(dim)
         self.linear_p_out = LinearNoBias(dim, dim, init="final")
-        self.linear_g_out = LinearNoBias(dim, dim, init="final")
+        self.linear_g_out = LinearNoBias(dim, dim, init="gating")
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor, use_kernels: bool = False

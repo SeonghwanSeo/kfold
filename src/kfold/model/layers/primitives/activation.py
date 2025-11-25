@@ -9,9 +9,11 @@ class SwiGLU(nn.Module):
 
     def __init__(self, channel_in: int, channel_out: int):
         super().__init__()
-        self.linear = LinearNoBias(channel_in, channel_out * 2, init="relu")
+        self.linear_a = LinearNoBias(channel_in, channel_out, init="relu")
+        self.linear_b = LinearNoBias(channel_in, channel_out, init="relu")
         self.swish = nn.SiLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        a, b = self.linear(x).chunk(2, dim=-1)
+        a = self.linear_a(x)
+        b = self.linear_b(x)
         return self.swish(a) * b
