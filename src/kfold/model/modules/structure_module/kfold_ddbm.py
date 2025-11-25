@@ -618,7 +618,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             # Line 9
             delta_coords = (atom_coords_noisy - atom_coords_denoised) / t_hat
 
-            # line 10
+            # Line 10
             dt = sigma_t - t_hat
 
             # Line 11
