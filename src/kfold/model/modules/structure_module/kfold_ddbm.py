@@ -280,7 +280,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
 
         # Call the score model with correct interface
         # NOTE: As in DDBM, we directly concat r_noisy and x_T,
-        # Howver, in future we should consider the scale of each data.
+        # However, in future we should consider the scale of each data.
         # DDBM used [-1,1] ranged data for both r_noisy and x_T,
         # but we use std as 1 for r_noisy and sigma_data_end for x_T
         assert prior_coords is not None and torch.is_tensor(prior_coords), (
