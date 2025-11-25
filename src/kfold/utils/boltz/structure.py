@@ -95,6 +95,7 @@ Atom: list[tuple[str, np.dtype]] = [
     ("element", np.dtype("i1")),
     ("charge", np.dtype("i1")),
     ("coords", np.dtype("3f4")),
+    ("conformer", np.dtype("3f4")),
     ("is_present", np.dtype("?")),
     ("chirality", np.dtype("i1")),
 ]
@@ -127,7 +128,6 @@ Chain: list[tuple[str, np.dtype]] = [
     ("atom_num", np.dtype("i4")),
     ("res_idx", np.dtype("i4")),
     ("res_num", np.dtype("i4")),
-    ("cyclic_period", np.dtype("i4")),
 ]
 
 Connection: list[tuple[str, np.dtype]] = [

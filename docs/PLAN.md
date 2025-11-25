@@ -23,6 +23,7 @@ If the features listed below are completed, I will include the corresponding PR 
 
 ### Data featurization
 
+- [x] Add PDBBind split introduced by EquiBind for Proof of Concept.
 - [ ] Better cropping algorithm for **apo-to-holo** diffusion bridge training.
 - [ ] Implement apo perturbation module.
 - [ ] Include symmetry information in the input features for validation.
@@ -31,6 +32,7 @@ If the features listed below are completed, I will include the corresponding PR 
 ### Model implementation
 
 - [x] Add Boltz1 layers
+- [ ] Implement initial diffusion bridge framework
 
 ### Training
 
@@ -41,7 +43,7 @@ If the features listed below are completed, I will include the corresponding PR 
 
 ### Benchmark
 
-- [ ] Implement PDB/mmCIF writer
+- [x] Implement PDB/mmCIF writer
     - [x] PDB writer
-    - [ ] mmCIF writer
+    - [x] mmCIF writer
 - [ ] Implement benchmark pipeline for K-Fold.
