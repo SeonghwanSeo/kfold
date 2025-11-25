@@ -71,7 +71,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             except Exception as e:
                 if not self.safe_load:
                     raise e
-                print(f"Error loading index {index}: {e}. Retrying...")
+                sample_id = sample.id
+                print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
                 index = np.random.randint(0, len(self))
                 trials.append(sample)
         raise RuntimeError(
@@ -169,7 +170,8 @@ class TrainingDataset(SafeLoadingDataset):
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
-                print(f"Error loading index {index}: {e}. Retrying...")
+                sample_id = sample.metadata.id
+                print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
                 index = np.random.randint(0, len(self))
                 if not self.safe_load:
                     raise e

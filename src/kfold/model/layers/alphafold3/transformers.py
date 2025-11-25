@@ -913,7 +913,8 @@ class AtomAttentionEncoder(nn.Module):
         r : torch.Tensor
             The noised structures' positions, shape [B, N, La, 3].
         """
-        r_to_q = self.linear_r_to_q(r)  # [B, N, La, c_atom]
+        with torch.autocast(q.device.type, enabled=False):
+            r_to_q = self.linear_r_to_q(r)  # [B, N, La, c_atom]
         return q + r_to_q  # [B, N, La, c_atom]
 
 
