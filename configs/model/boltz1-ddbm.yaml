@@ -13,7 +13,7 @@ structure_module:
   _yaml_: "module/structure_module/ddbm.yaml"
 
 score_model:
-  _yaml_: "module/score_model/af3.yaml"
+  _yaml_: "module/score_model/boltz1.yaml"
 
 distogram_head:
   _yaml_: "module/distogram_head/boltz1.yaml"
