@@ -1,5 +1,5 @@
 model:
-  _yaml_: "model/boltz1.yaml"
+  _yaml_: "model/boltz1-full.yaml"
   trunk:
     use_cuequiv_kernels: true
     use_msa: false # Include MSAModule or not

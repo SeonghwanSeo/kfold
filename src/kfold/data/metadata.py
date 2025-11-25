@@ -57,7 +57,7 @@ class ChainInfo(JsonSerializable):
 
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding None values."""
-        data = super().to_dict()
+        data = super(ChainInfo, self).to_dict()
         data["chain_type"] = self.chain_type.name
         return data
 

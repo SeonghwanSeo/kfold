@@ -132,8 +132,27 @@ class TrainingDataModule(pl.LightningDataModule):
             train_records = [r for r in all_records if r.id.lower() in val_ids]
             train_records = train_records * 100  # repeat to have enough samples
         else:
+            # If a train split file is provided, use it
+            train_split = self.split_path / "train_ids.txt"
+            if train_split.exists():
+                with open(train_split) as f:
+                    train_ids = set([line.strip().lower() for line in f])
+                self.print_rank_zero(
+                    f"[DataModule] Loaded {len(train_ids)} training IDs from split file."
+                )
+                train_records = [r for r in all_records if r.id.lower() in train_ids]
+            else:
+                self.print_rank_zero(
+                    "[DataModule] No train split file found. Using all records."
+                )
+
             # Apply filters
             train_records = [r for r in all_records if do_filter(r)]
+
+        self.print_rank_zero(
+            f"[DataModule] Constructed training dataset with "
+            f"total {len(train_records)} records."
+        )
 
         return LMDBTrainingDataset(
             records=train_records,
@@ -148,16 +167,19 @@ class TrainingDataModule(pl.LightningDataModule):
     def construct_val_dataset(self) -> ValidationDataset:
         # HACK: (SeonghwanSeo): hard-coded path to rcsb set; single dataset
 
+        # Load records
+        all_records: list[Metadata] = load_manifest(self.manifest_path)
+
         # get validation records
         validation_split = self.split_path / "validation_ids.txt"
         with open(validation_split) as f:
             val_ids = set([line.strip().lower() for line in f])
-
-        # Load records
-        all_records: list[Metadata] = load_manifest(self.manifest_path)
-
-        # Apply filters
         val_records = [r for r in all_records if r.id.lower() in val_ids]
+
+        self.print_rank_zero(
+            f"[DataModule] Constructed validation dataset with "
+            f"{len(val_records)} records."
+        )
 
         return LMDBValidationDataset(
             records=val_records,
@@ -220,3 +242,7 @@ class TrainingDataModule(pl.LightningDataModule):
             pin_memory=self.config.pin_memory,
             persistent_workers=True if self.config.num_workers > 0 else False,
         )
+
+    def print_rank_zero(self, msg: str) -> None:
+        if self.trainer is None or self.trainer.global_rank == 0:
+            print(msg)
