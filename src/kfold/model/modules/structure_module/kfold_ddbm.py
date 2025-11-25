@@ -135,7 +135,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         if self.coordinate_augmentation:
             self.random_augmentation = CenterRandomAugmentation(
                 centering=True,
-                random_rotate=self.coordinate_augmentation,
+                augmentation=self.coordinate_augmentation,
+                s_trans=1.0,  # not used when augmentation is False
             )
 
     # === Bridge EDM diffusion coefficients === #

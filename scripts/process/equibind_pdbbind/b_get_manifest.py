@@ -1,9 +1,8 @@
-"""Get train/validation/test split used in Boltz1
+"""Get train/validation/test split used in EquiBind: Stärk et al, 2022.
 
 This includes multiple pre-filtering steps:
     1. Max chain filtering (>300 chains)
-    2. Single-chain filtering (optional)
-    3. Nucleic acid filtering (optional)
+    2. Nucleic acid filtering (optional)
 
 TODO:
     - For single-chain filtering, consider adding a minimum length threshold
@@ -27,7 +26,7 @@ logger = logging.getLogger(__name__)
 # FIXME: remove default path before publish
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Get RCSB manifest based on Boltz1 splits."
+        description="Get PDBBind manifest based on EquiBind splits."
     )
     parser.add_argument(
         "--boltz_manifest_path",
@@ -36,22 +35,22 @@ def parse_args():
         default="/cache/wykim_lab/rcsb_processed_targets/manifest.json",
     )
     parser.add_argument(
+        "--split_path",
+        type=Path,
+        help="Path to the directory containing equibind time-splits.",
+        default="./assets/splits/equibind/",
+    )
+    parser.add_argument(
         "--output_path",
         type=Path,
-        required=True,
         help="Path to save the output manifest file.",
+        default="/cache/wykim_lab/kfold-data/manifest/pdbbind_manifest.json",
     )
     parser.add_argument(
         "--exclude_large_complex",
         action="store_true",
         help="Whether to filter out structures with more than 300 chains.",
     )
-    parser.add_argument(
-        "--exclude_single_chain",
-        action="store_true",
-        help="Whether to filter out single-chain only structures.",
-    )
-    # FIXME: remove this argument after extending modality (DNA, RNA)
     parser.add_argument(
         "--exclude_nucleic_acids",
         action="store_true",
@@ -65,12 +64,31 @@ def main(args):
     st_time = time.time()
     with open(args.boltz_manifest_path) as f:
         record_dicts = json.load(f)
-    all_records: list[Metadata] = [parse_record(r) for r in record_dicts]
 
-    total_count = len(all_records)
+    total_count = len(record_dicts)
     logger.info(
-        f"Loaded {total_count} total structures in {time.time() - st_time:.2f} seconds."
+        f"Loaded {total_count} total records in {time.time() - st_time:.2f} seconds."
     )
+
+    # Load splits
+    with open(args.split_path / "train_ids.txt") as f:
+        train_ids = set(line.strip() for line in f)
+    with open(args.split_path / "validation_ids.txt") as f:
+        val_ids = set(line.strip() for line in f)
+    with open(args.split_path / "test_ids.txt") as f:
+        test_ids = set(line.strip() for line in f)
+    all_ids = sorted(list(train_ids)) + sorted(list(val_ids)) + sorted(list(test_ids))
+    all_ids = [k.lower() for k in all_ids]
+    logger.info(
+        f"Loaded EquiBind splits: {len(train_ids)} train, "
+        f"{len(val_ids)} val, {len(test_ids)} test."
+    )
+    logger.info(f"Total of {len(all_ids)} unique structure IDs in the splits.")
+
+    record_dicts = [r for r in record_dicts if r["id"].lower() in all_ids]
+    all_records: list[Metadata] = [parse_record(r) for r in record_dicts]
+    total_count = len(all_records)
+    logger.info(f"Filtered to {total_count} records based on EquiBind splits")
 
     # Apply filters
     if args.exclude_large_complex:
@@ -80,16 +98,6 @@ def main(args):
         all_records = [r for r in all_records if r.num_chains <= 300]
         logger.info(
             f"Filtered {prev_count - len(all_records)} large-complex structures "
-            f"in {time.time() - st_time:.2f} seconds."
-        )
-
-    if args.exclude_single_chain:
-        st_time = time.time()
-        logger.info("Filtering out single-chain only structures.")
-        prev_count = len(all_records)
-        all_records = [r for r in all_records if r.num_chains > 1]
-        logger.info(
-            f"Filtered {prev_count - len(all_records)} single-chain structures "
             f"in {time.time() - st_time:.2f} seconds."
         )
 
