@@ -121,8 +121,15 @@ class TrainingDataModule(pl.LightningDataModule):
         def do_filter(r: Metadata) -> bool:
             return all(filt(r) for filt in self.filters)
 
+        def load_split_ids(split_file: Path) -> set[str]:
+            with open(split_file) as f:
+                ids = set([line.strip().lower() for line in f])
+            return ids
+
         # Load records
         all_records: list[Metadata] = load_manifest(self.manifest_path)
+        # By default, use all records
+        train_records = all_records
 
         if self.config.overfit_val:
             # use only validation set for overfitting
@@ -130,28 +137,32 @@ class TrainingDataModule(pl.LightningDataModule):
             with open(validation_split) as f:
                 val_ids = set([line.strip().lower() for line in f])
             train_records = [r for r in all_records if r.id.lower() in val_ids]
-            train_records = train_records * 100  # repeat to have enough samples
         else:
             # If a train split file is provided, use it
-            train_split = self.split_path / "train_ids.txt"
-            if train_split.exists():
-                with open(train_split) as f:
-                    train_ids = set([line.strip().lower() for line in f])
-                self.print_rank_zero(
-                    f"[DataModule] Loaded {len(train_ids)} training IDs from split file."
-                )
+            if (train_split_path := self.split_path / "train_ids.txt").exists():
+                train_ids = load_split_ids(train_split_path)
                 train_records = [r for r in all_records if r.id.lower() in train_ids]
-            else:
                 self.print_rank_zero(
-                    "[DataModule] No train split file found. Using all records."
+                    f"Loaded train split file with {len(train_ids)} ids."
+                    f" Total {len(train_records)} records selected."
                 )
+            else:
+                self.print_rank_zero("No train split file found. Using all records.")
+
+            # If a validation/test split file is provided, exclude those records
+            for fn in ["validation_ids.txt", "test_ids.txt"]:
+                if (test_split_path := self.split_path / fn).exists():
+                    exclude_ids = load_split_ids(test_split_path)
+                    train_records = [
+                        r for r in train_records if r.id.lower() not in exclude_ids
+                    ]
 
             # Apply filters
-            train_records = [r for r in all_records if do_filter(r)]
+            train_records = [r for r in train_records if do_filter(r)]
 
         self.print_rank_zero(
-            f"[DataModule] Constructed training dataset with "
-            f"total {len(train_records)} records."
+            "Constructed training dataset with total {len(train_records)} records "
+            "after filtering."
         )
 
         return LMDBTrainingDataset(
@@ -177,8 +188,7 @@ class TrainingDataModule(pl.LightningDataModule):
         val_records = [r for r in all_records if r.id.lower() in val_ids]
 
         self.print_rank_zero(
-            f"[DataModule] Constructed validation dataset with "
-            f"{len(val_records)} records."
+            f"Constructed validation dataset with {len(val_records)} records."
         )
 
         return LMDBValidationDataset(
@@ -243,6 +253,6 @@ class TrainingDataModule(pl.LightningDataModule):
             persistent_workers=True if self.config.num_workers > 0 else False,
         )
 
-    def print_rank_zero(self, msg: str) -> None:
+    def print_rank_zero(self, msg: str, prefix: str = "[DataModule] ") -> None:
         if self.trainer is None or self.trainer.global_rank == 0:
-            print(msg)
+            print(prefix + msg)
