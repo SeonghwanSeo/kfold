@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # FIXME: remove default path before publish
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Save apo-holo pairs from a dataset of protein structures."
+        description="Get RCSB manifest based on Boltz1 splits."
     )
     parser.add_argument(
         "--boltz_manifest_path",
@@ -39,7 +39,7 @@ def parse_args():
         "--output_path",
         type=Path,
         required=True,
-        help="Path to the save the output manifest file.",
+        help="Path to save the output manifest file.",
     )
     parser.add_argument(
         "--exclude_large_complex",

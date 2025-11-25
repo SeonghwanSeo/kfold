@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # FIXME: remove default path before publish
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Save apo-holo pairs from a dataset of protein structures."
+        description="Get PDBBind manifest based on EquiBind splits."
     )
     parser.add_argument(
         "--boltz_manifest_path",
@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument(
         "--output_path",
         type=Path,
-        help="Path to the save the output manifest file.",
+        help="Path to save the output manifest file.",
         default="/cache/wykim_lab/kfold-data/manifest/pdbbind_manifest.json",
     )
     parser.add_argument(

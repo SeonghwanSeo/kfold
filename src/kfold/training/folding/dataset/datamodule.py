@@ -123,7 +123,7 @@ class TrainingDataModule(pl.LightningDataModule):
 
         def load_split_ids(split_file: Path) -> set[str]:
             with open(split_file) as f:
-                ids = set([line.strip().lower() for line in f])
+                ids = set([line.strip().lower() for line in f if line.strip()])
             return ids
 
         # Load records
@@ -133,10 +133,16 @@ class TrainingDataModule(pl.LightningDataModule):
 
         if self.config.overfit_val:
             # use only validation set for overfitting
+            # skip filtering to overfit.
             validation_split = self.split_path / "validation_ids.txt"
             with open(validation_split) as f:
                 val_ids = set([line.strip().lower() for line in f])
             train_records = [r for r in all_records if r.id.lower() in val_ids]
+            self.print_rank_zero(
+                f"Overfitting mode: using {len(train_records)} records "
+                "from validation set. Replicated 10 times for more samples."
+            )
+            train_records = train_records * 10  # replicate to have more samples
         else:
             # If a train split file is provided, use it
             if (train_split_path := self.split_path / "train_ids.txt").exists():
@@ -184,7 +190,7 @@ class TrainingDataModule(pl.LightningDataModule):
         # get validation records
         validation_split = self.split_path / "validation_ids.txt"
         with open(validation_split) as f:
-            val_ids = set([line.strip().lower() for line in f])
+            val_ids = set([line.strip().lower() for line in f if line.strip()])
         val_records = [r for r in all_records if r.id.lower() in val_ids]
 
         self.print_rank_zero(
