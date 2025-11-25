@@ -9,6 +9,7 @@ train:
   name: debug-512
   out_dir: ./experiments/
   seed: 42
+  synchronize_seed: true
 
   # pytorch lightning trainer hparams
   trainer:

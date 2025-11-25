@@ -8,30 +8,31 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: af3-edm
+  name: kfold-af3-edm
   out_dir: ./experiments/
   seed: 42
+  synchronize_seed: false # should be false when synchronize_sigmas=true
 
   # pytorch lightning trainer hparams
   trainer:
     strategy: "auto"
     devices: 8
     num_nodes: 1
-    precision: 32
+    precision: bf16-mixed
     max_epochs: 100
-    limit_train_batches: 3000 # 3 hours
-    accumulate_grad_batches: 16 # 256 // batch_size // num_gpus
+    limit_train_batches: 800
+    accumulate_grad_batches: 4
 
   training:
     diffusion_batch_size: 16
 
   data:
-    train_batch_size: 1
+    train_batch_size: 4
     max_tokens: 512
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/all_manifest.pkl
     split_path: ./assets/splits/boltz1
-    num_workers: 4
+    num_workers: 8
 
     featurization_args:
       synchronize_ref_pos_augmentation: true

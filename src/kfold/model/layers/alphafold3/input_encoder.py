@@ -3,8 +3,9 @@ import torch.nn as nn
 
 import kfold.constants as C
 from kfold.data.model_input import FoldingInput
-from kfold.model.layers.alphafold3.primitives import LinearNoBias
-from kfold.model.layers.alphafold3.transformers import AtomAttentionEncoder
+from kfold.model.layers.primitives import LinearNoBias
+
+from .transformers import AtomAttentionEncoder
 
 
 class InputFeatureEmbedder(nn.Module):
@@ -60,12 +61,11 @@ class InputFeatureEmbedder(nn.Module):
         # residue info
         self.num_res_types: int = C.NUM_RES_TYPES  # = 32
         assert self.num_res_types == 32, "Expected num_res_types to be 32."
-        self.num_profile_bins: int = 32
 
         # out projection
         # NOTE: (SeonghwanSeo) I introduce additional linear layer to unify the dimension.
-        s_input_dim = channel_s + self.num_res_types + self.num_profile_bins + 1
-        self.proj_s = LinearNoBias(s_input_dim, channel_s)
+        s_input_dim = channel_s + self.num_res_types
+        self.proj_s = LinearNoBias(s_input_dim, channel_s, init="default")
 
     def forward(self, f_input: FoldingInput) -> torch.Tensor:
         """Perform the forward pass.
@@ -85,22 +85,8 @@ class InputFeatureEmbedder(nn.Module):
 
         # Concatenate additional token features
         res_type = f_input.token.res_type  # [B, Lt, 32]
-        if False:
-            # TODO: add MSA features later
-            profile = f_input.msa.profile  # [B, Lt,]
-            deletion_mean = f_input.msa.deletion_mean  # [B, Lt,]
-        else:
-            profile = res_type  # Same when MSA features are not used
-            deletion_mean = torch.zeros(
-                (*res_type.shape[:-1], 1), device=res_type.device
-            )  # [B, Lt, 32]
         s = torch.cat(
-            [
-                a,
-                res_type,
-                profile,
-                deletion_mean,
-            ],
+            [a, res_type],
             dim=-1,
         )
 
@@ -130,7 +116,7 @@ class AtomAttentionEncoderWithoutStructure(AtomAttentionEncoder):
     ):
         super().__init__(
             channel_s=channel_s,
-            channel_z=0,  # no pair embedding used in input embedding
+            channel_z=None,  # no pair embedding used in input embedding
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             channel_token=channel_token,

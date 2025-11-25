@@ -3,7 +3,7 @@ import torch
 from kfold.data.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
 from kfold.model.layers.alphafold3.input_encoder import InputFeatureEmbedder
-from kfold.model.layers.alphafold3.primitives import LinearNoBias
+from kfold.model.layers.primitives import LinearNoBias
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 
 from .base import BaseInputEmbedder
@@ -73,16 +73,19 @@ class AF3InputEmbedder(BaseInputEmbedder):
 
         # Project to model dimension
         # Line 2
-        self.linear_no_bias_s_init = LinearNoBias(cfg.channel_s, cfg.channel_s)
+        self.linear_s_init = LinearNoBias(cfg.channel_s, cfg.channel_s)
         # Line 3
-        self.linear_no_bias_z_init1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
-        self.linear_no_bias_z_init2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
+        self.linear_z_init1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
+        self.linear_z_init2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         # Line 4
         self.relative_pos_encoding = RelativePositionEncoding(
-            cfg.channel_z, r_max=cfg.max_relative_token, s_max=cfg.max_relative_chain
+            r_max=cfg.max_relative_token, s_max=cfg.max_relative_chain
+        )
+        self.linear_pos = LinearNoBias(
+            self.relative_pos_encoding.dimension, cfg.channel_z
         )
         # Line 5
-        self.linear_no_bias_bond = LinearNoBias(1, cfg.channel_z)
+        self.linear_bond = LinearNoBias(1, cfg.channel_z)
 
     def forward(
         self,
@@ -113,20 +116,21 @@ class AF3InputEmbedder(BaseInputEmbedder):
 
         # Get initial single and pair representations
         # Line 2
-        s_init = self.linear_no_bias_s_init(s_inputs)  # [B, L, c_s]
+        s_init = self.linear_s_init(s_inputs)  # [B, L, c_s]
 
         # Line 3
         z_init = (
-            self.linear_no_bias_z_init1(s_inputs)[:, None, :, :]
-            + self.linear_no_bias_z_init2(s_inputs)[:, :, None, :]
+            self.linear_z_init1(s_inputs)[:, None, :, :]
+            + self.linear_z_init2(s_inputs)[:, :, None, :]
         )  # [B, L, L, c_z]
 
         # Line 4
         # NOTE: cache the relative position encoding if possible for efficiency
-        z_init = z_init + self.relative_pos_encoding(f_input)  # [B, L, c_z]
+        rel_feat = self.relative_pos_encoding(f_input)
+        z_init = z_init + self.linear_pos(rel_feat)  # [B, L, c_z]
 
         # Line 5
-        z_init = z_init + self.linear_no_bias_bond(
+        z_init = z_init + self.linear_bond(
             self.get_adjacency_matrix(
                 f_input.bond.token_index, f_input.num_tokens, f_input.bond.pad_mask
             ).unsqueeze(-1)  # [B, L, L, 1]

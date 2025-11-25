@@ -40,7 +40,9 @@ NOTE: If you want to use Boltz1's original implementation, please refer to [`src
 - Boltz: `2 * c_s + 32 + 32 + 1` (See point 2)
 - Ours: `c_s` (with projection)
 
-2. **RelativePositionEncoding (Algorithm 3)**: There is a typo in Algorithm. In line 8, $b_{ij}^\text{same\_chain}$ should be corrected to $b_{ij}^\text{diff\_entity}$, according to AlphaFold3's official implementation. We note that Boltz does not fix this typo. We use the correct version.
+2. **RelativePositionEncoding (Algorithm 3)**:
+- There is a typo in Algorithm. In line 8, $b_{ij}^\text{same\_chain}$ should be corrected to $b_{ij}^\text{diff\_entity}$, according to AlphaFold3's official implementation. We note that Boltz does not fix this typo. We use the correct version.
+- There is a linear layer after the concatenation of different chain/entity information in the algorithm, it is missing in the official implementation. We follow the official implementation.
 
 3. **AtomAttentionEncoder (Algorithm 3)**: Boltz's output dimension is calculated differently from the actual algorithm (always calculated as `c_token = 2 * c_s`). We explicitly introduce the `c_token` parameter in accordance with the official algorithm's notation.
 

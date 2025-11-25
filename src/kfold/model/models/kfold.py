@@ -150,7 +150,6 @@ class KFold(torch.nn.Module):
         s_inputs, s_init, z_init = self.input_embedder(f_input)
 
         # Trunk with recycling
-        # NOTE: In trunk, we do not use cache.
         s_trunk, z_trunk = self.trunk(
             s_inputs,
             s_init,
