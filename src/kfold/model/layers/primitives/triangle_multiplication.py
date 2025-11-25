@@ -64,7 +64,7 @@ class TriangleMultiplicationOutgoing(nn.Module):
         """
         super().__init__()
 
-        self.layernorm_in = LayerNorm(dim, eps=1e-5)
+        self.layernorm_in = LayerNorm(dim)
         self.linear_p_in = LinearNoBias(dim, 2 * dim, init="default")
         self.linear_g_in = LinearNoBias(dim, 2 * dim, init="final")
 

@@ -27,6 +27,9 @@ class Linear(nn.Linear):
             initialize.gating_init_(self.weight)
         elif init == "gating_ada_zero":
             # weight: zero, bias: -2
+            assert self.bias is not None, (
+                "Bias must be True for gating_ada_zero initialization."
+            )
             initialize.gating_init_(self.weight)
             nn.init.constant_(self.bias, -2.0)
         elif init == "final":

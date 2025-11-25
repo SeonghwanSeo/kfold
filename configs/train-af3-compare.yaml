@@ -20,7 +20,7 @@ train:
     num_nodes: 1
     precision: bf16-mixed
     max_epochs: 100
-    limit_train_batches: 1000
+    limit_train_batches: 800
     accumulate_grad_batches: 4
 
   training:
