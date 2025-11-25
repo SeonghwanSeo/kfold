@@ -6,6 +6,7 @@ from pathlib import Path
 
 import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from kfold.data.metadata import Metadata
 from kfold.data.model_input import FoldingInput
@@ -197,11 +198,23 @@ class TrainingDataModule(pl.LightningDataModule):
     def val_dataloader(self) -> DataLoader:
         # HACK: (SeonghwanSeo): single
         dataset = self._val_ds
+
+        sampler = None
+        if self.trainer is not None:
+            if self.trainer.world_size > 1:
+                sampler = DistributedSampler(
+                    dataset,
+                    rank=self.trainer.global_rank,
+                    num_replicas=self.trainer.world_size,
+                    shuffle=False,
+                    drop_last=False,
+                )
+
         return DataLoader(
             dataset,
             batch_size=self.config.val_batch_size,
+            sampler=sampler,
             shuffle=False,
-            drop_last=True,
             collate_fn=collate,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
