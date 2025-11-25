@@ -63,6 +63,7 @@ It serves as a reference for developers and contributors working with the K-Fold
     - `models/`: Main K-Fold model classes
     - `modules/`: Submodules used in the K-Fold model (e.g., sequence encoder, ...)
     - `layers/`: Layer implementations for co-folding
+      - `primitives/`: Basic building blocks (e.g., linear, attention, ...)
       - `alphafold3/`: Layers based on the Alphafold3 architecture
       - `boltz1/`: Fork of Boltz1 layers adapted for K-Fold compatibility
 
