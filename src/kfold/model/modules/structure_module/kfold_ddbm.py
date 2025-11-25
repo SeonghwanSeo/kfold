@@ -290,7 +290,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             "In DDBM, the shapes of prior_coords and r_noisy should be the same"
         )
         if self.normalize_data_end:
-            prior_coords = prior_coords / self.sigma_data_end**2
+            prior_coords = prior_coords / self.sigma_data_end
         r_noisy = torch.cat([r_noisy, prior_coords], dim=-1)
         assert r_noisy.shape[-1] == 6, "In DDBM, the last dimension should be 6"
         r_update = self.score_model(
