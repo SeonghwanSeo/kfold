@@ -38,26 +38,26 @@ class AttentionPairBias(nn.Module):
     def __init__(
         self,
         channel_a: int,  # c_atom (atom-attn) or c_token (token-attn)
-        channel_s: int,  # c_atom (atom-attn) or c_s (token-attn)
         channel_z: int,  # c_atompair (atom-attn) or c_z (token-attn)
+        channel_s: int | None,  # c_atom (atom-attn) or c_s (token-attn)
         num_heads: int,
-        use_s: bool = True,
+        use_single_cond: bool = True,
         inf: float = 1e6,
     ) -> None:
         """Initialize the attention pair bias layer.
 
         Parameters
         ----------
-        c_a : int
+        channel_a : int
             The atom/token dimension.
-        c_s : int
-            The input single dimension.
-        c_z : int
-            The input pair dimension.
+        channel_z : int
+            The input pair bias dimension.
+        channel_s : int
+            The input single conditioning dimension.
         num_heads : int
             The number of heads.
-        use_s : bool
-            whether s is None or not, stated in Algorithm 24 Line 1.
+        use_single_cond : bool
+            whether single conditioning `s` is used or not, stated in Algorithm 24 Line 1.
         inf : float, optional
             The inf value, by default 1e6
         """
@@ -66,44 +66,52 @@ class AttentionPairBias(nn.Module):
         assert channel_a % num_heads == 0
 
         self.channel_a: int = channel_a
-        self.channel_s: int = channel_s
         self.channel_z: int = channel_z
+        self.channel_s: int | None = channel_s
         self.num_heads: int = num_heads
         self.head_dim: int = channel_a // num_heads
         self.inf: float = inf
 
-        self.use_s: bool = use_s
-        if self.use_s:
-            assert self.channel_s > 0, "channel_s must be positive if use_s is True"
-            self.adaln = AdaLN(channel_a, channel_s)  # Defined below (Algorithm 26)
+        self.use_single_cond: bool = use_single_cond
+        if self.use_single_cond:
+            assert channel_s is not None, (
+                "channel_s must be provided if use_single_cond is True"
+            )
+            self.adaln = AdaLN(channel_a, channel_s)  # Defined at Algorithm 26
         else:
-            assert self.channel_s == 0, "channel_s must be 0 if use_s is False"
-            self.layernorm_a = LayerNorm(channel_a)
+            assert channel_s is None, "channel_s must be None if use_single_cond is False"
+            self.layernorm_a = LayerNorm(channel_a, create_offset=True)
 
-        self.proj_q = nn.Sequential(
+        self.linear_q = nn.Sequential(
             Linear(channel_a, channel_a, init="default"),
             Rearrange("b ... l (h d) -> b ... h l d", h=num_heads),
         )
-        self.proj_k = nn.Sequential(
+        self.linear_k = nn.Sequential(
             LinearNoBias(channel_a, channel_a, init="default"),
             Rearrange("b ... l (h d) -> b ... h l d", h=num_heads),
         )
-        self.proj_v = nn.Sequential(
+        self.linear_v = nn.Sequential(
             LinearNoBias(channel_a, channel_a, init="default"),
             Rearrange("b ... l (h d) -> b ... h l d", h=num_heads),
         )
-        self.proj_g = LinearNoBias(channel_a, channel_a, init="gating")
+        self.linear_g = LinearNoBias(channel_a, channel_a, init="gating")
 
-        self.proj_z = nn.Sequential(
-            LayerNorm(channel_z),
+        self.linear_z = nn.Sequential(
+            LayerNorm(channel_z, create_offset=False),
             LinearNoBias(channel_z, num_heads, init="default"),
             Rearrange("b ... l1 l2 h -> b ... h l1 l2"),
         )
 
-        self.proj_out = LinearNoBias(channel_a, channel_a, init="final")
-
-        if self.use_s:
+        if self.use_single_cond:
+            assert channel_s is not None, (
+                "channel_s must be provided if use_single_cond is True"
+            )
+            self.linear_out = LinearNoBias(channel_a, channel_a, init="default")
             self.linear_s = Linear(channel_s, channel_a, init="gating_ada_zero")
+        else:
+            self.linear_out = LinearNoBias(channel_a, channel_a, init="final")
+
+        self.sigmoid = nn.Sigmoid()
 
     def forward(
         self,
@@ -123,9 +131,10 @@ class AttentionPairBias(nn.Module):
         a : torch.Tensor
             The input atom/token tensor (..., L, c_a)
         s : torch.Tensor | None
-            The input single tensor (..., L, c_s), can be None if use_s is False
+            The single conditioning tensor (..., L, c_s).
+            This should be None if use_single_cond is False
         z : torch.Tensor
-            The input pairwise tensor (..., Lq, Lk, c_z)
+            The pair conditioning tensor (..., Lq, Lk, c_z)
         attn_mask : torch.Tensor
             The attention mask tensor (..., Lk)
             NOTE: We only mask key positions as in the official implementation.
@@ -140,14 +149,14 @@ class AttentionPairBias(nn.Module):
             The output sequence tensor. (B, N, c_a)
 
         """
-        # === Input projection === #
-        if self.use_s:
+        # === Input linearection === #
+        if self.use_single_cond:
             # Line 1-2
-            assert s is not None, "s cannot be None if use_s is True"
+            assert s is not None, "s cannot be None if use_single_cond is True"
             a = self.adaln(a, s)
         else:
             # Line 3-4
-            assert s is None, "s must be None if use_s is False"
+            assert s is None, "s must be None if use_single_cond is False"
             a = self.layernorm_a(a)
 
         if local_attn_index is not None:
@@ -158,18 +167,18 @@ class AttentionPairBias(nn.Module):
             k_in = a  # [..., L, C_a]
 
         # Line 6
-        q = self.proj_q(q_in)  # [..., H, Lq, Dh]
+        q = self.linear_q(q_in)  # [..., H, Lq, Dh]
 
         # Line 7
-        k = self.proj_k(k_in)  # [..., H, Lk, Dh]
-        v = self.proj_v(k_in)  # [..., H, Lk, Dh]
+        k = self.linear_k(k_in)  # [..., H, Lk, Dh]
+        v = self.linear_v(k_in)  # [..., H, Lk, Dh]
 
         # Line 8
-        attn_bias = self.proj_z(z)  # [..., H, Lq, Lk]
+        attn_bias = self.linear_z(z)  # [..., H, Lq, Lk]
         attn_bias = attn_bias - self.inf * (1 - attn_mask.float())[..., None, None, :]
 
         # Line 9
-        g = self.proj_g(a).sigmoid()
+        g = self.sigmoid(self.linear_g(a))
 
         # === Attention === #
         # Line 10-11
@@ -185,13 +194,13 @@ class AttentionPairBias(nn.Module):
         Av = Av.reshape(a.shape)
 
         # Line 11
-        a = self.proj_out(g * Av)
+        a = self.linear_out(g * Av)
 
         # === Output projection === #
         # Line 12-14
-        if self.use_s:
-            assert s is not None, "s cannot be None if use_s is True"
-            a = torch.sigmoid(self.linear_s(s)) * a
+        if self.use_single_cond:
+            assert s is not None
+            a = self.sigmoid(self.linear_s(s)) * a
         return a
 
 
@@ -216,9 +225,9 @@ class DiffusionTransformer(nn.Module):
         channel_a : int
             The atom/token dimension.
         channel_s : int
-            The single dimension.
+            The single conditioning dimension.
         channel_z : int
-            The pairwise dimension.
+            The pair bias dimension.
         num_blocks : int
             The number of blocks.
         num_heads : int
@@ -255,7 +264,7 @@ class DiffusionTransformer(nn.Module):
         a : torch.Tensor
             The input single representation tensor (..., L, c_a)
         s : torch.Tensor
-            The input single condition tensor (..., L, c_s)
+            The input single conditioning tensor (..., L, c_s)
         z : torch.Tensor
             The input pair representation tensor (..., Lq, Lk, c_z)
         attn_mask : torch.Tensor
@@ -316,7 +325,11 @@ class DiffusionTransformerBlock(nn.Module):
         """
         super().__init__()
         self.attention = AttentionPairBias(
-            channel_a, channel_s, channel_z, num_heads, use_s=True
+            channel_a=channel_a,
+            channel_z=channel_z,
+            channel_s=channel_s,
+            num_heads=num_heads,
+            use_single_cond=True,
         )
 
         self.transition = ConditionedTransitionBlock(
@@ -339,7 +352,7 @@ class DiffusionTransformerBlock(nn.Module):
         a : torch.Tensor
             The input single representation tensor (..., L, c_a)
         s : torch.Tensor
-            The input single condition tensor (..., L, c_s)
+            The input single conditioning tensor (..., L, c_s)
         z : torch.Tensor
             The input pair representation tensor (..., Lq, Lk, c_z)
         attn_mask : torch.Tensor
@@ -375,7 +388,7 @@ class DiffusionTransformerBlock(nn.Module):
         # Line 3
         a = a + self.transition(a, s)
 
-        # Return updated a, s, z (s and z are unchanged)
+        # NOTE: Return updated a, s, z (s and z are unchanged)
         # This is to maintain compatibility with checkpoint_blocks
         return a, s, z
 
@@ -520,7 +533,7 @@ class AtomAttentionEncoder(nn.Module):
     def __init__(
         self,
         channel_s: int,  # 384 in AF3
-        channel_z: int,  # 128 in AF3
+        channel_z: int | None,  # 128 in AF3
         channel_atom: int,  # 128 in AF3
         channel_atompair: int,  # 16 in AF3
         channel_token: int,  # 384 (InputEmbedder) or 768 (Diffusion) in AF3
@@ -538,7 +551,7 @@ class AtomAttentionEncoder(nn.Module):
         ----------
         channel_s : int
             The single representation dimension.
-        channel_z : int
+        channel_z : int | None
             The pair representation dimension.
         channel_atom : int
             The atom single representation dimension.
@@ -571,17 +584,22 @@ class AtomAttentionEncoder(nn.Module):
 
         self.use_structure = use_structure
         if use_structure:
+            assert channel_z is not None, (
+                "channel_z must be provided if use_structure is True"
+            )
             self.linear_s_to_c = nn.Sequential(
-                LayerNorm(channel_s, bias=False),
+                LayerNorm(channel_s, create_offset=False),
                 LinearNoBias(channel_s, channel_atom, init="final"),
             )
             self.linear_z_to_p = nn.Sequential(
-                LayerNorm(channel_z, bias=False),
+                LayerNorm(channel_z, create_offset=False),
                 LinearNoBias(channel_z, channel_atompair, init="final"),
             )
             self.linear_r_to_q = LinearNoBias(
                 channel_coords, channel_atom, init="default"
             )
+        else:
+            assert channel_z is None, "channel_z must be None if use_structure is False"
 
         self.linear_key = nn.Sequential(
             nn.ReLU(),
@@ -699,7 +717,7 @@ class AtomAttentionEncoder(nn.Module):
             mask_q = local_attn_index.to_query(mask, dim=-1)  # [B, W, Lq]
             mask_k = local_attn_index.to_key(mask, dim=-1)  # [B, W, Lk]
             v = uid_q[..., :, None] == uid_k[..., None, :]  # [B, W, Lq, Lk]
-            v = v & mask_q[..., :, None] & mask_k[..., None, :]  # [B, W, Lq, Lk]
+            v = v & (mask_q[..., :, None] & mask_k[..., None, :])
             v = v.float().unsqueeze(-1)  # [B, W, Lq, Lk, 1]
 
             # Line 4, skip masking
@@ -953,7 +971,7 @@ class AtomAttentionDecoder(nn.Module):
         )
 
         self.linear_q_to_r = nn.Sequential(
-            LayerNorm(channel_atom, bias=False),
+            LayerNorm(channel_atom, create_offset=False),
             LinearNoBias(channel_atom, 3, init="final"),
         )
 

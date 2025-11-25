@@ -9,9 +9,12 @@ from kfold.model.layers.primitives import LinearNoBias
 
 
 class RelativePositionEncoding(nn.Module):
-    """Relative position encoder."""
+    """Relative position encoder.
+    NOTE: Differ to AlphaFold3 official algorithm, its official algorithm does
+    not pass linear projection layer here.
+    """
 
-    def __init__(self, channel_z: int, r_max: int = 32, s_max: int = 2):
+    def __init__(self, r_max: int = 32, s_max: int = 2):
         """Initialize the relative position encoder.
 
         Parameters
@@ -27,9 +30,7 @@ class RelativePositionEncoding(nn.Module):
         super().__init__()
         self.r_max: int = r_max
         self.s_max: int = s_max
-        self.linear_layer = LinearNoBias(
-            4 * (r_max + 1) + 2 * (s_max + 1) + 1, channel_z, init="default"
-        )
+        self.dimension: int = 4 * (r_max + 1) + 2 * (s_max + 1) + 1
 
     @torch.no_grad()
     def get_relative_position_encoding(self, f_input: FoldingInput) -> torch.Tensor:
@@ -93,7 +94,7 @@ class RelativePositionEncoding(nn.Module):
         # Line 9
         a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2)
 
-        # Line 10:1 (concat)
+        # Line 10 (concat)
         rel_position_encoding = torch.cat(
             [
                 a_rel_pos.float(),
@@ -106,11 +107,12 @@ class RelativePositionEncoding(nn.Module):
         return rel_position_encoding  # [B, L, L, D]
 
     def forward(
-        self,
-        f_input: FoldingInput,
-        model_cache: dict | None = None,
+        self, f_input: FoldingInput, model_cache: dict | None = None
     ) -> torch.Tensor:
-        """See Section 3.1.2 Algorithm 3: Relative position encoding in the AF3 paper."""
+        """See Section 3.1.2 Algorithm 3: Relative position encoding in the AF3 paper.
+        NOTE: Differ to AlphaFold3 official algorithm, its official algorithm does
+        not pass linear projection layer here.
+        """
         if model_cache is not None:
             cache_prefix = "relative_position_encoding"
             if cache_prefix not in model_cache:
@@ -124,11 +126,7 @@ class RelativePositionEncoding(nn.Module):
             layer_cache["rel_pos_encoding"] = rel_position_encoding
         else:
             rel_position_encoding = layer_cache["rel_pos_encoding"]
-
-        # Line 10:2 (linear)
-        p = self.linear_layer(rel_position_encoding)  # [B, L, L, c_z]
-
-        return p  # [L, L, c_z]
+        return rel_position_encoding
 
 
 class AtomEmbedding(nn.Module):

@@ -79,7 +79,10 @@ class AF3InputEmbedder(BaseInputEmbedder):
         self.linear_z_init2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         # Line 4
         self.relative_pos_encoding = RelativePositionEncoding(
-            cfg.channel_z, r_max=cfg.max_relative_token, s_max=cfg.max_relative_chain
+            r_max=cfg.max_relative_token, s_max=cfg.max_relative_chain
+        )
+        self.linear_pos = LinearNoBias(
+            self.relative_pos_encoding.dimension, cfg.channel_z
         )
         # Line 5
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
@@ -123,7 +126,8 @@ class AF3InputEmbedder(BaseInputEmbedder):
 
         # Line 4
         # NOTE: cache the relative position encoding if possible for efficiency
-        z_init = z_init + self.relative_pos_encoding(f_input)  # [B, L, c_z]
+        rel_feat = self.relative_pos_encoding(f_input)
+        z_init = z_init + self.linear_pos(rel_feat)  # [B, L, c_z]
 
         # Line 5
         z_init = z_init + self.linear_bond(

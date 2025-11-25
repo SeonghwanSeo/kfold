@@ -2,11 +2,11 @@ from .activation import SwiGLU
 from .attention import attention
 from .linear import Linear, LinearNoBias
 from .normalization import AdaLN, LayerNorm
-from .triangular_attention import (
+from .triangle_attention import (
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
 )
-from .triangular_multiplication import (
+from .triangle_multiplication import (
     TriangleMultiplicationIncoming,
     TriangleMultiplicationOutgoing,
 )

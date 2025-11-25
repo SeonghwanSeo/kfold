@@ -8,11 +8,11 @@ import torch
 import torch.nn as nn
 
 from kfold.model.layers.primitives.dropout import get_dropout_mask
-from kfold.model.layers.primitives.triangular_attention import (
+from kfold.model.layers.primitives.triangle_attention import (
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
 )
-from kfold.model.layers.primitives.triangular_multiplication import (
+from kfold.model.layers.primitives.triangle_multiplication import (
     TriangleMultiplicationIncoming,
     TriangleMultiplicationOutgoing,
 )
@@ -171,7 +171,11 @@ class PairformerBlock(nn.Module):
         )
 
         self.attention = AttentionPairBias(
-            channel_s, 0, channel_z, num_heads, use_s=False
+            channel_a=channel_s,
+            channel_z=channel_z,
+            num_heads=num_heads,
+            channel_s=None,
+            use_single_cond=False,
         )
 
         self.transition_s = Transition(channel_s, expansion_factor=4)

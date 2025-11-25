@@ -155,7 +155,7 @@ class DiffusionModule(nn.Module):
         )
 
         # === Full token-level attention === #
-        self.layernorm_s = LayerNorm(channel_s, bias=False)
+        self.layernorm_s = LayerNorm(channel_s, create_offset=False)
         self.linear_s_to_a = LinearNoBias(channel_s, channel_token, init="final")
 
         self.token_transformer = DiffusionTransformer(
@@ -167,7 +167,7 @@ class DiffusionModule(nn.Module):
             blocks_per_ckpt=blocks_per_ckpt,
         )
 
-        self.layernorm_a = LayerNorm(channel_token, bias=False)
+        self.layernorm_a = LayerNorm(channel_token, create_offset=False)
 
         # === Local token-level attention decoder === #
         self.atom_attention_decoder = AtomAttentionDecoder(
@@ -332,9 +332,11 @@ class DiffusionConditioning(nn.Module):
         super().__init__()
 
         # Pair representation conditioning
-        self.rel_pos_encoding = RelativePositionEncoding(channel_z=channel_z)
-        self.layernorm_z = LayerNorm(channel_z * 2, bias=False)
-        self.linear_z = LinearNoBias(channel_z * 2, channel_z, init="default")
+        self.rel_pos_encoding = RelativePositionEncoding()
+        rel_pos_dim = self.rel_pos_encoding.dimension
+
+        self.layernorm_z = LayerNorm(channel_z + rel_pos_dim, create_offset=False)
+        self.linear_z = LinearNoBias(channel_z + rel_pos_dim, channel_z, init="default")
 
         self.transitions_z = nn.ModuleList(
             [
@@ -344,11 +346,11 @@ class DiffusionConditioning(nn.Module):
         )
 
         # Single representation conditioning
-        self.layernorm_s = LayerNorm(channel_s * 2, bias=False)
+        self.layernorm_s = LayerNorm(channel_s * 2, create_offset=False)
         self.linear_s = LinearNoBias(channel_s * 2, channel_s, init="default")
 
         self.fourier_embed = FourierEmbedding(dim_fourier)
-        self.layernorm_fourier = LayerNorm(dim_fourier, bias=False)
+        self.layernorm_fourier = LayerNorm(dim_fourier, create_offset=False)
         self.linear_fourier = LinearNoBias(dim_fourier, channel_s, init="default")
 
         self.transitions_s = nn.ModuleList(

@@ -116,7 +116,7 @@ class AtomAttentionEncoderWithoutStructure(AtomAttentionEncoder):
     ):
         super().__init__(
             channel_s=channel_s,
-            channel_z=0,  # no pair embedding used in input embedding
+            channel_z=None,  # no pair embedding used in input embedding
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             channel_token=channel_token,
