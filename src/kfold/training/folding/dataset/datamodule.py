@@ -161,7 +161,7 @@ class TrainingDataModule(pl.LightningDataModule):
             train_records = [r for r in train_records if do_filter(r)]
 
         self.print_rank_zero(
-            "Constructed training dataset with total {len(train_records)} records "
+            f"Constructed training dataset with total {len(train_records)} records "
             "after filtering."
         )
 
