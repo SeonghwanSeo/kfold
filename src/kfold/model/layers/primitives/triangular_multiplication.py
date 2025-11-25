@@ -1,4 +1,5 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License,
+
 import torch
 from torch import nn
 
@@ -7,7 +8,8 @@ try:
 except ImportError:
     triangle_multiplicative_update = None
 
-from .primitives import LayerNorm, LinearNoBias
+from .linear import LinearNoBias
+from .normalization import LayerNorm
 
 
 @torch.compiler.disable
@@ -64,11 +66,11 @@ class TriangleMultiplicationOutgoing(nn.Module):
 
         self.norm_in = LayerNorm(dim, eps=1e-5)
         self.p_in = LinearNoBias(dim, 2 * dim, init="default")
-        self.g_in = LinearNoBias(dim, 2 * dim, init="gating")
+        self.g_in = LinearNoBias(dim, 2 * dim, init="final")
 
         self.norm_out = LayerNorm(dim)
         self.p_out = LinearNoBias(dim, dim, init="final")
-        self.g_out = LinearNoBias(dim, dim, init="gating")
+        self.g_out = LinearNoBias(dim, dim, init="final")
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor, use_kernels: bool = False

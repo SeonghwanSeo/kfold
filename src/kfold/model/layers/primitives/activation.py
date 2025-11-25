@@ -7,9 +7,9 @@ from .linear import LinearNoBias
 class SwiGLU(nn.Module):
     """SiLU Gated Linear Unit (SwiGLU) activation function."""
 
-    def __init__(self, channel_in: int, channel_out: int, init: str = "relu"):
+    def __init__(self, channel_in: int, channel_out: int):
         super().__init__()
-        self.linear = LinearNoBias(channel_in, channel_out * 2, init=init)
+        self.linear = LinearNoBias(channel_in, channel_out * 2, init="relu")
         self.swish = nn.SiLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

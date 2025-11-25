@@ -8,16 +8,18 @@ import torch
 import torch.nn as nn
 
 from kfold.model.layers.primitives.dropout import get_dropout_mask
+from kfold.model.layers.primitives.triangular_attention import (
+    TriangleAttentionEndingNode,
+    TriangleAttentionStartingNode,
+)
+from kfold.model.layers.primitives.triangular_multiplication import (
+    TriangleMultiplicationIncoming,
+    TriangleMultiplicationOutgoing,
+)
 from kfold.utils.checkpointing import checkpoint_blocks
 
 from .transformers import AttentionPairBias
 from .transition import Transition
-from .triangular_update import (
-    TriangleAttentionEndingNode,
-    TriangleAttentionStartingNode,
-    TriangleMultiplicationIncoming,
-    TriangleMultiplicationOutgoing,
-)
 
 
 class PairformerStack(nn.Module):
