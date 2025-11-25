@@ -25,7 +25,8 @@ class NumChainFilter(BaseFilter):
 
     def filter(self, record: Metadata) -> bool:
         num_chains = record.num_chains
-        return self.min_chains <= num_chains <= self.max_chains
+        num_valid = sum(1 for chain in record.chains if chain.valid)
+        return (self.min_chains <= num_valid) and (num_chains <= self.max_chains)
 
 
 @DATA_FILTER.register()

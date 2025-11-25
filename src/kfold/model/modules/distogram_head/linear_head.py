@@ -1,5 +1,6 @@
 import torch
 
+from kfold.model.layers.primitives import LinearNoBias
 from kfold.utils.registry import DISTOGRAM_HEAD
 
 from .base import BaseDistogramHead
@@ -9,7 +10,7 @@ from .base import BaseDistogramHead
 class DistogramHead(BaseDistogramHead):
     def __init__(self, cfg: BaseDistogramHead.Config):
         super().__init__(cfg)
-        self.linear = torch.nn.Linear(cfg.channel_z, cfg.num_bins)
+        self.linear = LinearNoBias(cfg.channel_z, cfg.num_bins, init="final")
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Forward pass of distogram head module.

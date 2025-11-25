@@ -87,10 +87,7 @@ def do_augment_apo_structure(
     augmented_apo_coords : np.ndarray
         Augmented apo structure coordinates of shape [Napo, Natom, 3].
     """
-    # Apply random rotation per apo coords
-    # NOTE: Unlike holo structure, apo structure is input so that
-    # random translation is not applied.
-
+    # Apply random rotation and translation per apo coords
     new_coords = np.zeros_like(apo_coords)
     start_idx = 0
     for natom in chain_sizes:
@@ -98,8 +95,6 @@ def do_augment_apo_structure(
         new_coords[:, start_idx:end_idx] = center_random_augmentation(
             apo_coords[:, start_idx:end_idx],  # =apo_chain_coords
             mask[:, start_idx:end_idx],  # =apo_chain_mask
-            random_rotate=True,
-            s_trans=0.0,
             rng=rng,
         )
         start_idx = end_idx

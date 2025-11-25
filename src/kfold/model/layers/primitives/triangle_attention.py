@@ -1,5 +1,4 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License,
-
 # Copyright 2021 AlQuraishi Laboratory
 # Copyright 2021 DeepMind Technologies Limited
 #
@@ -16,145 +15,19 @@
 # limitations under the License.
 
 import math
-from collections.abc import Callable
+from functools import partial, partialmethod
 
 import torch
-from torch import nn
+import torch.nn as nn
 
 try:
     from cuequivariance_torch.primitives.triangle import triangle_attention
 except ImportError:
     triangle_attention = None
 
-from . import initialize
-from .utils import flatten_final_dims, permute_final_dims
-
-
-class Linear(nn.Linear):
-    """
-    A Linear layer with built-in nonstandard initializations. Called just
-    like torch.nn.Linear.
-
-    Implements the initializers in 1.11.4, plus some additional ones found
-    in the code.
-    """
-
-    def __init__(
-        self,
-        in_dim: int,
-        out_dim: int,
-        bias: bool = True,
-        init: str = "default",
-        init_fn: Callable[[torch.Tensor, torch.Tensor], None] | None = None,
-        precision=None,
-    ):
-        """Initialize the linear layer.
-
-        Parameters
-        ----------
-        in_dim : int
-            The final dimension of inputs to the layer
-        out_dim : int
-            The final dimension of layer outputs
-        bias : bool, default=True
-            Whether to learn an additive bias
-        init : str, default='default'
-            The initializer to use. Choose from:
-
-            - "default": LeCun fan-in truncated normal initialization
-            - "relu": He initialization w/ truncated normal distribution
-            - "glorot": Fan-average Glorot uniform initialization
-            - "gating": Weights=0, Bias=1
-            - "normal": Normal initialization with std=1/sqrt(fan_in)
-            - "final": Weights=0, Bias=0
-
-            Overridden by init_fn if the latter is not None.
-        init_fn : callable, optional
-            A custom initializer taking weight and bias as inputs.
-            Overrides init if not None.
-
-        """
-        super().__init__(in_dim, out_dim, bias=bias)
-
-        if bias:
-            with torch.no_grad():
-                self.bias.fill_(0)
-
-        with torch.no_grad():
-            if init_fn is not None:
-                init_fn(self.weight, self.bias)
-            else:
-                if init == "default":
-                    initialize.lecun_normal_init_(self.weight)
-                elif init == "relu":
-                    initialize.he_normal_init_(self.weight)
-                elif init == "glorot":
-                    initialize.glorot_uniform_init_(self.weight)
-                elif init == "gating":
-                    initialize.gating_init_(self.weight)
-                    if bias:
-                        self.bias.fill_(1.0)
-                elif init == "normal":
-                    initialize.normal_init_(self.weight)
-                elif init == "final":
-                    initialize.final_init_(self.weight)
-                else:
-                    raise ValueError("Invalid init string.")
-
-        self.precision = precision
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        d = input.dtype
-        if self.precision is not None:
-            with torch.autocast("cuda", enabled=False):
-                bias = (
-                    self.bias.to(dtype=self.precision) if self.bias is not None else None
-                )
-                return nn.functional.linear(
-                    input.to(dtype=self.precision),
-                    self.weight.to(dtype=self.precision),
-                    bias,
-                ).to(dtype=d)
-
-        if d is torch.bfloat16:
-            with torch.autocast("cuda", enabled=False):
-                bias = self.bias.to(dtype=d) if self.bias is not None else None
-                return nn.functional.linear(input, self.weight.to(dtype=d), bias)
-
-        return nn.functional.linear(input, self.weight, self.bias)
-
-
-class LayerNorm(nn.Module):
-    def __init__(self, c_in, eps=1e-5):
-        super().__init__()
-
-        self.c_in = (c_in,)
-        self.eps = eps
-
-        self.weight = nn.Parameter(torch.ones(c_in))
-        self.bias = nn.Parameter(torch.zeros(c_in))
-
-    def forward(self, x):
-        d = x.dtype
-        if d is torch.bfloat16:
-            with torch.autocast("cuda", enabled=False):
-                out = nn.functional.layer_norm(
-                    x,
-                    self.c_in,
-                    self.weight.to(dtype=d),
-                    self.bias.to(dtype=d),
-                    self.eps,
-                )
-        else:
-            out = nn.functional.layer_norm(
-                x,
-                self.c_in,
-                self.weight,
-                self.bias,
-                self.eps,
-            )
-
-        return out
+from .linear import LinearNoBias
+from .normalization import LayerNorm
+from .utils import chunk_layer, flatten_final_dims, permute_final_dims
 
 
 @torch.jit.ignore
@@ -173,7 +46,6 @@ def softmax_no_cast(t: torch.Tensor, dim: int = -1) -> torch.Tensor:
     return s
 
 
-# @torch.jit.script
 def _attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -214,7 +86,7 @@ def kernel_triangular_attn(
     return triangle_attention(q, k, v, tri_bias, mask=mask, scale=scale)
 
 
-class Attention(nn.Module):
+class MultiHeadAttention(nn.Module):
     """
     Standard multi-head attention using AlphaFold's default layer
     initialization. Allows multiple bias vectors.
@@ -259,23 +131,23 @@ class Attention(nn.Module):
         # DISCREPANCY: c_hidden is not the per-head channel dimension, as
         # stated in the supplement, but the overall channel dimension.
 
-        self.linear_q = Linear(
-            self.c_q, self.c_hidden * self.no_heads, bias=False, init="glorot"
+        self.linear_q = LinearNoBias(
+            self.c_q, self.c_hidden * self.no_heads, init="default"
         )
-        self.linear_k = Linear(
-            self.c_k, self.c_hidden * self.no_heads, bias=False, init="glorot"
+        self.linear_k = LinearNoBias(
+            self.c_k, self.c_hidden * self.no_heads, init="default"
         )
-        self.linear_v = Linear(
-            self.c_v, self.c_hidden * self.no_heads, bias=False, init="glorot"
+        self.linear_v = LinearNoBias(
+            self.c_v, self.c_hidden * self.no_heads, init="default"
         )
-        self.linear_o = Linear(
-            self.c_hidden * self.no_heads, self.c_q, bias=False, init="final"
+        self.linear_o = LinearNoBias(
+            self.c_hidden * self.no_heads, self.c_q, init="final"
         )
 
         self.linear_g = None
         if self.gating:
-            self.linear_g = Linear(
-                self.c_q, self.c_hidden * self.no_heads, bias=False, init="gating"
+            self.linear_g = LinearNoBias(
+                self.c_q, self.c_hidden * self.no_heads, init="gating"
             )
 
         self.sigmoid = nn.Sigmoid()
@@ -376,3 +248,162 @@ class Attention(nn.Module):
         o = self._wrap_up(o, q_x)
 
         return o
+
+
+class TriangleAttention(nn.Module):
+    """See Section 3.4 Algorithm 14 in the AlphaFold3 paper."""
+
+    def __init__(
+        self,
+        c_in: int,
+        c_hidden: int,
+        no_heads: int,
+        starting: bool = True,
+        inf: float = 1e9,
+    ) -> None:
+        super().__init__()
+
+        self.c_in = c_in
+        self.c_hidden = c_hidden
+        self.no_heads = no_heads
+        self.starting = starting
+        self.inf = inf
+
+        self.layer_norm = LayerNorm(self.c_in)
+
+        self.linear = LinearNoBias(c_in, self.no_heads, init="default")
+
+        self.mha = MultiHeadAttention(
+            self.c_in, self.c_in, self.c_in, self.c_hidden, self.no_heads
+        )
+
+    @torch.jit.ignore
+    def _chunk(
+        self,
+        x: torch.Tensor,
+        tri_bias: torch.Tensor,
+        mask_bias: torch.Tensor,
+        mask: torch.Tensor,
+        chunk_size: int,
+        use_kernels: bool = False,
+    ) -> torch.Tensor:
+        """Compute triangle attention.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape [*, I, J, C_in]
+        biases : list[torch.Tensor]
+            List of bias tensors of shape [*, H, I, J]
+        chunk_size : int
+            Size of chunks for memory efficient computation
+        use_kernels : bool, default=False
+            Whether to use optimized CUDA kernels
+
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape [*, I, J, C_in]
+
+        """
+        mha_inputs = {
+            "q_x": x,
+            "kv_x": x,
+            "tri_bias": tri_bias,
+            "mask_bias": mask_bias,
+            "mask": mask,
+        }
+
+        return chunk_layer(
+            partial(
+                self.mha,
+                use_kernels=use_kernels,
+            ),
+            mha_inputs,
+            chunk_size=chunk_size,
+            no_batch_dims=len(x.shape[:-2]),
+            _out=None,
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor | None = None,
+        chunk_size: int | None = None,
+        use_kernels: bool = False,
+    ) -> torch.Tensor:
+        """Compute triangle attention.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape [*, I, J, C_in]
+        mask : torch.Tensor, optional
+            Attention mask of shape [*, I, J]
+        chunk_size : int, optional
+            Size of chunks for memory efficient computation
+        use_kernels : bool, default=False
+            Whether to use optimized CUDA kernels
+
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape [*, I, J, C_in]
+
+        """
+        if mask is None:
+            # [*, I, J]
+            mask = x.new_ones(
+                x.shape[:-1],
+            )
+
+        if not self.starting:
+            x = x.transpose(-2, -3)
+            mask = mask.transpose(-1, -2)
+
+        # [*, I, J, C_in]
+        x = self.layer_norm(x)
+
+        # [*, I, 1, 1, J]
+        mask = mask[..., :, None, None, :]
+        mask_bias = self.inf * (mask - 1)
+
+        # [*, H, I, J]
+        triangle_bias = permute_final_dims(self.linear(x), (2, 0, 1))
+
+        # [*, 1, H, I, J]
+        triangle_bias = triangle_bias.unsqueeze(-4)
+
+        if chunk_size is not None and not use_kernels:
+            x = self._chunk(
+                x,
+                triangle_bias,
+                mask_bias,
+                mask,
+                chunk_size,
+                use_kernels=use_kernels,
+            )
+        else:
+            x = self.mha(
+                x,
+                x,
+                triangle_bias,
+                mask_bias,
+                mask,
+                use_kernels=use_kernels,
+            )
+
+        if not self.starting:
+            x = x.transpose(-2, -3)
+
+        return x
+
+
+# Implements Algorithm 14
+TriangleAttentionStartingNode = TriangleAttention
+
+
+class TriangleAttentionEndingNode(TriangleAttention):
+    """See Section 3.4 Algorithm 15 in the AlphaFold3 paper."""
+
+    __init__ = partialmethod(TriangleAttention.__init__, starting=False)

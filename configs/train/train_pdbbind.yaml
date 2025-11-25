@@ -1,7 +1,7 @@
 # Configuration for K-Fold structure module training
 
 # Training Configuration
-name: structure-only
+name: train-pdbbind
 out_dir: ./experiments/
 
 # Random Seed
@@ -15,7 +15,7 @@ data:
   # Data paths
   lmdb_path: <LMDB_PATH_PLACEHOLDER>
   manifest_path: <MANIFEST_PATH_PLACEHOLDER>
-  split_path: ./assets/splits/boltz1
+  split_path: ./assets/splits/equibind/
   overfit_val: false
 
   # DataLoader
@@ -32,11 +32,8 @@ data:
       max_chains: 300
     - _registry_: "data_filter"
       _class_: ReleaseDateFilter
-      date: "2021-09-30"
+      date: "2018-12-31"
       ref: released
-    - _registry_: "data_filter"
-      _class_: ResolutionFilter
-      resolution: 9.0
 
   cropper:
     _registry_: "data_cropper"

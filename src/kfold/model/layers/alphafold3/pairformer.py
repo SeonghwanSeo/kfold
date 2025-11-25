@@ -7,17 +7,19 @@ from functools import partial
 import torch
 import torch.nn as nn
 
-from kfold.utils.checkpointing import checkpoint_blocks
-
-from .dropout import get_dropout_mask
-from .transformers import AttentionPairBias
-from .transition import Transition
-from .triangular_update import (
+from kfold.model.layers.primitives.dropout import get_dropout_mask
+from kfold.model.layers.primitives.triangle_attention import (
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
+)
+from kfold.model.layers.primitives.triangle_multiplication import (
     TriangleMultiplicationIncoming,
     TriangleMultiplicationOutgoing,
 )
+from kfold.utils.checkpointing import checkpoint_blocks
+
+from .transformers import AttentionPairBias
+from .transition import Transition
 
 
 class PairformerStack(nn.Module):
@@ -169,11 +171,15 @@ class PairformerBlock(nn.Module):
         )
 
         self.attention = AttentionPairBias(
-            channel_s, 0, channel_z, num_heads, use_s=False
+            channel_a=channel_s,
+            channel_z=channel_z,
+            num_heads=num_heads,
+            channel_s=None,
+            use_single_cond=False,
         )
 
-        self.transition_s = Transition(channel_s, channel_s * 4)
-        self.transition_z = Transition(channel_z, channel_z * 4)
+        self.transition_s = Transition(channel_s, expansion_factor=4)
+        self.transition_z = Transition(channel_z, expansion_factor=4)
 
     def forward(
         self,
