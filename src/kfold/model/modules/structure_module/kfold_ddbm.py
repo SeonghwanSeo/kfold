@@ -613,6 +613,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
                     s_trunk=s_trunk,
                     z_trunk=z_trunk,
                     model_cache=model_cache,
+                    prior_coords=atom_coords[:, st:end],
                 )
 
             # Line 9
