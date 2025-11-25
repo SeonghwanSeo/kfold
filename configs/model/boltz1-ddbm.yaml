@@ -3,6 +3,11 @@
 _registry_: "main_module"
 _class_: Boltz1Pretrained
 
+# Whether to project the score model inputs.
+# This option should be true when we want to use AF3DiffusionModule as score model
+# NOTE: The Boltz1 use different input dimensions to AF3 algorithm.
+proj_s_inputs: false
+
 input_embedder:
   _yaml_: "module/input_embedder/boltz1.yaml"
 
