@@ -34,11 +34,11 @@ from tqdm import tqdm
 import kfold.constants as C
 from kfold.constants.chain import ChainType
 from kfold.data.structure import TokenizedStructure
-from kfold.data.utils.augmentation import do_centering
 from kfold.utils import errors
 from kfold.utils.boltz.process import tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.files import load_apo_chain
+from kfold.utils.geometry.random_augment import do_centering
 
 # type alias
 Point3D = tuple[float, float, float]
@@ -175,6 +175,8 @@ def parse_structure(
             logger.debug(f"Output file already exists, skipping: {output_path}")
             return True
 
+    pdb_id = boltz_npz_file.stem
+
     boltz_structure: BoltzStructure = BoltzStructure.load(boltz_npz_file)
     try:
         tokenized_structure: TokenizedStructure = tokenize_structure(boltz_structure)
@@ -215,9 +217,8 @@ def parse_structure(
         match chain_type:
             case ChainType.PROTEIN | ChainType.DNA | ChainType.RNA:
                 # === Load apo structure for protein/DNA/RNA chain === #
-                # entity_id starts from 1, while the saved apo structures start from 0
-                # example: dna chain (entity_id=1) -> entity_0_dna.pdb
-                filename = f"entity_{entity_id - 1}_{chain_type.name.lower()}.pdb"
+                # entity_id starts from 1
+                filename = f"{pdb_id}_{entity_id}_{chain_type.name.lower()}.pdb"
                 apo_chain_pdb_path = apo_structure_path / filename
 
                 if entity_id in entity_apo_chains:
@@ -284,7 +285,7 @@ def parse_structure_safe(
     """Wrapper with better error handling."""
     pdb_id = boltz_npz_file.stem
     output_path = output_dir / f"{pdb_id}.npz"
-    apo_path = apo_structure_dir / pdb_id
+    apo_path = apo_structure_dir / pdb_id[:2] / pdb_id
     try:
         success = parse_structure(
             boltz_npz_file, apo_path, output_path, allow_large_complex, force
