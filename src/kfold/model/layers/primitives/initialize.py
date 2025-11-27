@@ -96,6 +96,11 @@ def glorot_uniform_init_(weights):
 
 
 @torch.no_grad()
+def zero_init_(weights):
+    weights.fill_(0.0)
+
+
+@torch.no_grad()
 def final_init_(weights):
     weights.fill_(0.0)
 
