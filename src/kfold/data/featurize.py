@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 
 import numpy as np
@@ -9,6 +10,8 @@ from kfold.utils.geometry.random_augment import center_random_augmentation, do_c
 
 from . import model_input, structure
 from .utils import frame_utils
+
+__all__ = ["featurize_structure", "add_pretrained_embeddings"]
 
 # TODO list:
 # - Add symmetry.
@@ -121,8 +124,10 @@ def featurize_structure(
     synchronize_ref_pos_augmentation : bool, optional
         Whether to synchronize the random augmentation for ref_pos across all atoms,
 
-    Returns:
-        FoldingInput: The featurized model input.
+    Returns
+    -------
+    f_input: FoldingInput
+        The featurized model input
     """
 
     def cast(data: np.ndarray) -> np.ndarray:
@@ -197,6 +202,7 @@ def featurize_structure(
     # ============================================
 
     # === Token-level features ===
+
     # Make one-hot vector for residue types
     residue_one_hot = np.eye(32, dtype=np.float32)
     token_dict["res_type"] = residue_one_hot[token_dict["res_type"]]
@@ -249,9 +255,7 @@ def featurize_structure(
         token_data.resolved_mask & atom_dict["resolved_mask"][token_dict["disto_index"]]
     )
 
-    # =========================== #
-    # === Atom-level features === #
-    # =========================== #
+    # === Atom-level features ===
 
     # Make one-hot vector for atom types
     ref_element_one_hot = np.eye(128, dtype=np.float32)
@@ -310,6 +314,7 @@ def featurize_structure(
         ).transpose(1, 0, 2)
 
     # === Bond-level features ===
+
     # TODO: Remap token indices to cropped tokens
     # e.g., [0, 3, 4, 5, 8] -> [0, 1, 2, 3, 4]
     original_token_index = token_dict["org_token_index"]
@@ -332,6 +337,13 @@ def featurize_structure(
     token_dict.pop("is_standard")
     token_dict.pop("num_atoms")
 
+    # === placeholder for pretrained embeddings === #
+    pretrained_dict = {
+        "sequence_embedding": np.empty((num_tokens, 0), dtype=np.float32),
+        "structure_embedding": np.empty((num_tokens, 0), dtype=np.float32),
+        "pad_mask": token_dict["pad_mask"],
+    }
+
     # === Convert to tensors ===
     chain_layout = model_input.ChainLayout(
         **{k: torch.from_numpy(v) for k, v in chain_dict.items()}
@@ -349,6 +361,10 @@ def featurize_structure(
         **{k: torch.from_numpy(v) for k, v in bond_dict.items()}
     )
 
+    pretrained_layout = model_input.PretrainedLayout(
+        **{k: torch.from_numpy(v) for k, v in pretrained_dict.items()}
+    )
+
     # === Before returning, compute ligand frames inplace === #
     frame_utils.compute_ligand_frames_inplace(token_layout, atom_layout, chain_layout)
 
@@ -357,5 +373,153 @@ def featurize_structure(
         token=token_layout,
         atom=atom_layout,
         bond=bond_layout,
+        pretrained=pretrained_layout,
     )
     return folding_input
+
+
+def load_pretrained_embedding(
+    f_input: model_input.FoldingInput,
+    prefix: str,
+    embedding_dim: int,
+) -> torch.Tensor:
+    """Load pre-trained embedding from a file.
+
+    Parameters
+    ----------
+    f_input : model_input.FoldingInput
+        The model input containing chain and token layouts.
+    prefix : str
+        Prefix for the path to pre-computed embeddings.
+    embedding_dim : int
+        Dimension of the embedding.
+
+    Returns
+    -------
+    embedding : torch.Tensor
+        Loaded embedding tensor of shape [Ntoken, Nfeat].
+    """
+    entity_ids = f_input.chain.entity_id
+    cached_embeddings: dict[int, torch.Tensor | None] = {}
+
+    embedding_tensors: list[torch.Tensor] = []
+
+    # NOTE: the tokens are ordered by chains.
+    for cidx in range(f_input.num_chains):
+        entity_id = int(entity_ids[cidx].item())
+        asym_id = f_input.chain.asym_id[cidx].item()
+        chain_type = C.ChainType(int(f_input.chain.chain_type[cidx]))
+        if entity_id not in cached_embeddings:
+            # Load from file
+            filepath = f"{prefix}{entity_id}_{chain_type.name.lower()}.pt"
+            if not os.path.exists(filepath):
+                embedding_tensor = None
+            else:
+                embedding_tensor = torch.load(filepath, "cpu", weights_only=True)
+            cached_embeddings[entity_id] = embedding_tensor
+        else:
+            embedding_tensor = cached_embeddings[entity_id]
+
+        # Extract embeddings for the tokens in this chain
+        chain_token_mask = f_input.token.asym_id == asym_id
+        num_tokens_in_chain = int(chain_token_mask.sum())
+        if embedding_tensor is not None:
+            if chain_type in (C.ChainType.PROTEIN, C.ChainType.DNA, C.ChainType.RNA):
+                # For polymer chains, we load embeddings according to the residue indices.
+                # between the embedding and the token layout.
+                residue_indices = f_input.token.residue_index[chain_token_mask]
+                # NOTE: residue_index is starting from 1.
+                assert (residue_indices >= 1).all(), "Residue indices should be positive."
+                chain_embeddings = embedding_tensor[residue_indices - 1]
+            else:
+                # For ligand, we ensure the number of tokens match.
+                assert embedding_tensor.shape[0] == num_tokens_in_chain, (
+                    f"Number of tokens in chain ({num_tokens_in_chain}) does not match "
+                    f"the number of embeddings ({embedding_tensor.shape[0]}) for ligand."
+                )
+                chain_embeddings = embedding_tensor
+        else:
+            # If no embedding file found, use zero tensor.
+            chain_embeddings = torch.zeros(
+                (num_tokens_in_chain, embedding_dim), dtype=torch.float32
+            )
+        embedding_tensors.append(chain_embeddings)
+
+    return torch.cat(embedding_tensors, dim=0)
+
+
+def add_pretrained_embeddings(
+    f_input: model_input.FoldingInput,
+    seq_embedding_prefix: str | None = None,
+    struct_embedding_prefix: str | None = None,
+    seq_embedding_dim: int | None = None,
+    struct_embedding_dim: int | None = None,
+) -> model_input.FoldingInput:
+    """Add pre-trained features to the model input.
+
+    Parameters
+    ----------
+    f_input : model_input.FoldingInput
+        The model input to add pretrained features.
+    seq_embedding_prefix : str | None, optional
+        Prefix for the path to pre-computed sequence embeddings.
+        Example of the filename:
+            "embeddings/esm/6o/6oim/6oim_2_protein.pt"
+            where 2 is the entity index.
+        Example of the prefix:
+            "embeddings/esm/6o/6oim/6oim_"
+    struct_embedding_prefix : str | None, optional
+        Prefix for the path to pre-computed structure embeddings.
+        Example of the filename:
+            "embeddings/struct/10/10gs/10gs_1_protein.pt"
+            where 1 is the entity index.
+        Example of the prefix:
+            "embeddings/struct/10/10gs/10gs_"
+    seq_embedding_dim : int | None, optional
+        Dimension of the sequence embedding.
+    struct_embedding_dim : int | None, optional
+        Dimension of the structure embedding.
+
+    Returns
+    -------
+    f_input_upd: FoldingInput
+        The featurized model input with pretrained features added.
+    """
+    assert seq_embedding_prefix is not None
+    if seq_embedding_prefix is None and struct_embedding_prefix is None:
+        return f_input
+
+    pretrained_dict = {}
+    if seq_embedding_prefix is not None:
+        assert seq_embedding_dim is not None
+        seq_embedding = load_pretrained_embedding(
+            f_input, seq_embedding_prefix, seq_embedding_dim
+        )
+        pretrained_dict["sequence_embedding"] = seq_embedding
+    else:
+        pretrained_dict["sequence_embedding"] = f_input.pretrained.sequence_embedding
+
+    if struct_embedding_prefix is not None:
+        assert struct_embedding_dim is not None
+        struct_embedding = load_pretrained_embedding(
+            f_input, struct_embedding_prefix, struct_embedding_dim
+        )
+        pretrained_dict["structure_embedding"] = struct_embedding
+    else:
+        pretrained_dict["structure_embedding"] = f_input.pretrained.structure_embedding
+
+    pretrained_dict["pad_mask"] = f_input.pretrained.pad_mask
+
+    pretrained_layout = model_input.PretrainedLayout(
+        **{k: v for k, v in pretrained_dict.items()}
+    )
+
+    # Return updated FoldingInput
+    f_input_upd = model_input.FoldingInput(
+        chain=f_input.chain,
+        token=f_input.token,
+        atom=f_input.atom,
+        bond=f_input.bond,
+        pretrained=pretrained_layout,
+    )
+    return f_input_upd

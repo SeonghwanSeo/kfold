@@ -562,10 +562,10 @@ class PretrainedLayout(TensorLayout):
 
     Attributes
     ----------
-    seq_encoding: torch.Tensor (float32)
-        Pretrained sequence encoding of shape [L, c_seq_enc].
-    struct_encoding: torch.Tensor (float32)
-        Pretrained structure encoding of shape [L, c_struct_enc].
+    sequence_embedding: torch.Tensor (float32)
+        Pretrained sequence embedding of shape [L, c_seq_enc].
+    structure_embedding: torch.Tensor (float32)
+        Pretrained structure embedidng of shape [L, c_struct_enc].
     """
 
     # TODO (SeonghwanSeo): we may want to add raw input format for
@@ -577,8 +577,8 @@ class PretrainedLayout(TensorLayout):
     #   3. crop indices to map cropped tokens to original full sequence/structure
     #   4. We may have to introduce mini-batch dimension for memory efficiency.
 
-    sequence_encoding: torch.Tensor  # [L, c_seq_enc], float32
-    structure_encoding: torch.Tensor  # [L, c_struct_enc], float32
+    sequence_embedding: torch.Tensor  # [L, c_seq_enc], float32
+    structure_embedding: torch.Tensor  # [L, c_struct_enc], float32
     pad_mask: torch.Tensor  # [L,], bool
 
     @property
@@ -591,26 +591,26 @@ class PretrainedLayout(TensorLayout):
         return 1
 
     @property
-    def has_seq_encoding(self) -> bool:
-        """Whether the layout has sequence encoding."""
-        return self.sequence_encoding.shape[0] > 0
+    def has_sequence_embedding(self) -> bool:
+        """Whether the layout has sequence embedding."""
+        return self.sequence_embedding.shape[0] > 0
 
     @property
-    def has_struct_encoding(self) -> bool:
-        """Whether the layout has structure encoding."""
-        return self.structure_encoding.shape[0] > 0
+    def has_structure_embedding(self) -> bool:
+        """Whether the layout has structure embedding."""
+        return self.structure_embedding.shape[0] > 0
 
     def __post_init__(self):
         shape = self.layout_shape
         check_tensor(
-            self.sequence_encoding,
-            name="sequence_encoding",
+            self.sequence_embedding,
+            name="sequence_embedding",
             dtype=torch.float32,
             shape=(*shape, -1),
         )
         check_tensor(
-            self.structure_encoding,
-            name="structure_encoding",
+            self.structure_embedding,
+            name="structure_embedding",
             dtype=torch.float32,
             shape=(*shape, -1),
         )
@@ -627,8 +627,8 @@ class PretrainedLayout(TensorLayout):
         L = len(self)
 
         pad_values = {
-            "seq_encoding": 0.0,
-            "struct_encoding": 0.0,
+            "sequence_embedding": 0.0,
+            "structure_embedding": 0.0,
             "pad_mask": False,
         }
         fields = {}

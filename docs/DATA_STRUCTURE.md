@@ -182,7 +182,7 @@ token_index = token_layout.token_index  # Shape: (Ntoken,)
 | Boltz Field | K-Fold Field | Shape (Boltz vs K-Fold) | Description |
 | :--- | :--- | :--- | :--- |
 | `token_index` | *same* | `(Ntoken,)` | Index of tokens (`=torch.arange(len(tokens))`) |
-| `residue_index` | *same* | `(Ntoken,)` | Residue index for each token |
+| `residue_index` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
 | `asym_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
 | `entity_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
 | `sym_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |

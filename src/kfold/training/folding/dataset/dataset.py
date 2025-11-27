@@ -8,8 +8,6 @@ import torch
 from typing_extensions import override
 
 from kfold.data import featurize, metadata, model_input, structure
-from kfold.utils.boltz.process import tokenize_structure
-from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
@@ -30,12 +28,54 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     def __init__(
         self,
         records: list[metadata.Metadata],
-        safe_load: bool = True,
-        featurization_args: dict | None = None,
+        safe_load: bool,
+        featurization_args: dict | None,
+        pretrained_embedding_paths: dict | None,
     ) -> None:
         self.records: list[metadata.Metadata] = records
         self.safe_load: bool = safe_load
         self.featurization_args = featurization_args or {}
+
+        pretrained_embedding_paths = pretrained_embedding_paths or {}
+        known_keys = {
+            "seq_embedding_path",
+            "struct_embedding_path",
+            "seq_embedding_dim",
+            "struct_embedding_dim",
+        }
+        for key in pretrained_embedding_paths.keys():
+            if key not in known_keys:
+                raise ValueError(
+                    f"Unknown key '{key}' in pretrained_embedding_paths. "
+                    f"Known keys are: {known_keys}"
+                )
+        self.seq_embedding_path: str | None = pretrained_embedding_paths.get(
+            "seq_embedding_path"
+        )
+        self.struct_embedding_path: str | None = pretrained_embedding_paths.get(
+            "struct_embedding_path"
+        )
+        self.seq_embedding_dim: int | None = pretrained_embedding_paths.get(
+            "seq_embedding_dim"
+        )
+        self.struct_embedding_dim: int | None = pretrained_embedding_paths.get(
+            "struct_embedding_dim"
+        )
+
+        if self.seq_embedding_path is not None:
+            assert Path(self.seq_embedding_path).exists(), (
+                f"seq_embedding_path '{self.seq_embedding_path}' does not exist."
+            )
+            assert self.seq_embedding_dim is not None, (
+                "seq_embedding_dim must be provided when seq_embedding_path is set."
+            )
+        if self.struct_embedding_path is not None:
+            assert Path(self.struct_embedding_path).exists(), (
+                f"struct_embedding_path '{self.struct_embedding_path}' does not exist."
+            )
+            assert self.struct_embedding_dim is not None, (
+                "struct_embedding_dim must be provided when struct_embedding_path is set."
+            )
 
     def __len__(self) -> int:
         return len(self.records)
@@ -85,21 +125,51 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         **kwargs,
     ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given sample."""
+        record_id = record.id
+
         # Tokenization
         tokenized_structure = self.load_tokenized_structure(record)
         # Featurization
-        f_input = featurize.featurize_structure(
-            tokenized_structure, **self.featurization_args
-        )
+        f_input = self.featurize(tokenized_structure, record)
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
 
         symmetry = {}
         # TODO: add symmetry info
-        symmetry["id"] = record.id
+        symmetry["id"] = record_id
         symmetry["structure"] = tokenized_structure
 
         return f_input, symmetry
+
+    def featurize(
+        self, struct: structure.TokenizedStructure, record: metadata.Metadata
+    ) -> model_input.FoldingInput:
+        """Featurize the given tokenized structure."""
+        record_id = record.id
+
+        # Featurization
+        f_input = featurize.featurize_structure(struct, **self.featurization_args)
+
+        # Add pretrained embeddings if provided
+        if self.seq_embedding_path is not None:
+            seq_emb_prefix = f"{self.seq_embedding_path}/{record_id[:2]}/{record_id}_"
+        else:
+            seq_emb_prefix = None
+        if self.struct_embedding_path is not None:
+            struct_emb_prefix = (
+                f"{self.struct_embedding_path}/{record_id[:2]}/{record_id}_"
+            )
+        else:
+            struct_emb_prefix = None
+
+        f_input = featurize.add_pretrained_embeddings(
+            f_input,
+            seq_emb_prefix,
+            struct_emb_prefix,
+            self.seq_embedding_dim,
+            self.struct_embedding_dim,
+        )
+        return f_input
 
 
 class TrainingDataset(SafeLoadingDataset):
@@ -109,8 +179,9 @@ class TrainingDataset(SafeLoadingDataset):
         max_tokens: int,
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
-        safe_load: bool = True,
-        featurization_args: dict | None = None,
+        safe_load: bool,
+        featurization_args: dict | None,
+        pretrained_embedding_paths: dict | None,
     ) -> None:
         """
         Parameters
@@ -133,7 +204,9 @@ class TrainingDataset(SafeLoadingDataset):
         2. During data loading, samples are cropped to fit within `max_tokens`
            using the provided `cropper`.
         """
-        super().__init__(records, safe_load, featurization_args)
+        super().__init__(
+            records, safe_load, featurization_args, pretrained_embedding_paths
+        )
         self.max_tokens: int = max_tokens
         self.cropper: BaseCropper = cropper
         assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
@@ -198,9 +271,7 @@ class TrainingDataset(SafeLoadingDataset):
             )
 
         # Featurization
-        f_input = featurize.featurize_structure(
-            tokenized_structure, **self.featurization_args
-        )
+        f_input = self.featurize(tokenized_structure, record)
         # Pad the folding input to max_tokens for LocalAtomAttention.
         f_input = self.pad_input(f_input)
         return f_input, None
@@ -213,6 +284,7 @@ class ValidationDataset(SafeLoadingDataset):
         max_tokens: int | None,
         safe_load: bool = True,
         featurization_args: dict | None = None,
+        pretrained_embedding_paths: dict | None = None,
     ) -> None:
         """
         Parameters
@@ -223,7 +295,9 @@ class ValidationDataset(SafeLoadingDataset):
             Maximum number of tokens per sample. If None, padding is done to
             the nearest multiple of 64.
         """
-        super().__init__(records, safe_load, featurization_args)
+        super().__init__(
+            records, safe_load, featurization_args, pretrained_embedding_paths
+        )
         self.max_tokens: int | None = max_tokens
         if self.max_tokens is not None:
             assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
@@ -234,54 +308,6 @@ class ValidationDataset(SafeLoadingDataset):
             return f_input.pad_to_max_token(max_tokens=self.max_tokens)
         else:
             return f_input.pad_to_multiple_of(64)
-
-
-class BoltzDatabase:
-    structure_dir: Path
-
-    def load_from_boltz(self, record: metadata.Metadata) -> structure.TokenizedStructure:
-        """Load the tokenized structure from BoltzStructure."""
-        name = record.id
-        path = self.structure_dir / f"{name}.npz"
-        boltz_structure = BoltzStructure.load(path)
-        tokenized_structure = tokenize_structure(boltz_structure)
-        return tokenized_structure
-
-
-class BoltzTrainingDataset(TrainingDataset, BoltzDatabase):
-    def __init__(
-        self,
-        records: list[metadata.Metadata],
-        structure_dir: Path,
-        max_tokens: int,
-        cropper: BaseCropper,
-        sampler_config: BaseSampler.Config | None,
-    ) -> None:
-        TrainingDataset.__init__(self, records, max_tokens, cropper, sampler_config)
-        self.structure_dir: Path = structure_dir
-
-    def load_tokenized_structure(
-        self, record: metadata.Metadata
-    ) -> structure.TokenizedStructure:
-        """Load the tokenized structure from BoltzStructure."""
-        return self.load_from_boltz(record)
-
-
-class BoltzValidationDataset(ValidationDataset, BoltzDatabase):
-    def __init__(
-        self,
-        records: list[metadata.Metadata],
-        structure_dir: Path,
-        max_tokens: int | None = None,
-    ) -> None:
-        ValidationDataset.__init__(self, records, max_tokens)
-        self.structure_dir: Path = structure_dir
-
-    def load_tokenized_structure(
-        self, record: metadata.Metadata
-    ) -> structure.TokenizedStructure:
-        """Load the tokenized structure from BoltzStructure."""
-        return self.load_from_boltz(record)
 
 
 class LMDBDatabase:
@@ -335,8 +361,9 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
         max_tokens: int,
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
-        safe_load: bool = True,
-        featurization_args: dict | None = None,
+        safe_load: bool,
+        featurization_args: dict | None,
+        pretrained_embedding_paths: dict | None,
     ) -> None:
         TrainingDataset.__init__(
             self,
@@ -346,6 +373,7 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
             sampler_config,
             safe_load,
             featurization_args,
+            pretrained_embedding_paths,
         )
         self.lmdb_path: Path = lmdb_path
 
@@ -361,12 +389,18 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         self,
         records: list[metadata.Metadata],
         lmdb_path: Path,
-        max_tokens: int | None = None,
-        safe_load: bool = True,
-        featurization_args: dict | None = None,
+        max_tokens: int | None,
+        safe_load: bool,
+        featurization_args: dict | None,
+        pretrained_embedding_paths: dict | None,
     ) -> None:
         ValidationDataset.__init__(
-            self, records, max_tokens, safe_load, featurization_args
+            self,
+            records,
+            max_tokens,
+            safe_load,
+            featurization_args,
+            pretrained_embedding_paths,
         )
         self.lmdb_path: Path = lmdb_path
 
