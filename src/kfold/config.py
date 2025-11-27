@@ -7,7 +7,10 @@ from omegaconf import MISSING, DictConfig, OmegaConf
 from kfold.utils.registry import Registry
 
 
-def load_config(path: str | Path) -> DictConfig:
+def load_config(
+    path: str | Path,
+    override_args: list[str] | None = None,
+) -> DictConfig:
     """
     Load a configuration file from the given path with recursive _yaml_ inheritance.
 
@@ -18,6 +21,12 @@ def load_config(path: str | Path) -> DictConfig:
         DictConfig: The loaded configuration as a DictConfig object.
     """
     config: DictConfig = OmegaConf.load(path)
+
+    if override_args is not None:
+        # Override specific arguments in the config
+        overrides = OmegaConf.from_dotlist(override_args)
+        config = OmegaConf.merge(config, overrides)
+
     config = _resolve_yaml_inheritance(config, Path(path).parent)
     config = _resolve_registry_defaults(config)
     return config
