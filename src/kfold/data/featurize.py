@@ -412,7 +412,21 @@ def load_pretrained_embedding(
         if entity_id not in cached_embeddings:
             # Load from file
             filepath = f"{prefix}{entity_id}_{chain_type.name.lower()}.pt"
+            # TODO: In future, we may want to enforce the existence of embedding files
+            # for all chain types.
             if not os.path.exists(filepath):
+                # HACK: (SeonghwanSeo) Print warning only for protein chains, since other
+                # chain types are not prepared yet. In future, we may want to enforce the
+                # existence of embedding files for all chain types.
+                if chain_type is C.ChainType.PROTEIN:
+                    import warnings
+
+                    warnings.warn(
+                        "Precomputed Embedding file not found for protein chain: "
+                        f"{filepath}. Using zero tensor as placeholder.",
+                        UserWarning,
+                    )
+
                 embedding_tensor = None
             else:
                 embedding_tensor = torch.load(filepath, "cpu", weights_only=True)
@@ -485,7 +499,6 @@ def add_pretrained_embeddings(
     f_input_upd: FoldingInput
         The featurized model input with pretrained features added.
     """
-    assert seq_embedding_prefix is not None
     if seq_embedding_prefix is None and struct_embedding_prefix is None:
         return f_input
 

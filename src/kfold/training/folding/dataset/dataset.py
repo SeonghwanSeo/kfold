@@ -36,6 +36,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.safe_load: bool = safe_load
         self.featurization_args = featurization_args or {}
 
+        # Check validity and assign pretrained embedding paths and dimensions
         pretrained_embedding_paths = pretrained_embedding_paths or {}
         known_keys = {
             "seq_embedding_path",
@@ -152,12 +153,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # Add pretrained embeddings if provided
         if self.seq_embedding_path is not None:
-            seq_emb_prefix = f"{self.seq_embedding_path}/{record_id[:2]}/{record_id}_"
+            seq_emb_prefix = (
+                f"{self.seq_embedding_path}/{record_id[:2]}/{record_id}/{record_id}_"
+            )
         else:
             seq_emb_prefix = None
         if self.struct_embedding_path is not None:
             struct_emb_prefix = (
-                f"{self.struct_embedding_path}/{record_id[:2]}/{record_id}_"
+                f"{self.struct_embedding_path}/{record_id[:2]}/{record_id}/{record_id}_"
             )
         else:
             struct_emb_prefix = None
