@@ -17,6 +17,7 @@ This document describes the data structure used in **K-Fold** and compares it wi
     - [Atom features](#atom-features)
     - [Token features](#token-features)
     - [Bond features](#bond-features)
+    - [Pretrained embeddings](#pretrained-embeddings)
 
 ---
 
@@ -46,7 +47,7 @@ K-Fold utilizes a data processing framework and data structures inspired by the 
 The data structure used in K-Fold (`kfold.data.structure.TokenizedStructure`) is largely inspired by the Boltz implementation (`boltz.data.types.Structure`).
 The main difference lies in the representation format: K-Fold uses Python dataclasses with NumPy arrays, which are easier to interpret and manage than NumPy void arrays.
 
-> **NOTE:** In this section, we only show the common features between Boltz and K-Fold. To see the complete list of features and their shapes in K-Fold, please refer to [`src/kfold/data/structure.py`](../src/kfold/data/structure.py).
+> **NOTE:** In this section, we only show the common features between Boltz and K-Fold. To see the complete list of features and their shapes in K-Fold, please refer to [`src/kfold/data/structure.py`](./src/kfold/data/structure.py).
 
 ```python
 from kfold.data import structure
@@ -181,7 +182,7 @@ token_index = token_layout.token_index  # Shape: (Ntoken,)
 | Boltz Field | K-Fold Field | Shape (Boltz vs K-Fold) | Description |
 | :--- | :--- | :--- | :--- |
 | `token_index` | *same* | `(Ntoken,)` | Index of tokens (`=torch.arange(len(tokens))`) |
-| `residue_index` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
+| `residue_index` | *same* | `(Ntoken,)` | Residue index for each token |
 | `asym_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
 | `entity_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
 | `sym_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
@@ -211,6 +212,7 @@ token_index = token_layout.token_index  # Shape: (Ntoken,)
 | `frames_idx` | `frames_index` | `(Ntoken, 3)` | Frame defining atom index, e.g., protein: (N, Cα, C) |
 | `frame_resolved_mask` | `frames_mask` | `(Ntoken,)` | Whether all frame atoms are resolved |
 
+
 ### Bond features
 
 You can get bond features from `kfold.data.model_input.BondLayout`:
@@ -236,14 +238,17 @@ token_index = bond_layout.token_index  # Shape: (Ntoken,)
 
 > $^1$ **Note:** Used to compute bond-loss in AlphaFold3, while Boltz does not use this loss.
 
-```
 
-### Changes Made:
-1.  **Structure:** Added a horizontal rule and unified the Table of Contents indentation.
-2.  **Clarity:** Changed "difficult to aware of" to "difficult to visualize" for better flow.
-3.  **Tables:**
-    * Renamed columns to **Boltz Field** and **K-Fold Field** for clarity.
-    * Combined the "Shape" columns where appropriate using the `vs` notation to match the row content.
-    * Moved complex footnotes (like `*1`, `*2`) out of the table body and into blockquotes below the tables for cleaner rendering.
-4.  **Emphasis:** Bolded **TODO** items so they are easily skimmable.
-5.  **Code:** Added comments to the Python blocks indicating shapes for immediate context.
+### Pretrained embeddings
+
+K-Fold uses residue-level embeddings from pre-trained language models as additional input features. To facilitate this, we provide a separate data structure `kfold.data.model_input.PretrainedEmbedding`:
+
+```python
+from kfold.data.model_input import PretrainedEmbedding, FoldingInput
+model_input: FoldingInput = ...
+pretrained_embedding: PretrainedEmbedding = model_input.pretrained_embedding
+
+seq_embedding = pretrained_embedding.sequence_embedding  # Shape: (Ntoken, D_seq)
+struct_embedding = pretrained_embedding.structure_embedding  # Shape: (Ntoken, D_struct)
+# ...
+```
