@@ -1,5 +1,4 @@
-# Based on af3-mini.yaml, but with KFoldBridgeDiffusion structure module
-# Cannot inherit from af3.yaml because structure_module._yaml_ is in struct mode
+# === Model Configuration === #
 _registry_: "main_module"
 _class_: Boltz1Pretrained
 
