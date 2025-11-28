@@ -565,7 +565,7 @@ class PretrainedLayout(TensorLayout):
     sequence_embedding: torch.Tensor (float32)
         Pretrained sequence embedding of shape [L, c_seq_enc].
     structure_embedding: torch.Tensor (float32)
-        Pretrained structure embedidng of shape [L, c_struct_enc].
+        Pretrained structure embedding of shape [L, c_struct_enc].
     """
 
     # TODO (SeonghwanSeo): we may want to add raw input format for
@@ -593,12 +593,12 @@ class PretrainedLayout(TensorLayout):
     @property
     def has_sequence_embedding(self) -> bool:
         """Whether the layout has sequence embedding."""
-        return self.sequence_embedding.shape[0] > 0
+        return self.sequence_embedding.shape[-1] > 0
 
     @property
     def has_structure_embedding(self) -> bool:
         """Whether the layout has structure embedding."""
-        return self.structure_embedding.shape[0] > 0
+        return self.structure_embedding.shape[-1] > 0
 
     def __post_init__(self):
         shape = self.layout_shape

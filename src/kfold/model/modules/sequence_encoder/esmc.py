@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from functools import lru_cache
 
 import torch
@@ -140,7 +139,7 @@ class ESMC(BaseSequenceEncoder):
         return x, None
 
     @staticmethod
-    @lru_cache()
+    @lru_cache
     def _get_token_to_id() -> dict[str, int]:
         # fmt: off
         SEQUENCE_VOCAB = [
@@ -172,6 +171,8 @@ class ESMC(BaseSequenceEncoder):
         ----------
         sequences : list[str]
             The sequences to encode.
+        add_special_tokens : bool, optional
+            Whether to add special tokens (<cls> and <eos>) to the sequences.
         include_special_tokens : bool, optional
             Whether to include special tokens in the output. Default is False.
 

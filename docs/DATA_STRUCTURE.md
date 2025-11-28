@@ -241,14 +241,14 @@ token_index = bond_layout.token_index  # Shape: (Ntoken,)
 
 ### Pretrained embeddings
 
-K-Fold uses residue-level embeddings from pre-trained language models as additional input features. To facilitate this, we provide a separate data structure `kfold.data.model_input.PretrainedEmbedding`:
+K-Fold uses residue-level embeddings from pre-trained language models as additional input features. To facilitate this, we provide a separate data structure `kfold.data.model_input.PretrainedLayout`:
 
 ```python
-from kfold.data.model_input import PretrainedEmbedding, FoldingInput
+from kfold.data.model_input import PretrainedLayout, FoldingInput
 model_input: FoldingInput = ...
-pretrained_embedding: PretrainedEmbedding = model_input.pretrained_embedding
+pretrained: PretrainedLayout = model_input.pretrained
 
-seq_embedding = pretrained_embedding.sequence_embedding  # Shape: (Ntoken, D_seq)
-struct_embedding = pretrained_embedding.structure_embedding  # Shape: (Ntoken, D_struct)
+seq_embedding = pretrained.sequence_embedding  # Shape: (Ntoken, D_seq)
+struct_embedding = pretrained.structure_embedding  # Shape: (Ntoken, D_struct)
 # ...
 ```

@@ -440,7 +440,6 @@ def load_pretrained_embedding(
         if embedding_tensor is not None:
             if chain_type in (C.ChainType.PROTEIN, C.ChainType.DNA, C.ChainType.RNA):
                 # For polymer chains, we load embeddings according to the residue indices.
-                # between the embedding and the token layout.
                 residue_indices = f_input.token.residue_index[chain_token_mask]
                 # NOTE: residue_index is starting from 1.
                 assert (residue_indices >= 1).all(), "Residue indices should be positive."
