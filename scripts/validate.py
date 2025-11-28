@@ -9,7 +9,7 @@ from kfold.training.folding.training_module import KFoldTrainingModule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Boltzmann Generator model.")
+    parser = argparse.ArgumentParser(description="Validate a Co-Folding model.")
     parser.add_argument(
         "--config",
         type=str,

@@ -6,7 +6,7 @@ out_dir: ./experiments/
 
 # Random Seed
 seed: 42
-synchronize_seed: false # Use synchronized seed across DDP processes
+synchronize_seed: true # Use the same seed across DDP processes
 
 data:
   _registry_: "datamodule"
@@ -17,6 +17,16 @@ data:
   manifest_path: <MANIFEST_PATH_PLACEHOLDER>
   split_path: ./assets/splits/boltz1
   overfit_val: false
+
+  pretrained_embedding_paths:
+    # Pre-trained feature embedding paths
+    # The embedding files should be organized as follows:
+    #   Protein chain of 6oim with entity id=1: 6o/6oim/6oim_1_protein.pt
+    seq_embedding_path: null
+    struct_embedding_path: null
+    # TODO: remove these params if all chains have precomputed embeddings
+    seq_embedding_dim: null
+    struct_embedding_dim: null
 
   # DataLoader
   train_batch_size: 1

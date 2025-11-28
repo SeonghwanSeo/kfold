@@ -75,6 +75,7 @@ class DiffusionModule(nn.Module):
         channel_z: int = 128,
         channel_atom: int = 128,
         channel_atompair: int = 16,
+        channel_coords: int = 3,
         atoms_per_window_queries: int = 32,
         atoms_per_window_keys: int = 128,
         dim_fourier: int = 256,
@@ -99,6 +100,8 @@ class DiffusionModule(nn.Module):
             The atom single representation dimension.
         channel_atompair : int
             The atom pair representation dimension.
+        channel_coords : int
+            The atom coordinates dimension, by default 3.
         atoms_per_window_queries : int, optional
             The number of atoms per window for queries, by default 32.
         atoms_per_window_keys : int, optional
@@ -146,6 +149,7 @@ class DiffusionModule(nn.Module):
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             channel_token=channel_token,
+            channel_coords=channel_coords,
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
             atoms_per_window_queries=atoms_per_window_queries,

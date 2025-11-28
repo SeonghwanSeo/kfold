@@ -12,7 +12,7 @@ from kfold.training.folding.training_module import KFoldTrainingModule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Boltzmann Generator model.")
+    parser = argparse.ArgumentParser(description="Train a Co-Folding model.")
     parser.add_argument(
         "--config",
         type=str,
@@ -82,7 +82,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_config(args) -> DictConfig:
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, override_args=args.override)
 
     # Override some config options with command line args
     if args.out_dir is not None:
@@ -119,23 +119,6 @@ def parse_config(args) -> DictConfig:
             # Skip validation steps, use when validation process is not yet ready
             cfg.train.trainer.num_sanity_val_steps = 0
             cfg.train.trainer.limit_val_batches = 0
-
-    # Override configuration options from command line
-    if args.override is not None:
-        for override_arg in args.override:
-            key, value = override_arg.split("=", 1)
-            # Navigate through nested attributes
-            keys = key.split(".")
-            d = cfg
-            for k in keys[:-1]:
-                d = getattr(d, k)
-            # Convert value to appropriate type
-            attr_type = type(getattr(d, keys[-1]))
-            if attr_type is bool:
-                value = value.lower() == "true"
-            else:
-                value = attr_type(value)
-            setattr(d, keys[-1], value)
 
     return cfg
 
@@ -229,12 +212,11 @@ def train(args) -> None:
     # Cons: it makes the training less reproducible.
     if cfg.train.synchronize_seed:
         # Same seed for all ranks
-        pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
+        seed = cfg.train.seed
     else:
         # Different seed for each rank
-        pl.seed_everything(
-            cfg.train.seed + trainer.global_rank, workers=True, verbose=False
-        )
+        seed = cfg.train.seed + trainer.global_rank
+    pl.seed_everything(seed, workers=True, verbose=False)
 
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)

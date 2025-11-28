@@ -35,6 +35,9 @@ class Linear(nn.Linear):
         elif init == "final":
             # weight: zero
             initialize.final_init_(self.weight)
+        elif init == "zero":
+            # weight: zero
+            initialize.zero_init_(self.weight)
         else:
             raise ValueError(f"Unknown initialization method: {init}")
 

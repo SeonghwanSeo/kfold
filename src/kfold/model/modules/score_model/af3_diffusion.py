@@ -27,6 +27,8 @@ class AF3DiffusionModule(BaseScoreModel):
             The atom single representation dimension.
         channel_atompair : int
             The atom pair representation dimension.
+        channel_coords : int
+            The coordinate dimension (default: 3).
         atoms_per_window_queries : int, optional
             The number of atoms per window for queries, by default 32.
         atoms_per_window_keys : int, optional
@@ -55,6 +57,7 @@ class AF3DiffusionModule(BaseScoreModel):
         channel_z: int = 128
         channel_atom: int = 128
         channel_atompair: int = 16
+        channel_coords: int = 3
         atoms_per_window_queries: int = 32
         atoms_per_window_keys: int = 128
         dim_fourier: int = 256
@@ -75,6 +78,7 @@ class AF3DiffusionModule(BaseScoreModel):
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
+            channel_coords=cfg.channel_coords,
             atoms_per_window_queries=cfg.atoms_per_window_queries,
             atoms_per_window_keys=cfg.atoms_per_window_keys,
             dim_fourier=cfg.dim_fourier,

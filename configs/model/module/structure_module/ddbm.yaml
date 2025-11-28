@@ -2,16 +2,17 @@ _registry_: "structure_module"
 _class_: "KFoldBridgeDiffusion"
 num_steps: 200
 sigma_min: 0.0004
-sigma_max: 160.0
+sigma_max: 16.0
 sigma_data: 16.0 # holo structures
-sigma_data_end: 16.0 # apo structures
-cov_xy: 128.0 # sigma_data * sigma_data_end / 2
+sigma_data_end: 12.0 # apo structures
+cov_xy: 96.0 # sigma_data * sigma_data_end / 2
+w: 1.0
+churn_step_ratio: 0.5 # 0 for full SDE, 1 for full ODE
 rho: 7
 P_mean: -1.2
 P_std: 1.5
 noise_scale: 1.003
 step_scale: 1.5
-churn_step_ratio: 0.33
-guidance_weight: 1.0
 coordinate_augmentation: True
 synchronize_sigmas: False
+normalize_data_end: False

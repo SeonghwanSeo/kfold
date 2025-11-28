@@ -1,7 +1,12 @@
 model:
-  _yaml_: "model/af3-tiny.yaml"
+  _yaml_: "model/af3.yaml"
   trunk:
     use_cuequiv_kernels: true
+    num_blocks: 8
+  score_model:
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 8
+    atom_decoder_blocks: 1
 
 train:
   _yaml_: "train/structure_only.yaml"

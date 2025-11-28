@@ -1,138 +1,58 @@
 import time
-import urllib.request
-from pathlib import Path
+import warnings
 
 import torch
 from omegaconf import DictConfig
 
 import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
-from kfold.model.modules.distogram_head.boltz1 import Boltz1DistogramHead
-from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedder
-from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk
 from kfold.utils.registry import MAIN_MODULE, Registry
-
-from .base import BaseFoldingModel
 
 
 @MAIN_MODULE.register()
-class Boltz1Pretrained(BaseFoldingModel):
-    input_embedder: Boltz1InputEmbedder  # type: ignore
-    trunk: Boltz1PairformerTrunk  # type: ignore
-    distogram_head: Boltz1DistogramHead  # type: ignore
-
+class BaseFoldingModel(torch.nn.Module):
     def __init__(self, global_config: DictConfig):
-        super().__init__(global_config)
+        super().__init__()
         self.config = global_config
+
+        # Initialize sub-modules here using the config
         model_config = global_config.model
 
-        # === Boltz-1 pretrained modules === #
-        assert isinstance(self.input_embedder, Boltz1InputEmbedder)
-        assert isinstance(self.trunk, Boltz1PairformerTrunk)
-        assert isinstance(self.distogram_head, Boltz1DistogramHead)
+        self.input_embedder: submodules.input_embedder.BaseInputEmbedder = (
+            Registry.instantiate(model_config.input_embedder)
+        )
 
-        # === For custom diffusion structure module === #
+        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(model_config.trunk)
+
         self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
             model_config.score_model
         )
+
+        # NOTE: structure module is not a torch.nn.Module
+        # This handles diffusion sampling as well
         self.structure_module: submodules.structure_module.BaseStructureModule = (
             Registry.instantiate(
                 model_config.structure_module, score_model=self.score_model
             )
         )
 
-        # Load Boltz-1 pretrained weights
-        self.load_boltz_weights()
-
-        # NOTE: additional projection layers for compatibility with KFold
-        self.proj_s_inputs = None
-        need_projection: bool = model_config.get("proj_s_inputs", False)
-        if need_projection:
-            c_input_boltz = 384 + 33 * 2 + 1 + 4  # 459
-            self.proj_s_inputs = torch.nn.Linear(
-                c_input_boltz,
-                model_config.score_model.channel_s,
-                bias=False,
-            )
-
-    def load_boltz_weights(self):
-        # cache_dir = Path("/cache/wykim_lab/boltz1_weights")
-        cache_dir = Path("/mnt/parallel_storage/wykim_lab/icl_swkim/kfold")
-
-        model_path = cache_dir / "boltz1_conf.ckpt"
-        state_dict_path = cache_dir / "boltz1_state_dict.ckpt"
-
-        MODEL_URL = (
-            "https://huggingface.co/boltz-community/boltz-1/resolve/main/boltz1_conf.ckpt"
+        # Heads
+        self.distogram_head: submodules.distogram_head.BaseDistogramHead = (
+            Registry.instantiate(model_config.distogram_head)
         )
-        # Download model
-        if not state_dict_path.exists():
-            print("Downloading Boltz-1 weights...")
-            model_path.parent.mkdir(parents=True, exist_ok=True)
-            urllib.request.urlretrieve(MODEL_URL, str(model_path))  # noqa: S310
 
-            print("Extracting Boltz-1 model weights...")
-            # Load weights
-            state_dict = torch.load(model_path, map_location="cpu", weights_only=False)[
-                "state_dict"
-            ]
-            # Save state dict
-            torch.save(state_dict, state_dict_path)
-        else:
-            state_dict = torch.load(state_dict_path, map_location="cpu")
+        # self.confidence_head: submodules.confidence_head.BaseConfidenceHead = (
+        #     Registry.instantiate(model_config.confidence_head)
+        # )
 
-        input_embedder_state_dict = {
-            k: v
-            for k, v in state_dict.items()
-            if k.startswith(
-                (
-                    "input_embedder",
-                    "s_init",
-                    "z_init_1",
-                    "z_init_2",
-                    "rel_pos",
-                    "token_bonds",
-                )
-            )
-        }
-        self.input_embedder.load_state_dict(input_embedder_state_dict)
-        for k in list(input_embedder_state_dict.keys()):
-            state_dict.pop(k)
-
-        trunk_state_dict = {
-            k: v
-            for k, v in state_dict.items()
-            if k.startswith(
-                (
-                    "pairformer_module",
-                    "s_norm",
-                    "z_norm",
-                    "s_recycle",
-                    "z_recycle",
-                    "msa_module",
-                )
-            )
-        }
-        self.trunk.load_state_dict(trunk_state_dict, strict=True)
-        for k in list(trunk_state_dict.keys()):
-            state_dict.pop(k)
-
-        distogram_module_state_dict = {
-            k.replace("distogram_module.", ""): v
-            for k, v in state_dict.items()
-            if k.startswith("distogram_module")
-        }
-        self.distogram_head.load_state_dict(distogram_module_state_dict, strict=True)
-        for k in list(distogram_module_state_dict.keys()):
-            state_dict.pop("distogram_module." + k)
-
-        # Remove unused keys
-        for k in list(state_dict.keys()):
-            if k.startswith(("structure_module", "confidence_module")):
-                state_dict.pop(k)
-
-        # Check that all keys have been used
-        assert len(state_dict) == 0, f"Unused keys in state dict: {state_dict.keys()}"
+        # Compile submodules
+        # NOTE: (SeonghwanSeo) This is very slow... Right now, just disable them.
+        if getattr(model_config, "compile_trunk", False):
+            self.trunk.compile(getattr(model_config, "compile_trunk", False))
+        if getattr(model_config, "compile_score_model", False):
+            self.score_model.compile(getattr(model_config, "compile_score_model", False))
+        # if getattr(model_config, "compile_confidence_head", False):
+        #     self.confidence_head.compile()
 
     def forward(
         self,
@@ -145,9 +65,64 @@ class Boltz1Pretrained(BaseFoldingModel):
         train_structure_module: bool = True,
         train_confidence_module: bool = True,
     ) -> dict[str, dict[str, torch.Tensor]]:
-        """Override forward pass of Boltz1 pretrained model for
-        compatibility with KFold structure module input dimensions"""
+        """Forward pass of KFold for model training.
+        See Figure 2c in the main article of AlphaFold3.
 
+        Parameters
+        ----------
+        f_input : FoldingInput
+            Input data for folding model. Preferred to be batched.
+        num_cycles : int
+            Number of recycling cycles in trunk.
+
+        # For diffusion sampling:
+        num_steps : int
+            Number of diffusion steps to sample structures:
+            Used for validation and confidence module training.
+        num_diffusion_samples : int
+            Number of diffusion samples to sample structures for
+            confidence module training.
+
+        # For structure module training:
+        diffusion_batch_size : int
+            Batch size for diffusion training step.
+
+        sample_structures : bool, optional
+            Whether to sample structures for confidence module training,
+        train_structure_module : bool, optional
+            Whether to train structure module, by default True
+        train_confidence_module : bool, optional
+            Whether to train confidence module, by default True
+
+        Returns
+        -------
+        model_out : dict[str, torch.Tensor]
+
+            # When sample_structures is True:
+            - sample:
+                - coordinates: [B, N_samples, Ltoken, 3]
+                    Sampled atom coordinates
+
+            # For structure module training (distogram, diffusion)
+            - distogram:
+                - logits: [B, Ltoken, Ltoken, Dd]
+                    Distogram logits
+            - diffusion:
+                - loss_weights: [B, N_noise]
+                    Weights for diffusion noise scale
+                - prior_atom_coords: [B, N_noise, Latom, 3]
+                    Prior atom coordinates
+                - noised_atom_coords: [B, N_noise, Latom, 3]
+                    Noised atom coordinates
+                - denoised_atom_coords: [B, N_noise, Latom, 3]
+                    Denoised atom coordinates
+                - true_atom_coords: [B, N_noise, Latom, 3]
+                    Ground truth atom coordinates
+
+            # For confidence module training
+            - confidence:
+                # TODO
+        """
         # Ensure batched input
         f_input = self.ensure_batched_input(f_input, do_warning=True)
 
@@ -176,12 +151,6 @@ class Boltz1Pretrained(BaseFoldingModel):
             f_input,
             num_cycles,
         )
-
-        # ====================================================== #
-        # NOTE: Only the difference is here: Project single features to match
-        if self.proj_s_inputs is not None:
-            s_inputs = self.proj_s_inputs(s_inputs)
-        # ====================================================== #
 
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.
@@ -288,12 +257,6 @@ class Boltz1Pretrained(BaseFoldingModel):
         et = time.time()
         time_logs["distogram_head"] = et - st
 
-        # ====================================================== #
-        # NOTE: Only the difference is here: Project single features to match
-        if self.proj_s_inputs is not None:
-            s_inputs = self.proj_s_inputs(s_inputs)
-        # ====================================================== #
-
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
         st = time.time()
@@ -318,11 +281,35 @@ class Boltz1Pretrained(BaseFoldingModel):
                 dict_out[key] = dict_out[key].squeeze(0)
         return dict_out, time_logs
 
-    def freeze_modules(self):
-        """Freeze Boltz-1 pretrained modules."""
-        for param in self.input_embedder.parameters():
-            param.requires_grad_(False)
-        for param in self.trunk.parameters():
-            param.requires_grad_(False)
-        for param in self.distogram_head.parameters():
-            param.requires_grad_(False)
+    # === Helper functions === #
+    def ensure_batched_input(
+        self,
+        f_input: FoldingInput,
+        do_warning: bool = False,
+    ) -> FoldingInput:
+        """Ensure the input is batched. If not, add batch dimension of size 1.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            Input data for folding model.
+
+        Returns
+        -------
+        f_input_batched : FoldingInput
+            Batched input data for folding model.
+        """
+        if not f_input.is_batched:
+            # If single example is given, make it batched.
+            # However, this process copies tensors.
+            if do_warning:
+                warnings.warn(
+                    "Input is not batched. Adding batch dimension of size 1."
+                    " This copies tensors and may slow down the process."
+                    " Please batch your inputs before moving to device:\n"
+                    "\tf_input = FoldingInput.from_list([f_input])",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            f_input = FoldingInput.from_list([f_input])
+        return f_input

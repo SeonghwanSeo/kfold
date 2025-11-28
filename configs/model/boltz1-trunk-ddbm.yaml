@@ -1,7 +1,11 @@
-# Based on af3-mini.yaml, but with KFoldBridgeDiffusion structure module
-# Cannot inherit from af3.yaml because structure_module._yaml_ is in struct mode
+# === Model Configuration === #
 _registry_: "main_module"
 _class_: Boltz1Pretrained
+
+# Whether to project the score model inputs.
+# This option should be true when we want to use AF3DiffusionModule as score model
+# NOTE: The Boltz1 use different input dimensions to AF3 algorithm.
+proj_s_inputs: true
 
 input_embedder:
   _yaml_: "module/input_embedder/boltz1.yaml"
@@ -14,6 +18,7 @@ structure_module:
 
 score_model:
   _yaml_: "module/score_model/af3.yaml"
+  channel_coords: 6
 
 distogram_head:
   _yaml_: "module/distogram_head/boltz1.yaml"
