@@ -38,7 +38,7 @@ def print_config(config: DictConfig) -> None:
 
 
 def save_config(config: DictConfig, save_path: str | Path) -> None:
-    """Print the configuration in a human-readable format."""
+    """Save the configuration to a YAML file."""
     OmegaConf.save(config, save_path)
 
 

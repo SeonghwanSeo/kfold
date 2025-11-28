@@ -147,7 +147,7 @@ def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
         def _save_config() -> None:
             config_out = Path(wandb_logger.experiment.dir) / "config.yaml"
             save_config(cfg, config_out)
-            wandb_logger.experiment.save(config_out.name)
+            wandb_logger.experiment.save("config.yaml")
 
         _save_config()
 
