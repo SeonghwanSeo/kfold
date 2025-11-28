@@ -8,7 +8,7 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: base-512
+  name: esmc-edm-base
   out_dir: ./experiments/
   seed: 42
 

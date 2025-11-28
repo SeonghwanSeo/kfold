@@ -47,6 +47,9 @@ export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 cd $KFOLD_DATA_DIR
 cp -r --sparse always /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251120.lmdb ./
 cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/ ./
+# (optional) ESM embeddings
+cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/esm_embeddings.tar ./
+tar -xvf esm_embeddings.tar
 chmod 775 -R .
 ```
 

@@ -18,7 +18,7 @@ train:
     precision: 32
     max_epochs: 100
     limit_train_batches: 1000
-    limit_val_batches: 0 # No validation for now.
+    limit_val_batches: null # set 0 to skip validation
     accumulate_grad_batches: 16 # 256 // batch_size // num_gpus
 
   training:
@@ -36,6 +36,9 @@ train:
     manifest_path: /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/pdbbind_pl_manifest.pkl
     split_path: ./assets/splits/equibind/
     num_workers: 4 # set to batch_size * 2.
+
+    featurization_args:
+      synchronize_ref_pos_augmentation: true
 
   wandb:
     use: false

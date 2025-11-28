@@ -102,8 +102,8 @@ The following items require future implementation.
 1. **Sequence Layout**: To be added for integrating with pre-trained language models.
 2. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
 3. **Symmetry**: Addition of symmetry information is required for accurate **LDDT** calculation during the validation process.
-4. **Pocket Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
-    - NOTE: Instead pocket conditioning, generalize this to multi-modal interface conditioning.
+4. **Interface Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
+    - NOTE: Generalize this to multi-modal interface conditioning.
 
 ### Structure Module
 
