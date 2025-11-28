@@ -74,22 +74,6 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             The noise scale for stochastic sampling, by default 1.003.
         step_scale : float, optional
             The step scale for ODE integration, by default 1.5.
-        churn_step_ratio : float, optional
-            Churn step ratio for adding controlled stochasticity, by default 0.33.
-            This parameter controls the strength of the stochastic Euler-Maruyama step
-            inserted before each deterministic Heun step. Higher values add more noise
-            for exploration. Set to 0.0 for pure deterministic ODE sampling.
-            Recommended value: 0.33 (from DDBM paper).
-        guidance_weight : float, optional
-            Guidance weight for fidelity to target structure, by default 1.0.
-            Higher values increase fidelity to the conditioning (holo) structure.
-
-            THEORETICAL NOTE: This corresponds to parameter 'w' in DDBM paper Eq. 13:
-            dxt = [f(xt,t) - g^2(t)(0.5s(xt,t,y,T) - wh(xt,t,y,T))]dt
-            where h is Doob's h-transform. Setting w≠1 modulates the "strength" of drift
-            adjustment towards the target endpoint, allowing exploration of a wider class
-            of marginal densities. However, w≠1 changes the marginal distribution of the
-            bridge process, so use with caution. For faithful bridge sampling, use w=1.0.
         coordinate_augmentation : bool, optional
             Whether to use coordinate augmentation, by default True.
             This is important for SE(3)-equivariant biomolecular modeling.
@@ -106,12 +90,13 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         rho: int = 7
         P_mean: float = -1.2
         P_std: float = 1.5
+        w: float = 1.0
+        churn_step_ratio: float = 0.0  # 0 for full SDE, 1 for full ODE
         noise_scale: float = 1.003
         step_scale: float = 1.5
-        churn_step_ratio: float = 0.33
-        guidance_weight: float = 1.0
         coordinate_augmentation: bool = True
         synchronize_sigmas: bool = False
+        normalize_data_end: bool = False
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the bridge diffusion module."""
@@ -124,13 +109,14 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         self.rho: int = cfg.rho
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
+        self.w: float = cfg.w
+        self.churn_step_ratio: float = cfg.churn_step_ratio
         self.num_steps: int = cfg.num_steps
         self.noise_scale: float = cfg.noise_scale
         self.step_scale: float = cfg.step_scale
-        self.churn_step_ratio: float = cfg.churn_step_ratio
-        self.guidance_weight: float = cfg.guidance_weight
         self.coordinate_augmentation: bool = cfg.coordinate_augmentation
         self.synchronize_sigmas: bool = cfg.synchronize_sigmas
+        self.normalize_data_end: bool = cfg.normalize_data_end
 
         if self.coordinate_augmentation:
             self.random_augmentation = CenterRandomAugmentation(
@@ -249,6 +235,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         model_cache=None,
+        prior_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model with bridge preconditioning.
 
@@ -271,6 +258,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
             Trunk pairwise embeddings. Shape (B, L, L, c_z).
         model_cache : optional
             Model cache for efficiency.
+        prior_coords : optional
+            Model input of x_T (apo structure) as in DDBM. Shape (B, N, L, 3)
 
         Returns
         -------
@@ -290,8 +279,22 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         c_noise = self.c_noise(t_hat)  # [B, N]
 
         # Call the score model with correct interface
+        # NOTE: As in DDBM, we directly concat r_noisy and x_T,
+        # However, in future we should consider the scale of each data.
+        # DDBM used [-1,1] ranged data for both r_noisy and x_T,
+        # but we use std as 1 for r_noisy and sigma_data_end for x_T
+        assert prior_coords is not None and torch.is_tensor(prior_coords), (
+            "In DDBM, prior_coords should be Tensor"
+        )
+        assert prior_coords.shape == r_noisy.shape, (
+            "In DDBM, the shapes of prior_coords and r_noisy should be the same"
+        )
+        if self.normalize_data_end:
+            prior_coords = prior_coords / self.sigma_data_end
+        r_noisy = torch.cat([r_noisy, prior_coords], dim=-1)
+        assert r_noisy.shape[-1] == 6, "In DDBM, the last dimension should be 6"
         r_update = self.score_model(
-            r_noisy=r_noisy,  # [B, N, La, 3]
+            r_noisy=r_noisy,  # [B, N, La, 6]
             c_noise=c_noise,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
@@ -321,6 +324,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         # See Section 3.7 of AlphaFold3 paper.
         # t_hat = sigma_data * exp(-1.2 + 1.5 * N(0, 1)),
         # where -1.2 is P_mean and 1.5 is P_std.
+        # all the same with af3_edm, except for the maximum sigma value after
+        # c_noise scaling is sigma_max, which is 16.0 by default
         def _sample(*shape: int) -> torch.Tensor:
             return (
                 torch.exp(
@@ -526,11 +531,134 @@ class KFoldBridgeDiffusion(BaseStructureModule):
 
         return noised_coords
 
-    def sample_structure(self, *args, **kwargs) -> dict[str, torch.Tensor]:
+    # === For sampling === #
+    def sample_structure(
+        self,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        s_trunk: torch.Tensor,
+        z_trunk: torch.Tensor,
+        num_steps: int | None = None,
+        num_diffusion_samples: int = 1,
+        max_parallel_samples: int | None = None,
+        return_traj: bool = False,
+    ) -> dict[str, torch.Tensor]:
         """Sample structures via diffusion sampling.
-        See Section 3.7: Algorithm 18 of AlphaFold3 paper.
+        Modified DDBM inference; using Euler sampler, not Heun sampler.
+        See Notion page for details!
         """
-        # TODO: Implement this
-        raise NotImplementedError(
-            "Structure sampling not yet implemented for KFoldBridgeDiffusion."
-        )
+
+        sample_out: dict[str, torch.Tensor] = {}
+        traj: list[torch.Tensor] = []
+
+        if num_steps is None:
+            num_steps = self.num_steps
+
+        if max_parallel_samples is None:
+            max_parallel_samples = num_diffusion_samples
+
+        model_cache = {}
+
+        # Get noise schedule
+        sigmas = self.get_sampling_schedule(
+            num_steps=num_steps, device=s_inputs.device
+        ).tolist()
+
+        # NOTE: for sampling, there is no unresolved atoms.
+        # Therefore, we can use pad_mask here.
+        atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
+
+        # Line 1-2: sample x_N from q_data(y), not N(0, I)
+        x_apo = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
+
+        sample_out["init_coordinates"] = x_apo
+        x_i = x_apo
+        T = self.sigma_max * self.sigma_data
+
+        # TODO: Turn off random augmentation when generating traj,
+        # or modify to save traj without this applied.
+        if return_traj:
+            traj.append(x_i.cpu())  # Move to cpu to save memory
+
+        # Line 3
+        for step_idx in range(1, num_steps):
+            # Line 4: do random augmentation
+            x_i, x_apo = self.random_augmentation(x_i, x_apo, mask=atom_mask)
+
+            t_i, t_im1 = (
+                sigmas[step_idx - 1],
+                sigmas[step_idx],
+            )
+
+            # Line 5
+            t_i_hat = t_i + self.churn_step_ratio * (t_im1 - t_i)
+
+            # Line 6
+            # Process in chunks for memory efficiency
+            x_i_denoised = torch.zeros_like(x_i)
+            for st in range(0, num_diffusion_samples, max_parallel_samples):
+                end = min(st + max_parallel_samples, num_diffusion_samples)
+                x_i_denoised[:, st:end] = self.forward_model(
+                    x_noisy=x_i[:, st:end],
+                    t_hat=t_i,
+                    f_input=f_input,
+                    s_inputs=s_inputs,
+                    s_trunk=s_trunk,
+                    z_trunk=z_trunk,
+                    model_cache=model_cache,
+                    prior_coords=x_apo[:, st:end],
+                )
+
+            # Line 7
+            s_i = -(
+                x_i - ((t_i / T) ** 2) * x_apo - x_i_denoised * (1 - (t_i / T) ** 2)
+            ) / (t_i**2 * (1 - (t_i / T) ** 2))
+            # Line 8
+            d_i = -2 * t_i * s_i
+            # d_i = -2 * t_i * (s_i - w * (x_apo - x_i) / (T ** 2 - t_i ** 2))
+            # Line 9
+            eps_i = torch.randn_like(x_i)
+            # Line 10
+            x_i_hat = (
+                x_i
+                + d_i * (t_i_hat - t_i)
+                + ((2 * t_i) ** 0.5 * (t_i - t_i_hat) ** 0.5) * eps_i
+            )
+
+            # Line 11
+            x_i_denoised_hat = torch.zeros_like(x_i_hat)
+            for st in range(0, num_diffusion_samples, max_parallel_samples):
+                end = min(st + max_parallel_samples, num_diffusion_samples)
+                x_i_denoised_hat[:, st:end] = self.forward_model(
+                    x_noisy=x_i_hat[:, st:end],
+                    t_hat=t_i_hat,
+                    f_input=f_input,
+                    s_inputs=s_inputs,
+                    s_trunk=s_trunk,
+                    z_trunk=z_trunk,
+                    model_cache=model_cache,
+                    prior_coords=x_apo[:, st:end],
+                )
+
+            # Line 12
+            # s_i_hat = (x_i_hat - x_i_denoised_hat) / (t_i_hat ** 2)
+            s_i_hat = -(
+                x_i_hat
+                - ((t_i_hat / T) ** 2) * x_apo
+                - x_i_denoised_hat * (1 - (t_i_hat / T) ** 2)
+            ) / (t_i_hat**2 * (1 - (t_i_hat / T) ** 2))
+            # Line 13
+            d_i_hat = -t_i_hat * (
+                s_i_hat - self.w * (x_apo - x_i_hat) / (T**2 - t_i_hat**2)
+            )
+            # Line 14
+            x_i = x_i_hat + d_i_hat * (t_im1 - t_i_hat)
+
+            if return_traj:
+                traj.append(x_i.cpu())  # Move to cpu to save memory
+
+        sample_out["sample_coordinates"] = x_i
+        if return_traj:
+            sample_out["traj"] = torch.stack(traj)
+
+        return sample_out
