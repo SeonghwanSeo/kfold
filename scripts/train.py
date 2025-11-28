@@ -12,7 +12,7 @@ from kfold.training.folding.training_module import KFoldTrainingModule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Boltzmann Generator model.")
+    parser = argparse.ArgumentParser(description="Train a Co-Folding model.")
     parser.add_argument(
         "--config",
         type=str,
@@ -212,12 +212,11 @@ def train(args) -> None:
     # Cons: it makes the training less reproducible.
     if cfg.train.synchronize_seed:
         # Same seed for all ranks
-        pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
+        seed = cfg.train.seed
     else:
         # Different seed for each rank
-        pl.seed_everything(
-            cfg.train.seed + trainer.global_rank, workers=True, verbose=False
-        )
+        seed = cfg.train.seed + trainer.global_rank
+    pl.seed_everything(seed, workers=True, verbose=False)
 
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)

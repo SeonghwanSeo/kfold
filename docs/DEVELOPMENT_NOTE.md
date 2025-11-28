@@ -7,7 +7,7 @@ Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
 - [Implementation of AlphaFold3 Algorithms](#implementation-of-alphafold3-algorithms)
 - [K-Fold Implementation](#implementation-for-k-fold-foundation-model)
 - [Not Yet Implemented](#not-yet-implemented)
-- [To Be Changed](#to-be-changed)
+- [To Be Modified](#to-be-modified)
 
 ## Reference
 
@@ -102,17 +102,20 @@ The following items require future implementation.
 1. **Sequence Layout**: To be added for integrating with pre-trained language models.
 2. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
 3. **Symmetry**: Addition of symmetry information is required for accurate **LDDT** calculation during the validation process.
-4. **Pocket Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
+4. **Interface Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
+    - NOTE: Generalize this to multi-modal interface conditioning.
+
+### Structure Module
+
+1. **Abstraction for Structure Module**: We may want to use not only diffusion models but also flow-matching models or other generative models as the structure module. Therefore, we need to abstract the structure module more generally.
+    - Currently, the structure module is tightly coupled with the diffusion model. In future, we need to decouple this, i.e., BaseStructureModule, BaseDiffusionModule, BaseFlowMatchingModule, etc.
 
 ### Benchmark
 
-1. **mmCIF Writer**: **PDB** writing code is currently available, but **mmCIF** implementation is needed.
-2. **Evaluation Metrics**: Installation of evaluation tools and script writing.
+1. **Evaluation Metrics**: Installation of evaluation tools and script writing.
 
-## To Be Updated
+## To Be Modified
 
 The following items are scheduled for future modification.
 
 1. **Cropping Algorithm Planning**: **A new cropping algorithm** must be implemented when training the Diffusion bridge model for `apo to holo` (e.g., ensuring the cropped structure always contains two or more chains).
-
-2. **Atom Layout Change**: Boltz represents atom features as a dense feature (`f_atom: [N_allatom, ...]]`). However, this requires a `scatter` operation in the mapping between tokens and atoms, which Boltz handles by performing a `matmul` operation using an `[N_allatom, Ntoken]` one-hot vector. We plan to represent it as a **sparse** matrix (`f_atom: [Ntoken, 24]`), consistent with AlphaFold3, Protenix, and OpenFold3, to increase computational efficiency.

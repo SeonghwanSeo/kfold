@@ -27,12 +27,16 @@ If the features listed below are completed, I will include the corresponding PR 
 - [ ] Better cropping algorithm for **apo-to-holo** diffusion bridge training.
 - [ ] Implement apo perturbation module.
 - [ ] Include symmetry information in the input features for validation.
-- [ ] Implement pocket conditioning features as in Boltz1.
+- [ ] Implement contact conditioning features as in Boltz1.
 
 ### Model implementation
 
-- [x] Add Boltz1 layers
-- [ ] Implement initial diffusion bridge framework
+- [x] Add AlphaFold3 layers: 251124 - [#53](https://github.com/SeonghwanSeo/kfold/pull/53)
+- [x] Add Boltz1 layers: 251118 - [#29](https://github.com/SeonghwanSeo/kfold/pull/29)
+    - [x] Load pre-trained weights from Boltz1.
+    - [x] Introduce Cu-equivariance kernels for acceleration.
+- [x] Implement initial diffusion bridge framework
+- [x] Integrate to pre-trained sequence/structure embeddings and train.
 
 ### Training
 
@@ -40,6 +44,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [ ] Add **validation pipeline** including symmetry-aware LDDT calculation.
     - [x] Add **validation metrics**.
     - [ ] Add chain-permutation and atom-swapping for symmetry correction.
+- [ ] Correct **cropping algorithm** to match training losses and validation metrics to Boltz1.
 
 ### Benchmark
 

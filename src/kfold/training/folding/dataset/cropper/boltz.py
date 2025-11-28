@@ -105,6 +105,10 @@ def pick_interface_token(
 
         # Select random token
         candidates = np.concatenate([tokens_1, tokens_2])
+        if candidates.size == 0:
+            # Fallback to all tokens
+            valid_tokens = token_indices[structure.token.resolved_mask]
+            return np.random.choice(valid_tokens)
         return np.random.choice(candidates)
 
 
