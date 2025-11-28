@@ -61,7 +61,8 @@ class Boltz1Pretrained(KFold):
         self.load_boltz_weights()
 
     def load_boltz_weights(self):
-        cache_dir = Path("/cache/wykim_lab/boltz1_weights")
+        # cache_dir = Path("/cache/wykim_lab/boltz1_weights")
+        cache_dir = Path("/mnt/parallel_storage/wykim_lab/icl_swkim/kfold")
 
         model_path = cache_dir / "boltz1_conf.ckpt"
         state_dict_path = cache_dir / "boltz1_state_dict.ckpt"

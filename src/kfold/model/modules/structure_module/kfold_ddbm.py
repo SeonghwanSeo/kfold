@@ -91,8 +91,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         rho: int = 7
         P_mean: float = -1.2
         P_std: float = 1.5
-        gamma_0: float = 0.8
-        gamma_min: float = 1.0
+        w: float = 1.0
+        churn_step_ratio: float = 0.0 # 0 for full SDE, 1 for full ODE
         noise_scale: float = 1.003
         step_scale: float = 1.5
         coordinate_augmentation: bool = True
@@ -110,8 +110,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         self.rho: int = cfg.rho
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
-        self.gamma_0: float = cfg.gamma_0
-        self.gamma_min: float = cfg.gamma_min
+        self.w: float = cfg.w
+        self.churn_step_ratio: float = cfg.churn_step_ratio
         self.num_steps: int = cfg.num_steps
         self.noise_scale: float = cfg.noise_scale
         self.step_scale: float = cfg.step_scale
@@ -544,7 +544,8 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         return_traj: bool = False,
     ) -> dict[str, torch.Tensor]:
         """Sample structures via diffusion sampling.
-        See Section 3.7: Algorithm 18 of AlphaFold3 paper.
+        Modified DDBM inference; using Euler sampler, not Heun sampler.
+        See Notion page for details!
         """
 
         sample_out: dict[str, torch.Tensor] = {}
@@ -559,77 +560,93 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         model_cache = {}
 
         # Get noise schedule
-        sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device)
-        gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
-        sigmas, gammas = sigmas.tolist(), gammas.tolist()
+        sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device).tolist()
 
         # NOTE: for sampling, there is no unresolved atoms.
         # Therefore, we can use pad_mask here.
         atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
 
-        # Line 1
-        init_sigma = sigmas[0]
-        prior_coords = self.sample_prior(
+        # Line 1-2: sample x_N from q_data(y), not N(0, I)
+        x_apo = self.sample_prior(
             f_input, num_diffusion_samples
         )  # (B, N, Latom, 3)
-        atom_coords: torch.Tensor = init_sigma * prior_coords  # (B, N, Latom, 3)
-        start_coords = atom_coords
 
+        sample_out["init_coordinates"] = x_apo
+        x_i = x_apo
+        T = self.sigma_max * self.sigma_data
+
+        # TODO: Turn off random augmentation when generating traj, or modify to save traj without this applied.
         if return_traj:
-            traj.append(atom_coords.cpu())  # Move to cpu to save memory
+            traj.append(x_i.cpu())  # Move to cpu to save memory
 
-        # Line 2: gradually denoise
+        # Line 3
         for step_idx in range(1, num_steps):
-            # Line 3
-            atom_coords = self.random_augmentation(atom_coords, mask=atom_mask)
+            # Line 4: do random augmentation
+            x_i, x_apo = self.random_augmentation(
+                x_i, x_apo, mask=atom_mask
+            )
 
-            # Line 4
-            sigma_tm, sigma_t, gamma = (
+            t_i, t_im1 = (
                 sigmas[step_idx - 1],
                 sigmas[step_idx],
-                gammas[step_idx],
             )
 
             # Line 5
-            t_hat: float = sigma_tm * (1 + gamma)
+            t_i_hat = t_i + self.churn_step_ratio * (t_im1 - t_i)
 
             # Line 6
-            noise_var: float = self.noise_scale**2 * (t_hat**2 - sigma_tm**2)
-            eps = math.sqrt(noise_var) * torch.randn_like(atom_coords)
-
-            # Line 7
-            atom_coords_noisy = atom_coords + eps
-
-            # Line 8
             # Process in chunks for memory efficiency
-            atom_coords_denoised = torch.zeros_like(atom_coords_noisy)
+            x_i_denoised = torch.zeros_like(x_i)
             for st in range(0, num_diffusion_samples, max_parallel_samples):
                 end = min(st + max_parallel_samples, num_diffusion_samples)
-                atom_coords_denoised[:, st:end] = self.forward_model(
-                    x_noisy=atom_coords_noisy[:, st:end],
-                    t_hat=t_hat,
+                x_i_denoised[:, st:end] = self.forward_model(
+                    x_noisy=x_i[:, st:end],
+                    t_hat=t_i,
                     f_input=f_input,
                     s_inputs=s_inputs,
                     s_trunk=s_trunk,
                     z_trunk=z_trunk,
                     model_cache=model_cache,
-                    prior_coords=atom_coords[:, st:end],
+                    prior_coords=x_apo[:, st:end],
                 )
 
+            # Line 7
+            s_i = - (x_i - ((t_i/T)**2) * x_apo - x_i_denoised * (1-(t_i/T)**2)) / (t_i**2 * (1-(t_i/T)**2))
+            # Line 8
+            d_i = -2 * t_i * s_i
+            # d_i = -2 * t_i * (s_i - w * (x_apo - x_i) / (T ** 2 - t_i ** 2))
             # Line 9
-            delta_coords = (atom_coords_noisy - atom_coords_denoised) / t_hat
-
+            eps_i = torch.randn_like(x_i)
             # Line 10
-            dt = sigma_t - t_hat
+            x_i_hat = x_i + d_i * (t_i_hat - t_i) + ((2 * t_i)** 0.5 * (t_i - t_i_hat) ** 0.5) * eps_i
 
             # Line 11
-            atom_coords = atom_coords_noisy + self.step_scale * dt * delta_coords
+            x_i_denoised_hat = torch.zeros_like(x_i_hat)
+            for st in range(0, num_diffusion_samples, max_parallel_samples):
+                end = min(st + max_parallel_samples, num_diffusion_samples)
+                x_i_denoised_hat[:, st:end] = self.forward_model(
+                    x_noisy=x_i_hat[:, st:end],
+                    t_hat=t_i_hat,
+                    f_input=f_input,
+                    s_inputs=s_inputs,
+                    s_trunk=s_trunk,
+                    z_trunk=z_trunk,
+                    model_cache=model_cache,
+                    prior_coords=x_apo[:, st:end],
+                )
+            
+            # Line 12
+            # s_i_hat = (x_i_hat - x_i_denoised_hat) / (t_i_hat ** 2)
+            s_i_hat = - (x_i_hat - ((t_i_hat/T)**2) * x_apo - x_i_denoised_hat * (1-(t_i_hat/T)**2)) / (t_i_hat**2 * (1-(t_i_hat/T)**2))
+            # Line 13
+            d_i_hat = -t_i_hat * (s_i_hat - self.w * (x_apo - x_i_hat) / (T ** 2 - t_i_hat ** 2))
+            # Line 14
+            x_i = x_i_hat + d_i_hat * (t_im1 - t_i_hat)
 
             if return_traj:
-                traj.append(atom_coords.cpu())  # Move to cpu to save memory
+                traj.append(x_i.cpu())  # Move to cpu to save memory
 
-        sample_out["init_coordinates"] = start_coords
-        sample_out["sample_coordinates"] = atom_coords
+        sample_out["sample_coordinates"] = x_i
         if return_traj:
             sample_out["traj"] = torch.stack(traj)
 
