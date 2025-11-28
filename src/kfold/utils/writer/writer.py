@@ -2,8 +2,8 @@ from pathlib import Path
 
 from kfold.data.structure import TokenizedStructure
 
-from .pdb import to_pdbstring
 from .mmcif import to_mmcifstring
+from .pdb import to_pdbstring
 
 
 class KFoldWriter:
