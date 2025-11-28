@@ -4,9 +4,10 @@ from pathlib import Path
 import lightning.pytorch as pl
 import lightning.pytorch.callbacks as pl_callbacks
 import torch
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 
-from kfold.config import load_config, print_config, to_dict
+from kfold.config import load_config, print_config, save_config, to_dict
 from kfold.training.folding.dataset.datamodule import TrainingDataModule
 from kfold.training.folding.training_module import KFoldTrainingModule
 
@@ -141,6 +142,15 @@ def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
             save_dir=save_dir,
         )
         loggers = [wandb_logger]
+
+        @rank_zero_only
+        def _save_config() -> None:
+            config_out = Path(wandb_logger.experiment.dir) / "config.yaml"
+            save_config(cfg, config_out)
+            wandb_logger.experiment.save("config.yaml")
+
+        _save_config()
+
     else:
         loggers = None  # use default logger
 

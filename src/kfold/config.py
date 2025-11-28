@@ -37,6 +37,11 @@ def print_config(config: DictConfig) -> None:
     print(OmegaConf.to_yaml(config))
 
 
+def save_config(config: DictConfig, save_path: str | Path) -> None:
+    """Save the configuration to a YAML file."""
+    OmegaConf.save(config, save_path)
+
+
 def to_dict(config: DictConfig) -> dict:
     """Convert a DictConfig to a standard Python dictionary."""
     return OmegaConf.to_container(config, resolve=True)
