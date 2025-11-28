@@ -1,7 +1,6 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 # adapted with DDBM bridge diffusion approach
 
-import math
 from dataclasses import dataclass
 
 import torch
@@ -92,7 +91,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         P_mean: float = -1.2
         P_std: float = 1.5
         w: float = 1.0
-        churn_step_ratio: float = 0.0 # 0 for full SDE, 1 for full ODE
+        churn_step_ratio: float = 0.0  # 0 for full SDE, 1 for full ODE
         noise_scale: float = 1.003
         step_scale: float = 1.5
         coordinate_augmentation: bool = True
@@ -560,31 +559,30 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         model_cache = {}
 
         # Get noise schedule
-        sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device).tolist()
+        sigmas = self.get_sampling_schedule(
+            num_steps=num_steps, device=s_inputs.device
+        ).tolist()
 
         # NOTE: for sampling, there is no unresolved atoms.
         # Therefore, we can use pad_mask here.
         atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
 
         # Line 1-2: sample x_N from q_data(y), not N(0, I)
-        x_apo = self.sample_prior(
-            f_input, num_diffusion_samples
-        )  # (B, N, Latom, 3)
+        x_apo = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
 
         sample_out["init_coordinates"] = x_apo
         x_i = x_apo
         T = self.sigma_max * self.sigma_data
 
-        # TODO: Turn off random augmentation when generating traj, or modify to save traj without this applied.
+        # TODO: Turn off random augmentation when generating traj,
+        # or modify to save traj without this applied.
         if return_traj:
             traj.append(x_i.cpu())  # Move to cpu to save memory
 
         # Line 3
         for step_idx in range(1, num_steps):
             # Line 4: do random augmentation
-            x_i, x_apo = self.random_augmentation(
-                x_i, x_apo, mask=atom_mask
-            )
+            x_i, x_apo = self.random_augmentation(x_i, x_apo, mask=atom_mask)
 
             t_i, t_im1 = (
                 sigmas[step_idx - 1],
@@ -611,14 +609,20 @@ class KFoldBridgeDiffusion(BaseStructureModule):
                 )
 
             # Line 7
-            s_i = - (x_i - ((t_i/T)**2) * x_apo - x_i_denoised * (1-(t_i/T)**2)) / (t_i**2 * (1-(t_i/T)**2))
+            s_i = -(
+                x_i - ((t_i / T) ** 2) * x_apo - x_i_denoised * (1 - (t_i / T) ** 2)
+            ) / (t_i**2 * (1 - (t_i / T) ** 2))
             # Line 8
             d_i = -2 * t_i * s_i
             # d_i = -2 * t_i * (s_i - w * (x_apo - x_i) / (T ** 2 - t_i ** 2))
             # Line 9
             eps_i = torch.randn_like(x_i)
             # Line 10
-            x_i_hat = x_i + d_i * (t_i_hat - t_i) + ((2 * t_i)** 0.5 * (t_i - t_i_hat) ** 0.5) * eps_i
+            x_i_hat = (
+                x_i
+                + d_i * (t_i_hat - t_i)
+                + ((2 * t_i) ** 0.5 * (t_i - t_i_hat) ** 0.5) * eps_i
+            )
 
             # Line 11
             x_i_denoised_hat = torch.zeros_like(x_i_hat)
@@ -634,12 +638,18 @@ class KFoldBridgeDiffusion(BaseStructureModule):
                     model_cache=model_cache,
                     prior_coords=x_apo[:, st:end],
                 )
-            
+
             # Line 12
             # s_i_hat = (x_i_hat - x_i_denoised_hat) / (t_i_hat ** 2)
-            s_i_hat = - (x_i_hat - ((t_i_hat/T)**2) * x_apo - x_i_denoised_hat * (1-(t_i_hat/T)**2)) / (t_i_hat**2 * (1-(t_i_hat/T)**2))
+            s_i_hat = -(
+                x_i_hat
+                - ((t_i_hat / T) ** 2) * x_apo
+                - x_i_denoised_hat * (1 - (t_i_hat / T) ** 2)
+            ) / (t_i_hat**2 * (1 - (t_i_hat / T) ** 2))
             # Line 13
-            d_i_hat = -t_i_hat * (s_i_hat - self.w * (x_apo - x_i_hat) / (T ** 2 - t_i_hat ** 2))
+            d_i_hat = -t_i_hat * (
+                s_i_hat - self.w * (x_apo - x_i_hat) / (T**2 - t_i_hat**2)
+            )
             # Line 14
             x_i = x_i_hat + d_i_hat * (t_im1 - t_i_hat)
 

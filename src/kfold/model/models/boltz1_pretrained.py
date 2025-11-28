@@ -46,6 +46,9 @@ class Boltz1Pretrained(KFold):
             )
         )
 
+        # Load Boltz-1 pretrained weights
+        self.load_boltz_weights()
+
         # NOTE: additional projection layers for compatibility with KFold
         self.proj_s_inputs = None
         need_projection: bool = model_config.get("proj_s_inputs", False)
@@ -56,9 +59,6 @@ class Boltz1Pretrained(KFold):
                 model_config.score_model.channel_s,
                 bias=False,
             )
-
-        # Load Boltz-1 pretrained weights
-        self.load_boltz_weights()
 
     def load_boltz_weights(self):
         # cache_dir = Path("/cache/wykim_lab/boltz1_weights")
