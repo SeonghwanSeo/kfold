@@ -55,17 +55,20 @@ class DataModuleConfig(BaseConfig):
     pin_memory: bool = True
     safe_load: bool = True
 
-    # === For debugging === #
-    overfit_val: bool = False
+    # === Pretrained embedding paths === #
+    pretrained_embedding_paths: dict = dataclasses.field(default_factory=dict)
 
     # === Cropping arguments === #
     cropper: BaseCropper.Config
 
     # === Featurization arguments === #
-    featurization_args: dict
+    featurization_args: dict = dataclasses.field(default_factory=dict)
+
+    # === For debugging === #
+    overfit_val: bool = False
 
 
-# FIXME: remove this (hard-coded)
+# FIXME: revise this (hard-coded)
 class LMDBDataModuleConfig(DataModuleConfig):
     # Dataset specific (TODO: move to dataset config)
     lmdb_path: str | Path
@@ -100,6 +103,7 @@ class TrainingDataModule(pl.LightningDataModule):
         self.lmdb_path: Path = Path(config.lmdb_path)
         self.manifest_path: Path = Path(config.manifest_path)
         self.split_path: Path = Path(config.split_path)
+        self.pretrained_embedding_paths = config.pretrained_embedding_paths
 
         if not self.lmdb_path.exists():
             raise FileNotFoundError(f"LMDB path not found: {self.lmdb_path}")
@@ -179,6 +183,7 @@ class TrainingDataModule(pl.LightningDataModule):
             sampler_config=self.config.sampler,
             safe_load=self.config.safe_load,
             featurization_args=self.featurization_args,
+            pretrained_embedding_paths=self.pretrained_embedding_paths,
         )
 
     def construct_val_dataset(self) -> ValidationDataset:
@@ -200,8 +205,10 @@ class TrainingDataModule(pl.LightningDataModule):
         return LMDBValidationDataset(
             records=val_records,
             lmdb_path=self.lmdb_path,
+            max_tokens=None,  # No cropping for validation
             safe_load=self.config.safe_load,
             featurization_args=self.featurization_args,
+            pretrained_embedding_paths=self.pretrained_embedding_paths,
         )
 
     def train_dataloader(self):

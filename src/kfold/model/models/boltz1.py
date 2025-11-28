@@ -9,40 +9,29 @@ from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedd
 from kfold.model.modules.score_model.boltz1_diffusion import Boltz1DiffusionModule
 from kfold.model.modules.structure_module.boltz1_edm import Boltz1SampleDiffusion
 from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk
-from kfold.utils.registry import MAIN_MODULE, Registry
+from kfold.utils.registry import MAIN_MODULE
 
-from .kfold import KFold
+from .base import BaseFoldingModel
 
 
 @MAIN_MODULE.register()
-class Boltz1(KFold):
+class Boltz1(BaseFoldingModel):
+    input_embedder: Boltz1InputEmbedder  # type: ignore
+    trunk: Boltz1PairformerTrunk  # type: ignore
+    distogram_head: Boltz1DistogramHead  # type: ignore
+    score_model: Boltz1DiffusionModule  # type: ignore
+    structure_module: Boltz1SampleDiffusion  # type: ignore
+
     def __init__(self, global_config: DictConfig):
-        torch.nn.Module.__init__(self)
+        super().__init__(global_config)
         self.config = global_config
         model_config = global_config.model
 
         # === Boltz-1 pretrained modules === #
-        self.input_embedder: Boltz1InputEmbedder = Registry.instantiate(
-            model_config.input_embedder
-        )
         assert isinstance(self.input_embedder, Boltz1InputEmbedder)
-
-        self.trunk: Boltz1PairformerTrunk = Registry.instantiate(model_config.trunk)
         assert isinstance(self.trunk, Boltz1PairformerTrunk)
-
-        self.distogram_head: Boltz1DistogramHead = Registry.instantiate(
-            model_config.distogram_head
-        )
         assert isinstance(self.distogram_head, Boltz1DistogramHead)
-
-        self.score_model: Boltz1DiffusionModule = Registry.instantiate(
-            model_config.score_model
-        )
         assert isinstance(self.score_model, Boltz1DiffusionModule)
-
-        self.structure_module: Boltz1SampleDiffusion = Registry.instantiate(
-            model_config.structure_module, score_model=self.score_model
-        )
         assert isinstance(self.structure_module, Boltz1SampleDiffusion)
 
         # Load Boltz-1 pretrained weights

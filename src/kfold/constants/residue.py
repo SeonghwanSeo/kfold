@@ -9,15 +9,16 @@ PROTEIN_AMINO_ACIDS: tuple[str, ...] = (
     "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V",
     "X"
 )  # fmt: skip
-RNA_BASES: tuple[str, ...] = ("A", "G", "C", "U", "N")
-DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
-
 PROTEIN_RESIDUES: tuple[str, ...] = (
     "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
     "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
     "UNK"
 )  # fmt: skip
+
+RNA_BASES: tuple[str, ...] = ("A", "G", "C", "U", "N")
 RNA_RESIDUES: tuple[str, ...] = ("A", "G", "C", "U", "N")
+
+DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
 DNA_RESIDUES: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
 
 
