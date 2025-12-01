@@ -22,7 +22,7 @@ DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
 DNA_RESIDUES: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
 
 
-class ResidueName(enum.Enum):
+class ResidueName(enum.StrEnum):
     # pad
     PAD = "[PAD]"  # We use padint token instead of gap ("-") of MSA.
 
