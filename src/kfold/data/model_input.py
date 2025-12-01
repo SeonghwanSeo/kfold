@@ -155,11 +155,12 @@ class TokenLayout(TensorLayout):
         Chain types of shape [L,], indicating the type of each token.
     residue_index: torch.Tensor (long)
         Residue indices of shape [L,], used for residue-level operations.
+        Starting from 1 for each chain.
         example)
             4-len polymer(protein/RNA/DNA):
-                residue_index: [0, 1, 2, 3]
+                residue_index: [1, 2, 3, 4]
             6-sized ligand:
-                residue_index: [0, 0, 0, 0, 0, 0]
+                residue_index: [1, 1, 1, 1, 1, 1]
     disto_index: torch.Tensor (long)
         Representative atom indices of shape [L,], Cβ
     center_index: torch.Tensor (long)

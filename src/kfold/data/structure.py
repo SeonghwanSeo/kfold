@@ -31,20 +31,35 @@ class Chain(PlainLayout[np.ndarray]):
         Asymmetric unit IDs of shape [Nchain,], starting from 1.
     sym_id: np.ndarray (int)
         Symmetry IDs of shape [Nchain,], starting from 1.
-    num_tokens: np.ndarray (int)
-        Number of tokens per chain of shape [Nchain,].
     num_residues: np.ndarray (int)
         Number of residues per chain of shape [Nchain,].
+    num_tokens: np.ndarray (int)
+        Number of tokens per chain of shape [Nchain,].
     num_atoms: np.ndarray (int)
         Number of atoms per chain of shape [Nchain,].
+
+    Cached Properties
+    -----------------
+    is_protein: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is protein.
+    is_dna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is dna.
+    is_rna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is rna.
+    is_ligand: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is ligand.
+    residue_starts: np.ndarray (int)
+        Starting indices of residues for each chain.
+    token_starts: np.ndarray (int)
+        Starting indices of tokens for each chain.
     """
 
     chain_type: np.ndarray  # [Nchain,], int
     entity_id: np.ndarray  # [Nchain,], int
     asym_id: np.ndarray  # [Nchain,], int
     sym_id: np.ndarray  # [Nchain,], int
-    num_tokens: np.ndarray  # [Nchain,], int
     num_residues: np.ndarray  # [Nchain,], int
+    num_tokens: np.ndarray  # [Nchain,], int
     num_atoms: np.ndarray  # [Nchain,], int
 
     # === Properties === #
@@ -61,8 +76,8 @@ class Chain(PlainLayout[np.ndarray]):
         check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
         check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=shape)
         check_array(self.sym_id, name="sym_id", dtype=np.integer, shape=shape)
-        check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=shape)
         check_array(self.num_residues, name="num_residues", dtype=np.integer, shape=shape)
+        check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=shape)
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
 
     @cached_property
@@ -84,6 +99,16 @@ class Chain(PlainLayout[np.ndarray]):
     def is_ligand(self) -> np.ndarray:
         """Boolean tensor indicating whether the chain is ligand."""
         return self.chain_type == C.chain.ChainType.LIGAND.value
+
+    @cached_property
+    def residue_starts(self) -> np.ndarray:
+        """Starting indices of residues for each chain."""
+        return np.cumsum(self.num_residues, dtype=np.int32) - self.num_residues
+
+    @cached_property
+    def token_starts(self) -> np.ndarray:
+        """Starting indices of tokens for each chain."""
+        return np.cumsum(self.num_tokens, dtype=np.int32) - self.num_tokens
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
@@ -115,6 +140,19 @@ class Residue(PlainLayout[np.ndarray]):
         Mask tensor of shape [L,], indicating residues to be resolved.
     is_standard: np.ndarray (bool)
         Boolean tensor of shape [L,], indicating whether the residue is standard.
+
+    Cached Properties
+    -----------------
+    is_protein: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is protein.
+    is_dna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is dna.
+    is_rna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is rna.
+    is_ligand: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is ligand.
+    token_starts: np.ndarray (int)
+        Starting indices of tokens for each chain.
     """
 
     name: np.ndarray  # [L,], object(str)
@@ -169,6 +207,47 @@ class Residue(PlainLayout[np.ndarray]):
         """Boolean tensor of shape [L,], indicating whether the token is ligand."""
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
+    @cached_property
+    def token_starts(self) -> np.ndarray:
+        """Starting indices of tokens for each chain."""
+        return np.cumsum(self.num_tokens, dtype=np.int32) - self.num_tokens
+
+    # === Utility functions === #
+    @cached_property
+    def _get_residue_uid_to_index(self) -> dict[tuple[int, int], int]:
+        """Get a mapping from (asym_id, residue_index) to global residue index."""
+        uid_to_index: dict[tuple[int, int], int] = {
+            (int(asym_id), int(res_idx)): res_i
+            for res_i, (asym_id, res_idx) in enumerate(
+                zip(self.asym_id, self.residue_index, strict=True)
+            )
+        }
+        return uid_to_index
+
+    def get_global_residue_idx(self, asym_id: int, residue_index: int) -> int:
+        """Get the global residue idx from asym_id and residue_index.
+
+        Parameters
+        ----------
+        asym_id: int
+            Asymmetric unit ID of the chain which the residue belongs to. (1-based)
+        residue_index: int
+            Residue index within the chain. (1-based)
+
+        Returns
+        -------
+        global_residue_index: int
+            Global residue index in the structure. (0-based)
+        """
+        uid_to_index = self._get_residue_uid_to_index
+        res_uid = (asym_id, residue_index)
+        if res_uid not in uid_to_index:
+            raise KeyError(
+                f"Residue with asym_id={asym_id} and residue_index={residue_index} "
+                f"not found."
+            )
+        return uid_to_index[res_uid]
+
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
 class Token(PlainLayout[np.ndarray]):
@@ -191,6 +270,8 @@ class Token(PlainLayout[np.ndarray]):
     residue_index: np.ndarray (int)
         Residue indices of shape [L,], used for residue-level operations,
         starting from 1.
+    num_atoms: np.ndarray (int)
+        Number of atoms per token of shape [L,].
     disto_index: np.ndarray (int)
         Distogram atom index of shape [L,], used for distogram calculations.
     center_index: np.ndarray (int)
@@ -199,6 +280,17 @@ class Token(PlainLayout[np.ndarray]):
         Mask tensor of shape [L,], indicating tokens to be resolved.
     is_standard: np.ndarray (bool)
         Boolean tensor of shape [L,], indicating whether the token is standard.
+
+    Cached Properties
+    -----------------
+    is_protein: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is protein.
+    is_dna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is dna.
+    is_rna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is rna.
+    is_ligand: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is ligand.
     """
 
     res_type: np.ndarray  # [L,], int
