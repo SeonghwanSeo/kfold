@@ -100,8 +100,7 @@ The following items require future implementation.
 ### Data Processing
 
 1. **Sequence Layout**: To be added for integrating with pre-trained language models.
-2. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
-3. **Symmetry**: Addition of symmetry information is required for accurate **LDDT** calculation during the validation process.
+23. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
 4. **Interface Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
     - NOTE: Generalize this to multi-modal interface conditioning.
 
@@ -109,6 +108,9 @@ The following items require future implementation.
 
 1. **Abstraction for Structure Module**: We may want to use not only diffusion models but also flow-matching models or other generative models as the structure module. Therefore, we need to abstract the structure module more generally.
     - Currently, the structure module is tightly coupled with the diffusion model. In future, we need to decouple this, i.e., BaseStructureModule, BaseDiffusionModule, BaseFlowMatchingModule, etc.
+2. **Geometric OT**: We plan to implement geometric optimal transport (OT) computation to improve training stability.
+    - Implement symmetry computation within the cropped structure.
+    - Compute optimal transport between apo and holo structures.
 
 ### Benchmark
 
