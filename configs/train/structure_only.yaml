@@ -1,12 +1,19 @@
 # Configuration for K-Fold structure module training
 
-# Training Configuration
 name: structure-only
 out_dir: ./experiments/
 
-# Random Seed
+# Reproducibility
 seed: 42
 synchronize_seed: true # Use the same seed across DDP processes
+
+# Training parameters for multi-gpu setup.
+global_hparams:
+  max_tokens: 512
+  batch_size: 1
+  diffusion_batch_size: 48
+  global_batch_size: 256
+  num_global_steps_per_epoch: 1000
 
 data:
   _registry_: "datamodule"
@@ -29,9 +36,9 @@ data:
     struct_embedding_dim: null
 
   # DataLoader
-  train_batch_size: 1
+  train_batch_size: ??? # set by global_hparam
   val_batch_size: 1
-  num_workers: 4
+  num_workers: 8
   max_tokens: 384
   pin_memory: true
   safe_load: true
@@ -75,18 +82,12 @@ trainer:
   num_nodes: "auto"
   precision: bf16-mixed
   max_epochs: -1
-  limit_train_batches: 100_000
+  limit_train_batches: ??? # set by global_hparam
   limit_val_batches: null
   log_every_n_steps: 1
   enable_checkpointing: true
-  accumulate_grad_batches: 256 # 256 // batch_size // num_gpus
+  accumulate_grad_batches: ??? # set by global_hparam
   gradient_clip_val: 10.0
-
-wandb:
-  use: false
-  project: "KFold"
-  group: null # set your group name
-  entity: null # set your entity name
 
 # Exponential Moving Average (EMA)
 training:
@@ -99,7 +100,7 @@ training:
   num_cycles: 4
 
   # For structure module training
-  diffusion_batch_size: 48
+  diffusion_batch_size: ??? # set by global_hparam
 
   # For confidence module training
   num_steps: 20 # Mini-diffusion rollout
@@ -167,3 +168,9 @@ loss:
   # Confidence loss
   # TODO
   confidence_loss: {}
+
+wandb:
+  use: false
+  project: "KFold"
+  group: null # set your group name
+  entity: null # set your entity name

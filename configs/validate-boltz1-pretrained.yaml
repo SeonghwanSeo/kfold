@@ -18,17 +18,13 @@ train:
     devices: "auto"
     num_nodes: 1
     precision: 32
-    max_epochs: 100
-    limit_train_batches: 3000
-    accumulate_grad_batches: 16
 
   data:
-    train_batch_size: 1
-    max_tokens: 512
     lmdb_path: /cache/wykim_lab/kfold_data1/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data1/manifests/af3_manifest.pkl
     split_path: ./assets/splits/boltz1
-    num_workers: 4
+    num_workers: 8
 
     featurization_args:
+      # NOTE: Set True to use pre-trained Boltz1
       synchronize_ref_pos_augmentation: true
