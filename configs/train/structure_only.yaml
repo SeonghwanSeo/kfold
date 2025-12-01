@@ -39,7 +39,7 @@ data:
   train_batch_size: ??? # set by global_hparam
   val_batch_size: 1
   num_workers: 8
-  max_tokens: 384
+  max_tokens: ??? # set by global_hparam
   pin_memory: true
   safe_load: true
 
