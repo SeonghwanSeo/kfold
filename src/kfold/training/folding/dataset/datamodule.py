@@ -90,10 +90,7 @@ class TrainingDataModule(pl.LightningDataModule):
 
     def __init__(self, config: LMDBDataModuleConfig) -> None:
         super().__init__()
-        assert config.max_tokens % 128 == 0, "max_tokens must be a multiple of 128."
-
         self.config = config
-        self.max_tokens: int = config.max_tokens
 
         self.filters: list[BaseFilter] = [
             Registry.instantiate(config=c) for c in config.filters
@@ -175,10 +172,14 @@ class TrainingDataModule(pl.LightningDataModule):
             "after filtering."
         )
 
+        max_tokens: int = self.config.max_tokens
+        # Ensure max_atoms(=max_tokens*24) is a multiple of 32 for LocalAttention
+        assert max_tokens % 4 == 0, "max_tokens must be a multiple of 4."
+
         return LMDBTrainingDataset(
             records=train_records,
             lmdb_path=self.lmdb_path,
-            max_tokens=self.max_tokens,
+            max_tokens=max_tokens,
             cropper=self.cropper,
             sampler_config=self.config.sampler,
             safe_load=self.config.safe_load,
@@ -198,6 +199,9 @@ class TrainingDataModule(pl.LightningDataModule):
             val_ids = set([line.strip().lower() for line in f if line.strip()])
         val_records = [r for r in all_records if r.id.lower() in val_ids]
 
+        # Sort validation records by length (for efficient batching)
+        val_records.sort(key=lambda r: r.num_valid_residues, reverse=False)
+
         self.print_rank_zero(
             f"Constructed validation dataset with {len(val_records)} records."
         )
@@ -205,7 +209,6 @@ class TrainingDataModule(pl.LightningDataModule):
         return LMDBValidationDataset(
             records=val_records,
             lmdb_path=self.lmdb_path,
-            max_tokens=None,  # No cropping for validation
             safe_load=self.config.safe_load,
             featurization_args=self.featurization_args,
             pretrained_embedding_paths=self.pretrained_embedding_paths,

@@ -858,8 +858,9 @@ class FoldingInput:
         """Pad all layouts to the multiple of 32 tokens for LocalAtomAttention and
         model efficiency."""
         assert multiple > 0, f"multiple must be a positive integer, but got {multiple}."
-        assert multiple % 8 == 0, (
-            f"multiple must be a multiple of 8 for LocalAttention, but got {multiple}."
+        # 4 * 24 is divided by 32, which is the minimum unit of LocalAttention
+        assert multiple % 4 == 0, (
+            f"multiple must be a multiple of 4 for LocalAttention, but got {multiple}."
         )
         max_tokens = ((self.num_tokens + multiple - 1) // multiple) * multiple
         return self.pad_to_max_token(max_tokens)

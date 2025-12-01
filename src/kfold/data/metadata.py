@@ -109,6 +109,14 @@ class Metadata:
     def num_residues(self) -> int:
         return sum(chain.num_residues for chain in self.chains)
 
+    @property
+    def num_valid_chains(self) -> int:
+        return sum(1 for chain in self.chains if chain.valid)
+
+    @property
+    def num_valid_residues(self) -> int:
+        return sum(chain.num_residues for chain in self.chains if chain.valid)
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,

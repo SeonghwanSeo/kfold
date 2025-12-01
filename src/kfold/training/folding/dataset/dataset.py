@@ -90,8 +90,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     # === Optional to-override in subclasses === #
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
-        return f_input.pad_to_multiple_of(64)
+        """Pad the folding input to multiple of 32 for LocalAtomAttention."""
+        multiple_of = lambda x, base: ((x + base - 1) // base) * base  # noqa
+
+        num_tokens = multiple_of(f_input.num_tokens, 16)
+        num_atoms = multiple_of(f_input.num_atoms, 32)
+        return f_input.pad(max_tokens=num_tokens, max_atoms=num_atoms)
 
     def __getitem__(self, index: int) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
@@ -132,7 +136,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         tokenized_structure = self.load_tokenized_structure(record)
         # Featurization
         f_input = self.featurize(tokenized_structure, record)
-        # Pad the folding input to multiple of 64 for LocalAtomAttention
+        # Pad the folding input for LocalAtomAttention.
         f_input = self.pad_input(f_input)
 
         symmetry = {}
@@ -227,7 +231,11 @@ class TrainingDataset(SafeLoadingDataset):
         return len(self.samples)
 
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        return f_input.pad_to_max_token(max_tokens=self.max_tokens)
+        max_tokens = self.max_tokens
+        max_chains = max_tokens // 4  # min 4 tokens per chain
+        max_atoms = max_tokens * 24  # max 24 atoms per token
+        max_bonds = max_tokens * 10  # max 10 bonds per token
+        return f_input.pad(max_tokens, max_chains, max_atoms, max_bonds)
 
     @override
     def get_item_safe(
@@ -284,7 +292,6 @@ class ValidationDataset(SafeLoadingDataset):
     def __init__(
         self,
         records: list[metadata.Metadata],
-        max_tokens: int | None,
         safe_load: bool = True,
         featurization_args: dict | None = None,
         pretrained_embedding_paths: dict | None = None,
@@ -294,23 +301,10 @@ class ValidationDataset(SafeLoadingDataset):
         ----------
         records : list[metadata.Metadata]
             List of samples to use in the dataset.
-        max_tokens : int | None
-            Maximum number of tokens per sample. If None, padding is done to
-            the nearest multiple of 64.
         """
         super().__init__(
             records, safe_load, featurization_args, pretrained_embedding_paths
         )
-        self.max_tokens: int | None = max_tokens
-        if self.max_tokens is not None:
-            assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
-
-    def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
-        if self.max_tokens is not None:
-            return f_input.pad_to_max_token(max_tokens=self.max_tokens)
-        else:
-            return f_input.pad_to_multiple_of(64)
 
 
 class LMDBDatabase:
@@ -392,7 +386,6 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         self,
         records: list[metadata.Metadata],
         lmdb_path: Path,
-        max_tokens: int | None,
         safe_load: bool,
         featurization_args: dict | None,
         pretrained_embedding_paths: dict | None,
@@ -400,7 +393,6 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         ValidationDataset.__init__(
             self,
             records,
-            max_tokens,
             safe_load,
             featurization_args,
             pretrained_embedding_paths,
