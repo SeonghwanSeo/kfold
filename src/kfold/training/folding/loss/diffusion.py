@@ -96,6 +96,7 @@ class WeightedMSELoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
+        memory_efficient: bool = True,
     ) -> torch.Tensor:
         """Compute the weighted MSE loss.
 
@@ -118,6 +119,17 @@ class WeightedMSELoss(torch.nn.Module):
 
         w = self.get_atom_weights(f_input)  # [B, L]
         mask = f_input.atom.resolved_mask  # [B, L]
+
+        if memory_efficient:
+            # Minimize the number of padding
+            pad_mask = f_input.atom.pad_mask  # [B, L]
+            max_atoms = int(pad_mask.sum(dim=-1).max().clamp(min=1))
+
+            w = w[:, :max_atoms]  # [B, L]
+            mask = mask[:, :max_atoms]  # [B, L]
+            x_true = x_true[:, :, :max_atoms, :]  # [B, N, L, 3]
+            x_pred = x_pred[:, :, :max_atoms, :]  # [B, N, L, 3]
+
         w = w * mask  # [B, L]
 
         w = w.unsqueeze(-2)  # [B, 1, L]
@@ -301,6 +313,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         x_true: torch.Tensor,
         f_input: FoldingInput,
         chunk_size: int | None = 1,
+        memory_efficient: bool = True,
     ) -> torch.Tensor:
         """Compute weighted alignment.
 
@@ -327,21 +340,33 @@ class SmoothLDDTLoss(torch.nn.Module):
         assert x_pred.ndim == 4  # [B, N, L, 3]
         B, N, L = x_pred.shape[:3]
 
+        # Mask to compute loss
+        mask = f_input.atom.resolved_mask  # [B, Latom]
+
         # Line 5: is_nucleotide = is_dna | is_rna
         is_nucleotide = f_input.token.is_dna | f_input.token.is_rna  # [B, Ltoken]
         # [B, Ntoken] -> [B, Natom]
         batch_indices = torch.arange(B, device=f_input.device)[:, None]
         is_nucleotide = is_nucleotide[batch_indices, f_input.atom.token_index]
 
-        # Prepare masking
-        mask = f_input.atom.resolved_mask  # [B, Latom]
+        if memory_efficient:
+            # Minimize the padding to save memory
+            pad_mask = f_input.atom.pad_mask  # [B, Ltoken]
+            max_atoms = int(pad_mask.sum(dim=-1).max().clamp(min=1))
+
+            x_pred = x_pred[:, :, :max_atoms, :]  # [B, N, L, 3]
+            x_true = x_true[:, :, :max_atoms, :]  # [B, N, L, 3]
+            mask = mask[:, :max_atoms]  # [B, L]
+            is_nucleotide = is_nucleotide[:, :max_atoms]  # [B, L]
+
+        # Create pair mask
         pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, L, L]
         # mask self-distances
         pair_mask.diagonal(dim1=-2, dim2=-1).fill_(0)
 
         # Reshape inputs for chunking
-        x_pred = x_pred.view(B * N, L, 3)  # [B*N, L, 3]
-        x_true = x_true.view(B * N, L, 3)  # [B*N, L, 3]
+        x_pred = x_pred.flatten(0, 1)  # [B*N, L, 3]
+        x_true = x_true.flatten(0, 1)  # [B*N, L, 3]
         is_nucleotide = is_nucleotide.repeat_interleave(N, dim=0)  # [B*N, L]
         pair_mask = pair_mask.repeat_interleave(N, dim=0)  # [B*N, L, L]
 
