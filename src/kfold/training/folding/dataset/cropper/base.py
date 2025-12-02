@@ -15,7 +15,7 @@ class BaseCropper(ABC):
 
     def crop(
         self,
-        structure: TokenizedStructure,
+        struct: TokenizedStructure,
         max_tokens: int,
         asym_ids: tuple[int, ...] | None,
     ) -> TokenizedStructure:
@@ -23,7 +23,7 @@ class BaseCropper(ABC):
 
         Parameters
         ----------
-        structure : Tokenized
+        struct : Tokenized
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
@@ -37,21 +37,21 @@ class BaseCropper(ABC):
         """
 
         # Check if structure have any valid tokens
-        if structure.num_tokens == 0:
-            raise ValueError("No valid tokens in structure")
+        if struct.num_tokens == 0:
+            raise ValueError("No valid tokens in struct")
 
-        if structure.num_tokens <= max_tokens:
+        if struct.num_tokens <= max_tokens:
             # No cropping needed
-            return structure
+            return struct
 
         # Get the token indices to include in the crop
-        selected_token_indices = self.get_token_indices(structure, max_tokens, asym_ids)
-        return structure.crop(selected_token_indices)
+        selected_token_indices = self.get_token_indices(struct, max_tokens, asym_ids)
+        return struct.crop(selected_token_indices)
 
     @abstractmethod
     def get_token_indices(
         self,
-        structure: TokenizedStructure,
+        struct: TokenizedStructure,
         max_tokens: int,
         asym_ids: tuple[int, ...] | None,
     ) -> np.ndarray:
@@ -59,7 +59,7 @@ class BaseCropper(ABC):
 
         Parameters
         ----------
-        structure : Tokenized
+        struct : Tokenized
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
