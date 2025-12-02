@@ -1,4 +1,5 @@
 import enum
+from collections.abc import Sequence
 from functools import lru_cache
 
 from . import residue
@@ -242,22 +243,32 @@ PSEUDO_BETA_ATOM: dict[ResidueName, AtomName] = {
 
 # NOTE: There are no name-swap for RNA/DNA in AlphaFold3 paper and its implementation.
 # Therefore, I have just implemented name-swap for protein residues here.
-RESIDUE_AMBIGUOUS_ATOMS: dict[ResidueName, dict[AtomName, AtomName]] = {
-    ResidueName.ASP: {AtomName.OD1: AtomName.OD2},
-    ResidueName.GLU: {AtomName.OE1: AtomName.OE2},
-    ResidueName.PHE: {AtomName.CD1: AtomName.CD2, AtomName.CE1: AtomName.CE2},
-    ResidueName.TYR: {AtomName.CD1: AtomName.CD2, AtomName.CE1: AtomName.CE2},
+# NOTE: There is only up to one swap per residue.
+RESIDUE_AMBIGUOUS_ATOMS: dict[
+    ResidueName, tuple[tuple[AtomName, ...], tuple[AtomName, ...]]
+] = {
+    ResidueName.ASP: ((AtomName.OD1,), (AtomName.OD2,)),
+    ResidueName.GLU: ((AtomName.OE1,), (AtomName.OE2,)),
+    ResidueName.PHE: ((AtomName.CD1, AtomName.CE1), (AtomName.CD2, AtomName.CE2)),
+    ResidueName.TYR: ((AtomName.CD1, AtomName.CE1), (AtomName.CD2, AtomName.CE2)),
 }
 
 
 # === Function lists === #
 @lru_cache(1000)
 def encode_atom_name(atom_name: str) -> tuple[int, int, int, int]:
-    """Expand atom names to standard format."""
+    """Encode atom name to 4-character integer tuple."""
     name = atom_name.strip()
     name_int = [ord(c) - 32 for c in name]
     name_int = name_int + [0] * (4 - len(name_int))  # pad to 4 characters
-    return tuple(name_int)  # pyright: ignore
+    return tuple(name_int)  # type: ignore
+
+
+def decode_atom_name(atom_name_chars: Sequence[int]) -> str:
+    if len(atom_name_chars) != 4:
+        raise ValueError("Atom name must be a sequence of 4 integers.")
+    name = "".join(chr(c + 32) for c in atom_name_chars if c != 0).strip()
+    return name
 
 
 @lru_cache(2000)

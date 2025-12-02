@@ -33,6 +33,7 @@ train:
   data:
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/pdbbind_pl_manifest.pkl
+    symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
     split_path: ./assets/splits/equibind/
     num_workers: 4
 

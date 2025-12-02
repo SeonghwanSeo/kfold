@@ -84,7 +84,7 @@ class ValidationConfig:
     num_cycles: int = 4
     num_steps: int = 20
     num_diffusion_samples: int = 5
-    symmetry_correction: bool = False
+    symmetry_correction: bool = True
     save_structure_path: str | None = None
 
 
@@ -390,7 +390,7 @@ class KFoldTrainingModule(pl.LightningModule):
             true_coords, atom_mask = validation_metrics.permute_label_coordinates(
                 f_input=f_input,
                 pred_coords=sample_coords,
-                full_structure_list=full_struct_list,
+                full_struct_list=full_struct_list,
                 symmetry_correction=val_config.symmetry_correction,
             )
             metrics = validation_metrics.compute_validation_metrics(
@@ -408,7 +408,9 @@ class KFoldTrainingModule(pl.LightningModule):
                 val_config.save_structure_path, f"it-{self.global_step}"
             )
             try:
-                self.save_structure(f_input, sample_coords, full_struct_list, save_dir)
+                self.save_structure(
+                    f_input, sample_coords, true_coords, full_struct_list, save_dir
+                )
             except Exception as e:
                 print(f"Failed to save structure for batch {batch_idx}: {e}")
 
@@ -671,6 +673,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self,
         f_input: FoldingInput,
         pred_coords: torch.Tensor,
+        true_coords: torch.Tensor,
         full_struct_list: list[dict],
         save_dir: pathlib.Path,
     ):
@@ -681,8 +684,12 @@ class KFoldTrainingModule(pl.LightningModule):
         struct: TokenizedStructure = full_dict["structure"]
 
         save_dir.mkdir(parents=True, exist_ok=True)
-        save_path = save_dir / f"{name}-gt.pdb"
-        struct.write(save_path, 0, is_predicted=False)
+
+        true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
+        new_struct = struct.replace_atom_coords(true_coords_arr)
+        for i in range(true_coords_arr.shape[0]):
+            save_path = save_dir / f"{name}-gt-{i}.pdb"
+            new_struct.write(save_path, i, is_predicted=False)
 
         # [B, Nsample, Natom, 3] -> [Nsample, Natom, 3]
         assert f_input.batch_size == 1, "Saving structure only supports batch size of 1."

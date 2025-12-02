@@ -26,7 +26,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Add PDBBind split introduced by EquiBind for Proof of Concept.
 - [ ] Better cropping algorithm for **apo-to-holo** diffusion bridge training.
 - [ ] Implement apo perturbation module.
-- [ ] Include symmetry information in the input features for validation.
+- [x] Include symmetry information in the input features for validation.
 - [ ] Implement contact conditioning features as in Boltz1.
 
 ### Model implementation
@@ -41,9 +41,11 @@ If the features listed below are completed, I will include the corresponding PR 
 ### Training
 
 - [x] Test **multi-node training**.
-- [ ] Add **validation pipeline** including symmetry-aware LDDT calculation.
+- [x] Add **validation pipeline** including symmetry-aware LDDT calculation.
     - [x] Add **validation metrics**.
-    - [ ] Add chain-permutation and atom-swapping for symmetry correction.
+    - [x] Add chain-permutation and atom-swapping for symmetry correction.
+- [ ] Add geometric OT computation for better training stability.
+    - [ ] Add **symmetry in cropped structure**.
 - [ ] Correct **cropping algorithm** to match training losses and validation metrics to Boltz1.
 
 ### Benchmark
