@@ -37,8 +37,6 @@ class Boltz1PairformerTrunk(BaseTrunk):
             Whether to use template, by default False
         use_msa: bool, optional
             Whether to use MSA, by default False
-        tri_attn_chunk_threshold : int, optional
-            The threshold for chunking in triangle attention, by default 384
         """
 
         channel_s: int = 384
@@ -50,7 +48,6 @@ class Boltz1PairformerTrunk(BaseTrunk):
         pairwise_num_heads: int = 4
         use_msa: bool = False
         use_template: bool = False
-        tri_attn_chunk_threshold: int = 384
         use_cuequiv_kernels: bool = False
 
     def __init__(self, cfg: Config):
@@ -58,7 +55,6 @@ class Boltz1PairformerTrunk(BaseTrunk):
         super().__init__(cfg)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
         self.use_kernels: bool = cfg.use_cuequiv_kernels
 
         if self.use_template:
@@ -163,7 +159,6 @@ class Boltz1PairformerTrunk(BaseTrunk):
                         z, s_inputs, f_input, use_kernels=self.use_kernels
                     )
 
-                # Revert to uncompiled version for validation
                 s, z = self.pairformer_module(
                     s, z, mask, pair_mask, use_kernels=self.use_kernels
                 )

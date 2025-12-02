@@ -22,12 +22,13 @@ from .dataset import (
 from .dl_sampler import DistributedWeightedSampler
 from .filter import BaseFilter
 from .sampler import BaseSampler
+from .utils.symmetry import load_ccd_symmetry_dict
 
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
 
 
 def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
-    f_input_batched = FoldingInput.from_list([b[0] for b in batches])
+    f_input_batched = FoldingInput.from_list([b[0] for b in batches], pad_to_max=False)
     meta_infos = [b[1] for b in batches]
     return f_input_batched, meta_infos
 
@@ -55,8 +56,8 @@ class DataModuleConfig(BaseConfig):
     pin_memory: bool = True
     safe_load: bool = True
 
-    # === Pretrained embedding paths === #
-    pretrained_embedding_paths: dict = dataclasses.field(default_factory=dict)
+    # === Additional paths required === #
+    paths: dict = dataclasses.field(default_factory=dict)
 
     # === Cropping arguments === #
     cropper: BaseCropper.Config
@@ -64,21 +65,25 @@ class DataModuleConfig(BaseConfig):
     # === Featurization arguments === #
     featurization_args: dict = dataclasses.field(default_factory=dict)
 
-    # === For debugging === #
-    overfit_val: bool = False
 
-
-# FIXME: revise this (hard-coded)
-class LMDBDataModuleConfig(DataModuleConfig):
+class TrainingDataModuleConfig(DataModuleConfig):
     # Dataset specific (TODO: move to dataset config)
-    lmdb_path: str | Path
     manifest_path: str | Path
     split_path: str | Path
+    symmetry_path: str | Path | None
+    return_train_symmetry: bool = False
+    return_validation_symmetry: bool = True
     max_tokens: int  # Used for cropping and padding
     filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config = dataclasses.field(
         default_factory=BaseSampler.Config
     )  # Default: uniform sampler
+
+
+# FIXME: revise this (hard-coded)
+class LMDBDataModuleConfig(TrainingDataModuleConfig):
+    # Dataset specific (TODO: move to dataset config)
+    lmdb_path: str | Path
 
 
 @DATAMODULE.register(config_cls=LMDBDataModuleConfig)
@@ -90,25 +95,27 @@ class TrainingDataModule(pl.LightningDataModule):
 
     def __init__(self, config: LMDBDataModuleConfig) -> None:
         super().__init__()
-        assert config.max_tokens % 128 == 0, "max_tokens must be a multiple of 128."
-
         self.config = config
-        self.max_tokens: int = config.max_tokens
 
         self.filters: list[BaseFilter] = [
             Registry.instantiate(config=c) for c in config.filters
         ]
         self.cropper = Registry.instantiate(config=config.cropper)
+        self.manifest_path: Path = Path(config.manifest_path)
+        self.ccd_symmetry_path: Path | None = (
+            Path(config.symmetry_path) if config.symmetry_path else None
+        )
+        self.split_path: Path = Path(config.split_path)
+        self.paths: dict[str, Path | None] = {
+            k: Path(v) if v else None for k, v in config.paths.items()
+        }
+        self.featurization_args = config.featurization_args
+        self.return_train_symmetry: bool = config.return_train_symmetry
+        self.return_validation_symmetry: bool = config.return_validation_symmetry
 
         self.lmdb_path: Path = Path(config.lmdb_path)
-        self.manifest_path: Path = Path(config.manifest_path)
-        self.split_path: Path = Path(config.split_path)
-        self.pretrained_embedding_paths = config.pretrained_embedding_paths
-
         if not self.lmdb_path.exists():
             raise FileNotFoundError(f"LMDB path not found: {self.lmdb_path}")
-
-        self.featurization_args = config.featurization_args
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -135,55 +142,56 @@ class TrainingDataModule(pl.LightningDataModule):
         # By default, use all records
         train_records = all_records
 
-        if self.config.overfit_val:
-            # use only validation set for overfitting
-            # skip filtering to overfit.
-            validation_split = self.split_path / "validation_ids.txt"
-            with open(validation_split) as f:
-                val_ids = set([line.strip().lower() for line in f])
-            train_records = [r for r in all_records if r.id.lower() in val_ids]
+        # If a train split file is provided, use it
+        if (train_split_path := self.split_path / "train_ids.txt").exists():
+            train_ids = load_split_ids(train_split_path)
+            train_records = [r for r in all_records if r.id.lower() in train_ids]
             self.print_rank_zero(
-                f"Overfitting mode: using {len(train_records)} records "
-                "from validation set. Replicated 10 times for more samples."
+                f"Loaded train split file with {len(train_ids)} ids."
+                f" Total {len(train_records)} records selected."
             )
-            train_records = train_records * 10  # replicate to have more samples
         else:
-            # If a train split file is provided, use it
-            if (train_split_path := self.split_path / "train_ids.txt").exists():
-                train_ids = load_split_ids(train_split_path)
-                train_records = [r for r in all_records if r.id.lower() in train_ids]
-                self.print_rank_zero(
-                    f"Loaded train split file with {len(train_ids)} ids."
-                    f" Total {len(train_records)} records selected."
-                )
-            else:
-                self.print_rank_zero("No train split file found. Using all records.")
+            self.print_rank_zero("No train split file found. Using all records.")
 
-            # If a validation/test split file is provided, exclude those records
-            for fn in ["validation_ids.txt", "test_ids.txt"]:
-                if (test_split_path := self.split_path / fn).exists():
-                    exclude_ids = load_split_ids(test_split_path)
-                    train_records = [
-                        r for r in train_records if r.id.lower() not in exclude_ids
-                    ]
+        # If a validation/test split file is provided, exclude those records
+        for fn in ["validation_ids.txt", "test_ids.txt"]:
+            if (test_split_path := self.split_path / fn).exists():
+                exclude_ids = load_split_ids(test_split_path)
+                train_records = [
+                    r for r in train_records if r.id.lower() not in exclude_ids
+                ]
 
-            # Apply filters
-            train_records = [r for r in train_records if do_filter(r)]
+        # Apply filters
+        train_records = [r for r in train_records if do_filter(r)]
 
         self.print_rank_zero(
             f"Constructed training dataset with total {len(train_records)} records "
             "after filtering."
         )
 
+        max_tokens: int = self.config.max_tokens
+        # Ensure max_atoms(=max_tokens*24) is a multiple of 32 for LocalAttention
+        assert max_tokens % 4 == 0, "max_tokens must be a multiple of 4."
+        # If symmetry is to be returned, load symmetry info
+        if self.return_train_symmetry:
+            assert self.ccd_symmetry_path is not None, (
+                "symmetry_path must be provided if return_true_symmetry is True"
+            )
+            ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
+        else:
+            ccd_symmetry_dict = None
+
         return LMDBTrainingDataset(
             records=train_records,
             lmdb_path=self.lmdb_path,
-            max_tokens=self.max_tokens,
+            paths=self.paths,
+            featurization_args=self.featurization_args,
+            max_tokens=max_tokens,
             cropper=self.cropper,
             sampler_config=self.config.sampler,
             safe_load=self.config.safe_load,
-            featurization_args=self.featurization_args,
-            pretrained_embedding_paths=self.pretrained_embedding_paths,
+            return_symmetry=self.return_train_symmetry,
+            ccd_symmetry_dict=ccd_symmetry_dict,
         )
 
     def construct_val_dataset(self) -> ValidationDataset:
@@ -197,18 +205,32 @@ class TrainingDataModule(pl.LightningDataModule):
         with open(validation_split) as f:
             val_ids = set([line.strip().lower() for line in f if line.strip()])
         val_records = [r for r in all_records if r.id.lower() in val_ids]
+        val_records = sorted(val_records, key=lambda r: r.num_residues)
+
+        # Sort validation records by length (for efficient batching)
+        val_records.sort(key=lambda r: r.num_valid_residues, reverse=False)
 
         self.print_rank_zero(
             f"Constructed validation dataset with {len(val_records)} records."
         )
 
+        # If symmetry is to be returned, load symmetry info
+        if self.return_validation_symmetry:
+            assert self.ccd_symmetry_path is not None, (
+                "symmetry_path must be provided if return_validation_symmetry is True"
+            )
+            ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
+        else:
+            ccd_symmetry_dict = None
+
         return LMDBValidationDataset(
             records=val_records,
             lmdb_path=self.lmdb_path,
-            max_tokens=None,  # No cropping for validation
-            safe_load=self.config.safe_load,
+            paths=self.paths,
             featurization_args=self.featurization_args,
-            pretrained_embedding_paths=self.pretrained_embedding_paths,
+            safe_load=self.config.safe_load,
+            return_symmetry=self.return_validation_symmetry,
+            ccd_symmetry_dict=ccd_symmetry_dict,
         )
 
     def train_dataloader(self):

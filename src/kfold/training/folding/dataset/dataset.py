@@ -12,14 +12,19 @@ from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
+from .utils import symmetry
 
 """
 This dataset implementation includes a safe loading mechanism that retries
 """
 
 # Type alias
-SymmetryInfo = dict | None
-# FIXME: add symmetry info for validation set
+SymmetryInfo = dict
+
+
+def next_multiple(n: int, divisor: int) -> int:
+    """Return the next integer greater than or equal to n that is divisible by divisor."""
+    return ((n + divisor - 1) // divisor) * divisor
 
 
 class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
@@ -28,54 +33,60 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     def __init__(
         self,
         records: list[metadata.Metadata],
-        safe_load: bool,
-        featurization_args: dict | None,
-        pretrained_embedding_paths: dict | None,
+        paths: dict[str, Path | None],
+        featurization_args: dict,
+        safe_load: bool = True,
+        return_symmetry: bool = False,
+        return_structure: bool = False,
+        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         self.records: list[metadata.Metadata] = records
         self.safe_load: bool = safe_load
-        self.featurization_args = featurization_args or {}
 
-        # Check validity and assign pretrained embedding paths and dimensions
-        pretrained_embedding_paths = pretrained_embedding_paths or {}
-        known_keys = {
-            "seq_embedding_path",
-            "struct_embedding_path",
-            "seq_embedding_dim",
-            "struct_embedding_dim",
-        }
-        for key in pretrained_embedding_paths.keys():
-            if key not in known_keys:
-                raise ValueError(
-                    f"Unknown key '{key}' in pretrained_embedding_paths. "
-                    f"Known keys are: {known_keys}"
-                )
-        self.seq_embedding_path: str | None = pretrained_embedding_paths.get(
-            "seq_embedding_path"
-        )
-        self.struct_embedding_path: str | None = pretrained_embedding_paths.get(
-            "struct_embedding_path"
-        )
-        self.seq_embedding_dim: int | None = pretrained_embedding_paths.get(
-            "seq_embedding_dim"
-        )
-        self.struct_embedding_dim: int | None = pretrained_embedding_paths.get(
-            "struct_embedding_dim"
-        )
+        # Featurization arguments (copy to avoid mutation)
+        featurization_args = featurization_args.copy()
+        self.featurization_args: dict = featurization_args
 
+        self.return_symmetry: bool = return_symmetry
+        self.return_structure: bool = return_structure
+
+        if self.return_symmetry:
+            assert ccd_symmetry_dict is not None, (
+                "ccd_symmetry_dict must be provided when return_symmetry is True."
+            )
+            self.ccd_symmetry_dict: dict = ccd_symmetry_dict
+
+        # Pretrained embeddings
+        self.seq_embedding_path: Path | None = paths["seq_embedding_path"]
+        self.seq_embedding_dim: int | None = featurization_args.pop("seq_embedding_dim")
         if self.seq_embedding_path is not None:
-            assert Path(self.seq_embedding_path).exists(), (
+            assert self.seq_embedding_path.exists(), (
                 f"seq_embedding_path '{self.seq_embedding_path}' does not exist."
             )
             assert self.seq_embedding_dim is not None, (
-                "seq_embedding_dim must be provided when seq_embedding_path is set."
+                "seq_embedding_dim must be provided when seq_embedding_path is provided."
             )
+        else:
+            assert self.seq_embedding_dim is None, (
+                "seq_embedding_dim must be None when seq_embedding_path is not provided."
+            )
+
+        self.struct_embedding_path: Path | None = paths["struct_embedding_path"]
+        self.struct_embedding_dim: int | None = featurization_args.pop(
+            "struct_embedding_dim"
+        )
         if self.struct_embedding_path is not None:
-            assert Path(self.struct_embedding_path).exists(), (
+            assert self.struct_embedding_path.exists(), (
                 f"struct_embedding_path '{self.struct_embedding_path}' does not exist."
             )
             assert self.struct_embedding_dim is not None, (
-                "struct_embedding_dim must be provided when struct_embedding_path is set."
+                "struct_embedding_dim must be provided when struct_embedding_path is"
+                " provided."
+            )
+        else:
+            assert self.struct_embedding_dim is None, (
+                "struct_embedding_dim must be None when struct_embedding_path is not"
+                " provided."
             )
 
     def __len__(self) -> int:
@@ -89,9 +100,21 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Get the tokenized structure for the given index."""
 
     # === Optional to-override in subclasses === #
+    def crop_structure(
+        self,
+        struct: structure.TokenizedStructure,
+        **kwargs,
+    ) -> structure.TokenizedStructure:
+        """Crop the folding input structure as needed."""
+        return struct
+
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
-        return f_input.pad_to_multiple_of(64)
+        """Pad the folding input to multiple of 32 for LocalAtomAttention."""
+        # Pad num_tokens for CUDA efficiency.
+        num_tokens = next_multiple(f_input.num_tokens, 16)
+        # Pad num_atoms for local attention.
+        num_atoms = next_multiple(f_input.num_atoms, 32)
+        return f_input.pad(max_tokens=num_tokens, max_atoms=num_atoms)
 
     def __getitem__(self, index: int) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
@@ -129,18 +152,28 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         record_id = record.id
 
         # Tokenization
-        tokenized_structure = self.load_tokenized_structure(record)
+        struct = self.load_tokenized_structure(record)
+
+        # Cropping
+        cropped_struct = self.crop_structure(struct, **kwargs)
+
         # Featurization
-        f_input = self.featurize(tokenized_structure, record)
+        f_input = self.featurize(cropped_struct, record)
+
+        symmetry_dict = {}
+        symmetry_dict["id"] = record_id
+        if self.return_structure:
+            symmetry_dict["structure"] = struct
+        if self.return_symmetry:
+            # WARN: symmetry computation should be done before padding
+            symmetry_dict["symmetry"] = symmetry.get_symmetries(
+                f_input, cropped_struct, struct, self.ccd_symmetry_dict
+            )
+
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
 
-        symmetry = {}
-        # TODO: add symmetry info
-        symmetry["id"] = record_id
-        symmetry["structure"] = tokenized_structure
-
-        return f_input, symmetry
+        return f_input, symmetry_dict
 
     def featurize(
         self, struct: structure.TokenizedStructure, record: metadata.Metadata
@@ -153,14 +186,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # Add pretrained embeddings if provided
         if self.seq_embedding_path is not None:
-            seq_emb_prefix = (
-                f"{self.seq_embedding_path}/{record_id[:2]}/{record_id}/{record_id}_"
+            seq_emb_prefix = str(
+                self.seq_embedding_path / record_id[:2] / record_id / f"{record_id}_"
             )
         else:
             seq_emb_prefix = None
         if self.struct_embedding_path is not None:
-            struct_emb_prefix = (
-                f"{self.struct_embedding_path}/{record_id[:2]}/{record_id}/{record_id}_"
+            struct_emb_prefix = str(
+                self.struct_embedding_path / record_id[:2] / record_id / f"{record_id}_"
             )
         else:
             struct_emb_prefix = None
@@ -179,12 +212,14 @@ class TrainingDataset(SafeLoadingDataset):
     def __init__(
         self,
         records: list[metadata.Metadata],
+        paths: dict[str, Path | None],
+        featurization_args: dict,
         max_tokens: int,
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
-        safe_load: bool,
-        featurization_args: dict | None,
-        pretrained_embedding_paths: dict | None,
+        safe_load: bool = True,
+        return_symmetry: bool = False,
+        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         """
         Parameters
@@ -208,7 +243,13 @@ class TrainingDataset(SafeLoadingDataset):
            using the provided `cropper`.
         """
         super().__init__(
-            records, safe_load, featurization_args, pretrained_embedding_paths
+            records,
+            paths,
+            featurization_args,
+            safe_load,
+            return_symmetry,
+            return_structure=False,
+            ccd_symmetry_dict=ccd_symmetry_dict,
         )
         self.max_tokens: int = max_tokens
         self.cropper: BaseCropper = cropper
@@ -226,8 +267,26 @@ class TrainingDataset(SafeLoadingDataset):
     def __len__(self) -> int:
         return len(self.samples)
 
+    @override
+    def crop_structure(
+        self,
+        struct: structure.TokenizedStructure,
+        **kwargs,
+    ) -> structure.TokenizedStructure:
+        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
+        asym_ids: list[str] = kwargs["asym_ids"]
+        if self.max_tokens < struct.num_tokens:
+            # Crop the tokenized structure
+            struct = self.cropper.crop(struct, self.max_tokens, asym_ids)
+        return struct
+
+    @override
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        return f_input.pad_to_max_token(max_tokens=self.max_tokens)
+        max_tokens = self.max_tokens
+        max_chains = max_tokens // 4  # min 4 tokens per chain
+        max_atoms = max_tokens * 24  # max 24 atoms per token
+        max_bonds = max_tokens * 10  # max 10 bonds per token
+        return f_input.pad(max_tokens, max_chains, max_atoms, max_bonds)
 
     @override
     def get_item_safe(
@@ -256,61 +315,32 @@ class TrainingDataset(SafeLoadingDataset):
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
 
-    def get_item(
-        self,
-        record: metadata.Metadata,
-        **kwargs,
-    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
-        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
-
-        tokenized_structure = self.load_tokenized_structure(record)
-
-        # Cropping
-        if self.max_tokens < tokenized_structure.num_tokens:
-            # Crop the tokenized structure
-            asym_ids: tuple[int, ...] | None = kwargs["asym_ids"]
-            tokenized_structure = self.cropper.crop(
-                tokenized_structure, self.max_tokens, asym_ids
-            )
-
-        # Featurization
-        f_input = self.featurize(tokenized_structure, record)
-        # Pad the folding input to max_tokens for LocalAtomAttention.
-        f_input = self.pad_input(f_input)
-        return f_input, None
-
 
 class ValidationDataset(SafeLoadingDataset):
     def __init__(
         self,
         records: list[metadata.Metadata],
-        max_tokens: int | None,
+        paths: dict[str, Path | None],
+        featurization_args: dict,
         safe_load: bool = True,
-        featurization_args: dict | None = None,
-        pretrained_embedding_paths: dict | None = None,
+        return_symmetry: bool = False,
+        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         """
         Parameters
         ----------
         records : list[metadata.Metadata]
             List of samples to use in the dataset.
-        max_tokens : int | None
-            Maximum number of tokens per sample. If None, padding is done to
-            the nearest multiple of 64.
         """
         super().__init__(
-            records, safe_load, featurization_args, pretrained_embedding_paths
+            records,
+            paths,
+            featurization_args,
+            safe_load,
+            return_symmetry,
+            return_structure=True,
+            ccd_symmetry_dict=ccd_symmetry_dict,
         )
-        self.max_tokens: int | None = max_tokens
-        if self.max_tokens is not None:
-            assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
-
-    def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
-        if self.max_tokens is not None:
-            return f_input.pad_to_max_token(max_tokens=self.max_tokens)
-        else:
-            return f_input.pad_to_multiple_of(64)
 
 
 class LMDBDatabase:
@@ -361,22 +391,26 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
         self,
         records: list[metadata.Metadata],
         lmdb_path: Path,
+        paths: dict[str, Path | None],
+        featurization_args: dict,
         max_tokens: int,
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
-        safe_load: bool,
-        featurization_args: dict | None,
-        pretrained_embedding_paths: dict | None,
+        safe_load: bool = True,
+        return_symmetry: bool = False,
+        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         TrainingDataset.__init__(
             self,
             records,
+            paths,
+            featurization_args,
             max_tokens,
             cropper,
             sampler_config,
             safe_load,
-            featurization_args,
-            pretrained_embedding_paths,
+            return_symmetry,
+            ccd_symmetry_dict,
         )
         self.lmdb_path: Path = lmdb_path
 
@@ -392,18 +426,20 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         self,
         records: list[metadata.Metadata],
         lmdb_path: Path,
-        max_tokens: int | None,
-        safe_load: bool,
-        featurization_args: dict | None,
-        pretrained_embedding_paths: dict | None,
+        paths: dict[str, Path | None],
+        featurization_args: dict,
+        safe_load: bool = True,
+        return_symmetry: bool = False,
+        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         ValidationDataset.__init__(
             self,
             records,
-            max_tokens,
-            safe_load,
+            paths,
             featurization_args,
-            pretrained_embedding_paths,
+            safe_load,
+            return_symmetry,
+            ccd_symmetry_dict,
         )
         self.lmdb_path: Path = lmdb_path
 

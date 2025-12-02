@@ -45,11 +45,19 @@ You can use this path as an argument for the training script directly and skip t
 export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 
 cd $KFOLD_DATA_DIR
+# Copy LMDB dataset, manifests, and ccd symmetry to your working directory
 cp -r --sparse always /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251120.lmdb ./
 cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/ ./
-# (optional) ESM embeddings
-cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/esm_embeddings.tar ./
-tar -xvf esm_embeddings.tar
+cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/symmetry.pkl/ ./
+
+# (optional) ESM embeddings (esmc_300m(free) or esmc_600m(non-commercial))
+mkdir esm_embeddings/
+cd ./esm_embeddings
+cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/esm_embeddings/esmc_300m.tar ./
+tar -xvf esmc_300m.tar
+cd ../
+
+# Set permissions for other users in the group to read, write, and execute
 chmod 775 -R .
 ```
 
@@ -154,10 +162,10 @@ Modify `config file` to match your training environment.
 
 - Debug mode (single GPU, no workers, no safe data-loading):
   ```bash
-  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug on
+  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug
 
-  # Use skip-val when validation is not implemented yet.
-  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug skip-val
+  # If you want to skip validation (e.g., validation not implemented yet), use --skip_val
+  python ./scripts/train.py --config ./configs/train-af3-tiny.yaml --debug --skip_val
   ```
 
 - Full training mode with prepared config file:

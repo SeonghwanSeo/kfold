@@ -155,11 +155,12 @@ class TokenLayout(TensorLayout):
         Chain types of shape [L,], indicating the type of each token.
     residue_index: torch.Tensor (long)
         Residue indices of shape [L,], used for residue-level operations.
+        Starting from 1 for each chain.
         example)
             4-len polymer(protein/RNA/DNA):
-                residue_index: [0, 1, 2, 3]
+                residue_index: [1, 2, 3, 4]
             6-sized ligand:
-                residue_index: [0, 0, 0, 0, 0, 0]
+                residue_index: [1, 1, 1, 1, 1, 1]
     disto_index: torch.Tensor (long)
         Representative atom indices of shape [L,], Cβ
     center_index: torch.Tensor (long)
@@ -734,8 +735,22 @@ class FoldingInput:
         return len(self.atom)
 
     @classmethod
-    def from_list(cls, data_list: list[Self]) -> Self:
-        """Create a Batched Input from a list of data."""
+    def from_list(cls, data_list: list[Self], pad_to_max: bool = False) -> Self:
+        """Create a Batched Input from a list of data.
+
+        Parameters
+        ----------
+        data_list: list[FoldingInput]
+            A list of FoldingInput instances to be batched.
+        pad_to_max: bool
+            Whether to pad all layouts to the maximum length in the batch.
+            Default is False (If False, all layouts should have the same length).
+
+        Returns
+        -------
+        batch: FoldingInput
+            A batched FoldingInput instance.
+        """
         # Check all data are non-batched
         for data in data_list:
             assert not data.is_batched, "All inputs in data_list must be non-batched."
@@ -746,6 +761,38 @@ class FoldingInput:
             assert data.device == ref_device, (
                 "All inputs in data_list must be on the same device."
             )
+
+        if pad_to_max:
+            # Pad to the maximum length in the batch
+            # Determine max lengths for each layout
+            max_chains = max(len(data.chain) for data in data_list)
+            max_tokens = max(len(data.token) for data in data_list)
+            max_atoms = max(len(data.atom) for data in data_list)
+            max_bonds = max(len(data.bond) for data in data_list)
+            # Pad each layout to the maximum length
+            data_list = [
+                data.pad(max_tokens, max_chains, max_atoms, max_bonds)
+                for data in data_list
+            ]
+        else:
+            # Check all layouts have the same length
+            ref_num_chains = len(data_list[0].chain)
+            ref_num_tokens = len(data_list[0].token)
+            ref_num_atoms = len(data_list[0].atom)
+            ref_num_bonds = len(data_list[0].bond)
+            for data in data_list:
+                assert len(data.chain) == ref_num_chains, (
+                    "All chain layouts must have the same length."
+                )
+                assert len(data.token) == ref_num_tokens, (
+                    "All token layouts must have the same length."
+                )
+                assert len(data.atom) == ref_num_atoms, (
+                    "All atom layouts must have the same length."
+                )
+                assert len(data.bond) == ref_num_bonds, (
+                    "All bond layouts must have the same length."
+                )
 
         batched_chain = ChainLayout.from_list([data.chain for data in data_list])
         batched_token = TokenLayout.from_list([data.token for data in data_list])
@@ -858,8 +905,9 @@ class FoldingInput:
         """Pad all layouts to the multiple of 32 tokens for LocalAtomAttention and
         model efficiency."""
         assert multiple > 0, f"multiple must be a positive integer, but got {multiple}."
-        assert multiple % 8 == 0, (
-            f"multiple must be a multiple of 8 for LocalAttention, but got {multiple}."
+        # 4 * 24 is divided by 32, which is the minimum unit of LocalAttention
+        assert multiple % 4 == 0, (
+            f"multiple must be a multiple of 4 for LocalAttention, but got {multiple}."
         )
         max_tokens = ((self.num_tokens + multiple - 1) // multiple) * multiple
         return self.pad_to_max_token(max_tokens)

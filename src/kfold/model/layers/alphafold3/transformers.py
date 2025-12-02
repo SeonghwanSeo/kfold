@@ -120,7 +120,6 @@ class AttentionPairBias(nn.Module):
         z: torch.Tensor,
         attn_mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex | None = None,
-        use_high_precision: bool = False,
         inplace: bool = False,
     ) -> torch.Tensor:
         """Forward pass.
@@ -140,8 +139,6 @@ class AttentionPairBias(nn.Module):
             NOTE: We only mask key positions as in the official implementation.
         local_attn_index : LocalAttentionIndex | None
             The local attention indexer, by default None
-        use_high_precision : bool
-            Whether to use high precision for attention computation, by default True
 
         Returns
         -------
@@ -188,7 +185,7 @@ class AttentionPairBias(nn.Module):
             v,
             bias=attn_bias,
             scale=math.sqrt(self.head_dim),
-            use_high_precision=use_high_precision,
+            inplace=inplace,
         )
         Av = rearrange(Av, "... h l d -> ... l (h d)")
         Av = Av.reshape(a.shape)
@@ -272,27 +269,25 @@ class DiffusionTransformer(nn.Module):
             NOTE: We only mask key positions as in the official implementation.
         """
         # Line 1, 4
-
         blocks = [
             partial(
                 b,
                 attn_mask=attn_mask,
                 local_attn_index=local_attn_index,
-                block_cache=None,
             )
             for b in self.blocks
         ]
 
-        blocks_per_ckpt = self.blocks_per_ckpt
-        if not torch.is_grad_enabled():
-            blocks_per_ckpt = None
-
-        a, s, z = checkpoint_blocks(
-            blocks,
-            args=(a, s, z),
-            blocks_per_ckpt=blocks_per_ckpt,
-            use_reentrant=False,
-        )
+        if self.training and torch.is_grad_enabled():
+            a, s, z = checkpoint_blocks(
+                blocks,
+                args=(a, s, z),
+                blocks_per_ckpt=self.blocks_per_ckpt,
+                use_reentrant=False,
+            )
+        else:
+            for b in blocks:
+                a, s, z = b(a, s, z)
 
         return a
 
@@ -343,7 +338,6 @@ class DiffusionTransformerBlock(nn.Module):
         z: torch.Tensor,
         attn_mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex | None = None,
-        block_cache: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """See Section 3.7 Algorithm 23 Diffusion Transformer
 
@@ -383,7 +377,6 @@ class DiffusionTransformerBlock(nn.Module):
             z=z,
             attn_mask=attn_mask,
             local_attn_index=local_attn_index,
-            use_high_precision=True,  # High precision for attention computation
         )
         # Line 3
         a = a + self.transition(a, s)
@@ -640,8 +633,8 @@ class AtomAttentionEncoder(nn.Module):
         self,
         f_input: FoldingInput,
         s_trunk: torch.Tensor | None,
-        z: torch.Tensor | None,
-        r: torch.Tensor | None,
+        z_trunk: torch.Tensor | None,
+        r_noisy: torch.Tensor | None,
         model_cache: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of the atom attention encoder.
@@ -657,9 +650,9 @@ class AtomAttentionEncoder(nn.Module):
             The folding input.
         s_trunk : torch.Tensor | None
             The trunk single representation, shape [B, Lt, c_s].
-        z : torch.Tensor | None
+        z_trunk : torch.Tensor | None
             The conditioning pair representation, shape [B, Lt, c_z].
-        r : torch.Tensor | None
+        r_noisy : torch.Tensor | None
             The noised structures' positions, shape [B, N, La, c_r],
             where Nsample is the number of diffusion samples.
         model_cache : dict | None
@@ -676,6 +669,9 @@ class AtomAttentionEncoder(nn.Module):
         p_skip : torch.Tensor
             The atom pair representation, shape [B, N, W, Lq, Lk, c_atompair]
         """
+        if self.use_structure:
+            assert s_trunk is not None and z_trunk is not None and r_noisy is not None
+
         if model_cache is not None:
             # NOTE: (seonghwanseo) Since atom encoder is used in both InputEmbedder and
             # DiffusionModule, I constrain caching only for DiffusionModule usage
@@ -737,7 +733,7 @@ class AtomAttentionEncoder(nn.Module):
             q = c  # [B, La, c_atom]
 
             if self.use_structure:
-                assert s_trunk is not None and z is not None and r is not None
+                assert s_trunk is not None and z_trunk is not None
                 # Add trunk embedding
                 atom_mask = f_input.atom.pad_mask
                 token_index = f_input.atom.token_index
@@ -745,7 +741,7 @@ class AtomAttentionEncoder(nn.Module):
                 c = self.add_trunk_single_conditioning(c, s_trunk, token_index, atom_mask)
                 # Line 10
                 p = self.add_trunk_pair_embedding(
-                    p, z, token_index, atom_mask, local_attn_index
+                    p, z_trunk, token_index, atom_mask, local_attn_index
                 )
 
             # Line 13-14
@@ -770,8 +766,8 @@ class AtomAttentionEncoder(nn.Module):
 
         # Repeat for diffusion samples
         if self.use_structure:
-            assert r is not None, "r cannot be None when use_structure is True"
-            N = r.shape[1]  # number of diffusion samples
+            assert r_noisy is not None, "r cannot be None when use_structure is True"
+            N = r_noisy.shape[1]  # number of diffusion samples
         else:
             N = 1
 
@@ -790,8 +786,8 @@ class AtomAttentionEncoder(nn.Module):
 
         # Line 11
         if self.use_structure:
-            assert r is not None
-            q = self.add_noise_position(q, r)
+            assert r_noisy is not None
+            q = self.add_noise_position(q, r_noisy)
 
         # Line 15
         q = self.atom_encoder(q, c, p, mask)
@@ -901,7 +897,7 @@ class AtomAttentionEncoder(nn.Module):
     def add_noise_position(
         self,
         q: torch.Tensor,
-        r: torch.Tensor,
+        r_noisy: torch.Tensor,
     ) -> torch.Tensor:
         """Algorithm 5, Line 11
         Add noise position to atom single representation.
@@ -910,11 +906,12 @@ class AtomAttentionEncoder(nn.Module):
         ----------
         q : torch.Tensor
             The atom single representation, shape [B, N, La, c_atom].
-        r : torch.Tensor
+        r_noisy : torch.Tensor
             The noised structures' positions, shape [B, N, La, 3].
         """
         with torch.autocast(q.device.type, enabled=False):
-            r_to_q = self.linear_r_to_q(r)  # [B, N, La, c_atom]
+            assert r_noisy.dtype == torch.float32, "r_noisy must be float32"
+            r_to_q = self.linear_r_to_q(r_noisy)  # [B, N, La, c_atom]
         return q + r_to_q  # [B, N, La, c_atom]
 
 
@@ -1023,5 +1020,6 @@ class AtomAttentionDecoder(nn.Module):
             mask=mask[..., None, :],  # [B, 1, La], broadcasted to [B, N, La]
         )
 
-        r_update = self.linear_q_to_r(q)
+        with torch.autocast(a.device.type, enabled=False):
+            r_update = self.linear_q_to_r(q.float())
         return r_update

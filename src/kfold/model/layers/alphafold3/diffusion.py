@@ -193,7 +193,7 @@ class DiffusionModule(nn.Module):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache=None,
+        model_cache: dict | None = None,
     ) -> torch.Tensor:
         """Forward pass of the AF3 diffusion module.
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
@@ -244,9 +244,9 @@ class DiffusionModule(nn.Module):
         # Line 3
         a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
             f_input=f_input,
-            r=r_noisy,  # [B, N, La, 3]
+            r_noisy=r_noisy,  # [B, N, La, 3]
             s_trunk=s_trunk,  # [B, Lt, c_s]
-            z=z,  # [B, Lt, Lt, c_z]
+            z_trunk=z,  # [B, Lt, Lt, c_z]
             model_cache=model_cache,
         )
         # Shape:
@@ -411,7 +411,7 @@ class DiffusionConditioning(nn.Module):
             # For time-independent pair representation z, we cache the result
             # Line 1
             rel_pos_feats = self.rel_pos_encoding(
-                f_input, model_cache
+                f_input, z_trunk.dtype, model_cache
             )  # [B, Lt, Lt, c_z]
             z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
 

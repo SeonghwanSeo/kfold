@@ -3,12 +3,12 @@ from collections.abc import Sequence
 import torch
 
 from kfold.data.model_input import FoldingInput
+from kfold.training.folding.dataset.utils.permutation import get_aligned_true_coords
 from kfold.training.folding.loss.diffusion import (
     compute_modality_weights,
     get_atom_weights,
     weighted_rigid_align,
 )
-from kfold.utils.misc import expand_dim
 
 
 def compute_pair_lddt(
@@ -150,6 +150,9 @@ def compute_validation_metric_singles(
     dict[str, dict[str, torch.Tensor]]
         The metrics for each modality
     """
+    assert pred_coords.shape == true_coords.shape, (
+        "Predicted and true coordinates must have the same shape."
+    )
 
     metrics: dict[str, torch.Tensor] = {}
     weights: dict[str, torch.Tensor] = {}
@@ -406,9 +409,8 @@ def compute_validation_metrics(
 def permute_label_coordinates(
     f_input: FoldingInput,
     pred_coords: torch.Tensor,
-    full_structure_list: list[dict],
+    full_struct_list: list[dict],
     symmetry_correction: bool = True,
-    minimize_metric: str = "lddt",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Get the best matching true coordinates to the predicted coordinates.
     Chain permutation and atom swaps.
@@ -419,23 +421,38 @@ def permute_label_coordinates(
         Input features
     pred_coords : torch.Tensor
         Predicted atom coordinates, Shape of [B, Nsample, Natom, 3]
-    full_structure_list : list[dict]
-        Full structure dictionary containing symmetry information
+    full_struct_list : list[dict]
+        Full structure information for each sample in the batch
     symmetry_correction : bool
         Whether to apply symmetry correction
-    minimize_metric : str
-        Metric to minimize when finding the best permutation during symmetry correction
-        "lddt" or "rmsd"
 
     Returns
     -------
     tuple[torch.Tensor, torch.Tensor]
         The true coordinates after permutation and the corresponding mask
     """
-    B, Nsample, Natom, _ = pred_coords.shape
-    if not symmetry_correction:
-        """Perform weighted rigid alignment without symmetry correction."""
+    B, Nsample, _, _ = pred_coords.shape
+    if symmetry_correction:
+        aligned_true_coords_list = []
+        resolved_mask_list = []
+        for batch_i in range(B):
+            coords_i = pred_coords[batch_i]  # [Nsample, Natom, 3]
+            symmetry_dict = full_struct_list[batch_i]["symmetry"]
+            true_coords_aligned, mask = get_aligned_true_coords(
+                coords_i,  # [Nsample, Natom, 3]
+                f_input,
+                symmetry_dict,
+                index_batch=batch_i,
+            )  # [Nsample, Natom, 3], [Nsample, Natom]
+            aligned_true_coords_list.append(true_coords_aligned)
+            resolved_mask_list.append(mask)
+        aligned_coords = torch.stack(
+            aligned_true_coords_list, dim=0
+        )  # [B, Nsample, Natom, 3]
+        mask = torch.stack(resolved_mask_list, dim=0)  # [B, Nsample, Natom]
 
+    else:
+        """Perform weighted rigid alignment without symmetry correction."""
         true_coords = f_input.atom.label_coords  # [B, Natom, Nholo, 3]
         # HACK: we only consider the first bio-assembly
         true_coords = true_coords[:, :, 0, :]
@@ -443,15 +460,12 @@ def permute_label_coordinates(
 
         # Weighted rigid alignment for best permutation
         weights = get_atom_weights(f_input)  # [B, Natom]
-
-        # Expand to match pred_coords shape
-        true_coords = expand_dim(
-            true_coords, dim=1, n_repeat=Nsample
-        )  # [B, Nsample, Natom, 3]
-        weights = expand_dim(weights, 1, Nsample)  # [B, Nsample, Natom]
-        mask = expand_dim(mask, 1, Nsample)  # [B, Nsample, Natom]
+        true_coords = true_coords[:, None, :, :]  # [B, 1, Natom, 3]
+        weights = weights[:, None, :]  # [B, 1, Natom]
+        mask = mask[:, None, :]  # [B, 1, Natom]
         aligned_coords = weighted_rigid_align(true_coords, pred_coords, weights, mask)
-    else:
-        raise NotImplementedError("Symmetry correction is not implemented yet.")
+
+        # Expand mask
+        mask = mask.expand(-1, Nsample, -1)  # [B, Nsample, Natom]
 
     return aligned_coords, mask
