@@ -23,7 +23,7 @@ class BaseCropper(ABC):
 
         Parameters
         ----------
-        struct : Tokenized
+        struct : TokenizedStructure
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
@@ -32,7 +32,7 @@ class BaseCropper(ABC):
 
         Returns
         -------
-        TokenizedStructure
+        cropped_struct: TokenizedStructure
             The cropped data.
         """
 
@@ -59,11 +59,16 @@ class BaseCropper(ABC):
 
         Parameters
         ----------
-        struct : Tokenized
+        struct : TokenizedStructure
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
         asym_ids : tuple[int, ...] | None, optional
             The chain IDs to center the crop on. If None, a random chain
+
+        Returns
+        -------
+        selected_token_indices : np.ndarray
+            The indices of the tokens to include in the crop.
         """
         raise NotImplementedError

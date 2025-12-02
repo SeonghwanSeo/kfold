@@ -11,15 +11,18 @@ from .base import BaseCropper
 def pick_chain_token(
     struct: TokenizedStructure,
     asym_id: int,
+    resolved_mask: np.ndarray | None = None,
 ) -> int:
     """Pick a random token from a chain.
 
     Parameters
     ----------
     struct : TokenizedStructure
-        The tokenized structure
-    chain_id : int
-        The chain ID.
+        The tokenized structure.
+    asym_id : int
+        The chain asymmetric ID.
+    resolved_mask : np.ndarray | None, optional
+        An optional mask of valid tokens.
 
     Returns
     -------
@@ -27,10 +30,11 @@ def pick_chain_token(
         The selected token index.
     """
     # Get resolved mask with valid centers
-    token_center_mask = struct.atom.resolved_mask[
-        struct.token.token_index, struct.token.center_index, 0
-    ]  # (num_tokens,)
-    resolved_mask = struct.token.resolved_mask & token_center_mask
+    if resolved_mask is None:
+        token_center_mask = struct.atom.resolved_mask[
+            struct.token.token_index, struct.token.center_index
+        ]  # (num_tokens,)
+        resolved_mask = struct.token.resolved_mask & token_center_mask
 
     chain_mask = struct.token.asym_id == asym_id
 
@@ -48,6 +52,7 @@ def pick_interface_token(
     struct: TokenizedStructure,
     asym_ids: tuple[int, ...],
     center_coords: np.ndarray,
+    resolved_mask: np.ndarray | None = None,
 ) -> int:
     """Pick a random token from an interface.
 
@@ -59,6 +64,8 @@ def pick_interface_token(
         The chain IDs defining the interface.
     center_coords : np.ndarray
         The center coordinates of all tokens.
+    resolved_mask : np.ndarray | None, optional
+        An optional mask of valid tokens.
 
     Returns
     -------
@@ -72,14 +79,14 @@ def pick_interface_token(
 
     chain_1, chain_2 = asym_ids
 
+    # Get resolved mask with valid center atoms
+    if resolved_mask is None:
+        token_center_mask = struct.atom.resolved_mask[
+            struct.token.token_index, struct.token.center_index
+        ]  # (num_tokens,)
+        resolved_mask = struct.token.resolved_mask & token_center_mask
+
     token_indices = struct.token.token_index
-
-    # Get resolved mask with valid centers
-    token_center_mask = struct.atom.resolved_mask[
-        struct.token.token_index, struct.token.center_index, 0
-    ]  # (num_tokens,)
-    resolved_mask = struct.token.resolved_mask & token_center_mask
-
     tokens_1 = token_indices[(struct.token.asym_id == chain_1) & resolved_mask]
     tokens_2 = token_indices[(struct.token.asym_id == chain_2) & resolved_mask]
 
@@ -156,7 +163,7 @@ class BoltzCropper(BaseCropper):
         Parameters
         ----------
         struct : TokenizedStructure
-            The tokenized structure
+            The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
         asym_ids : tuple[int, ...] | None
@@ -171,9 +178,9 @@ class BoltzCropper(BaseCropper):
         token_data = struct.token  # features: [L, ...]
         atom_data = struct.atom  # features: [L, 24, ...]
 
-        # Get resolved mask with valid centers
+        # Get resolved mask with valid center atoms
         token_center_mask = atom_data.resolved_mask[
-            token_data.token_index, token_data.center_index, 0
+            token_data.token_index, token_data.center_index
         ]  # (num_tokens,)
         resolved_mask = token_data.resolved_mask & token_center_mask
 
@@ -197,11 +204,13 @@ class BoltzCropper(BaseCropper):
         if asym_ids is None:
             valid_chain_asym_ids = np.unique(all_asym_ids[valid_tokens])
             asym_id = np.random.choice(valid_chain_asym_ids)
-            query = pick_chain_token(struct, asym_id)
+            query = pick_chain_token(struct, asym_id, resolved_mask)
         elif len(asym_ids) == 1:
-            query = pick_chain_token(struct, asym_ids[0])
+            query = pick_chain_token(struct, asym_ids[0], resolved_mask)
         elif len(asym_ids) == 2:
-            query = pick_interface_token(struct, asym_ids, all_token_centers)
+            query = pick_interface_token(
+                struct, asym_ids, all_token_centers, resolved_mask
+            )
         else:
             raise ValueError("asym_ids must be None, length 1, or length 2")
 
