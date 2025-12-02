@@ -108,7 +108,7 @@ The following items require future implementation.
 
 1. **Abstraction for Structure Module**: We may want to use not only diffusion models but also flow-matching models or other generative models as the structure module. Therefore, we need to abstract the structure module more generally.
     - Currently, the structure module is tightly coupled with the diffusion model. In future, we need to decouple this, i.e., BaseStructureModule, BaseDiffusionModule, BaseFlowMatchingModule, etc.
-2. **Geometric OT**: We plan to implement geometric optimal transport (OT) computation to improve training stability.
+2. **Optimal Transport Permutation**: We plan to implement optimal transport (OT) permutation to improve training stability.
     - Implement symmetry computation within the cropped structure.
     - Compute optimal transport between apo and holo structures.
 
