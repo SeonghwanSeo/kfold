@@ -10,7 +10,6 @@ from torch.utils.data.distributed import DistributedSampler
 
 from kfold.data.metadata import Metadata
 from kfold.data.model_input import FoldingInput
-from kfold.data.utils.symmetry import load_ccd_symmetry_dict
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
 
 from .cropper import BaseCropper
@@ -23,12 +22,13 @@ from .dataset import (
 from .dl_sampler import DistributedWeightedSampler
 from .filter import BaseFilter
 from .sampler import BaseSampler
+from .utils.symmetry import load_ccd_symmetry_dict
 
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
 
 
 def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
-    f_input_batched = FoldingInput.from_list([b[0] for b in batches])
+    f_input_batched = FoldingInput.from_list([b[0] for b in batches], pad_to_max=False)
     meta_infos = [b[1] for b in batches]
     return f_input_batched, meta_infos
 
@@ -228,7 +228,6 @@ class TrainingDataModule(pl.LightningDataModule):
             lmdb_path=self.lmdb_path,
             paths=self.paths,
             featurization_args=self.featurization_args,
-            max_tokens=None,
             safe_load=self.config.safe_load,
             return_symmetry=self.return_validation_symmetry,
             ccd_symmetry_dict=ccd_symmetry_dict,

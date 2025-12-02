@@ -8,11 +8,11 @@ import torch
 from typing_extensions import override
 
 from kfold.data import featurize, metadata, model_input, structure
-from kfold.data.utils import symmetry
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
+from .utils import symmetry
 
 """
 This dataset implementation includes a safe loading mechanism that retries
@@ -20,6 +20,11 @@ This dataset implementation includes a safe loading mechanism that retries
 
 # Type alias
 SymmetryInfo = dict
+
+
+def next_multiple(n: int, divisor: int) -> int:
+    """Return the next integer greater than or equal to n that is divisible by divisor."""
+    return ((n + divisor - 1) // divisor) * divisor
 
 
 class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
@@ -105,10 +110,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
         """Pad the folding input to multiple of 32 for LocalAtomAttention."""
-        multiple_of = lambda x, base: ((x + base - 1) // base) * base  # noqa
-
-        num_tokens = multiple_of(f_input.num_tokens, 16)
-        num_atoms = multiple_of(f_input.num_atoms, 32)
+        # Pad num_tokens for CUDA efficiency.
+        num_tokens = next_multiple(f_input.num_tokens, 16)
+        # Pad num_atoms for local attention.
+        num_atoms = next_multiple(f_input.num_atoms, 32)
         return f_input.pad(max_tokens=num_tokens, max_atoms=num_atoms)
 
     def __getitem__(self, index: int) -> tuple[model_input.FoldingInput, SymmetryInfo]:

@@ -101,7 +101,7 @@ class RelativePositionEncoding(nn.Module):
             [
                 a_rel_pos,
                 a_rel_token,
-                b_same_entity.unsqueeze(-1),
+                b_same_entity.unsqueeze(-1).to(dtype),
                 a_rel_chain,
             ],
             dim=-1,

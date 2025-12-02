@@ -3,7 +3,7 @@ from collections.abc import Sequence
 import torch
 
 from kfold.data.model_input import FoldingInput
-from kfold.data.utils.permutation import get_aligned_true_coords
+from kfold.training.folding.dataset.utils.permutation import get_aligned_true_coords
 from kfold.training.folding.loss.diffusion import (
     compute_modality_weights,
     get_atom_weights,

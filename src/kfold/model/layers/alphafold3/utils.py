@@ -182,7 +182,7 @@ class LocalAttentionIndex:
         self.pad_mask: torch.Tensor = pad_mask
 
     @staticmethod
-    @lru_cache(maxsize=2)
+    @lru_cache(maxsize=5)
     def _build_gather_indices(
         W: int, Lq: int, Lk: int, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:

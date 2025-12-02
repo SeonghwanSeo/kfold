@@ -108,6 +108,8 @@ class WeightedMSELoss(torch.nn.Module):
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
+        memory_efficient : bool
+            Whether to use memory efficient implementation.
 
         Returns
         -------
