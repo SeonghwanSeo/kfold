@@ -110,6 +110,7 @@ def featurize_structure(
     augment_apo: bool = True,
     synchronize_ref_pos_augmentation: bool = False,
     rng: np.random.Generator | None = None,
+    **kwargs,
 ) -> model_input.FoldingInput:
     """Featurize a tokenized structure into model input features.
 

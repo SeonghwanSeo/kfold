@@ -19,22 +19,6 @@ data:
   _registry_: "datamodule"
   _class_: TrainingDataModule
 
-  # Data paths
-  lmdb_path: <LMDB_PATH_PLACEHOLDER>
-  manifest_path: <MANIFEST_PATH_PLACEHOLDER>
-  split_path: ./assets/splits/boltz1
-  overfit_val: false
-
-  pretrained_embedding_paths:
-    # Pre-trained feature embedding paths
-    # The embedding files should be organized as follows:
-    #   Protein chain of 6oim with entity id=1: 6o/6oim/6oim_1_protein.pt
-    seq_embedding_path: null
-    struct_embedding_path: null
-    # TODO: remove these params if all chains have precomputed embeddings
-    seq_embedding_dim: null
-    struct_embedding_dim: null
-
   # DataLoader
   train_batch_size: ??? # set by global_hparam
   val_batch_size: 1
@@ -42,6 +26,22 @@ data:
   max_tokens: ??? # set by global_hparam
   pin_memory: true
   safe_load: true
+
+  # Data paths
+  lmdb_path: <LMDB_PATH_PLACEHOLDER>
+  manifest_path: <MANIFEST_PATH_PLACEHOLDER>
+  symmetry_path: <SYMMETRY_PATH_PLACEHOLDER>
+  split_path: ./assets/splits/boltz1
+
+  # Symmetry
+  return_train_symmetry: false
+  return_validation_symmetry: true
+
+  # Additional data paths if needed
+  paths:
+    # Precomputed embeddings
+    seq_embedding_path: null
+    struct_embedding_path: null
 
   filters:
     - _registry_: "data_filter"
@@ -73,6 +73,10 @@ data:
     augment_ref_pos: true
     augment_apo: true
     synchronize_ref_pos_augmentation: false
+    # Precomputed embeddings
+    # TODO: remove these params if all chains have precomputed embeddings
+    seq_embedding_dim: null
+    struct_embedding_dim: null
 
 # Lightning Trainer Configuration
 trainer:
@@ -111,7 +115,7 @@ validation:
   num_cycles: 4
   num_steps: 200
   num_diffusion_samples: 5
-  symmetry_correction: false # TODO: fix get_true_coordinates function to use symmetry correction
+  symmetry_correction: true
   save_structure_path: null # if given, save structure
 
 optimizer:
