@@ -9,7 +9,6 @@ def attention(
     value: torch.Tensor,
     bias: torch.Tensor | None = None,
     scale: float | None = None,
-    use_high_precision: bool = False,
     inplace: bool = False,
 ) -> torch.Tensor:
     """Compute the attention operation.
@@ -25,8 +24,6 @@ def attention(
         The attention bias of shape (..., Q, K), default None
     scale : Optional[float]
         The scaling factor for the query-key dot product, default None
-    use_high_precision : bool
-        Whether to use high precision (float32) for attention computation, default False
     inplace : bool
         Whether to perform operations in-place, default False
 
@@ -36,12 +33,14 @@ def attention(
         The output tensor of shape (..., Q, C)
     """
 
-    dtype = query.dtype if not use_high_precision else torch.float32
+    with torch.autocast("cuda", dtype=torch.float32):
+        query = query.to(torch.float32)
+        key = key.to(torch.float32)
+        bias = bias.to(torch.float32) if bias is not None else None
 
-    if scale is not None:
-        query = div(query, scale, inplace=inplace)
+        if scale is not None:
+            query = div(query, scale, inplace=inplace)
 
-    with torch.autocast("cuda", dtype=dtype):
         # Compute attention weights
         attn = torch.einsum("...qc,...kc->...qk", query, key)
 
@@ -49,9 +48,8 @@ def attention(
         if bias is not None:
             attn = add(attn, bias, inplace=inplace)
 
-        # Softmax normalization
-        with torch.autocast("cuda", dtype=torch.float32):
-            attn = attn.softmax(dim=-1)
+        # Softmax
+        attn = attn.softmax(dim=-1)
 
     # Compute output
     out = torch.einsum("...qk,...kc->...qc", attn.to(value.dtype), value)

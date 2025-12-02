@@ -98,10 +98,6 @@ class PairformerStack(nn.Module):
 
         pair_mask = mask[..., None] & mask[..., None, :]
 
-        blocks_per_ckpt = self.blocks_per_ckpt
-        if not torch.is_grad_enabled():
-            blocks_per_ckpt = None
-
         blocks = [
             partial(
                 b,
@@ -113,12 +109,18 @@ class PairformerStack(nn.Module):
             )
             for b in self.blocks
         ]
-        s, z = checkpoint_blocks(
-            blocks,
-            (s, z),
-            blocks_per_ckpt,
-            use_reentrant=False,
-        )
+        blocks_per_ckpt = self.blocks_per_ckpt
+
+        if self.training and torch.is_grad_enabled():
+            s, z = checkpoint_blocks(
+                blocks,
+                (s, z),
+                blocks_per_ckpt,
+                use_reentrant=False,
+            )
+        else:
+            for block in blocks:
+                s, z = block(s, z)
 
         # Line 10
         return s, z
@@ -238,7 +240,6 @@ class PairformerBlock(nn.Module):
             None,
             z,  # [B, L, L, C_z]
             attn_mask=single_mask,  # [B, L]
-            use_high_precision=False,
         )
 
         # Line 8

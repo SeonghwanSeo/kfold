@@ -125,8 +125,7 @@ class AF3InputEmbedder(BaseInputEmbedder):
         )  # [B, L, L, c_z]
 
         # Line 4
-        # NOTE: cache the relative position encoding if possible for efficiency
-        rel_feat = self.relative_pos_encoding(f_input)
+        rel_feat = self.relative_pos_encoding(f_input, s_init.dtype)
         z_init = z_init + self.linear_pos(rel_feat)  # [B, L, c_z]
 
         # Line 5

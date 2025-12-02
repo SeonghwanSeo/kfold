@@ -101,60 +101,49 @@ def aggregate_atoms_to_tokens(
     torch.Tensor
         Token features of shape (..., Ntoken, D)
     """
-    # *batch_shapes, Natom, D
-    *batch_shapes, num_atoms, D = x_atom.shape
+    # Parse shapes & Device
+    *batch_dims, num_atoms, D = x_atom.shape
+    batch_size = math.prod(batch_dims) if batch_dims else 1
     device = x_atom.device
     dtype = x_atom.dtype
 
-    # 1. Initialize Output
-    out = torch.zeros(
-        *batch_shapes, num_tokens, D, device=device, dtype=dtype
-    )  # (..., Ntoken, D)
+    # Flatten inputs
+    num_total_atoms = batch_size * num_atoms
+    total_tokens = num_tokens * batch_size
 
-    # 2. Prepare Inputs
-    # Handle padding indices (-1) by clamping to 0.
-    # (We mask the values later so adding to index 0 is safe)
-    safe_index = token_index.clamp(min=0, max=num_tokens - 1)
+    x_atom_flat = x_atom.view(num_total_atoms, D)
+    indices_flat = token_index.expand(x_atom.shape[:-1]).reshape(-1)
+    # Add offsets to shift indices for each batch
+    offsets = torch.arange(batch_size, device=device) * num_tokens
+    indices_flat = indices_flat + offsets.repeat_interleave(num_atoms)
 
-    # Expand index for gather/scatter: (..., Natom) -> (..., Natom, D)
-    index_expanded = safe_index.unsqueeze(-1).expand_as(x_atom)
+    # Handle Masking
+    # Allocate one extra slot for trash bin (last index)
+    alloc_tokens = total_tokens + 1
+    trash_idx = total_tokens
 
-    # 3. Masking
-    # We perform masking on the input values.
-    # If mask is None, we assume all atoms are valid.
     if atom_mask is not None:
-        # (..., Natom, 1) broadcasting to (..., Natom, D)
-        x_atom = x_atom * atom_mask.unsqueeze(-1).type(dtype)
+        mask_flat = atom_mask.expand(x_atom.shape[:-1]).reshape(-1)
+        indices_flat = torch.where(mask_flat, indices_flat, trash_idx)
 
-    # 4. Scatter Sum (Numerator)
-    # Sums x_atom into out at the specified indices
-    out.scatter_add_(dim=-2, index=index_expanded, src=x_atom)
+    # Aggregate
+    out_flat = torch.zeros(alloc_tokens, D, device=device, dtype=dtype)
+    out_flat.index_add_(0, indices_flat, x_atom_flat)
 
-    # 5. Mean Handling (Denominator)
+    # Mean Handling
     if aggr == "mean":
-        # Optimization: Count atoms per token using only 1 channel, not D.
-        # Shape: (..., Ntoken, 1)
-        atom_counts = torch.zeros(
-            *batch_shapes, num_tokens, 1, device=device, dtype=dtype
-        )
-
-        # Create ones: (..., Natom, 1)
-        ones = torch.ones(*batch_shapes, num_atoms, 1, device=device, dtype=dtype)
-
-        if atom_mask is not None:
-            ones = ones * atom_mask.unsqueeze(-1).type(dtype)
-
-        # Scatter counts: indices must match src dim.
-        # index: (..., Natom) -> (..., Natom, 1)
-        index_counts = safe_index.unsqueeze(-1)
-
-        atom_counts.scatter_add_(dim=-2, index=index_counts, src=ones)
-
+        # Compute counts using the same strategy (1 channel only)
+        ones = torch.ones((num_total_atoms, 1), device=device, dtype=dtype)
+        counts_flat = torch.zeros((alloc_tokens, 1), device=device, dtype=dtype)
+        counts_flat.index_add_(0, indices_flat, ones)
         # Avoid division by zero
-        atom_counts = atom_counts.clamp(min=1.0)
+        out_flat = out_flat / counts_flat.clamp_(min=1.0)
 
-        # Broadcast division: (..., Ntoken, D) / (..., Ntoken, 1)
-        out = out / atom_counts
+    # Remove Trash Bin & Reshape
+    out_flat = out_flat[:total_tokens]
+
+    # Reshape to original batch dims
+    out = out_flat.view(*batch_dims, num_tokens, D)
 
     return out
 
@@ -193,7 +182,7 @@ class LocalAttentionIndex:
         self.pad_mask: torch.Tensor = pad_mask
 
     @staticmethod
-    @lru_cache(maxsize=2)
+    @lru_cache(maxsize=5)
     def _build_gather_indices(
         W: int, Lq: int, Lk: int, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:

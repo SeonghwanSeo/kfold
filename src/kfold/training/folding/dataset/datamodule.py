@@ -10,7 +10,6 @@ from torch.utils.data.distributed import DistributedSampler
 
 from kfold.data.metadata import Metadata
 from kfold.data.model_input import FoldingInput
-from kfold.data.utils.symmetry import load_ccd_symmetry_dict
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
 
 from .cropper import BaseCropper
@@ -23,12 +22,13 @@ from .dataset import (
 from .dl_sampler import DistributedWeightedSampler
 from .filter import BaseFilter
 from .sampler import BaseSampler
+from .utils.symmetry import load_ccd_symmetry_dict
 
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
 
 
 def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
-    f_input_batched = FoldingInput.from_list([b[0] for b in batches])
+    f_input_batched = FoldingInput.from_list([b[0] for b in batches], pad_to_max=False)
     meta_infos = [b[1] for b in batches]
     return f_input_batched, meta_infos
 
@@ -95,10 +95,7 @@ class TrainingDataModule(pl.LightningDataModule):
 
     def __init__(self, config: LMDBDataModuleConfig) -> None:
         super().__init__()
-        assert config.max_tokens % 128 == 0, "max_tokens must be a multiple of 128."
-
         self.config = config
-        self.max_tokens: int = config.max_tokens
 
         self.filters: list[BaseFilter] = [
             Registry.instantiate(config=c) for c in config.filters
@@ -172,6 +169,9 @@ class TrainingDataModule(pl.LightningDataModule):
             "after filtering."
         )
 
+        max_tokens: int = self.config.max_tokens
+        # Ensure max_atoms(=max_tokens*24) is a multiple of 32 for LocalAttention
+        assert max_tokens % 4 == 0, "max_tokens must be a multiple of 4."
         # If symmetry is to be returned, load symmetry info
         if self.return_train_symmetry:
             assert self.ccd_symmetry_path is not None, (
@@ -186,7 +186,7 @@ class TrainingDataModule(pl.LightningDataModule):
             lmdb_path=self.lmdb_path,
             paths=self.paths,
             featurization_args=self.featurization_args,
-            max_tokens=self.max_tokens,
+            max_tokens=max_tokens,
             cropper=self.cropper,
             sampler_config=self.config.sampler,
             safe_load=self.config.safe_load,
@@ -207,6 +207,9 @@ class TrainingDataModule(pl.LightningDataModule):
         val_records = [r for r in all_records if r.id.lower() in val_ids]
         val_records = sorted(val_records, key=lambda r: r.num_residues)
 
+        # Sort validation records by length (for efficient batching)
+        val_records.sort(key=lambda r: r.num_valid_residues, reverse=False)
+
         self.print_rank_zero(
             f"Constructed validation dataset with {len(val_records)} records."
         )
@@ -225,7 +228,6 @@ class TrainingDataModule(pl.LightningDataModule):
             lmdb_path=self.lmdb_path,
             paths=self.paths,
             featurization_args=self.featurization_args,
-            max_tokens=None,
             safe_load=self.config.safe_load,
             return_symmetry=self.return_validation_symmetry,
             ccd_symmetry_dict=ccd_symmetry_dict,

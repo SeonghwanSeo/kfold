@@ -8,11 +8,11 @@ import torch
 from typing_extensions import override
 
 from kfold.data import featurize, metadata, model_input, structure
-from kfold.data.utils import symmetry
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
+from .utils import symmetry
 
 """
 This dataset implementation includes a safe loading mechanism that retries
@@ -20,6 +20,11 @@ This dataset implementation includes a safe loading mechanism that retries
 
 # Type alias
 SymmetryInfo = dict
+
+
+def next_multiple(n: int, divisor: int) -> int:
+    """Return the next integer greater than or equal to n that is divisible by divisor."""
+    return ((n + divisor - 1) // divisor) * divisor
 
 
 class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
@@ -104,8 +109,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         return struct
 
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
-        return f_input.pad_to_multiple_of(64)
+        """Pad the folding input to multiple of 32 for LocalAtomAttention."""
+        # Pad num_tokens for CUDA efficiency.
+        num_tokens = next_multiple(f_input.num_tokens, 16)
+        # Pad num_atoms for local attention.
+        num_atoms = next_multiple(f_input.num_atoms, 32)
+        return f_input.pad(max_tokens=num_tokens, max_atoms=num_atoms)
 
     def __getitem__(self, index: int) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
@@ -273,7 +282,11 @@ class TrainingDataset(SafeLoadingDataset):
 
     @override
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        return f_input.pad_to_max_token(max_tokens=self.max_tokens)
+        max_tokens = self.max_tokens
+        max_chains = max_tokens // 4  # min 4 tokens per chain
+        max_atoms = max_tokens * 24  # max 24 atoms per token
+        max_bonds = max_tokens * 10  # max 10 bonds per token
+        return f_input.pad(max_tokens, max_chains, max_atoms, max_bonds)
 
     @override
     def get_item_safe(
@@ -309,7 +322,6 @@ class ValidationDataset(SafeLoadingDataset):
         records: list[metadata.Metadata],
         paths: dict[str, Path | None],
         featurization_args: dict,
-        max_tokens: int | None,
         safe_load: bool = True,
         return_symmetry: bool = False,
         ccd_symmetry_dict: dict | None = None,
@@ -319,9 +331,6 @@ class ValidationDataset(SafeLoadingDataset):
         ----------
         records : list[metadata.Metadata]
             List of samples to use in the dataset.
-        max_tokens : int | None
-            Maximum number of tokens per sample. If None, padding is done to
-            the nearest multiple of 64.
         """
         super().__init__(
             records,
@@ -332,16 +341,6 @@ class ValidationDataset(SafeLoadingDataset):
             return_structure=True,
             ccd_symmetry_dict=ccd_symmetry_dict,
         )
-        self.max_tokens: int | None = max_tokens
-        if self.max_tokens is not None:
-            assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
-
-    def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
-        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
-        if self.max_tokens is not None:
-            return f_input.pad_to_max_token(max_tokens=self.max_tokens)
-        else:
-            return f_input.pad_to_multiple_of(64)
 
 
 class LMDBDatabase:
@@ -429,7 +428,6 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         lmdb_path: Path,
         paths: dict[str, Path | None],
         featurization_args: dict,
-        max_tokens: int | None,
         safe_load: bool = True,
         return_symmetry: bool = False,
         ccd_symmetry_dict: dict | None = None,
@@ -439,7 +437,6 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
             records,
             paths,
             featurization_args,
-            max_tokens,
             safe_load,
             return_symmetry,
             ccd_symmetry_dict,

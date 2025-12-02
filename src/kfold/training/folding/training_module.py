@@ -378,8 +378,8 @@ class KFoldTrainingModule(pl.LightningModule):
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
-                torch.cuda.empty_cache()
                 gc.collect()
+                torch.cuda.empty_cache()
                 return
             else:
                 raise e
@@ -452,6 +452,10 @@ class KFoldTrainingModule(pl.LightningModule):
 
         avg_values = {f"val/{k}": v for k, v in avg_values.items()}
         self.log_dict(avg_values, sync_dist=True)
+
+        # Clear cache after validation
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # === Loss functions === #
     def compute_distogram_loss(
