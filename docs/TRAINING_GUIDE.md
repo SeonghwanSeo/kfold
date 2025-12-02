@@ -45,9 +45,10 @@ You can use this path as an argument for the training script directly and skip t
 export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 
 cd $KFOLD_DATA_DIR
-# Copy LMDB dataset and manifests to your working directory
+# Copy LMDB dataset, manifests, and ccd symmetry to your working directory
 cp -r --sparse always /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251120.lmdb ./
 cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/ ./
+cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/symmetry.pkl/ ./
 
 # (optional) ESM embeddings (esmc_300m(free) or esmc_600m(non-commercial))
 mkdir esm_embeddings/
