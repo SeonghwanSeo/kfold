@@ -161,10 +161,10 @@ Modify `config file` to match your training environment.
 
 - Debug mode (single GPU, no workers, no safe data-loading):
   ```bash
-  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug on
+  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug
 
-  # Use skip-val when validation is not implemented yet.
-  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug skip-val
+  # If you want to skip validation (e.g., validation not implemented yet), use --skip_val
+  python ./scripts/train.py --config ./configs/train-af3-tiny.yaml --debug --skip_val
   ```
 
 - Full training mode with prepared config file:
