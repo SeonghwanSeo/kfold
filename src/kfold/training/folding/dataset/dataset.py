@@ -8,6 +8,7 @@ import torch
 from typing_extensions import override
 
 from kfold.data import featurize, metadata, model_input, structure
+from kfold.data.utils import symmetry
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
@@ -18,8 +19,7 @@ This dataset implementation includes a safe loading mechanism that retries
 """
 
 # Type alias
-SymmetryInfo = dict | None
-# FIXME: add symmetry info for validation set
+SymmetryInfo = dict
 
 
 class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
@@ -31,10 +31,25 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         safe_load: bool,
         featurization_args: dict | None,
         pretrained_embedding_paths: dict | None,
+        mode: str = "train",
     ) -> None:
         self.records: list[metadata.Metadata] = records
         self.safe_load: bool = safe_load
         self.featurization_args = featurization_args or {}
+
+        if mode == "train":
+            return_symmetry = self.featurization_args.get("return_train_symmetry", False)
+            return_structure = False
+        elif mode == "validation":
+            return_symmetry = self.featurization_args.get(
+                "return_validation_symmetry", False
+            )
+            return_structure = True
+        else:
+            raise ValueError(f"Unknown mode '{mode}'")
+
+        self.return_symmetry: bool = return_symmetry
+        self.return_structure: bool = return_structure
 
         # Check validity and assign pretrained embedding paths and dimensions
         pretrained_embedding_paths = pretrained_embedding_paths or {}
@@ -89,6 +104,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Get the tokenized structure for the given index."""
 
     # === Optional to-override in subclasses === #
+    def crop_structure(
+        self,
+        struct: structure.TokenizedStructure,
+        **kwargs,
+    ) -> structure.TokenizedStructure:
+        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
+        return struct
+
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
         """Pad the folding input to multiple of 64 for LocalAtomAttention."""
         return f_input.pad_to_multiple_of(64)
@@ -129,18 +152,26 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         record_id = record.id
 
         # Tokenization
-        tokenized_structure = self.load_tokenized_structure(record)
+        struct = self.load_tokenized_structure(record)
+
+        # Cropping
+        cropped_struct = self.crop_structure(struct, **kwargs)
+
         # Featurization
-        f_input = self.featurize(tokenized_structure, record)
+        f_input = self.featurize(cropped_struct, record)
+
+        symmetry_dict = {}
+        symmetry_dict["id"] = record_id
+        if self.return_structure:
+            symmetry_dict["structure"] = struct
+        if self.return_symmetry:
+            symmetry_dict["symmetry"] = symmetry.get_symmetries(
+                f_input, cropped_struct, struct, {}
+            )
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
 
-        symmetry = {}
-        # TODO: add symmetry info
-        symmetry["id"] = record_id
-        symmetry["structure"] = tokenized_structure
-
-        return f_input, symmetry
+        return f_input, symmetry_dict
 
     def featurize(
         self, struct: structure.TokenizedStructure, record: metadata.Metadata
@@ -208,7 +239,11 @@ class TrainingDataset(SafeLoadingDataset):
            using the provided `cropper`.
         """
         super().__init__(
-            records, safe_load, featurization_args, pretrained_embedding_paths
+            records,
+            safe_load,
+            featurization_args,
+            pretrained_embedding_paths,
+            mode="train",
         )
         self.max_tokens: int = max_tokens
         self.cropper: BaseCropper = cropper
@@ -226,6 +261,20 @@ class TrainingDataset(SafeLoadingDataset):
     def __len__(self) -> int:
         return len(self.samples)
 
+    @override
+    def crop_structure(
+        self,
+        struct: structure.TokenizedStructure,
+        **kwargs,
+    ) -> structure.TokenizedStructure:
+        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
+        asym_ids: list[str] = kwargs["asym_ids"]
+        if self.max_tokens < struct.num_tokens:
+            # Crop the tokenized structure
+            struct = self.cropper.crop(struct, self.max_tokens, asym_ids)
+        return struct
+
+    @override
     def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
         return f_input.pad_to_max_token(max_tokens=self.max_tokens)
 
@@ -256,29 +305,6 @@ class TrainingDataset(SafeLoadingDataset):
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
 
-    def get_item(
-        self,
-        record: metadata.Metadata,
-        **kwargs,
-    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
-        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
-
-        tokenized_structure = self.load_tokenized_structure(record)
-
-        # Cropping
-        if self.max_tokens < tokenized_structure.num_tokens:
-            # Crop the tokenized structure
-            asym_ids: tuple[int, ...] | None = kwargs["asym_ids"]
-            tokenized_structure = self.cropper.crop(
-                tokenized_structure, self.max_tokens, asym_ids
-            )
-
-        # Featurization
-        f_input = self.featurize(tokenized_structure, record)
-        # Pad the folding input to max_tokens for LocalAtomAttention.
-        f_input = self.pad_input(f_input)
-        return f_input, None
-
 
 class ValidationDataset(SafeLoadingDataset):
     def __init__(
@@ -299,7 +325,11 @@ class ValidationDataset(SafeLoadingDataset):
             the nearest multiple of 64.
         """
         super().__init__(
-            records, safe_load, featurization_args, pretrained_embedding_paths
+            records,
+            safe_load,
+            featurization_args,
+            pretrained_embedding_paths,
+            mode="validation",
         )
         self.max_tokens: int | None = max_tokens
         if self.max_tokens is not None:

@@ -292,6 +292,9 @@ def get_alt_coordinates(
             # In-place swap
             alter_coords[crop_idcs] = all_coords[global_idcs_swap]
             alter_mask[crop_idcs] = all_resolved_mask[global_idcs_swap]
+        if alter_mask.sum() <= 4:
+            # Skip if too few resolved atoms
+            continue
         alter_coords_list.append(alter_coords)
         alter_resolved_mask_list.append(alter_mask)
 
