@@ -213,7 +213,7 @@ class BoltzCropper(BaseCropper):
 
             # Get all tokens from this chain
             chain_mask = all_asym_ids == asym_id
-            chain_tokens = all_tokens[chain_mask & resolved_mask]
+            chain_tokens = all_tokens[chain_mask]
 
             # Pick the whole chain if possible, otherwise select
             # a contiguous subset centered at the query token
