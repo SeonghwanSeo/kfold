@@ -657,6 +657,8 @@ class TokenizedStructure:
         cropped_structure: TokenizedStructure
             Cropped tokenized structure.
         """
+        token_indices = np.sort(np.unique(token_indices))
+
         cropped_token = self.token[token_indices]
         cropped_atom = self.atom[token_indices]
 

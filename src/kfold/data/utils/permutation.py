@@ -69,25 +69,7 @@ def find_best_chain_permutation(
     gt_center_coords = all_alt_gt_coords[:, center_index, :]  # [Nsym, Ntoken, 3]
     center_mask = all_alt_resolved_mask[:, center_index]  # [Nsym, Ntoken]
 
-    try:
-        # Perform alignment altogether
-        gt_center_coords_aligned = rigid_align(
-            coords=gt_center_coords,
-            target=center_coords.unsqueeze(0),
-            mask=center_mask,
-        )  # [Nsym, Ntoken, 3]
-
-        # NOTE: compute MSE instead of RMSD for efficiency
-        mse = compute_mse_loss(
-            gt_center_coords_aligned, center_coords.unsqueeze(0), center_mask
-        )  # [Nsym]
-        best_symmetry_index = int(torch.argmin(mse).item())
-
-    except Exception as e:
-        # If alignment fails, Perform alignment with for loop
-        print("Warning: error in rigid alignment altogether: ", e)
-        gt_center_coords_aligned = gt_center_coords
-
+    if num_symmetries > 1:
         best_symmetry_index: int = -1
         best_mse: float = float("inf")
         for s_i in range(num_symmetries):
@@ -103,7 +85,6 @@ def find_best_chain_permutation(
             except Exception as e:
                 print("Warning: error in rigid alignment inside symmetry code: ", e)
                 continue
-
             mse_i = compute_mse_loss(
                 gt_center_coords_aligned_i, center_coords, center_mask[s_i]
             ).item()
@@ -111,6 +92,8 @@ def find_best_chain_permutation(
                 best_mse = mse_i
                 best_symmetry_index = s_i
         assert best_symmetry_index >= 0, "No valid symmetry found."
+    else:
+        best_symmetry_index = 0
 
     # 2. Align the best symmetry with all atoms
     # NOTE: Since token-wise alighment can be overfitted to ligand atoms,
@@ -155,6 +138,9 @@ def find_best_mol_permutation(
         The resolved mask of aligned ground truth coordinates. Shape: [Natoms]
     """
 
+    if len(mol_symmetries) == 0:
+        return gt_coords_aligned, gt_resolved_mask
+
     gt_coords = gt_coords_aligned.clone()
     gt_mask = gt_resolved_mask.clone()
 
@@ -162,9 +148,11 @@ def find_best_mol_permutation(
     best_mse = compute_mse_loss(coords, gt_coords, gt_mask).item()
 
     # Inplace swap function to avoid extra memory allocation
-    def inplace_swap(a: torch.Tensor, src: list[int], dst: list[int]):
+    def swap(a: torch.Tensor, src: list[int], dst: list[int]) -> torch.Tensor:
         """Inplace swap of elements in tensor a at indices src and dst."""
-        a[src], a[dst] = a[dst], a[src]
+        out = a.clone()
+        out[dst] = a[src]
+        return out
 
     # Find the best permutation greedily
     for atom_swaps in mol_symmetries:
@@ -173,33 +161,27 @@ def find_best_mol_permutation(
         best_mse_for_swap = best_mse
         for s_i, (src, dst) in enumerate(atom_swaps):
             # Swap atoms
-            inplace_swap(gt_coords, src, dst)
-            inplace_swap(gt_mask, src, dst)
+            gt_coords_swap = swap(gt_coords, src, dst)
+            gt_mask_swap = swap(gt_mask, src, dst)
 
             # Compute MSE after swap
             if align_coords:
                 # Align after swap
-                gt_coords_aligned = rigid_align(
-                    coords=gt_coords, target=coords, mask=gt_mask
+                gt_coords_swap = rigid_align(
+                    coords=gt_coords_swap, target=coords, mask=gt_mask_swap
                 )
-                mse = compute_mse_loss(coords, gt_coords_aligned, gt_mask).item()
-            else:
-                mse = compute_mse_loss(coords, gt_coords, gt_mask).item()
+            mse = compute_mse_loss(coords, gt_coords_swap, gt_mask_swap).item()
 
             # Update best swap
             if mse < best_mse_for_swap:
                 best_mse_for_swap = mse
                 best_swap_i = s_i
 
-            # Revert swap
-            inplace_swap(gt_coords, src, dst)
-            inplace_swap(gt_mask, src, dst)
-
         # Apply the best swap if it improves MSE
         if best_swap_i >= 0:
             src, dst = atom_swaps[best_swap_i]
-            inplace_swap(gt_coords, src, dst)
-            inplace_swap(gt_mask, src, dst)
+            gt_coords = swap(gt_coords, src, dst)
+            gt_mask = swap(gt_mask, src, dst)
             if align_coords:
                 # Align after swap
                 gt_coords = rigid_align(coords=gt_coords, target=coords, mask=gt_mask)
@@ -209,32 +191,28 @@ def find_best_mol_permutation(
 
 
 def get_aligned_true_coords(
-    coords_batch: torch.Tensor,
+    coords: torch.Tensor,
     f_input: FoldingInput,
-    symmetry_dicts: list[dict],
+    symmetry_dict: dict,
     index_batch: int,
 ):
     """Compute minimum RMSD coordinates considering symmetries.
     Parameters
     ----------
-    coords_batch : torch.Tensor
-        The predicted coordinates. Shape: [B, Nsample, Natoms, 3]
+    coords : torch.Tensor
+        The predicted coordinates. Shape: [Nsample, Natoms, 3]
     f_input : FoldingInput
         The folding input containing features.
-    symmetry_dicts : list[dict]
-        The list of symmetry dictionaries containing:
+        NOTE: This includes all samples in the batch.
+    symmetry_dict : dict
+        The dictionary containing symmetry information:
             - "alt_coordinates": torch.Tensor of shape [Nsym, Natoms, 3]
             - "alt_resolved_mask": torch.Tensor of shape [Nsym, Natoms]
-            - "amino_acids_symmetries": list[ResidueSymmetry]
-            - "ligand_symmetries": list[ResidueSymmetry]
+            - "residue_symmetries": list[ResidueSymmetry]
+            - "molecule_symmetries": list[ResidueSymmetry]
     index_batch : int
         The batch index.
     """
-
-    coords = coords_batch[index_batch]  # [Nsample, Natoms, 3]
-    symmetry_dict = symmetry_dicts[index_batch]
-    del coords_batch, symmetry_dicts
-
     # Remove padding
     original_num_atoms = f_input.num_atoms
     num_valid_atoms = f_input.atom.pad_mask[index_batch].sum().item()
@@ -280,13 +258,13 @@ def get_aligned_true_coords(
 
         # Rigid alignment after residue permutation
         gt_coords_i = rigid_align(
-            coords=gt_coords_i, target=coords[i_sample], mask=gt_resolved_mask_i
+            coords=gt_coords_i, target=coords_i, mask=gt_resolved_mask_i
         )
 
         # find the best molecule permutation (with rigid alignment)
         # TODO: if rigid alignment is bottleneck, consider skipping it here
         gt_coords_i, gt_resolved_mask_i = find_best_mol_permutation(
-            coords[i_sample],
+            coords_i,
             gt_coords_i,
             gt_resolved_mask_i,
             molecule_symmetries,

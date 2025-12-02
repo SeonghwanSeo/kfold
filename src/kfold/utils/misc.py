@@ -58,8 +58,8 @@ def check_tensor(
 
 def expand_dim(
     tensor: torch.Tensor,
-    dim: int,
     n_repeat: int,
+    dim: int,
     add_new_dim: bool = True,
 ) -> torch.Tensor:
     """Expanding a tensor with new shape"""
@@ -73,8 +73,8 @@ def expand_dim(
 
 def repeat_dim(
     tensor: torch.Tensor,
-    dim: int,
     n_repeat: int,
+    dim: int,
     add_new_dim: bool = True,
 ) -> torch.Tensor:
     """Repeat a tensor with new shape"""

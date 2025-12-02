@@ -1,5 +1,3 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License
-
 import warnings
 
 import torch
@@ -37,6 +35,7 @@ def rigid_align(
     return weighted_rigid_align(coords, target, weights, mask, anchor_index, eps)
 
 
+@torch.no_grad()
 def weighted_rigid_align(
     coords: torch.Tensor,
     target: torch.Tensor,
@@ -116,8 +115,6 @@ def get_rigid_transform(
         Tensor of shape (..., N, 3) representing the target coordinates.
     weights : torch.Tensor
         Tensor of shape (..., N) containing weights for each point.
-    anchor_index : torch.Tensor | None, optional
-        Tensor of shape (...) containing indices of anchors to be used for alignment.
     eps : float, optional
         Small value added for numerical stability (default: 1e-8).
 
@@ -176,6 +173,9 @@ def get_rigid_transform(
         )
         RT = torch.eye(3, dtype=torch.float32, device=coords.device)
         RT = RT.tile(*coords.shape[:-2], 1, 1)
-    t = target_center - coords_center @ RT
+
+    # Compute translation
+    t = target_center[..., None, :] - coords_center[..., None, :] @ RT
+    t = t.squeeze(-2)
 
     return RT, t
