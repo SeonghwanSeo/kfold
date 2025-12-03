@@ -31,7 +31,6 @@ class BaseStructureModule(ABC):
         prior_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model.
-        See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3 paper.
 
         Parameters
         ----------
@@ -39,7 +38,7 @@ class BaseStructureModule(ABC):
             Noisy atom coordinates. Shape (B, N, La, 3),
             where N is number of diffusion samples and La is number of atoms.
         t_hat : torch.Tensor | float
-            Diffusion noise level (or sigmas of EDM). Shape (B, N,).
+            Time step or noise level. Shape (B, N) or float.
         f_input : FoldingInput
             FoldingInput object containing model inputs.
         s_inputs : torch.Tensor
@@ -127,9 +126,6 @@ class BaseStructureModule(ABC):
             Input features
         num_diffusion_samples:
             Number of diffusion samples
-        label_coords: torch.Tensor
-            Label coordinates. Shape: [B, N, La, 3]
-            where N is the number of diffusion samples
 
         Returns
         -------
