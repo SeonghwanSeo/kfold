@@ -69,7 +69,13 @@ def find_best_chain_permutation(
     gt_center_coords = all_alt_gt_coords[:, center_index, :]  # [Nsym, Ntoken, 3]
     center_mask = all_alt_resolved_mask[:, center_index]  # [Nsym, Ntoken]
 
-    if num_symmetries > 1:
+    if num_symmetries == 1:
+        # Only one symmetry (itself), skip search
+        best_symmetry_index = 0
+    elif not center_coords.isfinite().all():
+        # If predicted center coords contain NaN or inf, skip symmetry search
+        best_symmetry_index = 0
+    else:
         best_symmetry_index: int = -1
         best_mse: float = float("inf")
         for s_i in range(num_symmetries):
@@ -92,8 +98,6 @@ def find_best_chain_permutation(
                 best_mse = mse_i
                 best_symmetry_index = s_i
         assert best_symmetry_index >= 0, "No valid symmetry found."
-    else:
-        best_symmetry_index = 0
 
     # 2. Align the best symmetry with all atoms
     # NOTE: Since token-wise alighment can be overfitted to ligand atoms,
