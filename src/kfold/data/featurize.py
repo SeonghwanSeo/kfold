@@ -187,7 +187,7 @@ def featurize_structure(
     label_coords = atom_dict.pop("coords")  # Rename for clarity
     n_holo = label_coords.shape[-2]
     assert n_holo == 1, "Currently only single holo coordinate is supported."
-    sampled_idx = rng and rng.integers(0, n_holo) or np.random.randint(0, n_holo)
+    sampled_idx = rng.integers(0, n_holo) if rng else np.random.randint(0, n_holo)
     label_coords = label_coords[:, sampled_idx, :]
 
     # Centering the ground truth coords
@@ -301,7 +301,7 @@ def featurize_structure(
     apo_mask = atom_dict.pop("apo_mask")
     n_apo = apo_coords.shape[-2]
     assert n_apo == 1, "Currently only single apo coordinate is supported."
-    sampled_idx = rng and rng.integers(0, n_holo) or np.random.randint(0, n_holo)
+    sampled_idx = rng.integers(0, n_apo) if rng else np.random.randint(0, n_apo)
     apo_coords = apo_coords[:, sampled_idx, :]
     apo_mask = apo_mask[:, sampled_idx]
     if augment_apo:
