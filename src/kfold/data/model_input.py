@@ -349,8 +349,7 @@ class AtomLayout(TensorLayout):
     token_index: torch.Tensor (long)
         Token indices mapping atoms to their parent tokens of shape [Natom,].
     apo_coords: torch.Tensor (float32)
-        Apo (unbound) state coordinates of shape [Natom, Napo, 3],
-        where Napo is the number of apo conformations.
+        Apo (unbound) state coordinates of shape [Natom, 3],
     resolved_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating atoms to be resolved.
     apo_mask: torch.Tensor (bool)
@@ -358,8 +357,7 @@ class AtomLayout(TensorLayout):
     pad_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating valid (non-padded) atoms.
     label_coords: torch.Tensor (float32)
-        Holo (bound) state coordinates of shape [Natom, Nholo, 3],
-        where Nholo is the number of ensemble holo conformations.
+        Holo (bound) state coordinates of shape [Natom, 3],
         This is used as the ground truth for training, and may be set to 0
         for inference.
     """
@@ -367,13 +365,13 @@ class AtomLayout(TensorLayout):
     ref_atom_name_chars: torch.Tensor  # [Natom, 4, 64], float32
     ref_element: torch.Tensor  # [Natom, 128], float32
     ref_charge: torch.Tensor  # [Natom,], float32
-    ref_pos: torch.Tensor  # [Natom, Nholo, 3], float32
+    ref_pos: torch.Tensor  # [Natom, 3], float32
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
-    label_coords: torch.Tensor  # [Natom, Nholo, 3], float32
-    apo_coords: torch.Tensor  # [Natom, Napo, 3], float32
+    label_coords: torch.Tensor  # [Natom, 3], float32
+    apo_coords: torch.Tensor  # [Natom, 3], float32
     resolved_mask: torch.Tensor  # [Natom,], bool
-    apo_mask: torch.Tensor  # [Natom, Napo], bool
+    apo_mask: torch.Tensor  # [Natom,], bool
     pad_mask: torch.Tensor  # [Natom,], bool
 
     @property
@@ -406,15 +404,15 @@ class AtomLayout(TensorLayout):
             self.label_coords,
             name="label_coords",
             dtype=torch.float32,
-            shape=(*shape, -1, 3),
+            shape=(*shape, 3),
         )
         check_tensor(
-            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, -1, 3)
+            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, 3)
         )
         check_tensor(
             self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=shape
         )
-        check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=(*shape, -1))
+        check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=shape)
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:

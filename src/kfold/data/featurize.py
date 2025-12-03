@@ -77,9 +77,9 @@ def do_augment_apo_structure(
     Parameters
     ----------
     apo_coords : np.ndarray
-        Apo structure coordinates of shape [Napo, Natom, 3].
+        Apo structure coordinates of shape [Natom, 3].
     mask : np.ndarray
-        Mask indicating valid atoms of shape [Napo, Natom].
+        Mask indicating valid atoms of shape [Natom].
     chain_sizes : np.ndarray
         Array of number of atoms per each chain.
     rng : np.random.Generator | None
@@ -88,17 +88,17 @@ def do_augment_apo_structure(
     Returns
     -------
     augmented_apo_coords : np.ndarray
-        Augmented apo structure coordinates of shape [Napo, Natom, 3].
+        Augmented apo structure coordinates of shape [Natom, 3].
     """
     # Apply random rotation and translation per apo coords
     new_coords = np.zeros_like(apo_coords)
     start_idx = 0
     for natom in chain_sizes:
         end_idx = start_idx + natom
-        new_coords[:, start_idx:end_idx] = center_random_augmentation(
-            apo_coords[:, start_idx:end_idx],  # =apo_chain_coords
-            mask[:, start_idx:end_idx],  # =apo_chain_mask
-            rng=rng,
+        chain_coords = apo_coords[start_idx:end_idx]
+        chain_mask = mask[start_idx:end_idx]
+        new_coords[start_idx:end_idx] = center_random_augmentation(
+            chain_coords, chain_mask, rng=rng
         )
         start_idx = end_idx
     return new_coords
@@ -179,17 +179,20 @@ def featurize_structure(
         k: cast(v)[atom_to_token, atom_in_token_idx]  # Fancy indexing - no loop!
         for k, v in atom_data.to_dict().items()
     }
-    atom_dict["label_coords"] = atom_dict.pop("coords")  # Rename for clarity
     atom_dict["token_index"] = atom_to_token
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
+    # Random sample the ground truth holo coords if multiple holo coords are given.
+    # [Natom, Nholo, 3] -> [Natom, 3]
+    label_coords = atom_dict.pop("coords")  # Rename for clarity
+    n_holo = label_coords.shape[-2]
+    assert n_holo == 1, "Currently only single holo coordinate is supported."
+    sampled_idx = rng and rng.integers(0, n_holo) or np.random.randint(0, n_holo)
+    label_coords = label_coords[:, sampled_idx, :]
+
     # Centering the ground truth coords
-    # [Natom, Nholo, 3] -> [Nholo, Natom, 3] -> [Natom, Nholo, 3]
-    atom_dict["label_coords"] = do_centering(
-        atom_dict["label_coords"].transpose(1, 0, 2),
-        atom_dict["resolved_mask"].reshape(1, -1),
-        mask_to_zero=True,
-    ).transpose(1, 0, 2)
+    label_coords = do_centering(label_coords, atom_dict["resolved_mask"])
+    atom_dict["label_coords"] = label_coords
 
     # === Bond-level features ===
     num_bonds = bond_data.length
@@ -241,12 +244,8 @@ def featurize_structure(
 
     # add disto/center coords
     # HACK: we assume there is only one holo coordinate set.
-    token_dict["disto_coords"] = atom_dict["label_coords"][:, 0][
-        token_dict["disto_index"]
-    ]
-    token_dict["center_coords"] = atom_dict["label_coords"][:, 0][
-        token_dict["center_index"]
-    ]
+    token_dict["disto_coords"] = atom_dict["label_coords"][token_dict["disto_index"]]
+    token_dict["center_coords"] = atom_dict["label_coords"][token_dict["center_index"]]
 
     # Masks indicating whether the center/disto atoms are resolved
     token_dict["resolved_mask"] = (
@@ -296,23 +295,27 @@ def featurize_structure(
             rng=rng,
         )
 
-    # TODO: if we use multiple apo structures, randomly sample one apo structure here.
     # TODO: If we use CCD, use random ETKDG conformers here.
+    # [Natom, Napo, 3] -> [Natom, 3]
+    apo_coords = atom_dict.pop("apo_coords")
+    apo_mask = atom_dict.pop("apo_mask")
+    n_apo = apo_coords.shape[-2]
+    assert n_apo == 1, "Currently only single apo coordinate is supported."
+    sampled_idx = rng and rng.integers(0, n_holo) or np.random.randint(0, n_holo)
+    apo_coords = apo_coords[:, sampled_idx, :]
+    apo_mask = apo_mask[:, sampled_idx]
     if augment_apo:
+        # Augment apo structure (chain-wise)
         num_atoms_per_chains = chain_dict["num_atoms"]
-        # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
-        atom_dict["apo_coords"] = do_augment_apo_structure(
-            apo_coords=atom_dict["apo_coords"].transpose(1, 0, 2),
-            mask=atom_dict["apo_mask"].transpose(1, 0),
+        apo_coords = do_augment_apo_structure(
+            apo_coords=apo_coords,
+            mask=apo_mask,
             chain_sizes=num_atoms_per_chains,
             rng=rng,
-        ).transpose(1, 0, 2)
-    else:
-        # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
-        atom_dict["apo_coords"] = do_centering(
-            atom_dict["apo_coords"].transpose(1, 0, 2),
-            atom_dict["apo_mask"].transpose(1, 0),
-        ).transpose(1, 0, 2)
+        )
+    apo_coords = do_centering(apo_coords, apo_mask)
+    atom_dict["apo_coords"] = apo_coords
+    atom_dict["apo_mask"] = apo_mask
 
     # === Bond-level features ===
 

@@ -453,9 +453,7 @@ def permute_label_coordinates(
 
     else:
         """Perform weighted rigid alignment without symmetry correction."""
-        true_coords = f_input.atom.label_coords  # [B, Natom, Nholo, 3]
-        # HACK: we only consider the first bio-assembly
-        true_coords = true_coords[:, :, 0, :]
+        true_coords = f_input.atom.label_coords  # [B, Natom, 3]
         mask = f_input.atom.resolved_mask  # [B, Natom]
 
         # Weighted rigid alignment for best permutation
