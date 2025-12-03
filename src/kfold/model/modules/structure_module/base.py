@@ -368,3 +368,7 @@ class BaseEDM(BaseStructureModule):
     @abstractmethod
     def c_noise(self, sigma: torch.Tensor) -> torch.Tensor:
         """Noise level conditioning coefficient for EDM preconditioning."""
+
+    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
+        """Compute loss weights based on noise levels t_hat. Shape: (B, N)."""
+        return 1 / self.c_out(t_hat) ** 2
