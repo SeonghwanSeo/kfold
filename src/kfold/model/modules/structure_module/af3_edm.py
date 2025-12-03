@@ -10,11 +10,11 @@ from kfold.model.modules.score_model.base import BaseScoreModel
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseStructureModule
+from .base import BaseEDM
 
 
 @STRUCTURE_MODULE.register()
-class AF3SampleDiffusion(BaseStructureModule):
+class AF3SampleDiffusion(BaseEDM):
     """Atom diffusion module used in AlphaFold3.
     See Section 3.7 Algorithm 18: SampleDiffusion in the AF3 paper.
     """

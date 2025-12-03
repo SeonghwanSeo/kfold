@@ -10,11 +10,11 @@ from kfold.model.modules.score_model.base import BaseScoreModel
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseStructureModule
+from .base import BaseEDM
 
 
 @STRUCTURE_MODULE.register()
-class Boltz1SampleDiffusion(BaseStructureModule):
+class Boltz1SampleDiffusion(BaseEDM):
     """Atom diffusion module used in Boltz1."""
 
     class Config(BaseConfig):

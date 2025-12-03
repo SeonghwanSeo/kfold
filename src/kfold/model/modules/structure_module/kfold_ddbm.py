@@ -10,11 +10,11 @@ from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_cen
 from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseStructureModule
+from .base import BaseEDM
 
 
 @STRUCTURE_MODULE.register()
-class KFoldBridgeDiffusion(BaseStructureModule):
+class KFoldBridgeDiffusion(BaseEDM):
     """Diffusion Bridge module for biomolecular structure prediction.
 
     Implements a bridge diffusion process that transitions from apo (unbound)
