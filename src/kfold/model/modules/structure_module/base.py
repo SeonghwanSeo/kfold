@@ -4,7 +4,8 @@ import torch
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.modules.score_model import BaseScoreModel
-from kfold.utils.geometry.random_augment import center_random_augmentation
+from kfold.utils.geometry.random_augment import do_centering
+from kfold.utils.misc import repeat_dim
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 
@@ -74,6 +75,46 @@ class BaseStructureModule(ABC):
     ) -> torch.Tensor:
         """Get the noise schedule for diffusion sampling."""
 
+    def apply_random_augmentation(
+        self, coords: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Apply random augmentation to coordinates.
+
+        Parameters
+        ----------
+        coords : torch.Tensor
+            Coordinates. Shape (*, L, 3).
+        mask : torch.Tensor
+            Mask. Shape (*, L).
+
+        Returns
+        -------
+        augmented_coords : torch.Tensor
+            Augmented Coordinates. Shape (*, La, 3).
+        """
+        # Default: simple centering without augmentation
+        coords = do_centering(coords, mask, mask_to_zero=True)
+        return coords
+
+    def sample_label(
+        self, f_input: FoldingInput, num_diffusion_samples: int = 1
+    ) -> torch.Tensor:
+        """Sample label coordinates from input features.
+        Return shape: [B, N, La, 3], where N is number of diffusion samples
+        and La is number of atoms.
+
+        Parameters
+        -----------
+        f_input: FoldingInput
+            Input features
+        """
+        # if the model is equivariance, skip augment
+        random_augment = True
+
+        holo_coords = self.sample_holo(f_input, num_diffusion_samples, random_augment)
+
+        return holo_coords
+
     def sample_prior(
         self,
         f_input: FoldingInput,
@@ -94,7 +135,6 @@ class BaseStructureModule(ABC):
             Label coordinates. Shape: [B, N, La, 3]
             where N is the number of diffusion samples
         """
-
         # if the model is equivariance, skip augment
         random_augment = True
 
@@ -167,6 +207,45 @@ class BaseStructureModule(ABC):
             Denoised atom coordinates. Shape (B, N, Lt, 3).
         """
 
+    # === Sampling holo/apo structures === #
+    def sample_holo(
+        self,
+        f_input: FoldingInput,
+        num_diffusion_samples: int = 1,
+        random_augment: bool = True,
+    ) -> torch.Tensor:
+        """Sample holo structures from input for model training.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+        num_diffusion_samples : int, optional
+            Number of diffusion samples to generate, by default 1.
+        random_augment: bool
+            Whether to apply random augmentation to holo coordinates.
+
+        Returns
+        -------
+        holo_coords : torch.Tensor
+            Sampled holo coordinates. Shape (B, N, L, 3),
+            where N is number of diffusion samples and L is the number of atoms.
+        """
+        holo_coords = f_input.atom.label_coords  # [B, L, 3]
+        atom_mask = f_input.atom.resolved_mask  # [B, L]
+
+        # repeat holo coords
+        holo_coords = repeat_dim(
+            holo_coords, num_diffusion_samples, dim=-3
+        )  # [B, N, L, 3]
+        atom_mask = atom_mask.unsqueeze(-2)  # [B, 1, L]
+
+        # Apply coordinate augmentation or centering
+        if random_augment:
+            holo_coords = self.apply_random_augmentation(holo_coords, atom_mask)
+
+        return holo_coords  # [B, N, L, 3]
+
     def sample_apo(
         self,
         f_input: FoldingInput,
@@ -193,31 +272,19 @@ class BaseStructureModule(ABC):
             where N is number of diffusion samples and L is the number of atoms.
         """
 
-        all_apo_coords = f_input.atom.apo_coords  # [B, L, Napo, 3]
-        all_apo_coords = all_apo_coords.permute(
-            0, 2, 1, 3
-        ).contiguous()  # [B, Napo, L, 3]
-        all_apo_mask = f_input.atom.apo_mask  # [B, L, Napo, 3]
-        all_apo_mask = all_apo_mask.permute(0, 2, 1).contiguous()  # [B, Napo, L]
+        apo_coords = f_input.atom.apo_coords  # [B, L, 3]
+        apo_mask = f_input.atom.apo_mask  # [B, L]
 
-        B, Napo, L = all_apo_mask.shape  # noqa
-        assert Napo == 1
         # TODO(SeonghwanSeo): Currently only supports a single apo structure (Napo == 1).
         # Update this code to support multiple apo structures in the future.
-        sampled_apo_coords = all_apo_coords.repeat(1, num_diffusion_samples, 1, 1)
-        sampled_apo_mask = all_apo_mask.repeat(1, num_diffusion_samples, 1)
+        apo_coords = repeat_dim(apo_coords, num_diffusion_samples, dim=-3)  # [B, N, L, 3]
+        apo_mask = apo_mask.unsqueeze(-2)  # [B, 1, L]
 
+        # Apply coordinate augmentation or centering
         if random_augment:
-            sampled_apo_coords = center_random_augmentation(
-                sampled_apo_coords,
-                sampled_apo_mask,
-                s_trans=0.0,  # Keep center to zero.
-            )
+            apo_coords = self.apply_random_augmentation(apo_coords, apo_mask)
 
-        # Mask out to zero
-        sampled_apo_coords = sampled_apo_coords * sampled_apo_mask[..., None]
-
-        return sampled_apo_coords  # [B, N, L, 3]
+        return apo_coords  # [B, N, L, 3]
 
     # === For model training === #
     def training_step(
@@ -241,14 +308,17 @@ class BaseStructureModule(ABC):
                 batch_size, num_diffusion_samples, device=f_input.device
             )  # [B, N]
 
-            # sample xt from label (Currently, there is only one holo structure per input)
-            holo_coords = self.sample_holo(f_input, num_diffusion_samples)
+            # sample xT from label
+            label_coords = self.sample_label(f_input, num_diffusion_samples)
+            label_coords = label_coords * mask[..., None, :, None]
 
             # sample x0 from prior
-            prior_coords = self.sample_prior(f_input, num_diffusion_samples, holo_coords)
+            prior_coords = self.sample_prior(f_input, num_diffusion_samples, label_coords)
+            prior_coords = prior_coords * mask[..., None, :, None]
 
-            noised_atom_coords = self.interpolate(prior_coords, holo_coords, t_hat, mask)
-            noised_atom_coords = noised_atom_coords * mask[:, None, :, None]
+            # sample xt via interpolation
+            noised_atom_coords = self.interpolate(prior_coords, label_coords, t_hat, mask)
+            noised_atom_coords = noised_atom_coords * mask[..., None, :, None]
 
         denoised_atom_coords = self.forward_model(
             x_noisy=noised_atom_coords,  # [B, N, La, 3]
@@ -269,7 +339,7 @@ class BaseStructureModule(ABC):
             "prior_atom_coords": prior_coords,
             "noised_atom_coords": noised_atom_coords,
             "denoised_atom_coords": denoised_atom_coords,
-            "true_atom_coords": holo_coords,
+            "true_atom_coords": label_coords,
         }
 
     @abstractmethod
@@ -277,44 +347,3 @@ class BaseStructureModule(ABC):
         """Compute loss weights based on noise levels t_hat.
         See Section 3.7.1 Equation 6 of AlphaFold3 paper.
         """
-
-    def sample_holo(
-        self, f_input: FoldingInput, num_diffusion_samples: int = 1
-    ) -> torch.Tensor:
-        """Sample holo structures from input for model training.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            FoldingInput object containing model inputs.
-        num_diffusion_samples : int, optional
-            Number of diffusion samples to generate, by default 1.
-
-        Returns
-        -------
-        holo_coords : torch.Tensor
-            Sampled holo coordinates. Shape (B, N, L, 3),
-            where N is number of diffusion samples and L is the number of atoms.
-        """
-
-        holo_coords = f_input.atom.label_coords  # [B, L, Nholo, 3]
-        holo_coords = holo_coords.permute(0, 2, 1, 3)  # [B, Nholo, L, 3]
-        Nholo = holo_coords.shape[1]
-        if Nholo != 1:
-            raise NotImplementedError(
-                "Multiple holo structures per input not supported yet."
-            )
-
-        if Nholo == 1:
-            # repeat holo coords
-            holo_coords = holo_coords.repeat(1, num_diffusion_samples, 1, 1)
-        else:
-            # sample holo indices
-            raise NotImplementedError("sample not implemented")
-
-        # Mask out unresolved atoms
-        atom_mask = f_input.atom.resolved_mask  # (B, Latom)
-        atom_mask = atom_mask.to(holo_coords.dtype)[:, None, :, None]
-        holo_coords = holo_coords * atom_mask
-
-        return holo_coords  # [B, N, L, 3]

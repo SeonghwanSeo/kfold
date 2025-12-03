@@ -158,9 +158,9 @@ ref_pos = atom_layout.ref_pos  # Shape: (Natom, 3)
 | `atom_to_token` | $^2$ | `(Natom, Ntoken)` vs `(Natom,)` | Mapping from atom to token (one-hot vs integer) |
 | `atom_pad_masks` | `pad_mask` | `(Natom,)` | Mask for valid atoms or padding |
 | `atom_resolved_mask` | `resolved_mask` | `(Natom,)` | Mask for resolved atoms |
-| `coords` | `label_coords` | `(Nholo, Natom, 3)` vs `(Natom, Nholo, 3)` | Target coordinates for training $^3$ |
-| - | `apo_coords` | `(Natom, Napo, 3)` | Apo structure coordinates |
-| - | `apo_mask` | `(Natom, Napo)` | Apo structure mask |
+| `coords` | `label_coords` | `(Nholo, Natom, 3)` vs `(Natom, 3)` | Target coordinates for training $^3$ |
+| - | `apo_coords` | `(Natom, 3)` | Apo structure coordinates |
+| - | `apo_mask` | `(Natom,)` | Apo structure mask |
 
 > $^1$ **Note:** In K-Fold, we are considering replacing `ref_pos` with `apo_coords`.
 > $^2$ **Note:** `atom_to_token` in Boltz can be accessed via `FoldingInput` instead of `AtomLayout`: `model_input.atom_to_token`.

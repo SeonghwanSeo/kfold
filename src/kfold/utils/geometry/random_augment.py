@@ -1,6 +1,6 @@
 import math
 from collections.abc import Sequence
-from typing import TypeVar
+from typing import TypeVar, overload
 
 import numpy as np
 import torch
@@ -318,3 +318,119 @@ def quaternion_to_matrix(quaternions: ArrayT) -> ArrayT:
         dim=-1,
     )
     return o.reshape(quaternions.shape[:-1] + (3, 3))
+
+
+class CenterRandomAugmentation:
+    """Centering and Random Augmentation Module
+    See Section 3.7 Algorithm 19 CentreRandomAugmentation
+
+    Usage)
+    ```python
+    augment = CenterRandomAugmentation(...)
+    x = augment(x, mask=mask)
+    x, y = augment(x, y, mask=mask)
+    ```
+    """
+
+    def __init__(
+        self,
+        augmentation: bool = True,
+        centering: bool = True,
+        s_trans: float = 1.0,
+        mask_to_zero: bool = True,
+    ):
+        self.augmentation: bool = augmentation
+        self.centering: bool = centering
+        self.s_trans: float = s_trans
+        self.mask_to_zero: bool = mask_to_zero
+
+    @overload
+    def __call__(
+        self,
+        coords: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def __call__(
+        self,
+        coords1: torch.Tensor,
+        coords2: torch.Tensor,
+        *others: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]: ...
+
+    def __call__(  # type: ignore[override]
+        self,
+        *coords: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        return self.augment(*coords, mask=mask)
+
+    @overload
+    def augment(
+        self,
+        coords: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor: ...
+
+    @overload
+    def augment(
+        self,
+        coords1: torch.Tensor,
+        coords2: torch.Tensor,
+        *others: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, ...]: ...
+
+    def augment(  # type: ignore[override]
+        self,
+        *coords: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        """See Section 3.7 Algorithm 19 CentreRandomAugmentation
+
+        Parameters
+        ----------
+        coords : torch.Tensor
+            One or more tensors of shape (..., L, 3) representing atomic coordinates.
+        mask : torch.Tensor
+            A tensor of shape (..., L) representing the atom mask.
+        """
+        coords_list: list[torch.Tensor] = list(coords)
+        # Check all input coords have the same batch size and number of atoms
+        ref_coords = coords_list[0]
+        coords_shape = ref_coords.shape
+        for c in coords_list:
+            assert c.shape == coords_shape, (
+                "All input coordinate tensors must have the same batch size and length."
+                f" Got {c.shape} vs {coords_shape}."
+            )
+
+        # Line 1
+        if self.centering:
+            coords_list = [do_centering(x, mask, mask_to_zero=False) for x in coords_list]
+
+        if self.augmentation:
+            # Line 2,4
+            R = random_rotations_torch(
+                coords_shape[:-2], ref_coords.dtype, ref_coords.device
+            )  # [..., 3, 3]
+            rotate = lambda x: torch.einsum("...md,...ds->...ms", x, R)  # noqa
+            coords_list = [rotate(x) for x in coords_list]
+
+            # Line 3,4
+            if self.s_trans > 0.0:
+                random_trans = torch.randn_like(ref_coords[..., 0:1, :]) * self.s_trans
+                coords_list = [x + random_trans for x in coords_list]
+
+        # Mask out
+        if self.mask_to_zero:
+            coords_list = [x * mask[..., None] for x in coords_list]
+
+        if len(coords) == 1:
+            # Single tensor input, return tensor
+            return coords_list[0]
+        else:
+            # Multiple tensor input, return list of tensors
+            return tuple(coords_list)
