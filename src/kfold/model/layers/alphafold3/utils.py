@@ -216,6 +216,29 @@ class LocalAttentionIndex:
 
         return gather_indices, pad_mask
 
+    def to_qk(self, x: torch.Tensor, dim: int = -2) -> tuple[torch.Tensor, torch.Tensor]:
+        """Convert single tensor to query and key tensors.
+        feature: [..., L, D] -> [..., W, Lq, D], [..., W, Lk, D]
+        mask, indices: [..., L] -> [..., W, Lq], [..., W, Lk]
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape [..., L, D] or [..., L]
+        dim : int, optional
+            Dimension corresponding to the atom sequence (default: -2)
+            should be -2 for features and -1 for masks or indices.
+
+        Returns
+        -------
+        tuple[torch.Tensor, torch.Tensor]
+            Query tensor of shape [..., W, Lq, D] or [..., W, Lq]
+            Key tensor of shape [..., W, Lk, D] or [..., W, Lk]
+        """
+        queries = self.to_query(x, dim=dim)
+        keys = self.to_key(x, dim=dim)
+        return queries, keys
+
     def to_query(self, x: torch.Tensor, dim: int = -2) -> torch.Tensor:
         """Convert single tensor to query tensor.
         feature: [..., L, D] -> [..., W, Lq, D] (set dim=-2)

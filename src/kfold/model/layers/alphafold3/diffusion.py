@@ -233,9 +233,13 @@ class DiffusionModule(nn.Module):
             model_cache=model_cache,
         )  # [B, N, Lt, c_s], [B, Lt, Lt, c_z]
 
+        s_trunk = s_trunk.unsqueeze(-3)  # [B, 1, Lt, c_s]
+        z = z.unsqueeze(-4)  # [B, 1, Lt, Lt, c_z]
+
         # Shape:
+        # - s_trunk: [B, 1, Lt, c_s]
         # - s: [B, N, Lt, c_s] where N is number of diffusion samples
-        # - z: [B, Lt, Lt, c_z] (time-independent)
+        # - z: [B, 1, Lt, Lt, c_z] (time-independent)
 
         # Line 2: x_noisy -> r_noisy
         # Already given as input
@@ -245,8 +249,8 @@ class DiffusionModule(nn.Module):
         a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
             f_input=f_input,
             r_noisy=r_noisy,  # [B, N, La, 3]
-            s_trunk=s_trunk,  # [B, Lt, c_s]
-            z_trunk=z,  # [B, Lt, Lt, c_z]
+            s_trunk=s_trunk,  # [B, 1, Lt, c_s], broadcasted to [B, N, Lt, c_s]
+            z_trunk=z,  # [B, 1, Lt, Lt, c_z], broadcasted to [B, N, Lt, Lt, c_z]
             model_cache=model_cache,
         )
         # Shape:
@@ -260,7 +264,6 @@ class DiffusionModule(nn.Module):
         a = a + self.linear_s_to_a(self.layernorm_s(s))  # [Nsample, La, c_token]
 
         # Line 5
-        z = z.unsqueeze(-4)  # [B, 1, Lt, Lt, c_z]
         token_mask = f_input.token.pad_mask.unsqueeze(-2)  # [B, 1, Lt]
         a = self.token_transformer(
             a,  # [B, N, Lt, c_token]

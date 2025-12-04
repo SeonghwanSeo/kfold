@@ -6,9 +6,9 @@ from kfold.data.model_input import FoldingInput
 from kfold.training.folding.dataset.utils.permutation import get_aligned_true_coords
 from kfold.training.folding.loss.diffusion import (
     compute_modality_weights,
-    get_atom_weights,
     weighted_rigid_align,
 )
+from kfold.utils.geometry.rigid_align import rigid_align
 
 
 def compute_pair_lddt(
@@ -21,9 +21,9 @@ def compute_pair_lddt(
     Parameters
     ----------
     d_predicted : torch.Tensor
-        Predicted distances, shape (B, Natom, Natom)
+        Predicted distances, shape (*, Natom, Natom)
     d_true : torch.Tensor
-        Ground truth distances, shape (B, Natom, Natom)
+        Ground truth distances, shape (*, Natom, Natom)
     thresholds : Sequence[float]
         Distance error thresholds for lddt calculation
     """
@@ -56,6 +56,12 @@ def compute_rmsd(
     torch.Tensor
         The rmsd score between predicted and true coordinates
     """
+    true_coords = rigid_align(
+        coords=true_coords,  # [Natom, 3]
+        target=pred_coords,  # [Natom, 3]
+        mask=mask,  # [Natom]
+    )  # [Natom, 3]
+
     diff = ((pred_coords - true_coords) ** 2).sum(-1)
     masked_diff = diff * mask
     mse = masked_diff.sum() / mask.sum()
@@ -94,21 +100,20 @@ def compute_weighted_rmsd(
         weights = weights * mask.float()
 
     aligned_coords_true = weighted_rigid_align(
-        coords=true_coords.float(),  # [B, N, L, 3]
-        target=pred_coords.float(),  # [B, N, L, 3]
-        weights=weights,  # [B, 1, L], broadcasted over N
-        mask=mask,  # [B, 1, L]
-    )  # [B, N, L, 3]
+        coords=true_coords,  # [Natom, 3]
+        target=pred_coords,  # [Natom, 3]
+        weights=weights,  # [Natom, L], broadcasted over N
+        mask=mask,  # [Natom, L]
+    )  # [Natom, 3]
 
-    d_sq = ((pred_coords - aligned_coords_true) ** 2).sum(dim=-1)  # [B, N, L]
+    d_sq = ((pred_coords - aligned_coords_true) ** 2).sum(dim=-1)  # [Natom]
     if scale:
-        weight_sum = weights.sum(-1).clamp(min=1)  # [B, 1]
-        mse_loss = (weights * d_sq).sum(-1) / weight_sum  # [B, N]
+        weight_sum = weights.sum().clamp(min=1)
+        mse_loss = (weights * d_sq).sum() / weight_sum
     else:
-        mask_sum = mask.sum(-1).clamp(min=1)  # [B, 1]
-        mse_loss = (weights * d_sq).sum(-1) / mask_sum  # [B, N]
+        mask_sum = mask.sum().clamp(min=1)
+        mse_loss = (weights * d_sq).sum() / mask_sum
     weighted_rmsd = torch.sqrt(mse_loss)
-
     return weighted_rmsd
 
 
@@ -153,6 +158,8 @@ def compute_validation_metric_singles(
     assert pred_coords.shape == true_coords.shape, (
         "Predicted and true coordinates must have the same shape."
     )
+    # Convert to float32
+    pred_coords, true_coords = pred_coords.float(), true_coords.float()
 
     metrics: dict[str, torch.Tensor] = {}
     weights: dict[str, torch.Tensor] = {}
@@ -194,6 +201,8 @@ def compute_validation_metric_singles(
     valid_mask.diagonal().fill_(0)  # Exclude self-pairs
     local_mask_15 = pdist_true < 15.0
     local_mask_30 = pdist_true < 30.0  # For DNA/RNA intra-chains and interfaces
+    local_mask_15 = local_mask_15 & valid_mask
+    local_mask_30 = local_mask_30 & valid_mask
 
     # Compute intra-chain metrics
     intra_mask = asym_id[:, None] == asym_id[None, :]
@@ -249,6 +258,9 @@ def compute_validation_metric_singles(
         total_pairs = lddt_mask.sum()
         lddt = (lddt_score * lddt_mask).sum() / total_pairs.clamp(1)
         metrics[metric_name] = lddt
+        if ctype1 != ctype2:
+            # Count both sides for hetero-interfaces
+            total_pairs = total_pairs * 2
         weights[metric_name] = total_pairs
 
     # Compute complex lddt
@@ -383,18 +395,22 @@ def compute_validation_metrics(
     # No prefix: best values for each metric across samples.
     # "avg_" prefix: average over all samples
     # "complex_" prefix: values of the highest-lddt sample.
+    # NOTE: use binary weights instead of number of pairs for averaging,
     validation_metrics: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
     for k in all_metrics.keys():
         v = torch.stack(all_metrics[k], dim=0)
         w = torch.stack(all_weights[k], dim=0)
+        w = (w > 0).float()  # Use binary weights for averaging
         validation_metrics[f"avg_{k}"] = (v, w)
     for k in all_best_metrics.keys():
         v = torch.stack(all_best_metrics[k], dim=0)
         w = torch.stack(all_best_weights[k], dim=0)
+        w = (w > 0).float()  # Use binary weights for averaging
         validation_metrics[k] = (v, w)
     for k in all_best_complex_metrics.keys():
         v = torch.stack(all_best_complex_metrics[k], dim=0)
         w = torch.stack(all_best_complex_weights[k], dim=0)
+        w = (w > 0).float()  # Use binary weights for averaging
         validation_metrics[f"complex_{k}"] = (v, w)
 
     # HACK: Boltz1 called 'weighted_lddt' as 'lddt'.
@@ -446,24 +462,21 @@ def permute_label_coordinates(
             )  # [Nsample, Natom, 3], [Nsample, Natom]
             aligned_true_coords_list.append(true_coords_aligned)
             resolved_mask_list.append(mask)
-        aligned_coords = torch.stack(
+        true_coords = torch.stack(
             aligned_true_coords_list, dim=0
         )  # [B, Nsample, Natom, 3]
         mask = torch.stack(resolved_mask_list, dim=0)  # [B, Nsample, Natom]
 
     else:
-        """Perform weighted rigid alignment without symmetry correction."""
         true_coords = f_input.atom.label_coords  # [B, Natom, 3]
         mask = f_input.atom.resolved_mask  # [B, Natom]
 
         # Weighted rigid alignment for best permutation
-        weights = get_atom_weights(f_input)  # [B, Natom]
         true_coords = true_coords[:, None, :, :]  # [B, 1, Natom, 3]
-        weights = weights[:, None, :]  # [B, 1, Natom]
         mask = mask[:, None, :]  # [B, 1, Natom]
-        aligned_coords = weighted_rigid_align(true_coords, pred_coords, weights, mask)
 
-        # Expand mask
+        # Expand
+        true_coords = true_coords.expand(-1, Nsample, -1, -1)  # [B, Nsample, Natom, 3]
         mask = mask.expand(-1, Nsample, -1)  # [B, Nsample, Natom]
 
-    return aligned_coords, mask
+    return true_coords, mask
