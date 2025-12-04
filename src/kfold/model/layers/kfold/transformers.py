@@ -34,6 +34,7 @@ class AtomEmbeddingWithApo(AtomEmbedding):
         atom_feats = super().forward(f_input)
         # Additional apo position embedding
         apo_coords = f_input.atom.apo_coords  # [B, La, 3]
+        apo_coords = apo_coords * f_input.atom.apo_mask[..., None]
         with torch.autocast(atom_feats.device.type, enabled=False):
             apo_coords_emb = self.embed_atom_apo_pos(apo_coords)
         atom_feats = atom_feats + apo_coords_emb
@@ -329,26 +330,34 @@ class AtomAttentionEncoderWithApo(nn.Module):
         p_ref = p_ref * ref_v
 
         # 2. Apo chain positions
+        # Masking with apo presence
+        apo_mask = f_input.atom.apo_mask  # [B, La]
+        apo_mask_q, apo_mask_k = local_attn_index.to_qk(apo_mask, dim=-1)
+        apo_v = apo_mask_q[..., :, None] & apo_mask_k[..., None, :]  # [B, W, Lq, Lk]
+
         # Masking with chain identity
         asym_id = broadcast_tokens_to_atoms(
-            f_input.token.asym_id, f_input.atom.token_index
-        )
+            f_input.token.asym_id.unsqueeze(-1), f_input.atom.token_index
+        ).squeeze(-1)  # [B, La]
         asym_id_q, asym_id_k = local_attn_index.to_qk(asym_id, dim=-1)
-        apo_v = asym_id_q[..., :, None] == asym_id_k[..., None, :]  # [B, W, Lq, Lk]
-        apo_v = apo_v.to(dtype=c.dtype).unsqueeze(-1)  # [B, W, Lq, Lk, 1]
+        apo_v &= asym_id_q[..., :, None] == asym_id_k[..., None, :]
+
+        # Final apo mask
+        apo_v = apo_v.to(c.dtype).unsqueeze(-1)  # [B, W, Lq, Lk, 1]
 
         with torch.autocast(c.device.type, enabled=False):
-            # Disable autocast for numerical stability
+            # NOTE: Since apo coordinates distribution is much wider than ref coordinates,
+            # we use d_inv instead of d_sq_inv for numerical stability.
             apo_pos = f_input.atom.apo_coords  # [B, La, 3]
-            apo_pos_q = local_attn_index.to_query(apo_pos)  # [B, W, Lq, 3]
-            apo_pos_k = local_attn_index.to_key(apo_pos)  # [B, W, Lk, 3]
+            # [B, La, 3] -> [B, W, Lq, 3], [B, W, Lk, 3]
+            apo_pos_q, apo_pos_k = local_attn_index.to_qk(apo_pos)
             # Shape: [B, W, Lq, Lk, 3], [B, W, Lq, Lk, 1]
             apo_d_offset = apo_pos_q[..., :, None, :] - apo_pos_k[..., None, :, :]
-            apo_dsq_inv = 1.0 / (1.0 + apo_d_offset.pow(2).sum(-1, keepdim=True))
+            apo_d_inv = 1.0 / (1.0 + apo_d_offset.norm(dim=-1, keepdim=True))
 
         # Shape: [B, W, Lq, Lk, c_atompair]
         p_apo = self.embed_apo_offset(apo_d_offset)
-        p_apo = p_apo + self.embed_apo_inv_dist(apo_dsq_inv)
+        p_apo = p_apo + self.embed_apo_inv_dist(apo_d_inv)
         p_apo = p_apo + self.embed_apo_mask(apo_v)
         p_apo = p_apo * apo_v
 

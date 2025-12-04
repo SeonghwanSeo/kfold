@@ -313,6 +313,17 @@ def featurize_structure(
             chain_sizes=num_atoms_per_chains,
             rng=rng,
         )
+
+    # TODO: remove this part after DNA/RNA apo generation is ready.
+    if kwargs["mask_nucleic_acid_apo"]:
+        ctype = token_dict["chain_type"]
+        atom_ctype = ctype[atom_dict["token_index"]]
+        is_dna = atom_ctype == C.chain.ChainType.DNA.value
+        is_rna = atom_ctype == C.chain.ChainType.RNA.value
+        is_nucleic_acid = is_dna | is_rna
+        apo_coords[is_nucleic_acid] = 0.0
+        apo_mask[is_nucleic_acid] = False
+
     apo_coords = do_centering(apo_coords, apo_mask)
     atom_dict["apo_coords"] = apo_coords
     atom_dict["apo_mask"] = apo_mask
