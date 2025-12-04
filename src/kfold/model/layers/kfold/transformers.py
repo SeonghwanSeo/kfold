@@ -30,7 +30,7 @@ class AtomEmbeddingWithApo(AtomEmbedding):
         self.embed_atom_apo_pos = LinearNoBias(3, channel_atom, init="zero")
 
     def forward(self, f_input: FoldingInput) -> torch.Tensor:
-        """Embed atom features."""  # noqa: E501
+        """Embed atom features with Apo positional embedding."""
         atom_feats = super().forward(f_input)
         # Additional apo position embedding
         apo_coords = f_input.atom.apo_coords  # [B, La, 3]
@@ -285,6 +285,9 @@ class AtomAttentionEncoderWithApo(nn.Module):
         ----------
         f_input : FoldingInput
             The folding input.
+        local_attn_index : LocalAttentionIndex
+            The local attention indexer for atom attention.
+
         Returns
         -------
         q : torch.Tensor
@@ -367,8 +370,7 @@ class AtomAttentionEncoderWithApo(nn.Module):
         token_index: torch.Tensor,
         atom_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Algorithm 5, Line 9 in AlphaFold3 SI
-        Add trunk single embedding to atom single conditioning.
+        """Add trunk single embedding to atom single conditioning.
 
         Parameters
         ----------
@@ -384,7 +386,7 @@ class AtomAttentionEncoderWithApo(nn.Module):
         # Case 2
         s_trunk = self.linear_s_to_c(s_trunk)  # [*, Lt, c_atom]
         s_to_c = broadcast_tokens_to_atoms(s_trunk, token_index)  # [*, La, c_atom]
-        s_to_c = s_to_c * atom_mask[..., None]  # [*, La, c_atom]
+        s_to_c = s_to_c * atom_mask.unsqueeze(-1)  # [*, La, c_atom]
         return c + s_to_c  # [*, La, c_atom]
 
     def add_trunk_pair_embedding(
@@ -395,8 +397,7 @@ class AtomAttentionEncoderWithApo(nn.Module):
         atom_mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex,
     ) -> torch.Tensor:
-        """Algorithm 5, Line 10 in AlphaFold3 SI
-        Add trunk pair embedding to atom pair representation.
+        """Add trunk pair embedding to atom pair representation.
 
         Parameters
         ----------
@@ -406,13 +407,10 @@ class AtomAttentionEncoderWithApo(nn.Module):
             The trunk pair representation, shape [*, Lt, Lt, c_z].
         token_index : torch.Tensor
             The atom to token mapping, shape [*, La].
+        atom_mask : torch.Tensor
+            The atom padding mask, shape [*, La].
         local_attn_index : LocalAttentionIndex
             The local attention indexer for atom attention.
-
-        Returns
-        -------
-        p : torch.Tensor
-            The updated atom pair representation, shape [*, W, Lq, Lk, c_atompair].
         """
         batch_shape = z_trunk.shape[:-3]  # [*]
         W, Lq, Lk = p.shape[-4:-1]
@@ -423,13 +421,13 @@ class AtomAttentionEncoderWithApo(nn.Module):
 
         # 2. Get Windowed Indices
         # [*, La] -> [*, W, Lq], [*, W, Lk]
-        q_idx, k_idx = local_attn_index.to_qk(token_index, dim=-1)
-        q_idx = q_idx.expand(*batch_shape, W, Lq)
-        k_idx = k_idx.expand(*batch_shape, W, Lk)
+        idx_q, idx_k = local_attn_index.to_qk(token_index, dim=-1)
+        idx_q = idx_q.expand(*batch_shape, W, Lq)
+        idx_k = idx_k.expand(*batch_shape, W, Lk)
 
         # NOTE: safe indexing: Although the pad value of token_index is 0,
         # we clamp indices to be at least 0 to avoid run-time error.
-        q_idx, k_idx = q_idx.clamp(min=0), k_idx.clamp(min=0)
+        idx_q, idx_k = idx_q.clamp(min=0), idx_k.clamp(min=0)
 
         # 3. Token pair embedding to atom pair representation
         # [*, Ntoken, c_atom_pair] -> [*, W, Lq, Lk, c_atompair]
@@ -438,14 +436,13 @@ class AtomAttentionEncoderWithApo(nn.Module):
         batch_indices = torch.arange(B, device=p.device)
         z_to_p = z_trunk[
             batch_indices.view(B, 1, 1, 1),  # [B, 1, 1, 1]
-            q_idx.view(B, W, Lq, 1),
-            k_idx.view(B, W, 1, Lk),
+            idx_q.view(B, W, Lq, 1),
+            idx_k.view(B, W, 1, Lk),
         ].unflatten(0, batch_shape)  # [*, W, Lq, Lk, c_atompair]
 
         # 5. Apply Padding Mask
-        q_mask = local_attn_index.to_query(atom_mask, dim=-1)  # [*, W, Lq]
-        k_mask = local_attn_index.to_key(atom_mask, dim=-1)  # [*, W, Lk]
-        pair_mask = q_mask[..., :, None] & k_mask[..., None, :]  # [*, W, Lq, Lk]
+        mask_q, mask_k = local_attn_index.to_qk(atom_mask, dim=-1)  # [*, W, Lq|Lk]
+        pair_mask = mask_q[..., :, None] & mask_k[..., None, :]  # [*, W, Lq, Lk]
         z_to_p = z_to_p * pair_mask[..., None]  # [*, W, Lq, Lk, c_atompair]
 
         return p + z_to_p
@@ -466,5 +463,6 @@ class AtomAttentionEncoderWithApo(nn.Module):
             The noised structures' positions, shape [*, La, 3].
         """
         with torch.autocast(q.device.type, enabled=False):
+            assert r_noisy.dtype == torch.float32, "r_noisy must be float32"
             r_to_q = self.linear_r_to_q(r_noisy)  # [*, La, c_atom]
         return q + r_to_q  # [*, La, c_atom]

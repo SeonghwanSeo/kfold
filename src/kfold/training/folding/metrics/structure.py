@@ -21,9 +21,9 @@ def compute_pair_lddt(
     Parameters
     ----------
     d_predicted : torch.Tensor
-        Predicted distances, shape (B, Natom, Natom)
+        Predicted distances, shape (*, Natom, Natom)
     d_true : torch.Tensor
-        Ground truth distances, shape (B, Natom, Natom)
+        Ground truth distances, shape (*, Natom, Natom)
     thresholds : Sequence[float]
         Distance error thresholds for lddt calculation
     """
@@ -57,10 +57,10 @@ def compute_rmsd(
         The rmsd score between predicted and true coordinates
     """
     true_coords = rigid_align(
-        coords=true_coords,  # [B, N, L, 3]
-        target=pred_coords,  # [B, N, L, 3]
-        mask=mask,  # [B, 1, L]
-    )  # [B, N, L, 3]
+        coords=true_coords,  # [Natom, 3]
+        target=pred_coords,  # [Natom, 3]
+        mask=mask,  # [Natom]
+    )  # [Natom, 3]
 
     diff = ((pred_coords - true_coords) ** 2).sum(-1)
     masked_diff = diff * mask
@@ -100,21 +100,20 @@ def compute_weighted_rmsd(
         weights = weights * mask.float()
 
     aligned_coords_true = weighted_rigid_align(
-        coords=true_coords,  # [B, N, L, 3]
-        target=pred_coords,  # [B, N, L, 3]
-        weights=weights,  # [B, 1, L], broadcasted over N
-        mask=mask,  # [B, 1, L]
-    )  # [B, N, L, 3]
+        coords=true_coords,  # [Natom, 3]
+        target=pred_coords,  # [Natom, 3]
+        weights=weights,  # [Natom, L], broadcasted over N
+        mask=mask,  # [Natom, L]
+    )  # [Natom, 3]
 
-    d_sq = ((pred_coords - aligned_coords_true) ** 2).sum(dim=-1)  # [B, N, L]
+    d_sq = ((pred_coords - aligned_coords_true) ** 2).sum(dim=-1)  # [Natom]
     if scale:
-        weight_sum = weights.sum(-1).clamp(min=1)  # [B, 1]
-        mse_loss = (weights * d_sq).sum(-1) / weight_sum  # [B, N]
+        weight_sum = weights.sum().clamp(min=1)
+        mse_loss = (weights * d_sq).sum() / weight_sum
     else:
-        mask_sum = mask.sum(-1).clamp(min=1)  # [B, 1]
-        mse_loss = (weights * d_sq).sum(-1) / mask_sum  # [B, N]
+        mask_sum = mask.sum().clamp(min=1)
+        mse_loss = (weights * d_sq).sum() / mask_sum
     weighted_rmsd = torch.sqrt(mse_loss)
-
     return weighted_rmsd
 
 
