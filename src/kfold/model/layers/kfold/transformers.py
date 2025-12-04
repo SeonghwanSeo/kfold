@@ -14,33 +14,6 @@ from kfold.model.layers.alphafold3.utils import (
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 
 
-class AtomEmbeddingWithApo(AtomEmbedding):
-    """Atom embedding including apo position embedding."""
-
-    def __init__(self, channel_atom: int):
-        """Initialize the atom attention encoder.
-
-        Parameters
-        ----------
-        channel_atom : int
-            The atom single representation dimension.
-        """
-        super().__init__(channel_atom)
-        # additional embedding for apo structures (zero init)
-        self.embed_atom_apo_pos = LinearNoBias(3, channel_atom, init="zero")
-
-    def forward(self, f_input: FoldingInput) -> torch.Tensor:
-        """Embed atom features with Apo positional embedding."""
-        atom_feats = super().forward(f_input)
-        # Additional apo position embedding
-        apo_coords = f_input.atom.apo_coords  # [B, La, 3]
-        apo_coords = apo_coords * f_input.atom.apo_mask[..., None]
-        with torch.autocast(atom_feats.device.type, enabled=False):
-            apo_coords_emb = self.embed_atom_apo_pos(apo_coords)
-        atom_feats = atom_feats + apo_coords_emb
-        return atom_feats
-
-
 class AtomAttentionEncoderWithApo(nn.Module):
     """Atom attention encoder with apo embedding."""
 
@@ -92,7 +65,7 @@ class AtomAttentionEncoderWithApo(nn.Module):
         self.atoms_per_window_keys: int = atoms_per_window_keys
 
         # Embeddings atom features `c`
-        self.embed_atom = AtomEmbeddingWithApo(channel_atom)
+        self.embed_atom = AtomEmbedding(channel_atom)
 
         # Embeddings for atom pair features `p`
         # Reference position embeddings

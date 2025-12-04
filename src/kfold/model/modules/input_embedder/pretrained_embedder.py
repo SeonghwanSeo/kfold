@@ -10,6 +10,30 @@ from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 from .base import BaseInputEmbedder
 
 
+def _rbf(
+    d_sq: torch.Tensor,
+    d_min: float = 2.0,
+    d_max: float = 22.0,
+    num_bins: int = 64,
+) -> torch.Tensor:
+    """Radial basis function encoding for distances.
+    Parameters
+    ----------
+    d_sq : torch.Tensor
+        Tensor of shape (...,) containing squared distances.
+    d_min : float
+        The minimum distance for RBF encoding.
+    d_max : float
+        The maximum distance for RBF encoding.
+    num_bins : int
+        The number of bins for RBF encoding.
+    """
+    d_mu = torch.linspace(d_min, d_max, num_bins, dtype=d_sq.dtype, device=d_sq.device)
+    d_sigma = (d_max - d_min) / num_bins
+    rbf = torch.exp(-((d_sq.unsqueeze(-1) - d_mu) ** 2) / (2 * d_sigma**2))
+    return rbf
+
+
 @INPUT_EMBEDDER.register()
 class PretrainedInputEmbedder(BaseInputEmbedder):
     """Input embedding module using pre-trained embeddings."""
@@ -45,6 +69,14 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             The maximum relative chain distance for relative position encoding.
         embed_apo : bool
             Whether to embed apo structure.
+
+        # RBF parameters
+        min_dist : float
+            The minimum distance for RBF encoding.
+        max_dist : float
+            The maximum distance for RBF encoding.
+        num_bins : int
+            The number of bins for RBF encoding.
         """
 
         channel_s: int = 384
@@ -60,6 +92,9 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         max_relative_token: int = 32
         max_relative_chain: int = 2
         embed_apo: bool = False
+        num_rbf: int = 64
+        min_dist: float = 2.0
+        max_dist: float = 22.0
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
@@ -116,7 +151,13 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
 
         # Token-level apo embedding
         if cfg.embed_apo:
-            self.linear_apo_dist = LinearNoBias(1, cfg.channel_z)
+            # rbf
+            self.num_rbf: int = cfg.num_rbf
+            self.min_dist: float = cfg.min_dist
+            self.max_dist: float = cfg.max_dist
+
+            # Pair representation
+            self.linear_apo_pdist = LinearNoBias(cfg.num_rbf, cfg.channel_z)
 
     def forward(
         self,
@@ -182,11 +223,19 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
 
         return s_inputs, s_init, z_init
 
-    def get_apo_embedding(
-        self,
-        f_input: FoldingInput,
-    ) -> torch.Tensor:
-        """Get apo embedding for the input features."""
+    def get_apo_embedding(self, f_input: FoldingInput) -> torch.Tensor:
+        """Get apo embedding for the input features.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+
+        Returns
+        -------
+        z_apo : torch.Tensor
+            Pair representation containing apo information. Shape: (B, L, L, c_z)
+        """
         assert self.embed_apo, "Apo embedding is not enabled."
 
         batch_index = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
@@ -203,17 +252,19 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
 
         pair_mask = pair_mask & chain_mask
 
+        # Pair representation: pairwise distance RBF
         with torch.autocast("cuda", enabled=False):
             # NOTE: use d_inv instead of d_sq_inv(used for ref_pos in AF3) since
             # d_inv has better numerical stability for large distances.
-            apo_d = torch.cdist(apo_coords, apo_coords, p=2)  # [B, L, L]
-            apo_d_inv = 1 / (apo_d + 1.0)  # [B, L, L]
-            apo_d_inv = apo_d_inv * pair_mask
+            pdist = torch.cdist(apo_coords, apo_coords, p=2)  # [B, L, L]
+            pdist_rbf = _rbf(
+                pdist, self.min_dist, self.max_dist, self.num_rbf
+            )  # [B, L, L, num_rbf]
+        pdist_rbf = pdist_rbf * pair_mask.unsqueeze(-1)  # apply mask
 
-            # Embedding
-            apo_pair_emb = self.linear_apo_dist(apo_d_inv.unsqueeze(-1))  # [B, L, L, c_z]
+        z_apo = self.linear_apo_pdist(pdist_rbf)  # [B, L, L, c_z]
 
-        return apo_pair_emb
+        return z_apo
 
     def get_adjacency_matrix(
         self, bond_index: torch.Tensor, num_tokens: int, mask: torch.Tensor
