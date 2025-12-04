@@ -15,7 +15,7 @@ train:
   global_hparams:
     max_tokens: 512
     batch_size: 2
-    diffusion_batch_size: 16
+    diffusion_batch_size: 32
     global_batch_size: 128
     num_global_steps_per_epoch: 250
 
