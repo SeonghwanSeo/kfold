@@ -27,7 +27,8 @@ def get_dropout_mask(
         The dropout mask
 
     """
-    dropout = dropout * training
+    if not training:
+        return torch.ones_like(z[:, 0:1, :, 0:1] if columnwise else z[:, :, 0:1, 0:1])
     v = z[:, 0:1, :, 0:1] if columnwise else z[:, :, 0:1, 0:1]
     d = torch.rand_like(v) > dropout
     d = d * 1.0 / (1.0 - dropout)
