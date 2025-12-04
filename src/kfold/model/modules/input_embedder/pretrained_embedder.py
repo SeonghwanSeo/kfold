@@ -203,7 +203,7 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
 
         pair_mask = pair_mask & chain_mask
 
-        with torch.autocast("cuda", enabled=False), torch.no_grad():
+        with torch.autocast("cuda", enabled=False):
             # NOTE: use d_inv instead of d_sq_inv(used for ref_pos in AF3) since
             # d_inv has better numerical stability for large distances.
             apo_d = torch.cdist(apo_coords, apo_coords, p=2)  # [B, L, L]
