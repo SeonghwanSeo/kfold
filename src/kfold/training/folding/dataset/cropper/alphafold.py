@@ -87,7 +87,6 @@ class AlphaFoldCropper(BaseCropper):
             contiguous: float = 0.2,
             spatial: float = 0.4,
             spatial_interface: float = 0.4,
-            spatial_unresolved: bool = False
         ):
             # TODO: (pminha01) raise an error or just fix the weighting?
             sum = contiguous + spatial + spatial_interface
