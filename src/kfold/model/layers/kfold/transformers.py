@@ -175,9 +175,6 @@ class AtomAttentionEncoderWithApo(nn.Module):
             The atom pair representation
             shape [B, W, Lq, Lk, c_atompair] or [B, N, W, Lq, Lk, c_atompair]
         """
-        if self.use_structure:
-            assert s_trunk is not None and z_trunk is not None and r_noisy is not None
-
         if model_cache is not None:
             assert self.use_structure, "Caching is only supported when using structure."
             cache_prefix = "atom_attn_encoder"
@@ -231,6 +228,7 @@ class AtomAttentionEncoderWithApo(nn.Module):
         p = p + self.linear_key(c_k)[..., None, :, :]
         p = p + self.mlp_pair(p)  # [B, *, W, Lq, Lk, c_atompair]
 
+        # Run Atom Transformer
         q = self.atom_encoder(q, c, p, mask)
 
         # Aggregate atom representations to token representations
@@ -271,8 +269,6 @@ class AtomAttentionEncoderWithApo(nn.Module):
         p : torch.Tensor
             The atom pair representation, shape [B, W, Lq, Lk, c_atompair].
         """
-        # Get indexing matrix for single to keys conversion
-
         # === Initialize single conditioning === #
         c = self.embed_atom(f_input)  # [B, La, c_atom]
 
@@ -280,12 +276,12 @@ class AtomAttentionEncoderWithApo(nn.Module):
         q = c  # [B, La, c_atom]
 
         # === Initialize pair representation === #
-        # 1. Reference positions
-        # Masking with residue identity
+        # 1. Embed Reference conformers (residue-level pairwise embeddings)
+        # Mask with residue identity
         uid = f_input.atom.ref_space_uid
         uid_q, uid_k = local_attn_index.to_qk(uid, dim=-1)
-        ref_v = uid_q[..., :, None] == uid_k[..., None, :]  # [B, W, Lq, Lk]
-        ref_v = ref_v.to(dtype=c.dtype).unsqueeze(-1)  # [B, W, Lq, Lk, 1]
+        v_ref = uid_q[..., :, None] == uid_k[..., None, :]  # [B, W, Lq, Lk]
+        v_ref = v_ref.to(dtype=c.dtype).unsqueeze(-1)  # [B, W, Lq, Lk, 1]
 
         # Shape: [B, W, Lq], [B, W, Lk]
         ref_pos = f_input.atom.ref_pos  # [B, La, 3]
@@ -299,30 +295,30 @@ class AtomAttentionEncoderWithApo(nn.Module):
         # Shape: [B, W, Lq, Lk, c_atompair]
         p_ref = self.embed_ref_offset(ref_d_offset)
         p_ref = p_ref + self.embed_ref_inv_dist(ref_dsq_inv)
-        p_ref = p_ref + self.embed_ref_mask(ref_v)
-        p_ref = p_ref * ref_v
+        p_ref = p_ref + self.embed_ref_mask(v_ref)
+        p_ref = p_ref * v_ref
 
-        # 2. Apo chain positions
-        # Masking with apo presence
-        apo_mask = f_input.atom.apo_mask  # [B, La]
-        apo_mask_q, apo_mask_k = local_attn_index.to_qk(apo_mask, dim=-1)
-        apo_v = apo_mask_q[..., :, None] & apo_mask_k[..., None, :]  # [B, W, Lq, Lk]
-
-        # Masking with chain identity
+        # 2. Embed Apo chain structures (chain-level pairwise embeddings)
+        # Mask with chain identity
         asym_id = broadcast_tokens_to_atoms(
             f_input.token.asym_id.unsqueeze(-1), f_input.atom.token_index
         ).squeeze(-1)  # [B, La]
         asym_id_q, asym_id_k = local_attn_index.to_qk(asym_id, dim=-1)
-        apo_v &= asym_id_q[..., :, None] == asym_id_k[..., None, :]
+        v_apo = asym_id_q[..., :, None] == asym_id_k[..., None, :]  # [B, W, Lq, Lk]
+
+        # Mask unresolved apo atoms (this doesn't mean unresolved atoms in holo)
+        apo_mask = f_input.atom.apo_mask  # [B, La]
+        apo_mask_q, apo_mask_k = local_attn_index.to_qk(apo_mask, dim=-1)
+        v_apo &= apo_mask_q[..., :, None] & apo_mask_k[..., None, :]  # [B, W, Lq, Lk]
 
         # Final apo mask
-        apo_v = apo_v.to(c.dtype).unsqueeze(-1)  # [B, W, Lq, Lk, 1]
+        v_apo = v_apo.to(c.dtype).unsqueeze(-1)  # [B, W, Lq, Lk, 1]
 
         with torch.autocast(c.device.type, enabled=False):
-            # NOTE: Since apo coordinates distribution is much wider than ref coordinates,
-            # we use d_inv instead of d_sq_inv for numerical stability.
+            # NOTE: (SeonghwanSeo) Since apo structure is much larger than ref_pos,
+            # d_inv is adopted instead of d_inv_sq for better representation.
             apo_pos = f_input.atom.apo_coords  # [B, La, 3]
-            # [B, La, 3] -> [B, W, Lq, 3], [B, W, Lk, 3]
+            # Shape: [B, La, 3] -> [B, W, Lq, 3], [B, W, Lk, 3]
             apo_pos_q, apo_pos_k = local_attn_index.to_qk(apo_pos)
             # Shape: [B, W, Lq, Lk, 3], [B, W, Lq, Lk, 1]
             apo_d_offset = apo_pos_q[..., :, None, :] - apo_pos_k[..., None, :, :]
@@ -331,13 +327,13 @@ class AtomAttentionEncoderWithApo(nn.Module):
         # Shape: [B, W, Lq, Lk, c_atompair]
         p_apo = self.embed_apo_offset(apo_d_offset)
         p_apo = p_apo + self.embed_apo_inv_dist(apo_d_inv)
-        p_apo = p_apo + self.embed_apo_mask(apo_v)
-        p_apo = p_apo * apo_v
+        p_apo = p_apo + self.embed_apo_mask(v_apo)
+        p_apo = p_apo * v_apo
 
-        # Combine reference and apo position embeddings
+        # 3. Combine reference and apo position embeddings
         p = p_ref + p_apo  # [B, W, Lq, Lk, c_atompair]
 
-        # Masking with padding mask
+        # 4. Masking with padding mask
         mask_q, mask_k = local_attn_index.to_qk(f_input.atom.pad_mask, dim=-1)
         pair_mask = mask_q[..., :, None] & mask_k[..., None, :]
 
