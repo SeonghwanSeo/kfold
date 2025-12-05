@@ -180,5 +180,7 @@ Modify `config file` to match your training environment.
   python scripts/train.py \
     --config ./configs/train-af3.yaml \
     --wandb \
-    --override train.trainer.max_epochs=-1 train.data.max_tokens=512 ...
+    --override \
+      train.trainer.max_epochs=10 \
+      train.global_hparams.max_tokens=512 ...
   ```

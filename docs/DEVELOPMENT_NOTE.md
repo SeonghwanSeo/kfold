@@ -2,12 +2,16 @@
 
 Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
 
-## Sections:
+This document provides all detailed notes on the development of the K-Fold project.
+
+## Contents:
 - [Reference](#reference)
-- [Implementation of AlphaFold3 Algorithms](#implementation-of-alphafold3-algorithms)
-- [K-Fold Implementation](#implementation-for-k-fold-foundation-model)
+- [Reproduction of AlphaFold3 Algorithms](#reproduction-of-alphafold3-algorithms)
+- [Implementation of K-Fold](#implementation-of-k-fold)
 - [Not Yet Implemented](#not-yet-implemented)
 - [To Be Modified](#to-be-modified)
+
+---
 
 ## Reference
 
@@ -20,7 +24,9 @@ In developing this codebase, we referred to the following repositories:
 In particular, we started from Boltz's implementation.
 - NOTE: Boltz1's processed data and training code are publicly available, but Boltz2's training code is not, so implementation is based on Boltz1.
 
-## Implementation of AlphaFold3 Algorithms
+---
+
+## Reproduction of AlphaFold3 Algorithms
 
 This section explains how we implement AlphaFold3 algorithm and compares it to Boltz1 or other models, highlighting the differences.
 
@@ -41,7 +47,7 @@ NOTE: If you want to use Boltz1's original implementation, please refer to [`src
 - Ours: `c_s` (with projection)
 
 2. **RelativePositionEncoding (Algorithm 3)**:
-- There is a typo in Algorithm. In line 8, $b_{ij}^\text{same\_chain}$ should be corrected to $b_{ij}^\text{diff\_entity}$, according to AlphaFold3's official implementation. We note that Boltz does not fix this typo. We use the correct version.
+- There is a typo in Algorithm. In line 8, $b_{ij}^\text{same-chain}$ should be corrected to $b_{ij}^\text{diff-entity}$, according to AlphaFold3's official implementation. We note that Boltz does not fix this typo. We use the correct version.
 - There is a linear layer after the concatenation of different chain/entity information in the algorithm, it is missing in the official implementation. We follow the official implementation.
 
 3. **AtomAttentionEncoder (Algorithm 3)**: Boltz's output dimension is calculated differently from the actual algorithm (always calculated as `c_token = 2 * c_s`). We explicitly introduce the `c_token` parameter in accordance with the official algorithm's notation.
@@ -68,7 +74,9 @@ NOTE: If you want to use Boltz1's original implementation, please refer to [`src
 
 1. **LDDT Calculation**: We follow the official AlphaFold3 explanation for LDDT calculation during validation. However, **symmetry correction is not yet implemented**.
 
-## Implementation for K-Fold Foundation Model.
+---
+
+## Implementation of K-Fold
 
 This section describes the additional implementations which are not part of the original AlphaFold3 but are necessary for training the K-Fold Foundation Model.
 
@@ -76,8 +84,8 @@ This section describes the additional implementations which are not part of the 
 
 1. **Apo Structure Construction**: To train the model to learn the dynamics between **apo** and **holo** states, we need to generate **apo** structures to pair with the existing **holo** structures in the dataset. We use multiple methods to generate these **apo** structures based on the type of biomolecule:
     - Protein: Using ESMFold to predict the **apo** structure.
-    - DNA: Not implemented yet (to be added later).
-    - RNA: Not implemented yet (to be added later).
+    - DNA: **Not implemented yet (to be added later).**
+    - RNA: **Not implemented yet (to be added later).**
     - Ligand: Using ETKDG to generate free conformers for small molecule ligands.
 
 2. **Multi-Chain Handling**: Since our model is designed to model dynamics between **apo** and **holo** states, our training pipeline cannot defined on single-chain structures. Therefore, we modified the data processing pipeline to handle **multi-chain complex structures** only:
@@ -86,12 +94,24 @@ This section describes the additional implementations which are not part of the 
     - Implementing a cropping algorithm that ensures the cropped structure contains multiple chains.
         - Not implemented yet (to be added later).
 
-### Representation Model
+3. **Data Cropping**: TODO.
+
+### Pre-trained Representation Model
+
 1. **Pre-trained Language Model Integration**: We integrated pre-trained language models to enhance the sequence representation of each chain in the complex structure. This replaces the needs of MSA-based representation.
-2. **Pair-wise Representation**: Not yet implemented (to be added later).
+
+2. **Pre-trained Structure Representation Model Integration**: Not yet implemented (to be added later).
+
+### Apo Feature Embedding
+
+We modified the input feature embedding architecture (`AtomAttentionEncoder`) to incorporate features derived from the **apo** structure:
+  - Local structure: Similar to the **ref_pos** embedding in AF3, pairwise offset vectors between atoms in the **apo** structure are computed and embedded to provide local context.
+  - Global structure: Pairwise distance maps (token-level) are computed and embedded with RBF to provide spatial context.
 
 ### Diffusion Module
 1. **Diffusion Bridge**: We implemented a diffusion bridge module that learns the dynamics between **apo** and **holo** states. This module is designed to take both **apo** and **holo** structures as input during training, allowing the model to learn the transition dynamics effectively.
+
+---
 
 ## Not Yet Implemented
 
@@ -115,6 +135,8 @@ The following items require future implementation.
 ### Benchmark
 
 1. **Evaluation Metrics**: Installation of evaluation tools and script writing.
+
+---
 
 ## To Be Modified
 
