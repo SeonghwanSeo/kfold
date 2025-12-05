@@ -10,17 +10,11 @@ from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 from .base import BaseInputEmbedder
 
 
-def _rbf(
-    d_sq: torch.Tensor,
-    d_min: float = 2.0,
-    d_max: float = 22.0,
-    num_bins: int = 64,
-) -> torch.Tensor:
+class RBF(torch.nn.Module):
     """Radial basis function encoding for distances.
+
     Parameters
     ----------
-    d_sq : torch.Tensor
-        Tensor of shape (...,) containing squared distances.
     d_min : float
         The minimum distance for RBF encoding.
     d_max : float
@@ -28,10 +22,30 @@ def _rbf(
     num_bins : int
         The number of bins for RBF encoding.
     """
-    d_mu = torch.linspace(d_min, d_max, num_bins, dtype=d_sq.dtype, device=d_sq.device)
-    d_sigma = (d_max - d_min) / num_bins
-    rbf = torch.exp(-((d_sq.unsqueeze(-1) - d_mu) ** 2) / (2 * d_sigma**2))
-    return rbf
+
+    def __init__(
+        self, d_min: float = 2.0, d_max: float = 22.0, num_bins: int = 64
+    ) -> None:
+        super().__init__()
+        self.d_sigma = (d_max - d_min) / num_bins
+        self.register_buffer(
+            "d_mu", torch.linspace(d_min, d_max, num_bins), persistent=False
+        )
+
+    def forward(self, dist: torch.Tensor) -> torch.Tensor:
+        """Forward pass of RBF encoding.
+        Parameters
+        ----------
+        dist : torch.Tensor
+            Tensor of shape (...,) containing distances.
+        Returns
+        -------
+        rbf : torch.Tensor
+            Tensor of shape (..., num_bins) containing RBF encoded distances.
+        """
+        d_mu: torch.Tensor = self.d_mu
+        rbf = torch.exp(-((dist.unsqueeze(-1) - d_mu) ** 2) / (2 * self.d_sigma**2))
+        return rbf
 
 
 @INPUT_EMBEDDER.register()
@@ -48,9 +62,9 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         channel_z : int
             The token pairwise embedding size.
         channel_atom : int
-            The token single embedding size.
+            The atom single embedding size.
         channel_atompair : int
-            The token pairwise embedding size.
+            The atom pairwise embedding size.
         channel_seq_encoder : int | None
             The pre-trained sequence encoder output channel size.
         channel_struct_encoder : int | None
@@ -69,14 +83,12 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             The maximum relative chain distance for relative position encoding.
         embed_apo : bool
             Whether to embed apo structure.
-
-        # RBF parameters
         min_dist : float
             The minimum distance for RBF encoding.
         max_dist : float
             The maximum distance for RBF encoding.
-        num_bins : int
-            The number of bins for RBF encoding.
+        num_rbf : int
+            The number of radial basis functions (RBFs) for encoding.
         """
 
         channel_s: int = 384
@@ -152,9 +164,7 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         # Token-level apo embedding
         if cfg.embed_apo:
             # rbf
-            self.num_rbf: int = cfg.num_rbf
-            self.min_dist: float = cfg.min_dist
-            self.max_dist: float = cfg.max_dist
+            self.rbf = RBF(d_min=cfg.min_dist, d_max=cfg.max_dist, num_bins=cfg.num_rbf)
 
             # Pair representation
             self.linear_apo_pdist = LinearNoBias(cfg.num_rbf, cfg.channel_z)
@@ -181,7 +191,7 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             Tensor of shape (B, L, C_s) containing initial single representation
             before trunk.
         z_init: torch.Tensor
-            Tensor of shape (B, L, L, C_s) containing initial pair representation
+            Tensor of shape (B, L, L, C_z) containing initial pair representation
             before trunk.
         """
 
@@ -236,8 +246,6 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         z_apo : torch.Tensor
             Pair representation containing apo information. Shape: (B, L, L, c_z)
         """
-        assert self.embed_apo, "Apo embedding is not enabled."
-
         batch_index = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
         center_index = f_input.token.center_index
 
@@ -257,9 +265,7 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             # NOTE: use d_inv instead of d_sq_inv(used for ref_pos in AF3) since
             # d_inv has better numerical stability for large distances.
             pdist = torch.cdist(apo_coords, apo_coords, p=2)  # [B, L, L]
-            pdist_rbf = _rbf(
-                pdist, self.min_dist, self.max_dist, self.num_rbf
-            )  # [B, L, L, num_rbf]
+            pdist_rbf = self.rbf(pdist)  # [B, L, L, num_rbf]
         pdist_rbf = pdist_rbf * pair_mask.unsqueeze(-1)  # apply mask
 
         z_apo = self.linear_apo_pdist(pdist_rbf)  # [B, L, L, c_z]

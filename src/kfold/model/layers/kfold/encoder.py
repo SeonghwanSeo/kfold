@@ -2,12 +2,13 @@ import torch
 
 import kfold.constants as C
 from kfold.data.model_input import FoldingInput
-from kfold.model.layers.kfold.transformers import AtomAttentionEncoderWithApo
 from kfold.model.layers.primitives import LinearNoBias
+
+from .transformers import AtomAttentionEncoderWithApo
 
 
 class InputEmbedderWithApo(torch.nn.Module):
-    """Input embedding module with pre-trained embeddings."""
+    """Input embedding module with apo structure embedding"""
 
     def __init__(
         self,
@@ -29,9 +30,9 @@ class InputEmbedderWithApo(torch.nn.Module):
         channel_s : int
             The token single embedding size.
         channel_atom : int
-            The token single embedding size.
+            The atom single embedding size.
         channel_atompair : int
-            The token pairwise embedding size.
+            The atom pairwise embedding size.
         channel_seq_encoder : int | None
             The pre-trained sequence encoder output channel size.
         channel_struct_encoder : int | None
@@ -57,8 +58,8 @@ class InputEmbedderWithApo(torch.nn.Module):
             atoms_per_window_keys=atoms_per_window_keys,
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
-            blocks_per_ckpt=blocks_per_ckpt,
             use_structure=False,
+            blocks_per_ckpt=blocks_per_ckpt,
         )
 
         # residue info
