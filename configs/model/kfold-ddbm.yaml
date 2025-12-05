@@ -3,7 +3,7 @@ _registry_: "main_module"
 _class_: KFold
 
 input_embedder:
-  _yaml_: "module/input_embedder/kfold.yaml"
+  _yaml_: "module/input_embedder/pretrained.yaml"
   channel_seq_encoder: null # Should be overriden
   channel_struct_encoder: null # Should be overriden
 

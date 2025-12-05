@@ -156,18 +156,18 @@ class AttentionPairBias(nn.Module):
             a = self.layernorm_a(a)
 
         if local_attn_index is not None:
-            q_in = local_attn_index.to_query(a)  # [..., W, Lq, c_a]
-            k_in = local_attn_index.to_key(a)  # [..., W, Lk, c_a]
+            a_q = local_attn_index.to_query(a)  # [..., W, Lq, c_a]
+            a_k = local_attn_index.to_key(a)  # [..., W, Lk, c_a]
         else:
-            q_in = a  # [..., L, C_a]
-            k_in = a  # [..., L, C_a]
+            a_q = a  # [..., L, C_a]
+            a_k = a  # [..., L, C_a]
 
         # Line 6
-        q = self.linear_q(q_in)  # [..., H, Lq, Dh]
+        q = self.linear_q(a_q)  # [..., H, Lq, Dh]
 
         # Line 7
-        k = self.linear_k(k_in)  # [..., H, Lk, Dh]
-        v = self.linear_v(k_in)  # [..., H, Lk, Dh]
+        k = self.linear_k(a_k)  # [..., H, Lk, Dh]
+        v = self.linear_v(a_k)  # [..., H, Lk, Dh]
 
         # Line 8
         attn_bias = self.linear_z(z)  # [..., H, Lq, Lk]
@@ -188,8 +188,6 @@ class AttentionPairBias(nn.Module):
         )
         Av = rearrange(Av, "... h l d -> ... l (h d)")
         Av = Av.reshape(a.shape)
-
-        # Line 11
         a = self.linear_out(g * Av)
 
         # === Output projection === #
@@ -778,8 +776,6 @@ class AtomAttentionEncoder(nn.Module):
         p : torch.Tensor
             The atom pair representation, shape [B, W, Lq, Lk, c_atompair].
         """
-        # Get indexing matrix for single to keys conversion
-
         # Line 1
         c = self.embed_atom(f_input)  # [B, La, c_atom]
 
@@ -795,14 +791,14 @@ class AtomAttentionEncoder(nn.Module):
         v = uid_q[..., :, None] == uid_k[..., None, :]  # [B, W, Lq, Lk]
         v = v.float().unsqueeze(-1)  # [B, W, Lq, Lk, 1]
 
-        # Line 4, masking later
+        # Line 4, mask later
         p = self.embed_atompair_ref_pos(d)
 
-        # Line 5, masking later
+        # Line 5, mask later
         d_sq = d.pow(2).sum(-1, keepdim=True)
         p = p + self.embed_atompair_ref_dist(1 / (1 + d_sq))
 
-        # Line 6, masking later
+        # Line 6, mask later
         p = p + self.embed_atompair_mask(v)
 
         # Line 4-6, mask at once

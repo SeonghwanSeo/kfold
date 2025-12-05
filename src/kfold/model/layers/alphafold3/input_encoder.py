@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 
 import kfold.constants as C
 from kfold.data.model_input import FoldingInput
@@ -8,7 +7,7 @@ from kfold.model.layers.primitives import LinearNoBias
 from .transformers import AtomAttentionEncoder
 
 
-class InputFeatureEmbedder(nn.Module):
+class InputFeatureEmbedder(torch.nn.Module):
     """Input embedding module based on AlphaFold3.
     See Section 3 Algorithm 2 of the AlphaFold3 paper.
     """
@@ -31,9 +30,9 @@ class InputFeatureEmbedder(nn.Module):
         channel_s : int
             The token single embedding size.
         channel_atom : int
-            The token single embedding size.
+            The atom single embedding size.
         channel_atompair : int
-            The token pairwise embedding size.
+            The atom pairwise embedding size.
         atoms_per_window_queries: int,
             The number of atoms per window for queries.
         atoms_per_window_keys: int,
@@ -42,7 +41,6 @@ class InputFeatureEmbedder(nn.Module):
             The number of blocks in atom encoder.
         atom_encoder_heads: int,
             The number of heads in atom encoder.
-
         """
         super().__init__()
 
@@ -92,5 +90,4 @@ class InputFeatureEmbedder(nn.Module):
         # Project to model dimension
         # NOTE: (SeonghwanSeo) I introduce additional linear layer to unify the dimension.
         s = self.proj_s(s)  # [B, Lt, c_s]
-
         return s

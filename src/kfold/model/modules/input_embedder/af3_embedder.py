@@ -26,9 +26,9 @@ class AF3InputEmbedder(BaseInputEmbedder):
         channel_z : int
             The token pairwise embedding size.
         channel_atom : int
-            The token single embedding size.
+            The atom single embedding size.
         channel_atompair : int
-            The token pairwise embedding size.
+            The atom pairwise embedding size.
         atoms_per_window_queries: int,
             The number of atoms per window for queries.
         atoms_per_window_keys: int,

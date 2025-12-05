@@ -2,6 +2,7 @@ model:
   _yaml_: "model/kfold-edm.yaml"
   input_embedder:
     channel_seq_encoder: 960
+    embed_apo: true
   trunk:
     use_cuequiv_kernels: true
     num_blocks: 16
@@ -13,7 +14,7 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: esmc-edm-mini
+  name: esmc-apoemb-edm-mini
   out_dir: ./experiments/
   seed: 42
 
@@ -43,9 +44,10 @@ train:
 
     featurization_args:
       seq_embedding_dim: 960
+      mask_nucleic_acid_apo: true # TODO: remove this flag
 
   wandb:
     use: false
     project: "EDM-esmc"
-    group: esmc # set your group name
+    group: apoemb-esmc # set your group name
     entity: K-Fold # set your entity name
