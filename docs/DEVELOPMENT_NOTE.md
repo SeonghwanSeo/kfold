@@ -2,10 +2,12 @@
 
 Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
 
-## Sections:
+This document provides all detailed notes on the development of the K-Fold project.
+
+## Contents:
 - [Reference](#reference)
-- [Implementation of AlphaFold3 Algorithms](#implementation-of-alphafold3-algorithms)
-- [K-Fold Implementation](#implementation-for-k-fold-foundation-model)
+- [Reproduction of AlphaFold3 Algorithms](#reproduction-of-alphafold3-algorithms)
+- [Implementation of K-Fold](#implementation-of-k-fold)
 - [Not Yet Implemented](#not-yet-implemented)
 - [To Be Modified](#to-be-modified)
 
@@ -74,7 +76,7 @@ NOTE: If you want to use Boltz1's original implementation, please refer to [`src
 
 ---
 
-## Implementation for K-Fold Foundation Model.
+## Implementation of K-Fold
 
 This section describes the additional implementations which are not part of the original AlphaFold3 but are necessary for training the K-Fold Foundation Model.
 
@@ -82,8 +84,8 @@ This section describes the additional implementations which are not part of the 
 
 1. **Apo Structure Construction**: To train the model to learn the dynamics between **apo** and **holo** states, we need to generate **apo** structures to pair with the existing **holo** structures in the dataset. We use multiple methods to generate these **apo** structures based on the type of biomolecule:
     - Protein: Using ESMFold to predict the **apo** structure.
-    - DNA: Not implemented yet (to be added later).
-    - RNA: Not implemented yet (to be added later).
+    - DNA: **Not implemented yet (to be added later).**
+    - RNA: **Not implemented yet (to be added later).**
     - Ligand: Using ETKDG to generate free conformers for small molecule ligands.
 
 2. **Multi-Chain Handling**: Since our model is designed to model dynamics between **apo** and **holo** states, our training pipeline cannot defined on single-chain structures. Therefore, we modified the data processing pipeline to handle **multi-chain complex structures** only:
@@ -92,7 +94,10 @@ This section describes the additional implementations which are not part of the 
     - Implementing a cropping algorithm that ensures the cropped structure contains multiple chains.
         - Not implemented yet (to be added later).
 
-### Representation Model
+3. **Data Cropping**: TODO.
+
+### Pre-trained Representation Model
+
 1. **Pre-trained Language Model Integration**: We integrated pre-trained language models to enhance the sequence representation of each chain in the complex structure. This replaces the needs of MSA-based representation.
 
 2. **Pre-trained Structure Representation Model Integration**: Not yet implemented (to be added later).
