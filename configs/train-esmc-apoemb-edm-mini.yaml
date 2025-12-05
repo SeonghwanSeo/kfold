@@ -1,19 +1,27 @@
 model:
-  _yaml_: "model/boltz1-trunk-ddbm.yaml"
+  _yaml_: "model/kfold-edm.yaml"
+  input_embedder:
+    channel_seq_encoder: 960
+    embed_apo: true
   trunk:
     use_cuequiv_kernels: true
+    num_blocks: 16
+  score_model:
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 8
+    atom_decoder_blocks: 1
 
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: boltz1-ddbm
+  name: esmc-apoemb-edm-mini
   out_dir: ./experiments/
   seed: 42
 
   global_hparams:
     max_tokens: 512
-    batch_size: 2
-    diffusion_batch_size: 16
+    batch_size: 4
+    diffusion_batch_size: 32
     global_batch_size: 128
     num_global_steps_per_epoch: 250
 
@@ -22,27 +30,24 @@ train:
     strategy: "auto"
     devices: "auto"
     num_nodes: 1
-    precision: 32
-
-  training:
-    train_trunk: false
-    train_distogram_head: false
-    train_structure_module: true
-    train_confidence_head: false
+    precision: bf16-mixed
 
   data:
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
     split_path: ./assets/splits/boltz1
-    num_workers: 4
+    num_workers: 8
+
+    paths:
+      seq_embedding_path: /cache/wykim_lab/kfold_data/esm_embeddings/esmc_300m/
 
     featurization_args:
-      # NOTE: Set true to use pre-trained Boltz1 trunk
-      synchronize_ref_pos_augmentation: true
+      seq_embedding_dim: 960
+      mask_nucleic_acid_apo: true # TODO: remove this flag
 
   wandb:
     use: false
-    project: "KFold-boltz1-trunk"
-    group: ddbm-score-model-only
-    entity: K-Fold
+    project: "EDM-esmc"
+    group: apoemb-esmc # set your group name
+    entity: K-Fold # set your entity name

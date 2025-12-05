@@ -65,7 +65,8 @@ It serves as a reference for developers and contributors working with the K-Fold
     - `layers/`: Layer implementations for co-folding
       - `primitives/`: Basic building blocks (e.g., linear, attention, ...)
       - `alphafold3/`: Layers based on the Alphafold3 architecture
-      - `boltz1/`: Fork of Boltz1 layers adapted for K-Fold compatibility
+      - `boltz1/`: Fork of Boltz1 layers modified for K-Fold compatibility
+      - `kfold/`: Custom layers specific to K-Fold architecture
 
   - **`training/`**: Training pipeline components (pytorch-lightning)
 

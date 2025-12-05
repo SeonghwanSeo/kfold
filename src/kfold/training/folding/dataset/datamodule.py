@@ -205,7 +205,6 @@ class TrainingDataModule(pl.LightningDataModule):
         with open(validation_split) as f:
             val_ids = set([line.strip().lower() for line in f if line.strip()])
         val_records = [r for r in all_records if r.id.lower() in val_ids]
-        val_records = sorted(val_records, key=lambda r: r.num_residues)
 
         # Sort validation records by length (for efficient batching)
         val_records.sort(key=lambda r: r.num_valid_residues, reverse=False)

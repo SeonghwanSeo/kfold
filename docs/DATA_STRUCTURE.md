@@ -91,7 +91,7 @@ You can access residue-level structures via `kfold.data.structure.Residue`:
 | `is_standard` | *same* | `(Nresidue,)` | Whether the residue is standard |
 | `is_present` | `resolved_mask` | `(Nresidue,)` | Whether the residue is resolved |
 
-> $^1$ **Note:** Boltz uses 31 types + 1 gap + 1 padding. K-Fold (AlphaFold3 style) uses 31 types + 1 gap, excluding the padding token.
+- 1: Boltz uses 31 types + 1 gap + 1 padding. K-Fold (AlphaFold3 style) uses 31 types + 1 gap, excluding the padding token.
 
 ### Token
 
@@ -158,13 +158,13 @@ ref_pos = atom_layout.ref_pos  # Shape: (Natom, 3)
 | `atom_to_token` | $^2$ | `(Natom, Ntoken)` vs `(Natom,)` | Mapping from atom to token (one-hot vs integer) |
 | `atom_pad_masks` | `pad_mask` | `(Natom,)` | Mask for valid atoms or padding |
 | `atom_resolved_mask` | `resolved_mask` | `(Natom,)` | Mask for resolved atoms |
-| `coords` | `label_coords` | `(Nholo, Natom, 3)` vs `(Natom, Nholo, 3)` | Target coordinates for training $^3$ |
-| - | `apo_coords` | `(Natom, Napo, 3)` | Apo structure coordinates |
-| - | `apo_mask` | `(Natom, Napo)` | Apo structure mask |
+| `coords` | `label_coords` | `(Nholo, Natom, 3)` vs `(Natom, 3)` | Target coordinates for training $^3$ |
+| - | `apo_coords` | `(Natom, 3)` | Apo structure coordinates |
+| - | `apo_mask` | `(Natom,)` | Apo structure mask |
 
-> $^1$ **Note:** In K-Fold, we are considering replacing `ref_pos` with `apo_coords`.
-> $^2$ **Note:** `atom_to_token` in Boltz can be accessed via `FoldingInput` instead of `AtomLayout`: `model_input.atom_to_token`.
-> $^3$ **Note:** `Nholo` represents the number of bioassemblies. This is always 1 in AlphaFold3 (Using the first bioassembly).
+- 1: In K-Fold, we are considering replacing `ref_pos` with `apo_coords`.
+- 2: `atom_to_token` in Boltz can be accessed via `FoldingInput` instead of `AtomLayout`: `model_input.atom_to_token`.
+- 3: `Nholo` represents the number of bioassemblies. This is always 1 in AlphaFold3 (Using the first bioassembly).
 
 ### Token features
 
@@ -193,7 +193,7 @@ token_index = token_layout.token_index  # Shape: (Ntoken,)
 | `pocket_feature` | `pocket_contact_type` | `(Ntoken,)` | Feature for pocket tokens (**TODO:** implement more) |
 | `cyclic_period` | - | `(Ntoken,)` | Cyclic period (not used in Boltz). |
 
-> $^1$ **Note:** Boltz uses 31 types + 1 gap + 1 padding. K-Fold (AlphaFold3 style) uses 31 types + 1 gap, excluding the padding token.
+- 1: Boltz uses 31 types + 1 gap + 1 padding. K-Fold (AlphaFold3 style) uses 31 types + 1 gap, excluding the padding token.
 
 #### Token features for distogram head
 
@@ -236,7 +236,7 @@ token_index = bond_layout.token_index  # Shape: (Ntoken,)
 | - | `is_ligand_ligand` | `(Nbond,)` | Whether the bond is between ligands |
 | - | `pad_mask` | `(Nbond,)` | Mask for valid bonds |
 
-> $^1$ **Note:** Used to compute bond-loss in AlphaFold3, while Boltz does not use this loss.
+- 1: Used to compute bond-loss in AlphaFold3, while Boltz does not use this loss.
 
 
 ### Pretrained embeddings

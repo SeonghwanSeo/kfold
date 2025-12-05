@@ -1,5 +1,5 @@
 _registry_: "input_embedder"
-_class_: "KFoldInputEmbedder"
+_class_: "PretrainedInputEmbedder"
 channel_s: 384
 channel_z: 128
 channel_atom: 128
@@ -12,3 +12,4 @@ atom_encoder_blocks: 3
 atom_encoder_heads: 4
 max_relative_token: 32
 max_relative_chain: 2
+embed_apo: false

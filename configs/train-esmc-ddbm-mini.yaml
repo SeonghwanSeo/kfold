@@ -4,7 +4,7 @@ model:
     channel_seq_encoder: 960
   trunk:
     use_cuequiv_kernels: true
-    num_blocks: 8
+    num_blocks: 16
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -13,14 +13,14 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: esmc-ddbm-tiny
+  name: esmc-ddbm-mini
   out_dir: ./experiments/
   seed: 42
 
   global_hparams:
     max_tokens: 512
     batch_size: 4
-    diffusion_batch_size: 16
+    diffusion_batch_size: 32
     global_batch_size: 128
     num_global_steps_per_epoch: 250
 

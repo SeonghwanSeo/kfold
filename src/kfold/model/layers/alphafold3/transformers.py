@@ -24,7 +24,6 @@ from .utils import (
     LocalAttentionIndex,
     aggregate_atoms_to_tokens,
     broadcast_tokens_to_atoms,
-    expand_dim,
 )
 
 # === Helper functions for local atom attention === #
@@ -157,18 +156,18 @@ class AttentionPairBias(nn.Module):
             a = self.layernorm_a(a)
 
         if local_attn_index is not None:
-            q_in = local_attn_index.to_query(a)  # [..., W, Lq, c_a]
-            k_in = local_attn_index.to_key(a)  # [..., W, Lk, c_a]
+            a_q = local_attn_index.to_query(a)  # [..., W, Lq, c_a]
+            a_k = local_attn_index.to_key(a)  # [..., W, Lk, c_a]
         else:
-            q_in = a  # [..., L, C_a]
-            k_in = a  # [..., L, C_a]
+            a_q = a  # [..., L, C_a]
+            a_k = a  # [..., L, C_a]
 
         # Line 6
-        q = self.linear_q(q_in)  # [..., H, Lq, Dh]
+        q = self.linear_q(a_q)  # [..., H, Lq, Dh]
 
         # Line 7
-        k = self.linear_k(k_in)  # [..., H, Lk, Dh]
-        v = self.linear_v(k_in)  # [..., H, Lk, Dh]
+        k = self.linear_k(a_k)  # [..., H, Lk, Dh]
+        v = self.linear_v(a_k)  # [..., H, Lk, Dh]
 
         # Line 8
         attn_bias = self.linear_z(z)  # [..., H, Lq, Lk]
@@ -189,8 +188,6 @@ class AttentionPairBias(nn.Module):
         )
         Av = rearrange(Av, "... h l d -> ... l (h d)")
         Av = Av.reshape(a.shape)
-
-        # Line 11
         a = self.linear_out(g * Av)
 
         # === Output projection === #
@@ -669,9 +666,6 @@ class AtomAttentionEncoder(nn.Module):
         p_skip : torch.Tensor
             The atom pair representation, shape [B, N, W, Lq, Lk, c_atompair]
         """
-        if self.use_structure:
-            assert s_trunk is not None and z_trunk is not None and r_noisy is not None
-
         if model_cache is not None:
             # NOTE: (seonghwanseo) Since atom encoder is used in both InputEmbedder and
             # DiffusionModule, I constrain caching only for DiffusionModule usage
@@ -684,125 +678,75 @@ class AtomAttentionEncoder(nn.Module):
         else:
             layer_cache = {}
 
-        if len(layer_cache) == 0:
-            # Cache the representation for structure-independent components
+        # Get indexing matrix for single to keys conversion
+        local_attn_index = LocalAttentionIndex(
+            num_atoms=f_input.num_atoms,
+            atoms_per_window_queries=self.atoms_per_window_queries,
+            atoms_per_window_keys=self.atoms_per_window_keys,
+            device=f_input.device,
+        )
 
-            # Get indexing matrix for single to keys conversion
-            local_attn_index = LocalAttentionIndex(
-                num_atoms=f_input.num_atoms,
-                atoms_per_window_queries=self.atoms_per_window_queries,
-                atoms_per_window_keys=self.atoms_per_window_keys,
-                device=f_input.device,
-            )
-
-            # Initialize single conditioning and pair representations
-            # Line 1
-            c = self.embed_atom(f_input)  # [B, La, c_atom]
-
-            # Line 2
-            ref_pos = f_input.atom.ref_pos  # [B, La, 3]
-            ref_pos_q = local_attn_index.to_query(ref_pos)  # [B, W, Lq, 3]
-            ref_pos_k = local_attn_index.to_key(ref_pos)  # [B, W, Lk, 3]
-            d = ref_pos_q.unsqueeze(-2) - ref_pos_k.unsqueeze(-3)  # [B, W, Lq, Lk, 3]
-
-            # Line 3
-            residue_uid = f_input.atom.ref_space_uid  # [B, La]
-            mask = f_input.atom.pad_mask  # [B, La]
-            uid_q = local_attn_index.to_query(residue_uid, dim=-1)  # [B, W, Lq]
-            uid_k = local_attn_index.to_key(residue_uid, dim=-1)  # [B, W, Lk]
-            mask_q = local_attn_index.to_query(mask, dim=-1)  # [B, W, Lq]
-            mask_k = local_attn_index.to_key(mask, dim=-1)  # [B, W, Lk]
-            v = uid_q[..., :, None] == uid_k[..., None, :]  # [B, W, Lq, Lk]
-            v = v & (mask_q[..., :, None] & mask_k[..., None, :])
-            v = v.float().unsqueeze(-1)  # [B, W, Lq, Lk, 1]
-
-            # Line 4, skip masking
-            p = self.embed_atompair_ref_pos(d)
-
-            # Line 5, skip masking
-            d_sq = d.pow(2).sum(-1, keepdim=True)
-            p = p + self.embed_atompair_ref_dist(1 / (1 + d_sq))
-
-            # Line 6, skip masking
-            p = p + self.embed_atompair_mask(v)
-
-            # Line 4-6, mask at once
-            p = p * v  # [B, W, Lq, Lk, c_atompair]
-
-            # Line 7
-            q = c  # [B, La, c_atom]
-
-            if self.use_structure:
-                assert s_trunk is not None and z_trunk is not None
-                # Add trunk embedding
-                atom_mask = f_input.atom.pad_mask
-                token_index = f_input.atom.token_index
-                # Line 9
-                c = self.add_trunk_single_conditioning(c, s_trunk, token_index, atom_mask)
-                # Line 10
-                p = self.add_trunk_pair_embedding(
-                    p, z_trunk, token_index, atom_mask, local_attn_index
-                )
-
-            # Line 13-14
-            c_q = local_attn_index.to_query(c)  # [B, W, Lq, c_atom]
-            c_k = local_attn_index.to_key(c)  # [B, W, Lk, c_atom]
-            p = p + self.linear_query(c_q)[..., :, None, :]
-            p = p + self.linear_key(c_k)[..., None, :, :]
-            p = p + self.mlp_pair(p)  # [B, W, Lq, Lk, c_atompair]
-
-            layer_cache["q"] = q  # [B, La, c_atom]
-            layer_cache["c"] = c  # [B, La, c_atom]
-            layer_cache["p"] = p  # [B, W, Lq, Lk, c_atompair]
+        if "qcp" in layer_cache:
+            q, c, p = layer_cache["qcp"]
         else:
-            q = layer_cache["q"]
-            c = layer_cache["c"]
-            p = layer_cache["p"]
+            # Line 1-7
+            q, c, p = self.initialize_atom_representation(f_input, local_attn_index)
+            layer_cache["qcp"] = (q, c, p)
 
         # Shapes at this point:
         # q: [B, La, c_atom]
         # c: [B, La, c_atom]
         # p: [B, W, Lq, Lk, c_atompair]
 
-        # Repeat for diffusion samples
+        mask = f_input.atom.pad_mask  # [B, La]
+        token_index = f_input.atom.token_index  # [B, La]
+
+        # Line 8-12: If provided, add trunk conditioning and noisy structure
         if self.use_structure:
-            assert r_noisy is not None, "r cannot be None when use_structure is True"
-            N = r_noisy.shape[1]  # number of diffusion samples
-        else:
-            N = 1
+            assert s_trunk is not None and z_trunk is not None and r_noisy is not None
+            # Broadcast for multiple diffusion samples
+            # [B, ...] -> [B, *, ...]
+            q = q.unsqueeze(1)  # [B, 1, La, c_atom]
+            c = c.unsqueeze(1)  # [B, 1, La, c_atom]
+            p = p.unsqueeze(1)  # [B, 1, W, Lq, Lk, c_atompair]
+            mask = mask.unsqueeze(1)  # [B, 1, La]
+            token_index = token_index.unsqueeze(1)  # [B, 1, La]
 
-        # [B, ...] -> [B, N, ...]
-        mask = f_input.atom.pad_mask
-        q = expand_dim(q, dim=1, n=N, add_dim=True)
-        c = expand_dim(c, dim=1, n=N, add_dim=True)
-        p = expand_dim(p, dim=1, n=N, add_dim=True)
-        mask = expand_dim(mask, dim=1, n=N, add_dim=True)
-
-        # Shapes at this point:
-        # q: [B, N, La, c_atom]
-        # c: [B, N, La, c_atom]
-        # p: [B, N, W, Lq, Lk, c_atompair]
-        # mask: [B, N, La]
-
-        # Line 11
-        if self.use_structure:
-            assert r_noisy is not None
+            # Line 9
+            c = self.add_trunk_single_conditioning(c, s_trunk, token_index, mask)
+            # Line 10
+            p = self.add_trunk_pair_embedding(
+                p, z_trunk, token_index, mask, local_attn_index
+            )
+            # Line 11
             q = self.add_noise_position(q, r_noisy)
 
-        # Line 15
+        # Shapes at this point:
+        # q: [B, *, La, c_atom]
+        # c: [B, *, La, c_atom]
+        # p: [B, *, W, Lq, Lk, c_atompair]
+        # mask: [B, *, La]
+        # token_index: [B, *, La]
+
+        # Line 13
+        c_q = local_attn_index.to_query(c)  # [B, *, W, Lq, c_atom]
+        c_k = local_attn_index.to_key(c)  # [B, *, W, Lk, c_atom]
+        p = p + self.linear_query(c_q)[..., :, None, :]
+        p = p + self.linear_key(c_k)[..., None, :, :]
+
+        # Line 14
+        p = p + self.mlp_pair(p)
+
+        # Line 15: Atom Transformer
         q = self.atom_encoder(q, c, p, mask)
 
-        # NOTE that c_token can be different from c_s (channel_s)
-        # Line 16
-        q_to_a = self.linear_q_to_a(q)  # [B, N, La, c_token]
-
-        # Aggregate atom representations to token representations
-        # [B, N, La, c_atom] -> [B, N, Lt, c_token]
+        # Line 16: Aggregate atom representations to token representations
+        q_to_a = self.linear_q_to_a(q)  # [B, *, La, c_atom] -> [B, *, Lt, c_token]
         a = aggregate_atoms_to_tokens(
-            q_to_a,  # [B, N, La, c_token]
-            token_index=f_input.atom.token_index[:, None, :],  # [B, 1, La]
+            x_atom=q_to_a,  # [B, *, La, c_token]
+            token_index=token_index,  # [B, *, La]
+            atom_mask=mask,  # [B, *, La]
             num_tokens=f_input.num_tokens,
-            atom_mask=f_input.atom.pad_mask[:, None, :],  # [B, 1, La]
             aggr="mean",
         )
 
@@ -810,6 +754,66 @@ class AtomAttentionEncoder(nn.Module):
         q_skip, c_skip, p_skip = q, c, p
 
         return a, q_skip, c_skip, p_skip
+
+    def initialize_atom_representation(
+        self,
+        f_input: FoldingInput,
+        local_attn_index: LocalAttentionIndex,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Initialize atom representations.
+        See Algorithm 5 Line 1-7 in the AF3 paper for more details.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            The folding input.
+        Returns
+        -------
+        q : torch.Tensor
+            The atom single representation, shape [B, La, c_atom].
+        c : torch.Tensor
+            The atom single conditioning, shape [B, La, c_atom].
+        p : torch.Tensor
+            The atom pair representation, shape [B, W, Lq, Lk, c_atompair].
+        """
+        # Line 1
+        c = self.embed_atom(f_input)  # [B, La, c_atom]
+
+        # Line 2
+        ref_pos = f_input.atom.ref_pos  # [B, La, 3]
+        # [B, La, 3] -> [B, W, Lq, 3], [B, W, Lk, 3]
+        ref_pos_q, ref_pos_k = local_attn_index.to_qk(ref_pos)  # [B, W, Lq|Lk, 3]
+        d = ref_pos_q.unsqueeze(-2) - ref_pos_k.unsqueeze(-3)  # [B, W, Lq, Lk, 3]
+
+        # Line 3
+        uid = f_input.atom.ref_space_uid  # [B, La]
+        uid_q, uid_k = local_attn_index.to_qk(uid, dim=-1)  # [B, W, Lq|Lk]
+        v = uid_q[..., :, None] == uid_k[..., None, :]  # [B, W, Lq, Lk]
+        v = v.float().unsqueeze(-1)  # [B, W, Lq, Lk, 1]
+
+        # Line 4, mask later
+        p = self.embed_atompair_ref_pos(d)
+
+        # Line 5, mask later
+        d_sq = d.pow(2).sum(-1, keepdim=True)
+        p = p + self.embed_atompair_ref_dist(1 / (1 + d_sq))
+
+        # Line 6, mask later
+        p = p + self.embed_atompair_mask(v)
+
+        # Line 4-6, mask at once
+        p = p * v  # [B, W, Lq, Lk, c_atompair]
+
+        # Line 7
+        q = c  # [B, La, c_atom]
+
+        # Mask out padding
+        mask = f_input.atom.pad_mask  # [B, La]
+        mask_q, mask_k = local_attn_index.to_qk(mask, dim=-1)  # [B, W, Lq|Lk]
+        pair_mask = mask_q[..., :, None] & mask_k[..., None, :]  # [B, W, Lq, Lk]
+
+        p = p * pair_mask[..., None]  # [B, W, Lq, Lk, c_atompair]
+        return q, c, p
 
     def add_trunk_single_conditioning(
         self,
@@ -824,19 +828,19 @@ class AtomAttentionEncoder(nn.Module):
         Parameters
         ----------
         c : torch.Tensor
-            The atom single conditioning, shape [B, La, c_atom].
+            The atom single conditioning, shape [*, La, c_atom].
         s_trunk : torch.Tensor
-            The trunk single representation, shape [B,Lt, c_s].
+            The trunk single representation, shape [*, Lt, c_s].
         token_index: torch.Tensor
-            The atom to token mapping, shape [B, La].
+            The atom to token mapping, shape [*, La].
         atom_mask : torch.Tensor
-            The atom padding mask, shape [B, La]
+            The atom padding mask, shape [*, La]
         """
         # Case 2
-        s_trunk = self.linear_s_to_c(s_trunk)  # [B, Lt, c_atom]
-        s_to_c = broadcast_tokens_to_atoms(s_trunk, token_index)  # [B, La, c_atom]
-        s_to_c = s_to_c * atom_mask.unsqueeze(-1)  # [B, La, c_atom]
-        return c + s_to_c  # [B, La, c_atom]
+        s_trunk = self.linear_s_to_c(s_trunk)  # [*, Lt, c_atom]
+        s_to_c = broadcast_tokens_to_atoms(s_trunk, token_index)  # [*, La, c_atom]
+        s_to_c = s_to_c * atom_mask.unsqueeze(-1)  # [*, La, c_atom]
+        return c + s_to_c  # [*, La, c_atom]
 
     def add_trunk_pair_embedding(
         self,
@@ -852,45 +856,48 @@ class AtomAttentionEncoder(nn.Module):
         Parameters
         ----------
         p : torch.Tensor
-            The atom pair representation, shape [B, W, Lq, Lk, c_atompair].
+            The atom pair representation, shape [*, W, Lq, Lk, c_atompair].
         z_trunk : torch.Tensor
-            The trunk pair representation, shape [B, Lt, Lt, c_z].
+            The trunk pair representation, shape [*, Lt, Lt, c_z].
         token_index : torch.Tensor
-            The atom to token mapping, shape [B, La].
+            The atom to token mapping, shape [*, La].
+        atom_mask : torch.Tensor
+            The atom padding mask, shape [*, La].
         local_attn_index : LocalAttentionIndex
             The local attention indexer for atom attention.
         """
-        B = token_index.shape[0]
+        batch_shape = z_trunk.shape[:-3]  # [*]
+        W, Lq, Lk = p.shape[-4:-1]
 
         # 1. Project Trunk features
-        # [B, Lt, Lt, c_z] -> [B, Lt, Lt, c_atompair]
+        # [*, Lt, Lt, c_z] -> [*, Lt, Lt, c_atompair]
         z_trunk = self.linear_z_to_p(z_trunk)
 
         # 2. Get Windowed Indices
-        # [B, La] -> [B, W, Lq], [B, W, Lk]
-        q_idx = local_attn_index.to_query(token_index, dim=-1)  # [B, W, Lq]
-        k_idx = local_attn_index.to_key(token_index, dim=-1)  # [B, W, Lk]
+        # [*, La] -> [*, W, Lq], [*, W, Lk]
+        idx_q, idx_k = local_attn_index.to_qk(token_index, dim=-1)
+        idx_q = idx_q.expand(*batch_shape, W, Lq)
+        idx_k = idx_k.expand(*batch_shape, W, Lk)
 
         # NOTE: safe indexing: Although the pad value of token_index is 0,
         # we clamp indices to be at least 0 to avoid run-time error.
-        q_idx, k_idx = q_idx.clamp(min=0), k_idx.clamp(min=0)
+        idx_q, idx_k = idx_q.clamp(min=0), idx_k.clamp(min=0)
 
-        # 3. Create Batch Indices
-        # Broadcast Trunk Pair Embedding to Atom Pair Representation
-        # [B, Ntoken, c_atom_pair] -> [B, W, Lq, Lk, c_atompair]
-        # batch_idx: [B, 1, 1, 1]
-        # q_idx: [B, W, Lq] -> [B, W, Lq, 1]
-        # k_idx: [B, W, Lk] -> [B, W, 1, Lk]
-        batch_idx = torch.arange(B, device=p.device).view(B, 1, 1, 1)
-
-        # Token pair embedding to atom pair representation
-        z_to_p = z_trunk[batch_idx, q_idx[..., None], k_idx[..., None, :]]
+        # 3. Token pair embedding to atom pair representation
+        # [*, Ntoken, c_atom_pair] -> [*, W, Lq, Lk, c_atompair]
+        B = math.prod(batch_shape)
+        z_trunk = z_trunk.flatten(0, -4)  # [B, Lt, Lt, c_atompair]
+        batch_indices = torch.arange(B, device=p.device)
+        z_to_p = z_trunk[
+            batch_indices.view(B, 1, 1, 1),  # [B, 1, 1, 1]
+            idx_q.view(B, W, Lq, 1),
+            idx_k.view(B, W, 1, Lk),
+        ].unflatten(0, batch_shape)  # [*, W, Lq, Lk, c_atompair]
 
         # 5. Apply Padding Mask
-        q_mask = local_attn_index.to_query(atom_mask, dim=-1)  # [B, W, Lq]
-        k_mask = local_attn_index.to_key(atom_mask, dim=-1)  # [B, W, Lk]
-        pair_mask = q_mask[..., :, None] & k_mask[..., None, :]  # [B, W, Lq, Lk]
-        z_to_p.masked_fill_(~pair_mask[..., None], 0.0)
+        mask_q, mask_k = local_attn_index.to_qk(atom_mask, dim=-1)  # [*, W, Lq|Lk]
+        pair_mask = mask_q[..., :, None] & mask_k[..., None, :]  # [*, W, Lq, Lk]
+        z_to_p = z_to_p * pair_mask[..., None]  # [*, W, Lq, Lk, c_atompair]
 
         return p + z_to_p
 
@@ -905,14 +912,14 @@ class AtomAttentionEncoder(nn.Module):
         Parameters
         ----------
         q : torch.Tensor
-            The atom single representation, shape [B, N, La, c_atom].
+            The atom single representation, shape [*, La, c_atom].
         r_noisy : torch.Tensor
-            The noised structures' positions, shape [B, N, La, 3].
+            The noised structures' positions, shape [*, La, 3].
         """
         with torch.autocast(q.device.type, enabled=False):
             assert r_noisy.dtype == torch.float32, "r_noisy must be float32"
-            r_to_q = self.linear_r_to_q(r_noisy)  # [B, N, La, c_atom]
-        return q + r_to_q  # [B, N, La, c_atom]
+            r_to_q = self.linear_r_to_q(r_noisy)  # [*, La, c_atom]
+        return q + r_to_q  # [*, La, c_atom]
 
 
 class AtomAttentionDecoder(nn.Module):

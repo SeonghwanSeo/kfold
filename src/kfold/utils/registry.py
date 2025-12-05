@@ -1,3 +1,5 @@
+# Reference: https://github.com/SeonghwanSeo/PharmacoNet/blob/v2.0.0/pmnet/network/utils/registry.py
+
 import dataclasses
 import typing
 from collections.abc import Callable

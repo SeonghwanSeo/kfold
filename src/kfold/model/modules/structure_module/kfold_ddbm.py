@@ -1,23 +1,20 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 # adapted with DDBM bridge diffusion approach
 
-from dataclasses import dataclass
-
 import torch
 import torch.nn.functional as F
 
 from kfold.data.model_input import FoldingInput
-from kfold.model.layers.alphafold3.utils import CenterRandomAugmentation
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.utils.geometry.random_augment import do_centering
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
 from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseStructureModule
+from .base import BaseEDM
 
 
 @STRUCTURE_MODULE.register()
-class KFoldBridgeDiffusion(BaseStructureModule):
+class KFoldBridgeDiffusion(BaseEDM):
     """Diffusion Bridge module for biomolecular structure prediction.
 
     Implements a bridge diffusion process that transitions from apo (unbound)
@@ -30,7 +27,6 @@ class KFoldBridgeDiffusion(BaseStructureModule):
                            Models"
     """
 
-    @dataclass
     class Config(BaseConfig):
         """Configuration for the Bridge Diffusion Structure module.
 
@@ -118,12 +114,17 @@ class KFoldBridgeDiffusion(BaseStructureModule):
         self.synchronize_sigmas: bool = cfg.synchronize_sigmas
         self.normalize_data_end: bool = cfg.normalize_data_end
 
-        if self.coordinate_augmentation:
-            self.random_augmentation = CenterRandomAugmentation(
-                centering=True,
-                augmentation=self.coordinate_augmentation,
-                s_trans=1.0,  # not used when augmentation is False
-            )
+        self.random_augmentation = CenterRandomAugmentation(
+            centering=True,
+            augmentation=self.coordinate_augmentation,
+            s_trans=1.0,  # not used when augmentation is False
+        )
+
+    def apply_random_augmentation(
+        self, coords: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Apply random augmentation to coordinates."""
+        return self.random_augmentation(coords, mask=mask)
 
     # === Bridge EDM diffusion coefficients === #
     def _get_bridge_scalings(
@@ -430,49 +431,6 @@ class KFoldBridgeDiffusion(BaseStructureModule):
 
         return apo_coords
 
-    def sample_holo(
-        self,
-        f_input: FoldingInput,
-        num_diffusion_samples: int = 1,
-    ) -> torch.Tensor:
-        """Sample holo structures (target for bridge diffusion).
-
-        In bridge diffusion, the holo (bound) structure is the target
-        that we condition on during sampling.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            FoldingInput object containing model inputs.
-        num_diffusion_samples : int, optional
-            Number of diffusion samples, by default 1.
-
-        Returns
-        -------
-        holo_coords : torch.Tensor
-            Holo coordinates. Shape (B, N, La, 3).
-        """
-        holo_coords = super().sample_holo(
-            f_input, num_diffusion_samples
-        )  # [B, N, Latom, 3]
-
-        if self.coordinate_augmentation:
-            atom_mask = f_input.atom.pad_mask.float()  # (B, Latom)
-
-            B, N, L = holo_coords.shape[:3]
-            holo_coords = holo_coords.view(B * N, L, 3)  # (B*N, Latom, 3)
-            atom_mask = atom_mask.repeat_interleave(N, dim=0)  # (B * N, Latom)
-
-            # Apply coordinate augmentation
-            holo_coords = self.random_augmentation(holo_coords, mask=atom_mask)
-
-            # Mask out the padding atoms
-            holo_coords = holo_coords * atom_mask[:, :, None]  # (B*N, Latom, 3)
-
-            holo_coords = holo_coords.view(B, N, L, 3)
-
-        return holo_coords
-
     def interpolate(
         self,
         noise_coords: torch.Tensor,
@@ -566,7 +524,7 @@ class KFoldBridgeDiffusion(BaseStructureModule):
 
         # NOTE: for sampling, there is no unresolved atoms.
         # Therefore, we can use pad_mask here.
-        atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
+        atom_mask = f_input.atom.pad_mask.unsqueeze(1)  # (B, 1, Latom)
 
         # Line 1-2: sample x_N from q_data(y), not N(0, I)
         x_apo = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
