@@ -375,10 +375,16 @@ def compute_validation_metrics(
         for k, agg in metric_keys:
             stacked_values = torch.stack([v[k] for v in values])
             stacked_weights = torch.stack([w[k] for w in weights])
+
+            nan_mask = ~stacked_values.isfinite()
+            stacked_weights[nan_mask] = 0.0
             if agg == "max":
+                stacked_values[nan_mask] = -1e6
                 best_idx = torch.argmax(stacked_values)
             else:
+                stacked_values[nan_mask] = 1e6
                 best_idx = torch.argmin(stacked_values)
+
             all_best_metrics[k].append(stacked_values[best_idx])
             all_best_weights[k].append(stacked_weights[best_idx])
 

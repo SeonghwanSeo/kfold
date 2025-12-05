@@ -218,7 +218,7 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
 
         # Add relative positional encoding
         rel_feat = self.relative_pos_encoding(f_input)
-        z_init = z_init + self.linear_rel_pos(rel_feat)  # [B, L, c_z]
+        z_init = z_init + self.linear_rel_pos(rel_feat)  # [B, L, L, c_z]
 
         # Add bond adjacency matrix
         z_init = z_init + self.linear_bond(

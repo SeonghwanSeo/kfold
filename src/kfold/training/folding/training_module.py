@@ -422,9 +422,10 @@ class KFoldTrainingModule(pl.LightningModule):
         avg_values: dict[str, torch.Tensor] = {}
         for k, m in val_metrics.items():
             v = m.compute()
-            if v.isfinite().all():
-                # Ignore non-finite values (after sanity check)
-                avg_values[k] = v
+            if not v.isfinite().all():
+                # Ignore non-finite values
+                continue
+            avg_values[k] = v
             m.reset()
 
         # Compute weighted lddt scores (Monitored metrics)
