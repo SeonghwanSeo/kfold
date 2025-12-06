@@ -59,7 +59,7 @@ class BaseCropper(ABC):
         struct: TokenizedStructure,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         """Get the indices of the tokens to include in the crop.
 
@@ -72,8 +72,8 @@ class BaseCropper(ABC):
         bias_asym_id : int | tuple[int, int] | None
             The chain ID(s) to center the crop on. If None, a random chain or interface
             will be selected.
-        rng : np.random.Generator | None, optional
-            The random number generator. If None, use np.random.
+        rng : np.random.Generator
+            The random number generator.
 
         Returns
         -------

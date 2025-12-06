@@ -21,11 +21,11 @@ data:
   _class_: TrainingDataModule
 
   # DataLoader
-  train_batch_size: ${global_hparams.batch_size}
+  train_batch_size: ???
   val_batch_size: 1
   num_workers: 8
-  max_chains: ${global_hparams.max_chains}
-  max_tokens: ${global_hparams.max_tokens}
+  max_chains: ???
+  max_tokens: ???
   pin_memory: true
   safe_load: true
 
@@ -60,8 +60,9 @@ data:
   cropper:
     _registry_: "data_cropper"
     _class_: MultiAnchorCropper
-    w_contiguous: 0.3
-    w_spatial: 0.2
+    max_anchors: 1
+    w_contiguous: 0.25
+    w_spatial: 0.25
     w_spatial_interface: 0.5
 
   sampler:

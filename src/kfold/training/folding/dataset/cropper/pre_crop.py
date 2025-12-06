@@ -9,13 +9,16 @@ from .base import BaseCropper
 
 @DATA_CROPPER.register()
 class PreCropper(BaseCropper):
-    """Pre-Cropper that selects up to max_chains chains
-    See AlphaFold3 SI Section 2.5.4
+    """Pre-Cropper that selects up to `max_chains` chains.
+    See AlphaFold 3 SI Section 2.5.4.
 
-    NOTE: The output of this cropper is considered as an original structure
-    instead of cropped structure for further cropping and chain permutations.
-    Actually, this cropper just sample the neighboring chains to limit the number
-    of chains.
+    NOTE: The output of this cropper is treated as the "original" structure
+    rather than a training crop. It effectively samples neighboring chains to
+    reduce the complex to a manageable bioassembly size before further processing.
+
+    NOTE: Unlike the original AF3 description, this cropper is polymer-centric.
+    Small molecules (<6 atoms) do not count toward the chain limit. For example,
+    20 polymer chains + 3 small molecules/metals are counted as 20 chains, not 23.
     """
 
     class Config(BaseCropper.Config):
@@ -25,12 +28,17 @@ class PreCropper(BaseCropper):
         ----------
         max_chains : int
             Maximum number of chains to consider for contiguous cropping.
+        min_chain_atom_count : int
+            The minimum number of atoms in a chain to be considered
+            for max chain counting. If 0, all chains are counted.
         """
 
         max_chains: int = 20
+        min_chain_atom_count: int = 6
 
     def __init__(self, config: Config):
         self.max_chains: int = config.max_chains
+        self.min_chain_atom_count: int = config.min_chain_atom_count
 
     def crop(
         self,
@@ -55,7 +63,7 @@ class PreCropper(BaseCropper):
         Returns
         -------
         cropped_struct: TokenizedStructure
-            The partial complex structure with limited number of chains.
+            The sub-complex structure with limited number of chains.
         """
         rng = rng or np.random.default_rng()
 
@@ -68,7 +76,7 @@ class PreCropper(BaseCropper):
         token_mask = np.isin(struct.token.asym_id, sampled_asym_ids)
         selected_token_indices = struct.token.token_index[token_mask]
 
-        # Extract the partial structure with the selected chains
+        # Extract the sub-complex structure with the selected chains
         partial_struct = struct.crop(selected_token_indices)
 
         # Re-assign token index to be consecutive
@@ -76,12 +84,12 @@ class PreCropper(BaseCropper):
 
         return partial_struct
 
-    def get_token_indices(  # noqa: PLR0915
+    def get_token_indices(
         self,
         struct: TokenizedStructure,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         raise ValueError("PreCropper does not support get_token_indices")
 
@@ -141,16 +149,22 @@ class PreCropper(BaseCropper):
         # 3. Select chains based on nearest distances
         neighbors = np.argsort(dists)
         selected_asym_ids: list[int] = []
+        chain_counts: int = 0
 
         all_asym_ids = struct.token.asym_id
         for idx in neighbors:
             if np.isinf(dists[idx]):
                 break
-            asym_id = all_asym_ids[idx]
-            if asym_id not in selected_asym_ids:
-                selected_asym_ids.append(asym_id)
-            if len(selected_asym_ids) >= self.max_chains:
+            if chain_counts >= self.max_chains:
                 break
+            asym_id = all_asym_ids[idx]
+            if asym_id in selected_asym_ids:
+                continue
+            selected_asym_ids.append(asym_id)
+            chain_idx = np.where(struct.chain.asym_id == asym_id)[0][0]
+            if self.min_chain_atom_count <= struct.chain.num_atoms[chain_idx]:
+                # Only count chains with sufficient atoms
+                chain_counts += 1
 
         return np.array(selected_asym_ids)
 

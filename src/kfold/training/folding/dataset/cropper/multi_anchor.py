@@ -110,7 +110,7 @@ class MultiAnchorCropper(BaseCropper):
         struct: TokenizedStructure,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         """Crop the data to a maximum number of tokens.
 
@@ -123,14 +123,14 @@ class MultiAnchorCropper(BaseCropper):
         bias_asym_id : int | tuple[int, int] | None
             The chain ID(s) to center the crop on. If None, a random chain or interface
             will be selected.
+        rng : np.random.Generator
+            The random number generator
 
         Returns
         -------
         token_indices: np.ndarray
             The selected token indices.
         """
-        rng = rng or np.random.default_rng()
-
         v = rng.random()
         if v < self.w_contiguous:
             # Contiguous cropping
@@ -175,9 +175,12 @@ class MultiAnchorCropper(BaseCropper):
         """
 
         # Compute the number of tokens and start indices per chain
+        asym_id_to_chain_idx: dict[int, int] = {
+            v: i for i, v in enumerate(struct.chain.asym_id.tolist())
+        }
         chain_sizes: dict[int, int] = {
-            int(struct.chain.asym_id[i]): int(struct.chain.num_tokens[i])
-            for i in range(struct.num_chains)
+            asym_id: int(struct.chain.num_tokens[chain_idx])
+            for asym_id, chain_idx in asym_id_to_chain_idx.items()
         }
 
         # Randomly permute the chain order
@@ -218,7 +221,7 @@ class MultiAnchorCropper(BaseCropper):
             crop_start = int(rng.integers(0, n_k - crop_size + 1))
 
             # Line 11
-            chain_idx = np.where(struct.chain.asym_id == asym_id)[0][0]
+            chain_idx = asym_id_to_chain_idx[asym_id]
             chain_st = int(struct.chain.token_starts[chain_idx])
             crop_start += chain_st
             selected_tokens = np.arange(crop_start, crop_start + crop_size)

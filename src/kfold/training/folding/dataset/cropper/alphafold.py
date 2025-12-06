@@ -47,12 +47,12 @@ class AlphaFold3Cropper(BaseCropper):
         if self.w_contiguous + self.w_spatial + self.w_spatial_interface != 1.0:
             raise ValueError("Cropping strategy weights must sum to 1.0")
 
-    def get_token_indices(  # noqa: PLR0915
+    def get_token_indices(
         self,
         struct: TokenizedStructure,
         max_tokens: int,
-        bias_asym_id: int | tuple[int, int] | None = None,
-        rng: np.random.Generator | None = None,
+        bias_asym_id: int | tuple[int, int] | None,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         """Get the token indices to include in the crop.
 
@@ -65,8 +65,8 @@ class AlphaFold3Cropper(BaseCropper):
         bias_asym_id: int | tuple[int, ...] | None
             The chain ID(s) to center the crop on. If None, a random chain or interface
             will be selected.
-        rng: np.random.Generator | None, optional
-            The random number generator. If None, use np.random.
+        rng: np.random.Generator
+            The random number generator.
 
         Returns
         ----------
