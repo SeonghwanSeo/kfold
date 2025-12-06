@@ -21,11 +21,11 @@ data:
   _class_: TrainingDataModule
 
   # DataLoader
-  train_batch_size: ???
+  train_batch_size: ??? # set by global_hparam
   val_batch_size: 1
   num_workers: 8
-  max_chains: ???
-  max_tokens: ???
+  max_chains: ??? # set by global_hparam
+  max_tokens: ??? # set by global_hparam
   pin_memory: true
   safe_load: true
 
