@@ -378,8 +378,9 @@ class LMDBDatabase:
 
         # Use io.BytesIO to wrap the raw bytes
         with io.BytesIO(value_bytes) as byte_stream:
-            tokenized_structure = structure.TokenizedStructure.load_npz(byte_stream)
-        return tokenized_structure
+            struct = structure.TokenizedStructure.load_npz(byte_stream)
+        struct = struct.copy_with(metadata=record)
+        return struct
 
     def __del__(self):
         if hasattr(self, "_lmdb_env"):

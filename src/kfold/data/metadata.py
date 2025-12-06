@@ -71,15 +71,13 @@ class ChainInfo(JsonSerializable):
 
 @dataclass(frozen=True, slots=True)
 class InterfaceInfo(JsonSerializable):
-    # NOTE(seonghwanseo): I change (asym_id1, asym_id2) to {asym_id} to
-    # support multi-chain interaces (e.g., Protac)
-    asym_ids: tuple[int, ...]
+    asym_ids: tuple[int, int]
     # covalent bond interface. If True, the chains must be sampled together.
     is_bonded: bool = False
     valid: bool = True
 
     def __post_init__(self):
-        assert len(self.asym_ids) >= 2, "Interface must involve at least two chains."
+        assert len(self.asym_ids) == 2, "Interface must involve exactly two chains."
 
 
 @dataclass
