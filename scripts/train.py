@@ -117,6 +117,7 @@ def parse_config(args) -> DictConfig:
     train_cfg = cfg.train
     global_hparams = train_cfg.global_hparams
 
+    train_cfg.data.max_chains = global_hparams.max_chains
     train_cfg.data.max_tokens = global_hparams.max_tokens
     train_cfg.data.train_batch_size = global_hparams.batch_size
     train_cfg.training.diffusion_batch_size = global_hparams.diffusion_batch_size
@@ -155,7 +156,7 @@ def parse_config(args) -> DictConfig:
         cfg.train.trainer.accumulate_grad_batches = 1
         cfg.train.trainer.log_every_n_steps = 1
         cfg.train.trainer.limit_train_batches = 10
-        cfg.train.trainer.limit_val_batches = 50
+        cfg.train.trainer.limit_val_batches = 10
         cfg.train.data.train_batch_size = 1
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False

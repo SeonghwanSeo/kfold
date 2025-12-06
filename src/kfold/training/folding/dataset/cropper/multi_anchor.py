@@ -74,6 +74,8 @@ class MultiAnchorCropper(BaseCropper):
         anchor_distribution : str
             Distribution to sample number of anchors from.
             Choices: 'uniform', 'linear', 'squared', 'exponential'.
+        min_anchors : int
+            Minimum number of anchor tokens.
         max_anchors : int
             Maximum number of anchor tokens.
         max_anchor_distance : float
@@ -84,6 +86,7 @@ class MultiAnchorCropper(BaseCropper):
         w_spatial: float = 0.4
         w_spatial_interface: float = 0.4
         anchor_distribution: str = "exponential"
+        min_anchors: int = 1
         max_anchors: int = 1
         max_anchor_distance: float = 100.0
 
@@ -101,7 +104,7 @@ class MultiAnchorCropper(BaseCropper):
         self.w_spatial: float = config.w_spatial
         self.w_spatial_interface: float = config.w_spatial_interface
         self.anchor_distribution: str = config.anchor_distribution
-        self.min_anchors: int = 1
+        self.min_anchors: int = config.min_anchors
         self.max_anchors: int = config.max_anchors
         self.max_anchor_distance: float = config.max_anchor_distance
 
@@ -110,7 +113,7 @@ class MultiAnchorCropper(BaseCropper):
         struct: TokenizedStructure,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         """Crop the data to a maximum number of tokens.
 
@@ -123,14 +126,14 @@ class MultiAnchorCropper(BaseCropper):
         bias_asym_id : int | tuple[int, int] | None
             The chain ID(s) to center the crop on. If None, a random chain or interface
             will be selected.
+        rng : np.random.Generator
+            The random number generator
 
         Returns
         -------
         token_indices: np.ndarray
             The selected token indices.
         """
-        rng = rng or np.random.default_rng()
-
         v = rng.random()
         if v < self.w_contiguous:
             # Contiguous cropping
@@ -175,9 +178,12 @@ class MultiAnchorCropper(BaseCropper):
         """
 
         # Compute the number of tokens and start indices per chain
+        asym_id_to_chain_idx: dict[int, int] = {
+            v: i for i, v in enumerate(struct.chain.asym_id.tolist())
+        }
         chain_sizes: dict[int, int] = {
-            int(struct.chain.asym_id[i]): int(struct.chain.num_tokens[i])
-            for i in range(struct.num_chains)
+            asym_id: int(struct.chain.num_tokens[chain_idx])
+            for asym_id, chain_idx in asym_id_to_chain_idx.items()
         }
 
         # Randomly permute the chain order
@@ -218,7 +224,7 @@ class MultiAnchorCropper(BaseCropper):
             crop_start = int(rng.integers(0, n_k - crop_size + 1))
 
             # Line 11
-            chain_idx = np.where(struct.chain.asym_id == asym_id)[0][0]
+            chain_idx = asym_id_to_chain_idx[asym_id]
             chain_st = int(struct.chain.token_starts[chain_idx])
             crop_start += chain_st
             selected_tokens = np.arange(crop_start, crop_start + crop_size)
@@ -355,7 +361,7 @@ class MultiAnchorCropper(BaseCropper):
 
         is_selected = np.zeros(struct.num_tokens, dtype=bool)
         is_remaining = resolved_mask.copy()
-        visited_chains: set[int] = set()
+        visited_chains: list[int] = []
         for i in range(num_anchors):
             # Select an interface to sample anchor from
             if i == 0:
@@ -382,10 +388,9 @@ class MultiAnchorCropper(BaseCropper):
             else:
                 # Pick an interface connected to visited chains
                 assert len(visited_chains) > 0, "No visited chains"
-                i1 = utils.random_choice(list(visited_chains), rng=rng)
+                i1 = utils.random_choice(visited_chains, rng=rng)
                 i2 = utils.random_choice(chain_to_neighbors[i1], rng=rng)
                 interface_id = (min(i1, i2), max(i1, i2))
-            visited_chains.update(interface_id)
 
             # Select anchor token from the interface
             # NOTE: Since re-sample from visited interfaces, we allow picking from
@@ -399,6 +404,8 @@ class MultiAnchorCropper(BaseCropper):
             )
             is_selected[neighbor_indices] = True
             is_remaining[neighbor_indices] = False
+
+            visited_chains = np.unique(struct.token.asym_id[is_selected]).tolist()
 
         return np.where(is_selected)[0]
 

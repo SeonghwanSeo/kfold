@@ -725,6 +725,40 @@ class TokenizedStructure:
             metadata=self.metadata,
         )
 
+    def reassign_token_indices(self) -> Self:
+        """Reassign token indices to be consecutive from 0 to Ntoken-1.
+
+        Returns
+        -------
+        new_struct: TokenizedStructure
+            Structure with reassigned token indices.
+        """
+        Ntoken = self.num_tokens
+        old_token_indices = self.token.token_index
+        new_token_indices = np.arange(Ntoken, dtype=old_token_indices.dtype)
+
+        # Update token structure
+        new_token = self.token.copy_with(token_index=new_token_indices)
+
+        # Update token indices in bond
+        bond = self.bond
+        token_index_mapping = {
+            old_idx: new_idx for new_idx, old_idx in enumerate(old_token_indices)
+        }
+        old_bond_token_indices = bond.token_index
+        new_bond_token_indices = np.array(
+            [
+                [token_index_mapping[int(idx)] for idx in bond_pair]
+                for bond_pair in old_bond_token_indices
+            ],
+            dtype=old_bond_token_indices.dtype,
+        ).reshape(-1, 2)
+        new_bond = bond.copy_with(token_index=new_bond_token_indices)
+
+        # Create new structure
+        new_struct = self.copy_with(token=new_token, bond=new_bond)
+        return new_struct
+
     def replace_atom_coords(
         self,
         atom_coords: np.ndarray,

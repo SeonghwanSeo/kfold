@@ -41,7 +41,7 @@ class BoltzCropper(BaseCropper):
         struct: TokenizedStructure,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         """Crop the data to a maximum number of tokens.
 
@@ -54,17 +54,14 @@ class BoltzCropper(BaseCropper):
         asym_ids : tuple[int, ...] | None, optional
             The chain ID(s) to center the crop on. If None, a random chain
             or interface will be selected.
-        rng : np.random.Generator | None, optional
-            The random number generator. If None, use np.random.
+        rng : np.random.Generator
+            The random number generator
 
         Returns
         -------
         token_indices: np.ndarray
             The selected token indices.
         """
-        if rng is None:
-            rng = np.random.default_rng()
-
         token_data = struct.token  # features: [L, ...]
         atom_data = struct.atom  # features: [L, 24, ...]
 
