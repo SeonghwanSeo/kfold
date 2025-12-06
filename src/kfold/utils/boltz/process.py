@@ -94,8 +94,7 @@ def parse_record(record_json: dict) -> metadata.Metadata:
 
 
 def tokenize_structure(
-        boltz_data: BoltzStructure,
-        metadata: metadata.Metadata | None = None
+    boltz_data: BoltzStructure, metadata: metadata.Metadata | None = None
 ) -> structure.TokenizedStructure:
     """Tokenize structure.
 
@@ -483,5 +482,4 @@ def tokenize_structure(
         token=token_structure,
         atom=atom_structure,
         bond=bond_structure,
-        metadata=metadata
     )
