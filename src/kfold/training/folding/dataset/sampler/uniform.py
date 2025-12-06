@@ -38,7 +38,7 @@ class UniformSampler(BaseSampler):
                 for chain in m.chains:
                     if not chain.valid:
                         continue
-                    samples.append(Sample(m, (chain.asym_id,)))
+                    samples.append(Sample(m, chain.asym_id))
 
         weights = None  # Uniform sampling
         return samples, weights

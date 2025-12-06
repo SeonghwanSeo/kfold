@@ -301,7 +301,7 @@ class TrainingDataset(SafeLoadingDataset):
         for _ in range(num_trials):
             sample = self.samples[index]
             try:
-                return self.get_item(sample.metadata, asym_ids=sample.asym_ids)
+                return self.get_item(sample.metadata, asym_ids=sample.asym_id)
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
@@ -378,8 +378,9 @@ class LMDBDatabase:
 
         # Use io.BytesIO to wrap the raw bytes
         with io.BytesIO(value_bytes) as byte_stream:
-            tokenized_structure = structure.TokenizedStructure.load_npz(byte_stream)
-        return tokenized_structure
+            struct = structure.TokenizedStructure.load_npz(byte_stream)
+        struct = struct.copy_with(metadata=record)
+        return struct
 
     def __del__(self):
         if hasattr(self, "_lmdb_env"):

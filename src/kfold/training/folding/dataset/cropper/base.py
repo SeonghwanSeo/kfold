@@ -17,7 +17,8 @@ class BaseCropper(ABC):
         self,
         struct: TokenizedStructure,
         max_tokens: int,
-        asym_ids: tuple[int, ...] | None,
+        bias_asym_id: int | tuple[int, int] | None = None,
+        rng: np.random.Generator | None = None,
     ) -> TokenizedStructure:
         """Crop the data to a maximum number of tokens.
 
@@ -27,14 +28,16 @@ class BaseCropper(ABC):
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
-        asym_ids : tuple[int, ...] | None, optional
-            The chain IDs to center the crop on. If None, a random chain
+        bias_asym_id : int | tuple[int, int] | None, optional
+            The chain IDs to center the crop on. If None, a random chain or interface
+            will be selected.
 
         Returns
         -------
         cropped_struct: TokenizedStructure
             The cropped data.
         """
+        rng = rng or np.random.default_rng()
 
         # Check if structure have any valid tokens
         if struct.num_tokens == 0:
@@ -45,7 +48,9 @@ class BaseCropper(ABC):
             return struct
 
         # Get the token indices to include in the crop
-        selected_token_indices = self.get_token_indices(struct, max_tokens, asym_ids)
+        selected_token_indices = self.get_token_indices(
+            struct, max_tokens, bias_asym_id, rng=rng
+        )
         return struct.crop(selected_token_indices)
 
     @abstractmethod
@@ -53,7 +58,8 @@ class BaseCropper(ABC):
         self,
         struct: TokenizedStructure,
         max_tokens: int,
-        asym_ids: tuple[int, ...] | None,
+        bias_asym_id: int | tuple[int, int] | None,
+        rng: np.random.Generator | None = None,
     ) -> np.ndarray:
         """Get the indices of the tokens to include in the crop.
 
@@ -63,8 +69,11 @@ class BaseCropper(ABC):
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
-        asym_ids : tuple[int, ...] | None, optional
-            The chain IDs to center the crop on. If None, a random chain
+        bias_asym_id : int | tuple[int, int] | None
+            The chain ID(s) to center the crop on. If None, a random chain or interface
+            will be selected.
+        rng : np.random.Generator | None, optional
+            The random number generator. If None, use np.random.
 
         Returns
         -------

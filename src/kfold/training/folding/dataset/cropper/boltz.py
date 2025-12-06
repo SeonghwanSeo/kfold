@@ -1,132 +1,16 @@
+# started from code from https://github.com/jwohlwend/boltz, MIT License
 import numpy as np
-from scipy.spatial.distance import cdist
 
-import kfold.constants as C
 from kfold.data.structure import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
+from . import utils
 from .base import BaseCropper
-
-
-def pick_chain_token(
-    struct: TokenizedStructure,
-    asym_id: int,
-    resolved_mask: np.ndarray | None = None,
-) -> int:
-    """Pick a random token from a chain.
-
-    Parameters
-    ----------
-    struct : TokenizedStructure
-        The tokenized structure.
-    asym_id : int
-        The chain asymmetric ID.
-    resolved_mask : np.ndarray | None, optional
-        An optional mask of valid tokens.
-
-    Returns
-    -------
-    token_index : int
-        The selected token index.
-    """
-    # Get resolved mask with valid centers
-    if resolved_mask is None:
-        token_center_mask = struct.atom.resolved_mask[
-            struct.token.token_index, struct.token.center_index
-        ]  # (num_tokens,)
-        resolved_mask = struct.token.resolved_mask & token_center_mask
-
-    chain_mask = struct.token.asym_id == asym_id
-
-    # Pick from chain, fallback to all tokens
-    token_indices = struct.token.token_index
-    chain_tokens = token_indices[chain_mask & resolved_mask]
-    if chain_tokens.size:
-        return np.random.choice(chain_tokens)
-    else:
-        valid_tokens = token_indices[resolved_mask]
-        return np.random.choice(valid_tokens)
-
-
-def pick_interface_token(
-    struct: TokenizedStructure,
-    asym_ids: tuple[int, ...],
-    center_coords: np.ndarray,
-    resolved_mask: np.ndarray | None = None,
-) -> int:
-    """Pick a random token from an interface.
-
-    Parameters
-    ----------
-    struct : TokenizedStructure
-        The tokenized data.
-    asym_ids : tuple[int, ...]
-        The chain IDs defining the interface.
-    center_coords : np.ndarray
-        The center coordinates of all tokens.
-    resolved_mask : np.ndarray | None, optional
-        An optional mask of valid tokens.
-
-    Returns
-    -------
-    token_index : int
-        The selected token index.
-    """
-
-    # Sample random interface
-    if len(asym_ids) != 2:
-        raise ValueError("asym_ids must have length 2 for interface picking")
-
-    chain_1, chain_2 = asym_ids
-
-    # Get resolved mask with valid center atoms
-    if resolved_mask is None:
-        token_center_mask = struct.atom.resolved_mask[
-            struct.token.token_index, struct.token.center_index
-        ]  # (num_tokens,)
-        resolved_mask = struct.token.resolved_mask & token_center_mask
-
-    token_indices = struct.token.token_index
-    tokens_1 = token_indices[(struct.token.asym_id == chain_1) & resolved_mask]
-    tokens_2 = token_indices[(struct.token.asym_id == chain_2) & resolved_mask]
-
-    # If no interface, pick from the chains
-    if tokens_1.size and (not tokens_2.size):
-        return np.random.choice(tokens_1)
-    elif tokens_2.size and (not tokens_1.size):
-        return np.random.choice(tokens_2)
-    elif (not tokens_1.size) and (not tokens_2.size):
-        # Fallback to all tokens
-        valid_tokens = token_indices[resolved_mask]
-        return np.random.choice(valid_tokens)
-    else:
-        # If we have tokens, compute distances to find interface tokens
-        tokens_1_coords = center_coords[tokens_1]  # (num_tokens_1, 3)
-        tokens_2_coords = center_coords[tokens_2]  # (num_tokens_2, 3)
-
-        dists = cdist(tokens_1_coords, tokens_2_coords)
-        cuttoff = dists < C.INTERFACE_CUTOFF
-
-        # In rare cases, the interface cuttoff is slightly
-        # too small, then we slightly expand it if it happens
-        if not np.any(cuttoff):
-            cuttoff = dists < (C.INTERFACE_CUTOFF + 5.0)
-
-        tokens_1 = tokens_1[np.any(cuttoff, axis=1)]
-        tokens_2 = tokens_2[np.any(cuttoff, axis=0)]
-
-        # Select random token
-        candidates = np.concatenate([tokens_1, tokens_2])
-        if candidates.size == 0:
-            # Fallback to all tokens
-            valid_tokens = token_indices[resolved_mask]
-            return np.random.choice(valid_tokens)
-        return np.random.choice(candidates)
 
 
 @DATA_CROPPER.register()
 class BoltzCropper(BaseCropper):
-    """Interpolate between contiguous and spatial crops."""
+    """Unified cropper used in Boltz1"""
 
     class Config(BaseCropper.Config):
         """Configuration for the BoltzCropper.
@@ -150,13 +34,14 @@ class BoltzCropper(BaseCropper):
 
     def __init__(self, config: Config):
         sizes = list(range(config.min_neighborhood, config.max_neighborhood + 1, 2))
-        self.neighborhood_sizes = sizes
+        self.neighborhood_sizes: list[int] = sizes
 
     def get_token_indices(  # noqa: PLR0915
         self,
         struct: TokenizedStructure,
         max_tokens: int,
-        asym_ids: tuple[int, ...] | None,
+        bias_asym_id: int | tuple[int, int] | None,
+        rng: np.random.Generator | None = None,
     ) -> np.ndarray:
         """Crop the data to a maximum number of tokens.
 
@@ -166,14 +51,19 @@ class BoltzCropper(BaseCropper):
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
-        asym_ids : tuple[int, ...] | None
-            The chain IDs to center the crop on. If None, a random chain
+        asym_ids : tuple[int, ...] | None, optional
+            The chain ID(s) to center the crop on. If None, a random chain
+            or interface will be selected.
+        rng : np.random.Generator | None, optional
+            The random number generator. If None, use np.random.
 
         Returns
         -------
         token_indices: np.ndarray
             The selected token indices.
         """
+        if rng is None:
+            rng = np.random.default_rng()
 
         token_data = struct.token  # features: [L, ...]
         atom_data = struct.atom  # features: [L, 24, ...]
@@ -198,21 +88,19 @@ class BoltzCropper(BaseCropper):
         ]  # (num_tokens, 3)
 
         # Randomly select a neighborhood size
-        neighborhood_size = np.random.choice(self.neighborhood_sizes)
+        neighborhood_size = utils.random_choice(self.neighborhood_sizes, rng=rng)
 
         # Pick a random token, chain, or interface
-        if asym_ids is None:
+        if bias_asym_id is None:
             valid_chain_asym_ids = np.unique(all_asym_ids[valid_tokens])
-            asym_id = np.random.choice(valid_chain_asym_ids)
-            query = pick_chain_token(struct, asym_id, resolved_mask)
-        elif len(asym_ids) == 1:
-            query = pick_chain_token(struct, asym_ids[0], resolved_mask)
-        elif len(asym_ids) == 2:
-            query = pick_interface_token(
-                struct, asym_ids, all_token_centers, resolved_mask
-            )
-        else:
-            raise ValueError("asym_ids must be None, length 1, or length 2")
+            chain_id = rng.choice(valid_chain_asym_ids)
+            query = utils.pick_token(struct, chain_id, resolved_mask, rng)
+        elif isinstance(bias_asym_id, int):
+            chain_id = bias_asym_id
+            query = utils.pick_token(struct, chain_id, resolved_mask, rng)
+        else:  # tuple[int, int]
+            interface_id = bias_asym_id
+            query = utils.pick_token(struct, interface_id, resolved_mask, rng)
 
         query_coords = all_token_centers[query]  # [3,]
         valid_coords = all_token_centers[valid_tokens]  # [num_valid_tokens, 3]
