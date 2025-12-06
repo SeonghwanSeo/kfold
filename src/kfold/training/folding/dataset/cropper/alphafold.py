@@ -62,8 +62,9 @@ class AlphaFold3Cropper(BaseCropper):
             The tokenized structure.
         max_tokens: int
             The maximum number of tokens to crop.
-        bias_asym_id: tuple[int, ...] | None
-            The chain IDs to center the crop on. If None, a random chain or interface
+        bias_asym_id: int | tuple[int, ...] | None
+            The chain ID(s) to center the crop on. If None, a random chain or interface
+            will be selected.
         rng: np.random.Generator | None, optional
             The random number generator. If None, use np.random.
 
@@ -78,6 +79,7 @@ class AlphaFold3Cropper(BaseCropper):
         strategy = utils.random_choice(
             ["contiguous", "spatial", "spatial_interface"],
             p=[self.w_contiguous, self.w_spatial, self.w_spatial_interface],
+            rng=rng,
         )
         match strategy:
             case "contiguous":
@@ -164,8 +166,9 @@ class AlphaFold3Cropper(BaseCropper):
             The tokenized structure.
         max_tokens: int
             The maximum number of tokens to crop.
-        bias_asym_id: tuple[int, ...] | None
-            The chain IDs to center the crop on. If None, a random chain or interface
+        bias_asym_id: int | tuple[int, ...] | None
+            The chain ID(s) to center the crop on. If None, a random chain or interface
+            will be selected.
         rng: np.random.Generator
             The random number generator.
 
@@ -204,8 +207,9 @@ class AlphaFold3Cropper(BaseCropper):
             The tokenized structure.
         max_tokens: int
             The maximum number of tokens to crop.
-        bias_asym_id: tuple[int, ...] | None
-            The chain IDs to center the crop on. If None, a random chain or interface
+        bias_asym_id: int | tuple[int, ...] | None
+            The chain ID(s) to center the crop on. If None, a random chain or interface
+            will be selected.
         rng: np.random.Generator
             The random number generator.
 
@@ -252,6 +256,10 @@ class AlphaFold3Cropper(BaseCropper):
         resolved_mask = struct.token.resolved_mask
         if not resolved_mask.any():
             raise ValueError("No valid tokens in structure")
+
+        if resolved_mask.sum() <= max_tokens:
+            # all valid tokens fit in the crop
+            return struct.token.token_index[resolved_mask]
 
         # frequently used variables
         token_data = struct.token  # [n_tokens, ...]

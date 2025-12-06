@@ -30,6 +30,7 @@ class BaseCropper(ABC):
             The maximum number of tokens to crop.
         bias_asym_id : int | tuple[int, int] | None, optional
             The chain IDs to center the crop on. If None, a random chain or interface
+            will be selected.
 
         Returns
         -------
@@ -69,7 +70,8 @@ class BaseCropper(ABC):
         max_tokens : int
             The maximum number of tokens to crop.
         bias_asym_id : int | tuple[int, int] | None
-            The chain ID(s) to center the crop on. If None, a random chain
+            The chain ID(s) to center the crop on. If None, a random chain or interface
+            will be selected.
         rng : np.random.Generator | None, optional
             The random number generator. If None, use np.random.
 
