@@ -109,8 +109,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         See Section 2.5.4 of AlphaFold3 SI
 
         In contrast to `crop_structure`, this method is intended for
-        sample sub-complexes from the original structure before
-        applying the main cropping strategy.
+        sampling sub-complexes from the original structure before applying
+        the main cropping strategy.
         """
         return struct
 
@@ -302,7 +302,7 @@ class TrainingDataset(SafeLoadingDataset):
         **kwargs,
     ) -> structure.TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
-        asym_ids: list[str] = kwargs["asym_ids"]
+        asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_chains < struct.num_chains:
             # Get sub-complex with limited number of chains
             struct = self.pre_cropper.crop(struct, self.max_tokens, asym_ids)
@@ -315,7 +315,7 @@ class TrainingDataset(SafeLoadingDataset):
         **kwargs,
     ) -> structure.TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
-        asym_ids: list[str] = kwargs["asym_ids"]
+        asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_tokens < struct.num_tokens:
             # Crop the tokenized structure
             struct = self.cropper.crop(struct, self.max_tokens, asym_ids)

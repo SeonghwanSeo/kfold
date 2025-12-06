@@ -22,7 +22,7 @@ class PreCropper(BaseCropper):
     """
 
     class Config(BaseCropper.Config):
-        """Configuration for the MultiAnchorCropper.
+        """Configuration for the PreCropper.
 
         Parameters
         ----------
@@ -47,7 +47,7 @@ class PreCropper(BaseCropper):
         bias_asym_id: int | tuple[int, int] | None = None,
         rng: np.random.Generator | None = None,
     ) -> TokenizedStructure:
-        """Crop the data to a maximum number of tokens.
+        """Crop the data to a maximum number of chains, optionally biasing the selection.
 
         Parameters
         ----------
@@ -56,8 +56,9 @@ class PreCropper(BaseCropper):
         max_tokens : int
             The maximum number of tokens to crop.
             NOTE: NOT USED in this cropper.
-        asym_ids : tuple[int, ...] | None, optional
-            The chain IDs to center the crop on. If None, a random chain
+        bias_asym_ids : tuple[int, ...] | None, optional
+            The chain ID(s) to center the crop on. If None, a random chain or interface
+            will be selected.
             NOTE: NOT USED in this cropper.
 
         Returns
@@ -80,7 +81,7 @@ class PreCropper(BaseCropper):
         partial_struct = struct.crop(selected_token_indices)
 
         # Re-assign token index to be consecutive
-        partial_struct = struct.reassign_token_indices()
+        partial_struct = partial_struct.reassign_token_indices()
 
         return partial_struct
 
