@@ -73,6 +73,7 @@ class TrainingDataModuleConfig(DataModuleConfig):
     symmetry_path: str | Path | None
     return_train_symmetry: bool = False
     return_validation_symmetry: bool = True
+    max_chains: int  # Used for chain sampling
     max_tokens: int  # Used for cropping and padding
     filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config = dataclasses.field(
@@ -112,6 +113,11 @@ class TrainingDataModule(pl.LightningDataModule):
         self.featurization_args = config.featurization_args
         self.return_train_symmetry: bool = config.return_train_symmetry
         self.return_validation_symmetry: bool = config.return_validation_symmetry
+        if self.return_train_symmetry or self.return_validation_symmetry:
+            assert self.ccd_symmetry_path is not None, (
+                "symmetry_path must be provided if return_train_symmetry or "
+                "return_validation_symmetry is True"
+            )
 
         self.lmdb_path: Path = Path(config.lmdb_path)
         if not self.lmdb_path.exists():
@@ -169,23 +175,24 @@ class TrainingDataModule(pl.LightningDataModule):
             "after filtering."
         )
 
+        max_chains: int = self.config.max_chains
         max_tokens: int = self.config.max_tokens
+
         # Ensure max_atoms(=max_tokens*24) is a multiple of 32 for LocalAttention
         assert max_tokens % 4 == 0, "max_tokens must be a multiple of 4."
+
         # If symmetry is to be returned, load symmetry info
+        ccd_symmetry_dict = None
         if self.return_train_symmetry:
-            assert self.ccd_symmetry_path is not None, (
-                "symmetry_path must be provided if return_true_symmetry is True"
-            )
+            assert self.ccd_symmetry_path is not None
             ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
-        else:
-            ccd_symmetry_dict = None
 
         return LMDBTrainingDataset(
             records=train_records,
             lmdb_path=self.lmdb_path,
             paths=self.paths,
             featurization_args=self.featurization_args,
+            max_chains=max_chains,
             max_tokens=max_tokens,
             cropper=self.cropper,
             sampler_config=self.config.sampler,
@@ -215,9 +222,7 @@ class TrainingDataModule(pl.LightningDataModule):
 
         # If symmetry is to be returned, load symmetry info
         if self.return_validation_symmetry:
-            assert self.ccd_symmetry_path is not None, (
-                "symmetry_path must be provided if return_validation_symmetry is True"
-            )
+            assert self.ccd_symmetry_path is not None
             ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
         else:
             ccd_symmetry_dict = None

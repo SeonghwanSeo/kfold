@@ -220,7 +220,7 @@ class ClusterSampler(BaseSampler):
                     self.alpha_nuc,
                     self.alpha_ligand,
                 )
-                samples.append(Sample(record, (chain.asym_id,)))
+                samples.append(Sample(record, chain.asym_id))
                 weights.append(weight)
 
             for interface in record.interfaces:

@@ -13,6 +13,7 @@ train:
   seed: 42
 
   global_hparams:
+    max_chains: 20
     max_tokens: 512
     batch_size: 2
     diffusion_batch_size: 32

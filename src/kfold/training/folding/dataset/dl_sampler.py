@@ -72,7 +72,8 @@ class DistributedWeightedSampler(Sampler[int]):
 
     def __iter__(self) -> Iterator[int]:
         # deterministically shuffle based on epoch and seed
-        rng = np.random.RandomState(self.seed + self.epoch)
+        seed = self.seed + self.epoch
+        rng = np.random.default_rng(seed)
 
         indices = rng.choice(
             self.dataset_size,

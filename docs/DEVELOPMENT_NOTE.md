@@ -94,7 +94,9 @@ This section describes the additional implementations which are not part of the 
     - Implementing a cropping algorithm that ensures the cropped structure contains multiple chains.
         - Not implemented yet (to be added later).
 
-3. **Data Cropping**: TODO.
+3. **Multi-Anchor Cropping**: Since our model utilizes apo structures as input, we modified the cropping algorithm to prioritize inter-chain co-folding over local folding.
+    - Rationale: The apo input provides a strong structural prior for intra-chain geometry and relative positioning, reducing the need to learn these features from scratch.
+    - Method: We extend standard spatial cropping and spatial interface cropping to multi-anchor cropping, which selects multiple spatial centers to form a single input. This allows the model to simultaneously capture disparate regions of the complex, focusing training on interface regions and global chain arrangement.
 
 ### Pre-trained Representation Model
 
@@ -120,8 +122,8 @@ The following items require future implementation.
 ### Data Processing
 
 1. **Sequence Layout**: To be added for integrating with pre-trained language models.
-23. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
-4. **Interface Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
+2. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
+3. **Interface Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
     - NOTE: Generalize this to multi-modal interface conditioning.
 
 ### Structure Module
@@ -136,10 +138,10 @@ The following items require future implementation.
 
 1. **Evaluation Metrics**: Installation of evaluation tools and script writing.
 
----
+--- 
 
-## To Be Modified
+## TODO
 
-The following items are scheduled for future modification.
+1. Search hyperparameters related to PDB weighted sampling (chain/interface weights)
+2. Test the performance with/without single-chain structure datas in the training set.
 
-1. **Cropping Algorithm Planning**: **A new cropping algorithm** must be implemented when training the Diffusion bridge model for `apo to holo` (e.g., ensuring the cropped structure always contains two or more chains).

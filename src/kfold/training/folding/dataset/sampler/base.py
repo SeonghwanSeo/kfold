@@ -14,13 +14,13 @@ class Sample(NamedTuple):
     ----------
     metadata : Metadata
         The metadata record of the sampled item.
-    asym_ids : tuple[int, ...] or None
-        The cropping constraint; asym_ids of chains / interfaces to include.
+    asym_id : int | tuple[int, int] | None
+        The cropping constraint; asym_id(s) of chain / interface to include.
         If None, no constraint is applied.
     """
 
     metadata: Metadata
-    asym_ids: tuple[int, ...] | None = None
+    asym_id: int | tuple[int, int] | None
 
 
 @DATA_SAMPLER.register()
