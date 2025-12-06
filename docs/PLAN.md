@@ -21,8 +21,8 @@ If the features listed below are completed, I will include the corresponding PR 
 
 - [x] Add PDBBind split introduced by EquiBind for Proof of Concept. - [#57](https://github.com/SeonghwanSeo/kfold/pull/57)
 - [x] Include symmetry information in the input features for validation - [#67](https://github.com/SeonghwanSeo/kfold/pull/67)
-- [ ] Implement cropping algorithm used in AF-M/AF3.
-- [ ] Implement Better cropping algorithm for **apo-to-holo** scheme.
+- [x] Implement cropping algorithm used in AF-M/AF3. - [#83](https://github.com/SeonghwanSeo/kfold/pull/83), [#86](https://github.com/SeonghwanSeo/kfold/pull/86)
+- [x] Implement Better cropping algorithm for **apo-to-holo** scheme. - [#85](https://github.com/SeonghwanSeo/kfold/pull/85)
 - [ ] Implement apo perturbation module.
 - [ ] Implement contact conditioning features as in Boltz1.
 
@@ -36,7 +36,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Implement initial diffusion bridge framework - [#48]
 - [x] Integrate to pre-trained sequence/structure embeddings and train. - [#62](https://github.com/SeonghwanSeo/kfold/pull/62)
 - [x] Add apo information (e.g., distance map) before Pairformer trunk - [#80](https://github.com/SeonghwanSeo/kfold/pull/80)
-- [ ] Add apo information (e.g., distance map) before Structure module.
+- [ ] Add apo information (e.g., distance map) in Structure module.
 
 ### Training
 
