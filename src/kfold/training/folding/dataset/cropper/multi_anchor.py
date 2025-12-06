@@ -1,4 +1,48 @@
-import random
+"""
+Multi-Anchor Cropping Strategy for Apo-to-Holo Structure Modeling.
+
+This module implements an extended cropping strategy designed for scenarios
+where Apo structures (e.g., from AF2/ESMFold) are used as templates or inputs
+to predict Holo complexes.
+
+**Motivation**
+In Apo-to-Holo co-folding, a critical challenge is preventing the model from
+learning trivial identity mappings. Standard single-center spatial cropping
+(as used in AlphaFold-Multimer/AF3) often yields a dense, locally rigid crop.
+In such cases, the model can minimize loss simply by copying the input Apo
+structure via residual connections, failing to learn global conformational
+changes or inter-domain rearrangements.
+
+The 'Multi-Anchor' strategy mitigates this by distributing the token budget
+across multiple spatially distinct regions. This forces the model to reason
+about the geometric relationships *between* disconnected or distant regions,
+thereby encouraging the learning of global structural transitions.
+
+**Algorithm Description**
+1. Contiguous Cropping:
+    - Same as AF-M/AF3's contiguous cropping strategy.
+
+2. Spatial Cropping (Multi-Anchor):
+    - Selects N anchor tokens (default: 4) and partitions the total token budget.
+    - The first anchor is sampled based on chain bias or uniformly.
+    - Subsequent anchors are sampled from resolved tokens within a defined
+      radius (default: 100 Å) of previous anchors to ensure partial connectivity
+      while maximizing coverage.
+
+3. Spatial Interface Cropping (Multi-Anchor):
+    - Selects anchors specifically from tokens involved in chain interfaces.
+    - Unlike random sampling, this strategy traverses the 'interaction graph'.
+      Subsequent anchors are chosen from interfaces connected to already
+      selected chains, preserving the biological context of the complex assembly.
+
+**References**
+- AlphaFold-Multimer (Evans et al., 2021):
+    - Algorithm 1: Contiguous Cropping
+    - Algorithm 2: Spatial Cropping logic
+- AlphaFold 3 (Abramson et al., 2024):
+    - Section 2.7: Cropping strategies (Contiguous, Spatial, Spatial Interface)
+"""
+
 from collections import defaultdict
 
 import numpy as np
@@ -6,8 +50,8 @@ import numpy as np
 from kfold.data.structure import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
+from . import utils
 from .base import BaseCropper
-from .utils import pick_token
 
 
 @DATA_CROPPER.register()
@@ -27,8 +71,6 @@ class MultiAnchorCropper(BaseCropper):
             Weight for spatial cropping.
         w_spatial_interface : float
             Weight for spatial interface cropping.
-        max_chains : int
-            Maximum number of chains to consider for contiguous cropping.
         anchor_distribution : str
             Distribution to sample number of anchors from.
             Choices: 'uniform', 'linear', 'squared', 'exponential'.
@@ -41,7 +83,6 @@ class MultiAnchorCropper(BaseCropper):
         w_contiguous: float = 0.3
         w_spatial: float = 0.2
         w_spatial_interface: float = 0.5
-        max_chains: int = 20
         anchor_distribution: str = "exponential"
         max_anchors: int = 4
         max_anchor_distance: float = 100.0
@@ -59,7 +100,6 @@ class MultiAnchorCropper(BaseCropper):
         self.w_contiguous: float = config.w_contiguous
         self.w_spatial: float = config.w_spatial
         self.w_spatial_interface: float = config.w_spatial_interface
-        self.max_chains: int = config.max_chains
         self.anchor_distribution: str = config.anchor_distribution
         self.min_anchors: int = 1
         self.max_anchors: int = config.max_anchors
@@ -69,7 +109,8 @@ class MultiAnchorCropper(BaseCropper):
         self,
         struct: TokenizedStructure,
         max_tokens: int,
-        asym_ids: tuple[int, ...] | None,
+        bias_asym_id: int | tuple[int, int] | None,
+        rng: np.random.Generator | None = None,
     ) -> np.ndarray:
         """Crop the data to a maximum number of tokens.
 
@@ -79,23 +120,28 @@ class MultiAnchorCropper(BaseCropper):
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
-        asym_ids : tuple[int, ...] | None
-            The chain IDs to center the crop on. If None, a random chain
+        bias_asym_id : int | tuple[int, int] | None
+            The chain ID(s) to center the crop on. If None, a random chain or interface
+            will be selected.
 
         Returns
         -------
         token_indices: np.ndarray
             The selected token indices.
         """
-        v = np.random.rand()
+        rng = rng or np.random.default_rng()
+
+        v = rng.random()
         if v < self.w_contiguous:
             # Contiguous cropping
-            crop_indices = self.crop_contiguous(struct, max_tokens)
+            crop_indices = self.crop_contiguous(struct, max_tokens, rng=rng)
         elif v < self.w_contiguous + self.w_spatial:
             # Spatial cropping
-            crop_indices = self.crop_spatial(struct, max_tokens, asym_ids)
+            crop_indices = self.crop_spatial(struct, max_tokens, bias_asym_id, rng=rng)
         else:  # Spatial interface cropping
-            crop_indices = self.crop_spatial_interface(struct, max_tokens, asym_ids)
+            crop_indices = self.crop_spatial_interface(
+                struct, max_tokens, bias_asym_id, rng=rng
+            )
 
         # Ensure sorted order and limit to max_tokens
         crop_indices.sort()
@@ -108,6 +154,7 @@ class MultiAnchorCropper(BaseCropper):
         self,
         struct: TokenizedStructure,
         max_tokens: int,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         """Select an anchor token using contiguous cropping.
         See Algorithm 1 in the AlphaFold Multimer paper.
@@ -118,6 +165,8 @@ class MultiAnchorCropper(BaseCropper):
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
+        rng : np.random.Generator
+            The random number generator.
 
         Returns
         -------
@@ -131,11 +180,9 @@ class MultiAnchorCropper(BaseCropper):
             for i in range(struct.num_chains)
         }
 
-        # Sample chains up to max_chains
+        # Randomly permute the chain order
         asym_ids = struct.chain.asym_id
-        selected_asym_ids = np.random.permutation(asym_ids)[: self.max_chains]
-
-        is_selected = np.zeros(struct.num_tokens, dtype=bool)
+        selected_asym_ids = rng.permutation(asym_ids)
 
         # Line 1
         n_added: int = 0
@@ -143,8 +190,13 @@ class MultiAnchorCropper(BaseCropper):
         # NOTE: This differs from the original algorithm which uses max_tokens.
         n_remaining: int = sum(chain_sizes[asym_id] for asym_id in selected_asym_ids)
 
+        is_selected = np.zeros(struct.num_tokens, dtype=bool)
+
         # Line 3-13
         for asym_id in selected_asym_ids:
+            if n_added >= max_tokens:
+                break
+
             n_k = chain_sizes[asym_id]
             # Line 4
             n_remaining -= n_k
@@ -155,19 +207,24 @@ class MultiAnchorCropper(BaseCropper):
             # Line 6
             min_crop = min(n_k, max(0, max_tokens - n_added - n_remaining))
             # Line 7
-            crop_size = np.random.randint(min_crop, max_crop + 1)
+            crop_size = int(rng.integers(min_crop, max_crop + 1))
             # Line 8
             n_added += crop_size
 
-            # Line 9-12
-            if crop_size > 0:
-                selected_tokens = self.do_crop_chain_contiguously(
-                    struct, asym_id, crop_size
-                )
-                is_selected[selected_tokens] = True
+            if crop_size == 0:
+                continue
 
-            if n_added >= max_tokens:
-                break
+            # Line 9
+            crop_start = int(rng.integers(0, n_k - crop_size + 1))
+
+            # Line 11
+            chain_idx = np.where(struct.chain.asym_id == asym_id)[0][0]
+            chain_st = int(struct.chain.token_starts[chain_idx])
+            crop_start += chain_st
+            selected_tokens = np.arange(crop_start, crop_start + crop_size)
+
+            # Line 12
+            is_selected[selected_tokens] = True
 
         return np.where(is_selected)[0]
 
@@ -175,7 +232,8 @@ class MultiAnchorCropper(BaseCropper):
         self,
         struct: TokenizedStructure,
         max_tokens: int,
-        bias_asym_ids: tuple[int, ...] | None = None,
+        bias_asym_id: int | tuple[int, int] | None,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         """Select anchor tokens using spatial cropping.
 
@@ -185,13 +243,15 @@ class MultiAnchorCropper(BaseCropper):
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
-        asym_ids : tuple[int, ...] | None
+        bias_asym_id : int | tuple[int, int] | None
             The chain IDs to bias the anchor selection towards.
+        rng : np.random.Generator
+            The random number generator.
 
         Returns
         -------
-        token_index : np.ndarray
-            The selected token index.
+        token_indices : np.ndarray
+            The selected token indices.
         """
         # For spatial cropping, get the token center coordinates
         tokens = struct.token.token_index  # =np.arange(n_tokens)
@@ -206,37 +266,37 @@ class MultiAnchorCropper(BaseCropper):
             return np.where(resolved_mask)[0]
 
         # Sample number of anchors and their budgets
-        num_anchors: int = self.sample_num_anchors()
-        budgets: list[int] = self.sample_budgets_per_anchor(num_anchors, max_tokens)
+        num_anchors: int = self.sample_num_anchors(rng)
+        budgets: list[int] = self.sample_budgets_per_anchor(num_anchors, max_tokens, rng)
 
         anchor_tokens: list[int] = []
         is_selected = np.zeros(struct.num_tokens, dtype=bool)
         is_remaining = resolved_mask.copy()
         for i in range(num_anchors):
-            # === Select anchor token === #
-            asym_id: int | None = None  # No bias by default
-            anchor_mask = resolved_mask
-            if i == 0 and bias_asym_ids is not None:
-                # If bias is given, sample the first anchor from the biased chains
-                asym_id = random.choice(bias_asym_ids)
-            elif len(anchor_tokens) > 0:
+            # Select anchor token
+            if i == 0:
+                # Pick first anchor randomly or from biased chain(s)
+                anchor = utils.pick_token(struct, bias_asym_id, is_remaining, rng)
+            else:
                 # Pick anchor token not to far from previous anchor
                 prev_anchor = anchor_tokens[-1]
                 prev_anchor_coords = center_coords[prev_anchor]  # (3,)
                 dists = np.linalg.norm(center_coords - prev_anchor_coords, axis=1)
-                # Anchor already selected is allowed
-                anchor_mask = anchor_mask & (dists < self.max_anchor_distance)
+                cutoff_mask = dists < self.max_anchor_distance
+                anchor_mask = is_remaining & cutoff_mask
+                if not np.any(anchor_mask):
+                    # Fallback to allow picking from all remaining tokens
+                    anchor_mask = resolved_mask & cutoff_mask
+                anchor = utils.pick_token(struct, None, anchor_mask, rng)
+            anchor_tokens.append(anchor)
 
-            anchor = pick_token(struct, asym_id=asym_id, mask=anchor_mask)
-
-            # === Crop spatially around the anchor token === #
+            # Crop spatially around the anchor token
             crop_size = budgets[i]
-            neighbor_indices = self.do_crop_complex_spatially(
-                struct, anchor, crop_size, center_coords, resolved_mask=is_remaining
+            neighbor_indices = self.get_closest_tokens(
+                struct, anchor, crop_size, center_coords, mask=is_remaining
             )
             is_selected[neighbor_indices] = True
             is_remaining[neighbor_indices] = False
-            anchor_tokens.append(anchor)
 
         return np.where(is_selected)[0]
 
@@ -244,7 +304,8 @@ class MultiAnchorCropper(BaseCropper):
         self,
         struct: TokenizedStructure,
         max_tokens: int,
-        bias_asym_ids: tuple[int, ...] | None = None,
+        bias_asym_id: int | tuple[int, int] | None,
+        rng: np.random.Generator,
     ) -> np.ndarray:
         """Select anchor tokens using spatial cropping.
 
@@ -254,13 +315,13 @@ class MultiAnchorCropper(BaseCropper):
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
-        bias_asym_ids : tuple[int, ...] | None
-            The chain IDs to bias the anchor selection towards.
+        bias_asym_id : int | tuple[int, int] | None
+            The chain ID(s) to bias the anchor selection towards.
 
         Returns
         -------
-        token_index : np.ndarray
-            The selected token index.
+        token_indices : np.ndarray
+            The selected token indices.
         """
         # For spatial cropping, get the token center coordinates
         tokens = struct.token.token_index  # =np.arange(n_tokens)
@@ -275,23 +336,11 @@ class MultiAnchorCropper(BaseCropper):
             return np.where(resolved_mask)[0]
 
         # Get all valid interfaces
-        record = struct.metadata
-        assert record is not None, "Metadata is required for interface cropping."
+        all_interfaces = self.get_valid_interfaces(struct)
 
-        all_chains: set[int] = set(struct.chain.asym_id.tolist())
-        all_interfaces: list[tuple[int, int]] = [
-            interface.asym_ids for interface in record.interfaces if interface.valid
-        ]
-        all_interfaces = [v for v in all_interfaces if set(v).issubset(all_chains)]
-        if bias_asym_ids is not None and len(bias_asym_ids) == 2:
-            # Ensure the biased interface is included
-            all_interfaces.append(bias_asym_ids)
-        all_interfaces = sorted(set(all_interfaces))
-        num_interfaces = len(all_interfaces)
-
-        if num_interfaces == 0:
+        if len(all_interfaces) == 0:
             # No valid interfaces, fall back to regular spatial cropping
-            return self.crop_spatial(struct, max_tokens, bias_asym_ids)
+            return self.crop_spatial(struct, max_tokens, bias_asym_id, rng=rng)
 
         # Collect neighboring chains for each chain
         chain_to_neighbors: dict[int, list[int]] = defaultdict(list)
@@ -301,73 +350,65 @@ class MultiAnchorCropper(BaseCropper):
             chain_to_neighbors[i2].append(i1)
 
         # Sample number of anchors and their budgets
-        num_anchors: int = self.sample_num_anchors()
-        budgets: list[int] = self.sample_budgets_per_anchor(num_anchors, max_tokens)
+        num_anchors: int = self.sample_num_anchors(rng)
+        budgets: list[int] = self.sample_budgets_per_anchor(num_anchors, max_tokens, rng)
 
         is_selected = np.zeros(struct.num_tokens, dtype=bool)
         is_remaining = resolved_mask.copy()
         visited_chains: set[int] = set()
         for i in range(num_anchors):
-            # === Select interface to sample from === #
-            if i == 0 and bias_asym_ids is not None:
-                # Pick first interface randomly or from biased chains
-                if len(bias_asym_ids) == 1:
-                    asym_id = bias_asym_ids[0]
+            # Select an interface to sample anchor from
+            if i == 0:
+                if bias_asym_id is None:
+                    # Pick a random interface
+                    interface_id = utils.random_choice(all_interfaces, rng=rng)
+                elif isinstance(bias_asym_id, int):
                     # Find an interface containing the biased chain
+                    chain_id = bias_asym_id
                     candidate_interfaces = [
-                        interface for interface in all_interfaces if asym_id in interface
+                        iface for iface in all_interfaces if chain_id in iface
                     ]
-                    interface = random.choice(candidate_interfaces)
+                    if not candidate_interfaces:
+                        # Fallback to random interface
+                        candidate_interfaces = all_interfaces
+                    interface_id = utils.random_choice(candidate_interfaces, rng=rng)
                 else:
-                    assert len(bias_asym_ids) == 2
-                    interface = bias_asym_ids
-            elif len(visited_chains) > 0:
-                # Pick an interface connected to visited chains
-                i1 = random.choice(list(visited_chains))
-                i2 = random.choice(chain_to_neighbors[i1])
-                interface = (min(i1, i2), max(i1, i2))
+                    # Pick the biased interface
+                    if bias_asym_id not in all_interfaces:
+                        interface_id = bias_asym_id
+                    else:
+                        # Fallback to random interface
+                        interface_id = utils.random_choice(all_interfaces, rng=rng)
             else:
-                # Pick a random interface
-                interface = random.choice(all_interfaces)
+                # Pick an interface connected to visited chains
+                assert len(visited_chains) > 0, "No visited chains"
+                i1 = utils.random_choice(list(visited_chains), rng=rng)
+                i2 = utils.random_choice(chain_to_neighbors[i1], rng=rng)
+                interface_id = (min(i1, i2), max(i1, i2))
+            visited_chains.update(interface_id)
 
-            # === Select anchor token in the interface === #
-            crop_size = budgets[i]
-            # Anchor already selected is allowed
-            anchor = pick_token(struct, asym_id=interface, mask=resolved_mask)
+            # Select anchor token from the interface
+            # NOTE: Since re-sample from visited interfaces, we allow picking from
+            # all resolved tokens even if already selected.
+            anchor = utils.pick_interface_token(struct, interface_id, resolved_mask, rng)
 
             # Crop spatially around the anchor token
             crop_size = budgets[i]
-            neighbor_indices = self.do_crop_complex_spatially(
-                struct, anchor, crop_size, center_coords, resolved_mask=is_remaining
+            neighbor_indices = self.get_closest_tokens(
+                struct, anchor, crop_size, center_coords, mask=is_remaining
             )
             is_selected[neighbor_indices] = True
             is_remaining[neighbor_indices] = False
-            visited_chains.update(interface)
 
         return np.where(is_selected)[0]
 
-    def do_crop_chain_contiguously(
-        self, struct: TokenizedStructure, asym_id: int, crop_size: int
-    ) -> np.ndarray:
-        """Crop a contiguous segment from a specific chain."""
-        chain_i = np.where(struct.chain.asym_id == asym_id)[0]
-        assert chain_i.size == 1, f"Chain {asym_id} not found."
-        chain_i = chain_i[0]
-
-        chain_size = int(struct.chain.num_tokens[chain_i])
-        crop_start = np.random.randint(0, chain_size - crop_size + 1, 1).item()
-
-        chain_start = int(struct.chain.token_starts[chain_i])
-        global_start = chain_start + crop_start
-        return np.arange(global_start, global_start + crop_size)
-
-    def do_crop_complex_spatially(
+    def get_closest_tokens(
         self,
         struct: TokenizedStructure,
         anchor_token: int,
         crop_size: int,
         center_coords: np.ndarray | None = None,
-        resolved_mask: np.ndarray | None = None,
+        mask: np.ndarray | None = None,
     ) -> np.ndarray:
         """Crop tokens spatially around an anchor token.
 
@@ -381,7 +422,7 @@ class MultiAnchorCropper(BaseCropper):
             The number of tokens to crop.
         center_coords : np.ndarray | None, optional
             Precomputed center coordinates of tokens.
-        resolved_mask : np.ndarray | None, optional
+        mask : np.ndarray | None, optional
             Precomputed resolved mask of tokens.
 
         Returns
@@ -393,21 +434,23 @@ class MultiAnchorCropper(BaseCropper):
         center_idx = struct.token.center_index  # (num_tokens, 3)
         if center_coords is None:
             center_coords = struct.atom.coords[tokens, center_idx]  # (num_tokens, 3)
-        if resolved_mask is None:
-            resolved_mask = struct.atom.resolved_mask[tokens, center_idx]  # (num_tokens,)
+        if mask is None:
+            mask = struct.atom.resolved_mask[tokens, center_idx]  # (num_tokens,)
 
-        crop_size = min(crop_size, resolved_mask.sum())
+        if mask.sum() <= crop_size:
+            # If all resolved tokens fit in the budget, return all
+            return np.where(mask)[0]
 
         # Compute distances to all tokens
         anchor_coord = center_coords[anchor_token]  # (3,)
         dists = np.linalg.norm(center_coords - anchor_coord, axis=1)  # (num_tokens,)
-        dists[~resolved_mask] = np.inf
+        dists[~mask] = np.inf
         # Get tokens within budget (this includes the anchor token itself)
-        neighbor_indices = np.argsort(dists)[:crop_size]
+        neighbor_indices = np.argpartition(dists, crop_size)[:crop_size]
         return neighbor_indices
 
     # === Helper functions === #
-    def sample_num_anchors(self) -> int:
+    def sample_num_anchors(self, rng: np.random.Generator) -> int:
         """Sample the number of anchor tokens."""
         distribution = self.anchor_distribution
         min_anchors = self.min_anchors
@@ -420,19 +463,19 @@ class MultiAnchorCropper(BaseCropper):
             case "linear":
                 w = np.linspace(1.0, 0.0, n_candidates + 1)[:-1]
             case "squared":
-                w = np.linspace(1.0, 0.0, n_candidates + 1)[:-1]
-                w = w**2
+                w = np.linspace(1.0, 0.0, n_candidates + 1)[:-1] ** 2
             case "exponential":
                 w = np.exp(-candidates)
             case _:
                 raise ValueError(f"Unknown anchor distribution: {distribution}")
         w /= w.sum()
-        return np.random.choice(candidates, p=w)
+        return int(rng.choice(candidates, p=w))
 
     def sample_budgets_per_anchor(
         self,
         num_anchors: int,
         total_budget: int,
+        rng: np.random.Generator,
         min_per_anchor: int | None = None,
     ) -> list[int]:
         """Sample the token budgets for each anchor token.
@@ -443,6 +486,8 @@ class MultiAnchorCropper(BaseCropper):
             The number of anchor tokens.
         total_budget : int
             The total token budget.
+        rng : np.random.Generator
+            The random number generator.
         min_per_anchor : int (optional)
             The minimum number of tokens per anchor.
             Default: set to total_budget // num_anchors // 4
@@ -465,10 +510,10 @@ class MultiAnchorCropper(BaseCropper):
                 "Minimum per anchor too high for total budget and number of anchors."
             )
 
-        budgets = [min_per_anchor] * num_anchors
+        budgets: list[int] = [min_per_anchor] * num_anchors
         remaining_budget = total_budget - sum(budgets)
 
-        splits = np.random.randint(0, remaining_budget + 1, size=num_anchors - 1)
+        splits = rng.integers(0, remaining_budget + 1, size=num_anchors - 1)
         splits = np.concatenate(([0], np.sort(splits), [remaining_budget]))
         allocation = splits[1:] - splits[:-1]
         for i in range(num_anchors):
@@ -478,3 +523,26 @@ class MultiAnchorCropper(BaseCropper):
         budgets.sort(reverse=True)
 
         return budgets
+
+    @staticmethod
+    def get_valid_interfaces(struct: TokenizedStructure) -> list[tuple[int, int]]:
+        """Get all valid interfaces in the structure.
+
+        Parameters
+        ----------
+        struct : TokenizedStructure
+            The tokenized structure.
+
+        Returns
+        -------
+        interface_ids : list[tuple[int, int]]
+            The valid interfaces in the structure.
+        """
+        record = struct.metadata
+        assert record is not None, "Structure metadata is required"
+        all_chains: set[int] = set(struct.chain.asym_id.tolist())
+        all_interfaces: list[tuple[int, int]] = [
+            interface.asym_ids for interface in record.interfaces if interface.valid
+        ]
+        all_interfaces = [v for v in all_interfaces if set(v).issubset(all_chains)]
+        return sorted(set(all_interfaces))

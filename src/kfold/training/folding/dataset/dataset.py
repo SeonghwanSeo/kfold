@@ -301,7 +301,7 @@ class TrainingDataset(SafeLoadingDataset):
         for _ in range(num_trials):
             sample = self.samples[index]
             try:
-                return self.get_item(sample.metadata, asym_ids=sample.asym_ids)
+                return self.get_item(sample.metadata, asym_ids=sample.asym_id)
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
