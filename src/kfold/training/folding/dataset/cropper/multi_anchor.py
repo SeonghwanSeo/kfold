@@ -80,11 +80,11 @@ class MultiAnchorCropper(BaseCropper):
             Maximum distance between anchor tokens during spatial cropping.
         """
 
-        w_contiguous: float = 0.3
-        w_spatial: float = 0.2
-        w_spatial_interface: float = 0.5
+        w_contiguous: float = 0.2
+        w_spatial: float = 0.4
+        w_spatial_interface: float = 0.4
         anchor_distribution: str = "exponential"
-        max_anchors: int = 4
+        max_anchors: int = 1
         max_anchor_distance: float = 100.0
 
     def __init__(self, config: Config):
