@@ -278,7 +278,7 @@ class MultiAnchorCropper(BaseCropper):
                 # Pick first anchor randomly or from biased chain(s)
                 anchor = utils.pick_token(struct, bias_asym_id, is_remaining, rng)
             else:
-                # Pick anchor token not to far from previous anchor
+                # Pick anchor token not too far from previous anchor
                 prev_anchor = anchor_tokens[-1]
                 prev_anchor_coords = center_coords[prev_anchor]  # (3,)
                 dists = np.linalg.norm(center_coords - prev_anchor_coords, axis=1)
@@ -374,7 +374,7 @@ class MultiAnchorCropper(BaseCropper):
                     interface_id = utils.random_choice(candidate_interfaces, rng=rng)
                 else:
                     # Pick the biased interface
-                    if bias_asym_id not in all_interfaces:
+                    if bias_asym_id in all_interfaces:
                         interface_id = bias_asym_id
                     else:
                         # Fallback to random interface
@@ -446,7 +446,8 @@ class MultiAnchorCropper(BaseCropper):
         dists = np.linalg.norm(center_coords - anchor_coord, axis=1)  # (num_tokens,)
         dists[~mask] = np.inf
         # Get tokens within budget (this includes the anchor token itself)
-        neighbor_indices = np.argpartition(dists, crop_size)[:crop_size]
+        neighbor_indices = np.argpartition(dists, crop_size - 1)[:crop_size]
+        neighbor_indices.sort()
         return neighbor_indices
 
     # === Helper functions === #

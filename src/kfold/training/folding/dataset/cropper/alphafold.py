@@ -83,9 +83,9 @@ class AlphaFold3Cropper(BaseCropper):
             case "contiguous":
                 return self.crop_contiguous(struct, max_tokens, rng)
             case "spatial":
-                return self.crop_spatial(struct, bias_asym_id, rng)
+                return self.crop_spatial(struct, max_tokens, bias_asym_id, rng)
             case "spatial_interface":
-                return self.crop_spatial_interface(struct, bias_asym_id, rng)
+                return self.crop_spatial_interface(struct, max_tokens, bias_asym_id, rng)
             case _:
                 raise ValueError(f"Unknown cropping strategy: {strategy}")
 
@@ -152,6 +152,7 @@ class AlphaFold3Cropper(BaseCropper):
     def crop_spatial(
         self,
         struct: TokenizedStructure,
+        max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
     ) -> np.ndarray:
@@ -161,6 +162,8 @@ class AlphaFold3Cropper(BaseCropper):
         ----------
         struct: TokenizedStructure
             The tokenized structure.
+        max_tokens: int
+            The maximum number of tokens to crop.
         bias_asym_id: tuple[int, ...] | None
             The chain IDs to center the crop on. If None, a random chain or interface
         rng: np.random.Generator
@@ -180,24 +183,27 @@ class AlphaFold3Cropper(BaseCropper):
 
         # pick a random token from a chain or interface if specified
         anchor = utils.pick_token(struct, bias_asym_id, mask=resolved_mask, rng=rng)
-        return self.get_closest_tokens(struct, struct.num_tokens, anchor)
+        return self.get_closest_tokens(struct, max_tokens, anchor)
 
     def crop_spatial_interface(
         self,
         struct: TokenizedStructure,
+        max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
     ) -> np.ndarray:
         """Crop a spatial region around a random interface tokens
 
         If no bias interface is provided, then a random interface is selected.
-        If a bais interface is provided, then select a random token from that interface.
-        If a bais chain is provided, then select a random interface involving that chain.
+        If a bias interface is provided, then select a random token from that interface.
+        If a bias chain is provided, then select a random interface involving that chain.
 
         Parameters
         ----------
         struct: TokenizedStructure
             The tokenized structure.
+        max_tokens: int
+            The maximum number of tokens to crop.
         bias_asym_id: tuple[int, ...] | None
             The chain IDs to center the crop on. If None, a random chain or interface
         rng: np.random.Generator
@@ -212,7 +218,7 @@ class AlphaFold3Cropper(BaseCropper):
         all_interfaces: list[tuple[int, int]] = self.get_valid_interfaces(struct)
         if len(all_interfaces) == 0:
             # no valid interfaces found; default to a random center
-            return self.crop_spatial(struct, bias_asym_id, rng)
+            return self.crop_spatial(struct, max_tokens, bias_asym_id, rng)
 
         # pick a random token from an interface
         if bias_asym_id is None:
@@ -233,7 +239,7 @@ class AlphaFold3Cropper(BaseCropper):
                 # no valid interfaces found; default to a random interface
                 interface_id = utils.random_choice(all_interfaces, rng=rng)
         anchor = utils.pick_interface_token(struct, interface_id, rng=rng)
-        return self.get_closest_tokens(struct, struct.num_tokens, anchor)
+        return self.get_closest_tokens(struct, max_tokens, anchor)
 
     def get_closest_tokens(
         self,
@@ -248,24 +254,26 @@ class AlphaFold3Cropper(BaseCropper):
             raise ValueError("No valid tokens in structure")
 
         # frequently used variables
-        token_data = struct.token  # features: [L, ...]
-        atom_data = struct.atom  # features: [L, 24, ...]
+        token_data = struct.token  # [n_tokens, ...]
+        atom_data = struct.atom  # [n_tokens, 24, ...]
         all_tokens = token_data.token_index
         valid_tokens = all_tokens[resolved_mask]
 
         # get the first bioassembly
-        holo_coords = atom_data.coords[..., 0, :]  # (n-tokens, 24, 3)
+        holo_coords = atom_data.coords[..., 0, :]  # [n_tokens, 24, 3]
         all_token_centers = holo_coords[
             token_data.token_index, token_data.center_index, :
         ]  # (num_tokens, 3)
 
         query_coords = all_token_centers[query]  # [3,]
-        valid_coords = all_token_centers[valid_tokens]  # [n_tokens, 3]
+        valid_coords = all_token_centers[valid_tokens]  # [n_val_tokens, 3]
 
         # sort all tokens by distance to query_coords
-        dists = np.linalg.norm(valid_coords - query_coords, axis=1)  # [n_tokens, 1]
+        dists = np.linalg.norm(valid_coords - query_coords, axis=1)  # [n_val_tokens]
         indices = np.argpartition(dists, max_tokens - 1)[:max_tokens]
-        return valid_tokens[indices]
+        neighbor_indices = valid_tokens[indices]
+        neighbor_indices.sort()
+        return neighbor_indices
 
     @staticmethod
     def get_valid_interfaces(struct: TokenizedStructure) -> list[tuple[int, int]]:

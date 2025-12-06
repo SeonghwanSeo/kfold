@@ -142,7 +142,7 @@ def pick_chain_token(
         The tokenized structure.
     asym_id : int
         The chain asymmetric ID.
-    resolved_mask : np.ndarray | None, optional
+    mask : np.ndarray | None, optional
         An optional mask of valid tokens.
     rng : np.random.Generator | None, optional
         The random number generator. If None, use np.random.
@@ -236,7 +236,7 @@ def pick_interface_token(
     dists = cdist(tokens_1_coords, tokens_2_coords)
     cutoff = dists < C.INTERFACE_CUTOFF
 
-    # In rare cases, the interface cuttoff is slightly to small,
+    # In rare cases, the interface cutoff is slightly too small,
     # then we slightly expand it if it happens
     if not np.any(cutoff):
         cutoff = dists < (C.INTERFACE_CUTOFF + 5.0)
