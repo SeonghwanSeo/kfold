@@ -10,7 +10,7 @@ from typing_extensions import override
 from kfold.data import featurize, metadata, model_input, structure
 from kfold.utils.registry import Registry
 
-from .cropper import BaseCropper
+from .cropper import BaseCropper, PreCropper
 from .sampler import BaseSampler, Sample
 from .utils import symmetry
 
@@ -100,6 +100,19 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Get the tokenized structure for the given index."""
 
     # === Optional to-override in subclasses === #
+    def pre_crop_structure(
+        self,
+        struct: structure.TokenizedStructure,
+        **kwargs,
+    ) -> structure.TokenizedStructure:
+        """Pre-crop the folding input structure as needed.
+        See Section 2.5.4 of AlphaFold3 SI
+
+        In contrast to `crop_structure`, this method is intended for
+        chain subsampling before actual cropping.
+        """
+        return struct
+
     def crop_structure(
         self,
         struct: structure.TokenizedStructure,
@@ -153,6 +166,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # Tokenization
         struct = self.load_tokenized_structure(record)
+
+        # Pre-cropping (on-the-fly pipeline of AlphaFold3 SI Section 2.5.4)
+        struct = self.pre_crop_structure(struct, **kwargs)
 
         # Cropping
         cropped_struct = self.crop_structure(struct, **kwargs)
@@ -214,6 +230,7 @@ class TrainingDataset(SafeLoadingDataset):
         records: list[metadata.Metadata],
         paths: dict[str, Path | None],
         featurization_args: dict,
+        max_chains: int,
         max_tokens: int,
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
@@ -226,6 +243,12 @@ class TrainingDataset(SafeLoadingDataset):
         ----------
         records : list[metadata.Metadata]
             List of samples to use in the dataset.
+        paths : dict[str, Path | None]
+            Paths for various resources.
+        featurization_args : dict
+            Arguments for featurization.
+        max_chains : int
+            Maximum number of chains per sample.
         max_tokens : int
             Maximum number of tokens per sample. Must be a multiple of 64 for
             LocalAtomAttention.
@@ -252,7 +275,11 @@ class TrainingDataset(SafeLoadingDataset):
             ccd_symmetry_dict=ccd_symmetry_dict,
         )
         self.max_tokens: int = max_tokens
+        self.max_chains: int = max_chains
+
+        self.pre_cropper = PreCropper(PreCropper.Config(max_chains=max_chains))
         self.cropper: BaseCropper = cropper
+
         assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
 
         # AF3-style sampling (chain/interface-based)
@@ -266,6 +293,18 @@ class TrainingDataset(SafeLoadingDataset):
     @override
     def __len__(self) -> int:
         return len(self.samples)
+
+    @override
+    def pre_crop_structure(
+        self,
+        struct: structure.TokenizedStructure,
+        **kwargs,
+    ) -> structure.TokenizedStructure:
+        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
+        asym_ids: list[str] = kwargs["asym_ids"]
+        if self.max_chains < struct.num_chains:
+            struct = self.pre_cropper.crop(struct, self.max_tokens, asym_ids)
+        return struct
 
     @override
     def crop_structure(
@@ -394,6 +433,7 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
         lmdb_path: Path,
         paths: dict[str, Path | None],
         featurization_args: dict,
+        max_chains: int,
         max_tokens: int,
         cropper: BaseCropper,
         sampler_config: BaseSampler.Config | None,
@@ -406,6 +446,7 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
             records,
             paths,
             featurization_args,
+            max_chains,
             max_tokens,
             cropper,
             sampler_config,

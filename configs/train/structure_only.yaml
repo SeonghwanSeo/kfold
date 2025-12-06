@@ -9,6 +9,7 @@ synchronize_seed: true # Use the same seed across DDP processes
 
 # Training parameters for multi-gpu setup.
 global_hparams:
+  max_chains: 20
   max_tokens: 512
   batch_size: 1
   diffusion_batch_size: 48
@@ -20,10 +21,11 @@ data:
   _class_: TrainingDataModule
 
   # DataLoader
-  train_batch_size: ??? # set by global_hparam
+  train_batch_size: ${global_hparams.batch_size}
   val_batch_size: 1
   num_workers: 8
-  max_tokens: ??? # set by global_hparam
+  max_chains: ${global_hparams.max_chains}
+  max_tokens: ${global_hparams.max_tokens}
   pin_memory: true
   safe_load: true
 
@@ -57,9 +59,10 @@ data:
 
   cropper:
     _registry_: "data_cropper"
-    _class_: BoltzCropper
-    min_neighborhood: 0
-    max_neighborhood: 40
+    _class_: MultiAnchorCropper
+    w_contiguous: 0.3
+    w_spatial: 0.2
+    w_spatial_interface: 0.5
 
   sampler:
     _registry_: "data_sampler"
