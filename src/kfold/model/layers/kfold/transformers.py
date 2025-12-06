@@ -299,17 +299,30 @@ class AtomAttentionEncoderWithApo(nn.Module):
         p_ref = p_ref * v_ref
 
         # 2. Embed Apo chain structures (chain-level pairwise embeddings)
-        # Mask with chain identity
-        asym_id = broadcast_tokens_to_atoms(
-            f_input.token.asym_id.unsqueeze(-1), f_input.atom.token_index
-        ).squeeze(-1)  # [B, La]
-        asym_id_q, asym_id_k = local_attn_index.to_qk(asym_id, dim=-1)
-        v_apo = asym_id_q[..., :, None] == asym_id_k[..., None, :]  # [B, W, Lq, Lk]
+        # This is used to capture the local geometry of apo structure;
+        # i.e., the relative positions of neighboring residues in sequence
 
         # Mask unresolved apo atoms (this doesn't mean unresolved atoms in holo)
         apo_mask = f_input.atom.apo_mask  # [B, La]
         apo_mask_q, apo_mask_k = local_attn_index.to_qk(apo_mask, dim=-1)
-        v_apo &= apo_mask_q[..., :, None] & apo_mask_k[..., None, :]  # [B, W, Lq, Lk]
+        v_apo = apo_mask_q[..., :, None] & apo_mask_k[..., None, :]
+
+        # Mask with chain identity (Apo structure is defined per chain)
+        asym_id = broadcast_tokens_to_atoms(
+            f_input.token.asym_id.unsqueeze(-1), f_input.atom.token_index
+        ).squeeze(-1)  # [B, La]
+        asym_id_q, asym_id_k = local_attn_index.to_qk(asym_id, dim=-1)
+        v_apo &= asym_id_q[..., :, None] == asym_id_k[..., None, :]  # [B, W, Lq, Lk]
+
+        # Mask with distance cutoff in sequence (10 neighbor residues)
+        # NOTE: (SeonghwanSeo) In spatial cropping, the residue indices may not be
+        # continuous. To capture local geometry, we only consider atoms from residues
+        # that are within 5 residues in sequence.
+        residue_idx = broadcast_tokens_to_atoms(
+            f_input.token.residue_index.unsqueeze(-1), f_input.atom.token_index
+        ).squeeze(-1)  # [B, La]
+        residx_q, residx_k = local_attn_index.to_qk(residue_idx, dim=-1)
+        v_apo &= abs(residx_q[..., :, None] - residx_k[..., None, :]) <= 5
 
         # Final apo mask
         v_apo = v_apo.to(c.dtype).unsqueeze(-1)  # [B, W, Lq, Lk, 1]
@@ -323,6 +336,7 @@ class AtomAttentionEncoderWithApo(nn.Module):
             # Shape: [B, W, Lq, Lk, 3], [B, W, Lq, Lk, 1]
             apo_d_offset = apo_pos_q[..., :, None, :] - apo_pos_k[..., None, :, :]
             apo_d_inv = 1.0 / (1.0 + apo_d_offset.norm(dim=-1, keepdim=True))
+            apo_d_offset = apo_d_offset * apo_d_inv.sqrt()  # scale offsets
 
         # Shape: [B, W, Lq, Lk, c_atompair]
         p_apo = self.embed_apo_offset(apo_d_offset)
