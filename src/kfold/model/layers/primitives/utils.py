@@ -1,5 +1,3 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License,
-
 # Copyright 2021 AlQuraishi Laboratory
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,18 +19,35 @@ from typing import Any
 import torch
 
 
-def add(m1: torch.Tensor, m2: torch.Tensor, inplace: bool) -> torch.Tensor:
-    # The first operation in a checkpoint can't be in-place, but it's
-    # nice to have in-place addition during inference. Thus...
-    if not inplace:
-        m1 = m1 + m2
+def add(x: torch.Tensor, y: float | torch.Tensor, inplace: bool = False) -> torch.Tensor:
+    if inplace:
+        return x.add_(y)
     else:
-        m1 += m2
-
-    return m1
+        return x + y
 
 
-def permute_final_dims(tensor: torch.Tensor, inds: list[int]) -> torch.Tensor:
+def sub(x: torch.Tensor, y: float | torch.Tensor, inplace: bool = False) -> torch.Tensor:
+    if inplace:
+        return x.sub_(y)
+    else:
+        return x - y
+
+
+def div(x: torch.Tensor, y: float | torch.Tensor, inplace: bool = False) -> torch.Tensor:
+    if inplace:
+        return x.div_(y)
+    else:
+        return x / y
+
+
+def mul(x: torch.Tensor, y: float | torch.Tensor, inplace: bool = False) -> torch.Tensor:
+    if inplace:
+        return x.mul_(y)
+    else:
+        return x * y
+
+
+def permute_final_dims(tensor: torch.Tensor, inds: Sequence[int]) -> torch.Tensor:
     zero_index = -1 * len(inds)
     first_inds = list(range(len(tensor.shape[:zero_index])))
     return tensor.permute(first_inds + [zero_index + i for i in inds])

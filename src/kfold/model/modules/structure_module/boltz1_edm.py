@@ -6,15 +6,15 @@ import torch
 import torch.nn.functional as F
 
 from kfold.data.model_input import FoldingInput
-from kfold.model.layers.alphafold3.utils import CenterRandomAugmentation
 from kfold.model.modules.score_model.base import BaseScoreModel
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseStructureModule
+from .base import BaseEDM
 
 
 @STRUCTURE_MODULE.register()
-class Boltz1SampleDiffusion(BaseStructureModule):
+class Boltz1SampleDiffusion(BaseEDM):
     """Atom diffusion module used in Boltz1."""
 
     class Config(BaseConfig):
@@ -82,11 +82,17 @@ class Boltz1SampleDiffusion(BaseStructureModule):
         self.coordinate_augmentation: bool = cfg.coordinate_augmentation
         self.synchronize_sigmas: bool = cfg.synchronize_sigmas
 
-        if self.coordinate_augmentation:
-            self.random_augmentation = CenterRandomAugmentation(
-                centering=True,
-                random_rotate=self.coordinate_augmentation,
-            )
+        self.random_augmentation = CenterRandomAugmentation(
+            centering=True,
+            augmentation=self.coordinate_augmentation,
+            s_trans=1.0,  # not used when augmentation is False
+        )
+
+    def apply_random_augmentation(
+        self, coords: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Apply random augmentation to coordinates."""
+        return self.random_augmentation(coords, mask=mask)
 
     # === EDM diffusion coefficients === #
     def c_skip(self, sigma: torch.Tensor) -> torch.Tensor:
@@ -123,6 +129,7 @@ class Boltz1SampleDiffusion(BaseStructureModule):
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         model_cache=None,
+        prior_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model.
         See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3 paper.
@@ -214,25 +221,6 @@ class Boltz1SampleDiffusion(BaseStructureModule):
             # use different sigmas for each diffusion sample
             return _sample(batch_size, num_diffusion_samples)
 
-    def sample_holo(
-        self,
-        f_input: FoldingInput,
-        num_diffusion_samples: int = 1,
-    ) -> torch.Tensor:
-        """Sample from the prior distribution."""
-        holo_coords = super().sample_holo(
-            f_input, num_diffusion_samples
-        )  # [B, N, Latom, 3]
-        atom_mask = f_input.atom.resolved_mask.float()  # (B, Latom)
-
-        # Apply coordinate augmentation
-        holo_coords = self.random_augmentation(
-            holo_coords,
-            mask=atom_mask.unsqueeze(1),  # (B, 1, Latom)
-        )
-
-        return holo_coords
-
     def interpolate(
         self,
         noise_coords: torch.Tensor,
@@ -299,7 +287,7 @@ class Boltz1SampleDiffusion(BaseStructureModule):
 
         # NOTE: for sampling, there is no unresolved atoms.
         # Therefore, we can use pad_mask here.
-        atom_mask = f_input.atom.pad_mask.float().unsqueeze(1)  # (B, 1, Latom)
+        atom_mask = f_input.atom.pad_mask.unsqueeze(1)  # (B, 1, Latom)
 
         # Line 1
         init_sigma = sigmas[0]

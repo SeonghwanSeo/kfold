@@ -125,8 +125,8 @@ class Boltz1DiffusionModule(BaseScoreModel):
         r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """
-        B, N, La, _ = r_noisy.shape
-        r_noisy = r_noisy.view(B * N, La, 3)
+        B, N, La, coords_dim = r_noisy.shape
+        r_noisy = r_noisy.view(B * N, La, coords_dim)
         c_noise = c_noise.view(B * N)
         # s_inputs = s_inputs
         # s_trunk = s_trunk.repeat_interleave(N, dim=0)

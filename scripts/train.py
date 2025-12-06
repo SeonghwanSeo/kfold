@@ -4,15 +4,16 @@ from pathlib import Path
 import lightning.pytorch as pl
 import lightning.pytorch.callbacks as pl_callbacks
 import torch
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 
-from kfold.config import load_config, print_config, to_dict
+from kfold.config import load_config, print_config, save_config, to_dict
 from kfold.training.folding.dataset.datamodule import TrainingDataModule
 from kfold.training.folding.training_module import KFoldTrainingModule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Boltzmann Generator model.")
+    parser = argparse.ArgumentParser(description="Train a Co-Folding model.")
     parser.add_argument(
         "--config",
         type=str,
@@ -46,9 +47,14 @@ def parse_args() -> argparse.Namespace:
         help="Batch size for training",
     )
     parser.add_argument(
-        "--accumulate_grad_batches",
+        "--global_batch_size",
         type=int,
-        help="Number of batches for gradient accumulation.",
+        help="Global batch size for training across all GPUs.",
+    )
+    parser.add_argument(
+        "--num_steps_per_epoch",
+        type=int,
+        help="Number of training steps per epoch.",
     )
     parser.add_argument(
         "--num_workers",
@@ -67,10 +73,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--debug",
-        type=str,
-        choices=["off", "on", "default", "skip-val"],
-        default="off",
+        action="store_true",
         help="Enable debug mode",
+    )
+    parser.add_argument(
+        "--skip_val",
+        action="store_true",
+        help="Skip validation steps",
     )
     parser.add_argument(
         "--override",
@@ -82,7 +91,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def parse_config(args) -> DictConfig:
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, override_args=args.override)
 
     # Override some config options with command line args
     if args.out_dir is not None:
@@ -94,15 +103,52 @@ def parse_config(args) -> DictConfig:
     if args.num_nodes is not None:
         cfg.train.trainer.num_nodes = args.num_nodes
     if args.batch_size is not None:
-        cfg.train.data.train_batch_size = args.batch_size
-    if args.accumulate_grad_batches is not None:
-        cfg.train.trainer.accumulate_grad_batches = args.accumulate_grad_batches
+        cfg.train.global_hparams.batch_size = args.batch_size
+    if args.global_batch_size is not None:
+        cfg.train.global_hparams.global_batch_size = args.global_batch_size
+    if args.num_steps_per_epoch is not None:
+        cfg.train.global_hparams.num_global_steps_per_epoch = args.num_steps_per_epoch
     if args.num_workers is not None:
         cfg.train.data.num_workers = args.num_workers
     if args.wandb:
         cfg.train.wandb.use = True
 
-    if args.debug != "off":
+    # Compute parameters dependent on global_hparams
+    train_cfg = cfg.train
+    global_hparams = train_cfg.global_hparams
+
+    train_cfg.data.max_tokens = global_hparams.max_tokens
+    train_cfg.data.train_batch_size = global_hparams.batch_size
+    train_cfg.training.diffusion_batch_size = global_hparams.diffusion_batch_size
+
+    # compute accumulate_grad_batches
+    if train_cfg.trainer.devices == "auto":
+        num_gpus = torch.cuda.device_count()
+    else:
+        num_gpus = train_cfg.trainer.devices
+    assert isinstance(num_gpus, int), "num_gpus should be an integer or 'auto'."
+    assert num_gpus > 0, "No GPUs available for training."
+
+    world_size = train_cfg.trainer.num_nodes * num_gpus
+    batch_size = global_hparams.batch_size
+    if global_hparams.global_batch_size % (batch_size * world_size) != 0:
+        raise ValueError(
+            f"Global batch size {global_hparams.global_batch_size} is not "
+            f"divisible by (batch_size {batch_size} * world_size {world_size})"
+        )
+    train_cfg.trainer.accumulate_grad_batches = global_hparams.global_batch_size // (
+        batch_size * world_size
+    )
+    # compute limit_train_batches
+    train_cfg.trainer.limit_train_batches = (
+        global_hparams.num_global_steps_per_epoch
+        * train_cfg.trainer.accumulate_grad_batches
+    )
+    # Remove global_hparams from cfg after overrides
+    del cfg.train.global_hparams
+
+    if args.debug:
+        # Enable debug mode settings
         print("Debug mode is enabled: Single GPU, 0 workers, no wandb.")
         cfg.train.trainer.devices = 1
         cfg.train.trainer.num_nodes = 1
@@ -115,27 +161,11 @@ def parse_config(args) -> DictConfig:
         cfg.train.data.safe_load = False
         cfg.train.wandb.use = False
 
-        if args.debug == "skip-val":
-            # Skip validation steps, use when validation process is not yet ready
-            cfg.train.trainer.num_sanity_val_steps = 0
-            cfg.train.trainer.limit_val_batches = 0
-
-    # Override configuration options from command line
-    if args.override is not None:
-        for override_arg in args.override:
-            key, value = override_arg.split("=", 1)
-            # Navigate through nested attributes
-            keys = key.split(".")
-            d = cfg
-            for k in keys[:-1]:
-                d = getattr(d, k)
-            # Convert value to appropriate type
-            attr_type = type(getattr(d, keys[-1]))
-            if attr_type is bool:
-                value = value.lower() == "true"
-            else:
-                value = attr_type(value)
-            setattr(d, keys[-1], value)
+    if args.skip_val:
+        # Skip validation steps, use when validation process is not yet ready
+        print("Skipping validation steps.")
+        cfg.train.trainer.num_sanity_val_steps = 0
+        cfg.train.trainer.limit_val_batches = 0
 
     return cfg
 
@@ -158,6 +188,15 @@ def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
             save_dir=save_dir,
         )
         loggers = [wandb_logger]
+
+        @rank_zero_only
+        def _save_config() -> None:
+            config_out = Path(wandb_logger.experiment.dir) / "config.yaml"
+            save_config(cfg, config_out)
+            wandb_logger.experiment.save("config.yaml")
+
+        _save_config()
+
     else:
         loggers = None  # use default logger
 
@@ -208,6 +247,7 @@ def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
         enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
         accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,
         gradient_clip_val=pl_trainer_cfg.gradient_clip_val,
+        use_distributed_sampler=False,
         # reload_dataloaders_every_n_epochs=1,
     )
     return trainer
@@ -219,10 +259,21 @@ def train(args) -> None:
 
     cfg = parse_config(args)
 
-    # Set random seed
-    pl.seed_everything(cfg.train.seed)
-
     trainer = build_trainer(cfg, args.debug)
+
+    # Set random seed
+    # TODO: let's discuss to use different seeds for different ranks or not
+    # Pros: when we use `synchronize_sigma` option, use different seeds is essential to
+    #       train the model on various time steps.
+    # Cons: it makes the training less reproducible.
+    if cfg.train.synchronize_seed:
+        # Same seed for all ranks
+        seed = cfg.train.seed
+    else:
+        # Different seed for each rank
+        seed = cfg.train.seed + trainer.global_rank
+    pl.seed_everything(seed, workers=True, verbose=False)
+
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
 

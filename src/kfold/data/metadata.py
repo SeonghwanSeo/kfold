@@ -57,7 +57,7 @@ class ChainInfo(JsonSerializable):
 
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding None values."""
-        data = super().to_dict()
+        data = super(ChainInfo, self).to_dict()
         data["chain_type"] = self.chain_type.name
         return data
 
@@ -108,6 +108,14 @@ class Metadata:
     @property
     def num_residues(self) -> int:
         return sum(chain.num_residues for chain in self.chains)
+
+    @property
+    def num_valid_chains(self) -> int:
+        return sum(1 for chain in self.chains if chain.valid)
+
+    @property
+    def num_valid_residues(self) -> int:
+        return sum(chain.num_residues for chain in self.chains if chain.valid)
 
     def to_dict(self) -> dict:
         return {

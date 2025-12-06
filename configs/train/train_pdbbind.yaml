@@ -1,0 +1,33 @@
+# Configuration for K-Fold structure module training
+
+_yaml_: "structure_only.yaml"
+
+name: train-pdbbind
+
+data:
+  # Data paths
+  lmdb_path: <LMDB_PATH_PLACEHOLDER>
+  manifest_path: <MANIFEST_PATH_PLACEHOLDER>
+  split_path: ./assets/splits/equibind/
+
+  filters:
+    - _registry_: "data_filter"
+      _class_: NumChainFilter
+      max_chains: 300
+    - _registry_: "data_filter"
+      _class_: ReleaseDateFilter
+      date: "2018-12-31"
+      ref: released
+
+  cropper:
+    _registry_: "data_cropper"
+    _class_: BoltzCropper
+    min_neighborhood: 0
+    max_neighborhood: 40
+
+  sampler:
+    _registry_: "data_sampler"
+    _class_: ClusterSampler
+    beta_chain: 0.5
+    beta_interface: 1.0
+    allow_redundant: True # Same to Boltz1

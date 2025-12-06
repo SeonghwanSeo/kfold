@@ -1,10 +1,8 @@
 import torch
-import torch.nn as nn
 
 from kfold.data.model_input import FoldingInput
-from kfold.model.layers.alphafold3 import initialize as init
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
-from kfold.model.layers.alphafold3.primitives import LinearNoBias
+from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
 from .base import BaseTrunk
@@ -87,12 +85,10 @@ class AF3PairformerTrunk(BaseTrunk):
         )
 
         # For recycling
-        self.layernorm_s = nn.LayerNorm(cfg.channel_s)
-        self.layernorm_z = nn.LayerNorm(cfg.channel_z)
-        self.linear_no_bias_s = LinearNoBias(cfg.channel_s, cfg.channel_s)
-        self.linear_no_bias_z = LinearNoBias(cfg.channel_z, cfg.channel_z)
-        init.gating_init_(self.linear_no_bias_s.weight)
-        init.gating_init_(self.linear_no_bias_z.weight)
+        self.layernorm_s = LayerNorm(cfg.channel_s)
+        self.layernorm_z = LayerNorm(cfg.channel_z)
+        self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
+        self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
     def do_compile(self):
         """Compile the trunk module."""
@@ -156,7 +152,7 @@ class AF3PairformerTrunk(BaseTrunk):
                     torch.clear_autocast_cache()
 
                 # Line 8
-                z = z_init + self.linear_no_bias_z(self.layernorm_z(z_hat))
+                z = z_init + self.linear_z(self.layernorm_z(z_hat))
 
                 # Line 9: TemplateEmbedder
                 if self.use_template:
@@ -167,7 +163,7 @@ class AF3PairformerTrunk(BaseTrunk):
                     raise NotImplementedError("MSA Module is not implemented yet")
 
                 # Line 11
-                s = s_init + self.linear_no_bias_s(self.layernorm_s(s_hat))
+                s = s_init + self.linear_s(self.layernorm_s(s_hat))
 
                 # Line 12
                 # Revert to uncompiled version for validation

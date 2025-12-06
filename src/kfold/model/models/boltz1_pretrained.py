@@ -12,28 +12,23 @@ from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedd
 from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk
 from kfold.utils.registry import MAIN_MODULE, Registry
 
-from .kfold import KFold
+from .base import BaseFoldingModel
 
 
 @MAIN_MODULE.register()
-class Boltz1Pretrained(KFold):
+class Boltz1Pretrained(BaseFoldingModel):
+    input_embedder: Boltz1InputEmbedder  # type: ignore
+    trunk: Boltz1PairformerTrunk  # type: ignore
+    distogram_head: Boltz1DistogramHead  # type: ignore
+
     def __init__(self, global_config: DictConfig):
-        torch.nn.Module.__init__(self)
+        super().__init__(global_config)
         self.config = global_config
         model_config = global_config.model
 
         # === Boltz-1 pretrained modules === #
-        self.input_embedder: Boltz1InputEmbedder = Registry.instantiate(
-            model_config.input_embedder
-        )
         assert isinstance(self.input_embedder, Boltz1InputEmbedder)
-
-        self.trunk: Boltz1PairformerTrunk = Registry.instantiate(model_config.trunk)
         assert isinstance(self.trunk, Boltz1PairformerTrunk)
-
-        self.distogram_head: Boltz1DistogramHead = Registry.instantiate(
-            model_config.distogram_head
-        )
         assert isinstance(self.distogram_head, Boltz1DistogramHead)
 
         # === For custom diffusion structure module === #
@@ -46,19 +41,23 @@ class Boltz1Pretrained(KFold):
             )
         )
 
-        # NOTE: additional projection layers for compatibility with KFold
-        c_input_boltz = 384 + 33 * 2 + 1 + 4  # 459
-        self.proj_s_inputs = torch.nn.Linear(
-            c_input_boltz,
-            model_config.score_model.channel_s,
-            bias=False,
-        )
-
         # Load Boltz-1 pretrained weights
         self.load_boltz_weights()
 
+        # NOTE: additional projection layers for compatibility with KFold
+        self.proj_s_inputs = None
+        need_projection: bool = model_config.get("proj_s_inputs", False)
+        if need_projection:
+            c_input_boltz = 384 + 33 * 2 + 1 + 4  # 459
+            self.proj_s_inputs = torch.nn.Linear(
+                c_input_boltz,
+                model_config.score_model.channel_s,
+                bias=False,
+            )
+
     def load_boltz_weights(self):
-        cache_dir = Path("/cache/wykim_lab/boltz1_weights")
+        # cache_dir = Path("/cache/wykim_lab/boltz1_weights")
+        cache_dir = Path("/mnt/parallel_storage/wykim_lab/icl_swkim/kfold")
 
         model_path = cache_dir / "boltz1_conf.ckpt"
         state_dict_path = cache_dir / "boltz1_state_dict.ckpt"
@@ -178,8 +177,11 @@ class Boltz1Pretrained(KFold):
             num_cycles,
         )
 
-        # NOTE: Project single features to match structure module input dim
-        s_inputs = self.proj_s_inputs(s_inputs)
+        # ====================================================== #
+        # NOTE: Only the difference is here: Project single features to match
+        if self.proj_s_inputs is not None:
+            s_inputs = self.proj_s_inputs(s_inputs)
+        # ====================================================== #
 
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.
@@ -288,7 +290,8 @@ class Boltz1Pretrained(KFold):
 
         # ====================================================== #
         # NOTE: Only the difference is here: Project single features to match
-        s_inputs = self.proj_s_inputs(s_inputs)
+        if self.proj_s_inputs is not None:
+            s_inputs = self.proj_s_inputs(s_inputs)
         # ====================================================== #
 
         # Diffusion head

@@ -106,15 +106,15 @@ class ChainLayout(TensorLayout):
             "pad_mask": False,
         }
 
-        pad_size = total_length - L
         fields = {}
         for name, tensor in self.to_dict().items():
             pad_value = pad_values[name]
-            to_shape = (pad_size,) + tensor.shape[1:]
-            pad_tensor = torch.full(
+            to_shape = (total_length,) + tensor.shape[1:]
+            padded_tensor = torch.full(
                 to_shape, pad_value, dtype=tensor.dtype, device=tensor.device
             )
-            fields[name] = torch.cat([tensor, pad_tensor], dim=0)
+            padded_tensor[:L] = tensor
+            fields[name] = padded_tensor
         return self.from_dict(fields)
 
     @cached_property
@@ -155,11 +155,12 @@ class TokenLayout(TensorLayout):
         Chain types of shape [L,], indicating the type of each token.
     residue_index: torch.Tensor (long)
         Residue indices of shape [L,], used for residue-level operations.
+        Starting from 1 for each chain.
         example)
             4-len polymer(protein/RNA/DNA):
-                residue_index: [0, 1, 2, 3]
+                residue_index: [1, 2, 3, 4]
             6-sized ligand:
-                residue_index: [0, 0, 0, 0, 0, 0]
+                residue_index: [1, 1, 1, 1, 1, 1]
     disto_index: torch.Tensor (long)
         Representative atom indices of shape [L,], Cβ
     center_index: torch.Tensor (long)
@@ -311,15 +312,15 @@ class TokenLayout(TensorLayout):
             "pocket_contact_type": 0,
         }
 
-        pad_size = total_length - L
         fields = {}
         for name, tensor in self.to_dict().items():
             pad_value = pad_values[name]
-            to_shape = (pad_size,) + tensor.shape[1:]
-            pad_tensor = torch.full(
+            to_shape = (total_length,) + tensor.shape[1:]
+            padded_tensor = torch.full(
                 to_shape, pad_value, dtype=tensor.dtype, device=tensor.device
             )
-            fields[name] = torch.cat([tensor, pad_tensor], dim=0)
+            padded_tensor[:L] = tensor
+            fields[name] = padded_tensor
         return self.from_dict(fields)
 
 
@@ -348,8 +349,7 @@ class AtomLayout(TensorLayout):
     token_index: torch.Tensor (long)
         Token indices mapping atoms to their parent tokens of shape [Natom,].
     apo_coords: torch.Tensor (float32)
-        Apo (unbound) state coordinates of shape [Natom, Napo, 3],
-        where Napo is the number of apo conformations.
+        Apo (unbound) state coordinates of shape [Natom, 3],
     resolved_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating atoms to be resolved.
     apo_mask: torch.Tensor (bool)
@@ -357,8 +357,7 @@ class AtomLayout(TensorLayout):
     pad_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating valid (non-padded) atoms.
     label_coords: torch.Tensor (float32)
-        Holo (bound) state coordinates of shape [Natom, Nholo, 3],
-        where Nholo is the number of ensemble holo conformations.
+        Holo (bound) state coordinates of shape [Natom, 3],
         This is used as the ground truth for training, and may be set to 0
         for inference.
     """
@@ -366,13 +365,13 @@ class AtomLayout(TensorLayout):
     ref_atom_name_chars: torch.Tensor  # [Natom, 4, 64], float32
     ref_element: torch.Tensor  # [Natom, 128], float32
     ref_charge: torch.Tensor  # [Natom,], float32
-    ref_pos: torch.Tensor  # [Natom, Nholo, 3], float32
+    ref_pos: torch.Tensor  # [Natom, 3], float32
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
-    label_coords: torch.Tensor  # [Natom, Nholo, 3], float32
-    apo_coords: torch.Tensor  # [Natom, Napo, 3], float32
+    label_coords: torch.Tensor  # [Natom, 3], float32
+    apo_coords: torch.Tensor  # [Natom, 3], float32
     resolved_mask: torch.Tensor  # [Natom,], bool
-    apo_mask: torch.Tensor  # [Natom, Napo], bool
+    apo_mask: torch.Tensor  # [Natom,], bool
     pad_mask: torch.Tensor  # [Natom,], bool
 
     @property
@@ -405,15 +404,15 @@ class AtomLayout(TensorLayout):
             self.label_coords,
             name="label_coords",
             dtype=torch.float32,
-            shape=(*shape, -1, 3),
+            shape=(*shape, 3),
         )
         check_tensor(
-            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, -1, 3)
+            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, 3)
         )
         check_tensor(
             self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=shape
         )
-        check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=(*shape, -1))
+        check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=shape)
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:
@@ -442,15 +441,15 @@ class AtomLayout(TensorLayout):
             "label_coords": 0.0,
         }
 
-        pad_size = total_length - L
         fields = {}
         for name, tensor in self.to_dict().items():
             pad_value = pad_values[name]
-            to_shape = (pad_size,) + tensor.shape[1:]
-            pad_tensor = torch.full(
+            to_shape = (total_length,) + tensor.shape[1:]
+            padded_tensor = torch.full(
                 to_shape, pad_value, dtype=tensor.dtype, device=tensor.device
             )
-            fields[name] = torch.cat([tensor, pad_tensor], dim=0)
+            padded_tensor[:L] = tensor
+            fields[name] = padded_tensor
         return self.from_dict(fields)
 
 
@@ -544,15 +543,102 @@ class BondLayout(TensorLayout):
             "is_polymer_ligand": False,
         }
 
-        pad_size = total_length - L
         fields = {}
         for name, tensor in self.to_dict().items():
             pad_value = pad_values[name]
-            to_shape = (pad_size,) + tensor.shape[1:]
-            pad_tensor = torch.full(
+            to_shape = (total_length,) + tensor.shape[1:]
+            padded_tensor = torch.full(
                 to_shape, pad_value, dtype=tensor.dtype, device=tensor.device
             )
-            fields[name] = torch.cat([tensor, pad_tensor], dim=0)
+            padded_tensor[:L] = tensor
+            fields[name] = padded_tensor
+        return self.from_dict(fields)
+
+
+@dataclass(frozen=True, slots=True)
+class PretrainedLayout(TensorLayout):
+    """Token-level layout including pretrained embedding information.
+
+    Attributes
+    ----------
+    sequence_embedding: torch.Tensor (float32)
+        Pretrained sequence embedding of shape [L, c_seq_enc].
+    structure_embedding: torch.Tensor (float32)
+        Pretrained structure embedding of shape [L, c_struct_enc].
+    """
+
+    # TODO (SeonghwanSeo): we may want to add raw input format for
+    # on-the-fly embedding extraction.
+
+    # Requirements for pretrained embedding extraction:
+    #   1. original full sequence (token_ids + seq_ids)
+    #   2. original full structure (coords + atom_types)
+    #   3. crop indices to map cropped tokens to original full sequence/structure
+    #   4. We may have to introduce mini-batch dimension for memory efficiency.
+
+    sequence_embedding: torch.Tensor  # [L, c_seq_enc], float32
+    structure_embedding: torch.Tensor  # [L, c_struct_enc], float32
+    pad_mask: torch.Tensor  # [L,], bool
+
+    @property
+    def layout_shape(self) -> tuple[int, ...]:
+        return self.pad_mask.shape
+
+    @property
+    def ndim_unbatched(self) -> int:
+        """[ClassVar] The number of dimensions of the layout."""
+        return 1
+
+    @property
+    def has_sequence_embedding(self) -> bool:
+        """Whether the layout has sequence embedding."""
+        return self.sequence_embedding.shape[-1] > 0
+
+    @property
+    def has_structure_embedding(self) -> bool:
+        """Whether the layout has structure embedding."""
+        return self.structure_embedding.shape[-1] > 0
+
+    def __post_init__(self):
+        shape = self.layout_shape
+        check_tensor(
+            self.sequence_embedding,
+            name="sequence_embedding",
+            dtype=torch.float32,
+            shape=(*shape, -1),
+        )
+        check_tensor(
+            self.structure_embedding,
+            name="structure_embedding",
+            dtype=torch.float32,
+            shape=(*shape, -1),
+        )
+
+    def pad(self, *pad_shape: int) -> Self:
+        """Pad the layout to the total length."""
+        assert not self.is_batched, "Padding batched layout is not supported."
+        self._check_pad_input(pad_shape)
+
+        if pad_shape == self.layout_shape:
+            return self
+
+        total_length = pad_shape[0]  # single dimension
+        L = len(self)
+
+        pad_values = {
+            "sequence_embedding": 0.0,
+            "structure_embedding": 0.0,
+            "pad_mask": False,
+        }
+        fields = {}
+        for name, tensor in self.to_dict().items():
+            pad_value = pad_values[name]
+            to_shape = (total_length,) + tensor.shape[1:]
+            padded_tensor = torch.full(
+                to_shape, pad_value, dtype=tensor.dtype, device=tensor.device
+            )
+            padded_tensor[:L] = tensor
+            fields[name] = padded_tensor
         return self.from_dict(fields)
 
 
@@ -564,6 +650,7 @@ class FoldingInput:
     token: TokenLayout
     atom: AtomLayout
     bond: BondLayout
+    pretrained: PretrainedLayout
 
     def __post_init__(self):
         # check all layouts are on the same device
@@ -571,6 +658,9 @@ class FoldingInput:
         assert self.token.device == device, "token layout must be on the same device."
         assert self.atom.device == device, "atom layout must be on the same device."
         assert self.bond.device == device, "bond layout must be on the same device."
+        assert self.pretrained.device == device, (
+            "pretrained layout must be on the same device."
+        )
 
         # check all layouts are non-batched or batched
         is_batched = self.chain.is_batched
@@ -582,6 +672,14 @@ class FoldingInput:
         )
         assert self.bond.is_batched == is_batched, (
             "bond layout must be batched or non-batched as same as chain layout."
+        )
+        assert self.pretrained.is_batched == is_batched, (
+            "pretrained layout must be batched or non-batched as same as chain layout."
+        )
+
+        # check the pretrained layout length matches token layout length
+        assert self.token.layout_shape == self.pretrained.layout_shape, (
+            "pretrained layout must have the same length as token layout."
         )
 
         # check the batch size if batched
@@ -596,6 +694,9 @@ class FoldingInput:
             assert self.bond.batch_size == batch_size, (
                 "bond layout must have the same batch size as chain layout."
             )
+            assert self.pretrained.batch_size == batch_size, (
+                "pretrained layout must have the same batch size as chain layout."
+            )
 
     def to(self, device: str | torch.device) -> Self:
         return self.__class__(
@@ -603,11 +704,12 @@ class FoldingInput:
             token=self.token.to(device),
             atom=self.atom.to(device),
             bond=self.bond.to(device),
+            pretrained=self.pretrained.to(device),
         )
 
     @property
     def device(self) -> torch.device:
-        return self.token.res_type.device
+        return self.token.device
 
     @property
     def is_batched(self) -> bool:
@@ -631,8 +733,22 @@ class FoldingInput:
         return len(self.atom)
 
     @classmethod
-    def from_list(cls, data_list: list[Self]) -> Self:
-        """Create a Batched Input from a list of data."""
+    def from_list(cls, data_list: list[Self], pad_to_max: bool = False) -> Self:
+        """Create a Batched Input from a list of data.
+
+        Parameters
+        ----------
+        data_list: list[FoldingInput]
+            A list of FoldingInput instances to be batched.
+        pad_to_max: bool
+            Whether to pad all layouts to the maximum length in the batch.
+            Default is False (If False, all layouts should have the same length).
+
+        Returns
+        -------
+        batch: FoldingInput
+            A batched FoldingInput instance.
+        """
         # Check all data are non-batched
         for data in data_list:
             assert not data.is_batched, "All inputs in data_list must be non-batched."
@@ -644,16 +760,52 @@ class FoldingInput:
                 "All inputs in data_list must be on the same device."
             )
 
+        if pad_to_max:
+            # Pad to the maximum length in the batch
+            # Determine max lengths for each layout
+            max_chains = max(len(data.chain) for data in data_list)
+            max_tokens = max(len(data.token) for data in data_list)
+            max_atoms = max(len(data.atom) for data in data_list)
+            max_bonds = max(len(data.bond) for data in data_list)
+            # Pad each layout to the maximum length
+            data_list = [
+                data.pad(max_tokens, max_chains, max_atoms, max_bonds)
+                for data in data_list
+            ]
+        else:
+            # Check all layouts have the same length
+            ref_num_chains = len(data_list[0].chain)
+            ref_num_tokens = len(data_list[0].token)
+            ref_num_atoms = len(data_list[0].atom)
+            ref_num_bonds = len(data_list[0].bond)
+            for data in data_list:
+                assert len(data.chain) == ref_num_chains, (
+                    "All chain layouts must have the same length."
+                )
+                assert len(data.token) == ref_num_tokens, (
+                    "All token layouts must have the same length."
+                )
+                assert len(data.atom) == ref_num_atoms, (
+                    "All atom layouts must have the same length."
+                )
+                assert len(data.bond) == ref_num_bonds, (
+                    "All bond layouts must have the same length."
+                )
+
         batched_chain = ChainLayout.from_list([data.chain for data in data_list])
         batched_token = TokenLayout.from_list([data.token for data in data_list])
         batched_atom = AtomLayout.from_list([data.atom for data in data_list])
         batched_bond = BondLayout.from_list([data.bond for data in data_list])
+        batched_pretrained = PretrainedLayout.from_list(
+            [data.pretrained for data in data_list]
+        )
 
         return cls(
             chain=batched_chain,
             token=batched_token,
             atom=batched_atom,
             bond=batched_bond,
+            pretrained=batched_pretrained,
         )
 
     def to_list(self, deepcopy: bool = False) -> list[Self]:
@@ -661,6 +813,7 @@ class FoldingInput:
         token_list = self.token.to_list(deepcopy)
         atom_list = self.atom.to_list(deepcopy)
         bond_list = self.bond.to_list(deepcopy)
+        pretrained_list = self.pretrained.to_list(deepcopy)
 
         data_list: list[Self] = []
         batch_size = self.batch_size
@@ -671,6 +824,7 @@ class FoldingInput:
                     token=token_list[b],
                     atom=atom_list[b],
                     bond=bond_list[b],
+                    pretrained=pretrained_list[b],
                 )
             )
         return data_list
@@ -749,8 +903,9 @@ class FoldingInput:
         """Pad all layouts to the multiple of 32 tokens for LocalAtomAttention and
         model efficiency."""
         assert multiple > 0, f"multiple must be a positive integer, but got {multiple}."
-        assert multiple % 8 == 0, (
-            f"multiple must be a multiple of 8 for LocalAttention, but got {multiple}."
+        # 4 * 24 is divided by 32, which is the minimum unit of LocalAttention
+        assert multiple % 4 == 0, (
+            f"multiple must be a multiple of 4 for LocalAttention, but got {multiple}."
         )
         max_tokens = ((self.num_tokens + multiple - 1) // multiple) * multiple
         return self.pad_to_max_token(max_tokens)
@@ -787,4 +942,5 @@ class FoldingInput:
             token=self.token.pad(max_tokens),
             atom=self.atom.pad(max_atoms),
             bond=self.bond.pad(max_bonds),
+            pretrained=self.pretrained.pad(max_tokens),
         )

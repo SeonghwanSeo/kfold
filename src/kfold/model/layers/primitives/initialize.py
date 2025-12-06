@@ -1,7 +1,8 @@
-"""Utility functions for initializing weights and biases."""
+"""Utility functions for initializing weights and biases.
+Modified from OpenFold-3 initialize.py
+"""
 
 # Copyright 2021 AlQuraishi Laboratory
-# Copyright 2021 DeepMind Technologies Limited
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -44,7 +45,8 @@ def _calculate_fan(linear_weight_shape, fan="fan_in"):
     return f
 
 
-def trunc_normal_init_(weights, scale=1.0, fan="fan_in"):
+@torch.no_grad()
+def trunc_normal_init_openfold_(weights, scale=1.0, fan="fan_in"):
     shape = weights.shape
     f = _calculate_fan(shape, fan)
     scale = scale / max(1, f)
@@ -54,8 +56,30 @@ def trunc_normal_init_(weights, scale=1.0, fan="fan_in"):
     size = _prod(shape)
     samples = truncnorm.rvs(a=a, b=b, loc=0, scale=std, size=size)
     samples = np.reshape(samples, shape)
-    with torch.no_grad():
-        weights.copy_(torch.tensor(samples, device=weights.device))
+    weights.copy_(torch.as_tensor(samples, device=weights.device))
+
+
+@torch.no_grad()
+def trunc_normal_init_(weights, scale=1.0, fan="fan_in"):
+    """New truncated normal initialization consistent with
+    pure PyTorch implementation.
+    """
+    shape = weights.shape
+    f = _calculate_fan(shape, fan)
+    scale = scale / max(1, f)
+
+    # Same to truncnorm.std with a=-2, b=2, loc=0, scale=1
+    correction_factor = 0.87962566103423978
+
+    std = math.sqrt(scale) / correction_factor
+
+    torch.nn.init.trunc_normal_(
+        weights,
+        mean=0.0,
+        std=std,
+        a=-2.0 * std,
+        b=2.0 * std,
+    )
 
 
 def lecun_normal_init_(weights):
@@ -66,35 +90,42 @@ def he_normal_init_(weights):
     trunc_normal_init_(weights, scale=2.0)
 
 
+@torch.no_grad()
 def glorot_uniform_init_(weights):
     torch.nn.init.xavier_uniform_(weights, gain=1)
 
 
+@torch.no_grad()
+def zero_init_(weights):
+    weights.fill_(0.0)
+
+
+@torch.no_grad()
 def final_init_(weights):
-    with torch.no_grad():
-        weights.fill_(0.0)
+    weights.fill_(0.0)
 
 
+@torch.no_grad()
 def gating_init_(weights):
-    with torch.no_grad():
-        weights.fill_(0.0)
+    weights.fill_(0.0)
 
 
+@torch.no_grad()
 def bias_init_zero_(bias):
-    with torch.no_grad():
-        bias.fill_(0.0)
+    bias.fill_(0.0)
 
 
+@torch.no_grad()
 def bias_init_one_(bias):
-    with torch.no_grad():
-        bias.fill_(1.0)
+    bias.fill_(1.0)
 
 
+@torch.no_grad()
 def normal_init_(weights):
     torch.nn.init.kaiming_normal_(weights, nonlinearity="linear")
 
 
+@torch.no_grad()
 def ipa_point_weights_init_(weights):
-    with torch.no_grad():
-        softplus_inverse_1 = 0.541324854612918
-        weights.fill_(softplus_inverse_1)
+    softplus_inverse_1 = 0.541324854612918
+    weights.fill_(softplus_inverse_1)

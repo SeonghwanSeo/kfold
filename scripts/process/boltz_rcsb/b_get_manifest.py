@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # FIXME: remove default path before publish
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Save apo-holo pairs from a dataset of protein structures."
+        description="Get RCSB manifest based on Boltz1 splits."
     )
     parser.add_argument(
         "--boltz_manifest_path",
@@ -38,8 +38,8 @@ def parse_args():
     parser.add_argument(
         "--output_path",
         type=Path,
-        help="Path to the save the output manifest file.",
-        default="/cache/wykim_lab/kfold-data/manifest/af3_manifest.json",
+        required=True,
+        help="Path to save the output manifest file.",
     )
     parser.add_argument(
         "--exclude_large_complex",
@@ -117,28 +117,30 @@ def main(args):
 
     start_time = time.time()
     # Save the filtered manifest
-    format = Path(args.output_path).suffix.lower()
+    output_path = Path(args.output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    format = output_path.suffix.lower()
     dict_list = [r.to_dict() for r in all_records]
     if format == ".json":
-        with open(args.output_path, "w") as f:
+        with open(output_path, "w") as f:
             json.dump(dict_list, f, indent=2)
     elif format in {".pkl", ".pickle"}:
-        with open(args.output_path, "wb") as f:
+        with open(output_path, "wb") as f:
             pickle.dump(dict_list, f)
     else:
         raise ValueError(f"Unsupported output format: {format}")
     logger.info(
-        f"Saved filtered manifest to {args.output_path} in "
+        f"Saved filtered manifest to {output_path} in "
         f"{time.time() - start_time:.2f} seconds."
     )
 
     # Check loading time
     start_time = time.time()
     if format in {".pkl", ".pickle"}:
-        with open(args.output_path, "rb") as f:
+        with open(output_path, "rb") as f:
             res = pickle.load(f)
     else:
-        with open(args.output_path) as f:
+        with open(output_path) as f:
             res = json.load(f)
     manifest: list[Metadata] = [Metadata.from_dict(r) for r in res]  # noqa: F841
     logger.info(

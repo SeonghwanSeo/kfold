@@ -23,11 +23,13 @@ if __name__ == "__main__":
     global_config = load_config(TEST_CONFIG_PATH)
 
     # Modify config for testing
-    global_config.model.load_weight = True
-    global_config.model.freeze_weight = True
     global_config.train.data.featurization_args.augment_ref_pos = False
 
     # === Load Model === #
+    # Load Model
+    global_config.model.trunk.use_msa = True
+    global_config.model.load_weight = True
+    global_config.model.freeze_weight = True
     model = Boltz1(global_config)
     model = model.eval()
     model = model.cuda()

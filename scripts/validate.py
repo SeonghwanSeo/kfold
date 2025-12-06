@@ -9,7 +9,7 @@ from kfold.training.folding.training_module import KFoldTrainingModule
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train a Boltzmann Generator model.")
+    parser = argparse.ArgumentParser(description="Validate a Co-Folding model.")
     parser.add_argument(
         "--config",
         type=str,
@@ -47,7 +47,7 @@ def validate(args) -> None:
     cfg = load_config(args.config)
 
     # Set random seed
-    pl.seed_everything(cfg.train.seed)
+    pl.seed_everything(cfg.train.seed, workers=False)
 
     if args.checkpoint is None:
         print("No checkpoint path provided for validation.")
@@ -60,6 +60,10 @@ def validate(args) -> None:
     cfg.train.validation.num_steps = args.num_steps
     cfg.train.validation.num_cycles = args.num_cycles
 
+    if args.debug:
+        cfg.train.data.safe_load = False
+        cfg.train.data.num_workers = 0
+
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
 
@@ -67,7 +71,7 @@ def validate(args) -> None:
         devices=cfg.train.trainer.devices,
         accelerator=cfg.train.trainer.accelerator,
         precision=cfg.train.trainer.precision,
-        limit_val_batches=2 if args.debug else None,
+        limit_val_batches=5 if args.debug else None,
     )
 
     trainer.validate(

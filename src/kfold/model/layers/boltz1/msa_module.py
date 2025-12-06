@@ -363,10 +363,11 @@ class MSAModule(nn.Module):
 
         # Load relevant features
 
-        msa = torch.zeros(
+        msa = torch.ones(
             (f_input.batch_size, 2048, f_input.num_tokens, 33),
             device=f_input.token.res_type.device,
         )  # [B, 2048, L, 33]
+        msa[:, 0, :] = 0.0
         msa[:, 0, :, 1:] = f_input.token.res_type  # [B, 2048, L, 33]
         has_deletion = msa[..., :1] * 0.0  # [B, 2048, L, 1]
         deletion_value = has_deletion  # [B, 2048, L, 1]

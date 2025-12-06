@@ -7,27 +7,48 @@ from kfold.utils.checkpointing import checkpoint_section
 from kfold.utils.geometry.rigid_align import weighted_rigid_align
 
 
+def compute_modality_weights(
+    is_protein: torch.Tensor,
+    is_dna: torch.Tensor,
+    is_rna: torch.Tensor,
+    is_ligand: torch.Tensor,
+    upweight_protein: float = 0.0,
+    upweight_dna: float = 5.0,
+    upweight_rna: float = 5.0,
+    upweight_ligand: float = 10.0,
+) -> torch.Tensor:
+    """Compute weights for loss calculation.
+    See Section 3.7.1 Equation 4 of the AlphaFold 3 paper.
+    """
+    return (
+        1.0
+        + is_protein.float() * upweight_protein
+        + is_dna.float() * upweight_dna
+        + is_rna.float() * upweight_rna
+        + is_ligand.float() * upweight_ligand
+    )  # [B, Ltoken]
+
+
 def get_atom_weights(
     f_input: FoldingInput,
-    weight_protein: float = 1.0,
-    weight_dna: float = 5.0,
-    weight_rna: float = 5.0,
-    weight_ligand: float = 10.0,
+    upweight_protein: float = 0.0,
+    upweight_dna: float = 5.0,
+    upweight_rna: float = 5.0,
+    upweight_ligand: float = 10.0,
 ) -> torch.Tensor:
     """Compute atom weights for loss calculation.
     See Section 3.7.1 Equation 4 of the AlphaFold 3 paper.
     """
-    is_protein = f_input.token.is_protein  # [B, Ltoken]
-    is_dna = f_input.token.is_dna  # [B, Ltoken]
-    is_rna = f_input.token.is_rna  # [B, Ltoken]
-    is_ligand = f_input.token.is_ligand  # [B, Ltoken]
-
-    token_weights = (
-        is_protein.float() * weight_protein
-        + is_dna.float() * weight_dna
-        + is_rna.float() * weight_rna
-        + is_ligand.float() * weight_ligand
-    )  # [B, Ltoken]
+    token_weights = compute_modality_weights(
+        f_input.token.is_protein,
+        f_input.token.is_dna,
+        f_input.token.is_rna,
+        f_input.token.is_ligand,
+        upweight_protein,
+        upweight_dna,
+        upweight_rna,
+        upweight_ligand,
+    )
     batch_indices = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
     atom_weights = token_weights[batch_indices, f_input.atom.token_index]  # [B, Latom]
 
@@ -40,10 +61,10 @@ class WeightedMSELoss(torch.nn.Module):
 
     def __init__(
         self,
-        weight_protein: float = 1.0,
-        weight_dna: float = 5.0,
-        weight_rna: float = 5.0,
-        weight_ligand: float = 10.0,
+        upweight_protein: float = 0.0,
+        upweight_dna: float = 5.0,
+        upweight_rna: float = 5.0,
+        upweight_ligand: float = 10.0,
         scale: bool = False,
     ):
         """Initialize WeightedMSELoss.
@@ -64,10 +85,10 @@ class WeightedMSELoss(torch.nn.Module):
             NOTE: loss value is lower when scale=True.
         """
         super().__init__()
-        self.weight_protein: float = weight_protein
-        self.weight_dna: float = weight_dna
-        self.weight_rna: float = weight_rna
-        self.weight_ligand: float = weight_ligand
+        self.upweight_protein: float = upweight_protein
+        self.upweight_dna: float = upweight_dna
+        self.upweight_rna: float = upweight_rna
+        self.upweight_ligand: float = upweight_ligand
         self.scale: bool = scale
 
     def forward(
@@ -75,6 +96,7 @@ class WeightedMSELoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
+        memory_efficient: bool = True,
     ) -> torch.Tensor:
         """Compute the weighted MSE loss.
 
@@ -86,6 +108,8 @@ class WeightedMSELoss(torch.nn.Module):
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
+        memory_efficient : bool
+            Whether to use memory efficient implementation.
 
         Returns
         -------
@@ -97,6 +121,17 @@ class WeightedMSELoss(torch.nn.Module):
 
         w = self.get_atom_weights(f_input)  # [B, L]
         mask = f_input.atom.resolved_mask  # [B, L]
+
+        if memory_efficient:
+            # Minimize the number of padding
+            pad_mask = f_input.atom.pad_mask  # [B, L]
+            max_atoms = int(pad_mask.sum(dim=-1).max().clamp(min=1))
+
+            w = w[:, :max_atoms]  # [B, L]
+            mask = mask[:, :max_atoms]  # [B, L]
+            x_true = x_true[:, :, :max_atoms, :]  # [B, N, L, 3]
+            x_pred = x_pred[:, :, :max_atoms, :]  # [B, N, L, 3]
+
         w = w * mask  # [B, L]
 
         w = w.unsqueeze(-2)  # [B, 1, L]
@@ -128,10 +163,10 @@ class WeightedMSELoss(torch.nn.Module):
         """
         return get_atom_weights(
             f_input,
-            weight_protein=self.weight_protein,
-            weight_dna=self.weight_dna,
-            weight_rna=self.weight_rna,
-            weight_ligand=self.weight_ligand,
+            upweight_protein=self.upweight_protein,
+            upweight_dna=self.upweight_dna,
+            upweight_rna=self.upweight_rna,
+            upweight_ligand=self.upweight_ligand,
         )
 
 
@@ -279,7 +314,8 @@ class SmoothLDDTLoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        chunk_size: int | None = 1,
+        chunk_size: int = 1,
+        memory_efficient: bool = True,
     ) -> torch.Tensor:
         """Compute weighted alignment.
 
@@ -291,8 +327,10 @@ class SmoothLDDTLoss(torch.nn.Module):
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
-        chunk_size : int | None
+        chunk_size : int
             The chunk size for memory efficient implementation.
+        memory_efficient : bool
+            Whether to use memory efficient implementation.
 
         Returns
         -------
@@ -304,7 +342,10 @@ class SmoothLDDTLoss(torch.nn.Module):
         # from the original paper implementation.
 
         assert x_pred.ndim == 4  # [B, N, L, 3]
-        B, N, L = x_pred.shape[:3]
+        B, N = x_pred.shape[:2]
+
+        # Mask to compute loss
+        mask = f_input.atom.resolved_mask  # [B, Latom]
 
         # Line 5: is_nucleotide = is_dna | is_rna
         is_nucleotide = f_input.token.is_dna | f_input.token.is_rna  # [B, Ltoken]
@@ -312,43 +353,42 @@ class SmoothLDDTLoss(torch.nn.Module):
         batch_indices = torch.arange(B, device=f_input.device)[:, None]
         is_nucleotide = is_nucleotide[batch_indices, f_input.atom.token_index]
 
-        # Prepare masking
-        mask = f_input.atom.resolved_mask  # [B, Latom]
-        pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, L, L]
-        # mask self-distances
-        pair_mask.diagonal(dim1=-2, dim2=-1).fill_(0)
+        losses = []
+        for b_i in range(B):
+            x_pred_i = x_pred[b_i]  # [N, L, 3]
+            x_true_i = x_true[b_i]  # [N, L, 3]
+            mask_i = mask[b_i]  # [L]
+            is_nucleotide_i = is_nucleotide[b_i]  # [L]
 
-        # Reshape inputs for chunking
-        x_pred = x_pred.view(B * N, L, 3)  # [B*N, L, 3]
-        x_true = x_true.view(B * N, L, 3)  # [B*N, L, 3]
-        is_nucleotide = is_nucleotide.repeat_interleave(N, dim=0)  # [B*N, L]
-        pair_mask = pair_mask.repeat_interleave(N, dim=0)  # [B*N, L, L]
+            if memory_efficient:
+                # Minimize the padding to save memory
+                pad_mask_i = f_input.atom.pad_mask[b_i]  # [Ltoken]
+                num_atoms_i = int(pad_mask_i.sum().clamp(min=1))
+                x_pred_i = x_pred_i[:, :num_atoms_i, :]  # [N, L', 3]
+                x_true_i = x_true_i[:, :num_atoms_i, :]  # [N, L', 3]
+                mask_i = mask_i[:num_atoms_i]  # [L']
+                is_nucleotide_i = is_nucleotide_i[:num_atoms_i]  # [L']
 
-        BN = x_pred.shape[0]
-        if chunk_size is not None:
-            losses = []
-            for i in range(0, BN, chunk_size):
+            # Create pair mask
+            pair_mask_i = mask_i[None, :] & mask_i[:, None]  # [L, L]
+            # mask self-distances
+            pair_mask_i.diagonal(dim1=-2, dim2=-1).fill_(0)
+
+            for i in range(0, N, chunk_size):
                 st, end = i, i + chunk_size
                 loss_chunk = checkpoint_section(
                     self._chunk_forward,
                     (
-                        x_pred[st:end],
-                        x_true[st:end],
-                        is_nucleotide[st:end],
-                        pair_mask[st:end],
+                        x_pred_i[st:end],
+                        x_true_i[st:end],
+                        is_nucleotide_i,
+                        pair_mask_i,
                     ),
                     apply_ckpt=True,
                     use_reentrant=False,
                 )
                 losses.append(loss_chunk)
-            lddt_loss = torch.cat(losses, dim=0)  # [B*N]
-        else:
-            lddt_loss = self._chunk_forward(
-                x_pred,
-                x_true,
-                is_nucleotide,
-                pair_mask,
-            )  # [B*N]
+        lddt_loss = torch.cat(losses, dim=0)  # [B*N]
 
         lddt_loss = lddt_loss.view(B, N)  # [B, N]
 

@@ -132,7 +132,6 @@ class PairformerModule(nn.Module):
         pairwise_num_heads: int = 4,
         no_update_s: bool = False,
         no_update_z: bool = False,
-        chunk_size_tri_attn: int | None = None,
         **kwargs,
     ) -> None:
         """Initialize the Pairformer module.
@@ -157,8 +156,6 @@ class PairformerModule(nn.Module):
             Whether to update the single embeddings, by default False
         no_update_z : bool, optional
             Whether to update the pairwise embeddings, by default False
-        chunk_size_tri_attn : int, optional
-            The chunk size for triangle attention, by default None
 
         """
         super().__init__()
@@ -179,7 +176,6 @@ class PairformerModule(nn.Module):
                     pairwise_num_heads,
                     no_update_s,
                     False if i < num_blocks - 1 else no_update_z,
-                    chunk_size_tri_attn,
                 ),
             )
 
@@ -189,6 +185,7 @@ class PairformerModule(nn.Module):
         z: Tensor,
         mask: Tensor,
         pair_mask: Tensor,
+        chunk_size_tri_attn: int | None = None,
         use_kernels: bool = False,
     ) -> tuple[Tensor, Tensor]:
         """Perform the forward pass.
@@ -211,6 +208,14 @@ class PairformerModule(nn.Module):
             The updated pairwise embeddings.
 
         """
+        if not self.training:
+            if s.shape[-2] > 384:
+                chunk_size_tri_attn = 128
+            else:
+                chunk_size_tri_attn = 512
+        else:
+            chunk_size_tri_attn = None
+
         if self.training:
             for layer in self.layers:
                 s, z = torch.utils.checkpoint.checkpoint(
@@ -219,12 +224,20 @@ class PairformerModule(nn.Module):
                     z,
                     mask,
                     pair_mask,
+                    chunk_size_tri_attn,
                     use_kernels,
                     use_reentrant=False,
                 )
         else:
             for layer in self.layers:
-                s, z = layer(s, z, mask, pair_mask, use_kernels)
+                s, z = layer(
+                    s,
+                    z,
+                    mask,
+                    pair_mask,
+                    chunk_size_tri_attn,
+                    use_kernels,
+                )
         return s, z
 
 
@@ -241,7 +254,6 @@ class PairformerLayer(nn.Module):
         pairwise_num_heads: int = 4,
         no_update_s: bool = False,
         no_update_z: bool = False,
-        chunk_size_tri_attn: int | None = None,
     ) -> None:
         """Initialize the Pairformer module.
 
@@ -263,8 +275,6 @@ class PairformerLayer(nn.Module):
             Whether to update the single embeddings, by default False
         no_update_z : bool, optional
             Whether to update the pairwise embeddings, by default False
-        chunk_size_tri_attn : int, optional
-            The chunk size for triangle attention, by default None
 
         """
         super().__init__()
@@ -273,7 +283,6 @@ class PairformerLayer(nn.Module):
         self.num_heads = num_heads
         self.no_update_s = no_update_s
         self.no_update_z = no_update_z
-        self.chunk_size_tri_attn = chunk_size_tri_attn
         if not self.no_update_s:
             self.attention = AttentionPairBias(token_s, token_z, num_heads)
         self.tri_mul_out = TriangleMultiplicationOutgoing(token_z)
@@ -294,6 +303,7 @@ class PairformerLayer(nn.Module):
         z: Tensor,
         mask: Tensor,
         pair_mask: Tensor,
+        chunk_size_tri_attn: int | None = None,
         use_kernels: bool = False,
     ) -> tuple[Tensor, Tensor]:
         """Perform the forward pass."""
@@ -308,7 +318,7 @@ class PairformerLayer(nn.Module):
         z = z + dropout * self.tri_att_start(
             z,
             mask=pair_mask,
-            chunk_size=self.chunk_size_tri_attn if not self.training else None,
+            chunk_size=chunk_size_tri_attn,
             use_kernels=use_kernels,
         )
 
@@ -316,7 +326,7 @@ class PairformerLayer(nn.Module):
         z = z + dropout * self.tri_att_end(
             z,
             mask=pair_mask,
-            chunk_size=self.chunk_size_tri_attn if not self.training else None,
+            chunk_size=chunk_size_tri_attn,
             use_kernels=use_kernels,
         )
 

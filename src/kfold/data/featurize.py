@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 
 import numpy as np
@@ -9,6 +10,8 @@ from kfold.utils.geometry.random_augment import center_random_augmentation, do_c
 
 from . import model_input, structure
 from .utils import frame_utils
+
+__all__ = ["featurize_structure", "add_pretrained_embeddings"]
 
 # TODO list:
 # - Add symmetry.
@@ -74,9 +77,9 @@ def do_augment_apo_structure(
     Parameters
     ----------
     apo_coords : np.ndarray
-        Apo structure coordinates of shape [Napo, Natom, 3].
+        Apo structure coordinates of shape [Natom, 3].
     mask : np.ndarray
-        Mask indicating valid atoms of shape [Napo, Natom].
+        Mask indicating valid atoms of shape [Natom].
     chain_sizes : np.ndarray
         Array of number of atoms per each chain.
     rng : np.random.Generator | None
@@ -85,22 +88,17 @@ def do_augment_apo_structure(
     Returns
     -------
     augmented_apo_coords : np.ndarray
-        Augmented apo structure coordinates of shape [Napo, Natom, 3].
+        Augmented apo structure coordinates of shape [Natom, 3].
     """
-    # Apply random rotation per apo coords
-    # NOTE: Unlike holo structure, apo structure is input so that
-    # random translation is not applied.
-
+    # Apply random rotation and translation per apo coords
     new_coords = np.zeros_like(apo_coords)
     start_idx = 0
     for natom in chain_sizes:
         end_idx = start_idx + natom
-        new_coords[:, start_idx:end_idx] = center_random_augmentation(
-            apo_coords[:, start_idx:end_idx],  # =apo_chain_coords
-            mask[:, start_idx:end_idx],  # =apo_chain_mask
-            random_rotate=True,
-            s_trans=0.0,
-            rng=rng,
+        chain_coords = apo_coords[start_idx:end_idx]
+        chain_mask = mask[start_idx:end_idx]
+        new_coords[start_idx:end_idx] = center_random_augmentation(
+            chain_coords, chain_mask, rng=rng
         )
         start_idx = end_idx
     return new_coords
@@ -112,6 +110,7 @@ def featurize_structure(
     augment_apo: bool = True,
     synchronize_ref_pos_augmentation: bool = False,
     rng: np.random.Generator | None = None,
+    **kwargs,
 ) -> model_input.FoldingInput:
     """Featurize a tokenized structure into model input features.
 
@@ -126,8 +125,10 @@ def featurize_structure(
     synchronize_ref_pos_augmentation : bool, optional
         Whether to synchronize the random augmentation for ref_pos across all atoms,
 
-    Returns:
-        FoldingInput: The featurized model input.
+    Returns
+    -------
+    f_input: FoldingInput
+        The featurized model input
     """
 
     def cast(data: np.ndarray) -> np.ndarray:
@@ -178,17 +179,20 @@ def featurize_structure(
         k: cast(v)[atom_to_token, atom_in_token_idx]  # Fancy indexing - no loop!
         for k, v in atom_data.to_dict().items()
     }
-    atom_dict["label_coords"] = atom_dict.pop("coords")  # Rename for clarity
     atom_dict["token_index"] = atom_to_token
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
+    # Random sample the ground truth holo coords if multiple holo coords are given.
+    # [Natom, Nholo, 3] -> [Natom, 3]
+    label_coords = atom_dict.pop("coords")  # Rename for clarity
+    n_holo = label_coords.shape[-2]
+    assert n_holo == 1, "Currently only single holo coordinate is supported."
+    sampled_idx = rng.integers(0, n_holo) if rng else np.random.randint(0, n_holo)
+    label_coords = label_coords[:, sampled_idx, :]
+
     # Centering the ground truth coords
-    # [Natom, Nholo, 3] -> [Nholo, Natom, 3] -> [Natom, Nholo, 3]
-    atom_dict["label_coords"] = do_centering(
-        atom_dict["label_coords"].transpose(1, 0, 2),
-        atom_dict["resolved_mask"].reshape(1, -1),
-        mask_to_zero=True,
-    ).transpose(1, 0, 2)
+    label_coords = do_centering(label_coords, atom_dict["resolved_mask"])
+    atom_dict["label_coords"] = label_coords
 
     # === Bond-level features ===
     num_bonds = bond_data.length
@@ -202,6 +206,7 @@ def featurize_structure(
     # ============================================
 
     # === Token-level features ===
+
     # Make one-hot vector for residue types
     residue_one_hot = np.eye(32, dtype=np.float32)
     token_dict["res_type"] = residue_one_hot[token_dict["res_type"]]
@@ -239,12 +244,8 @@ def featurize_structure(
 
     # add disto/center coords
     # HACK: we assume there is only one holo coordinate set.
-    token_dict["disto_coords"] = atom_dict["label_coords"][:, 0][
-        token_dict["disto_index"]
-    ]
-    token_dict["center_coords"] = atom_dict["label_coords"][:, 0][
-        token_dict["center_index"]
-    ]
+    token_dict["disto_coords"] = atom_dict["label_coords"][token_dict["disto_index"]]
+    token_dict["center_coords"] = atom_dict["label_coords"][token_dict["center_index"]]
 
     # Masks indicating whether the center/disto atoms are resolved
     token_dict["resolved_mask"] = (
@@ -254,9 +255,7 @@ def featurize_structure(
         token_data.resolved_mask & atom_dict["resolved_mask"][token_dict["disto_index"]]
     )
 
-    # =========================== #
-    # === Atom-level features === #
-    # =========================== #
+    # === Atom-level features ===
 
     # Make one-hot vector for atom types
     ref_element_one_hot = np.eye(128, dtype=np.float32)
@@ -296,25 +295,41 @@ def featurize_structure(
             rng=rng,
         )
 
-    # TODO: if we use multiple apo structures, randomly sample one apo structure here.
     # TODO: If we use CCD, use random ETKDG conformers here.
+    # [Natom, Napo, 3] -> [Natom, 3]
+    apo_coords = atom_dict.pop("apo_coords")
+    apo_mask = atom_dict.pop("apo_mask")
+    n_apo = apo_coords.shape[-2]
+    assert n_apo == 1, "Currently only single apo coordinate is supported."
+    sampled_idx = rng.integers(0, n_apo) if rng else np.random.randint(0, n_apo)
+    apo_coords = apo_coords[:, sampled_idx, :]
+    apo_mask = apo_mask[:, sampled_idx]
     if augment_apo:
+        # Augment apo structure (chain-wise)
         num_atoms_per_chains = chain_dict["num_atoms"]
-        # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
-        atom_dict["apo_coords"] = do_augment_apo_structure(
-            apo_coords=atom_dict["apo_coords"].transpose(1, 0, 2),
-            mask=atom_dict["apo_mask"].transpose(1, 0),
+        apo_coords = do_augment_apo_structure(
+            apo_coords=apo_coords,
+            mask=apo_mask,
             chain_sizes=num_atoms_per_chains,
             rng=rng,
-        ).transpose(1, 0, 2)
-    else:
-        # [Natom, Napo, 3] -> [Napo, Natom, 3] -> [Natom, Napo, 3]
-        atom_dict["apo_coords"] = do_centering(
-            atom_dict["apo_coords"].transpose(1, 0, 2),
-            atom_dict["apo_mask"].transpose(1, 0),
-        ).transpose(1, 0, 2)
+        )
+
+    # TODO: remove this part after DNA/RNA apo generation is ready.
+    if kwargs["mask_nucleic_acid_apo"]:
+        ctype = token_dict["chain_type"]
+        atom_ctype = ctype[atom_dict["token_index"]]
+        is_dna = atom_ctype == C.chain.ChainType.DNA.value
+        is_rna = atom_ctype == C.chain.ChainType.RNA.value
+        is_nucleic_acid = is_dna | is_rna
+        apo_coords[is_nucleic_acid] = 0.0
+        apo_mask[is_nucleic_acid] = False
+
+    apo_coords = do_centering(apo_coords, apo_mask)
+    atom_dict["apo_coords"] = apo_coords
+    atom_dict["apo_mask"] = apo_mask
 
     # === Bond-level features ===
+
     # TODO: Remap token indices to cropped tokens
     # e.g., [0, 3, 4, 5, 8] -> [0, 1, 2, 3, 4]
     original_token_index = token_dict["org_token_index"]
@@ -337,6 +352,13 @@ def featurize_structure(
     token_dict.pop("is_standard")
     token_dict.pop("num_atoms")
 
+    # === placeholder for pretrained embeddings === #
+    pretrained_dict = {
+        "sequence_embedding": np.empty((num_tokens, 0), dtype=np.float32),
+        "structure_embedding": np.empty((num_tokens, 0), dtype=np.float32),
+        "pad_mask": token_dict["pad_mask"],
+    }
+
     # === Convert to tensors ===
     chain_layout = model_input.ChainLayout(
         **{k: torch.from_numpy(v) for k, v in chain_dict.items()}
@@ -354,6 +376,10 @@ def featurize_structure(
         **{k: torch.from_numpy(v) for k, v in bond_dict.items()}
     )
 
+    pretrained_layout = model_input.PretrainedLayout(
+        **{k: torch.from_numpy(v) for k, v in pretrained_dict.items()}
+    )
+
     # === Before returning, compute ligand frames inplace === #
     frame_utils.compute_ligand_frames_inplace(token_layout, atom_layout, chain_layout)
 
@@ -362,5 +388,165 @@ def featurize_structure(
         token=token_layout,
         atom=atom_layout,
         bond=bond_layout,
+        pretrained=pretrained_layout,
     )
     return folding_input
+
+
+def load_pretrained_embedding(
+    f_input: model_input.FoldingInput,
+    prefix: str,
+    embedding_dim: int,
+) -> torch.Tensor:
+    """Load pre-trained embedding from a file.
+
+    Parameters
+    ----------
+    f_input : model_input.FoldingInput
+        The model input containing chain and token layouts.
+    prefix : str
+        Prefix for the path to pre-computed embeddings.
+    embedding_dim : int
+        Dimension of the embedding.
+
+    Returns
+    -------
+    embedding : torch.Tensor
+        Loaded embedding tensor of shape [Ntoken, Nfeat].
+    """
+    entity_ids = f_input.chain.entity_id
+    cached_embeddings: dict[int, torch.Tensor | None] = {}
+
+    embedding_tensors: list[torch.Tensor] = []
+
+    # NOTE: the tokens are ordered by chains.
+    for cidx in range(f_input.num_chains):
+        entity_id = int(entity_ids[cidx].item())
+        asym_id = f_input.chain.asym_id[cidx].item()
+        chain_type = C.ChainType(int(f_input.chain.chain_type[cidx]))
+        if entity_id not in cached_embeddings:
+            # Load from file
+            filepath = f"{prefix}{entity_id}_{chain_type.name.lower()}.pt"
+            # TODO: In future, we may want to enforce the existence of embedding files
+            # for all chain types.
+            if not os.path.exists(filepath):
+                # HACK: (SeonghwanSeo) Print warning only for protein chains, since other
+                # chain types are not prepared yet. In future, we may want to enforce the
+                # existence of embedding files for all chain types.
+                if chain_type is C.ChainType.PROTEIN:
+                    import warnings
+
+                    warnings.warn(
+                        "Precomputed Embedding file not found for protein chain: "
+                        f"{filepath}. Using zero tensor as placeholder.",
+                        UserWarning,
+                    )
+
+                embedding_tensor = None
+            else:
+                embedding_tensor = torch.load(filepath, "cpu", weights_only=True)
+            cached_embeddings[entity_id] = embedding_tensor
+        else:
+            embedding_tensor = cached_embeddings[entity_id]
+
+        # Extract embeddings for the tokens in this chain
+        chain_token_mask = f_input.token.asym_id == asym_id
+        num_tokens_in_chain = int(chain_token_mask.sum())
+        if embedding_tensor is not None:
+            if chain_type in (C.ChainType.PROTEIN, C.ChainType.DNA, C.ChainType.RNA):
+                # For polymer chains, we load embeddings according to the residue indices.
+                residue_indices = f_input.token.residue_index[chain_token_mask]
+                # NOTE: residue_index is starting from 1.
+                assert (residue_indices >= 1).all(), "Residue indices should be positive."
+                chain_embeddings = embedding_tensor[residue_indices - 1]
+            else:
+                # For ligand, we ensure the number of tokens match.
+                assert embedding_tensor.shape[0] == num_tokens_in_chain, (
+                    f"Number of tokens in chain ({num_tokens_in_chain}) does not match "
+                    f"the number of embeddings ({embedding_tensor.shape[0]}) for ligand."
+                )
+                chain_embeddings = embedding_tensor
+        else:
+            # If no embedding file found, use zero tensor.
+            chain_embeddings = torch.zeros(
+                (num_tokens_in_chain, embedding_dim), dtype=torch.float32
+            )
+        embedding_tensors.append(chain_embeddings)
+
+    return torch.cat(embedding_tensors, dim=0)
+
+
+def add_pretrained_embeddings(
+    f_input: model_input.FoldingInput,
+    seq_embedding_prefix: str | None = None,
+    struct_embedding_prefix: str | None = None,
+    seq_embedding_dim: int | None = None,
+    struct_embedding_dim: int | None = None,
+) -> model_input.FoldingInput:
+    """Add pre-trained features to the model input.
+
+    Parameters
+    ----------
+    f_input : model_input.FoldingInput
+        The model input to add pretrained features.
+    seq_embedding_prefix : str | None, optional
+        Prefix for the path to pre-computed sequence embeddings.
+        Example of the filename:
+            "embeddings/esm/6o/6oim/6oim_2_protein.pt"
+            where 2 is the entity index.
+        Example of the prefix:
+            "embeddings/esm/6o/6oim/6oim_"
+    struct_embedding_prefix : str | None, optional
+        Prefix for the path to pre-computed structure embeddings.
+        Example of the filename:
+            "embeddings/struct/10/10gs/10gs_1_protein.pt"
+            where 1 is the entity index.
+        Example of the prefix:
+            "embeddings/struct/10/10gs/10gs_"
+    seq_embedding_dim : int | None, optional
+        Dimension of the sequence embedding.
+    struct_embedding_dim : int | None, optional
+        Dimension of the structure embedding.
+
+    Returns
+    -------
+    f_input_upd: FoldingInput
+        The featurized model input with pretrained features added.
+    """
+    if seq_embedding_prefix is None and struct_embedding_prefix is None:
+        return f_input
+
+    pretrained_dict = {}
+    if seq_embedding_prefix is not None:
+        assert seq_embedding_dim is not None
+        seq_embedding = load_pretrained_embedding(
+            f_input, seq_embedding_prefix, seq_embedding_dim
+        )
+        pretrained_dict["sequence_embedding"] = seq_embedding
+    else:
+        pretrained_dict["sequence_embedding"] = f_input.pretrained.sequence_embedding
+
+    if struct_embedding_prefix is not None:
+        assert struct_embedding_dim is not None
+        struct_embedding = load_pretrained_embedding(
+            f_input, struct_embedding_prefix, struct_embedding_dim
+        )
+        pretrained_dict["structure_embedding"] = struct_embedding
+    else:
+        pretrained_dict["structure_embedding"] = f_input.pretrained.structure_embedding
+
+    pretrained_dict["pad_mask"] = f_input.pretrained.pad_mask
+
+    pretrained_layout = model_input.PretrainedLayout(
+        **{k: v for k, v in pretrained_dict.items()}
+    )
+
+    # Return updated FoldingInput
+    f_input_upd = model_input.FoldingInput(
+        chain=f_input.chain,
+        token=f_input.token,
+        atom=f_input.atom,
+        bond=f_input.bond,
+        pretrained=pretrained_layout,
+    )
+    return f_input_upd

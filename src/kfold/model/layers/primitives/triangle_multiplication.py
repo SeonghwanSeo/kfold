@@ -1,4 +1,5 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License,
+
 import torch
 from torch import nn
 
@@ -7,7 +8,8 @@ try:
 except ImportError:
     triangle_multiplicative_update = None
 
-from . import initialize as init
+from .linear import LinearNoBias
+from .normalization import LayerNorm
 
 
 @torch.compiler.disable
@@ -62,25 +64,13 @@ class TriangleMultiplicationOutgoing(nn.Module):
         """
         super().__init__()
 
-        self.norm_in = nn.LayerNorm(dim, eps=1e-5)
-        self.p_in = nn.Linear(dim, 2 * dim, bias=False)
-        self.g_in = nn.Linear(dim, 2 * dim, bias=False)
+        self.layernorm_in = LayerNorm(dim)
+        self.linear_p_in = LinearNoBias(dim, 2 * dim, init="default")
+        self.linear_g_in = LinearNoBias(dim, 2 * dim, init="gating")
 
-        self.norm_out = nn.LayerNorm(dim)
-        self.p_out = nn.Linear(dim, dim, bias=False)
-        self.g_out = nn.Linear(dim, dim, bias=False)
-
-        init.bias_init_one_(self.norm_in.weight)
-        init.bias_init_zero_(self.norm_in.bias)
-
-        init.lecun_normal_init_(self.p_in.weight)
-        init.gating_init_(self.g_in.weight)
-
-        init.bias_init_one_(self.norm_out.weight)
-        init.bias_init_zero_(self.norm_out.bias)
-
-        init.final_init_(self.p_out.weight)
-        init.gating_init_(self.g_out.weight)
+        self.layernorm_out = LayerNorm(dim)
+        self.linear_p_out = LinearNoBias(dim, dim, init="final")
+        self.linear_g_out = LinearNoBias(dim, dim, init="gating")
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor, use_kernels: bool = False
@@ -107,21 +97,21 @@ class TriangleMultiplicationOutgoing(nn.Module):
                 x,
                 direction="outgoing",
                 mask=mask,
-                norm_in_weight=self.norm_in.weight,
-                norm_in_bias=self.norm_in.bias,
-                p_in_weight=self.p_in.weight,
-                g_in_weight=self.g_in.weight,
-                norm_out_weight=self.norm_out.weight,
-                norm_out_bias=self.norm_out.bias,
-                p_out_weight=self.p_out.weight,
-                g_out_weight=self.g_out.weight,
+                norm_in_weight=self.layernorm_in.weight,
+                norm_in_bias=self.layernorm_in.bias,
+                p_in_weight=self.linear_p_in.weight,
+                g_in_weight=self.linear_g_in.weight,
+                norm_out_weight=self.layernorm_out.weight,
+                norm_out_bias=self.layernorm_out.bias,
+                p_out_weight=self.linear_p_out.weight,
+                g_out_weight=self.linear_g_out.weight,
                 eps=1e-5,
             )
 
         # Input gating: D -> D
-        x = self.norm_in(x)
+        x = self.layernorm_in(x)
         x_in = x
-        x = self.p_in(x) * self.g_in(x).sigmoid()
+        x = self.linear_p_in(x) * self.linear_g_in(x).sigmoid()
 
         # Apply mask
         x = x * mask.unsqueeze(-1)
@@ -133,7 +123,7 @@ class TriangleMultiplicationOutgoing(nn.Module):
         x = torch.einsum("bikd,bjkd->bijd", a, b)
 
         # Output gating
-        x = self.p_out(self.norm_out(x)) * self.g_out(x_in).sigmoid()
+        x = self.linear_p_out(self.layernorm_out(x)) * self.linear_g_out(x_in).sigmoid()
 
         return x
 
@@ -154,25 +144,13 @@ class TriangleMultiplicationIncoming(nn.Module):
         """
         super().__init__()
 
-        self.norm_in = nn.LayerNorm(dim, eps=1e-5)
-        self.p_in = nn.Linear(dim, 2 * dim, bias=False)
-        self.g_in = nn.Linear(dim, 2 * dim, bias=False)
+        self.layernorm_in = LayerNorm(dim, eps=1e-5)
+        self.linear_p_in = LinearNoBias(dim, 2 * dim, init="default")
+        self.linear_g_in = LinearNoBias(dim, 2 * dim, init="gating")
 
-        self.norm_out = nn.LayerNorm(dim)
-        self.p_out = nn.Linear(dim, dim, bias=False)
-        self.g_out = nn.Linear(dim, dim, bias=False)
-
-        init.bias_init_one_(self.norm_in.weight)
-        init.bias_init_zero_(self.norm_in.bias)
-
-        init.lecun_normal_init_(self.p_in.weight)
-        init.gating_init_(self.g_in.weight)
-
-        init.bias_init_one_(self.norm_out.weight)
-        init.bias_init_zero_(self.norm_out.bias)
-
-        init.final_init_(self.p_out.weight)
-        init.gating_init_(self.g_out.weight)
+        self.layernorm_out = LayerNorm(dim)
+        self.linear_p_out = LinearNoBias(dim, dim, init="final")
+        self.linear_g_out = LinearNoBias(dim, dim, init="gating")
 
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor, use_kernels: bool = False
@@ -199,21 +177,21 @@ class TriangleMultiplicationIncoming(nn.Module):
                 x,
                 direction="incoming",
                 mask=mask,
-                norm_in_weight=self.norm_in.weight,
-                norm_in_bias=self.norm_in.bias,
-                p_in_weight=self.p_in.weight,
-                g_in_weight=self.g_in.weight,
-                norm_out_weight=self.norm_out.weight,
-                norm_out_bias=self.norm_out.bias,
-                p_out_weight=self.p_out.weight,
-                g_out_weight=self.g_out.weight,
+                norm_in_weight=self.layernorm_in.weight,
+                norm_in_bias=self.layernorm_in.bias,
+                p_in_weight=self.linear_p_in.weight,
+                g_in_weight=self.linear_g_in.weight,
+                norm_out_weight=self.layernorm_out.weight,
+                norm_out_bias=self.layernorm_out.bias,
+                p_out_weight=self.linear_p_out.weight,
+                g_out_weight=self.linear_g_out.weight,
                 eps=1e-5,
             )
 
         # Input gating: D -> D
-        x = self.norm_in(x)
+        x = self.layernorm_in(x)
         x_in = x
-        x = self.p_in(x) * self.g_in(x).sigmoid()
+        x = self.linear_p_in(x) * self.linear_g_in(x).sigmoid()
 
         # Apply mask
         x = x * mask.unsqueeze(-1)
@@ -225,6 +203,6 @@ class TriangleMultiplicationIncoming(nn.Module):
         x = torch.einsum("bkid,bkjd->bijd", a, b)
 
         # Output gating
-        x = self.p_out(self.norm_out(x)) * self.g_out(x_in).sigmoid()
+        x = self.linear_p_out(self.layernorm_out(x)) * self.linear_g_out(x_in).sigmoid()
 
         return x

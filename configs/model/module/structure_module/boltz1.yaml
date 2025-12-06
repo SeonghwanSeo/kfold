@@ -9,7 +9,7 @@ P_mean: -1.2
 P_std: 1.5
 gamma_0: 0.8
 gamma_min: 1.0
-noise_scale: 1.003
-step_scale: 1.5
+noise_scale: 1.0
+step_scale: 1.0
 coordinate_augmentation: True
 synchronize_sigmas: True
