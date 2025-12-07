@@ -13,9 +13,6 @@ from .utils import frame_utils
 
 __all__ = ["featurize_structure", "add_pretrained_embeddings"]
 
-# TODO list:
-# - Add symmetry.
-
 
 # === Helper functions === #
 def do_augment_ref_pos(
@@ -67,47 +64,9 @@ def do_augment_ref_pos(
         return new_ref_pos
 
 
-def do_augment_apo_structure(
-    apo_coords: np.ndarray,
-    mask: np.ndarray,
-    chain_sizes: np.ndarray,
-    rng: np.random.Generator | None = None,
-) -> np.ndarray:
-    """Augment apo structure coordinates with random rotation.
-    Parameters
-    ----------
-    apo_coords : np.ndarray
-        Apo structure coordinates of shape [Natom, 3].
-    mask : np.ndarray
-        Mask indicating valid atoms of shape [Natom].
-    chain_sizes : np.ndarray
-        Array of number of atoms per each chain.
-    rng : np.random.Generator | None
-        Random number generator for augmentation.
-
-    Returns
-    -------
-    augmented_apo_coords : np.ndarray
-        Augmented apo structure coordinates of shape [Natom, 3].
-    """
-    # Apply random rotation and translation per apo coords
-    new_coords = np.zeros_like(apo_coords)
-    start_idx = 0
-    for natom in chain_sizes:
-        end_idx = start_idx + natom
-        chain_coords = apo_coords[start_idx:end_idx]
-        chain_mask = mask[start_idx:end_idx]
-        new_coords[start_idx:end_idx] = center_random_augmentation(
-            chain_coords, chain_mask, rng=rng
-        )
-        start_idx = end_idx
-    return new_coords
-
-
 def featurize_structure(
     struct: structure.TokenizedStructure,
     augment_ref_pos: bool = True,
-    augment_apo: bool = True,
     synchronize_ref_pos_augmentation: bool = False,
     rng: np.random.Generator | None = None,
     **kwargs,
@@ -120,8 +79,6 @@ def featurize_structure(
         The tokenized structure to featurize.
     augment_ref_pos : bool, optional
         Whether to apply random augmentation to ref_pos,
-    augment_apo : bool, optional
-        Whether to apply random augmentation to apo_coords,
     synchronize_ref_pos_augmentation : bool, optional
         Whether to synchronize the random augmentation for ref_pos across all atoms,
 
@@ -295,24 +252,12 @@ def featurize_structure(
             rng=rng,
         )
 
-    # TODO: If we use CCD, use random ETKDG conformers here.
-    # [Natom, Napo, 3] -> [Natom, 3]
-    apo_coords = atom_dict.pop("apo_coords")
-    apo_mask = atom_dict.pop("apo_mask")
-    n_apo = apo_coords.shape[-2]
-    assert n_apo == 1, "Currently only single apo coordinate is supported."
-    sampled_idx = rng.integers(0, n_apo) if rng else np.random.randint(0, n_apo)
-    apo_coords = apo_coords[:, sampled_idx, :]
-    apo_mask = apo_mask[:, sampled_idx]
-    if augment_apo:
-        # Augment apo structure (chain-wise)
-        num_atoms_per_chains = chain_dict["num_atoms"]
-        apo_coords = do_augment_apo_structure(
-            apo_coords=apo_coords,
-            mask=apo_mask,
-            chain_sizes=num_atoms_per_chains,
-            rng=rng,
-        )
+    # [Natom, Napo, 3] -> [Natom, 3], Napo must be 1 (sampled beforehand)
+    apo_coords = atom_dict.pop("apo_coords")  # [Natom, Napo, 3]
+    apo_mask = atom_dict.pop("apo_mask")  # [Natom, Napo]
+    assert apo_coords.shape[1] == 1, "Apo coordinates should be sampled beforehand."
+    apo_coords = apo_coords[:, 0, :]
+    apo_mask = apo_mask[:, 0]
 
     # TODO: remove this part after DNA/RNA apo generation is ready.
     if kwargs["mask_nucleic_acid_apo"]:

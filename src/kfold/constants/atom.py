@@ -21,7 +21,7 @@ nucleic_atom29: tuple[str, ...] = (
 )  # fmt: skip
 
 
-class AtomName(enum.Enum):
+class AtomName(enum.StrEnum):
     """This is also used for indexing atom types"""
 
     # protein

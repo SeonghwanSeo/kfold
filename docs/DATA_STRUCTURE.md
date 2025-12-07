@@ -28,17 +28,18 @@ K-Fold utilizes a data processing framework and data structures inspired by the 
 ### Boltz (Reference)
 * **Preprocessed data (Storage):** `boltz.data.types.Structure` (NumPy void array)
 * **During data-processing** (in `Dataset.__getitem__`):
-    1.  **Tokenization:** `boltz.data.types.Structure` $\rightarrow$ `boltz.data.types.Tokenized` (NumPy void array)
+    1.  **Tokenization:** `boltz.data.types.Structure` → `boltz.data.types.Tokenized` (NumPy void array)
     2.  **Cropping:** Crops the tokenized structure to fit the maximum length (`max_tokens`).
-    3.  **Featurization:** `boltz.data.types.Tokenized` $\rightarrow$ Model input (dictionary of PyTorch tensors).
+    3.  **Featurization:** `boltz.data.types.Tokenized` → Model input (dictionary of PyTorch tensors).
 
 ### K-Fold
 * **Preprocessed data**: `kfold.data.structure.TokenizedStructure` (dataclass of NumPy arrays)
-    * **From Boltz data:** `boltz.data.types.Structure` $\rightarrow$ `kfold.data.structure.TokenizedStructure` (dataclass of NumPy arrays)
+    * **From Boltz data:** `boltz.data.types.Structure` → `kfold.data.structure.TokenizedStructure` (dataclass of NumPy arrays)
     * **From mmCIF:** **TODO**
 * **During data-processing** (in `Dataset.__getitem__`):
-    1.  **Cropping:** Crops the tokenized structure to fit the maximum length.
-    2.  **Featurization:** `kfold.data.structure.TokenizedStructure` $\rightarrow$ Model input (`kfold.data.model_input.FoldingInput`, dataclass of PyTorch tensors).
+    1.  **Pre-cropping:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface tokens. (See AlphaFold3 SI Section 2.5.4)
+    2.  **Cropping:** Crops the tokenized structure to fit the maximum length.
+    3.  **Featurization:** `kfold.data.structure.TokenizedStructure` → Model input (`kfold.data.model_input.FoldingInput`, dataclass of PyTorch tensors).
 
 ---
 
