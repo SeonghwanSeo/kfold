@@ -180,16 +180,21 @@ def featurize_structure(
     token_dict["frames_mask"] = np.zeros((num_tokens,), dtype=np.bool_)
     for tidx in range(num_tokens):
         is_standard = token_dict["is_standard"][tidx]
-        if is_standard:
-            res_name = residue_index_to_name[token_data.res_type[tidx]]
-            num_atoms_in_res = token_dict["num_atoms"][tidx]
-            if res_name is not C.residue.ResidueName.UNK and (num_atoms_in_res >= 3):
-                restype_atoms = C.atom.RESIDUE_ATOMS[res_name]
-                n, ca, c = C.atom.RESIDUE_FRAME_ATOMS[res_name]
-                frame_atom_index = [restype_atoms.index(a) for a in (n, ca, c)]
-                is_frame = atom_data.resolved_mask[tidx, frame_atom_index].all()
-                token_dict["frames_index"][tidx] = frame_atom_index
-                token_dict["frames_mask"][tidx] = is_frame
+        if not is_standard:
+            # Skip non-standard residues
+            continue
+        res_name = residue_index_to_name[int(token_data.res_type[tidx])]
+        if res_name is C.residue.ResidueName.UNK:
+            # Skip unknown residues
+            continue
+        num_atoms_in_res = token_dict["num_atoms"][tidx]
+        if num_atoms_in_res >= 3:
+            restype_atoms = C.atom.RESIDUE_ATOMS[res_name]
+            n, ca, c = C.atom.RESIDUE_FRAME_ATOMS[res_name]
+            frame_atom_index = [restype_atoms.index(a) for a in (n, ca, c)]
+            is_frame = atom_data.resolved_mask[tidx, frame_atom_index].all()
+            token_dict["frames_index"][tidx] = frame_atom_index
+            token_dict["frames_mask"][tidx] = is_frame
 
     # Map atom indices to global atom indices
     atom_offset = (
@@ -255,19 +260,10 @@ def featurize_structure(
     # [Natom, Napo, 3] -> [Natom, 3], Napo must be 1 (sampled beforehand)
     apo_coords = atom_dict.pop("apo_coords")  # [Natom, Napo, 3]
     apo_mask = atom_dict.pop("apo_mask")  # [Natom, Napo]
-    assert apo_coords.shape[1] == 1, "Apo coordinates should be sampled beforehand."
+    n_apo: int = apo_coords.shape[1]
+    assert n_apo == 1, "Apo coordinates should be sampled beforehand."
     apo_coords = apo_coords[:, 0, :]
     apo_mask = apo_mask[:, 0]
-
-    # TODO: remove this part after DNA/RNA apo generation is ready.
-    if kwargs["mask_nucleic_acid_apo"]:
-        ctype = token_dict["chain_type"]
-        atom_ctype = ctype[atom_dict["token_index"]]
-        is_dna = atom_ctype == C.chain.ChainType.DNA.value
-        is_rna = atom_ctype == C.chain.ChainType.RNA.value
-        is_nucleic_acid = is_dna | is_rna
-        apo_coords[is_nucleic_acid] = 0.0
-        apo_mask[is_nucleic_acid] = False
 
     apo_coords = do_centering(apo_coords, apo_mask)
     atom_dict["apo_coords"] = apo_coords

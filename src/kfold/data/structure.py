@@ -48,9 +48,9 @@ class Chain(PlainLayout[np.ndarray]):
         Boolean tensor indicating whether the chain is rna.
     is_ligand: np.ndarray (bool)
         Boolean tensor indicating whether the chain is ligand.
-    residue_starts: np.ndarray (int)
+    residue_start: np.ndarray (int)
         Starting indices of residues for each chain.
-    token_starts: np.ndarray (int)
+    token_start: np.ndarray (int)
         Starting indices of tokens for each chain.
     """
 
@@ -101,12 +101,12 @@ class Chain(PlainLayout[np.ndarray]):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
     @cached_property
-    def residue_starts(self) -> np.ndarray:
+    def residue_start(self) -> np.ndarray:
         """Starting indices of residues for each chain."""
         return np.cumsum(self.num_residues, dtype=np.int32) - self.num_residues
 
     @cached_property
-    def token_starts(self) -> np.ndarray:
+    def token_start(self) -> np.ndarray:
         """Starting indices of tokens for each chain."""
         return np.cumsum(self.num_tokens, dtype=np.int32) - self.num_tokens
 
@@ -151,7 +151,7 @@ class Residue(PlainLayout[np.ndarray]):
         Boolean tensor indicating whether the chain is rna.
     is_ligand: np.ndarray (bool)
         Boolean tensor indicating whether the chain is ligand.
-    token_starts: np.ndarray (int)
+    token_start: np.ndarray (int)
         Starting indices of tokens for each chain.
     """
 
@@ -208,7 +208,7 @@ class Residue(PlainLayout[np.ndarray]):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
     @cached_property
-    def token_starts(self) -> np.ndarray:
+    def token_start(self) -> np.ndarray:
         """Starting indices of tokens for each chain."""
         return np.cumsum(self.num_tokens, dtype=np.int32) - self.num_tokens
 

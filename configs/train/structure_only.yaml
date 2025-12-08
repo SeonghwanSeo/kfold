@@ -77,8 +77,6 @@ data:
     # TODO: remove these params if all chains have precomputed embeddings
     seq_embedding_dim: null
     struct_embedding_dim: null
-    # TODO: remove this flag
-    mask_nucleic_acid_apo: false
 
 # Lightning Trainer Configuration
 trainer:

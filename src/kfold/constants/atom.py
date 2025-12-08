@@ -243,7 +243,6 @@ PSEUDO_BETA_ATOM: dict[ResidueName, AtomName] = {
 
 # NOTE: There are no name-swap for RNA/DNA in AlphaFold3 paper and its implementation.
 # Therefore, I have just implemented name-swap for protein residues here.
-# NOTE: There is only up to one swap per residue.
 RESIDUE_AMBIGUOUS_ATOMS: dict[
     ResidueName, tuple[tuple[AtomName, ...], tuple[AtomName, ...]]
 ] = {
@@ -251,6 +250,20 @@ RESIDUE_AMBIGUOUS_ATOMS: dict[
     ResidueName.GLU: ((AtomName.OE1,), (AtomName.OE2,)),
     ResidueName.PHE: ((AtomName.CD1, AtomName.CE1), (AtomName.CD2, AtomName.CE2)),
     ResidueName.TYR: ((AtomName.CD1, AtomName.CE1), (AtomName.CD2, AtomName.CE2)),
+}
+
+# Extended version including more residues for optimal transport
+# TODO:(SeonghwanSeo) Do we have to add DNA/RNA ambiguous atoms?
+RESIDUE_AMBIGUOUS_ATOMS_EXTENDED: dict[
+    ResidueName, tuple[tuple[AtomName, ...], tuple[AtomName, ...]]
+] = {
+    ResidueName.ASP: ((AtomName.OD1,), (AtomName.OD2,)),
+    ResidueName.GLU: ((AtomName.OE1,), (AtomName.OE2,)),
+    ResidueName.PHE: ((AtomName.CD1, AtomName.CE1), (AtomName.CD2, AtomName.CE2)),
+    ResidueName.TYR: ((AtomName.CD1, AtomName.CE1), (AtomName.CD2, AtomName.CE2)),
+    ResidueName.ARG: ((AtomName.NH1,), (AtomName.NH2,)),
+    ResidueName.LEU: ((AtomName.CD1,), (AtomName.CD2,)),
+    ResidueName.VAL: ((AtomName.CG1,), (AtomName.CG2,)),
 }
 
 

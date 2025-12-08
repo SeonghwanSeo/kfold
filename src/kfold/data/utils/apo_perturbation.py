@@ -1,12 +1,50 @@
 import itertools
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
+from functools import lru_cache
 
 import numpy as np
 
 import kfold.constants as C
 from kfold.data.structure import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation
-from kfold.utils.geometry.rigid_align import weighted_rigid_align
+from kfold.utils.geometry.rigid_align import (
+    compute_rmsd,
+    weighted_rigid_align,
+)
+
+
+@lru_cache(100)
+def get_ambiguous_atoms_in_residue(res_name: C.ResidueName) -> list[list[int]]:
+    """Get the indices of ambiguous atoms for a given residue type.
+
+    Parameters
+    ----------
+    res_name : C.ResidueName
+        The residue type.
+
+    Returns
+    -------
+    perms: list[list[int]]
+        A list of atom permutations
+    """
+    if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS:
+        # If there is no ambiguous atoms, return empty list
+        return []
+    residue_atoms = C.atom.RESIDUE_ATOMS[res_name]
+
+    src_atoms, dst_atoms = C.atom.RESIDUE_AMBIGUOUS_ATOMS_EXTENDED[res_name]
+    src_indices = [residue_atoms.index(atom) for atom in src_atoms]
+    dst_indices = [residue_atoms.index(atom) for atom in dst_atoms]
+    # Ensure no overlapping indices
+    assert set(src_indices).isdisjoint(set(dst_indices)), (
+        "Overlapping ambiguous atom indices."
+    )
+    original_perm = list(range(len(residue_atoms)))
+    swap_perm = original_perm.copy()
+    for s_idx, d_idx in zip(src_indices, dst_indices, strict=True):
+        swap_perm[s_idx] = d_idx
+        swap_perm[d_idx] = s_idx
+    return [original_perm, swap_perm]
 
 
 class ApoPerturbation:
@@ -18,6 +56,7 @@ class ApoPerturbation:
         use_random_rotation: bool = False,
         use_symmetry_correction: bool = False,
         mask_nucleic_acid: bool = False,
+        ccd_symmetry_dict: dict | None = None,
     ):
         """Initialize ApoPerturbation.
         Parameters
@@ -28,22 +67,29 @@ class ApoPerturbation:
             Whether to apply random rotation to apo structures.
         use_symmetry_correction : bool, optional
             Whether to correct for symmetry to holo structures.
-            NOTE: This is used during training only (both training/validation).
+            NOTE: This is used during training only.
         mask_nucleic_acid : bool, optional
             Whether to mask nucleic acid chains during perturbation.
             TODO: (SeonghwanSeo) Remove this argument after DNA/RNA apo coordinates
             is prepared.
+        ccd_symmetry_dict: dict | None
+            Dictionary containing symmetry information for CCD entries.
         """
-
         self.use_perturbation: bool = use_perturbation
         self.use_random_rotation: bool = use_random_rotation
         self.use_symmetry_correction: bool = use_symmetry_correction
         self.mask_nucleic_acid: bool = mask_nucleic_acid
 
-    def augment_structure(
-        self, struct: TokenizedStructure, rng: np.random.Generator
+        if use_symmetry_correction:
+            assert ccd_symmetry_dict is not None, (
+                "CCD symmetry dictionary must be provided for symmetry correction."
+            )
+            self.ccd_symmetry_dict: dict = ccd_symmetry_dict
+
+    def run(
+        self, struct: TokenizedStructure, rng: np.random.Generator | None = None
     ) -> TokenizedStructure:
-        """Augment apo structure coordinates.
+        """Sample the apo structure and apply augmentation if needed.
 
         Parameters
         ----------
@@ -58,6 +104,42 @@ class ApoPerturbation:
             Tokenized structure with augmented apo coordinates.
             NOTE: if there is multiple apo structures, one of them is sampled randomly
             and augmented.
+        """
+        rng = rng or np.random.default_rng()
+
+        # Sample an apo structure for each chain and apply augmentation if needed
+        apo_coords, apo_mask = self.sample_and_augment_apo_structure(struct, rng)
+
+        # If symmetry correction is enabled, align apo to holo
+        if self.use_symmetry_correction:
+            apo_coords = self.align_apo_to_holo(struct, apo_coords, apo_mask, rng)
+
+        # Create new atom structure
+        num_tokens = struct.num_tokens
+        atom_struct = struct.atom.copy_with(
+            apo_coords=apo_coords.reshape(num_tokens, 24, 1, 3),
+            apo_mask=apo_mask.reshape(num_tokens, 24, 1),
+        )
+        return struct.copy_with(atom=atom_struct)
+
+    def sample_and_augment_apo_structure(
+        self, struct: TokenizedStructure, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Sample the apo structure and apply augmentation if needed.
+
+        Parameters
+        ----------
+        struct : TokenizedStructure
+            Tokenized structure containing apo coordinates and masks.
+        rng : np.random.Generator
+            Random number generator for stochastic operations.
+
+        Returns
+        -------
+        apo_coords : np.ndarray
+            Sampled and augmented apo structure coordinates of shape [Ntoken, 24, 3].
+        apo_mask : np.ndarray
+            Sampled and augmented apo structure masks of shape [Ntoken, 24].
         """
         # Get coordinates and masks for all apo structures
         all_apo_coords = struct.atom.apo_coords  # [Ntoken, 24, Napo, 3]
@@ -74,7 +156,7 @@ class ApoPerturbation:
         chain_apo_coords_list: list[np.ndarray] = []
         chain_apo_mask_list: list[np.ndarray] = []
         for chain_i in range(struct.num_chains):
-            entity_id = struct.chain.entity_id[chain_i]
+            entity_id = int(struct.chain.entity_id[chain_i])
 
             # synchronized apo structures for the same entity
             if entity_id in entity_apo_coords:
@@ -83,7 +165,7 @@ class ApoPerturbation:
                 continue
 
             # Slice indices for the current chain
-            token_st: int = int(struct.chain.token_starts[chain_i])
+            token_st: int = int(struct.chain.token_start[chain_i])
             token_num: int = int(struct.chain.num_tokens[chain_i])
             token_end: int = token_st + token_num
             all_chain_apo_coords = all_apo_coords[token_st:token_end]
@@ -126,18 +208,7 @@ class ApoPerturbation:
 
         apo_coords: np.ndarray = np.concatenate(chain_apo_coords_list, axis=0)
         apo_mask: np.ndarray = np.concatenate(chain_apo_mask_list, axis=0)
-
-        # If symmetry correction is enabled, align apo to holo
-        if self.use_symmetry_correction:
-            apo_coords = self.align_apo_to_holo(struct, apo_coords, apo_mask, rng)
-
-        # Create new atom structure
-        num_tokens = struct.num_tokens
-        atom_struct = struct.atom.copy_with(
-            apo_coords=apo_coords.reshape(num_tokens, 24, 1, 3),
-            apo_mask=apo_mask.reshape(num_tokens, 24, 1),
-        )
-        return struct.copy_with(atom=atom_struct)
+        return apo_coords, apo_mask
 
     # === Apo sampling === #
 
@@ -271,13 +342,48 @@ class ApoPerturbation:
         pmeruted_apo_mask : np.ndarray
             Permuted apo structure coordinates of shape [Ntoken, 24, 3].
         """
-        return self.get_best_chain_permutation(struct, apo_coords, apo_mask, 100, rng=rng)
+        # Prepare holo coordinates and masks
+        holo_coords: np.ndarray = struct.atom.coords  # [Ntoken, 24, Nholo, 3]
+        holo_mask: np.ndarray = struct.atom.resolved_mask  # [Ntoken, 24]
+        n_holo = holo_coords.shape[-2]
+        if n_holo != 1:
+            # Currently only support single bioassembly for symmetry correction
+            raise NotImplementedError(
+                "Symmetry correction for multiple bioassemblies is not implemented."
+            )
+        holo_coords = holo_coords[..., 0, :]  # [Ntoken, 24, 3]
+        holo_mask = holo_mask  # [Ntoken, 24]
+
+        # NOTE: apo mask is not changed during permutation since they are synchronized
+        align_mask = apo_mask & holo_mask  # [Ntoken, 24]
+
+        if not np.any(align_mask):
+            # If there are no valid apo/holo atoms to align, skip permutation.
+            return apo_coords
+
+        # Safe in-place modification
+        apo_coords = apo_coords.copy()
+
+        # First, correct chain-level symmetry
+        apo_coords = self.get_best_chain_permutation(
+            struct, holo_coords, apo_coords, align_mask, max_permutations=100, rng=rng
+        )
+        # Second, correct residue-level symmetry
+        apo_coords = self.get_best_residue_permutation(
+            struct, holo_coords, apo_coords, align_mask, rng=rng
+        )
+        # Third, correct molecule-level symmetry
+        apo_coords = self.get_best_mol_permutation(
+            struct, holo_coords, apo_coords, align_mask, rng=rng
+        )
+        return apo_coords
 
     def get_best_chain_permutation(
         self,
         struct: TokenizedStructure,
+        holo_coords: np.ndarray,
         apo_coords: np.ndarray,
-        apo_mask: np.ndarray,
+        align_mask: np.ndarray,
         max_permutations: int,
         rng: np.random.Generator,
     ) -> np.ndarray:
@@ -287,10 +393,12 @@ class ApoPerturbation:
         ----------
         struct : TokenizedStructure
             Tokenized structure containing holo coordinates.
+        holo_coords : np.ndarray
+            Holo structure coordinates. (Ntoken, 24, 3)
         apo_coords : np.ndarray
-            Apo structure coordinates. (Ntoke', 24, 3)
-        apo_mask : np.ndarray
-            Apo structure masks. (Ntoken, 24)
+            Apo structure coordinates. (Ntoken, 24, 3)
+        align_mask : np.ndarray
+            Mask for alignment. (Ntoken, 24)
         max_permutations : int
             Maximum number of permutations to consider.
         rng : np.random.Generator
@@ -306,9 +414,6 @@ class ApoPerturbation:
         chain_entity_ids: list[int] = struct.chain.entity_id.tolist()
         if len(set(chain_entity_ids)) == num_chains:
             # If all chains have unique entity IDs, no permutation is needed.
-            return apo_coords
-        if not np.any(apo_mask):
-            # If there are no valid apo atoms, skip permutation.
             return apo_coords
 
         # === Identify entities with multiple chains of the same size === #
@@ -332,29 +437,13 @@ class ApoPerturbation:
                 continue
         entities_with_symmetry: set[int] = set(entity_chains.keys())
 
-        # === Prepare holo center coordinates and masks === #
-        # Use the first bioassembly for symmetry correction
-        holo_coords: np.ndarray = struct.atom.coords  # [Ntoken, 24, Nholo, 3]
-        holo_mask: np.ndarray = struct.atom.resolved_mask  # [Ntoken, 24]
-        if holo_coords.shape[-2] != 1:
-            raise NotImplementedError(
-                "Symmetry correction for multiple bioassemblies is not implemented."
-            )
-        target_coords: np.ndarray = holo_coords[..., 0, :]  # [Ntoken, 24, 3]
-        target_mask: np.ndarray = holo_mask  # [Ntoken, 24]
-        del holo_coords, holo_mask
-
         # === Extract center atom coordinates and resolved masks === #
         # Center atom is CA for protein, C1' for nucleic acid, and centroid for ligand
         token_index = struct.token.token_index  # [Ntoken]
         center_index = struct.token.center_index  # [Ntoken]
-        target_coords = target_coords[token_index, center_index]  # [Ntoken, 3]
-        target_mask = target_mask[token_index, center_index]  # [Ntoken]
+        holo_coords = holo_coords[token_index, center_index]  # [Ntoken, 3]
         apo_coords = apo_coords[token_index, center_index]  # [Ntoken, 3]
-        apo_mask = apo_mask[token_index, center_index]  # [Ntoken]
-
-        # NOTE: apo mask is not changed during permutation since they are synchronized
-        align_mask = target_mask & apo_mask
+        align_mask = align_mask[token_index, center_index]  # [Ntoken]
 
         # === Sample anchor tokens for alignment === #
         # To reduce computation, use a subset of tokens as anchors
@@ -363,7 +452,7 @@ class ApoPerturbation:
         entity_anchor_tokens: dict[int, np.ndarray] = {}
         for chain_i in range(struct.num_chains):
             entity_id = chain_entity_ids[chain_i]
-            token_st: int = int(struct.chain.token_starts[chain_i])
+            token_st: int = int(struct.chain.token_start[chain_i])
             token_num: int = int(struct.chain.num_tokens[chain_i])
             num_anchors = min(10, token_num)
             if entity_id in entity_anchor_tokens:
@@ -381,13 +470,15 @@ class ApoPerturbation:
         del entity_anchor_tokens
 
         # === Get static variables for alignment === #
+        # Following variables are constant during permutation search
         total_anchors = np.concatenate(
             [chain_anchor_tokens[chain_i] for chain_i in range(struct.num_chains)]
         )  # [Nanchor,]
-        target_coords = target_coords[total_anchors]  # [Nanchor, 3]
+        holo_coords = holo_coords[total_anchors]  # [Nanchor, 3]
         align_mask = align_mask[total_anchors]  # [Nanchor,]
-        align_weights = np.concatenate(chain_anchor_weights, axis=0)
-        align_weights[~align_mask] = 0.0
+        align_weights: np.ndarray = np.concatenate(chain_anchor_weights, axis=0)
+        align_weights[~align_mask] = 0.0  # mask out invalid atoms
+        weight_sum = align_weights.sum().clip(min=1)
 
         # === Collect possible permutations === #
         original_perm: list[int] = list(range(num_chains))
@@ -411,17 +502,14 @@ class ApoPerturbation:
             permutations = new_permutations
             if len(permutations) >= max_candidates:
                 break
+
         if len(permutations) > max_permutations:
             # Randomly sample permutations if too many
             permutations = permutations[1:]  # exclude original permutation
-            indices = rng.choice(len(permutations), size=max_permutations).tolist()
+            indices = rng.choice(
+                len(permutations), size=max_permutations, replace=False
+            ).tolist()
             permutations = [original_perm] + [permutations[i] for i in indices]
-
-        # Include the original permutation at the beginning
-        original_permutation = list()
-        if original_permutation in permutations:
-            permutations.remove(original_permutation)
-        permutations = [original_permutation] + permutations
 
         # === Find best permutation with minimum weighted RMSD === #
         best_permutation: list[int] = list(range(num_chains))
@@ -437,13 +525,14 @@ class ApoPerturbation:
 
             # Align permuted apo to holo
             permuted_apo_coords = weighted_rigid_align(
-                permuted_apo_coords, target_coords, align_mask, align_weights
+                permuted_apo_coords, holo_coords, align_mask, align_weights
             )
 
             # Compute weighted RMSD
-            d = np.linalg.norm(permuted_apo_coords - target_coords, axis=-1)  # [Ntoken]
+            d = np.linalg.norm(permuted_apo_coords - holo_coords, axis=-1)  # [Ntoken,]
             w = align_weights  # already masked
-            weighted_mse = np.sum((d**2) * w) / (w.sum() + 1e-8)
+            w_sum = weight_sum
+            weighted_mse = np.sum((d**2) * w) / w_sum
             del permuted_apo_coords, d, w
 
             if weighted_mse < min_weighted_mse:
@@ -453,10 +542,184 @@ class ApoPerturbation:
         # === Apply best permutation to all apo coordinates === #
         chain_apo_coords: list[np.ndarray] = []
         for permuted_chain_i in best_permutation:
-            token_st: int = int(struct.chain.token_starts[permuted_chain_i])
+            token_st: int = int(struct.chain.token_start[permuted_chain_i])
             token_num: int = int(struct.chain.num_tokens[permuted_chain_i])
             token_end: int = token_st + token_num
             chain_apo_coords.append(apo_coords[token_st:token_end])
 
         permuted_apo_coords = np.concatenate(chain_apo_coords, axis=0)  # [Ntoken, 3]
         return permuted_apo_coords
+
+    def get_best_residue_permutation(
+        self,
+        struct: TokenizedStructure,
+        holo_coords: np.ndarray,
+        apo_coords: np.ndarray,
+        align_mask: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Find the best residue permutation for symmetry correction.
+        Use intra-residue structure comparison to find the best permutation.
+
+        Parameters
+        ----------
+        struct : TokenizedStructure
+            Tokenized structure containing holo coordinates.
+        holo_coords : np.ndarray
+            Holo structure coordinates. (Ntoken, 24, 3)
+        apo_coords : np.ndarray
+            Apo structure coordinates. (Ntoken, 24, 3)
+        align_mask : np.ndarray
+            Mask for alignment. (Ntoken, 24)
+        rng : np.random.Generator
+            Random number generator for stochastic operations.
+
+        Returns
+        -------
+        permuted_apo_coords : np.ndarray
+            Permuted apo structure coordinates of shape [Ntoken, 24, 3].
+        """
+        for i in range(struct.num_tokens):
+            num_atoms = struct.token.num_atoms[i]
+            if num_atoms == 1:
+                # Skip PTM or unknown residues here.
+                continue
+
+            restype = int(struct.token.res_type[i])
+            res_name = C.residue.residue_index_to_name[restype]
+            perms = get_ambiguous_atoms_in_residue(res_name)
+            if len(perms) <= 1:
+                # No ambiguous atoms, skip
+                continue
+
+            res_holo_coords = holo_coords[i, :num_atoms, :]  # [num_res_atoms, 3]
+            res_apo_coords = apo_coords[i, :num_atoms, :]  # [num_res_atoms, 3]
+            res_mask = align_mask[i, :num_atoms]  # [num_res_atoms,]
+            if res_mask.sum() < 4:
+                # Not enough resolved atoms to align
+                continue
+
+            # Find the best permutation
+            best_perm = list(range(num_atoms))
+            min_rmsd = float("inf")
+
+            for perm in perms:
+                permuted_apo_coords = res_apo_coords[perm, :]
+                rmsd = compute_rmsd(
+                    permuted_apo_coords, res_holo_coords, res_mask, align=True
+                )
+                if rmsd < min_rmsd:
+                    min_rmsd = rmsd
+                    best_perm = perm
+
+            # Apply best permutation
+            apo_coords[i, :num_atoms, :] = res_apo_coords[best_perm, :]
+
+        return apo_coords
+
+    def get_best_mol_permutation(
+        self,
+        struct: TokenizedStructure,
+        holo_coords: np.ndarray,
+        apo_coords: np.ndarray,
+        align_mask: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Find the best residue permutation for symmetry correction.
+        Use intra-molecule structure comparison to find the best permutation.
+
+        Parameters
+        ----------
+        struct : TokenizedStructure
+            Tokenized structure containing holo coordinates.
+        holo_coords : np.ndarray
+            Holo structure coordinates. (Ntoken, 24, 3)
+        apo_coords : np.ndarray
+            Apo structure coordinates. (Ntoke', 24, 3)
+        align_mask : np.ndarray
+            Mask for alignment. (Ntoken, 24)
+        rng : np.random.Generator
+            Random number generator for stochastic operations.
+
+        Returns
+        -------
+        permuted_apo_coords : np.ndarray
+            Permuted apo structure coordinates of shape [Ntoken, 24, 3].
+        """
+        # type alias
+        ResUID = tuple[int, int]  # (asym_id, res_idx)
+
+        residue_mol: OrderedDict[ResUID, tuple[str, list[str]]] = OrderedDict()
+        mol_token_indices: dict[ResUID, tuple[int, int]] = {}
+
+        for res_i in range(struct.num_residues):
+            # NOTE: res_i is global residue index (0-based), not per-chain index (1-based)
+            if struct.residue.is_standard[res_i]:
+                # Skip standard amino acids and nucleotides
+                continue
+
+            # Get CCD ID
+            ccd_id = str(struct.residue.name[res_i])
+            if ccd_id not in self.ccd_symmetry_dict:
+                # No symmetry information for this molecule
+                continue
+
+            # Get unique residue id (chain id, residue index)
+            asym_id = int(struct.residue.asym_id[res_i])
+            res_idx = int(struct.residue.residue_index[res_i])
+            res_uid = (asym_id, res_idx)
+
+            # Check input valid
+            num_atoms = int(struct.residue.num_atoms[res_i])
+            num_tokens = int(struct.residue.num_tokens[res_i])
+            assert num_atoms == num_tokens, "Molecule token and atom number mismatch"
+
+            # Get atom names
+            token_st = int(struct.residue.token_start[res_i])
+            token_end = token_st + num_tokens
+            mol_atom_names: list[str] = [
+                C.atom.decode_atom_name(struct.atom.ref_atom_name_chars[i, 0].tolist())
+                for i in range(token_st, token_end)
+            ]
+            residue_mol[res_uid] = (ccd_id, mol_atom_names)
+            mol_token_indices[res_uid] = (token_st, token_end)
+
+        # Get the best permutation for each molecule
+        for mol_uid in residue_mol.keys():
+            ccd_id, mol_atom_names = residue_mol[mol_uid]
+            perms = self.ccd_symmetry_dict[ccd_id]["atom_permutations"]
+            if len(perms) <= 1:
+                # No ambiguous atoms, skip
+                continue
+
+            token_st, token_end = mol_token_indices[mol_uid]
+            num_atoms = token_end - token_st
+            if num_atoms < 4:
+                # Not enough atoms to align
+                continue
+
+            # NOTE: for molecule, there is only one atom per token (always index=0)
+            # i.e., only the first atom is valid among 24 atom.
+            mol_holo_coords = holo_coords[token_st:token_end, 0, :]  # [num_mol_atoms, 3]
+            mol_apo_coords = apo_coords[token_st:token_end, 0, :]  # [num_mol_atoms, 3]
+            mol_mask = align_mask[token_st:token_end, 0]  # [num_mol_atoms,]
+            if mol_mask.sum() < 4:
+                # Not enough resolved atoms to align
+                continue
+
+            # Find the best permutation
+            best_perm = list(range(num_atoms))
+            min_rmsd = float("inf")
+
+            for perm in perms:
+                permuted_apo_coords = mol_apo_coords[perm, :]
+                rmsd = compute_rmsd(
+                    permuted_apo_coords, mol_holo_coords, mol_mask, align=True
+                )
+                if rmsd < min_rmsd:
+                    min_rmsd = rmsd
+                    best_perm = perm
+
+            # Apply best permutation
+            apo_coords[token_st:token_end, 0, :] = mol_apo_coords[best_perm, :]
+        return apo_coords

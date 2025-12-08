@@ -4,6 +4,66 @@ from typing import overload
 import numpy as np
 import torch
 
+__all__ = ["compute_rmsd", "rigid_align", "weighted_rigid_align"]
+
+
+@overload
+def compute_rmsd(
+    coords: np.ndarray, target: np.ndarray, mask: np.ndarray, align: bool = False
+) -> np.ndarray: ...
+
+
+@overload
+def compute_rmsd(
+    coords: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, align: bool = False
+) -> torch.Tensor: ...
+
+
+def compute_rmsd(
+    coords: np.ndarray | torch.Tensor,
+    target: np.ndarray | torch.Tensor,
+    mask: np.ndarray | torch.Tensor,
+    align: bool = False,
+) -> np.ndarray | torch.Tensor:
+    """
+    Computes the root mean square deviation (RMSD) between two sets of coordinates,
+
+    Parameters
+    ----------
+    coords : np.ndarray | torch.Tensor
+        Array of shape (..., N, 3) representing the coordinates to be aligned.
+    target : np.ndarray | torch.Tensor
+        Array of shape (..., N, 3) representing the target coordinates.
+    mask : np.ndarray | torch.Tensor
+        Array of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
+    align : bool, optional
+        If True, perform rigid alignment before computing RMSD (default: False).
+
+    Returns
+    -------
+    aligned_coords : torch.Tensor
+        Tensor of shape (..., N, 3) containing the aligned coordinates.
+    """
+    if align:
+        coords = rigid_align(coords, target, mask)
+    if isinstance(coords, np.ndarray):
+        assert isinstance(target, np.ndarray) and isinstance(mask, np.ndarray)
+        diff = (coords - target) * mask[..., np.newaxis]
+        mse = np.sum(diff**2, axis=(-2, -1)) / (np.sum(mask, axis=-1).clip(a_min=1))
+        rmsd = np.sqrt(mse)
+        return rmsd
+    elif isinstance(coords, torch.Tensor):
+        assert isinstance(target, torch.Tensor) and isinstance(mask, torch.Tensor)
+        diff = (coords - target) * mask[..., None]
+        mse = torch.sum(diff**2, dim=(-2, -1)) / (torch.sum(mask, dim=-1).clamp(min=1))
+        rmsd = torch.sqrt(mse)
+        return rmsd
+    else:
+        raise TypeError(
+            f"Unsupported array type: {type(coords)}. "
+            "Expected np.ndarray or torch.Tensor."
+        )
+
 
 @overload
 def rigid_align(
