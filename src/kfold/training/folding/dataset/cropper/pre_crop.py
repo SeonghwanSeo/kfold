@@ -19,6 +19,10 @@ class PreCropper(BaseCropper):
     NOTE: Unlike the original AF3 description, this cropper is polymer-centric.
     Small molecules (<6 atoms) do not count toward the chain limit. For example,
     20 polymer chains + 3 small molecules/metals are counted as 20 chains, not 23.
+
+    NOTE: Unlike the original AF3 description which always samples the anchor token
+    from an interface, this cropper falls back to sampling any resolved token
+    from the specified chain (=bias) if no valid interfaces are found.
     """
 
     class Config(BaseCropper.Config):
@@ -97,7 +101,7 @@ class PreCropper(BaseCropper):
     def sample_chains(
         self,
         struct: TokenizedStructure,
-        bias_asym_id: int | tuple[int, int] | None = None,
+        bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
         rng = rng or np.random.default_rng()
@@ -118,21 +122,30 @@ class PreCropper(BaseCropper):
         else:
             if bias_asym_id is None:
                 interface_id = utils.random_choice(valid_interfaces, rng=rng)
+                anchor = utils.pick_interface_token(
+                    struct, interface_id, resolved_mask, rng=rng
+                )
             elif isinstance(bias_asym_id, int):
                 candidate_interfaces = [
                     iface for iface in valid_interfaces if bias_asym_id in iface
                 ]
-                # Fallback if bias chain is not in any valid interface
-                if not candidate_interfaces:
-                    candidate_interfaces = valid_interfaces
-                interface_id = utils.random_choice(candidate_interfaces, rng=rng)
+                if len(candidate_interfaces) == 0:
+                    # Fallback to pick random token from the specified chain
+                    anchor = utils.pick_token(
+                        struct, bias_asym_id, resolved_mask, rng=rng
+                    )
+                else:
+                    # Pick random interface involving the specified chain
+                    interface_id = utils.random_choice(candidate_interfaces, rng=rng)
+                    anchor = utils.pick_interface_token(
+                        struct, interface_id, resolved_mask, rng=rng
+                    )
             else:
                 # Handle tuple case (specific interface request)
                 interface_id = bias_asym_id
-
-            anchor = utils.pick_interface_token(
-                struct, interface_id, resolved_mask, rng=rng
-            )
+                anchor = utils.pick_interface_token(
+                    struct, interface_id, resolved_mask, rng=rng
+                )
 
         # 2. Compute distances from anchor to all other tokens
         # SI: "based on minimum distance between any tokens centre atom"
@@ -161,7 +174,7 @@ class PreCropper(BaseCropper):
             asym_id = all_asym_ids[idx]
             if asym_id in selected_asym_ids:
                 continue
-            selected_asym_ids.append(asym_id)
+            selected_asym_ids.append(int(asym_id))
             chain_idx = np.where(struct.chain.asym_id == asym_id)[0][0]
             if self.min_chain_atom_count <= struct.chain.num_atoms[chain_idx]:
                 # Only count chains with sufficient atoms
