@@ -10,7 +10,7 @@ synchronize_seed: true # Use the same seed across DDP processes
 # Training parameters for multi-gpu setup.
 global_hparams:
   max_chains: 20
-  max_tokens: 512
+  max_tokens: 384
   batch_size: 1
   diffusion_batch_size: 48
   global_batch_size: 256
@@ -66,7 +66,7 @@ data:
     _class_: ClusterSampler
     beta_chain: 0.5
     beta_interface: 1.0
-    allow_redundant: True # Same to Boltz1
+    allow_redundant: False # Different to Boltz1
 
   # Featurizer configurations:
   featurization_args:
