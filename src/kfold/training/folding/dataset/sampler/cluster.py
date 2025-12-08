@@ -11,17 +11,17 @@ from .base import BaseSampler, Sample
 
 
 # === Helpers to compute weights === #
-def get_chain_cluster(chain: ChainInfo) -> str:
+def get_chain_cluster_id(chain: ChainInfo) -> str:
     """Get the cluster ID of a chain."""
     return chain.cluster_id
 
 
-def get_interface_cluster(
+def get_interface_cluster_id(
     interface: InterfaceInfo, chain_dict: dict[int, ChainInfo]
 ) -> str:
     """Get the cluster ID of an interface."""
     chains = [chain_dict[asym_id] for asym_id in interface.asym_ids]
-    cluster_ids = [get_chain_cluster(chain) for chain in chains]
+    cluster_ids = [get_chain_cluster_id(chain) for chain in chains]
     return ":".join(sorted(cluster_ids))
 
 
@@ -63,7 +63,7 @@ def get_chain_weight(
     else:
         n_ligand += 1
 
-    cluster_id = get_chain_cluster(chain)
+    cluster_id = get_chain_cluster_id(chain)
     n_cluster = cluster_sizes[cluster_id]
 
     # See Section 2.5.1 Equation 1
@@ -118,7 +118,7 @@ def get_interface_weight(
         else:
             n_ligand += 1
 
-    cluster_id = get_interface_cluster(interface, chain_dict)
+    cluster_id = get_interface_cluster_id(interface, chain_dict)
     n_cluster = cluster_sizes[cluster_id]
 
     # See Section 2.5.1 Equation 1
@@ -141,13 +141,15 @@ class ClusterSampler(BaseSampler):
     w ∝ (β_r / N_clust) * (α_prot * n_prot + α_nuc * n_nuc + α_ligand * n_ligand),
     where β_r is the beta value for the chain / interface.
 
-    NOTE: (SeonghwanSeo) Compare to Boltz, I changed a logic of cluster size estimation.
-
-    In Boltz, all valid chains / interfaces in the record are considered when
-    estimating the cluster sizes.
-    However, I introduced `allow_redundant` parameter to control whether to allow
-    redundant chains / interfaces when estimating cluster sizes.
-
+    NOTE: (SeonghwanSeo) Compare to Boltz1/AlphaFold3, I changed a logic of cluster
+    size estimation. (`allow_redundant=False`) This is because Boltz1's data processing
+    pipeline includes all chains in a complex while AF3's pipeline crops the complex up
+    to 20 chains, which may lead to overestimation of cluster sizes and underestimation
+    the chains/interfaces of small complexes. When `allow_redundant` is False, the
+    cluster size is estimated by counting unique clusters in a complex, rather than
+    counting all chains/interfaces. This way, small complexes are less penalized during
+    sampling. For example, consider a complex with 3 chains, all belonging to the same
+    cluster.
     e.g.)
     If a record has 3 chains, all of which belong to the same cluster,
     Boltz will estimate the cluster size as 3, while this will estimate it as 1
@@ -196,6 +198,7 @@ class ClusterSampler(BaseSampler):
         # Cluster sizes
         self.chain_cluster_sizes: dict[str, int] = defaultdict(int)
         self.interface_cluster_sizes: dict[str, int] = defaultdict(int)
+        self.num_clusters_in_complex: dict[str, dict[str, int]] = {}
 
     def get_samples(self, records: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
         # Estimate cluster sizes
@@ -209,6 +212,7 @@ class ClusterSampler(BaseSampler):
             chain_dict: dict[int, ChainInfo] = {
                 chain.asym_id: chain for chain in record.chains
             }
+            num_clusters_in_complex = self.num_clusters_in_complex.get(record.id, {})
             for chain in record.chains:
                 if not chain.valid:
                     continue
@@ -220,6 +224,9 @@ class ClusterSampler(BaseSampler):
                     self.alpha_nuc,
                     self.alpha_ligand,
                 )
+                if not self.allow_redundant:
+                    # Adjust weight by number of clusters in the record
+                    weight /= num_clusters_in_complex.get(get_chain_cluster_id(chain), 1)
                 samples.append(Sample(record, chain.asym_id))
                 weights.append(weight)
 
@@ -235,6 +242,11 @@ class ClusterSampler(BaseSampler):
                     self.alpha_nuc,
                     self.alpha_ligand,
                 )
+                if not self.allow_redundant:
+                    # Adjust weight by number of clusters in the record
+                    weight /= num_clusters_in_complex.get(
+                        get_interface_cluster_id(interface, chain_dict), 1
+                    )
                 samples.append(Sample(record, interface.asym_ids))
                 weights.append(weight)
 
@@ -249,19 +261,32 @@ class ClusterSampler(BaseSampler):
             chain_dict: dict[int, ChainInfo] = {
                 chain.asym_id: chain for chain in record.chains
             }
-            chain_clusters_in_record = [
-                get_chain_cluster(chain) for chain in record.chains if chain.valid
+            chain_clusters_in_record: list[str] = [
+                get_chain_cluster_id(chain) for chain in record.chains if chain.valid
             ]
-            interface_clusters_in_record = [
-                get_interface_cluster(interface, chain_dict)
+            interface_clusters_in_record: list[str] = [
+                get_interface_cluster_id(interface, chain_dict)
                 for interface in record.interfaces
                 if interface.valid
             ]
 
             if not self.allow_redundant:
+                # Store number of each cluster for each entry
+                num_clusters = defaultdict(int)
+                for cluster_id in chain_clusters_in_record:
+                    num_clusters[cluster_id] += 1
+                for cluster_id in interface_clusters_in_record:
+                    num_clusters[cluster_id] += 1
+                # Remove the count <= 1 to save memory
+                for cluster_id in list(num_clusters.keys()):
+                    if num_clusters[cluster_id] <= 1:
+                        del num_clusters[cluster_id]
+                if len(num_clusters) > 0:
+                    self.num_clusters_in_complex[record.id] = dict(num_clusters)
+
                 # Remove redundant clusters in the record
-                chain_clusters_in_record = set(chain_clusters_in_record)
-                interface_clusters_in_record = set(interface_clusters_in_record)
+                chain_clusters_in_record = list(set(chain_clusters_in_record))
+                interface_clusters_in_record = list(set(interface_clusters_in_record))
 
             for cluster_id in chain_clusters_in_record:
                 self.chain_cluster_sizes[cluster_id] += 1
