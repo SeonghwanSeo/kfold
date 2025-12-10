@@ -198,7 +198,7 @@ class ApoPerturbation:
         assert num_apos >= 1, "Apo structure must have at least one apo conformation."
 
         # Synchronized apo structures for entities
-        # HACK: Sine some chains with the same entity id have different number of
+        # HACK: Since some chains with the same entity id have different number of
         # tokens or atoms due to PTM, therefore, we need to distinguish this.
         entity_apo_coords: dict[tuple[int, int, int], np.ndarray] = {}
         entity_apo_masks: dict[tuple[int, int, int], np.ndarray] = {}
@@ -408,7 +408,7 @@ class ApoPerturbation:
 
         Returns
         -------
-        pmeruted_apo_mask : np.ndarray
+        permuted_apo_coords : np.ndarray
             Permuted apo structure coordinates of shape [Ntoken, 24, 3].
         """
         # Prepare holo coordinates and masks
@@ -604,7 +604,7 @@ class ApoPerturbation:
         best_permutation: list[int] = list(range(num_chains))
         min_weighted_mse: float = float("inf")
         for perm in permutations:
-            # Get permutaed anchor indices
+            # Get permuted anchor indices
             permuted_anchors = np.concatenate(
                 [chain_anchor_tokens[perm[chain_i]] for chain_i in range(num_chains)]
             )  # [Nanchor,]
@@ -614,11 +614,11 @@ class ApoPerturbation:
 
             # Align permuted apo to holo
             permuted_apo_centers = weighted_rigid_align(
-                permuted_apo_centers, holo_centers, center_mask, align_weights
+                permuted_apo_centers, holo_centers, align_weights, center_mask
             )
 
             # Compute weighted RMSD
-            d = np.linalg.norm(permuted_apo_centers - holo_centers, axis=-1)  # [Ntoken,]
+            d = np.linalg.norm(permuted_apo_centers - holo_centers, axis=-1)  # [Nanchor,]
             w = align_weights  # already masked
 
             w_sum = weight_sum
@@ -637,7 +637,7 @@ class ApoPerturbation:
             token_end: int = token_st + token_num
             chain_apo_coords.append(apo_coords[token_st:token_end])
 
-        permuted_apo_coords = np.concatenate(chain_apo_coords, axis=0)  # [Ntoken, 3]
+        permuted_apo_coords = np.concatenate(chain_apo_coords, axis=0)  # [Ntoken, 24, 3]
         return permuted_apo_coords
 
     def get_best_residue_permutation(
@@ -725,7 +725,7 @@ class ApoPerturbation:
         holo_coords : np.ndarray
             Holo structure coordinates. (Ntoken, 24, 3)
         apo_coords : np.ndarray
-            Apo structure coordinates. (Ntoke', 24, 3)
+            Apo structure coordinates. (Ntoken, 24, 3)
         align_mask : np.ndarray
             Mask for alignment. (Ntoken, 24)
         rng : np.random.Generator
@@ -737,7 +737,6 @@ class ApoPerturbation:
             Permuted apo structure coordinates of shape [Ntoken, 24, 3].
         """
         # type alias
-        ResUID = tuple[int, int]  # (asym_id, res_idx)
 
         residue_mol: OrderedDict[ResUID, tuple[str, list[str]]] = OrderedDict()
         mol_token_indices: dict[ResUID, tuple[int, int]] = {}

@@ -97,8 +97,7 @@ class InputFeaturizer:
         prefix : str | None
             Prefix for the path to pre-computed embeddings.
             Required to use pre-computed embeddings
-        rng : np.random.Generator | None
-            Random number generator for augmentation.
+
 
         Returns
         -------

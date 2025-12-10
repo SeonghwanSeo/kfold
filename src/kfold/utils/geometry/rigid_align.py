@@ -41,8 +41,8 @@ def compute_rmsd(
 
     Returns
     -------
-    aligned_coords : torch.Tensor
-        Tensor of shape (..., N, 3) containing the aligned coordinates.
+    aligned_coords : np.ndarray | torch.Tensor
+        Array or tensor of shape (..., N, 3) containing the aligned coordinates.
     """
     if align:
         coords = rigid_align(coords, target, mask)
@@ -107,8 +107,8 @@ def rigid_align(
 
     Returns
     -------
-    aligned_coords : torch.Tensor
-        Tensor of shape (..., N, 3) containing the aligned coordinates.
+    aligned_coords : np.ndarray | torch.Tensor
+        Array or tensor of shape (..., N, 3) containing the aligned coordinates.
     """
     if isinstance(coords, np.ndarray):
         return weighted_rigid_align_numpy(coords, target, None, mask, anchor_index)  # type: ignore
