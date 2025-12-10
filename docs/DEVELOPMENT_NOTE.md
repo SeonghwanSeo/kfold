@@ -108,12 +108,16 @@ This section describes the additional implementations which are not part of the 
 
 ### Apo Feature Embedding
 
-We modified the input feature embedding architecture (`AtomAttentionEncoder`) to incorporate features derived from the **apo** structure:
+1. **Modified AtomAttentionEncoder**: We modified the input feature embedding architecture (`AtomAttentionEncoder`) to incorporate features derived from the **apo** structure:
   - Local structure: Similar to the **ref_pos** embedding in AF3, pairwise offset vectors between atoms in the **apo** structure are computed and embedded to provide local context.
   - Global structure: Pairwise distance maps (token-level) are computed and embedded with RBF to provide spatial context.
 
-### Diffusion Module
+### Structure Module
 1. **Diffusion Bridge**: We implemented a diffusion bridge module that learns the dynamics between **apo** and **holo** states. This module is designed to take both **apo** and **holo** structures as input during training, allowing the model to learn the transition dynamics effectively.
+
+2. **Apo-conditioned Diffusion Score Model**: We implemented the diffusion score model which conditions on the **apo** structure features. This allows the model to generate **holo** structures that are consistent with the provided **apo** context.
+  - Local structure: Same procedure as in Apo Feature Embedding.
+  - Global structure: Inverse distance maps (token-level) are computed to provide attention bias during the diffusion process.
 
 ---
 
