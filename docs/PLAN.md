@@ -23,6 +23,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Include symmetry information in the input features for validation - [#67](https://github.com/SeonghwanSeo/kfold/pull/67)
 - [x] Implement cropping algorithm used in AF-M/AF3. - [#83](https://github.com/SeonghwanSeo/kfold/pull/83), [#86](https://github.com/SeonghwanSeo/kfold/pull/86)
 - [x] Implement Better cropping algorithm for **apo-to-holo** scheme. - [#85](https://github.com/SeonghwanSeo/kfold/pull/85)
+- [x] Implement symmetry alignment between apo and holo structures. - [#92](https://github.com/SeonghwanSeo/kfold/pull/92)
 - [ ] Implement apo perturbation module.
 - [ ] Implement contact conditioning features as in Boltz1.
 
@@ -45,8 +46,6 @@ If the features listed below are completed, I will include the corresponding PR 
     - [x] Add **validation metrics**. - [#33](https://github.com/SeonghwanSeo/kfold/pull/3)
     - [x] Add chain-permutation and atom-swapping for symmetry correction. - [#67](https://github.com/SeonghwanSeo/kfold/pull/67)
 - [x] Correct **cropping algorithm** to match training losses and validation metrics to Boltz1. - [#71](https://github.com/SeonghwanSeo/kfold/pull/71)
-- [ ] Add Optimal Transport Permutation for better ddbm training stability.
-    - [ ] Add **symmetry in cropped structure**.
 
 ### Benchmark
 
