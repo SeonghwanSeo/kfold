@@ -2,6 +2,7 @@ model:
   _yaml_: "model/kfold-ddbm.yaml"
   input_embedder:
     channel_seq_encoder: 960
+    use_apo: true
   trunk:
     use_cuequiv_kernels: true
     num_blocks: 16

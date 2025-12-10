@@ -6,6 +6,7 @@ input_embedder:
   _yaml_: "module/input_embedder/pretrained.yaml"
   channel_seq_encoder: null # Should be overriden
   channel_struct_encoder: null # Should be overriden
+  use_apo: false
 
 trunk:
   _yaml_: "module/trunk/af3.yaml"
@@ -15,8 +16,8 @@ structure_module:
   _yaml_: "module/structure_module/ddbm.yaml"
 
 score_model:
-  _yaml_: "module/score_model/af3.yaml"
-  channel_coords: 6
+  _yaml_: "module/score_model/apo_conditioned.yaml"
+  use_apo: false
 
 distogram_head:
   _yaml_: "module/distogram_head/af3.yaml"
