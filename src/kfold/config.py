@@ -10,12 +10,16 @@ from kfold.utils.registry import Registry
 def load_config(
     path: str | Path,
     override_args: list[str] | None = None,
+    override_registry_defaults: bool = True,
 ) -> DictConfig:
     """
     Load a configuration file from the given path with recursive _yaml_ inheritance.
 
     Args:
         path (str | Path): The path to the configuration file.
+        override_args (list[str] | None): A list of dotlist strings to override specific
+            configuration values.
+        override_registry_defaults (bool): Whether to override registry defaults.
 
     Returns:
         DictConfig: The loaded configuration as a DictConfig object.
@@ -28,7 +32,8 @@ def load_config(
         config = OmegaConf.merge(config, overrides)
 
     config = _resolve_yaml_inheritance(config, Path(path).parent)
-    config = _resolve_registry_defaults(config)
+    if override_registry_defaults:
+        config = _resolve_registry_defaults(config)
     return config
 
 
@@ -58,9 +63,8 @@ def _resolve_yaml_inheritance(config: DictConfig, base_path: Path) -> DictConfig
         # Check if current dict has _yaml_ and resolve it first
         if "_yaml_" in obj:
             yaml_path = base_path / obj.pop("_yaml_")
-            base_config: DictConfig = load_config(yaml_path)
-            OmegaConf.set_struct(base_config, True)  # avoid invalid override
-            obj = OmegaConf.to_container(OmegaConf.merge(base_config, obj))
+            base_config = load_config(yaml_path, override_registry_defaults=False)
+            obj = OmegaConf.merge(base_config, obj)
 
         # Recursively process all nested dicts
         resolved = {}
