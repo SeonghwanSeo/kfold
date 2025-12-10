@@ -26,16 +26,15 @@ class DiffusionConditioningWithApo(nn.Module):
         dim_fourier: int = 256,
         num_transitions: int = 2,
         transition_expansion_factor: int = 2,
-        eps: float = 1e-20,
     ):
-        """Initialize the single conditioning layer.
+        """Initialize the diffusion conditioning layer.
 
         Parameters
         ----------
         channel_s : int
             The single representation dimension, by default 384.
         channel_z : int
-        The pair representation dimension, by default 128.
+            The pair representation dimension, by default 128.
         dim_fourier : int
             The fourier embeddings dimension, by default 256.
         num_transitions : int
@@ -95,7 +94,7 @@ class DiffusionConditioningWithApo(nn.Module):
             The folding input.
         s_inputs : torch.Tensor
             Tensor of shape (B, Lt, c_s) for input single representation.
-        s_trunk : torch.Tensors
+        s_trunk : torch.Tensor
             Tensor of shape (B, Lt, c_s) for trunk single representation.
         z_trunk : torch.Tensor
             Tensor of shape (B, Lt, Lt, c_z) for trunk pair representation.
@@ -211,8 +210,6 @@ class DiffusionConditioningWithApo(nn.Module):
 
         # Compute distance features
         with torch.autocast("cuda", enabled=False):
-            # NOTE: use d_inv instead of d_sq_inv(used for ref_pos in AF3) since
-            # d_inv has better numerical stability for large distances.
             pdist = torch.cdist(apo_coords, apo_coords, p=2)  # [B, L, L]
 
             if p >= 0:
@@ -225,6 +222,8 @@ class DiffusionConditioningWithApo(nn.Module):
 
 
 class DiffusionModuleWithApo(nn.Module):
+    """Diffusion module with apo structure conditioning."""
+
     def __init__(
         self,
         channel_s: int = 384,
@@ -351,7 +350,7 @@ class DiffusionModuleWithApo(nn.Module):
         z_trunk: torch.Tensor,
         model_cache: dict | None = None,
     ) -> torch.Tensor:
-        """Forward pass of diffusion score model
+        """Forward pass of diffusion score model.
 
         Parameters
         ----------
@@ -408,10 +407,10 @@ class DiffusionModuleWithApo(nn.Module):
         # - a: [B, N, Lt, c_token]
         # - q_skip: [B, N, La, c_atom]
         # - c_skip: [B, N, La, c_atom]
-        # - p_skip: [B, N, La, La, c_atompair]
+        # - p_skip: [B, N, Lq, Lk, c_atompair]
 
         # === Full attention on token-level === #
-        a = a + self.linear_s_to_a(self.layernorm_s(s))  # [Nsample, La, c_token]
+        a = a + self.linear_s_to_a(self.layernorm_s(s))  # [B, N, La, c_token]
         token_mask = f_input.token.pad_mask[..., None, :]  # [B, 1, Lt]
         a = self.token_transformer(
             a,  # [B, N, Lt, c_token]

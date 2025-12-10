@@ -14,7 +14,7 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
     """Diffusion score model with apo structure conditioning."""
 
     class Config(BaseConfig):
-        """Initialize the diffusion module.
+        """Configuration for the apo-conditioned diffusion module.
 
         Parameters
         ----------
@@ -106,8 +106,7 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
         z_trunk: torch.Tensor,
         model_cache: dict | None = None,
     ) -> torch.Tensor:
-        """Forward pass of the AF3 diffusion module.
-        See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
+        """Forward pass of the apo-conditioned diffusion score model.
 
         Parameters
         ----------
