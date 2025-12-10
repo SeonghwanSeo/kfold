@@ -1,5 +1,6 @@
 import os
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -11,18 +12,172 @@ from kfold.utils.geometry.random_augment import center_random_augmentation, do_c
 from . import model_input, structure
 from .utils import frame_utils
 
-__all__ = ["featurize_structure", "add_pretrained_embeddings"]
 
-# TODO list:
-# - Add symmetry.
+class InputFeaturizer:
+    """A class for featurizing tokenized structures into model input features."""
+
+    def __init__(
+        self,
+        augment_ref_pos: bool = True,
+        synchronize_ref_pos_augmentation: bool = False,
+        seq_embedding_path: str | Path | None = None,
+        struct_embedding_path: str | Path | None = None,
+        seq_embedding_dim: int | None = None,
+        struct_embedding_dim: int | None = None,
+        seed: int | None = None,
+    ) -> None:
+        """Initialize the InputFeaturizer.
+
+        Parameters
+        ----------
+        augment_ref_pos : bool, optional
+            Whether to apply random augmentation to ref_pos,
+        synchronize_ref_pos_augmentation : bool
+            Whether to synchronize the random augmentation for ref_pos across all atoms,
+            default: False.
+            NOTE: This flag is just for running Boltz1 in this repository. (Boltz1: True)
+        seq_embedding_path : str | Path | None, optional
+            Path of directory containing pre-computed sequence embeddings.
+        struct_embedding_path : str | Path | None, optional
+            Path of directory containing pre-computed structure embeddings.
+        seq_embedding_dim : int | None, optional
+            Dimension of the sequence embedding.
+        struct_embedding_dim : int | None, optional
+            Dimension of the structure embedding.
+        seed : int | None
+            Random seed for reproducibility. If None, a random seed is used.
+        """
+        # Random seed
+        self.seed: int | None = seed
+
+        # Featurization arguments
+        self.augment_ref_pos: bool = augment_ref_pos
+        self.synchronize_ref_pos_augmentation: bool = synchronize_ref_pos_augmentation
+
+        # Precomputed embeddings
+        self.seq_embedding_path: Path | None = (
+            Path(seq_embedding_path) if seq_embedding_path is not None else None
+        )
+        self.struct_embedding_path: Path | None = (
+            Path(struct_embedding_path) if struct_embedding_path is not None else None
+        )
+        if self.seq_embedding_path is not None:
+            assert self.seq_embedding_path.exists(), (
+                f"seq_embedding_path does not exists ({self.seq_embedding_path})"
+            )
+            assert seq_embedding_dim is not None, (
+                "seq_embedding_dim must be provided when seq_embedding_path is not None."
+            )
+            self.seq_embedding_dim: int = seq_embedding_dim
+        else:
+            assert seq_embedding_dim is None, (
+                "seq_embedding_dim must be None when seq_embedding_path is None."
+            )
+        if self.struct_embedding_path is not None:
+            assert self.struct_embedding_path.exists(), (
+                f"struct_embedding_path does not exists ({self.struct_embedding_path})"
+            )
+            assert struct_embedding_dim is not None, (
+                "struct_embedding_dim must be provided when struct_embedding_path is not"
+                " None."
+            )
+            self.struct_embedding_dim: int = struct_embedding_dim
+
+    def run(
+        self,
+        struct: structure.TokenizedStructure,
+        prefix: str | None = None,
+    ) -> model_input.FoldingInput:
+        """Featurize a tokenized structure into model input features.
+
+        Parameters
+        ----------
+        struct : structure.TokenizedStructure
+            The tokenized structure to featurize.
+        prefix : str | None
+            Prefix for the path to pre-computed embeddings.
+            Required to use pre-computed embeddings
+
+
+        Returns
+        -------
+        f_input: FoldingInput
+            The featurized model input
+        """
+        rng = np.random.default_rng(seed=self.seed)
+
+        # Convert to model input features
+        f_input = self.to_folding_input(struct, rng)
+
+        # Add pre-computed embeddings
+        f_input = self.add_precomputed_embedding(f_input, prefix)
+
+        return f_input
+
+    def to_folding_input(
+        self,
+        struct: structure.TokenizedStructure,
+        rng: np.random.Generator,
+    ) -> model_input.FoldingInput:
+        """Convert the tokenized structure to model input features."""
+        return featurize_structure(
+            struct,
+            augment_ref_pos=self.augment_ref_pos,
+            synchronize_ref_pos_augmentation=self.synchronize_ref_pos_augmentation,
+            rng=rng,
+        )
+
+    def add_precomputed_embedding(
+        self,
+        f_input: model_input.FoldingInput,
+        prefix: str | None = None,
+    ) -> model_input.FoldingInput:
+        """Add pre-trained embeddings to the model input from pre-computed files.
+
+        Parameters
+        ----------
+        f_input : model_input.FoldingInput
+            The model input to add pretrained features.
+        prefix : str | None
+            Prefix for the path to pre-computed embeddings.
+
+        Returns
+        -------
+        f_input_upd: FoldingInput
+            The featurized model input with pretrained features added.
+        """
+        if self.seq_embedding_path is None and self.struct_embedding_path is None:
+            return f_input
+        assert prefix is not None, (
+            "Prefix must be provided when using pre-computed embeddings."
+        )
+
+        pretrained_dict = {}
+        if self.seq_embedding_path is not None:
+            seq_embedding_prefix = str(self.seq_embedding_path / prefix)
+            seq_embedding = load_pretrained_embedding(
+                f_input, seq_embedding_prefix, self.seq_embedding_dim
+            )
+            pretrained_dict["sequence_embedding"] = seq_embedding
+
+        if self.struct_embedding_path is not None:
+            struct_embedding_prefix = str(self.struct_embedding_path / prefix)
+            struct_embedding = load_pretrained_embedding(
+                f_input, struct_embedding_prefix, self.struct_embedding_dim
+            )
+            pretrained_dict["structure_embedding"] = struct_embedding
+
+        # Replace the pretrained features in FoldingInput
+        new_pretrained = f_input.pretrained.copy_with(**pretrained_dict)
+        return f_input.copy_with(pretrained=new_pretrained)
 
 
 # === Helper functions === #
 def do_augment_ref_pos(
     ref_pos: np.ndarray,
     mask: np.ndarray,
-    conformer_sizes: list[int] | None = None,
-    rng: np.random.Generator | None = None,
+    conformer_sizes: list[int],
+    rng: np.random.Generator,
     synchronize: bool = False,
 ) -> np.ndarray:
     """Augment reference positions with random translation and rotation.
@@ -33,9 +188,9 @@ def do_augment_ref_pos(
         Reference positions of shape [Natom, 3].
     mask : np.ndarray
         Mask indicating valid atoms of shape [Natom,].
-    conformer_sizes : list[int] | None
+    conformer_sizes : list[int]
         List of number of atoms per each conformer.
-    rng : np.random.Generator | None
+    rng : np.random.Generator
         Random number generator for augmentation.
     synchronize : bool
         Whether to synchronize the random augmentation across all atoms.
@@ -48,11 +203,9 @@ def do_augment_ref_pos(
     """
 
     if synchronize:
-        # NOTE: Just for comparison with Boltz. This flag should be False.
+        # NOTE: Just for running Boltz. This flag should be False.
         return center_random_augmentation(ref_pos, mask, rng=rng)
     else:
-        assert conformer_sizes is not None
-
         new_ref_pos = np.zeros_like(ref_pos)
         start_idx = 0
         # Apply random augmentation per residue(conformer)
@@ -67,50 +220,11 @@ def do_augment_ref_pos(
         return new_ref_pos
 
 
-def do_augment_apo_structure(
-    apo_coords: np.ndarray,
-    mask: np.ndarray,
-    chain_sizes: np.ndarray,
-    rng: np.random.Generator | None = None,
-) -> np.ndarray:
-    """Augment apo structure coordinates with random rotation.
-    Parameters
-    ----------
-    apo_coords : np.ndarray
-        Apo structure coordinates of shape [Natom, 3].
-    mask : np.ndarray
-        Mask indicating valid atoms of shape [Natom].
-    chain_sizes : np.ndarray
-        Array of number of atoms per each chain.
-    rng : np.random.Generator | None
-        Random number generator for augmentation.
-
-    Returns
-    -------
-    augmented_apo_coords : np.ndarray
-        Augmented apo structure coordinates of shape [Natom, 3].
-    """
-    # Apply random rotation and translation per apo coords
-    new_coords = np.zeros_like(apo_coords)
-    start_idx = 0
-    for natom in chain_sizes:
-        end_idx = start_idx + natom
-        chain_coords = apo_coords[start_idx:end_idx]
-        chain_mask = mask[start_idx:end_idx]
-        new_coords[start_idx:end_idx] = center_random_augmentation(
-            chain_coords, chain_mask, rng=rng
-        )
-        start_idx = end_idx
-    return new_coords
-
-
 def featurize_structure(
     struct: structure.TokenizedStructure,
     augment_ref_pos: bool = True,
-    augment_apo: bool = True,
     synchronize_ref_pos_augmentation: bool = False,
     rng: np.random.Generator | None = None,
-    **kwargs,
 ) -> model_input.FoldingInput:
     """Featurize a tokenized structure into model input features.
 
@@ -118,18 +232,19 @@ def featurize_structure(
     ----------
     struct : structure.TokenizedStructure
         The tokenized structure to featurize.
-    augment_ref_pos : bool, optional
+    augment_ref_pos : bool
         Whether to apply random augmentation to ref_pos,
-    augment_apo : bool, optional
-        Whether to apply random augmentation to apo_coords,
-    synchronize_ref_pos_augmentation : bool, optional
+    synchronize_ref_pos_augmentation : bool
         Whether to synchronize the random augmentation for ref_pos across all atoms,
+    rng : np.random.Generator
+        Random number generator for augmentation.
 
     Returns
     -------
     f_input: FoldingInput
         The featurized model input
     """
+    rng = rng or np.random.default_rng()
 
     def cast(data: np.ndarray) -> np.ndarray:
         if np.issubdtype(data.dtype, np.floating):
@@ -187,7 +302,7 @@ def featurize_structure(
     label_coords = atom_dict.pop("coords")  # Rename for clarity
     n_holo = label_coords.shape[-2]
     assert n_holo == 1, "Currently only single holo coordinate is supported."
-    sampled_idx = rng.integers(0, n_holo) if rng else np.random.randint(0, n_holo)
+    sampled_idx = rng.integers(low=0, high=n_holo)
     label_coords = label_coords[:, sampled_idx, :]
 
     # Centering the ground truth coords
@@ -223,16 +338,21 @@ def featurize_structure(
     token_dict["frames_mask"] = np.zeros((num_tokens,), dtype=np.bool_)
     for tidx in range(num_tokens):
         is_standard = token_dict["is_standard"][tidx]
-        if is_standard:
-            res_name = residue_index_to_name[token_data.res_type[tidx]]
-            num_atoms_in_res = token_dict["num_atoms"][tidx]
-            if res_name is not C.residue.ResidueName.UNK and (num_atoms_in_res >= 3):
-                restype_atoms = C.atom.RESIDUE_ATOMS[res_name]
-                n, ca, c = C.atom.RESIDUE_FRAME_ATOMS[res_name]
-                frame_atom_index = [restype_atoms.index(a) for a in (n, ca, c)]
-                is_frame = atom_data.resolved_mask[tidx, frame_atom_index].all()
-                token_dict["frames_index"][tidx] = frame_atom_index
-                token_dict["frames_mask"][tidx] = is_frame
+        if not is_standard:
+            # Skip non-standard residues
+            continue
+        res_name = residue_index_to_name[int(token_data.res_type[tidx])]
+        if res_name is C.residue.ResidueName.UNK:
+            # Skip unknown residues
+            continue
+        num_atoms_in_res = token_dict["num_atoms"][tidx]
+        if num_atoms_in_res >= 3:
+            restype_atoms = C.atom.RESIDUE_ATOMS[res_name]
+            n, ca, c = C.atom.RESIDUE_FRAME_ATOMS[res_name]
+            frame_atom_index = [restype_atoms.index(a) for a in (n, ca, c)]
+            is_frame = atom_data.resolved_mask[tidx, frame_atom_index].all()
+            token_dict["frames_index"][tidx] = frame_atom_index
+            token_dict["frames_mask"][tidx] = is_frame
 
     # Map atom indices to global atom indices
     atom_offset = (
@@ -295,34 +415,13 @@ def featurize_structure(
             rng=rng,
         )
 
-    # TODO: If we use CCD, use random ETKDG conformers here.
-    # [Natom, Napo, 3] -> [Natom, 3]
-    apo_coords = atom_dict.pop("apo_coords")
-    apo_mask = atom_dict.pop("apo_mask")
-    n_apo = apo_coords.shape[-2]
-    assert n_apo == 1, "Currently only single apo coordinate is supported."
-    sampled_idx = rng.integers(0, n_apo) if rng else np.random.randint(0, n_apo)
-    apo_coords = apo_coords[:, sampled_idx, :]
-    apo_mask = apo_mask[:, sampled_idx]
-    if augment_apo:
-        # Augment apo structure (chain-wise)
-        num_atoms_per_chains = chain_dict["num_atoms"]
-        apo_coords = do_augment_apo_structure(
-            apo_coords=apo_coords,
-            mask=apo_mask,
-            chain_sizes=num_atoms_per_chains,
-            rng=rng,
-        )
-
-    # TODO: remove this part after DNA/RNA apo generation is ready.
-    if kwargs["mask_nucleic_acid_apo"]:
-        ctype = token_dict["chain_type"]
-        atom_ctype = ctype[atom_dict["token_index"]]
-        is_dna = atom_ctype == C.chain.ChainType.DNA.value
-        is_rna = atom_ctype == C.chain.ChainType.RNA.value
-        is_nucleic_acid = is_dna | is_rna
-        apo_coords[is_nucleic_acid] = 0.0
-        apo_mask[is_nucleic_acid] = False
+    # [Natom, Napo, 3] -> [Natom, 3], Napo must be 1 (sampled beforehand)
+    apo_coords = atom_dict.pop("apo_coords")  # [Natom, Napo, 3]
+    apo_mask = atom_dict.pop("apo_mask")  # [Natom, Napo]
+    n_apo: int = apo_coords.shape[1]
+    assert n_apo == 1, "Apo coordinates should be sampled beforehand."
+    apo_coords = apo_coords[:, 0, :]
+    apo_mask = apo_mask[:, 0]
 
     apo_coords = do_centering(apo_coords, apo_mask)
     atom_dict["apo_coords"] = apo_coords
@@ -474,79 +573,3 @@ def load_pretrained_embedding(
         embedding_tensors.append(chain_embeddings)
 
     return torch.cat(embedding_tensors, dim=0)
-
-
-def add_pretrained_embeddings(
-    f_input: model_input.FoldingInput,
-    seq_embedding_prefix: str | None = None,
-    struct_embedding_prefix: str | None = None,
-    seq_embedding_dim: int | None = None,
-    struct_embedding_dim: int | None = None,
-) -> model_input.FoldingInput:
-    """Add pre-trained features to the model input.
-
-    Parameters
-    ----------
-    f_input : model_input.FoldingInput
-        The model input to add pretrained features.
-    seq_embedding_prefix : str | None, optional
-        Prefix for the path to pre-computed sequence embeddings.
-        Example of the filename:
-            "embeddings/esm/6o/6oim/6oim_2_protein.pt"
-            where 2 is the entity index.
-        Example of the prefix:
-            "embeddings/esm/6o/6oim/6oim_"
-    struct_embedding_prefix : str | None, optional
-        Prefix for the path to pre-computed structure embeddings.
-        Example of the filename:
-            "embeddings/struct/10/10gs/10gs_1_protein.pt"
-            where 1 is the entity index.
-        Example of the prefix:
-            "embeddings/struct/10/10gs/10gs_"
-    seq_embedding_dim : int | None, optional
-        Dimension of the sequence embedding.
-    struct_embedding_dim : int | None, optional
-        Dimension of the structure embedding.
-
-    Returns
-    -------
-    f_input_upd: FoldingInput
-        The featurized model input with pretrained features added.
-    """
-    if seq_embedding_prefix is None and struct_embedding_prefix is None:
-        return f_input
-
-    pretrained_dict = {}
-    if seq_embedding_prefix is not None:
-        assert seq_embedding_dim is not None
-        seq_embedding = load_pretrained_embedding(
-            f_input, seq_embedding_prefix, seq_embedding_dim
-        )
-        pretrained_dict["sequence_embedding"] = seq_embedding
-    else:
-        pretrained_dict["sequence_embedding"] = f_input.pretrained.sequence_embedding
-
-    if struct_embedding_prefix is not None:
-        assert struct_embedding_dim is not None
-        struct_embedding = load_pretrained_embedding(
-            f_input, struct_embedding_prefix, struct_embedding_dim
-        )
-        pretrained_dict["structure_embedding"] = struct_embedding
-    else:
-        pretrained_dict["structure_embedding"] = f_input.pretrained.structure_embedding
-
-    pretrained_dict["pad_mask"] = f_input.pretrained.pad_mask
-
-    pretrained_layout = model_input.PretrainedLayout(
-        **{k: v for k, v in pretrained_dict.items()}
-    )
-
-    # Return updated FoldingInput
-    f_input_upd = model_input.FoldingInput(
-        chain=f_input.chain,
-        token=f_input.token,
-        atom=f_input.atom,
-        bond=f_input.bond,
-        pretrained=pretrained_layout,
-    )
-    return f_input_upd

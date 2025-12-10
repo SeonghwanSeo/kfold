@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+import dataclasses
 from functools import cached_property
 from typing import Self
 
@@ -7,8 +7,6 @@ import torch
 import kfold.constants as C
 from kfold.data.layout import TensorLayout
 from kfold.utils.misc import check_tensor
-
-PAD_IDX = 2**16 - 1  # 65535
 
 __all__ = [
     "ChainLayout",
@@ -20,7 +18,7 @@ __all__ = [
 
 
 # === Layout dataclasses (chain-level, token-level, atom-level, bond-level) === #
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class ChainLayout(TensorLayout):
     """Chain-level layout information.
 
@@ -96,13 +94,13 @@ class ChainLayout(TensorLayout):
 
         # value: PAD_IDX means padding
         pad_values = {
-            "chain_type": PAD_IDX,
-            "entity_id": PAD_IDX,
-            "asym_id": PAD_IDX,
-            "sym_id": PAD_IDX,
-            "num_tokens": PAD_IDX,
-            "num_residues": PAD_IDX,
-            "num_atoms": PAD_IDX,
+            "chain_type": -1,
+            "entity_id": -1,
+            "asym_id": -1,
+            "sym_id": -1,
+            "num_tokens": -1,
+            "num_residues": -1,
+            "num_atoms": -1,
             "pad_mask": False,
         }
 
@@ -138,23 +136,23 @@ class ChainLayout(TensorLayout):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class TokenLayout(TensorLayout):
     """Token-level layout information.
 
     Attributes
     ----------
     token_index: torch.Tensor (long)
-        Token indices of shape [L,], mapping each token to its position.
+        Token indices of shape [Ntoken,], mapping each token to its position.
     org_token_index: torch.Tensor (long)
-        Original token indices of shape [L,], before cropping.
+        Original token indices of shape [Ntoken,], before cropping.
     res_type: torch.Tensor (float32)
-        Sequence tokens of shape [L, 32] (aatype, atom, ...)
+        Sequence tokens of shape [Ntoken, 32] (aatype, atom, ...)
         One-hot vector
     chain_type: torch.Tensor (long)
-        Chain types of shape [L,], indicating the type of each token.
+        Chain types of shape [Ntoken,], indicating the type of each token.
     residue_index: torch.Tensor (long)
-        Residue indices of shape [L,], used for residue-level operations.
+        Residue indices of shape [Ntoken,], used for residue-level operations.
         Starting from 1 for each chain.
         example)
             4-len polymer(protein/RNA/DNA):
@@ -162,45 +160,45 @@ class TokenLayout(TensorLayout):
             6-sized ligand:
                 residue_index: [1, 1, 1, 1, 1, 1]
     disto_index: torch.Tensor (long)
-        Representative atom indices of shape [L,], Cβ
+        Representative atom indices of shape [Ntoken,], Cβ
     center_index: torch.Tensor (long)
-        Center indices of shape [L,], Cα
+        Center indices of shape [Ntoken,], Cα
     frames_index: torch.Tensor (long)
-        Frame indices of shape [L, 3].
+        Frame indices of shape [Ntoken, 3].
     disto_coords: torch.Tensor (float32)
-        Representative atom center coordinates of shape [L, 3].
+        Representative atom center coordinates of shape [Ntoken, 3].
     center_coords: torch.Tensor (float32)
-        Center coordinates of shape [L, 3].
+        Center coordinates of shape [Ntoken, 3].
     disto_mask: torch.Tensor (bool)
-        Mask tensor of shape [L,], indicating disto atom of tokens to be resolved.
+        Mask tensor of shape [Ntoken,], indicating disto atom of tokens to be resolved.
     resolved_mask: torch.Tensor (bool)
-        Mask tensor of shape [L,], indicating tokens to be resolved.
+        Mask tensor of shape [Ntoken,], indicating tokens to be resolved.
     frames_mask: torch.Tensor (bool)
-        Boolean tensor of shape [L,], indicating whether the token's frame is resolved.
+        Boolean tensor of shape [Ntoken,], indicating whether token's frame is resolved.
     pad_mask: torch.Tensor (bool)
-        Mask tensor of shape [L,], indicating valid tokens.
+        Mask tensor of shape [Ntoken,], indicating valid tokens.
     pocket_contact_type: torch.Tensor (long)
-        Pocket contact types of shape [L,], indicating pocket contact information.
+        Pocket contact types of shape [Ntoken,], indicating pocket contact information.
     """
 
-    token_index: torch.Tensor  # [L,], long
-    org_token_index: torch.Tensor  # [L,], long
-    res_type: torch.Tensor  # [L, 32], float32
-    chain_type: torch.Tensor  # [L,], long
-    entity_id: torch.Tensor  # [L,], long
-    asym_id: torch.Tensor  # [L,], long, same to sequence_id
-    sym_id: torch.Tensor  # [L,], long
-    residue_index: torch.Tensor  # [L,], long
-    disto_index: torch.Tensor  # [L,], long
-    center_index: torch.Tensor  # [L,], long
-    frames_index: torch.Tensor  # [L, 3], long
-    disto_coords: torch.Tensor  # [L, 3], long
-    center_coords: torch.Tensor  # [L, 3], long
-    resolved_mask: torch.Tensor  # [L,], bool
-    disto_mask: torch.Tensor  # [L,], bool
-    frames_mask: torch.Tensor  # [L,], bool
-    pad_mask: torch.Tensor  # [L,], bool
-    pocket_contact_type: torch.Tensor  # [L,], bool
+    token_index: torch.Tensor  # [Ntoken,], long
+    org_token_index: torch.Tensor  # [Ntoken,], long
+    res_type: torch.Tensor  # [Ntoken, 32], float32
+    chain_type: torch.Tensor  # [Ntoken,], long
+    entity_id: torch.Tensor  # [Ntoken,], long
+    asym_id: torch.Tensor  # [Ntoken,], long, same to sequence_id
+    sym_id: torch.Tensor  # [Ntoken,], long
+    residue_index: torch.Tensor  # [Ntoken,], long
+    disto_index: torch.Tensor  # [Ntoken,], long
+    center_index: torch.Tensor  # [Ntoken,], long
+    frames_index: torch.Tensor  # [Ntoken, 3], long
+    disto_coords: torch.Tensor  # [Ntoken, 3], long
+    center_coords: torch.Tensor  # [Ntoken, 3], long
+    resolved_mask: torch.Tensor  # [Ntoken,], bool
+    disto_mask: torch.Tensor  # [Ntoken,], bool
+    frames_mask: torch.Tensor  # [Ntoken,], bool
+    pad_mask: torch.Tensor  # [Ntoken,], bool
+    pocket_contact_type: torch.Tensor  # [Ntoken,], bool
 
     @property
     def layout_shape(self) -> tuple[int, ...]:
@@ -261,22 +259,22 @@ class TokenLayout(TensorLayout):
 
     @cached_property
     def is_protein(self) -> torch.Tensor:
-        """Boolean tensor of shape [L,], indicating whether the token is protein."""
+        """Boolean tensor of shape [Ntoken,], indicating whether the token is protein."""
         return self.chain_type == C.chain.ChainType.PROTEIN.value
 
     @cached_property
     def is_dna(self) -> torch.Tensor:
-        """Boolean tensor of shape [L,], indicating whether the token is dna."""
+        """Boolean tensor of shape [Ntoken,], indicating whether the token is dna."""
         return self.chain_type == C.chain.ChainType.DNA.value
 
     @cached_property
     def is_rna(self) -> torch.Tensor:
-        """Boolean tensor of shape [L,], indicating whether the token is rna."""
+        """Boolean tensor of shape [Ntoken,], indicating whether the token is rna."""
         return self.chain_type == C.chain.ChainType.RNA.value
 
     @cached_property
     def is_ligand(self) -> torch.Tensor:
-        """Boolean tensor of shape [L,], indicating whether the token is ligand."""
+        """Boolean tensor of shape [Ntoken,], indicating whether the token is ligand."""
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
     def pad(self, *pad_shape: int) -> Self:
@@ -292,13 +290,13 @@ class TokenLayout(TensorLayout):
 
         # value: PAD_IDX means padding
         pad_values = {
-            "token_index": 0,
-            "org_token_index": 0,
-            "res_type": 0,
-            "chain_type": PAD_IDX,
-            "entity_id": 0,
-            "asym_id": 0,
-            "sym_id": 0,
+            "token_index": -1,
+            "org_token_index": -1,
+            "res_type": 0,  # 0 = pad
+            "chain_type": -1,
+            "entity_id": -1,
+            "asym_id": -1,
+            "sym_id": -1,
             "residue_index": -1,
             "disto_index": -1,
             "center_index": -1,
@@ -324,7 +322,7 @@ class TokenLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class AtomLayout(TensorLayout):
     """Atom-level layout information for molecular structures.
 
@@ -453,11 +451,11 @@ class AtomLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class BondLayout(TensorLayout):
     """Bond-level layout information for molecular structures.
 
-    Shape: [Nchain, ...] or [B, Nchain, ...]
+    Shape: [Nbond, ...] or [B, Nbond, ...]
 
     Attributes
     ----------
@@ -555,7 +553,7 @@ class BondLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class PretrainedLayout(TensorLayout):
     """Token-level layout including pretrained embedding information.
 
@@ -642,7 +640,7 @@ class PretrainedLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclass(frozen=True, slots=False)
+@dataclasses.dataclass(frozen=True, slots=False)
 class FoldingInput:
     """Input of co-folding"""
 
@@ -897,6 +895,21 @@ class FoldingInput:
                 f"  device: {device}\n"
                 f")"
             )
+
+    def copy_with(self, **kwargs) -> Self:
+        """Create a copy of the FoldingInput with modified attributes.
+
+        Parameters
+        ----------
+        kwargs: dict
+            Attributes to be modified in the new instance.
+
+        Returns
+        -------
+        new_instance: FoldingInput
+            A new instance of FoldingInput with modified attributes.
+        """
+        return dataclasses.replace(self, **kwargs)
 
     # === Padding functions for preparing model inputs === #
     def pad_to_multiple_of(self, multiple: int = 32) -> Self:

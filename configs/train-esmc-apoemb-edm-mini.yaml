@@ -45,7 +45,6 @@ train:
 
     featurization_args:
       seq_embedding_dim: 960
-      mask_nucleic_acid_apo: true # TODO: remove this flag
 
   wandb:
     use: false

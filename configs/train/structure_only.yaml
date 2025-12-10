@@ -68,17 +68,23 @@ data:
     beta_interface: 1.0
     allow_redundant: False # Different to Boltz1
 
+  # Apo perturbation configurations:
+  apo_perturbation_args:
+    use_perturbation: false # TODO: set to true after implementation is complete
+    use_random_rotation: true
+    use_symmetry_correction: true # enabled during training
+    prob_perturbation: 0.5
+    prob_replace_to_holo: 0.0 # enabled during training
+    mask_nucleic_acids: true # TODO: remove this after NA apo structures are available
+
   # Featurizer configurations:
   featurization_args:
     augment_ref_pos: true
-    augment_apo: true
     synchronize_ref_pos_augmentation: false
     # Precomputed embeddings
     # TODO: remove these params if all chains have precomputed embeddings
     seq_embedding_dim: null
     struct_embedding_dim: null
-    # TODO: remove this flag
-    mask_nucleic_acid_apo: false
 
 # Lightning Trainer Configuration
 trainer:

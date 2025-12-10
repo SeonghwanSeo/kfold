@@ -1,6 +1,6 @@
 import pickle
 import random
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -130,7 +130,7 @@ def get_symmetries(
     symmetry_info["residue_symmetries"] = res_syms_global
 
     # === Ligand and non-standard amino-acid symmetries === #
-    mol_syms = get_molecule_symmetries(cropped_struct, all_struct, ccd_symmetry_dict)
+    mol_syms = get_molecule_symmetries(cropped_struct, ccd_symmetry_dict)
     # Convert token index to global atom index
     # NOTE: Each token corresponds to one atom for ligands and non-standard amino-acids
     mol_syms_global: list[ResidueSymmetry] = []
@@ -200,16 +200,16 @@ def get_alt_coordinates(
     chain_symmetries: dict[int, list[int]] = {}
     # NOTE: Ensure the same number of tokens and atoms for symmetry
     chain_num_tokens: dict[int, int] = {
-        all_struct.chain.asym_id[i]: all_struct.chain.num_tokens[i]
+        int(all_struct.chain.asym_id[i]): int(all_struct.chain.num_tokens[i])
         for i in range(all_struct.num_chains)
     }
     chain_num_atoms: dict[int, int] = {
-        all_struct.chain.asym_id[i]: all_struct.chain.num_atoms[i]
+        int(all_struct.chain.asym_id[i]): int(all_struct.chain.num_atoms[i])
         for i in range(all_struct.num_chains)
     }
     for i in range(cropped_struct.num_chains):
-        asym_id = cropped_struct.chain.asym_id[i]
-        entity_id = cropped_struct.chain.entity_id[i]
+        asym_id = int(cropped_struct.chain.asym_id[i])
+        entity_id = int(cropped_struct.chain.entity_id[i])
         symmetry_chains = entity_chains[entity_id]
         # Get exactly symmetric chains
         symmetry_chains = [
@@ -275,14 +275,14 @@ def get_alt_coordinates(
         swaps = all_swaps
 
     # === Get alternative atom coordinates === #
-    global_token_st = all_struct.chain.token_starts
+    global_token_st = all_struct.chain.token_start
     global_token_offset: dict[int, int] = {
-        all_struct.chain.asym_id[i]: int(global_token_st[i])
+        int(all_struct.chain.asym_id[i]): int(global_token_st[i])
         for i in range(all_struct.num_chains)
     }
 
     chain_token_idcs = {}  # {asym_id: (crop_indices, global_indices)}
-    crop_token_st = cropped_struct.chain.token_starts
+    crop_token_st = cropped_struct.chain.token_start
     crop_token_end = crop_token_st + cropped_struct.chain.num_tokens
     for i in range(cropped_struct.num_chains):
         asym_id = cropped_struct.chain.asym_id[i]
@@ -389,70 +389,51 @@ ResUID = tuple[int, int]  # (asym_id, residue_index)
 
 def get_molecule_symmetries(
     cropped_struct: TokenizedStructure,
-    all_struct: TokenizedStructure,
     ccd_symmetry_dict: dict,
 ) -> list[ResidueSymmetry]:
     # Compute ligand and non-standard amino-acids symmetries
 
-    visited: set[ResUID] = set()
-    mol_uids: list[ResUID] = []
-    residue_mol: dict[ResUID, tuple[str, list[str]]] = {}
+    residue_mol: OrderedDict[ResUID, tuple[str, list[str]]] = OrderedDict()
     mol_token_st: dict[ResUID, int] = {}
 
-    for token_i in range(cropped_struct.num_tokens):
-        if all_struct.token.is_standard[token_i]:
+    for res_i in range(cropped_struct.num_residues):
+        if cropped_struct.residue.is_standard[res_i]:
             # Skip standard amino acids and nucleotides
             continue
 
-        # Get unique residue id (chain id, residue index)
-        asym_id = cropped_struct.token.asym_id[token_i]
-        res_idx = cropped_struct.token.residue_index[token_i]
-        res_uid = (asym_id, res_idx)
-
-        if res_uid in visited:
-            # Already processed
+        # Get CCD ID
+        ccd_id = str(cropped_struct.residue.name[res_i])
+        if ccd_id not in ccd_symmetry_dict:
+            # Skip if there is no symmetry information
             continue
 
-        # Mark as visited
-        visited.add(res_uid)
+        # Get unique residue id (chain id, residue index)
+        asym_id = int(cropped_struct.residue.asym_id[res_i])
+        res_idx = int(cropped_struct.residue.residue_index[res_i])
+        res_uid = (asym_id, res_idx)
 
-        # get the molecule type and indices
-        res_i_global = all_struct.residue.get_global_residue_idx(asym_id, res_idx)
+        # Check input valid
+        num_atoms = int(cropped_struct.residue.num_atoms[res_i])
+        num_tokens = int(cropped_struct.residue.num_tokens[res_i])
+        assert num_atoms == num_tokens, (
+            f"Molecule token and atom number mismatch, {num_atoms} != {num_tokens}"
+        )
 
-        # Get molecule name and atom names
-        ccd_id = all_struct.residue.name[res_i_global]
-        num_atoms = all_struct.residue.num_atoms[res_i_global]
-        num_tokens = all_struct.residue.num_tokens[res_i_global]
-        assert num_atoms == num_tokens, "Molecule token and atom number mismatch"
-
-        # Check all tokens are belong to the cropped structure
-        assert np.all(
-            cropped_struct.token.asym_id[token_i : token_i + num_atoms] == asym_id
-        ), "All molecule tokens should belong to the same chain after cropping."
-        assert np.all(
-            cropped_struct.token.residue_index[token_i : token_i + num_atoms] == res_idx
-        ), "All molecule tokens should belong to the same residue after cropping."
-        assert np.all(
-            cropped_struct.token.num_atoms[token_i : token_i + num_atoms] == 1
-        ), "Molecule tokens should have one atom per token."
-
+        # Get molecule atom names
+        token_st = int(cropped_struct.residue.token_start[res_i])
         mol_atom_names: list[str] = [
-            C.atom.decode_atom_name(cropped_struct.atom.ref_atom_name_chars[i, 0])
-            for i in range(token_i, token_i + num_atoms)
+            C.atom.decode_atom_name(
+                cropped_struct.atom.ref_atom_name_chars[i, 0].tolist()
+            )
+            for i in range(token_st, token_st + num_atoms)
         ]
         residue_mol[res_uid] = (ccd_id, mol_atom_names)
-        mol_token_st[res_uid] = token_i
-
-        # Record molecule uid to process
-        mol_uids.append(res_uid)
+        mol_token_st[res_uid] = token_st
 
     # for each molecule, get the symmetries
     mol_atom_swaps: list[ResidueSymmetry] = []
-    for mol_uid in mol_uids:
+    for mol_uid in residue_mol.keys():
         ccd_id, mol_atom_names = residue_mol[mol_uid]
-        if ccd_id not in ccd_symmetry_dict:
-            continue
-
         ccd_syms, ccd_atom_names = ccd_symmetry_dict[ccd_id]
         atom_id_in_ccd: dict[int, int] = {
             ccd_atom_names.index(name): i for i, name in enumerate(mol_atom_names)
