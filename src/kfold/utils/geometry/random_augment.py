@@ -238,7 +238,6 @@ def _copysign(a: ArrayT, b: ArrayT) -> ArrayT:
     if isinstance(a, np.ndarray):
         return np.copysign(a, b)
     else:
-        assert isinstance(b, torch.Tensor)
         return torch.copysign(a, b)
 
 

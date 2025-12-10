@@ -41,7 +41,8 @@ train:
 
     paths:
       seq_embedding_path: /cache/wykim_lab/kfold_data/esm_embeddings/esmc_300m/
-
+    apo_perturbation_args:
+      mask_nucleic_acids: false # use holo structures as DNA/RNA apo structures
     featurization_args:
       seq_embedding_dim: 960
 

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from kfold.data.featurize import featurize_structure
+from kfold.data.featurize import InputFeaturizer
 from kfold.data.structure import TokenizedStructure
 from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
@@ -135,7 +135,8 @@ def check_structure(key: str, verbose: bool = False):
     print_(f"Boltz: Featurize structure in {time.time() - st:.2f} seconds")
 
     st = time.time()
-    folding_input = featurize_structure(kfold_tokenized, augment_ref_pos=False)
+    featurizer = InputFeaturizer(augment_ref_pos=False)
+    folding_input = featurizer.run(kfold_tokenized)
     print_(f"KFold: Featurize structure in {time.time() - st:.2f} seconds")
 
     # ==================================================== #

@@ -49,7 +49,9 @@ def compute_rmsd(
     if isinstance(coords, np.ndarray):
         assert isinstance(target, np.ndarray) and isinstance(mask, np.ndarray)
         diff = (coords - target) * mask[..., np.newaxis]
-        mse = np.sum(diff**2, axis=(-2, -1)) / (np.sum(mask, axis=-1).clip(a_min=1))
+        mse = np.sum(diff**2, axis=(-2, -1)) / np.clip(
+            np.sum(mask, axis=-1), a_min=1, a_max=None
+        )
         rmsd = np.sqrt(mse)
         return rmsd
     elif isinstance(coords, torch.Tensor):

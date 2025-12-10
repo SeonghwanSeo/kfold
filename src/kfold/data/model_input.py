@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+import dataclasses
 from functools import cached_property
 from typing import Self
 
@@ -18,7 +18,7 @@ __all__ = [
 
 
 # === Layout dataclasses (chain-level, token-level, atom-level, bond-level) === #
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class ChainLayout(TensorLayout):
     """Chain-level layout information.
 
@@ -136,7 +136,7 @@ class ChainLayout(TensorLayout):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class TokenLayout(TensorLayout):
     """Token-level layout information.
 
@@ -322,7 +322,7 @@ class TokenLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class AtomLayout(TensorLayout):
     """Atom-level layout information for molecular structures.
 
@@ -451,7 +451,7 @@ class AtomLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class BondLayout(TensorLayout):
     """Bond-level layout information for molecular structures.
 
@@ -553,7 +553,7 @@ class BondLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class PretrainedLayout(TensorLayout):
     """Token-level layout including pretrained embedding information.
 
@@ -640,7 +640,7 @@ class PretrainedLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclass(frozen=True, slots=False)
+@dataclasses.dataclass(frozen=True, slots=False)
 class FoldingInput:
     """Input of co-folding"""
 
@@ -895,6 +895,21 @@ class FoldingInput:
                 f"  device: {device}\n"
                 f")"
             )
+
+    def copy_with(self, **kwargs) -> Self:
+        """Create a copy of the FoldingInput with modified attributes.
+
+        Parameters
+        ----------
+        kwargs: dict
+            Attributes to be modified in the new instance.
+
+        Returns
+        -------
+        new_instance: FoldingInput
+            A new instance of FoldingInput with modified attributes.
+        """
+        return dataclasses.replace(self, **kwargs)
 
     # === Padding functions for preparing model inputs === #
     def pad_to_multiple_of(self, multiple: int = 32) -> Self:

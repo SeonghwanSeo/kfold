@@ -1,6 +1,6 @@
 import pickle
 import random
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict, defaultdict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -397,7 +397,7 @@ def get_molecule_symmetries(
     mol_token_st: dict[ResUID, int] = {}
 
     for res_i in range(cropped_struct.num_residues):
-        if cropped_struct.token.is_standard[res_i]:
+        if cropped_struct.residue.is_standard[res_i]:
             # Skip standard amino acids and nucleotides
             continue
 
@@ -415,7 +415,9 @@ def get_molecule_symmetries(
         # Check input valid
         num_atoms = int(cropped_struct.residue.num_atoms[res_i])
         num_tokens = int(cropped_struct.residue.num_tokens[res_i])
-        assert num_atoms == num_tokens, "Molecule token and atom number mismatch"
+        assert num_atoms == num_tokens, (
+            f"Molecule token and atom number mismatch, {num_atoms} != {num_tokens}"
+        )
 
         # Get molecule atom names
         token_st = int(cropped_struct.residue.token_start[res_i])
