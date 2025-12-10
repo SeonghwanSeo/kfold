@@ -37,7 +37,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Implement initial diffusion bridge framework - [#48]
 - [x] Integrate to pre-trained sequence/structure embeddings and train. - [#62](https://github.com/SeonghwanSeo/kfold/pull/62)
 - [x] Add apo information (e.g., distance map) before Pairformer trunk - [#80](https://github.com/SeonghwanSeo/kfold/pull/80)
-- [ ] Add apo information (e.g., distance map) in Structure module.
+- [x] Add apo-conditioned diffusion score model in Structure module - [#96](https://github.com/SeonghwanSeo/kfold/pull/96)
 
 ### Training
 

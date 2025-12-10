@@ -77,7 +77,7 @@ class AtomAttentionEncoderWithApo(nn.Module):
         self.embed_apo_inv_dist = LinearNoBias(1, channel_atompair, init="default")
         self.embed_apo_mask = LinearNoBias(1, channel_atompair, init="default")
 
-        self.use_structure = use_structure
+        self.use_structure: bool = use_structure
         if use_structure:
             assert channel_z is not None, (
                 "channel_z must be provided if use_structure is True"

@@ -81,7 +81,7 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             The maximum relative residue distance for relative position encoding.
         max_relative_chain : int
             The maximum relative chain distance for relative position encoding.
-        embed_apo : bool
+        use_apo : bool
             Whether to embed apo structure.
         min_dist : float
             The minimum distance for RBF encoding.
@@ -103,20 +103,20 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         atom_encoder_heads: int = 4
         max_relative_token: int = 32
         max_relative_chain: int = 2
-        embed_apo: bool = False
+        use_apo: bool = False
         num_rbf: int = 64
         min_dist: float = 2.0
         max_dist: float = 22.0
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
-        self.channel_s = cfg.channel_s
-        self.channel_z = cfg.channel_z
-        self.channel_atom = cfg.channel_atom
-        self.channel_atompair = cfg.channel_atompair
-        self.embed_apo = cfg.embed_apo
+        self.channel_s: int = cfg.channel_s
+        self.channel_z: int = cfg.channel_z
+        self.channel_atom: int = cfg.channel_atom
+        self.channel_atompair: int = cfg.channel_atompair
+        self.use_apo: bool = cfg.use_apo
 
-        if self.embed_apo:
+        if self.use_apo:
             self.encoder = InputEmbedderWithApo(
                 channel_s=cfg.channel_s,
                 channel_atom=cfg.channel_atom,
@@ -162,7 +162,7 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
 
         # Token-level apo embedding
-        if cfg.embed_apo:
+        if cfg.use_apo:
             # rbf
             self.rbf = RBF(d_min=cfg.min_dist, d_max=cfg.max_dist, num_bins=cfg.num_rbf)
 
@@ -228,7 +228,7 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         )  # [B, L, L, c_z]
 
         # Add apo distance embedding
-        if self.embed_apo:
+        if self.use_apo:
             z_init = z_init + self.get_apo_embedding(f_input)  # [B, L, L, c_z]
 
         return s_inputs, s_init, z_init
