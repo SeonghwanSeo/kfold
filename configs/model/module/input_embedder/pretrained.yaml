@@ -12,4 +12,4 @@ atom_encoder_blocks: 3
 atom_encoder_heads: 4
 max_relative_token: 32
 max_relative_chain: 2
-embed_apo: false
+use_apo: false
