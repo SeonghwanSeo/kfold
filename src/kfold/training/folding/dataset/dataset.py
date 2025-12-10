@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from typing_extensions import override
 
-from kfold.data import featurize, metadata, model_input, structure
+from kfold.data import apo_perturbation, featurize, metadata, model_input, structure
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper, PreCropper
@@ -34,18 +34,38 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         records: list[metadata.Metadata],
         paths: dict[str, Path | None],
+        apo_perturbation_args: dict,
         featurization_args: dict,
         safe_load: bool = True,
         return_symmetry: bool = False,
         return_structure: bool = False,
         ccd_symmetry_dict: dict | None = None,
+        seed: int | None = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        records : list[metadata.Metadata]
+            List of samples to use in the dataset.
+        paths : dict[str, Path | None]
+            Paths for various resources.
+        apo_perturbation_args : dict
+            Arguments for apo perturbation.
+        featurization_args : dict
+            Arguments for featurization.
+        safe_load : bool
+            Whether to enable safe loading with retries on failure.
+        return_symmetry : bool
+            Whether to return symmetry information.
+        return_structure : bool
+            Whether to return the original tokenized structure.
+        ccd_symmetry_dict : dict | None
+            Dictionary mapping CCD IDs to symmetry information.
+        seed : int | None
+            Random seed for reproducibility.
+        """
         self.records: list[metadata.Metadata] = records
         self.safe_load: bool = safe_load
-
-        # Featurization arguments (copy to avoid mutation)
-        featurization_args = featurization_args.copy()
-        self.featurization_args: dict = featurization_args
 
         self.return_symmetry: bool = return_symmetry
         self.return_structure: bool = return_structure
@@ -56,38 +76,20 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             )
             self.ccd_symmetry_dict: dict = ccd_symmetry_dict
 
-        # Pretrained embeddings
-        self.seq_embedding_path: Path | None = paths["seq_embedding_path"]
-        self.seq_embedding_dim: int | None = featurization_args.pop("seq_embedding_dim")
-        if self.seq_embedding_path is not None:
-            assert self.seq_embedding_path.exists(), (
-                f"seq_embedding_path '{self.seq_embedding_path}' does not exist."
+        # Initialize featurizer and apo perturbation
+        self.apo_perturbation: apo_perturbation.ApoPerturbation = (
+            apo_perturbation.ApoPerturbation(
+                **apo_perturbation_args,
+                ccd_symmetry_dict=ccd_symmetry_dict,
+                seed=seed,
             )
-            assert self.seq_embedding_dim is not None, (
-                "seq_embedding_dim must be provided when seq_embedding_path is provided."
-            )
-        else:
-            assert self.seq_embedding_dim is None, (
-                "seq_embedding_dim must be None when seq_embedding_path is not provided."
-            )
-
-        self.struct_embedding_path: Path | None = paths["struct_embedding_path"]
-        self.struct_embedding_dim: int | None = featurization_args.pop(
-            "struct_embedding_dim"
         )
-        if self.struct_embedding_path is not None:
-            assert self.struct_embedding_path.exists(), (
-                f"struct_embedding_path '{self.struct_embedding_path}' does not exist."
-            )
-            assert self.struct_embedding_dim is not None, (
-                "struct_embedding_dim must be provided when struct_embedding_path is"
-                " provided."
-            )
-        else:
-            assert self.struct_embedding_dim is None, (
-                "struct_embedding_dim must be None when struct_embedding_path is not"
-                " provided."
-            )
+        self.featurizer: featurize.InputFeaturizer = featurize.InputFeaturizer(
+            **featurization_args,
+            seq_embedding_path=paths["seq_embedding_path"],
+            struct_embedding_path=paths["struct_embedding_path"],
+            seed=seed,
+        )
 
     def __len__(self) -> int:
         return len(self.records)
@@ -168,8 +170,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Tokenization
         struct = self.load_tokenized_structure(record)
 
-        # Pre-cropping (on-the-fly pipeline of AlphaFold3 SI Section 2.5.4)
+        # Sub-complex structure extraction for large complex (>20 chains)
+        # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
         struct = self.pre_crop_structure(struct, **kwargs)
+
+        # Apo perturbation
+        struct = self.augment_apo_structure(struct)
 
         # Cropping
         cropped_struct = self.crop_structure(struct, **kwargs)
@@ -192,36 +198,22 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         return f_input, symmetry_dict
 
+    def augment_apo_structure(
+        self, struct: structure.TokenizedStructure
+    ) -> structure.TokenizedStructure:
+        """Apply random perturbation/rotation to apo structure"""
+        return self.apo_perturbation.run(struct)
+
     def featurize(
         self, struct: structure.TokenizedStructure, record: metadata.Metadata
     ) -> model_input.FoldingInput:
         """Featurize the given tokenized structure."""
-        record_id = record.id
-
         # Featurization
-        f_input = featurize.featurize_structure(struct, **self.featurization_args)
-
-        # Add pretrained embeddings if provided
-        if self.seq_embedding_path is not None:
-            seq_emb_prefix = str(
-                self.seq_embedding_path / record_id[:2] / record_id / f"{record_id}_"
-            )
-        else:
-            seq_emb_prefix = None
-        if self.struct_embedding_path is not None:
-            struct_emb_prefix = str(
-                self.struct_embedding_path / record_id[:2] / record_id / f"{record_id}_"
-            )
-        else:
-            struct_emb_prefix = None
-
-        f_input = featurize.add_pretrained_embeddings(
-            f_input,
-            seq_emb_prefix,
-            struct_emb_prefix,
-            self.seq_embedding_dim,
-            self.struct_embedding_dim,
-        )
+        record_id = record.id
+        # HACK: This is the rule to save the pre-computed features in the directory.
+        # e.g., "{seq_embedding_path}/4l/4l8g/4l8g_*"
+        prefix = f"{record_id[:2]}/{record_id}/{record_id}_"
+        f_input = self.featurizer.run(struct, prefix)
         return f_input
 
 
@@ -230,6 +222,7 @@ class TrainingDataset(SafeLoadingDataset):
         self,
         records: list[metadata.Metadata],
         paths: dict[str, Path | None],
+        apo_perturbation_args: dict,
         featurization_args: dict,
         max_chains: int,
         max_tokens: int,
@@ -246,6 +239,8 @@ class TrainingDataset(SafeLoadingDataset):
             List of samples to use in the dataset.
         paths : dict[str, Path | None]
             Paths for various resources.
+        apo_perturbation_args : dict
+            Arguments for apo perturbation.
         featurization_args : dict
             Arguments for featurization.
         max_chains : int
@@ -258,6 +253,10 @@ class TrainingDataset(SafeLoadingDataset):
         sampler_config : BaseSampler.Config | None
             Sampler configuration to use for sampling samples.
             If None, uniform sampling is used.
+        safe_load : bool
+            Whether to enable safe loading with retries on failure.
+        return_symmetry : bool
+            Whether to return symmetry information.
 
         Notes
         -----
@@ -269,11 +268,13 @@ class TrainingDataset(SafeLoadingDataset):
         super().__init__(
             records,
             paths,
+            apo_perturbation_args,
             featurization_args,
             safe_load,
             return_symmetry,
             return_structure=False,
             ccd_symmetry_dict=ccd_symmetry_dict,
+            seed=None,  # Do not fix seed for training dataset
         )
         self.max_tokens: int = max_tokens
         self.max_chains: int = max_chains
@@ -362,6 +363,7 @@ class ValidationDataset(SafeLoadingDataset):
         self,
         records: list[metadata.Metadata],
         paths: dict[str, Path | None],
+        apo_perturbation_args: dict,
         featurization_args: dict,
         safe_load: bool = True,
         return_symmetry: bool = False,
@@ -373,14 +375,23 @@ class ValidationDataset(SafeLoadingDataset):
         records : list[metadata.Metadata]
             List of samples to use in the dataset.
         """
+        # To validate the folding performance in usage scenario, where holo
+        # structures are not available, we disable symmetry correction and
+        # holo replacement during apo perturbation.
+        apo_perturbation_args = apo_perturbation_args.copy()
+        apo_perturbation_args["use_symmetry_correction"] = False
+        apo_perturbation_args["prob_replace_to_holo"] = 0.0
+
         super().__init__(
             records,
             paths,
+            apo_perturbation_args,
             featurization_args,
             safe_load,
             return_symmetry,
             return_structure=True,
             ccd_symmetry_dict=ccd_symmetry_dict,
+            seed=42,  # Fix seed for validation dataset
         )
 
 
@@ -434,6 +445,7 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
         records: list[metadata.Metadata],
         lmdb_path: Path,
         paths: dict[str, Path | None],
+        apo_perturbation_args: dict,
         featurization_args: dict,
         max_chains: int,
         max_tokens: int,
@@ -447,6 +459,7 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
             self,
             records,
             paths,
+            apo_perturbation_args,
             featurization_args,
             max_chains,
             max_tokens,
@@ -471,6 +484,7 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         records: list[metadata.Metadata],
         lmdb_path: Path,
         paths: dict[str, Path | None],
+        apo_perturbation_args: dict,
         featurization_args: dict,
         safe_load: bool = True,
         return_symmetry: bool = False,
@@ -480,6 +494,7 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
             self,
             records,
             paths,
+            apo_perturbation_args,
             featurization_args,
             safe_load,
             return_symmetry,

@@ -24,7 +24,7 @@ DNA_RESIDUES: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
 
 class ResidueName(enum.StrEnum):
     # pad
-    PAD = "[PAD]"  # We use padint token instead of gap ("-") of MSA.
+    PAD = "[PAD]"  # We use padding token instead of gap ("-") for MSA.
 
     # protein
     ALA = "ALA"
@@ -143,7 +143,9 @@ def get_one_letter(residue_name: str | ResidueName) -> str:
     if isinstance(residue_name, ResidueName):
         residue_name = residue_name.name
 
-    assert residue_name != "-", "Gap character does not have a one-letter code."
+    assert residue_name != ResidueName.PAD, (
+        "Padding residue does not have a one-letter code."
+    )
 
     if residue_name in PROTEIN_RESIDUES:
         idx = PROTEIN_RESIDUES.index(residue_name)

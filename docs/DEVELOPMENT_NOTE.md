@@ -98,6 +98,8 @@ This section describes the additional implementations which are not part of the 
     - Rationale: The apo input provides a strong structural prior for intra-chain geometry and relative positioning, reducing the need to learn these features from scratch.
     - Method: We extend standard spatial cropping and spatial interface cropping to multi-anchor cropping, which selects multiple spatial centers to form a single input. This allows the model to simultaneously capture disparate regions of the complex, focusing training on interface regions and global chain arrangement.
 
+4. **Optimal Transport Permutation**: To effectively learn the mapping between **apo** and **holo** structures, we implemented a chain permutation algorithm and residue atom swapping algorithm to match the symmetry between the two states.
+
 ### Pre-trained Representation Model
 
 1. **Pre-trained Language Model Integration**: We integrated pre-trained language models to enhance the sequence representation of each chain in the complex structure. This replaces the needs of MSA-based representation.
@@ -130,9 +132,6 @@ The following items require future implementation.
 
 1. **Abstraction for Structure Module**: We may want to use not only diffusion models but also flow-matching models or other generative models as the structure module. Therefore, we need to abstract the structure module more generally.
     - Currently, the structure module is tightly coupled with the diffusion model. In future, we need to decouple this, i.e., BaseStructureModule, BaseDiffusionModule, BaseFlowMatchingModule, etc.
-2. **Optimal Transport Permutation**: We plan to implement optimal transport (OT) permutation to improve training stability.
-    - Implement symmetry computation within the cropped structure.
-    - Compute optimal transport between apo and holo structures.
 
 ### Benchmark
 

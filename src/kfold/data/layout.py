@@ -48,7 +48,7 @@ class ArrayObj(Generic[ArrayT]):
         else:
             return self.from_dict(self.to_dict())
 
-    def copy_with(self, deepcopy: bool = False, **kwargs) -> Self:
+    def copy_with(self, deepcopy: bool = False, **kwargs: ArrayT) -> Self:
         """Create a copy of the object with optional field updates."""
         data = self.to_dict()
         assert kwargs.keys() <= data.keys(), (

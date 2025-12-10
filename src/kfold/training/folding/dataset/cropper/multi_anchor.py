@@ -225,7 +225,7 @@ class MultiAnchorCropper(BaseCropper):
 
             # Line 11
             chain_idx = asym_id_to_chain_idx[asym_id]
-            chain_st = int(struct.chain.token_starts[chain_idx])
+            chain_st = int(struct.chain.token_start[chain_idx])
             crop_start += chain_st
             selected_tokens = np.arange(crop_start, crop_start + crop_size)
 
