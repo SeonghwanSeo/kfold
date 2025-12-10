@@ -17,6 +17,7 @@ structure_module:
 
 score_model:
   _yaml_: "module/score_model/apo_conditioned.yaml"
+  channel_coords: 6
   use_apo: false
 
 distogram_head:
