@@ -54,7 +54,8 @@ It serves as a reference for developers and contributors working with the K-Fold
     - `structure.py`: High-level numpy array interfaces (`TokenizedStructure`).
     - `model_input.py`: High-level (batched) tensor interfaces (`FoldingInput`).
     - `metadata.py`: Metadata structures for datasets.
-    - `featurize.py`: Functions to convert tokenized representations and model inputs.
+    - `featurize.py`: A module and functions to convert `TokenizedStructure` to `FoldingInput`.
+    - `apo_perturbation.py`: A module and functions for apo structure perturbation and augmentation.
     - `sequence_tokenizer.py`: Tokenizers for protein, DNA and RNA
 
   - **`inference/`**: TODO: implement API for inference
