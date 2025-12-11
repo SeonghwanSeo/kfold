@@ -3,24 +3,6 @@ from functools import lru_cache
 
 from .chain import ChainType
 
-# one-letter codes for standard amino acids and nucleic acid bases
-PROTEIN_AMINO_ACIDS: tuple[str, ...] = (
-    "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I",
-    "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V",
-    "X"
-)  # fmt: skip
-PROTEIN_RESIDUES: tuple[str, ...] = (
-    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
-    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
-    "UNK"
-)  # fmt: skip
-
-RNA_BASES: tuple[str, ...] = ("A", "G", "C", "U", "N")
-RNA_RESIDUES: tuple[str, ...] = ("A", "G", "C", "U", "N")
-
-DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
-DNA_RESIDUES: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
-
 
 class ResidueName(enum.StrEnum):
     # pad
@@ -77,13 +59,33 @@ residue_index_to_name: dict[int, ResidueName] = {
 }
 
 
-def get_residue_name_with_unk(residue_name: str) -> ResidueName:
-    """Get the ResidueName enum, defaulting to UNK if not found."""
-    try:
-        return ResidueName[residue_name]
-    except KeyError:
-        return ResidueName.UNK
+# one-letter codes for standard amino acids and nucleic acid bases
+PROTEIN_AMINO_ACIDS: tuple[str, ...] = (
+    "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I",
+    "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V",
+    "X"
+)  # fmt: skip
+PROTEIN_RESIDUES_STR: tuple[str, ...] = (
+    "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
+    "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
+    "UNK"
+)  # fmt: skip
 
+RNA_BASES: tuple[str, ...] = ("A", "G", "C", "U", "N")
+RNA_RESIDUES_STR: tuple[str, ...] = ("A", "G", "C", "U", "N")
+
+DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
+DNA_RESIDUES_STR: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
+
+PROTEIN_RESIDUES: tuple[ResidueName, ...] = tuple(
+    ResidueName[name] for name in PROTEIN_RESIDUES_STR
+)
+RNA_RESIDUES: tuple[ResidueName, ...] = tuple(
+    ResidueName[name] for name in RNA_RESIDUES_STR
+)
+DNA_RESIDUES: tuple[ResidueName, ...] = tuple(
+    ResidueName[name] for name in DNA_RESIDUES_STR
+)
 
 protein_one_letter_to_residue_name: dict[str, ResidueName] = {
     "A": ResidueName.ALA,
@@ -122,39 +124,70 @@ dna_one_letter_to_residue_name: dict[str, ResidueName] = {
     "T": ResidueName.DT,
     "N": ResidueName.DN,
 }
+protein_residue_name_to_one_letter: dict[ResidueName, str] = {
+    v: k for k, v in protein_one_letter_to_residue_name.items()
+}
+rna_residue_name_to_one_letter: dict[ResidueName, str] = {
+    v: k for k, v in rna_one_letter_to_residue_name.items()
+}
+dna_residue_name_to_one_letter: dict[ResidueName, str] = {
+    v: k for k, v in dna_one_letter_to_residue_name.items()
+}
 
 
-@lru_cache(100)
-def map_one_letter_to_residue_name(chain_type: ChainType, one_letter: str) -> ResidueName:
+@lru_cache
+def get_residue_name_with_unk(residue_name: str, ctype: ChainType) -> ResidueName:
+    """Get the ResidueName enum, defaulting to UNK if not found.
+    NOTE: According to AF3, all non-standard residues are mapped to UNK.
+    """
+    match ctype:
+        case ChainType.PROTEIN:
+            if residue_name == "MSE":
+                residue_name = "MET"
+            if residue_name not in PROTEIN_RESIDUES:
+                return ResidueName.UNK
+            return ResidueName[residue_name]
+        case ChainType.RNA:
+            if residue_name not in RNA_RESIDUES:
+                return ResidueName.N
+            return ResidueName[residue_name]
+        case ChainType.DNA:
+            if residue_name not in DNA_RESIDUES:
+                return ResidueName.DN
+            return ResidueName[residue_name]
+        case _:
+            # default to UNK for ligand
+            return ResidueName.UNK
+
+
+@lru_cache
+def map_one_letter_to_residue_name(one_letter: str, ctype: ChainType) -> ResidueName:
     """Map one-letter code to ResidueName enum based on chain type."""
-    if chain_type == ChainType.PROTEIN:
-        return protein_one_letter_to_residue_name.get(one_letter, ResidueName.UNK)
-    elif chain_type == ChainType.RNA:
-        return rna_one_letter_to_residue_name.get(one_letter, ResidueName.N)
-    elif chain_type == ChainType.DNA:
-        return dna_one_letter_to_residue_name.get(one_letter, ResidueName.DN)
-    else:
-        raise ValueError(f"Unsupported chain type: {chain_type}")
+    match ctype:
+        case ChainType.PROTEIN:
+            return protein_one_letter_to_residue_name.get(one_letter, ResidueName.UNK)
+        case ChainType.RNA:
+            return rna_one_letter_to_residue_name.get(one_letter, ResidueName.N)
+        case ChainType.DNA:
+            return dna_one_letter_to_residue_name.get(one_letter, ResidueName.DN)
+        case _:
+            raise ValueError(f"Unsupported chain type: {ctype}")
 
 
-@lru_cache(100)
-def get_one_letter(residue_name: str | ResidueName) -> str:
+@lru_cache
+def get_one_letter(residue_name: str | ResidueName, ctype: ChainType) -> str:
     """Get the one-letter code for a given residue name."""
-    if isinstance(residue_name, ResidueName):
-        residue_name = residue_name.name
-
     assert residue_name != ResidueName.PAD, (
         "Padding residue does not have a one-letter code."
     )
+    if isinstance(residue_name, str):
+        residue_name = get_residue_name_with_unk(residue_name, ctype)
 
-    if residue_name in PROTEIN_RESIDUES:
-        idx = PROTEIN_RESIDUES.index(residue_name)
-        return PROTEIN_AMINO_ACIDS[idx]
-    elif residue_name in RNA_RESIDUES:
-        idx = RNA_RESIDUES.index(residue_name)
-        return RNA_BASES[idx]
-    elif residue_name in DNA_RESIDUES:
-        idx = DNA_RESIDUES.index(residue_name)
-        return DNA_BASES[idx]
+    if ctype == ChainType.PROTEIN:
+        return protein_residue_name_to_one_letter[residue_name]
+    elif ctype == ChainType.RNA:
+        return rna_residue_name_to_one_letter[residue_name]
+    elif ctype == ChainType.DNA:
+        return dna_residue_name_to_one_letter[residue_name]
     else:
-        return "X"  # Unknown residue
+        raise ValueError(f"Unsupported chain type: {ctype}")
