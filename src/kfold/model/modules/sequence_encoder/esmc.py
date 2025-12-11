@@ -69,17 +69,17 @@ class ESMC(BaseSequenceEncoder):
             n_layers_geom=0,
         )
 
+        # Load pretrained weights
+        model = load_local_model(cfg.model_name, device=torch.device("cpu"))
+        del model.sequence_head  # remove the head to avoid size mismatch
+        self.load_state_dict(model.state_dict(), strict=True)
+
         # Convert to bfloat16 (ESMC default)
         self.embed = self.embed.to(torch.bfloat16)
         self.transformer = self.transformer.to(torch.bfloat16)
 
         # Set to eval mode
         self.eval()
-
-        # Load pretrained weights
-        model = load_local_model(cfg.model_name, device=torch.device("cpu"))
-        del model.sequence_head  # remove the head to avoid size mismatch
-        self.load_state_dict(model.state_dict(), strict=True)
 
     @property
     def device(self) -> torch.device:
@@ -142,8 +142,8 @@ class ESMC(BaseSequenceEncoder):
             x, pre_norm, _ = self.transformer(x, sequence_id=sequence_id)
 
             if self.use_flash_attn:
-                assert pad_input is not None
                 assert indices is not None
+                assert pad_input is not None
                 pre_norm = pad_input(pre_norm, indices, B, L)  # Back to [B, L, D]
 
         # Return pre-norm representations since further layernorm is applied later.

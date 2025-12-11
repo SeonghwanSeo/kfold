@@ -151,10 +151,9 @@ residue_atoms: dict[str, tuple[str, ...]] = {
 }  # fmt: skip
 
 RESIDUE_FRAME_ATOMS: dict[ResidueName, tuple[AtomName, AtomName, AtomName]] = {
-    ResidueName[res]: (AtomName.N, AtomName.CA, AtomName.C)
-    for res in residue.PROTEIN_RESIDUES
+    res: (AtomName.N, AtomName.CA, AtomName.C) for res in residue.PROTEIN_RESIDUES
 } | {
-    ResidueName[res]: (AtomName.C1_PRIME, AtomName.C3_PRIME, AtomName.C4_PRIME)
+    res: (AtomName.C1_PRIME, AtomName.C3_PRIME, AtomName.C4_PRIME)
     for res in residue.RNA_RESIDUES + residue.DNA_RESIDUES
 }
 

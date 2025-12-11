@@ -106,7 +106,7 @@ class AttentionPairBias(nn.Module):
                 "channel_s must be provided if use_single_cond is True"
             )
             self.linear_out = LinearNoBias(channel_a, channel_a, init="default")
-            self.linear_s = Linear(channel_s, channel_a, init="gating_ada_zero")
+            self.linear_s = Linear(channel_s, channel_a, init="gating_closed")
         else:
             self.linear_out = LinearNoBias(channel_a, channel_a, init="final")
 
@@ -408,7 +408,7 @@ class ConditionedTransitionBlock(nn.Module):
         model_dim = int(channel_a * expansion_factor)  # Line 2
         self.swiglu = SwiGLU(channel_a, model_dim)
 
-        self.linear_g = Linear(channel_s, channel_a, init="gating_ada_zero")
+        self.linear_g = Linear(channel_s, channel_a, init="gating_closed")
         self.linear_out = LinearNoBias(model_dim, channel_a, init="default")
         self.sigmoid = nn.Sigmoid()
 

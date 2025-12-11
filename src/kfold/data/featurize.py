@@ -540,7 +540,8 @@ def load_pretrained_embedding(
                 # HACK: (SeonghwanSeo) Print warning only for protein chains, since other
                 # chain types are not prepared yet. In future, we may want to enforce the
                 # existence of embedding files for all chain types.
-                if chain_type is C.ChainType.PROTEIN:
+                print_warning: bool = False
+                if print_warning and chain_type is C.ChainType.PROTEIN:
                     warnings.warn(
                         f"Precomputed Embedding file not found: {filename}."
                         f" Zero tensor is used instead.",

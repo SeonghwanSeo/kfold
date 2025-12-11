@@ -13,3 +13,4 @@ atom_encoder_heads: 4
 max_relative_token: 32
 max_relative_chain: 2
 use_apo: false
+gating: true

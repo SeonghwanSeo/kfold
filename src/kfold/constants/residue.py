@@ -144,15 +144,15 @@ def get_residue_name_with_unk(residue_name: str, ctype: ChainType) -> ResidueNam
         case ChainType.PROTEIN:
             if residue_name == "MSE":
                 residue_name = "MET"
-            if residue_name not in PROTEIN_RESIDUES:
+            if residue_name not in PROTEIN_RESIDUES_STR:
                 return ResidueName.UNK
             return ResidueName[residue_name]
         case ChainType.RNA:
-            if residue_name not in RNA_RESIDUES:
+            if residue_name not in RNA_RESIDUES_STR:
                 return ResidueName.N
             return ResidueName[residue_name]
         case ChainType.DNA:
-            if residue_name not in DNA_RESIDUES:
+            if residue_name not in DNA_RESIDUES_STR:
                 return ResidueName.DN
             return ResidueName[residue_name]
         case _:
@@ -183,11 +183,12 @@ def get_one_letter(residue_name: str | ResidueName, ctype: ChainType) -> str:
     if isinstance(residue_name, str):
         residue_name = get_residue_name_with_unk(residue_name, ctype)
 
-    if ctype == ChainType.PROTEIN:
-        return protein_residue_name_to_one_letter[residue_name]
-    elif ctype == ChainType.RNA:
-        return rna_residue_name_to_one_letter[residue_name]
-    elif ctype == ChainType.DNA:
-        return dna_residue_name_to_one_letter[residue_name]
-    else:
-        raise ValueError(f"Unsupported chain type: {ctype}")
+    match ctype:
+        case ChainType.PROTEIN:
+            return protein_residue_name_to_one_letter[residue_name]
+        case ChainType.RNA:
+            return rna_residue_name_to_one_letter[residue_name]
+        case ChainType.DNA:
+            return dna_residue_name_to_one_letter[residue_name]
+        case _:
+            raise ValueError(f"Unsupported chain type: {ctype}")
