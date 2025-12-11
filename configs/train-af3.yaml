@@ -32,6 +32,12 @@ train:
     symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
     num_workers: 4
 
+    cropper:
+      max_anchors: 1 # Same to AF-M/AF3 cropping
+      w_contiguous: 0.2
+      w_spatial: 0.4
+      w_spatial_interface: 0.4
+
   wandb:
     use: false
     project: "KFold-edm"
