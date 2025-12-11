@@ -59,7 +59,11 @@ data:
 
   cropper:
     _registry_: "data_cropper"
-    _class_: BoltzCropper
+    _class_: MultiAnchorCropper
+    max_anchors: 3
+    w_contiguous: 0.3
+    w_spatial: 0.2
+    w_spatial_interface: 0.5
 
   sampler:
     _registry_: "data_sampler"
