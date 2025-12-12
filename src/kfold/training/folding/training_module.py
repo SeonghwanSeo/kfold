@@ -690,6 +690,9 @@ class KFoldTrainingModule(pl.LightningModule):
 
         save_dir.mkdir(parents=True, exist_ok=True)
 
+        save_path = save_dir / f"{name}-apo.pdb"
+        struct.write(save_path, 0, save_apo=True)
+
         true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
         new_struct = struct.replace_atom_coords(true_coords_arr)
         for i in range(true_coords_arr.shape[0]):
