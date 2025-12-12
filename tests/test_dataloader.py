@@ -21,7 +21,7 @@ if __name__ == "__main__":
     global_config.train.data.safe_load = False
     global_config.train.data.num_workers = 64
 
-    # Load validation loader
+    # Load training loader
     data_module = TrainingDataModule(global_config.train.data)
     data_module.setup("fit")
     dataloader = data_module.train_dataloader()
