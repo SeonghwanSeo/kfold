@@ -34,7 +34,8 @@ def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, lis
 
 
 @lru_cache
-def load_manifest(manifest_path: Path) -> list[Metadata]:
+def load_manifest(manifest_path: str | Path) -> list[Metadata]:
+    manifest_path = Path(manifest_path)
     format = manifest_path.suffix.lower()
     if format == ".json":
         with open(manifest_path) as f:

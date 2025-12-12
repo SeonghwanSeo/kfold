@@ -2,7 +2,6 @@ model:
   _yaml_: "model/kfold-edm.yaml"
   input_embedder:
     channel_seq_encoder: 1152
-    use_apo: true
   trunk:
     use_cuequiv_kernels: true
 

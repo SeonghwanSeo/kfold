@@ -198,13 +198,17 @@ class KFoldTrainingModule(pl.LightningModule):
         # RMSD
         val_metrics["avg_rmsd"] = MeanMetric()
         val_metrics["rmsd"] = MeanMetric()
-        val_metrics["avg_weighted_rmsd"] = MeanMetric()
-        val_metrics["weighted_rmsd"] = MeanMetric()
+        val_metrics["best_rmsd"] = MeanMetric()
 
         # LDDT
+        val_metrics["lddt"] = MeanMetric()
+        val_metrics["best_lddt"] = MeanMetric()
+        val_metrics["complex_lddt"] = MeanMetric()
         for m in C.training.LDDTType:
-            val_metrics[f"avg_lddt_{m.value}"] = MeanMetric()
+            # HACK: Currently, `lddt_...` and `best_lddt_...` are the same
+            # since we do not perform confidence ranking yet.
             val_metrics[f"lddt_{m.value}"] = MeanMetric()
+            val_metrics[f"best_lddt_{m.value}"] = MeanMetric()
             val_metrics[f"complex_lddt_{m.value}"] = MeanMetric()
 
         self.metrics = torch.nn.ModuleDict(
@@ -431,25 +435,15 @@ class KFoldTrainingModule(pl.LightningModule):
         # Compute weighted lddt scores (Monitored metrics)
         # NOTE: this is equivalent to Boltz1's `lddt` metric.
         lddt_weights = C.training.LDDTWeightsBoltz
-        sum_weights = sum(lddt_weights.values())
 
-        weighted_lddt = 0
-        for m, w in lddt_weights.items():
-            weighted_lddt += avg_values.get(f"lddt_{m.value}", 0.0) * w
-        weighted_lddt /= sum_weights
-        avg_values["lddt"] = weighted_lddt  # type: ignore
-
-        weighted_lddt = 0
-        for m, w in lddt_weights.items():
-            weighted_lddt += avg_values.get(f"avg_lddt_{m.value}", 0.0) * w
-        weighted_lddt /= sum_weights
-        avg_values["avg_lddt"] = weighted_lddt  # type: ignore
-
-        # NOTE: to match the boltz's metric naming, I swap the name
-        for key in ["rmsd", "weighted_rmsd"]:
-            if key in avg_values:
-                v1, v2 = avg_values.pop(key), avg_values.pop(f"avg_{key}")
-                avg_values[key], avg_values[f"best_{key}"] = v2, v1
+        for prefix in ["", "best_", "complex_"]:
+            weighted_lddt = 0
+            sum_weights = 0
+            for m, w in lddt_weights.items():
+                weighted_lddt += avg_values.get(f"{prefix}lddt_{m.value}", 0.0) * w
+                sum_weights += w
+            weighted_lddt /= sum_weights
+            avg_values[f"{prefix}weighted_lddt"] = weighted_lddt  # type: ignore
 
         avg_values = {f"val/{k}": v for k, v in avg_values.items()}
         self.log_dict(avg_values, sync_dist=True)
@@ -551,8 +545,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        # FIXME: we may want to log less frequently
-        if self.trainer.global_step % 1 == 0:
+        if self.trainer.global_step % 10 == 0:
             self.log_model_state()
 
     def log_model_state(self):
