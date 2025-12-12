@@ -196,6 +196,7 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
             project=train_cfg.wandb.project,
             group=train_cfg.wandb.group,
             entity=train_cfg.wandb.entity,
+            tags=train_cfg.wandb.tags,
             config=to_dict(cfg),
             save_dir=save_dir,
         )
