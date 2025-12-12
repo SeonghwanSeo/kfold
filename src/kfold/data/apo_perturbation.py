@@ -732,7 +732,7 @@ class ApoPerturbation:
         holo_mask: np.ndarray,
         apo_mask: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Find the best residue permutation for symmetry correction.
+        """Find the best molecule permutation for symmetry correction.
         Use intra-molecule structure comparison to find the best permutation.
 
         Parameters
