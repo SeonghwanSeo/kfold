@@ -5,4 +5,3 @@ d_model: 960
 n_heads: 15
 n_layers: 30
 use_flash_attn: false
-load_pretrained: true

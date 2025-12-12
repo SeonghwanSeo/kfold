@@ -1,4 +1,5 @@
 import os
+import warnings
 from collections import defaultdict
 from pathlib import Path
 
@@ -523,30 +524,30 @@ def load_pretrained_embedding(
         entity_id = int(entity_ids[cidx].item())
         asym_id = f_input.chain.asym_id[cidx].item()
         chain_type = C.ChainType(int(f_input.chain.chain_type[cidx]))
-        if entity_id not in cached_embeddings:
-            # Load from file
-            filepath = f"{prefix}{entity_id}_{chain_type.name.lower()}.pt"
-            # TODO: In future, we may want to enforce the existence of embedding files
-            # for all chain types.
-            if not os.path.exists(filepath):
+        if entity_id in cached_embeddings:
+            # Use cached embedding if already loaded
+            embedding_tensor = cached_embeddings[entity_id]
+        else:
+            # Load embedding for this entity_id and chain_type (bf16 to save memory)
+            filename = f"{prefix}{entity_id}_{chain_type.name.lower()}.pt"
+            if os.path.exists(filename):
+                embedding_tensor = torch.load(filename, "cpu", weights_only=True)
+            else:
+                embedding_tensor = None
+            cached_embeddings[entity_id] = embedding_tensor
+
+            if embedding_tensor is None:
                 # HACK: (SeonghwanSeo) Print warning only for protein chains, since other
                 # chain types are not prepared yet. In future, we may want to enforce the
                 # existence of embedding files for all chain types.
-                if chain_type is C.ChainType.PROTEIN:
-                    import warnings
-
+                print_warning: bool = False
+                if print_warning and chain_type is C.ChainType.PROTEIN:
                     warnings.warn(
-                        "Precomputed Embedding file not found for protein chain: "
-                        f"{filepath}. Using zero tensor as placeholder.",
+                        f"Precomputed Embedding file not found: {filename}."
+                        f" Zero tensor is used instead.",
                         UserWarning,
+                        stacklevel=2,
                     )
-
-                embedding_tensor = None
-            else:
-                embedding_tensor = torch.load(filepath, "cpu", weights_only=True)
-            cached_embeddings[entity_id] = embedding_tensor
-        else:
-            embedding_tensor = cached_embeddings[entity_id]
 
         # Extract embeddings for the tokens in this chain
         chain_token_mask = f_input.token.asym_id == asym_id
@@ -555,9 +556,9 @@ def load_pretrained_embedding(
             if chain_type in (C.ChainType.PROTEIN, C.ChainType.DNA, C.ChainType.RNA):
                 # For polymer chains, we load embeddings according to the residue indices.
                 residue_indices = f_input.token.residue_index[chain_token_mask]
-                # NOTE: residue_index is starting from 1.
-                assert (residue_indices >= 1).all(), "Residue indices should be positive."
-                chain_embeddings = embedding_tensor[residue_indices - 1]
+                # NOTE: residue_index is 1-based indexing
+                residue_indices = residue_indices - 1
+                chain_embeddings = embedding_tensor[residue_indices]
             else:
                 # For ligand, we ensure the number of tokens match.
                 assert embedding_tensor.shape[0] == num_tokens_in_chain, (

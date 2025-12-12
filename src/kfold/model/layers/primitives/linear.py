@@ -25,13 +25,20 @@ class Linear(nn.Linear):
         elif init == "gating":
             # weight: zero
             initialize.gating_init_(self.weight)
-        elif init == "gating_ada_zero":
-            # weight: zero, bias: -2
+        elif init == "gating_closed":
+            # weight: zero, bias: -2 (so that sigmoid(bias) ~= 0.12)
             assert self.bias is not None, (
-                "Bias must be True for gating_ada_zero initialization."
+                "Bias must be True for gating_closed initialization."
             )
             initialize.gating_init_(self.weight)
             nn.init.constant_(self.bias, -2.0)
+        elif init == "gating_opened":
+            # weight: zero, bias: +2 (so that sigmoid(bias) ~= 0.88)
+            assert self.bias is not None, (
+                "Bias must be True for gating_opened initialization."
+            )
+            initialize.gating_init_(self.weight)
+            nn.init.constant_(self.bias, +2.0)
         elif init == "final":
             # weight: zero
             initialize.final_init_(self.weight)

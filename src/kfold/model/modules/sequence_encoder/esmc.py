@@ -40,7 +40,6 @@ class ESMCConfig(BaseConfig):
     n_heads: int = 15
     n_layers: int = 30
     use_flash_attn: bool = False
-    load_pretrained: bool = True
 
     @classmethod
     def from_model_name(cls, model_name: str, **kwargs) -> ESMCConfig:
@@ -59,8 +58,9 @@ class ESMC(BaseSequenceEncoder):
         from esm.layers.transformer_stack import TransformerStack
         from esm.pretrained import load_local_model
 
+        self.use_flash_attn: bool = is_flash_attn_available and cfg.use_flash_attn
+
         self.embed = nn.Embedding(64, cfg.d_model)
-        self._use_flash_attn = is_flash_attn_available and cfg.use_flash_attn
         self.transformer = TransformerStack(
             cfg.d_model,
             cfg.n_heads,
@@ -68,13 +68,18 @@ class ESMC(BaseSequenceEncoder):
             cfg.n_layers,
             n_layers_geom=0,
         )
-        self.eval()
 
-        if cfg.load_pretrained:
-            # Load pretrained weights
-            model = load_local_model(cfg.model_name, device=torch.device("cpu"))
-            del model.sequence_head  # remove the head to avoid size mismatch
-            self.load_state_dict(model.state_dict(), strict=True)
+        # Load pretrained weights
+        model = load_local_model(cfg.model_name, device=torch.device("cpu"))
+        del model.sequence_head  # remove the head to avoid size mismatch
+        self.load_state_dict(model.state_dict(), strict=True)
+
+        # Convert to bfloat16 (ESMC default)
+        self.embed = self.embed.to(torch.bfloat16)
+        self.transformer = self.transformer.to(torch.bfloat16)
+
+        # Set to eval mode
+        self.eval()
 
     @property
     def device(self) -> torch.device:
@@ -95,7 +100,7 @@ class ESMC(BaseSequenceEncoder):
             Tensor of shape (B, L) containing sequence tokens.
         sequence_id : torch.Tensor
             Tensor of shape (B, L) containing sequence idx.
-        chain_ids : torch.Tensor
+        chain_id : torch.Tensor
             Tensor of shape (B, L) containing chain ids.
         return_attention : bool, optional
             Whether to return attention weights. Default is False.
@@ -113,30 +118,36 @@ class ESMC(BaseSequenceEncoder):
                 "Attention weights are not implemented in this module."
             )
 
-        x = self.embed(sequence_tokens)
+        # NOTE: ESMC uses bfloat16 for inference.
+        with (
+            torch.no_grad(),
+            torch.autocast(enabled=True, device_type="cuda", dtype=torch.bfloat16),
+        ):
+            x = self.embed(sequence_tokens)
 
-        # If sequence_id looks like a mask.
-        B, L = x.shape[:2]
-        if self._use_flash_attn:
-            assert sequence_id.dtype == torch.bool, (
-                "sequence_id must be a boolean mask if Flash Attention is used"
-            )
-            assert sequence_id.shape == (B, L)
-            assert unpad_input is not None
-            x, indices, *_ = unpad_input(  # type: ignore
-                x, sequence_id
-            )
-        else:
-            indices = None
+            # If sequence_id looks like a mask.
+            B, L = x.shape[:2]
+            if self.use_flash_attn:
+                assert sequence_id.dtype == torch.bool, (
+                    "sequence_id must be a boolean mask if Flash Attention is used"
+                )
+                assert sequence_id.shape == (B, L)
+                assert unpad_input is not None
+                x, indices, *_ = unpad_input(  # type: ignore
+                    x, sequence_id
+                )
+            else:
+                indices = None
 
-        x, _, _ = self.transformer(x, sequence_id=sequence_id)
+            x, pre_norm, _ = self.transformer(x, sequence_id=sequence_id)
 
-        if self._use_flash_attn:
-            assert indices is not None
-            assert pad_input is not None
-            x = pad_input(x, indices, B, L)  # Back to [B, L, D]
+            if self.use_flash_attn:
+                assert indices is not None
+                assert pad_input is not None
+                pre_norm = pad_input(pre_norm, indices, B, L)  # Back to [B, L, D]
 
-        return x, None
+        # Return pre-norm representations since further layernorm is applied later.
+        return pre_norm, None
 
     @staticmethod
     @lru_cache
@@ -187,21 +198,24 @@ class ESMC(BaseSequenceEncoder):
         pad_token = token_to_id["<pad>"]
         unk_token = token_to_id["X"]  # Unknown amino acid
 
+        # Prepare model input
         batch_ids = []
         for seq in sequences:
             ids = [token_to_id.get(residue, unk_token) for residue in seq]
             if add_special_tokens:
                 ids = [cls_token] + ids + [eos_token]
             batch_ids.append(ids)
-
         max_len = max(len(ids) for ids in batch_ids)
+
         batch_tensor = torch.full((len(batch_ids), max_len), pad_token, dtype=torch.long)
         for i, ids in enumerate(batch_ids):
             batch_tensor[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
-
         batch_tensor = batch_tensor.to(self.device)
+
         attention_mask = batch_tensor != pad_token
-        sequence_embedding, _ = self.forward(batch_tensor, attention_mask, attention_mask)
+        sequence_id = chain_id = attention_mask
+
+        sequence_embedding, _ = self(batch_tensor, sequence_id, chain_id)
 
         outs: list[torch.Tensor] = []
         for i, ids in enumerate(batch_ids):

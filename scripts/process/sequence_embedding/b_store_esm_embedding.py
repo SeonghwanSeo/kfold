@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument(
         "--budget_size",
         type=int,
-        default=2048 * 32,
+        default=2048 * 64,
         help="Budget size for ESM model.",
     )
     return parser.parse_args()

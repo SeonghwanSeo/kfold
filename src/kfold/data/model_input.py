@@ -602,13 +602,13 @@ class PretrainedLayout(TensorLayout):
         check_tensor(
             self.sequence_embedding,
             name="sequence_embedding",
-            dtype=torch.float32,
+            dtype=(torch.float32, torch.bfloat16, torch.float16),
             shape=(*shape, -1),
         )
         check_tensor(
             self.structure_embedding,
             name="structure_embedding",
-            dtype=torch.float32,
+            dtype=(torch.float32, torch.bfloat16, torch.float16),
             shape=(*shape, -1),
         )
 
