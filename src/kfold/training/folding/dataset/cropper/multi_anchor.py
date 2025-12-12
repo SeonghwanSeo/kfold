@@ -388,16 +388,23 @@ class MultiAnchorCropper(BaseCropper):
             else:
                 # Pick an interface connected to visited chains
                 assert len(visited_chains) > 0, "No visited chains"
-                i1 = utils.random_choice(visited_chains, rng=rng)
-                i2 = utils.random_choice(chain_to_neighbors[i1], rng=rng)
-                interface_id = (min(i1, i2), max(i1, i2))
+                candidates: set[tuple[int, int]] = set()
+                for asym_id1 in visited_chains:
+                    neighbors = chain_to_neighbors[asym_id1]
+                    for asym_id2 in neighbors:
+                        interface_id = (min(asym_id1, asym_id2), max(asym_id1, asym_id2))
+                        candidates.add(interface_id)
+                if len(candidates) == 0:
+                    # No connected interfaces, fallback to all interfaces
+                    candidates = set(all_interfaces)
+                interface_id = utils.random_choice(sorted(candidates), rng=rng)
 
             # Select anchor token from the interface
             # NOTE: Since re-sample from visited interfaces, we allow picking from
             # all resolved tokens even if already selected.
             anchor = utils.pick_interface_token(struct, interface_id, resolved_mask, rng)
 
-            # Crop spatially around the anchor token
+            # Collect spatial neighbors around the anchor token among remaining tokens
             crop_size = budgets[i]
             neighbor_indices = self.get_closest_tokens(
                 struct, anchor, crop_size, center_coords, mask=is_remaining
