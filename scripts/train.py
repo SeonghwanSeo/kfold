@@ -157,6 +157,7 @@ def parse_config(args) -> DictConfig:
         cfg.train.trainer.log_every_n_steps = 1
         cfg.train.trainer.limit_train_batches = 10
         cfg.train.trainer.limit_val_batches = 10
+        cfg.train.trainer.enable_checkpointing = False
         cfg.train.data.train_batch_size = 1
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False
@@ -171,7 +172,7 @@ def parse_config(args) -> DictConfig:
     return cfg
 
 
-def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
+def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Trainer:
     train_cfg = cfg.train
     pl_trainer_cfg = train_cfg.trainer
     save_dir = Path(train_cfg.out_dir) / train_cfg.name
@@ -210,27 +211,29 @@ def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
     callbacks.append(model_summary)
 
     # TQDM
-    tqdm_refresh_rate = 5 if debug_mode == "off" else 1
+    tqdm_refresh_rate = 1 if debug else 5
     tqdm_callback = pl_callbacks.TQDMProgressBar(refresh_rate=tqdm_refresh_rate)
     callbacks.append(tqdm_callback)
 
-    if debug_mode == "skip-val":
-        checkpoint_callback = pl_callbacks.ModelCheckpoint(
-            monitor="train/loss",
-            save_top_k=-1,
-            filename="epoch{epoch:04d}_step{step:08d}_loss{train/loss:.4f}",
-            mode="min",
-            auto_insert_metric_name=False,
-        )
-    else:
-        checkpoint_callback = pl_callbacks.ModelCheckpoint(
-            monitor="val/lddt",
-            save_top_k=-1,
-            filename="epoch{epoch:04d}_step{step:08d}_lddt{val/lddt:.4f}",
-            mode="max",
-            auto_insert_metric_name=False,
-        )
-    callbacks.append(checkpoint_callback)
+    if not debug:
+        if skip_val:
+            # Save checkpoint only based on training loss
+            checkpoint_callback = pl_callbacks.ModelCheckpoint(
+                monitor="train/loss",
+                save_top_k=-1,
+                filename="epoch{epoch:04d}_step{step:08d}_loss{train/loss:.4f}",
+                mode="min",
+                auto_insert_metric_name=False,
+            )
+        else:
+            checkpoint_callback = pl_callbacks.ModelCheckpoint(
+                monitor="val/lddt",
+                save_top_k=-1,
+                filename="epoch{epoch:04d}_step{step:08d}_lddt{val/lddt:.4f}",
+                mode="max",
+                auto_insert_metric_name=False,
+            )
+        callbacks.append(checkpoint_callback)
 
     trainer = pl.Trainer(
         default_root_dir=save_dir,

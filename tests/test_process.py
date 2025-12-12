@@ -101,6 +101,12 @@ def check_structure(key: str, verbose: bool = False):
     npz_dict = kfold_tokenized.to_npz_dict()
     kfold_tokenized = TokenizedStructure.from_npz_dict(npz_dict)
 
+    if boltz_tokenized.tokens.shape[0] != kfold_tokenized.num_tokens:
+        raise Exception(
+            f"Token number mismatch after save/load for {key}: "
+            f"{boltz_tokenized.tokens.shape[0]} vs {kfold_tokenized.num_tokens}"
+        )
+
     # ==================================================== #
     # ================= Random Cropping ================== #
     # ==================================================== #
@@ -121,7 +127,7 @@ def check_structure(key: str, verbose: bool = False):
         boltz_tokenized = crop_boltz_structure(boltz_tokenized, token_indices)
         kfold_tokenized = kfold_tokenized.crop(token_indices)
     else:
-        print_("No cropping applied on tokens")
+        print_(f"No cropping applied on tokens {kfold_tokenized.num_tokens}")
 
     # ==================================================== #
     # ================== Featurization =================== #
