@@ -27,13 +27,13 @@ def parse_args():
         "--embedding_path",
         type=Path,
         help="Directory containing the structure embeddings.",
-        default="/cache/wykim_lab/kfold_data/pretrained/saprot_650m_raw/",
+        required=True,
     )
     parser.add_argument(
         "--output_path",
         type=Path,
-        help="Path of directory to save the matched embeddings.",
-        default="/cache/wykim_lab/kfold_data/pretrained/saprot_650m_matched/",
+        help="Path of directory to save the length-matched embeddings.",
+        required=True,
     )
     parser.add_argument(
         "--num_workers",

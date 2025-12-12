@@ -21,13 +21,13 @@ data:
   _class_: TrainingDataModule
 
   # DataLoader
-  train_batch_size: ??? # set by global_hparam
+  train_batch_size: 1 # NOTE: overridden by global_hparam
   val_batch_size: 1
   num_workers: 8
-  max_chains: ??? # set by global_hparam
-  max_tokens: ??? # set by global_hparam
+  max_chains: 20 # NOTE: overridden by global_hparam
+  max_tokens: 384 # NOTE: overridden by global_hparam
   pin_memory: true
-  safe_load: true
+  safe_load: false
 
   # Data paths
   lmdb_path: <LMDB_PATH_PLACEHOLDER>
@@ -98,11 +98,11 @@ trainer:
   num_nodes: "auto"
   precision: bf16-mixed
   max_epochs: -1
-  limit_train_batches: ??? # set by global_hparam
+  limit_train_batches: 1 # NOTE: overridden by global_hparam
   limit_val_batches: null
   log_every_n_steps: 1
   enable_checkpointing: true
-  accumulate_grad_batches: ??? # set by global_hparam
+  accumulate_grad_batches: 1 # NOTE: overridden by global_hparam
   gradient_clip_val: 10.0
 
 # Exponential Moving Average (EMA)
@@ -116,7 +116,7 @@ training:
   num_cycles: 4
 
   # For structure module training
-  diffusion_batch_size: ??? # set by global_hparam
+  diffusion_batch_size: 48 # NOTE: overridden by global_hparam
 
   # For confidence module training
   num_steps: 20 # Mini-diffusion rollout
