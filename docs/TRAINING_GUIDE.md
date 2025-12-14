@@ -50,11 +50,11 @@ cp -r --sparse always /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/
 cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/ ./
 cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/symmetry.pkl/ ./
 
-# (optional) ESM embeddings (esmc_300m(free) or esmc_600m(non-commercial))
-mkdir esm_embeddings/
-cd ./esm_embeddings
-cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/esm_embeddings/esmc_300m.tar ./
-tar -xvf esmc_300m.tar
+# (optional) Pretrained embeddings (e.g., ESM-2 3B embeddings - bf16 converted)
+mkdir pretrained/
+cd ./pretrained
+cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/pretrained/esm2_3b_bf16.tar.zst ./
+tar --zstd -xvf esm2_3b_bf16.tar.zst
 cd ../
 
 # Set permissions for other users in the group to read, write, and execute
