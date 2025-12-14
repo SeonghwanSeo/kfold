@@ -9,13 +9,18 @@ If the features listed below are completed, I will include the corresponding PR 
 ### Data preparation
 
 - [x] Prepare own data processing pipeline to **LMDB format** (`TokenizedStructure`) - [#23](https://github.com/SeonghwanSeo/kfold/pull/23)
+- [ ] Prepare own data pre-processing pipeline from mmCIF to **TokenizedStructure**
+    - [ ] Add CCD database according to AlphaFold3 description.
+    - [ ] Preserving original residue information before modification (PTM), instead of UNK.
+    - [ ] Handling ambiguous residues (e.g., GLX, ASX)
 - [ ] **Apo structure mapping**:
     - [x] Protein (ESMFold) - [#23](https://github.com/SeonghwanSeo/kfold/pull/23)
     - [ ] DNA
     - [ ] RNA
     - [x] Ligand (ETKDG; single conformer) - [#23](https://github.com/SeonghwanSeo/kfold/pull/23)
 - [ ] **Multiple apo structures** if possible (in particular, ligand)
-    - AlphaFold uses different conformers for each seed. (Boltz2: uses 10 different conformers as `ref_pos` for ligands)
+    - [ ] Protein: Consider AlphaFold2 / OpenFold predicted structures
+    - [ ] Ligand: AlphaFold uses different conformers for each seed. (Boltz2: uses 10 different conformers as `ref_pos` for ligands)
 
 ### Data featurization
 
@@ -46,6 +51,10 @@ If the features listed below are completed, I will include the corresponding PR 
     - [x] Add **validation metrics**. - [#33](https://github.com/SeonghwanSeo/kfold/pull/3)
     - [x] Add chain-permutation and atom-swapping for symmetry correction. - [#67](https://github.com/SeonghwanSeo/kfold/pull/67)
 - [x] Correct **cropping algorithm** to match training losses and validation metrics to Boltz1. - [#71](https://github.com/SeonghwanSeo/kfold/pull/71)
+- [ ] Implement multi-dataset training pipeline (e.g., RCSB + AFDB + ...)
+
+### Inference
+- [ ] Prepare data preparation pipeline for inference (from YAML config to `TokenizedStructure`).
 
 ### Benchmark
 
