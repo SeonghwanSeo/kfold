@@ -2,7 +2,6 @@ model:
   _yaml_: "model/kfold-ddbm.yaml"
   input_embedder:
     channel_seq_encoder: 1152
-    use_apo: true
   trunk:
     use_cuequiv_kernels: true
     num_blocks: 16
@@ -47,6 +46,7 @@ train:
       seq_embedding_dim: 1152
 
     apo_perturbation_args:
+      use_symmetry_correction: true # align apo to holo symmetry
       mask_nucleic_acids: false # use holo structures as DNA/RNA apo structures
 
   wandb:

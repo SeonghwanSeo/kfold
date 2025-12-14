@@ -33,7 +33,7 @@ data:
   lmdb_path: <LMDB_PATH_PLACEHOLDER>
   manifest_path: <MANIFEST_PATH_PLACEHOLDER>
   symmetry_path: <SYMMETRY_PATH_PLACEHOLDER>
-  split_path: ./assets/splits/boltz1
+  split_path: ./assets/splits/kfold_v251213/
 
   # Symmetry
   return_train_symmetry: false
@@ -76,7 +76,7 @@ data:
   apo_perturbation_args:
     use_perturbation: false # TODO: set to true after implementation is complete
     use_random_rotation: true
-    use_symmetry_correction: true # enabled during training
+    use_symmetry_correction: false # enabled during training
     prob_perturbation: 0.5
     prob_replace_to_holo: 0.0 # enabled during training
     mask_nucleic_acids: true # TODO: remove this after NA apo structures are available
@@ -100,7 +100,7 @@ trainer:
   max_epochs: -1
   limit_train_batches: 1 # NOTE: overridden by global_hparam
   limit_val_batches: null
-  log_every_n_steps: 1
+  log_every_n_steps: 10
   enable_checkpointing: true
   accumulate_grad_batches: 1 # NOTE: overridden by global_hparam
   gradient_clip_val: 10.0
@@ -190,3 +190,4 @@ wandb:
   project: "KFold"
   group: null # set your group name
   entity: null # set your entity name
+  tags: [] # add your tags
