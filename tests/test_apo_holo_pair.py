@@ -3,7 +3,7 @@ from pathlib import Path
 from kfold.data.structure import TokenizedStructure
 from kfold.utils import errors
 
-PROCESSED_NPZ_PATH = Path("/cache/wykim_lab/kfold_rcsb_processed_v251116/")
+PROCESSED_NPZ_PATH = Path("/cache/wykim_lab/kfold_rcsb_processed_v251120/")
 SAVE_PDB_PATH = Path("./tmp/pdb/")
 
 

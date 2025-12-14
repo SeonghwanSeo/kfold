@@ -1,8 +1,8 @@
 model:
   _yaml_: "model/kfold-edm.yaml"
   input_embedder:
-    channel_seq_encoder: 960
-    use_apo: true
+    channel_seq_encoder: 2560
+    channel_struct_encoder: 1280
   trunk:
     use_cuequiv_kernels: true
     num_blocks: 16
@@ -14,7 +14,7 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: esmc-edm-mini
+  name: mini-esm2-saprot-rbf-edm
   out_dir: ./experiments/
   seed: 42
 
@@ -37,17 +37,20 @@ train:
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
-    split_path: ./assets/splits/boltz1
+    split_path: ./assets/splits/kfold_v251213/
     num_workers: 8
 
     paths:
-      seq_embedding_path: /cache/wykim_lab/kfold_data/esm_embeddings/esmc_300m/
+      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esm2_3b_bf16/
+      struct_embedding_path: /cache/wykim_lab/kfold_data/pretrained/saprot_650m/
 
     featurization_args:
-      seq_embedding_dim: 960
+      seq_embedding_dim: 2560
+      struct_embedding_dim: 1280
 
   wandb:
     use: false
-    project: "EDM-esmc"
-    group: esmc # set your group name
-    entity: K-Fold # set your entity name
+    project: "KFold-Combined"
+    group: "251213"
+    entity: K-Fold
+    tags: ["mini", "edm", "esm2", "saprot", "rbf"]

@@ -113,40 +113,8 @@ def parse_config(args) -> DictConfig:
     if args.wandb:
         cfg.train.wandb.use = True
 
-    # Compute parameters dependent on global_hparams
-    train_cfg = cfg.train
-    global_hparams = train_cfg.global_hparams
-
-    train_cfg.data.max_chains = global_hparams.max_chains
-    train_cfg.data.max_tokens = global_hparams.max_tokens
-    train_cfg.data.train_batch_size = global_hparams.batch_size
-    train_cfg.training.diffusion_batch_size = global_hparams.diffusion_batch_size
-
-    # compute accumulate_grad_batches
-    if train_cfg.trainer.devices == "auto":
-        num_gpus = torch.cuda.device_count()
-    else:
-        num_gpus = train_cfg.trainer.devices
-    assert isinstance(num_gpus, int), "num_gpus should be an integer or 'auto'."
-    assert num_gpus > 0, "No GPUs available for training."
-
-    world_size = train_cfg.trainer.num_nodes * num_gpus
-    batch_size = global_hparams.batch_size
-    if global_hparams.global_batch_size % (batch_size * world_size) != 0:
-        raise ValueError(
-            f"Global batch size {global_hparams.global_batch_size} is not "
-            f"divisible by (batch_size {batch_size} * world_size {world_size})"
-        )
-    train_cfg.trainer.accumulate_grad_batches = global_hparams.global_batch_size // (
-        batch_size * world_size
-    )
-    # compute limit_train_batches
-    train_cfg.trainer.limit_train_batches = (
-        global_hparams.num_global_steps_per_epoch
-        * train_cfg.trainer.accumulate_grad_batches
-    )
-    # Remove global_hparams from cfg after overrides
-    del cfg.train.global_hparams
+    # Apply global_hparams overrides
+    apply_global_hparams_overrides(cfg)
 
     if args.debug:
         # Enable debug mode settings
@@ -157,6 +125,7 @@ def parse_config(args) -> DictConfig:
         cfg.train.trainer.log_every_n_steps = 1
         cfg.train.trainer.limit_train_batches = 10
         cfg.train.trainer.limit_val_batches = 10
+        cfg.train.trainer.enable_checkpointing = False
         cfg.train.data.train_batch_size = 1
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False
@@ -171,7 +140,49 @@ def parse_config(args) -> DictConfig:
     return cfg
 
 
-def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
+def apply_global_hparams_overrides(cfg: DictConfig) -> None:
+    # Estimate number of GPUs
+    train_cfg = cfg.train
+    if train_cfg.trainer.devices == "auto":
+        num_gpus: int = torch.cuda.device_count()
+    else:
+        num_gpus = cfg.train.trainer.devices
+    assert isinstance(num_gpus, int), "num_gpus should be an integer or 'auto'."
+    assert num_gpus > 0, "No GPUs available for training."
+    world_size: int = train_cfg.trainer.num_nodes * num_gpus
+
+    # Compute parameters dependent on global_hparams
+    global_hparams = train_cfg.global_hparams
+    max_chains: int = global_hparams.max_chains
+    max_tokens: int = global_hparams.max_tokens
+    batch_size: int = global_hparams.batch_size
+    diffusion_batch_size: int = global_hparams.diffusion_batch_size
+    global_batch_size: int = global_hparams.global_batch_size
+
+    if global_batch_size % (batch_size * world_size) != 0:
+        raise ValueError(
+            f"Global batch size {global_batch_size} is not "
+            f"divisible by (batch_size {batch_size} * world_size {world_size})"
+        )
+    # compute accumulate_grad_batches
+    accumulate_grad_batches: int = global_batch_size // (batch_size * world_size)
+    # compute limit_train_batches
+    limit_train_batches: int = (
+        global_hparams.num_global_steps_per_epoch * accumulate_grad_batches
+    )
+
+    train_cfg.data.max_chains = max_chains
+    train_cfg.data.max_tokens = max_tokens
+    train_cfg.data.train_batch_size = batch_size
+    train_cfg.training.diffusion_batch_size = diffusion_batch_size
+    train_cfg.trainer.accumulate_grad_batches = accumulate_grad_batches
+    train_cfg.trainer.limit_train_batches = limit_train_batches
+
+    # Remove global_hparams from cfg after overrides
+    del cfg.train.global_hparams
+
+
+def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Trainer:
     train_cfg = cfg.train
     pl_trainer_cfg = train_cfg.trainer
     save_dir = Path(train_cfg.out_dir) / train_cfg.name
@@ -185,6 +196,7 @@ def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
             project=train_cfg.wandb.project,
             group=train_cfg.wandb.group,
             entity=train_cfg.wandb.entity,
+            tags=train_cfg.wandb.tags,
             config=to_dict(cfg),
             save_dir=save_dir,
         )
@@ -210,27 +222,29 @@ def build_trainer(cfg, debug_mode: str = "off") -> pl.Trainer:
     callbacks.append(model_summary)
 
     # TQDM
-    tqdm_refresh_rate = 5 if debug_mode == "off" else 1
+    tqdm_refresh_rate = 1 if debug else 10
     tqdm_callback = pl_callbacks.TQDMProgressBar(refresh_rate=tqdm_refresh_rate)
     callbacks.append(tqdm_callback)
 
-    if debug_mode == "skip-val":
-        checkpoint_callback = pl_callbacks.ModelCheckpoint(
-            monitor="train/loss",
-            save_top_k=-1,
-            filename="epoch{epoch:04d}_step{step:08d}_loss{train/loss:.4f}",
-            mode="min",
-            auto_insert_metric_name=False,
-        )
-    else:
-        checkpoint_callback = pl_callbacks.ModelCheckpoint(
-            monitor="val/lddt",
-            save_top_k=-1,
-            filename="epoch{epoch:04d}_step{step:08d}_lddt{val/lddt:.4f}",
-            mode="max",
-            auto_insert_metric_name=False,
-        )
-    callbacks.append(checkpoint_callback)
+    if not debug:
+        if skip_val:
+            # Save checkpoint only based on training loss
+            checkpoint_callback = pl_callbacks.ModelCheckpoint(
+                monitor="train/loss",
+                save_top_k=-1,
+                filename="epoch{epoch:04d}_step{step:08d}_loss{train/loss:.4f}",
+                mode="min",
+                auto_insert_metric_name=False,
+            )
+        else:
+            checkpoint_callback = pl_callbacks.ModelCheckpoint(
+                monitor="val/weighted_lddt",
+                save_top_k=-1,
+                filename="epoch{epoch:04d}_step{step:08d}_lddt{val/weighted_lddt:.4f}",
+                mode="max",
+                auto_insert_metric_name=False,
+            )
+        callbacks.append(checkpoint_callback)
 
     trainer = pl.Trainer(
         default_root_dir=save_dir,

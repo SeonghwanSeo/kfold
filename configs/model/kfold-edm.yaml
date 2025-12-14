@@ -6,7 +6,7 @@ input_embedder:
   _yaml_: "module/input_embedder/pretrained.yaml"
   channel_seq_encoder: null # Should be overriden
   channel_struct_encoder: null # Should be overriden
-  use_apo: false
+  use_apo: true
 
 trunk:
   _yaml_: "module/trunk/af3.yaml"

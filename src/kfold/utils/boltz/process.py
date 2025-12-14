@@ -237,6 +237,8 @@ def tokenize_structure(
         entity_id = chain_info["entity_id"][chain_index]
         sym_id = chain_info["sym_id"][chain_index]
 
+        ctype = C.chain.ChainType(int(chain_type))
+
         # === Iterate residues === #
         # Iterate residues in the chain and fill token and some atom info
         # NOTE: res_index is reindexed per chain
@@ -249,7 +251,8 @@ def tokenize_structure(
             is_residue_standard = residue["is_standard"]
 
             res_name = residue["name"]
-            res_type = C.residue.get_residue_name_with_unk(str(res_name)).index
+            # NOTE: Ligands are mapped to UNK amino acid
+            res_type = C.residue.get_residue_name_with_unk(str(res_name), ctype).index
 
             # Insert residue info
             residue_info["name"].append(res_name)

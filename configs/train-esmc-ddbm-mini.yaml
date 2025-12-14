@@ -1,8 +1,7 @@
 model:
   _yaml_: "model/kfold-ddbm.yaml"
   input_embedder:
-    channel_seq_encoder: 960
-    use_apo: true
+    channel_seq_encoder: 1152
   trunk:
     use_cuequiv_kernels: true
     num_blocks: 16
@@ -41,11 +40,14 @@ train:
     num_workers: 8
 
     paths:
-      seq_embedding_path: /cache/wykim_lab/kfold_data/esm_embeddings/esmc_300m/
-    apo_perturbation_args:
-      mask_nucleic_acids: false # use holo structures as DNA/RNA apo structures
+      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esmc_600m_bf16/
+
     featurization_args:
-      seq_embedding_dim: 960
+      seq_embedding_dim: 1152
+
+    apo_perturbation_args:
+      use_symmetry_correction: true # align apo to holo symmetry
+      mask_nucleic_acids: false # use holo structures as DNA/RNA apo structures
 
   wandb:
     use: false

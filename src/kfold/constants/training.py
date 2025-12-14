@@ -4,12 +4,16 @@ import enum
 # For model training
 # TODO: add modified and resolved
 class LDDTType(enum.Enum):
-    PROTEIN_PROTEIN = "protein_protein"
-    DNA_PROTEIN = "dna_protein"
-    RNA_PROTEIN = "rna_protein"
-    DNA_LIGAND = "dna_ligand"
-    LIGAND_PROTEIN = "ligand_protein"
-    RNA_LIGAND = "rna_ligand"
+    # interface modalities
+    INTER_PROTEIN_PROTEIN = "inter_protein_protein"
+    INTER_DNA_DNA = "inter_dna_dna"
+    INTER_RNA_RNA = "inter_rna_rna"
+    INTER_DNA_PROTEIN = "inter_dna_protein"
+    INTER_RNA_PROTEIN = "inter_rna_protein"
+    INTER_LIGAND_PROTEIN = "inter_ligand_protein"
+    INTER_DNA_LIGAND = "inter_dna_ligand"
+    INTER_RNA_LIGAND = "inter_rna_ligand"
+    # intra-chain modalities
     INTRA_PROTEIN = "intra_protein"
     INTRA_DNA = "intra_dna"
     INTRA_RNA = "intra_rna"
@@ -17,24 +21,32 @@ class LDDTType(enum.Enum):
 
 
 LDDTWeightsAF3 = {
-    LDDTType.PROTEIN_PROTEIN: 20.0,
-    LDDTType.DNA_PROTEIN: 10.0,
-    LDDTType.RNA_PROTEIN: 10.0,
-    LDDTType.DNA_LIGAND: 5.0,
-    LDDTType.LIGAND_PROTEIN: 10.0,
-    LDDTType.RNA_LIGAND: 5.0,
+    # interface modalities
+    LDDTType.INTER_PROTEIN_PROTEIN: 20.0,
+    LDDTType.INTER_DNA_DNA: 0.0,
+    LDDTType.INTER_RNA_RNA: 0.0,
+    LDDTType.INTER_DNA_PROTEIN: 10.0,
+    LDDTType.INTER_RNA_PROTEIN: 10.0,
+    LDDTType.INTER_LIGAND_PROTEIN: 10.0,
+    LDDTType.INTER_DNA_LIGAND: 5.0,
+    LDDTType.INTER_RNA_LIGAND: 5.0,
+    # intra-chain modalities
     LDDTType.INTRA_PROTEIN: 20.0,
     LDDTType.INTRA_DNA: 4.0,
     LDDTType.INTRA_RNA: 16.0,
     LDDTType.INTRA_LIGAND: 20.0,
 }
 LDDTWeightsBoltz = {
-    LDDTType.PROTEIN_PROTEIN: 20.0,
-    LDDTType.DNA_PROTEIN: 5.0,
-    LDDTType.RNA_PROTEIN: 5.0,
-    LDDTType.DNA_LIGAND: 2.0,
-    LDDTType.LIGAND_PROTEIN: 20.0,
-    LDDTType.RNA_LIGAND: 2.0,
+    # interface modalities
+    LDDTType.INTER_PROTEIN_PROTEIN: 20.0,
+    LDDTType.INTER_DNA_DNA: 0.0,
+    LDDTType.INTER_RNA_RNA: 0.0,
+    LDDTType.INTER_DNA_PROTEIN: 5.0,
+    LDDTType.INTER_RNA_PROTEIN: 5.0,
+    LDDTType.INTER_LIGAND_PROTEIN: 20.0,
+    LDDTType.INTER_DNA_LIGAND: 2.0,
+    LDDTType.INTER_RNA_LIGAND: 2.0,
+    # intra-chain modalities
     LDDTType.INTRA_PROTEIN: 20.0,
     LDDTType.INTRA_DNA: 2.0,
     LDDTType.INTRA_RNA: 8.0,
