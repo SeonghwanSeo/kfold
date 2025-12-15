@@ -25,7 +25,6 @@ class InputFeaturizer:
         struct_embedding_path: str | Path | None = None,
         seq_embedding_dim: int | None = None,
         struct_embedding_dim: int | None = None,
-        seed: int | None = None,
     ) -> None:
         """Initialize the InputFeaturizer.
 
@@ -45,12 +44,7 @@ class InputFeaturizer:
             Dimension of the sequence embedding.
         struct_embedding_dim : int | None, optional
             Dimension of the structure embedding.
-        seed : int | None
-            Random seed for reproducibility. If None, a random seed is used.
         """
-        # Random seed
-        self.seed: int | None = seed
-
         # Featurization arguments
         self.augment_ref_pos: bool = augment_ref_pos
         self.synchronize_ref_pos_augmentation: bool = synchronize_ref_pos_augmentation
@@ -88,6 +82,7 @@ class InputFeaturizer:
         self,
         struct: structure.TokenizedStructure,
         prefix: str | None = None,
+        rng: np.random.Generator | None = None,
     ) -> model_input.FoldingInput:
         """Featurize a tokenized structure into model input features.
 
@@ -98,14 +93,15 @@ class InputFeaturizer:
         prefix : str | None
             Prefix for the path to pre-computed embeddings.
             Required to use pre-computed embeddings
-
+        rng : np.random.Generator
+            Random number generator for augmentation.
 
         Returns
         -------
         f_input: FoldingInput
             The featurized model input
         """
-        rng = np.random.default_rng(seed=self.seed)
+        rng = rng or np.random.default_rng()
 
         # Convert to model input features
         f_input = self.to_folding_input(struct, rng)

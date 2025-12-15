@@ -60,6 +60,7 @@ def get_symmetries(
     all_struct: TokenizedStructure,
     ccd_symmetry_dict: dict,
     max_chain_symmetries: int = 100,
+    rng: np.random.Generator | None = None,
 ) -> dict[str, Any]:
     """Get the symmetries of the complex structure.
 
@@ -82,11 +83,13 @@ def get_symmetries(
         A dictionary containing the symmetries of amino acids and ligands.
 
     """
+    rng = rng or np.random.default_rng()
+
     symmetry_info = {}
 
     # === Chain symmetries === #
     alt_coords_dict = get_alt_coordinates(
-        cropped_struct, all_struct, max_chain_symmetries
+        cropped_struct, all_struct, rng, max_chain_symmetries
     )
     alt_coordinates = alt_coords_dict["alt_coordinates"]
     alt_resolved_mask = alt_coords_dict["alt_resolved_mask"]
@@ -156,6 +159,7 @@ def get_symmetries(
 def get_alt_coordinates(
     cropped_struct: TokenizedStructure,
     all_struct: TokenizedStructure,
+    rng: np.random.Generator,
     max_symmetries: int = 100,
 ) -> dict[str, list[np.ndarray]]:
     """Get possible alternative atom coordinates based on chain symmetries.
@@ -166,6 +170,8 @@ def get_alt_coordinates(
         The cropped structure, raw data of model_input.
     all_struct : TokenizedStructure
         The full structure before cropping.
+    rng : np.random.Generator
+        The random number generator.
     max_symmetries : int, optional
         The maximum number of symmetries to consider, by default 100.
 
@@ -184,14 +190,14 @@ def get_alt_coordinates(
     all_resolved_mask = all_struct.atom.resolved_mask  # [Ntoken, 24]
 
     # Lists to store alternative coordinates and masks
-    alt_coords_list: list[np.ndarray] = [original_coords]
-    alt_resolved_mask_list: list[np.ndarray] = [original_resolved_mask]
+    alt_coords_list: list[np.ndarray] = []
+    alt_resolved_mask_list: list[np.ndarray] = []
 
     # === Get chain symmetries === #
     entity_chains: dict[int, list[int]] = defaultdict(list)
     for i in range(all_struct.num_chains):
-        asym_id = all_struct.chain.asym_id[i]
-        entity_id = all_struct.chain.entity_id[i]
+        asym_id = int(all_struct.chain.asym_id[i])
+        entity_id = int(all_struct.chain.entity_id[i])
         entity_chains[entity_id].append(asym_id)
 
     # Get symmetries of chains in the cropped structure
@@ -215,8 +221,7 @@ def get_alt_coordinates(
         symmetry_chains = [
             alt_asym_id
             for alt_asym_id in symmetry_chains
-            if alt_asym_id != asym_id
-            and chain_num_tokens[alt_asym_id] == chain_num_tokens[asym_id]
+            if chain_num_tokens[alt_asym_id] == chain_num_tokens[asym_id]
             and chain_num_atoms[alt_asym_id] == chain_num_atoms[asym_id]
         ]
         if len(symmetry_chains) > 1:
@@ -247,7 +252,7 @@ def get_alt_coordinates(
 
         src_asym_id = swappable_chains[idx]
         possible_targets = list(chain_symmetries[src_asym_id])
-        random.shuffle(possible_targets)
+        rng.shuffle(possible_targets)
 
         for tgt_asym_id in possible_targets:
             if tgt_asym_id in used_values:
@@ -270,7 +275,10 @@ def get_alt_coordinates(
     all_swaps = [swap for swap in all_swaps if len(swap) > 0]
     # Limit the number of symmetries to max_symmetries
     if len(all_swaps) > max_symmetries - 1:
-        swaps = random.sample(all_swaps, max_symmetries - 1)
+        sample_swap_indices = rng.choice(
+            len(all_swaps), size=max_symmetries - 1, replace=False
+        )
+        swaps = [all_swaps[i] for i in sample_swap_indices]
     else:
         swaps = all_swaps
 
@@ -284,33 +292,48 @@ def get_alt_coordinates(
     chain_token_idcs = {}  # {asym_id: (crop_indices, global_indices)}
     crop_token_st = cropped_struct.chain.token_start
     crop_token_end = crop_token_st + cropped_struct.chain.num_tokens
+    crop_token_index = cropped_struct.token.token_index
     for i in range(cropped_struct.num_chains):
         asym_id = cropped_struct.chain.asym_id[i]
         token_st, token_end = crop_token_st[i], crop_token_end[i]
-        # NOTE: tokens are continuous within a chain
-        idcs_in_crop = slice(token_st, token_end)
-        idcs_in_all = cropped_struct.token.token_index[idcs_in_crop]
+        # tokens are continuous in cropped structure
+        idcs_in_crop = np.arange(token_st, token_end)
+
+        # it is possible that tokens are not continuous in the full structure
+        # e.g., 100 102 103 106 ...
+        idcs_in_all = crop_token_index[token_st:token_end]
+
+        # Move to chain-based indexing
+        # e.g., 100 102 103 ... -> 0 2 3 ...
+        idcs_in_all = idcs_in_all - global_token_offset[asym_id]
+
         chain_token_idcs[asym_id] = (idcs_in_crop, idcs_in_all)
 
     # Apply each swap to get alternative coordinates
-    # NOTE: this may requires ~100 MB memory (for 4096 residues with 100 symmetries)
+    # NOTE: this tensor requires ~100 MB memory (for 4096 residues with 100 symmetries)
+
+    # Include original coordinates
+    alt_coords_list.append(original_coords)
+    alt_resolved_mask_list.append(original_resolved_mask)
+
     for swap in swaps:
         alt_coords = original_coords.copy()  # [Ntoken, 24, 3]
         alt_mask = original_resolved_mask.copy()  # [Ntoken, 24]
         for src_asym_id, tgt_asym_id in swap.items():
             crop_idcs, global_idcs = chain_token_idcs[src_asym_id]
 
-            # Map to swapped chain
-            offset_src = global_token_offset[src_asym_id]
-            offset_tgt = global_token_offset[tgt_asym_id]
-            global_idcs_swap = global_idcs - offset_src + offset_tgt
+            # Get the global indices in all_struct
+            # chain-based -> global token indices
+            global_idcs_swap = global_idcs + global_token_offset[tgt_asym_id]
 
             # In-place swap
             alt_coords[crop_idcs] = all_coords[global_idcs_swap]
             alt_mask[crop_idcs] = all_resolved_mask[global_idcs_swap]
+
         if alt_mask.sum() <= 4:
             # Skip if too few resolved atoms
             continue
+
         alt_coords_list.append(alt_coords)
         alt_resolved_mask_list.append(alt_mask)
 
