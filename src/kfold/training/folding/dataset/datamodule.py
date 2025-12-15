@@ -119,6 +119,11 @@ class TrainingDataModule(pl.LightningDataModule):
         if not self.lmdb_path.exists():
             raise FileNotFoundError(f"LMDB path not found: {self.lmdb_path}")
 
+        for path in self.paths.values():
+            if path is not None:
+                assert path.exists(), f"Path not found: {path}"
+                self.print_rank_zero(f"Path found: {path}")
+
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
             self._train_ds = self.construct_train_dataset()
