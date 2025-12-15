@@ -286,7 +286,7 @@ class KFoldTrainingModule(pl.LightningModule):
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
         # Sample recycling steps
-        num_cycles = np.random.randint(1, training_config.num_cycles)
+        num_cycles = np.random.randint(1, training_config.num_cycles + 1)
 
         # Compute the forward pass
         out: dict[str, torch.Tensor] = self(

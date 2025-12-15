@@ -174,7 +174,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Get the folding input for the given sample."""
         record_id: str = record.id
 
-        # Initialize random number generator
+        # Initialize random number generator (create new rng based on record_id)
         if self.seed is not None:
             rng = np.random.default_rng(self.seed + hash(record_id) % (1 << 15))
         else:
