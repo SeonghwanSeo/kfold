@@ -71,6 +71,7 @@ def validate(args) -> None:
         devices=cfg.train.trainer.devices,
         accelerator=cfg.train.trainer.accelerator,
         precision=cfg.train.trainer.precision,
+        deterministic=True,
         limit_val_batches=5 if args.debug else None,
     )
 

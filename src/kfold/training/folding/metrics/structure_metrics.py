@@ -332,9 +332,10 @@ def compute_validation_metrics(
     validation_metrics: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
 
     # Store average rmsd
-    v = torch.stack(all_metrics["rmsd"], dim=0)
-    w = torch.stack(all_weights["rmsd"], dim=0)
-    validation_metrics["avg_rmsd"] = (v, w)
+    for k, _ in metric_keys:
+        v = torch.stack(all_metrics[k], dim=0)
+        w = torch.stack(all_weights[k], dim=0)
+        validation_metrics[f"avg_{k}"] = (v, w)
 
     # Store best-of-five metrics
     # TODO: in future, consider confidence top-1 scores as well
