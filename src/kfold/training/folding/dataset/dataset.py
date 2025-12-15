@@ -134,7 +134,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def __getitem__(self, index: int) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
-        return self.get_item_safe(index, num_trials=10)
+        return self.get_item_safe(index, num_trials=100)
 
     def get_item_safe(
         self,
