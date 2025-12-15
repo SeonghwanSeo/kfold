@@ -44,4 +44,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
-train = ['lightning', 'wandb', 'lmdb']
+train = [
+  'lightning', # for training loop
+  'lmdb', # for training dataset storage
+  'wandb', # for experiment tracking
+  'pdbeccdutils', # for ccd data handling
+]
