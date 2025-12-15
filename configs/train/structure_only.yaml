@@ -27,7 +27,7 @@ data:
   max_chains: 20 # NOTE: overridden by global_hparam
   max_tokens: 384 # NOTE: overridden by global_hparam
   pin_memory: true
-  safe_load: false
+  safe_load: true
 
   # Data paths
   lmdb_path: <LMDB_PATH_PLACEHOLDER>
