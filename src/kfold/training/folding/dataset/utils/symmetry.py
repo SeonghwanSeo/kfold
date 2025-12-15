@@ -188,10 +188,6 @@ def get_alt_coordinates(
     all_coords = all_struct.atom.coords[:, :, 0, :]  # [Ntoken, 24, 3]
     all_resolved_mask = all_struct.atom.resolved_mask  # [Ntoken, 24]
 
-    # Lists to store alternative coordinates and masks
-    alt_coords_list: list[np.ndarray] = []
-    alt_resolved_mask_list: list[np.ndarray] = []
-
     # === Get chain symmetries === #
     entity_chains: dict[int, list[int]] = defaultdict(list)
     for i in range(all_struct.num_chains):
@@ -229,8 +225,8 @@ def get_alt_coordinates(
     # If there is no symmetry, return itself
     if len(chain_symmetries) == 0:
         return {
-            "alt_coordinates": alt_coords_list,
-            "alt_resolved_mask": alt_resolved_mask_list,
+            "alt_coordinates": [original_coords],
+            "alt_resolved_mask": [original_resolved_mask],
         }
 
     # Generate all possible swaps
@@ -311,9 +307,9 @@ def get_alt_coordinates(
     # Apply each swap to get alternative coordinates
     # NOTE: this tensor requires ~100 MB memory (for 4096 residues with 100 symmetries)
 
-    # Include original coordinates
-    alt_coords_list.append(original_coords)
-    alt_resolved_mask_list.append(original_resolved_mask)
+    # Lists to store alternative coordinates and masks
+    alt_coords_list: list[np.ndarray] = [original_coords]
+    alt_resolved_mask_list: list[np.ndarray] = [original_resolved_mask]
 
     for swap in swaps:
         alt_coords = original_coords.copy()  # [Ntoken, 24, 3]
