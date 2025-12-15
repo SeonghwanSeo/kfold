@@ -173,7 +173,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given sample."""
         record_id: str = record.id
-        print(f"Loading sample {record_id}...")
 
         # Initialize random number generator
         if self.seed is not None:
