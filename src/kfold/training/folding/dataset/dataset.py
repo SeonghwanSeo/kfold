@@ -227,11 +227,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     ) -> model_input.FoldingInput:
         """Featurize the given tokenized structure."""
         # Featurization
-        record_id = record.id
-        # HACK: This is the rule to save the pre-computed features in the directory.
-        # e.g., "{seq_embedding_path}/4l/4l8g/4l8g_*"
-        prefix = f"{record_id[:2]}/{record_id}/{record_id}_"
-        f_input = self.featurizer.run(struct, prefix, rng=rng)
+        f_input = self.featurizer.run(struct, record.id, rng=rng)
         return f_input
 
 

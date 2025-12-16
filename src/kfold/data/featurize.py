@@ -81,7 +81,7 @@ class InputFeaturizer:
     def run(
         self,
         struct: structure.TokenizedStructure,
-        prefix: str | None = None,
+        name: str | None = None,
         rng: np.random.Generator | None = None,
     ) -> model_input.FoldingInput:
         """Featurize a tokenized structure into model input features.
@@ -90,9 +90,8 @@ class InputFeaturizer:
         ----------
         struct : structure.TokenizedStructure
             The tokenized structure to featurize.
-        prefix : str | None
-            Prefix for the path to pre-computed embeddings.
-            Required to use pre-computed embeddings
+        name : str | None
+            Name of the structure, used as filename for pre-computed embeddings.
         rng : np.random.Generator
             Random number generator for augmentation.
 
@@ -107,7 +106,7 @@ class InputFeaturizer:
         f_input = self.to_folding_input(struct, rng)
 
         # Add pre-computed embeddings
-        f_input = self.add_precomputed_embedding(f_input, prefix)
+        f_input = self.add_precomputed_embedding(f_input, name)
 
         return f_input
 
@@ -127,7 +126,7 @@ class InputFeaturizer:
     def add_precomputed_embedding(
         self,
         f_input: model_input.FoldingInput,
-        prefix: str | None = None,
+        name: str | None = None,
     ) -> model_input.FoldingInput:
         """Add pre-trained embeddings to the model input from pre-computed files.
 
@@ -135,8 +134,8 @@ class InputFeaturizer:
         ----------
         f_input : model_input.FoldingInput
             The model input to add pretrained features.
-        prefix : str | None
-            Prefix for the path to pre-computed embeddings.
+        name : str | None
+            Name of the structure, used as filename for pre-computed embeddings.
 
         Returns
         -------
@@ -145,20 +144,36 @@ class InputFeaturizer:
         """
         if self.seq_embedding_path is None and self.struct_embedding_path is None:
             return f_input
-        assert prefix is not None, (
+        assert name is not None, (
             "Prefix must be provided when using pre-computed embeddings."
         )
 
+        def get_prefix(name: str, root_dir: Path) -> str:
+            """Get the prefix for pre-computed embedding files.
+            Example:
+                pdb_id: 6oim
+                root_dir: /path/to/embeddings/
+                returns:
+                  - /path/to/embeddings/oi/6oim/6oim_
+                  - /path/to/embeddings/6o/6oim/6oim_ (fallback)
+            """
+            # Try subdir with 2nd and 3rd chars first
+            subdir = root_dir / name[1:3] / name
+            if not subdir.exists():
+                subdir = root_dir / name[0:2] / name
+            prefix = str(subdir / f"{name}_")
+            return prefix
+
         pretrained_dict = {}
         if self.seq_embedding_path is not None:
-            seq_embedding_prefix = str(self.seq_embedding_path / prefix)
+            seq_embedding_prefix = get_prefix(name, self.seq_embedding_path)
             seq_embedding = load_pretrained_embedding(
                 f_input, seq_embedding_prefix, self.seq_embedding_dim
             )
             pretrained_dict["sequence_embedding"] = seq_embedding
 
         if self.struct_embedding_path is not None:
-            struct_embedding_prefix = str(self.struct_embedding_path / prefix)
+            struct_embedding_prefix = get_prefix(name, self.struct_embedding_path)
             struct_embedding = load_pretrained_embedding(
                 f_input, struct_embedding_prefix, self.struct_embedding_dim
             )
@@ -536,7 +551,7 @@ def load_pretrained_embedding(
                 # HACK: (SeonghwanSeo) Print warning only for protein chains, since other
                 # chain types are not prepared yet. In future, we may want to enforce the
                 # existence of embedding files for all chain types.
-                print_warning: bool = False
+                print_warning: bool = True  # For debugging purpose
                 if print_warning and chain_type is C.ChainType.PROTEIN:
                     warnings.warn(
                         f"Precomputed Embedding file not found: {filename}."
