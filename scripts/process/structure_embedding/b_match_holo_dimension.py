@@ -91,9 +91,11 @@ def process_batch(records: list[Metadata], root_dir: Path, save_dir: Path):
             src_dir = root_dir / pdb_id[1:3] / pdb_id
             dst_dir = save_dir / pdb_id[1:3] / pdb_id
             if not src_dir.exists():
+                logger.warning(f"Source directory {src_dir} does not exist. Skipping.")
                 continue
 
-            if len(list(src_dir.glob("*_protein.pdb"))) == 0:
+            if len(list(src_dir.glob("*_protein.pt"))) == 0:
+                logger.info(f"No protein chains found for {pdb_id}. Skipping.")
                 continue  # No protein chains found, skip
 
             dst_dir.mkdir(parents=True, exist_ok=True)
@@ -134,13 +136,15 @@ def process_batch(records: list[Metadata], root_dir: Path, save_dir: Path):
                 if not src_path.exists():
                     continue
 
-                if not dst_path.exists():
-                    continue
+                # if dst_path.exists():
+                #     continue
 
-                embedding = torch.load(src_path, "cpu", weights_only=True)
+                embedding = torch.load(src_path, "cpu", weights_only=True).to(
+                    torch.bfloat16
+                )
                 length = embedding.shape[0]
                 if length == num_residues:
-                    torch.save(embedding.clone(), dst_path)
+                    torch.save(embedding, dst_path)
                 else:
                     is_resolved = struct.residue.resolved_mask[
                         residue_st : residue_st + num_residues
