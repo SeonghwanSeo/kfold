@@ -1,0 +1,31 @@
+_registry_: "structure_module"
+_class_: "KFoldECSI"
+
+# Sampling configuration
+num_steps: 200
+sigma_min: 0.001  # t_min
+sigma_max: 0.999  # t_max (near 1)
+
+# Linear route parameters (Table 8)
+gamma_max: 0.25  # \gamma_t = 2 * \gamma_\max * \sqrt{t(1-t)}
+
+# Data distribution parameters
+sigma_data: 16.0  # holo structures (\sigma_0)
+sigma_data_end: 16.0  # apo structures (\sigma_T)
+cov_xy: 128.0  # \sigma_data * \sigma_data_end / 2
+
+# Karras schedule
+rho: 7
+
+# Training noise level sampling (not used - uniform sampling used instead)
+P_mean: -1.2
+P_std: 1.5
+
+# Stochasticity control
+# eta=0: deterministic ODE, eta=1: full SDE (DDBM-style)
+eta: 1.0
+
+# Other settings
+coordinate_augmentation: True
+synchronize_sigmas: False
+normalize_data_end: False
