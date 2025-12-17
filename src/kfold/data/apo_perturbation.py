@@ -95,7 +95,6 @@ class ApoPerturbation:
         prob_replace_to_holo: float = 0.0,
         mask_nucleic_acids: bool = False,
         ccd_symmetry_dict: dict | None = None,
-        seed: int | None = 42,
     ):
         """Initialize ApoPerturbation.
         Parameters
@@ -120,8 +119,6 @@ class ApoPerturbation:
             is prepared.
         ccd_symmetry_dict: dict | None
             Dictionary containing symmetry information for CCD entries.
-        seed : int | None, optional
-            Random seed for stochastic operations.
         """
         self.use_perturbation: bool = use_perturbation
         self.use_random_rotation: bool = use_random_rotation
@@ -129,7 +126,6 @@ class ApoPerturbation:
         self.prob_perturbation: float = prob_perturbation
         self.prob_replace_to_holo: float = prob_replace_to_holo
         self.mask_nucleic_acids: bool = mask_nucleic_acids
-        self.seed: int | None = seed
 
         if self.use_symmetry_correction:
             assert ccd_symmetry_dict is not None, (
@@ -138,7 +134,9 @@ class ApoPerturbation:
             self.ccd_symmetry_dict: dict = ccd_symmetry_dict
 
     def run(
-        self, struct: TokenizedStructure, rng: np.random.Generator | None = None
+        self,
+        struct: TokenizedStructure,
+        rng: np.random.Generator | None = None,
     ) -> TokenizedStructure:
         """Sample the apo structure and apply augmentation if needed.
 
@@ -156,7 +154,7 @@ class ApoPerturbation:
             NOTE: if there is multiple apo structures, one of them is sampled randomly
             and augmented.
         """
-        rng = rng or np.random.default_rng(self.seed)
+        rng = rng or np.random.default_rng()
 
         # Sample an apo structure for each chain and apply augmentation if needed
         apo_coords, apo_mask = self.sample_and_augment_apo_structure(struct, rng)
@@ -384,7 +382,7 @@ class ApoPerturbation:
         mask = mask.reshape(Ntoken * 24)
         # Apply random rotation or simple centering(no rotation)
         augmented_coords = center_random_augmentation(
-            coords, mask, augmentation=self.use_random_rotation
+            coords, mask, augmentation=self.use_random_rotation, rng=rng
         )
         return augmented_coords.reshape(Ntoken, 24, 3)
 

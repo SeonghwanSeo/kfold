@@ -2,11 +2,11 @@
 
 import gc
 import pathlib
-import random
 from dataclasses import dataclass
 from typing import Any
 
 import lightning.pytorch as pl
+import numpy as np
 import torch
 from omegaconf import DictConfig
 from torchmetrics import MeanMetric
@@ -286,7 +286,7 @@ class KFoldTrainingModule(pl.LightningModule):
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
         # Sample recycling steps
-        num_cycles = random.randint(1, training_config.num_cycles)
+        num_cycles = np.random.randint(1, training_config.num_cycles + 1)
 
         # Compute the forward pass
         out: dict[str, torch.Tensor] = self(
@@ -411,12 +411,17 @@ class KFoldTrainingModule(pl.LightningModule):
             save_dir = pathlib.Path(
                 val_config.save_structure_path, f"it-{self.global_step}"
             )
-            try:
-                self.save_structure(
-                    f_input, sample_coords, true_coords, full_struct_list, save_dir
-                )
-            except Exception as e:
-                print(f"Failed to save structure for batch {batch_idx}: {e}")
+            rmsd_list = metrics["avg_rmsd"][0].tolist()
+            lddt_list = metrics["avg_lddt"][0].tolist()
+            self.save_structure(
+                f_input,
+                sample_coords,
+                true_coords,
+                full_struct_list,
+                save_dir,
+                rmsd_list,
+                lddt_list,
+            )
 
     def on_validation_epoch_end(self):
         """Aggregate and log validation metrics at the end of the epoch."""
@@ -674,6 +679,8 @@ class KFoldTrainingModule(pl.LightningModule):
         true_coords: torch.Tensor,
         full_struct_list: list[dict],
         save_dir: pathlib.Path,
+        rmsd_list: list[float],
+        lddt_list: list[float],
     ):
         from kfold.data.structure import TokenizedStructure
 
@@ -683,20 +690,43 @@ class KFoldTrainingModule(pl.LightningModule):
 
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        save_path = save_dir / f"{name}-apo.pdb"
-        struct.write(save_path, 0, save_apo=True)
+        try:
+            save_path = save_dir / f"{name}-gt.cif"
+            struct.write(save_path, 0, is_predicted=False)
+        except Exception as e:
+            print(f"Failed to save ground-truth CIF for {name}: {e}")
 
-        true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
-        new_struct = struct.replace_atom_coords(true_coords_arr)
-        for i in range(true_coords_arr.shape[0]):
-            save_path = save_dir / f"{name}-gt-{i}.pdb"
-            new_struct.write(save_path, i, is_predicted=False)
+        try:
+            save_path = save_dir / f"{name}-apo.cif"
+            struct.write(save_path, 0, save_apo=True)
+        except Exception as e:
+            print(f"Failed to save apo CIF for {name}: {e}")
+            try:
+                save_path = save_dir / f"{name}-apo.pdb"
+                struct.write(save_path, 0, save_apo=True)
+            except Exception as e:
+                print(f"Failed to save apo PDB for {name}")
+
+        try:
+            true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
+            new_struct = struct.replace_atom_coords(true_coords_arr)
+            for i in range(true_coords_arr.shape[0]):
+                save_path = save_dir / f"{name}-gt-aligned{i}.cif"
+                new_struct.write(save_path, i, is_predicted=False)
+        except Exception as e:
+            print(f"Failed to save aligned ground-truth CIF for {name}: {e}")
 
         # [B, Nsample, Natom, 3] -> [Nsample, Natom, 3]
         assert f_input.batch_size == 1, "Saving structure only supports batch size of 1."
         pred_coords_arr = pred_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
 
-        new_struct = struct.replace_atom_coords(pred_coords_arr)
-        for i in range(pred_coords_arr.shape[0]):
-            save_path = save_dir / f"{name}-{i}.pdb"
-            new_struct.write(save_path, i, is_predicted=True)
+        try:
+            new_struct = struct.replace_atom_coords(pred_coords_arr)
+            for i in range(pred_coords_arr.shape[0]):
+                rmsd, lddt = rmsd_list[i], lddt_list[i]
+                save_path = (
+                    save_dir / f"{name}-{i}-rmsd{rmsd:.2f}-lddt{lddt * 100:.2f}.cif"
+                )
+                new_struct.write(save_path, i, is_predicted=True)
+        except Exception as e:
+            print(f"Failed to save predicted CIF for {name}: {e}")

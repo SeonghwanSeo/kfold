@@ -156,8 +156,9 @@ def _center_random_augmentation_npy(
         coords = do_centering(coords, mask, mask_to_zero=False)
 
     if augmentation:
+        rng = rng or np.random.default_rng()
+
         # Line 2,4
-        assert isinstance(rng, np.random.Generator | None)
         R = random_rotations_npy(
             coords.shape[:-2], dtype=np.float32, rng=rng
         )  # [..., 3, 3]
@@ -169,10 +170,7 @@ def _center_random_augmentation_npy(
             trans_shape = list(coords.shape)
             trans_shape[-2] = 1  # The 'L' dimension becomes 1 for broadcasting
 
-            if rng is None:
-                noise = np.random.randn(*trans_shape).astype(coords.dtype)
-            else:
-                noise = rng.normal(size=trans_shape).astype(coords.dtype)
+            noise = rng.normal(size=trans_shape).astype(coords.dtype)
             random_trans = noise * s_trans
             coords = coords + random_trans
 
@@ -242,7 +240,7 @@ def _copysign(a: ArrayT, b: ArrayT) -> ArrayT:
 
 
 def random_rotations_npy(
-    shape: tuple[int, ...], dtype: type | np.dtype, rng: np.random.Generator | None = None
+    shape: tuple[int, ...], dtype: type | np.dtype, rng: np.random.Generator
 ) -> np.ndarray:
     """
     Generate random rotations as 3x3 rotation matrices.
@@ -251,10 +249,7 @@ def random_rotations_npy(
     """
     # Get random quaternions
     n = math.prod(shape)
-    if rng is None:
-        o = np.random.randn(n, 4).astype(dtype)
-    else:
-        o = rng.normal(size=(n, 4)).astype(dtype)
+    o = rng.normal(size=(n, 4)).astype(dtype)
     s = (o * o).sum(axis=1)
     # Use broadcasting for division
     quaternions = o / _copysign(np.sqrt(s), o[:, 0])[:, np.newaxis]
