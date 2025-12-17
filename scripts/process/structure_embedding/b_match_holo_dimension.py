@@ -23,7 +23,8 @@ _env: lmdb.Environment | None = None
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Get protein structures from processed LMDB dataset."
+        description="Match the length of structure embeddings to holo protein"
+        " chain dimensions."
     )
     parser.add_argument(
         "--processed_lmdb_path",
@@ -136,8 +137,8 @@ def process_batch(records: list[Metadata], root_dir: Path, save_dir: Path):
                 if not src_path.exists():
                     continue
 
-                # if dst_path.exists():
-                #     continue
+                if dst_path.exists():
+                    continue
 
                 embedding = torch.load(src_path, "cpu", weights_only=True).to(
                     torch.bfloat16

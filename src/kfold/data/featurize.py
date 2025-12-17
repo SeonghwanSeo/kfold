@@ -145,8 +145,9 @@ class InputFeaturizer:
         if self.seq_embedding_path is None and self.struct_embedding_path is None:
             return f_input
         assert name is not None, (
-            "Prefix must be provided when using pre-computed embeddings."
+            "Name must be provided when using pre-computed embeddings."
         )
+        assert len(name) >= 4, "Name must be at least 4 characters long."
 
         def get_prefix(name: str, root_dir: Path) -> str:
             """Get the prefix for pre-computed embedding files.
