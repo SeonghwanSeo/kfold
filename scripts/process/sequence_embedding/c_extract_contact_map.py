@@ -25,7 +25,7 @@ _env = None
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Get polymer sequences from processed LMDB dataset (Multiprocessing)."
+        description="Extract contact maps and distance maps between chain interfaces from a processed LMDB dataset (multiprocessing)."
     )
     parser.add_argument(
         "--processed_lmdb_path",
@@ -36,7 +36,7 @@ def parse_args():
     parser.add_argument(
         "--manifest_path",
         type=Path,
-        help="Path to the processed LMDB dataset.",
+        help="Path to the manifest file containing structure metadata.",
         default="/cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl",
     )
     parser.add_argument(
@@ -92,7 +92,7 @@ def get_center_coords(chain_i: int, struct: TokenizedStructure) -> np.ndarray:
     center_coords[~mask] = np.nan  # Set unresolved tokens to NaN
 
     # Convert token coords to residue coords
-    # HACK: This returns N instead of CA for unstandard amino acids.
+    # HACK: This returns N instead of CA for nonstandard amino acids.
     res_st = int(struct.chain.residue_start[chain_i])
     res_end = res_st + int(struct.chain.num_residues[chain_i])
     res_token_st = struct.residue.token_start[res_st:res_end] - st  # (num_res,)
@@ -106,7 +106,9 @@ def process_batch(
     root_dir: Path,
 ) -> None:
     """
-    Process a batch of keys. Returns a list of (pdb_id, polymer_sequences).
+    Process a batch of structures from the manifest by reading them from the
+    LMDB database and saving contact maps and corresponding polymer sequences
+    to disk under the given root directory.
     """
     global _env
 
