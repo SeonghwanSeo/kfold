@@ -68,6 +68,8 @@ class KFoldECSI(BaseEDM):
             Whether to synchronize sigmas across diffusion samples, by default False.
         normalize_data_end : bool, optional
             Whether to normalize the source (apo) input, by default False.
+        normalize_coordinate : bool, optional
+            Whether to normalize the source and target coordinates, by default False.
         """
 
         num_steps: int = 200
@@ -84,6 +86,7 @@ class KFoldECSI(BaseEDM):
         coordinate_augmentation: bool = True
         synchronize_sigmas: bool = False
         normalize_data_end: bool = False
+        normalize_coordinate: bool = False
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -102,12 +105,27 @@ class KFoldECSI(BaseEDM):
         self.coordinate_augmentation: bool = cfg.coordinate_augmentation
         self.synchronize_sigmas: bool = cfg.synchronize_sigmas
         self.normalize_data_end: bool = cfg.normalize_data_end
+        self.normalize_coordinate: bool = cfg.normalize_coordinate
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
             augmentation=self.coordinate_augmentation,
             s_trans=1.0,
         )
+
+    @property
+    def _effective_sigma_data(self) -> float:
+        return 1.0 if self.normalize_coordinate else self.sigma_data
+
+    @property
+    def _effective_sigma_data_end(self) -> float:
+        return 1.0 if self.normalize_coordinate else self.sigma_data_end
+
+    @property
+    def _effective_cov_xy(self) -> float:
+        if self.normalize_coordinate:
+            return self.cov_xy / (self.sigma_data * self.sigma_data_end)
+        return self.cov_xy
 
     def apply_random_augmentation(
         self, coords: torch.Tensor, mask: torch.Tensor
@@ -166,13 +184,17 @@ class KFoldECSI(BaseEDM):
         beta_t = self.beta(t)
         gamma_t = self.gamma(t)
 
+        sigma_data = self._effective_sigma_data
+        sigma_data_end = self._effective_sigma_data_end
+        cov_xy = self._effective_cov_xy
+
         # Total variance A (adapted from DDBM Eq. 81)
         # A = \alpha_t^2 \sigma_0^2 + \beta_t^2 \sigma_T^2
         #   + 2 \alpha_t \beta_t \sigma_{0T} + \gamma_t^2
         A = (
-            alpha_t**2 * self.sigma_data**2
-            + beta_t**2 * self.sigma_data_end**2
-            + 2 * alpha_t * beta_t * self.cov_xy
+            alpha_t**2 * sigma_data**2
+            + beta_t**2 * sigma_data_end**2
+            + 2 * alpha_t * beta_t * cov_xy
             + gamma_t**2
         )
 
@@ -180,13 +202,13 @@ class KFoldECSI(BaseEDM):
         c_in = 1 / torch.sqrt(A + 1e-8)
 
         # c_skip: skip connection weight
-        numerator_skip = alpha_t * self.sigma_data**2 + beta_t * self.cov_xy
+        numerator_skip = alpha_t * sigma_data**2 + beta_t * cov_xy
         c_skip = numerator_skip / (A + 1e-8)
 
         # c_out: output scaling
         numerator_out_sq = (
-            beta_t**2 * (self.sigma_data**2 * self.sigma_data_end**2 - self.cov_xy**2)
-            + gamma_t**2 * self.sigma_data**2
+            beta_t**2 * (sigma_data**2 * sigma_data_end**2 - cov_xy**2)
+            + gamma_t**2 * sigma_data**2
         )
         c_out = torch.sqrt(torch.clamp(numerator_out_sq, min=1e-8)) * c_in
 
@@ -301,7 +323,7 @@ class KFoldECSI(BaseEDM):
         assert prior_coords.shape == r_noisy.shape, (
             "In ECSI, the shapes of prior_coords and r_noisy should be the same"
         )
-        if self.normalize_data_end:
+        if self.normalize_data_end and not self.normalize_coordinate:
             prior_coords = prior_coords / self.sigma_data_end
         r_noisy = torch.cat([r_noisy, prior_coords], dim=-1)
         assert r_noisy.shape[-1] == 6, "In ECSI, the last dimension should be 6"
@@ -477,6 +499,70 @@ class KFoldECSI(BaseEDM):
 
         return noised_coords
 
+    def training_step(
+        self,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        s_trunk: torch.Tensor,
+        z_trunk: torch.Tensor,
+        diffusion_batch_size: int = 1,
+        model_cache: dict | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Perform a single training step for the structure module.
+        See Section 5 of EDM paper.
+        """
+        batch_size = f_input.batch_size  # =B
+        num_diffusion_samples = diffusion_batch_size  # =N
+        mask = f_input.atom.pad_mask  # [B, La]
+
+        with torch.no_grad():
+            t_hat = self.sample_noise_level(
+                batch_size, num_diffusion_samples, device=f_input.device
+            )  # [B, N]
+
+            # sample xT from label
+            label_coords = self.sample_label(f_input, num_diffusion_samples)
+            label_coords = label_coords * mask[..., None, :, None]
+
+            # sample x0 from prior
+            prior_coords = self.sample_prior(f_input, num_diffusion_samples, label_coords)
+            prior_coords = prior_coords * mask[..., None, :, None]
+
+            if self.normalize_coordinate:
+                label_coords_norm = label_coords / self.sigma_data
+                prior_coords_norm = prior_coords / self.sigma_data_end
+            else:
+                label_coords_norm = label_coords
+                prior_coords_norm = prior_coords
+
+            # sample xt via interpolation
+            noised_atom_coords = self.interpolate(
+                prior_coords_norm, label_coords_norm, t_hat, mask
+            )
+            noised_atom_coords = noised_atom_coords * mask[..., None, :, None]
+
+        denoised_atom_coords = self.forward_model(
+            x_noisy=noised_atom_coords,  # [B, N, La, 3]
+            t_hat=t_hat,  # [B, N]
+            f_input=f_input,
+            s_inputs=s_inputs,  # [B, Lt, c_s]
+            s_trunk=s_trunk,  # [B, Lt, c_s]
+            z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
+            model_cache=model_cache,
+            prior_coords=prior_coords_norm,  # [B, N, La, 3]
+        )  # [B, N, La, 3]
+
+        loss_weights = self.loss_weights(t_hat)  # [B, N]
+
+        return {
+            "t_hat": t_hat,
+            "loss_weights": loss_weights,
+            "prior_atom_coords": prior_coords_norm,
+            "noised_atom_coords": noised_atom_coords,
+            "denoised_atom_coords": denoised_atom_coords,
+            "true_atom_coords": label_coords_norm,
+        }
+
     def sample_structure(
         self,
         f_input: FoldingInput,
@@ -524,6 +610,9 @@ class KFoldECSI(BaseEDM):
         x_apo = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
 
         sample_out["init_coordinates"] = x_apo
+        if self.normalize_coordinate:
+            x_apo = x_apo / self.sigma_data_end
+
         x_t = x_apo.clone()
 
         if return_traj:
@@ -606,6 +695,9 @@ class KFoldECSI(BaseEDM):
 
             if return_traj:
                 traj.append(x_t.cpu())
+
+        if self.normalize_coordinate:
+            x_t = x_t * self.sigma_data
 
         sample_out["sample_coordinates"] = x_t
         if return_traj:
