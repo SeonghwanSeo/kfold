@@ -247,19 +247,6 @@ def process_batch(
     txn.abort()
 
 
-def get_all_keys(lmdb_path: str) -> list[bytes]:
-    """Quickly retrieve all keys from the LMDB."""
-    logger.info("Reading all keys from LMDB...")
-    env = lmdb.open(lmdb_path, readonly=True, lock=False, readahead=False, meminit=False)
-    with env.begin(write=False) as txn:
-        # keys=True, values=False is much faster just to list keys
-        with txn.cursor() as cursor:
-            keys = [key for key in cursor.iternext(keys=True, values=False)]
-    env.close()
-    logger.info(f"Found {len(keys)} keys.")
-    return keys
-
-
 def main(args):
     # 1. Load manifest
     manifest: list[Metadata] = load_manifest(args.manifest_path)
