@@ -74,12 +74,41 @@ data:
 
   # Apo perturbation configurations:
   apo_perturbation_args:
-    use_perturbation: false # TODO: set to true after implementation is complete
+    use_perturbation: true # TODO: set to true after implementation is complete
     use_random_rotation: true
     use_symmetry_correction: false # enabled during training
-    prob_perturbation: 0.5
+    prob_perturbation: 1.0
     prob_replace_to_holo: 0.0 # enabled during training
     mask_nucleic_acids: true # TODO: remove this after NA apo structures are available
+    rmsd_threshold: 15.0 # Skip perturbation if RMSD exceeds this threshold (Angstroms)
+    log_stats: false # Whether to log perturbation statistics periodically
+    log_stats_interval: 1000 # Log statistics every N chain perturbations
+
+    # RieProDy Riemannian perturbation settings
+    metric_lmdb_path: "/cache/wykim_lab/apo_metrics_esmfold.lmdb/" # Path to LMDB containing pre-computed metric data (e.g., "/path/to/metric.lmdb")
+    metric_comp:
+      # Apo internal coordinate metric settings
+      apo_internal_coord_metric_calculation_device: "cpu" # or "cuda"
+      apo_internal_coord_metric_calculation_precision: "float64"
+      apo_internal_coord_metric_save_precision: "float16"
+      # Dummy path required by RieProDy __init__ (not used in training/inference path here)
+      apo_internal_coord_metric_information_path: "."
+
+    random_walk:
+      # Metric calculation options
+      apo_internal_coord_random_walk_device: "cpu"
+      apo_internal_coord_random_walk_precision: "float32"
+      consider_side_chain_in_metric: false
+      fixed_bb_angles: [] # e.g., ["phi", "psi"] to fix backbone angles
+
+      # Riemannian random walk settings
+      total_time: 20.0 # Total simulation time for Brownian motion
+      num_steps: 1
+      metric_calculation_period: 100
+      metric: "lagrangian"
+      use_precomputed_metric: true  # Use pre-computed metric from LMDB
+      with_christoffel_term: false
+      kabsch_aligned_traj: false
 
   # Featurizer configurations:
   featurization_args:
