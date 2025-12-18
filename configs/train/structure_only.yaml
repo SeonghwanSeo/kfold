@@ -88,6 +88,8 @@ data:
       apo_internal_coord_metric_calculation_device: "cpu" # or "cuda"
       apo_internal_coord_metric_calculation_precision: "float64"
       apo_internal_coord_metric_save_precision: "float16"
+      # Dummy path required by RieProDy __init__ (not used in training/inference path here)
+      apo_internal_coord_metric_information_path: "."
 
     random_walk:
       # Metric calculation options
