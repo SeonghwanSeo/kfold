@@ -63,7 +63,7 @@ class Chain(PlainLayout[np.ndarray]):
     num_atoms: np.ndarray  # [Nchain,], int
 
     # === Properties === #
-    @property
+    @cached_property
     def layout_shape(self) -> tuple[int, ...]:
         return self.chain_type.shape  # [Nchain,]
 
@@ -79,6 +79,19 @@ class Chain(PlainLayout[np.ndarray]):
         check_array(self.num_residues, name="num_residues", dtype=np.integer, shape=shape)
         check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=shape)
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
+
+    @cached_property
+    def default_dtype(self) -> dict[str, type]:
+        """Get default dtypes for each field."""
+        return {
+            "chain_type": np.int32,
+            "entity_id": np.int32,
+            "asym_id": np.int32,
+            "sym_id": np.int32,
+            "num_residues": np.int32,
+            "num_tokens": np.int32,
+            "num_atoms": np.int32,
+        }
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -167,7 +180,7 @@ class Residue(PlainLayout[np.ndarray]):
     resolved_mask: np.ndarray  # [L,], bool
     is_standard: np.ndarray  # [L,], bool
 
-    @property
+    @cached_property
     def layout_shape(self) -> tuple[int, ...]:
         return self.res_type.shape  # [Nresidue,]
 
@@ -186,6 +199,23 @@ class Residue(PlainLayout[np.ndarray]):
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
         check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
         check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
+
+    @classmethod
+    def get_default_dtype(cls) -> dict[str, type | np.dtype]:
+        """Get default dtypes for each field."""
+        return {
+            "name": np.dtype("<U5"),
+            "res_type": np.int8,  # 0-31
+            "chain_type": np.int8,  # 0-3
+            "entity_id": np.int16,
+            "asym_id": np.int16,
+            "sym_id": np.int16,
+            "residue_index": np.int32,
+            "num_tokens": np.int32,
+            "num_atoms": np.int32,  # 0-23
+            "resolved_mask": np.bool_,
+            "is_standard": np.bool_,
+        }
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -306,7 +336,7 @@ class Token(PlainLayout[np.ndarray]):
     resolved_mask: np.ndarray  # [L,], bool
     is_standard: np.ndarray  # [L,], bool
 
-    @property
+    @cached_property
     def layout_shape(self) -> tuple[int, ...]:
         return self.res_type.shape  # [Ntoken,]
 
@@ -325,6 +355,24 @@ class Token(PlainLayout[np.ndarray]):
         check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
         check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
         check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
+
+    @classmethod
+    def get_default_dtype(cls) -> dict[str, type | np.dtype]:
+        """Get default dtypes for each field."""
+        return {
+            "res_type": np.int8,  # 0-31
+            "chain_type": np.int8,  # 0-3
+            "entity_id": np.int16,
+            "asym_id": np.int16,
+            "sym_id": np.int16,
+            "token_index": np.int32,
+            "residue_index": np.int32,
+            "disto_index": np.int8,  # 0-23
+            "center_index": np.int8,  # 0-23
+            "num_atoms": np.int8,  # 0-23
+            "resolved_mask": np.bool_,
+            "is_standard": np.bool_,
+        }
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -389,7 +437,7 @@ class Atom(PlainLayout[np.ndarray]):
     apo_mask: np.ndarray  # [Ntoken, 24, Napo], bool
     pad_mask: np.ndarray  # [Ntoken, 24], bool
 
-    @property
+    @cached_property
     def layout_shape(self) -> tuple[int, ...]:
         return self.ref_element.shape
 
@@ -417,6 +465,21 @@ class Atom(PlainLayout[np.ndarray]):
         check_array(self.apo_mask, name="apo_mask", dtype=np.bool_, shape=(*shape, -1))
         check_array(self.pad_mask, name="pad_mask", dtype=np.bool_, shape=shape)
 
+    @classmethod
+    def get_default_dtype(cls) -> dict[str, type | np.dtype]:
+        """Get default dtypes for each field."""
+        return {
+            "ref_atom_name_chars": np.int8,  # 0-63
+            "ref_element": np.int8,  # 0-127
+            "ref_charge": np.float16,
+            "ref_pos": np.float32,
+            "coords": np.float32,
+            "apo_coords": np.float32,
+            "resolved_mask": np.bool_,
+            "apo_mask": np.bool_,
+            "pad_mask": np.bool_,
+        }
+
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
 class Bond(PlainLayout[np.ndarray]):
@@ -441,7 +504,7 @@ class Bond(PlainLayout[np.ndarray]):
     atom_index: np.ndarray  # [Nbond, 2], int
     bond_type: np.ndarray  # [Nbond,], int
 
-    @property
+    @cached_property
     def layout_shape(self) -> tuple[int, ...]:
         return self.bond_type.shape
 
@@ -456,8 +519,18 @@ class Bond(PlainLayout[np.ndarray]):
         )
         check_array(self.bond_type, name="bond_type", dtype=np.integer, shape=shape)
 
+    @classmethod
+    def get_default_dtype(cls) -> dict[str, type | np.dtype]:
+        """Get default dtypes for each field."""
+        return {
+            "asym_id": np.int16,
+            "token_index": np.int32,
+            "atom_index": np.int8,  # 0-23
+            "bond_type": np.int8,
+        }
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
+
+@dataclasses.dataclass(kw_only=True)
 class TokenizedStructure:
     """Tokenized representation of a molecular structure.
 
@@ -723,6 +796,51 @@ class TokenizedStructure:
             atom=cropped_atom,
             bond=cropped_bond,
             metadata=self.metadata,
+        )
+
+    @classmethod
+    def concatenate(cls, structures: list[Self]) -> Self:
+        """Concatenate multiple structures into one.
+
+        Parameters
+        ----------
+        structures: list[TokenizedStructure]
+            List of structures to concatenate.
+
+        Returns
+        -------
+        concatenated_structure: TokenizedStructure
+            Concatenated structure.
+        """
+        # Concatenate chain, residue, token, atom
+        concat_chain = Chain.concatenate([struct.chain for struct in structures])
+        concat_residue = Residue.concatenate([struct.residue for struct in structures])
+        concat_token = Token.concatenate([struct.token for struct in structures])
+        concat_atom = Atom.concatenate([struct.atom for struct in structures])
+
+        # Adjust token indices
+        concat_token = concat_token.copy_with(
+            token_index=np.arange(len(concat_token), dtype=concat_token.token_index.dtype)
+        )
+
+        # Adjust bond indices and concatenate
+        bond_list = []
+        token_offset = 0
+        for struct in structures:
+            bond = struct.bond
+            adjusted_token_index = bond.token_index + token_offset
+            adjusted_bond = bond.copy_with(token_index=adjusted_token_index)
+            bond_list.append(adjusted_bond)
+            token_offset += int(struct.num_tokens)
+        concat_bond = Bond.concatenate(bond_list)
+
+        return cls(
+            chain=concat_chain,
+            residue=concat_residue,
+            token=concat_token,
+            atom=concat_atom,
+            bond=concat_bond,
+            metadata=None,
         )
 
     def reassign_token_indices(self) -> Self:
