@@ -1,0 +1,10 @@
+_registry_: "trunk"
+_class_: "PairmixerTrunk"
+channel_s: 384
+channel_z: 128
+num_blocks: 48
+dropout: 0.25
+use_msa: False
+use_template: False
+use_cuequiv_kernels: True
+blocks_per_ckpt: 1
