@@ -66,6 +66,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """
         self.records: list[metadata.Metadata] = records
         self.safe_load: bool = safe_load
+        self.seed: int | None = seed
 
         self.return_symmetry: bool = return_symmetry
         self.return_structure: bool = return_structure
@@ -81,14 +82,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             apo_perturbation.ApoPerturbation(
                 **apo_perturbation_args,
                 ccd_symmetry_dict=ccd_symmetry_dict,
-                seed=seed,
             )
         )
         self.featurizer: featurize.InputFeaturizer = featurize.InputFeaturizer(
             **featurization_args,
             seq_embedding_path=paths["seq_embedding_path"],
             struct_embedding_path=paths["struct_embedding_path"],
-            seed=seed,
         )
 
     def __len__(self) -> int:
@@ -105,6 +104,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     def pre_crop_structure(
         self,
         struct: structure.TokenizedStructure,
+        rng: np.random.Generator | None = None,
         **kwargs,
     ) -> structure.TokenizedStructure:
         """Pre-crop the folding input structure as needed.
@@ -119,6 +119,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     def crop_structure(
         self,
         struct: structure.TokenizedStructure,
+        rng: np.random.Generator | None = None,
         **kwargs,
     ) -> structure.TokenizedStructure:
         """Crop the folding input structure as needed."""
@@ -139,8 +140,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     def get_item_safe(
         self,
         index: int,
-        num_trials: int = 10,
+        num_trials: int = 100,
     ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
+        """Get the folding input for the given index, with retry on failure."""
+        if self.seed is not None:
+            rng = np.random.default_rng(self.seed + index % (1 << 15))
+        else:
+            rng = np.random.default_rng()
+
         trials = []
         for _ in range(num_trials):
             sample: metadata.Metadata = self.records[index]
@@ -153,7 +160,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                     raise e
                 sample_id = sample.id
                 print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
-                index = np.random.randint(0, len(self))
+                index = int(rng.integers(0, len(self)))
                 trials.append(sample)
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
@@ -165,23 +172,29 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         **kwargs,
     ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given sample."""
-        record_id = record.id
+        record_id: str = record.id
 
-        # Tokenization
+        # Initialize random number generator (create new rng based on record_id)
+        if self.seed is not None:
+            rng = np.random.default_rng(self.seed + hash(record_id) % (1 << 15))
+        else:
+            rng = np.random.default_rng()
+
+        # Load tokenized structure
         struct = self.load_tokenized_structure(record)
 
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
-        struct = self.pre_crop_structure(struct, **kwargs)
+        struct = self.pre_crop_structure(struct, rng=rng, **kwargs)
 
         # Apo perturbation
-        struct = self.augment_apo_structure(struct)
+        struct = self.augment_apo_structure(struct, rng=rng)
 
         # Cropping
-        cropped_struct = self.crop_structure(struct, **kwargs)
+        cropped_struct = self.crop_structure(struct, rng=rng, **kwargs)
 
         # Featurization
-        f_input = self.featurize(cropped_struct, record)
+        f_input = self.featurize(cropped_struct, record, rng=rng)
 
         symmetry_dict = {}
         symmetry_dict["id"] = record_id
@@ -190,7 +203,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         if self.return_symmetry:
             # WARN: symmetry computation should be done before padding
             symmetry_dict["symmetry"] = symmetry.get_symmetries(
-                f_input, cropped_struct, struct, self.ccd_symmetry_dict
+                f_input, cropped_struct, struct, self.ccd_symmetry_dict, rng=rng
             )
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
@@ -199,21 +212,22 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         return f_input, symmetry_dict
 
     def augment_apo_structure(
-        self, struct: structure.TokenizedStructure
+        self,
+        struct: structure.TokenizedStructure,
+        rng: np.random.Generator | None = None,
     ) -> structure.TokenizedStructure:
         """Apply random perturbation/rotation to apo structure"""
-        return self.apo_perturbation.run(struct)
+        return self.apo_perturbation.run(struct, rng=rng)
 
     def featurize(
-        self, struct: structure.TokenizedStructure, record: metadata.Metadata
+        self,
+        struct: structure.TokenizedStructure,
+        record: metadata.Metadata,
+        rng: np.random.Generator | None = None,
     ) -> model_input.FoldingInput:
         """Featurize the given tokenized structure."""
         # Featurization
-        record_id = record.id
-        # HACK: This is the rule to save the pre-computed features in the directory.
-        # e.g., "{seq_embedding_path}/4l/4l8g/4l8g_*"
-        prefix = f"{record_id[:2]}/{record_id}/{record_id}_"
-        f_input = self.featurizer.run(struct, prefix)
+        f_input = self.featurizer.run(struct, record.id, rng=rng)
         return f_input
 
 
@@ -300,26 +314,38 @@ class TrainingDataset(SafeLoadingDataset):
     def pre_crop_structure(
         self,
         struct: structure.TokenizedStructure,
+        rng: np.random.Generator | None = None,
         **kwargs,
     ) -> structure.TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_chains < struct.num_chains:
             # Get sub-complex with limited number of chains
-            struct = self.pre_cropper.crop(struct, self.max_tokens, asym_ids)
+            struct = self.pre_cropper.crop(
+                struct,
+                self.max_tokens,
+                bias_asym_id=asym_ids,
+                rng=rng,
+            )
         return struct
 
     @override
     def crop_structure(
         self,
         struct: structure.TokenizedStructure,
+        rng: np.random.Generator | None = None,
         **kwargs,
     ) -> structure.TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_tokens < struct.num_tokens:
             # Crop the tokenized structure
-            struct = self.cropper.crop(struct, self.max_tokens, asym_ids)
+            struct = self.cropper.crop(
+                struct,
+                self.max_tokens,
+                bias_asym_id=asym_ids,
+                rng=rng,
+            )
         return struct
 
     @override

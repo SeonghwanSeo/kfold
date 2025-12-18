@@ -79,20 +79,22 @@ def find_best_chain_permutation(
         best_symmetry_index: int = -1
         best_mse: float = float("inf")
         for s_i in range(num_symmetries):
-            if not center_mask[s_i].any():
+            gt_center_coords_i = gt_center_coords[s_i]
+            mask_i = center_mask[s_i]
+            if not mask_i.any():
                 # Skip if no resolved atoms
                 continue
             try:
                 gt_center_coords_aligned_i = rigid_align(
-                    coords=gt_center_coords[s_i],
+                    coords=gt_center_coords_i,
                     target=center_coords,
-                    mask=center_mask[s_i],
+                    mask=mask_i,
                 )
             except Exception as e:
                 print("Warning: error in rigid alignment inside symmetry code: ", e)
                 continue
             mse_i = compute_mse_loss(
-                gt_center_coords_aligned_i, center_coords, center_mask[s_i]
+                gt_center_coords_aligned_i, center_coords, mask_i
             ).item()
             if mse_i < best_mse:
                 best_mse = mse_i
