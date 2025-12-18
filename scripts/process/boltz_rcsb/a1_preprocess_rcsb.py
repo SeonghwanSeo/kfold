@@ -109,7 +109,7 @@ def extract_apo_coords(
         # === Get residue information === #
         res_idx = int(residue_indices[token_idx])  # 1-based index
         res_type = int(res_types[token_idx])
-        res_name = C.residue.residue_index_to_name[res_type]
+        res_name = C.residue.residue_id_to_name[res_type]
 
         if res_idx not in apo_chain:
             # Missing residue in apo structure

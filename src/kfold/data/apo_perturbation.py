@@ -688,7 +688,7 @@ class ApoPerturbation:
                 continue
 
             restype = int(struct.token.res_type[i])
-            res_name = C.residue.residue_index_to_name[restype]
+            res_name = C.residue.residue_id_to_name[restype]
             perms = get_ambiguous_atoms_in_residue(res_name)
             if len(perms) <= 1:
                 # No ambiguous atoms, skip

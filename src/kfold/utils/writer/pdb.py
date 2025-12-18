@@ -96,7 +96,7 @@ def to_pdbstring(
         if should_terminate:
             asym_id = last_asym_id
             chain_tag = chain_id_iter[asym_id - 1]
-            res_name = C.residue.residue_index_to_name[tokens.res_type[i - 1]].name
+            res_name = C.residue.residue_id_to_name[tokens.res_type[i - 1]].name
             residue_index = tokens.residue_index[i - 1]
             # Close the chain.
             chain_end = "TER"
@@ -113,7 +113,7 @@ def to_pdbstring(
         chain_tag = chain_id_iter[asym_id - 1]
 
         # Residue Information
-        res_name = C.residue.residue_index_to_name[tokens.res_type[i]].name
+        res_name = C.residue.residue_id_to_name[tokens.res_type[i]].name
         residue_index = tokens.residue_index[i]
 
         # Atom Information

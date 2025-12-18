@@ -7,7 +7,6 @@ import numpy as np
 import torch
 
 import kfold.constants as C
-from kfold.constants.residue import residue_index_to_name
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
 from . import model_input, structure
@@ -354,7 +353,7 @@ def featurize_structure(
         if not is_standard:
             # Skip non-standard residues
             continue
-        res_name = residue_index_to_name[int(token_data.res_type[tidx])]
+        res_name = C.residue.residue_id_to_name[int(token_data.res_type[tidx])]
         if res_name is C.residue.ResidueName.UNK:
             # Skip unknown residues
             continue
