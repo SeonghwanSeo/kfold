@@ -63,8 +63,8 @@ from kfold.model.layers.primitives.triangle_multiplication import (
 )
 from kfold.utils.checkpointing import checkpoint_blocks
 
-from .transition import Transition
-from .transformers import AttentionPairBias
+from kfold.model.layers.alphafold3.transition import Transition
+from kfold.model.layers.alphafold3.transformers import AttentionPairBias
 
 
 
