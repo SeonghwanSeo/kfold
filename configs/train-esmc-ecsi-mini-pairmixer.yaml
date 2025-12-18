@@ -1,5 +1,5 @@
 model:
-	# should be path to model config w/ pairmixer
+  # should be path to model config w/ pairmixer
   _yaml_: "model/kfold-ecsi-pairmixer.yaml"
   input_embedder:
     channel_seq_encoder: 1152
