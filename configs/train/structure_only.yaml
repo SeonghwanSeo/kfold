@@ -102,7 +102,8 @@ data:
       fixed_bb_angles: [] # e.g., ["phi", "psi"] to fix backbone angles
 
       # Riemannian random walk settings
-      total_time: 20.0 # Total simulation time for Brownian motion
+      total_time: 20.0 # Maximum total simulation time (sampled uniformly in [total_time_min, total_time) per call)
+      total_time_min: 0.0 # Minimum total simulation time for uniform sampling
       num_steps: 1
       metric_calculation_period: 100
       metric: "lagrangian"

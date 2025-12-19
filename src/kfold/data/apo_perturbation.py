@@ -152,7 +152,8 @@ class ApoPerturbation:
             - apo_internal_coord_random_walk_precision
             - consider_side_chain_in_metric
             - fixed_bb_angles
-            - total_time
+            - total_time (maximum total simulation time; sampled uniformly each call)
+            - total_time_min (optional minimum; default: 0.0)
             - num_steps
             - metric_calculation_period
             - metric (optional, default: "lagrangian")
@@ -269,6 +270,36 @@ class ApoPerturbation:
         self._stats_rmsd_filtered: int = 0
         self._stats_shape_mismatch: int = 0
         self._stats_success: int = 0
+
+    def _sample_random_walk_total_time(self, rng: np.random.Generator) -> float:
+        """Sample random-walk total_time for Riemannian Brownian motion.
+
+        Interpretation:
+        - `random_walk.total_time` is treated as the maximum value (max_time).
+        - Optionally, `random_walk.total_time_min` can be provided as the minimum value.
+        - If max_time == min_time, the value is treated as fixed.
+        - Otherwise, we sample uniformly from [min_time, max_time).
+        """
+        if self.random_walk is None:
+            return 0.1
+
+        max_time = float(self.random_walk.get("total_time", 0.1))
+        min_time = float(self.random_walk.get("total_time_min", 0.0))
+
+        if max_time < min_time:
+            warnings.warn(
+                (
+                    f"random_walk.total_time ({max_time}) < "
+                    f"random_walk.total_time_min ({min_time}). Swapping the bounds."
+                ),
+                UserWarning,
+            )
+            min_time, max_time = max_time, min_time
+
+        if max_time == min_time:
+            return max_time
+
+        return float(rng.uniform(min_time, max_time))
 
     @property
     def lmdb_env(self) -> lmdb.Environment | None:
@@ -825,7 +856,7 @@ class ApoPerturbation:
 
             # NOTE: perturbation via RieProDy's Riemannian Brownian Motion.
             params = {
-                "total_time": self.random_walk.get("total_time", 0.1),
+                "total_time": self._sample_random_walk_total_time(rng),
                 "num_steps": self.random_walk.get("num_steps", 10),
                 "metric": self.random_walk.get("metric", "lagrangian"),
                 "with_christoffel_term": self.random_walk.get(
