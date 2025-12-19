@@ -562,7 +562,7 @@ class PretrainedLayout(TensorLayout):
     sequence_embedding: torch.Tensor (float32)
         Pretrained sequence embedding of shape [L, c_seq_enc].
     structure_embedding: torch.Tensor (float32)
-        Pretrained structure embedding of shape [L, c_struct_enc].
+        Pretrained structure embedding of shape [L, Nstruct, c_struct_enc].
     """
 
     # TODO (SeonghwanSeo): we may want to add raw input format for
@@ -575,7 +575,7 @@ class PretrainedLayout(TensorLayout):
     #   4. We may have to introduce mini-batch dimension for memory efficiency.
 
     sequence_embedding: torch.Tensor  # [L, c_seq_enc], float32
-    structure_embedding: torch.Tensor  # [L, c_struct_enc], float32
+    structure_embedding: torch.Tensor  # [L, Nstruct, c_struct_enc], float32
     pad_mask: torch.Tensor  # [L,], bool
 
     @property
@@ -609,7 +609,7 @@ class PretrainedLayout(TensorLayout):
             self.structure_embedding,
             name="structure_embedding",
             dtype=(torch.float32, torch.bfloat16, torch.float16),
-            shape=(*shape, -1),
+            shape=(*shape, -1, -1),
         )
 
     def pad(self, *pad_shape: int) -> Self:

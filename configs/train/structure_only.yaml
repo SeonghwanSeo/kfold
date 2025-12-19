@@ -89,6 +89,7 @@ data:
     # TODO: remove these params if all chains have precomputed embeddings
     seq_embedding_dim: null
     struct_embedding_dim: null
+    max_struct_ensembles: 1
 
 # Lightning Trainer Configuration
 trainer:

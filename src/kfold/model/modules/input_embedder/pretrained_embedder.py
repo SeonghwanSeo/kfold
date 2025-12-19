@@ -4,7 +4,7 @@ from kfold.data.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
 from kfold.model.layers.alphafold3.input_encoder import InputFeatureEmbedder
 from kfold.model.layers.kfold.encoder import InputEmbedderWithApo
-from kfold.model.layers.primitives import LayerNorm, Linear, LinearNoBias
+from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 
 from .base import BaseInputEmbedder
@@ -67,10 +67,6 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             The atom pairwise embedding size.
         channel_seq_encoder : int | None
             The pre-trained sequence encoder output channel size.
-        channel_struct_encoder : int | None
-            The pre-trained structure encoder output channel size.
-        gating: bool
-            Whether to use gating for pre-trained embeddings.
         atoms_per_window_queries: int,
             The number of atoms per window for queries.
         atoms_per_window_keys: int,
@@ -141,32 +137,14 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             )
 
         # Pre-trained encoders
-        self.gating: bool = cfg.gating
         self.use_seq_enc: bool = cfg.channel_seq_encoder is not None
         if cfg.channel_seq_encoder is not None:
-            self.layernorm_seq_emb = LayerNorm(
-                cfg.channel_seq_encoder, create_offset=False
+            self.proj_seq_emb = torch.nn.Sequential(
+                LayerNorm(cfg.channel_seq_encoder, create_offset=False),
+                LinearNoBias(cfg.channel_seq_encoder, cfg.channel_s, init="relu"),
+                torch.nn.ReLU(),
+                LinearNoBias(cfg.channel_s, cfg.channel_s, init="zero"),
             )
-            self.proj_seq_emb = LinearNoBias(
-                cfg.channel_seq_encoder, cfg.channel_s, init="zero"
-            )
-            if self.gating:
-                self.gate_seq_emb = Linear(
-                    cfg.channel_seq_encoder, cfg.channel_s, init="gating_opened"
-                )
-
-        self.use_struct_enc: bool = cfg.channel_struct_encoder is not None
-        if cfg.channel_struct_encoder is not None:
-            self.layernorm_struct_emb = LayerNorm(
-                cfg.channel_struct_encoder, create_offset=False
-            )
-            self.proj_struct_emb = LinearNoBias(
-                cfg.channel_struct_encoder, cfg.channel_s, init="zero"
-            )
-            if self.gating:
-                self.gate_struct_emb = Linear(
-                    cfg.channel_struct_encoder, cfg.channel_s, init="gating_opened"
-                )
 
         # Initial linear layers for single and pair representations
         self.linear_s_init = LinearNoBias(cfg.channel_s, cfg.channel_s)
@@ -221,22 +199,8 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         if self.use_seq_enc:
             assert f_input.pretrained.has_sequence_embedding
             seq_emb = f_input.pretrained.sequence_embedding  # [B, Lt, c_seq_enc]
-            seq_emb = self.layernorm_seq_emb(seq_emb)
-            s_seq = self.proj_seq_emb(seq_emb)
-            if self.gating:
-                g_seq = torch.sigmoid(self.gate_seq_emb(seq_emb))
-                s_seq = g_seq * s_seq
+            s_seq = self.proj_seq_emb(seq_emb)  # [B, Lt, c_s]
             s_inputs = s_inputs + s_seq
-
-        if self.use_struct_enc:
-            assert f_input.pretrained.has_structure_embedding
-            struct_emb = f_input.pretrained.structure_embedding  # [B, Lt, c_struct_emb]
-            struct_emb = self.layernorm_struct_emb(struct_emb)
-            s_struct = self.proj_struct_emb(struct_emb)
-            if self.gating:
-                g_struct = torch.sigmoid(self.gate_struct_emb(struct_emb))
-                s_struct = g_struct * s_struct
-            s_inputs = s_inputs + s_struct
 
         # Get initial single representation
         s_init = self.linear_s_init(s_inputs)  # [B, L, c_s]
