@@ -31,22 +31,20 @@ class PairformerStack(nn.Module):
         self,
         channel_s: int = 384,
         channel_z: int = 128,
+        num_heads_attn: int = 16,
+        num_heads_tri_attn: int = 4,
         num_blocks: int = 48,
-        num_heads: int = 16,
         dropout: float = 0.25,
-        pairwise_head_width: int = 32,
-        pairwise_num_heads: int = 4,
         blocks_per_ckpt: int | None = None,
     ):
         """Initialize the Pairformer module."""
         super().__init__()
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
-        self.num_blocks: int = num_blocks
+        self.num_heads_attn: int = num_heads_attn
+        self.num_heads_tri_attn: int = num_heads_tri_attn
         self.dropout: float = dropout
-        self.num_heads: int = num_heads
-        self.pairwise_head_width: int = pairwise_head_width
-        self.pairwise_num_heads: int = pairwise_num_heads
+        self.num_blocks: int = num_blocks
 
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
@@ -56,10 +54,9 @@ class PairformerStack(nn.Module):
                 PairformerBlock(
                     self.channel_s,
                     self.channel_z,
-                    self.num_heads,
+                    self.num_heads_attn,
+                    self.num_heads_tri_attn,
                     self.dropout,
-                    self.pairwise_head_width,
-                    self.pairwise_num_heads,
                 )
             )
 
@@ -135,10 +132,9 @@ class PairformerBlock(nn.Module):
         self,
         channel_s: int = 384,
         channel_z: int = 128,
-        num_heads: int = 16,
+        num_heads_attn: int = 16,
+        num_heads_tri_attn: int = 4,
         dropout: float = 0.25,
-        pairwise_head_width: int = 32,
-        pairwise_num_heads: int = 4,
     ):
         """Initialize the Pairformer module.
 
@@ -148,34 +144,32 @@ class PairformerBlock(nn.Module):
             The token single embedding size.
         channel_z : int
             The token pairwise embedding size.
-        num_heads : int, optional
-            The number of heads, by default 16
+        num_heads_attn : int, optional
+            The number of attention heads, by default 16
+        num_heads_tri_attn : int, optional
+            The number of triangle attention heads, by default 4
         dropout : float, optional
             The dropout rate, by default 0.25
-        pairwise_head_width : int, optional
-            The pairwise head width, by default 32
-        pairwise_num_heads : int, optional
-            The number of pairwise heads, by default 4
         """
         super().__init__()
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
         self.dropout: float = dropout
-        self.num_heads: int = num_heads
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
+
         self.tri_att_start = TriangleAttentionStartingNode(
-            channel_z, pairwise_head_width, pairwise_num_heads, inf=1e9
+            channel_z, num_heads_tri_attn, inf=1e9
         )
         self.tri_att_end = TriangleAttentionEndingNode(
-            channel_z, pairwise_head_width, pairwise_num_heads, inf=1e9
+            channel_z, num_heads_tri_attn, inf=1e9
         )
 
         self.attention = AttentionPairBias(
             channel_a=channel_s,
             channel_z=channel_z,
-            num_heads=num_heads,
+            num_heads=num_heads_attn,
             channel_s=None,
             use_single_cond=False,
         )
