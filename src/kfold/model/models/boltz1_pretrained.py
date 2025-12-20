@@ -1,9 +1,9 @@
+import dataclasses
 import time
 import urllib.request
 from pathlib import Path
 
 import torch
-from omegaconf import DictConfig
 
 import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
@@ -12,7 +12,12 @@ from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedd
 from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk
 from kfold.utils.registry import MAIN_MODULE, Registry
 
-from .base import BaseFoldingModel
+from .base import BaseFoldingModel, BaseFoldingModelConfig
+
+
+@dataclasses.dataclass(kw_only=True)
+class Boltz1PretrainedConfig(BaseFoldingModelConfig):
+    proj_s_inputs: bool = False
 
 
 @MAIN_MODULE.register()
@@ -21,37 +26,25 @@ class Boltz1Pretrained(BaseFoldingModel):
     trunk: Boltz1PairformerTrunk  # type: ignore
     distogram_head: Boltz1DistogramHead  # type: ignore
 
-    def __init__(self, global_config: DictConfig):
-        super().__init__(global_config)
-        self.config = global_config
-        model_config = global_config.model
+    def __init__(self, config: Boltz1PretrainedConfig):
+        super().__init__(config)
 
         # === Boltz-1 pretrained modules === #
         assert isinstance(self.input_embedder, Boltz1InputEmbedder)
         assert isinstance(self.trunk, Boltz1PairformerTrunk)
         assert isinstance(self.distogram_head, Boltz1DistogramHead)
 
-        # === For custom diffusion structure module === #
-        self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
-            model_config.score_model
-        )
-        self.structure_module: submodules.structure_module.BaseStructureModule = (
-            Registry.instantiate(
-                model_config.structure_module, score_model=self.score_model
-            )
-        )
-
         # Load Boltz-1 pretrained weights
         self.load_boltz_weights()
 
         # NOTE: additional projection layers for compatibility with KFold
         self.proj_s_inputs = None
-        need_projection: bool = model_config.get("proj_s_inputs", False)
+        need_projection: bool = config.proj_s_inputs
         if need_projection:
             c_input_boltz = 384 + 33 * 2 + 1 + 4  # 459
             self.proj_s_inputs = torch.nn.Linear(
                 c_input_boltz,
-                model_config.score_model.channel_s,
+                config.score_model.channel_s,
                 bias=False,
             )
 
