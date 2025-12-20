@@ -16,6 +16,7 @@ from .base import BaseFoldingModel, BaseFoldingModelConfig
 
 @dataclasses.dataclass(kw_only=True)
 class Boltz1Config(BaseFoldingModelConfig):
+    _class_: str = "Boltz1"
     load_weight: bool = True
 
 

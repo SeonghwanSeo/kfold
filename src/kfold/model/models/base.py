@@ -11,6 +11,7 @@ from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
 
 @dataclasses.dataclass(kw_only=True)
 class BaseFoldingModelConfig:
+    _class_: str = "BaseFoldingModel"
     input_embedder: BaseConfig
     trunk: BaseConfig
     score_model: BaseConfig

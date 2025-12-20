@@ -4,7 +4,7 @@ from .base import BaseFoldingModel, BaseFoldingModelConfig
 
 
 class KFoldConfig(BaseFoldingModelConfig):
-    pass
+    _class_: str = "KFold"
     # TODO: define encoders
     # sequence_encoder: BaseConfig
     # structure_encoder: BaseConfig

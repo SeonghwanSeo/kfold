@@ -5,18 +5,18 @@ from pathlib import Path
 
 import torch
 
-import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
 from kfold.model.modules.distogram_head.boltz1 import Boltz1DistogramHead
 from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedder
 from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk
-from kfold.utils.registry import MAIN_MODULE, Registry
+from kfold.utils.registry import MAIN_MODULE
 
 from .base import BaseFoldingModel, BaseFoldingModelConfig
 
 
 @dataclasses.dataclass(kw_only=True)
 class Boltz1PretrainedConfig(BaseFoldingModelConfig):
+    _class_: str = "Boltz1Pretrained"
     proj_s_inputs: bool = False
 
 
