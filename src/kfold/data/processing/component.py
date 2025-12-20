@@ -12,7 +12,7 @@ from rdkit import Chem
 
 from . import rdkit_utils
 
-# Helpfer function
+# Helper function
 
 _T = TypeVar("_T")
 

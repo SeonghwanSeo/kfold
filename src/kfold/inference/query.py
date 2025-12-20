@@ -344,7 +344,7 @@ def sanity_check_input_dicts(
 
         if "modifications" in chain_info:
             mods = chain_info["modifications"]
-            for key in mods.items():
+            for key in mods.keys():
                 if not key.isdigit():
                     raise ValueError(
                         f"Modification keys must be 1-based index, got: {key}"

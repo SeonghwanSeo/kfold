@@ -135,7 +135,6 @@ def to_mmcifstring(
         entity_id = int(chains.entity_id[chain_i])
 
         if entity_id in entity_map:
-            print(entity_id, "Already processed, skipping")
             continue  # already processed
 
         # Extract sequence

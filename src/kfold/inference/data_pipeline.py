@@ -685,10 +685,8 @@ def parse_ligand_sequence(
 
     # Load ccd or smiles
     components: list[Component] = []
-    if seq.ccd is not None:
-        if isinstance(seq.ccd, str):
-            ccd_codes = [seq.ccd]
-        for code in ccd_codes:
+    if seq.ccd_ids is not None:
+        for code in seq.ccd_ids:
             if code not in ccd:
                 raise ValueError(f"CCD code '{code}' not found in CCD.")
             components.append(ccd[code])
@@ -740,7 +738,6 @@ def parse_ligand_sequence(
         ref_charge = np.zeros((num_atoms, 24), dtype=np.float16)
         ref_pos = np.full((num_atoms, 24, 3), fill_value=np.nan, dtype=np.float32)
         coords = np.full((num_atoms, 24, 3), fill_value=np.nan, dtype=np.float32)
-        apo_mask = np.zeros((num_atoms, 24), dtype=np.bool_)
         pad_mask = np.zeros((num_atoms, 24), dtype=np.bool_)
 
         ref_atom_name_chars[:, 0, :] = ref_mol_data["atom_name_chars"]

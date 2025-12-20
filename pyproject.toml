@@ -48,5 +48,7 @@ train = [
   'lightning', # for training loop
   'lmdb', # for training dataset storage
   'wandb', # for experiment tracking
+]
+preprocess = [
   'pdbeccdutils', # for ccd data handling
 ]

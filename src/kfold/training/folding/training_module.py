@@ -1,5 +1,7 @@
 """Define training modules for k-fold"""
 
+from collections.abc import Mapping
+
 import gc
 import pathlib
 from dataclasses import dataclass
@@ -670,6 +672,22 @@ class KFoldTrainingModule(pl.LightningModule):
                     "Warning: EMA state not loaded due to incompatible model parameters."
                 )
             self.ema.to(self.device)
+
+    def load_state_dict(
+        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
+    ) -> None:
+        if "distogram_loss.boundaries" in state_dict:
+            import warnings
+
+            warnings.warn(
+                "Loading from a checkpoint with distogram boundaries. "
+                "The boundaries are now registered buffers and will be ignored. "
+                "In future versions, this is likely to raise an error.",
+            )
+            state_dict = dict(state_dict)
+            del state_dict["distogram_loss.boundaries"]
+
+        super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     # === Helper functions === #
     def save_structure(

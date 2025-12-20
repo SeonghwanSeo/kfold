@@ -27,7 +27,6 @@ def to_pdbstring(
     Parameters
     ----------
     struct : TokenizedStructure
-    structure : TokenizedStructure
         The input structure
     conformer_id : int, optional
         The conformer ID to write (default is 0)
