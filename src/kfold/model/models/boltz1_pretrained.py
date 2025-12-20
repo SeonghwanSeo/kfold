@@ -17,6 +17,7 @@ from .base import BaseFoldingModel, BaseFoldingModelConfig
 
 @dataclasses.dataclass(kw_only=True)
 class Boltz1PretrainedConfig(BaseFoldingModelConfig):
+    _class_: str = "Boltz1Pretrained"
     proj_s_inputs: bool = False
 
 
