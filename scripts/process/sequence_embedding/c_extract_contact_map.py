@@ -25,7 +25,8 @@ _env = None
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Extract contact maps and distance maps between chain interfaces from a processed LMDB dataset (multiprocessing)."
+        description="Extract contact maps and distance maps between chain interfaces"
+        "from a processed LMDB dataset (multiprocessing)."
     )
     parser.add_argument(
         "--processed_lmdb_path",
