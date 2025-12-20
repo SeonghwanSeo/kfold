@@ -3,6 +3,7 @@ model:
   input_embedder:
     channel_seq_encoder: 2560
   trunk:
+    use_ensemble: true
     pairformer:
       num_blocks: 16
     ensemble_module:

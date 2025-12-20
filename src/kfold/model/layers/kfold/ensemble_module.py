@@ -348,12 +348,12 @@ class EnsembleModule(torch.nn.Module):
         self.num_blocks: int = num_blocks
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
-        self.linear_s_input = LinearNoBias(channel_s, channel_struct, init="default")
         self.linear_struct = LinearNoBias(
             channel_struct_input, channel_struct, init="default"
         )
+        self.linear_s_input = LinearNoBias(channel_s, channel_struct, init="default")
         self.blocks = torch.nn.ModuleList()
-        for _ in range(num_blocks):
+        for i in range(num_blocks):
             self.blocks.append(
                 EnsembleBlock(
                     channel_struct=channel_struct,
@@ -363,6 +363,7 @@ class EnsembleModule(torch.nn.Module):
                     num_heads_tri_attn=num_heads_tri_attn,
                     struct_dropout=struct_dropout,
                     z_dropout=z_dropout,
+                    is_last_block=(i == num_blocks - 1),
                 )
             )
 
@@ -393,11 +394,13 @@ class EnsembleModule(torch.nn.Module):
         """
         # Set chunk sizes
         if not self.training:
+            chunk_size_opm = 128
             if z.shape[1] > 384:
                 chunk_size_tri_attn = 128
             else:
                 chunk_size_tri_attn = 512
         else:
+            chunk_size_opm = None
             chunk_size_tri_attn = None
 
         # Compute input projections
@@ -419,17 +422,17 @@ class EnsembleModule(torch.nn.Module):
                 struct_mask=struct_mask,
                 use_cuequiv_mul=use_cuequiv_mul,
                 use_cuequiv_attn=use_cuequiv_attn,
+                chunk_size_opm=chunk_size_opm,
                 chunk_size_tri_attn=chunk_size_tri_attn,
             )
             for b in self.blocks
         ]
 
-        blocks_per_ckpt = self.blocks_per_ckpt
         if self.training and torch.is_grad_enabled():
             e, z = checkpoint_blocks(
                 blocks,
                 (e, z),
-                blocks_per_ckpt,
+                self.blocks_per_ckpt,
                 use_reentrant=False,
             )
         else:
@@ -451,6 +454,7 @@ class EnsembleBlock(torch.nn.Module):
         num_heads_tri_attn: int = 4,
         struct_dropout: float = 0.15,
         z_dropout: float = 0.25,
+        is_last_block: bool = False,
     ) -> None:
         """Initialize the Ensemble block.
 
@@ -470,24 +474,18 @@ class EnsembleBlock(torch.nn.Module):
             The dropout rate for the ensemble stack, by default 0.15.
         z_dropout : float, optional
             The dropout rate for the pairwise stack, by default 0.25.
+        is_last_block : bool, optional
+            Whether this is the last block, by default False.
 
         """
         super().__init__()
         self.e_dropout: float = struct_dropout
         self.z_dropout: float = z_dropout
 
-        self.transition_e = Transition(channel_struct, expansion_factor=4)
-
         self.outer_product_mean = OuterProductMean(
             c_in=channel_struct,
             c_hidden=channel_hidden_opm,
             c_out=channel_z,
-        )
-
-        self.pair_weighted_averaging = PairWeightedAveraging(
-            c_in=channel_struct,
-            c_z=channel_z,
-            num_heads=num_heads_pwa,
         )
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
@@ -501,6 +499,17 @@ class EnsembleBlock(torch.nn.Module):
 
         self.transition_z = Transition(channel_z, expansion_factor=4)
 
+        self.is_last_block: bool = is_last_block
+        if not self.is_last_block:
+            # NOTE: The ensemble feature update is skipped in the last block
+            # since it is not used afterwards.
+            self.pair_weighted_averaging = PairWeightedAveraging(
+                c_in=channel_struct,
+                c_z=channel_z,
+                num_heads=num_heads_pwa,
+            )
+            self.transition_e = Transition(channel_struct, expansion_factor=4)
+
     def forward(
         self,
         e: torch.Tensor,
@@ -509,6 +518,7 @@ class EnsembleBlock(torch.nn.Module):
         struct_mask: torch.Tensor,
         use_cuequiv_mul: bool = True,
         use_cuequiv_attn: bool = True,
+        chunk_size_opm: int | None = None,
         chunk_size_tri_attn: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -533,12 +543,7 @@ class EnsembleBlock(torch.nn.Module):
 
         """
         # Communication
-        z = z + self.outer_product_mean(e, struct_mask)
-
-        # Ensemble stack
-        ensb_dropout = get_dropout_mask(e, self.e_dropout, self.training)
-        e = e + ensb_dropout * self.pair_weighted_averaging(e, z, token_mask)
-        e = e + self.transition_e(e)
+        z = z + self.outer_product_mean(e, struct_mask, chunk_size=chunk_size_opm)
 
         # Pairwise stack
         dropout = get_dropout_mask(z, self.z_dropout, self.training)
@@ -566,5 +571,11 @@ class EnsembleBlock(torch.nn.Module):
         )
 
         z = z + self.transition_z(z)
+
+        if not self.is_last_block:
+            # Ensemble stack
+            ensb_dropout = get_dropout_mask(e, self.e_dropout, self.training)
+            e = e + ensb_dropout * self.pair_weighted_averaging(e, z, token_mask)
+            e = e + self.transition_e(e)
 
         return e, z
