@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 # TODO: remove default path before publish
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Get ESM embedding for protein sequences in the dataset."
+        description="Get ESM-C embedding for protein sequences in the dataset."
     )
     parser.add_argument(
-        "--fasta_path",
+        "-i",
+        "--input",
         type=Path,
         help="Path to the fasta file containing protein sequences.",
         default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/rcsb_protein_sequences.fasta",
@@ -34,10 +35,11 @@ def parse_args():
         "--model",
         type=str,
         choices=["esmc_300m", "esmc_600m"],
-        default="esmc_300m",
+        default="esmc_600m",
         help="ESM model to use for embedding.",
     )
     parser.add_argument(
+        "-o",
         "--output_dir",
         type=Path,
         required=True,
@@ -66,7 +68,7 @@ def main(args):
 
     # Read fasta file
     sequences: dict[tuple[str, int], str] = {}
-    with open(args.fasta_path) as f:
+    with open(args.input) as f:
         lines = f.readlines()
         assert len(lines) % 2 == 0, "Fasta file should have even number of lines."
         for i in range(0, len(lines), 2):

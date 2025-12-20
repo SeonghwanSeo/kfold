@@ -133,6 +133,13 @@ class ApoPerturbation:
             )
             self.ccd_symmetry_dict: dict = ccd_symmetry_dict
 
+    def __call__(
+        self,
+        struct: TokenizedStructure,
+        rng: np.random.Generator | None = None,
+    ) -> TokenizedStructure:
+        return self.run(struct, rng)
+
     def run(
         self,
         struct: TokenizedStructure,
