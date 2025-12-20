@@ -1,8 +1,8 @@
+import dataclasses
 import urllib.request
 from pathlib import Path
 
 import torch
-from omegaconf import DictConfig
 
 from kfold.model.modules.distogram_head.boltz1 import Boltz1DistogramHead
 from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedder
@@ -11,7 +11,12 @@ from kfold.model.modules.structure_module.boltz1_edm import Boltz1SampleDiffusio
 from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk
 from kfold.utils.registry import MAIN_MODULE
 
-from .base import BaseFoldingModel
+from .base import BaseFoldingModel, BaseFoldingModelConfig
+
+
+@dataclasses.dataclass(kw_only=True)
+class Boltz1Config(BaseFoldingModelConfig):
+    load_weight: bool = True
 
 
 @MAIN_MODULE.register()
@@ -22,10 +27,8 @@ class Boltz1(BaseFoldingModel):
     score_model: Boltz1DiffusionModule  # type: ignore
     structure_module: Boltz1SampleDiffusion  # type: ignore
 
-    def __init__(self, global_config: DictConfig):
-        super().__init__(global_config)
-        self.config = global_config
-        model_config = global_config.model
+    def __init__(self, config: Boltz1Config):
+        super().__init__(config)
 
         # === Boltz-1 pretrained modules === #
         assert isinstance(self.input_embedder, Boltz1InputEmbedder)
@@ -35,7 +38,7 @@ class Boltz1(BaseFoldingModel):
         assert isinstance(self.structure_module, Boltz1SampleDiffusion)
 
         # Load Boltz-1 pretrained weights
-        if model_config.load_weight:
+        if config.load_weight:
             self.load_boltz_weights()
 
     def load_boltz_weights(self):

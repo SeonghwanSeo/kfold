@@ -103,7 +103,7 @@ class LossConfig:
 class KFoldTrainingModule(pl.LightningModule):
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.global_config = config
+        self.global_config: DictConfig = config
         self.config: TrainConfig = self.global_config.train
         self.training_config: TrainingConfig = self.config.training
         self.validation_config: ValidationConfig = self.config.validation
@@ -117,9 +117,9 @@ class KFoldTrainingModule(pl.LightningModule):
         self.train_confidence_head: bool = self.training_config.train_confidence_head
 
         # Initialize model here
-        self.model: KFold
-        model_cls = MAIN_MODULE[self.global_config.model._class_]
-        self.model = model_cls(self.global_config)
+        model_config = self.global_config.model
+        model_cls = MAIN_MODULE[model_config._class_]
+        self.model: KFold = model_cls(model_config)
 
         # Freeze parts of the model if needed
         self.freeze_submodules()
