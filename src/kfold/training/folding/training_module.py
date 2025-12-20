@@ -14,7 +14,7 @@ from torchmetrics import MeanMetric
 from kfold import constants as C
 from kfold.config import to_dict
 from kfold.data.model_input import FoldingInput
-from kfold.model.models.kfold import KFold
+from kfold.model.models.kfold import KFold, KFoldConfig
 from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
@@ -117,7 +117,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self.train_confidence_head: bool = self.training_config.train_confidence_head
 
         # Initialize model here
-        model_config = self.global_config.model
+        model_config: KFoldConfig = self.global_config.model
         model_cls = MAIN_MODULE[model_config._class_]
         self.model: KFold = model_cls(model_config)
 
