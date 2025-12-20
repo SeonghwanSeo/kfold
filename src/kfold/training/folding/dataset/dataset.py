@@ -86,9 +86,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         )
         self.featurizer: featurize.InputFeaturizer = featurize.InputFeaturizer(
             **featurization_args,
-            seq_embedding_path=paths["seq_embedding_path"],
-            struct_embedding_path=paths["struct_embedding_path"],
         )
+        # additional paths
+        self.paths: dict[str, Path | None] = paths
 
     def __len__(self) -> int:
         return len(self.records)
@@ -217,7 +217,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng: np.random.Generator | None = None,
     ) -> structure.TokenizedStructure:
         """Apply random perturbation/rotation to apo structure"""
-        return self.apo_perturbation.run(struct, rng=rng)
+        return self.apo_perturbation(struct, rng=rng)
 
     def featurize(
         self,
@@ -226,9 +226,79 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng: np.random.Generator | None = None,
     ) -> model_input.FoldingInput:
         """Featurize the given tokenized structure."""
+        # Get precomputed embeddings if available
+        # sequence embeddings
+        seq_emb_root = self.paths.get("seq_embedding_path", None)
+        seq_embedding_paths = self.find_precomputed_embeddings(
+            struct, record.id, seq_emb_root
+        )
+
+        # structure embeddings
+        struct_emb_root = self.paths.get("struct_embedding_path", None)
+        struct_embedding_paths = self.find_precomputed_embeddings(
+            struct, record.id, struct_emb_root
+        )
+
         # Featurization
-        f_input = self.featurizer.run(struct, record.id, rng=rng)
+        f_input = self.featurizer(
+            struct,
+            seq_embedding_paths=seq_embedding_paths,
+            struct_embedding_paths=struct_embedding_paths,
+            rng=rng,
+        )
         return f_input
+
+    def find_precomputed_embeddings(
+        self,
+        struct: structure.TokenizedStructure,
+        name: str,
+        root_dir: Path | None = None,
+    ) -> dict[int, Path] | None:
+        """Find precomputed embeddings for the given structure.
+
+        Parameters
+        ----------
+        struct : structure.TokenizedStructure
+            The tokenized structure.
+        name : str
+            The name/ID of the structure.
+        root_dir : Path
+            The root directory containing precomputed embeddings.
+
+        Returns
+        -------
+        dict[int, Path] | None
+            A dictionary mapping entity IDs to embedding file paths,
+            or None if no embeddings are found.
+        """
+        if root_dir is None:
+            return None
+
+        # Check existence
+        # if name='6oim', possible paths are:
+        # - {root_dir}/6o/6oim/* ...
+        # - {root_dir}/oi/6oim/* ...
+        subdir = root_dir / name[1:3] / name
+        if subdir.exists():
+            assert subdir.is_dir()
+        else:
+            subdir = root_dir / name[0:2] / name
+            if not subdir.exists():
+                return None
+            assert subdir.is_dir()
+
+        embedding_paths: dict[int, Path] = {}
+        for path in subdir.iterdir():
+            if not path.is_file():
+                continue
+            # Expecting filenames like:
+            #   {pdb_id}_{entity_id}_{chain_type}.pt
+            pdb_id, entity_id, chain_type = path.stem.split("_")
+            assert pdb_id == name, f"Unexpected pdb_id {pdb_id} in embedding file {path}."
+            entity_id_int = int(entity_id)
+            embedding_paths[entity_id_int] = path
+
+        return embedding_paths
 
 
 class TrainingDataset(SafeLoadingDataset):
