@@ -36,7 +36,7 @@ train:
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
-    split_path: ./assets/splits/boltz1
+    split_path: ./assets/splits/kfold_v251213/
     num_workers: 8
 
     paths:
