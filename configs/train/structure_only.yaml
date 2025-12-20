@@ -113,7 +113,7 @@ training:
   train_structure_module: true
   train_confidence_head: false
 
-  num_cycles: 4
+  num_recycles: 3
 
   # For structure module training
   diffusion_batch_size: 48 # NOTE: overridden by global_hparam
@@ -124,7 +124,7 @@ training:
 
 validation:
   # Validation step hyperparameters
-  num_cycles: 4
+  num_recycles: 3
   num_steps: 200
   num_diffusion_samples: 5
   symmetry_correction: true

@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         help="Number of diffusion steps for validation",
     )
     parser.add_argument(
-        "--num_cycles", type=int, default=4, help="Number of cycling for validation"
+        "--num_recycles", type=int, default=3, help="Number of cycling for validation"
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     return parser.parse_args()
@@ -58,7 +58,7 @@ def validate(args) -> None:
     if args.save_dir is not None:
         cfg.train.validation.save_structure_path = args.save_dir
     cfg.train.validation.num_steps = args.num_steps
-    cfg.train.validation.num_cycles = args.num_cycles
+    cfg.train.validation.num_recycles = args.num_recycles
 
     if args.debug:
         cfg.train.data.safe_load = False
@@ -73,6 +73,8 @@ def validate(args) -> None:
         precision=cfg.train.trainer.precision,
         deterministic=True,
         limit_val_batches=5 if args.debug else None,
+        logger=False,
+        enable_checkpointing=False,
     )
 
     trainer.validate(

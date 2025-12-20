@@ -130,7 +130,7 @@ class Boltz1Pretrained(BaseFoldingModel):
     def forward(
         self,
         f_input: FoldingInput,
-        num_cycles: int = 4,
+        num_recycles: int = 3,
         num_steps: int = 20,
         num_diffusion_samples: int = 1,
         diffusion_batch_size: int = 48,
@@ -167,7 +167,7 @@ class Boltz1Pretrained(BaseFoldingModel):
             s_init,
             z_init,
             f_input,
-            num_cycles,
+            num_recycles,
         )
 
         # ====================================================== #
@@ -226,7 +226,7 @@ class Boltz1Pretrained(BaseFoldingModel):
     def sample(
         self,
         f_input: FoldingInput,
-        num_cycles: int,
+        num_recycles: int,
         num_steps: int,
         num_diffusion_samples: int,
     ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
@@ -236,7 +236,7 @@ class Boltz1Pretrained(BaseFoldingModel):
         ----------
         f_input : FoldingInput
             Input data for folding model.
-        num_cycles : int
+        num_recycles : int
             Number of recycling cycles in trunk.
         num_steps : int
             Number of diffusion steps for training.
@@ -265,7 +265,7 @@ class Boltz1Pretrained(BaseFoldingModel):
             s_init,
             z_init,
             f_input,
-            num_cycles,
+            num_recycles,
         )
         et = time.time()
         time_logs["trunk"] = et - st

@@ -64,7 +64,7 @@ class BaseFoldingModel(torch.nn.Module):
     def forward(
         self,
         f_input: FoldingInput,
-        num_cycles: int = 4,
+        num_recycles: int = 3,
         num_steps: int = 20,
         num_diffusion_samples: int = 1,
         diffusion_batch_size: int = 48,
@@ -79,7 +79,7 @@ class BaseFoldingModel(torch.nn.Module):
         ----------
         f_input : FoldingInput
             Input data for folding model. Preferred to be batched.
-        num_cycles : int
+        num_recycles : int
             Number of recycling cycles in trunk.
 
         # For diffusion sampling:
@@ -156,7 +156,7 @@ class BaseFoldingModel(torch.nn.Module):
             s_init,
             z_init,
             f_input,
-            num_cycles,
+            num_recycles,
         )
 
         if sample_structures:
@@ -209,9 +209,9 @@ class BaseFoldingModel(torch.nn.Module):
     def sample(
         self,
         f_input: FoldingInput,
-        num_cycles: int,
-        num_steps: int,
-        num_diffusion_samples: int,
+        num_recycles: int = 10,
+        num_steps: int = 200,
+        num_diffusion_samples: int = 5,
     ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         """Forward pass of KFold model for model training.
 
@@ -219,7 +219,7 @@ class BaseFoldingModel(torch.nn.Module):
         ----------
         f_input : FoldingInput
             Input data for folding model.
-        num_cycles : int
+        num_recycles : int
             Number of recycling cycles in trunk.
         num_steps : int
             Number of diffusion steps for training.
@@ -248,7 +248,7 @@ class BaseFoldingModel(torch.nn.Module):
             s_init,
             z_init,
             f_input,
-            num_cycles,
+            num_recycles,
         )
         et = time.time()
         time_logs["trunk"] = et - st

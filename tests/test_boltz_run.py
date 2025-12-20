@@ -74,7 +74,7 @@ if __name__ == "__main__":
             s_init,
             z_init,
             f_input,
-            num_cycles=4,
+            num_recycles=3,
         )
         p_distogram = model.distogram_head(z_trunk)
 
