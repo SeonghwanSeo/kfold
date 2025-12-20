@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import io
 from functools import cached_property
@@ -80,17 +81,17 @@ class Chain(PlainLayout[np.ndarray]):
         check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=shape)
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
 
-    @cached_property
-    def default_dtype(self) -> dict[str, type]:
+    @classmethod
+    def get_default_dtype(cls) -> dict[str, type]:
         """Get default dtypes for each field."""
         return {
-            "chain_type": np.int32,
-            "entity_id": np.int32,
-            "asym_id": np.int32,
-            "sym_id": np.int32,
-            "num_residues": np.int32,
-            "num_tokens": np.int32,
-            "num_atoms": np.int32,
+            "chain_type": np.uint8,
+            "entity_id": np.uint16,
+            "asym_id": np.uint16,
+            "sym_id": np.uint16,
+            "num_residues": np.uint32,
+            "num_tokens": np.uint32,
+            "num_atoms": np.uint32,
         }
 
     @cached_property
@@ -205,14 +206,14 @@ class Residue(PlainLayout[np.ndarray]):
         """Get default dtypes for each field."""
         return {
             "name": np.dtype("<U5"),
-            "res_type": np.int8,  # 0-31
-            "chain_type": np.int8,  # 0-3
-            "entity_id": np.int16,
-            "asym_id": np.int16,
-            "sym_id": np.int16,
-            "residue_index": np.int32,
-            "num_tokens": np.int32,
-            "num_atoms": np.int32,  # 0-23
+            "res_type": np.uint8,  # 0-31
+            "chain_type": np.uint8,  # 0-3
+            "entity_id": np.uint16,
+            "asym_id": np.uint16,
+            "sym_id": np.uint16,
+            "residue_index": np.uint32,
+            "num_tokens": np.uint32,
+            "num_atoms": np.uint8,  # 0-23
             "resolved_mask": np.bool_,
             "is_standard": np.bool_,
         }
@@ -360,16 +361,16 @@ class Token(PlainLayout[np.ndarray]):
     def get_default_dtype(cls) -> dict[str, type | np.dtype]:
         """Get default dtypes for each field."""
         return {
-            "res_type": np.int8,  # 0-31
-            "chain_type": np.int8,  # 0-3
-            "entity_id": np.int16,
-            "asym_id": np.int16,
-            "sym_id": np.int16,
-            "token_index": np.int32,
-            "residue_index": np.int32,
-            "disto_index": np.int8,  # 0-23
-            "center_index": np.int8,  # 0-23
-            "num_atoms": np.int8,  # 0-23
+            "res_type": np.uint8,  # 0-31
+            "chain_type": np.uint8,  # 0-3
+            "entity_id": np.uint16,
+            "asym_id": np.uint16,
+            "sym_id": np.uint16,
+            "token_index": np.uint32,
+            "residue_index": np.uint32,
+            "disto_index": np.uint8,  # 0-23
+            "center_index": np.uint8,  # 0-23
+            "num_atoms": np.uint8,  # 0-23
             "resolved_mask": np.bool_,
             "is_standard": np.bool_,
         }
@@ -469,8 +470,8 @@ class Atom(PlainLayout[np.ndarray]):
     def get_default_dtype(cls) -> dict[str, type | np.dtype]:
         """Get default dtypes for each field."""
         return {
-            "ref_atom_name_chars": np.int8,  # 0-63
-            "ref_element": np.int8,  # 0-127
+            "ref_atom_name_chars": np.uint8,  # 0-63
+            "ref_element": np.uint8,  # 0-127
             "ref_charge": np.float16,
             "ref_pos": np.float32,
             "coords": np.float32,
@@ -525,8 +526,8 @@ class Bond(PlainLayout[np.ndarray]):
         return {
             "asym_id": np.int16,
             "token_index": np.int32,
-            "atom_index": np.int8,  # 0-23
-            "bond_type": np.int8,
+            "atom_index": np.uint8,  # 0-23
+            "bond_type": np.uint8,  # 0-5
         }
 
 
@@ -700,6 +701,20 @@ class TokenizedStructure:
         or dtype movement like PyTorch tensors.
         """
         return self
+
+    def copy(self, deepcopy: bool = False) -> Self:
+        """Create a copy of the structure."""
+        if deepcopy:
+            return copy.deepcopy(self)
+        else:
+            return self.__class__(
+                chain=self.chain,
+                residue=self.residue,
+                token=self.token,
+                atom=self.atom,
+                bond=self.bond,
+                metadata=self.metadata,
+            )
 
     def copy_with(self, **kwargs) -> Self:
         """Create a copy of the structure with updated fields.
