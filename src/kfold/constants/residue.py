@@ -65,6 +65,9 @@ PROTEIN_AMINO_ACIDS: tuple[str, ...] = (
     "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V",
     "X"
 )  # fmt: skip
+PROTEIN_AMINO_ACIDS_EXTENDED: tuple[str, ...] = (
+    *PROTEIN_AMINO_ACIDS, "B", "Z", "J", "U", "O"
+)  # fmt: skip
 PROTEIN_RESIDUES_STR: tuple[str, ...] = (
     "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",
     "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",

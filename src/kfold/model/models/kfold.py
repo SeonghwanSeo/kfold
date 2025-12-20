@@ -17,6 +17,8 @@ class KFoldConfig(BaseFoldingModelConfig):
 class KFold(BaseFoldingModel):
     def __init__(self, config: KFoldConfig):
         super().__init__(config)
+        self.channel_seq_encoder: int = config.input_embedder.channel_seq_encoder
+        self.channel_struct_encoder: int = config.input_embedder.channel_struct_encoder
         # self.sequence_encoder: submodules.sequence_encoder.BaseSequenceEncoder = (
         #     Registry.instantiate(model_config.sequence_encoder)
         # )

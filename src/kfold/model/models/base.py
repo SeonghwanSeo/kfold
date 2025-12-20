@@ -1,6 +1,8 @@
 import dataclasses
+import pathlib
 import time
 import warnings
+from typing import Self
 
 import torch
 
@@ -320,3 +322,39 @@ class BaseFoldingModel(torch.nn.Module):
                 )
             f_input = FoldingInput.from_list([f_input])
         return f_input
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        model_config: BaseFoldingModelConfig,
+        ckpt_path: str | pathlib.Path,
+        use_ema: bool = False,
+        strict: bool = True,
+    ) -> Self:
+        """Load model from checkpoint."""
+        # Initialize model
+        model_cls = MAIN_MODULE[model_config._class_]
+        model: torch.nn.Module = model_cls(model_config)
+
+        # Load checkpoint
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+
+        if "state_dict" not in ckpt:
+            # Assume the checkpoint is a state_dict itself
+            state_dict = ckpt
+        elif use_ema:
+            # Load EMA weights
+            state_dict = ckpt["ema"]
+        else:
+            # Load regular weights
+            state_dict = ckpt["state_dict"]
+
+        state_dict = {
+            k.replace("model.", "", 1): v
+            for k, v in state_dict.items()
+            if k.startswith("model.")
+        }
+
+        model.load_state_dict(state_dict, strict=strict)
+
+        return model
