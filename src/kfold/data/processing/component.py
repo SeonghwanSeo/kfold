@@ -55,6 +55,10 @@ def get_ideal_coordinates(cif_block: gemmi.cif.Block) -> np.ndarray | None:
             ideal_coords[i, 1] = float(y_i)
             ideal_coords[i, 2] = float(z_i)
 
+    if np.isnan(ideal_coords).all():
+        # All coordinates are missing
+        return None
+
     return ideal_coords
 
 
@@ -103,6 +107,10 @@ def get_model_coordinates(
             model_coords[i, 0] = float(x_i)
             model_coords[i, 1] = float(y_i)
             model_coords[i, 2] = float(z_i)
+
+    if np.isnan(model_coords).all():
+        # All coordinates are missing
+        return None
 
     return model_coords
 
@@ -175,6 +183,7 @@ class Component:
         conformer_type : str
             The type of conformer to retrieve.
             Options:
+              - auto: automatically select the most preferred conformer.
               - etkdg: generate a new ETKDG conformer.
               - etkdg-cached: pre-computed ETKDG conformer (if available).
               - ideal: CCD ideal conformer (if available).
@@ -182,39 +191,66 @@ class Component:
 
         Returns
         -------
-        np.ndarray | None
+        np.ndarray
             An array of shape (n_atoms, 3) representing the coordinates.
             Returns None if the specified conformer type is not available.
 
         Notes
         -----
-        - In general case, `etkdg` -> `etkdg-cached` -> `ideal` -> `model` is preferred.
+        - In general case, `etkdg-cached` -> `etkdg` -> `ideal` -> `model` is preferred.
         """
-        assert conformer_type in {"etkdg", "etkdg-cached", "ideal", "model"}, (
-            f"Invalid conformer_type: {conformer_type}. "
-            "Choose from 'etkdg', 'etkdg-cached', 'ideal', 'model'."
-        )
+        available_types = {"auto", "etkdg", "etkdg-cached", "ideal", "model", "nan"}
+        if conformer_type not in available_types:
+            raise ValueError(
+                f"Invalid conformer_type: {conformer_type}. "
+                f"Available options are: {available_types}"
+            )
 
         rng = rng or np.random.default_rng()
-        if conformer_type == "etkdg":
+
+        if conformer_type == "auto":
+            # Automatically select the most preferred conformer
+            # Try to get cached ETKDG conformer first
+            coords = self.get_conformer("etkdg-cached", rng)
+            if coords is not None:
+                return coords
+
+            # Then try to generate a new ETKDG conformer
+            coords = self.get_conformer("etkdg", rng)
+            if coords is not None:
+                return coords
+
+            # Then try to get ideal conformer
+            coords = self.get_conformer("ideal", rng)
+            if coords is not None and np.isfinite(coords).all():
+                # NOTE: Use ideal conformer only if all coordinates are finite
+                return coords
+
+            model_coords = self.get_conformer("model", rng)
+            if model_coords is not None and not np.isnan(model_coords).all():
+                coords = model_coords
+
+            if coords is not None:
+                return coords
+
+            # If no conformer is available, return NaN coordinates
+            return self.get_conformer("nan", rng)
+
+        elif conformer_type == "etkdg":
             # Return a new ETKDG conformer
-            mol = rdkit_utils.compute_rdkit_conformer(self.mol, rng=rng)
+            mol = Chem.AddHs(self.mol)
+            mol = rdkit_utils.compute_rdkit_conformer(mol, rng=rng)
+            mol = Chem.RemoveHs(mol, sanitize=False)
             if mol.GetNumConformers() == 0:
                 # Failed to generate conformer
                 return None
             conf = mol.GetConformer(0)
             coords = np.array(conf.GetPositions(), dtype=np.float32)
             return coords
-
-        if conformer_type == "ideal":
-            return self.ideal_coords
-        elif conformer_type == "model":
-            return self.model_coords
-        else:  # conformer_type == 'cached'
+        elif conformer_type == "etkdg-cached":
             # Return one of pre-computed ektdg conformers
             if self.etkdg_coords is None:
                 return None
-
             num_confs = self.etkdg_coords.shape[0]
             if num_confs == 0:
                 return None  # No conformers available
@@ -225,6 +261,15 @@ class Component:
                 conf_idx = rng.integers(0, num_confs)
                 coords = self.etkdg_coords[conf_idx]
                 return coords
+        if conformer_type == "ideal":
+            return self.ideal_coords
+        elif conformer_type == "model":
+            return self.model_coords
+        elif conformer_type == "nan":
+            n_atoms = len(self.atom_names)
+            return np.full((n_atoms, 3), np.nan, dtype=np.float32)
+        else:
+            raise RuntimeError(f"Unhandled conformer_type: {conformer_type}")
 
     @classmethod
     def from_mol(
@@ -234,6 +279,7 @@ class Component:
         num_confs: int = 0,
         ideal_conf_id: int | None = None,
         model_conf_id: int | None = None,
+        etkdg_conf_ids: list[int] | None = None,
         compute_symmetry: bool = False,
         is_ccd_component: bool = False,
         rng: np.random.Generator | None = None,
@@ -252,6 +298,8 @@ class Component:
             The conformer ID for ideal coordinates (default is None).
         model_conf_id : int | None, optional
             The conformer ID for model coordinates (default is None).
+        etkdg_conf_ids : list[int] | None, optional
+            The conformer IDs for etkdg coordinates (default is None).
         compute_symmetry : bool, optional
             Whether to compute permutational symmetries (default is False).
         is_ccd_component : bool, optional
@@ -274,17 +322,27 @@ class Component:
         ideal_conf: Chem.Conformer | None = None
         if ideal_conf_id is not None:
             ideal_conf = rdkit_utils.get_conformer(mol, ideal_conf_id)
-        if ideal_conf is not None:
-            ideal_conf.SetProp("source", "ideal")
+            if ideal_conf is not None:
+                ideal_conf = Chem.Conformer(ideal_conf)  # Create a copy
+                ideal_conf.SetProp("source", "ideal")
 
         model_conf: Chem.Conformer | None = None
         if model_conf_id is not None:
             model_conf = rdkit_utils.get_conformer(mol, model_conf_id)
-        if model_conf is not None:
-            model_conf.SetProp("source", "model")
+            if model_conf is not None:
+                model_conf = Chem.Conformer(model_conf)  # Create a copy
+                model_conf.SetProp("source", "model")
 
-        # 3. Compute etkdg conformers if requested
+        # 3. Label etkdg conformers if provided and generate new ones if requested
         etkdg_confs: list[Chem.Conformer] = []
+        if etkdg_conf_ids is not None:
+            for conf_id in etkdg_conf_ids:
+                etkdg_conf = rdkit_utils.get_conformer(mol, conf_id)
+                if etkdg_conf is not None:
+                    etkdg_conf = Chem.Conformer(etkdg_conf)  # Create a copy
+                    etkdg_conf.SetProp("source", "etkdg")
+                    etkdg_confs.append(etkdg_conf)
+
         if num_confs > 0 and mol.GetNumHeavyAtoms() > 1:
             # Only compute ETKDG for molecules with more than 1 atom
             rng = rng or np.random.default_rng()
@@ -304,7 +362,7 @@ class Component:
             mol.AddConformer(conf)
 
         # Remove hydrogens
-        mol = Chem.RemoveHs(mol, sanitize=False)
+        mol = Chem.RemoveAllHs(mol, sanitize=False)
 
         # Get coordinates
         ideal_coords: np.ndarray | None = None
@@ -445,12 +503,58 @@ class Component:
             rng=rng,
         )
 
+    @classmethod
+    def from_smiles(
+        cls,
+        code: str,
+        smiles: str,
+        num_confs: int = 0,
+        compute_symmetry: bool = False,
+        rng: np.random.Generator | None = None,
+    ) -> Self:
+        """Create a Component instance from an RDKit molecule and coordinates.
+
+        Parameters
+        ----------
+        code : str
+            The unique code (CCD or SMILES) of the component.
+        smiles : str
+            The SMILES string of the component.
+        num_confs : int, optional
+            The number of etkdg conformers to generate (default is 0).
+        compute_symmetry : bool, optional
+            Whether to compute permutational symmetries (default is False).
+        rng : np.random.Generator | None, optional
+            A random number generator for conformer generation (default is None).
+
+        Returns
+        -------
+        Component
+            A Component instance with the specified properties.
+        """
+        # 1. Remove hydrogens for processing
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError(f"Invalid SMILES string: {smiles}")
+        mol = Chem.AddHs(mol)  # Add hydrogens for conformer generation
+        return cls.from_mol(
+            code=code,
+            mol=mol,
+            num_confs=num_confs,
+            compute_symmetry=compute_symmetry,
+            is_ccd_component=False,
+            rng=rng,
+        )
+
 
 class CCD(Mapping[str, Component]):
     """Common Component Dictionary (CCD) for data processing components."""
 
     def __init__(self, components: dict[str, Component]) -> None:
         self.components: dict[str, Component] = components
+
+    def __keys__(self):
+        return self.components.keys()
 
     def __getitem__(self, key: str) -> Component:
         return self.components[key]
