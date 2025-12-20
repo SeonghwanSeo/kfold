@@ -1,57 +1,63 @@
+import dataclasses
 import time
 import warnings
 
 import torch
-from omegaconf import DictConfig
 
 import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
-from kfold.utils.registry import MAIN_MODULE, Registry
+from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
+
+
+@dataclasses.dataclass(kw_only=True)
+class BaseFoldingModelConfig:
+    input_embedder: BaseConfig
+    trunk: BaseConfig
+    score_model: BaseConfig
+    structure_module: BaseConfig
+    distogram_head: BaseConfig
+    # confidence_head: Baseconfig
 
 
 @MAIN_MODULE.register()
 class BaseFoldingModel(torch.nn.Module):
-    def __init__(self, global_config: DictConfig):
+    def __init__(self, config: BaseFoldingModelConfig):
         super().__init__()
-        self.config = global_config
+        self.config: BaseFoldingModelConfig = config
 
         # Initialize sub-modules here using the config
-        model_config = global_config.model
-
         self.input_embedder: submodules.input_embedder.BaseInputEmbedder = (
-            Registry.instantiate(model_config.input_embedder)
+            Registry.instantiate(config.input_embedder)
         )
 
-        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(model_config.trunk)
+        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(config.trunk)
 
         self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
-            model_config.score_model
+            config.score_model
         )
 
         # NOTE: structure module is not a torch.nn.Module
         # This handles diffusion sampling as well
         self.structure_module: submodules.structure_module.BaseStructureModule = (
-            Registry.instantiate(
-                model_config.structure_module, score_model=self.score_model
-            )
+            Registry.instantiate(config.structure_module, score_model=self.score_model)
         )
 
         # Heads
         self.distogram_head: submodules.distogram_head.BaseDistogramHead = (
-            Registry.instantiate(model_config.distogram_head)
+            Registry.instantiate(config.distogram_head)
         )
 
         # self.confidence_head: submodules.confidence_head.BaseConfidenceHead = (
-        #     Registry.instantiate(model_config.confidence_head)
+        #     Registry.instantiate(config.confidence_head)
         # )
 
         # Compile submodules
         # NOTE: (SeonghwanSeo) This is very slow... Right now, just disable them.
-        if getattr(model_config, "compile_trunk", False):
-            self.trunk.compile(getattr(model_config, "compile_trunk", False))
-        if getattr(model_config, "compile_score_model", False):
-            self.score_model.compile(getattr(model_config, "compile_score_model", False))
-        # if getattr(model_config, "compile_confidence_head", False):
+        if getattr(config, "compile_trunk", False):
+            self.trunk.compile(getattr(config, "compile_trunk", False))
+        if getattr(config, "compile_score_model", False):
+            self.score_model.compile(getattr(config, "compile_score_model", False))
+        # if getattr(config, "compile_confidence_head", False):
         #     self.confidence_head.compile()
 
     def forward(
