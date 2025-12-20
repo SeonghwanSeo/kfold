@@ -12,10 +12,18 @@ import sys
 import gemmi
 import numpy as np
 from rdkit import Chem, RDLogger, rdBase
-from pdbeccdutils.core import ccd_reader
 from tqdm import tqdm
 
 from kfold.data.processing.component import CCD, Component
+
+try:
+    # pdbeccdutils is required for reading RCSB CCD data
+    from pdbeccdutils.core import ccd_reader
+except ImportError as e:
+    raise ImportError(
+        "pdbeccdutils is required for this script. "
+        "Please install it via 'pip install pdbeccdutils'."
+    ) from e
 
 # Set property saving
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)
