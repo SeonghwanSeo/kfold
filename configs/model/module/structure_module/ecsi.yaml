@@ -29,3 +29,7 @@ eta: 1.0
 coordinate_augmentation: True
 synchronize_sigmas: False
 normalize_data_end: False
+
+logit_normal_sampling: False
+sampling_alpha: 1.0
+sampling_beta: 1.0

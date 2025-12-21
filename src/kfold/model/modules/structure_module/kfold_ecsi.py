@@ -87,6 +87,9 @@ class KFoldECSI(BaseEDM):
         synchronize_sigmas: bool = False
         normalize_data_end: bool = False
         normalize_coordinate: bool = False
+        logit_normal_sampling: bool = False
+        sampling_alpha: float = 1.0
+        sampling_beta: float = 1.0
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -106,6 +109,9 @@ class KFoldECSI(BaseEDM):
         self.synchronize_sigmas: bool = cfg.synchronize_sigmas
         self.normalize_data_end: bool = cfg.normalize_data_end
         self.normalize_coordinate: bool = cfg.normalize_coordinate
+        self.logit_normal_sampling: bool = cfg.logit_normal_sampling
+        self.sampling_alpha: float = cfg.sampling_alpha
+        self.sampling_beta: float = cfg.sampling_beta
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
@@ -353,8 +359,13 @@ class KFoldECSI(BaseEDM):
     ) -> torch.Tensor:
         r"""Sample time values for training.
 
-        Returns uniform samples in [sigma_min, sigma_max] which represents
+        Returns samples in [sigma_min, sigma_max] which represents
         the time interval [t_{min}, t_{max}] \subset [0, 1].
+
+        If logit_normal_sampling is True, samples from LogitNormal(0, 1).
+        Else, samples from Beta(alpha, beta).
+        If alpha=1, beta=1, this is equivalent to Uniform(0, 1).
+        Finally scales to [sigma_min, sigma_max].
 
         Returns
         -------
@@ -362,10 +373,27 @@ class KFoldECSI(BaseEDM):
             Time values. Shape (B, N).
         """
         if self.synchronize_sigmas:
-            t = torch.rand(batch_size, 1, device=device)
-            t = t.repeat(1, num_diffusion_samples)
+            shape = (batch_size, 1)
         else:
-            t = torch.rand(batch_size, num_diffusion_samples, device=device)
+            shape = (batch_size, num_diffusion_samples)
+
+        if self.logit_normal_sampling:
+            # LogitNormal(0, 1) sampling
+            y = torch.randn(shape, device=device)
+            t = torch.sigmoid(y)
+        else:
+            # Beta sampling (default to Uniform if alpha=1, beta=1)
+            if self.sampling_alpha == 1.0 and self.sampling_beta == 1.0:
+                t = torch.rand(shape, device=device)
+            else:
+                m = torch.distributions.Beta(
+                    torch.tensor(self.sampling_alpha, device=device),
+                    torch.tensor(self.sampling_beta, device=device),
+                )
+                t = m.sample(shape)
+
+        if self.synchronize_sigmas:
+            t = t.repeat(1, num_diffusion_samples)
 
         # Scale to [sigma_min, sigma_max]
         t = self.sigma_min + (self.sigma_max - self.sigma_min) * t
