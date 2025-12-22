@@ -489,7 +489,7 @@ def featurize_structure(
 
 def load_pretrained_sequence_embedding(
     f_input: model_input.FoldingInput,
-    paths: dict[int, Path],
+    paths: dict[int, str | Path],
     embedding_dim: int,
 ) -> torch.Tensor:
     """Load pre-trained sequence embedding from a file.
@@ -573,7 +573,7 @@ def load_pretrained_sequence_embedding(
 
 def load_pretrained_structure_embedding(
     f_input: model_input.FoldingInput,
-    paths: dict[int, Path],
+    paths: dict[int, str | Path],
     embedding_dim: int,
     max_ensembles: int = 5,
     rng: np.random.Generator | None = None,
