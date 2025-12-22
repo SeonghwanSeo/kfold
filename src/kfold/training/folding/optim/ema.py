@@ -1,3 +1,6 @@
+import warnings
+from typing import Any
+
 import torch
 
 
@@ -6,11 +9,15 @@ class ExponentialMovingAverage:
     Apache-2.0 license
     Maintains (exponential) moving average of a set of parameters."""
 
-    def __init__(self, parameters, decay, use_num_updates=True):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        decay: float,
+        use_num_updates: bool = True,
+    ):
         """
         Args:
-          parameters: Iterable of `torch.nn.Parameter`; usually the result of
-            `model.parameters()`.
+          model: The `torch.nn.Module` whose parameters will be tracked.
           decay: The exponential decay.
           use_num_updates: Whether to use number of updates when computing
             averages.
@@ -19,67 +26,89 @@ class ExponentialMovingAverage:
             raise ValueError("Decay must be between 0 and 1")
         self.decay = decay
         self.num_updates = 0 if use_num_updates else None
-        self.shadow_params = [p.clone().detach() for p in parameters if p.requires_grad]
-        self.collected_params = []
 
-    def update(self, parameters):
+        # Save as {name: tensor}
+        self.shadow_params: dict[str, torch.Tensor] = {
+            name: p.clone().detach()
+            for name, p in model.named_parameters()
+            if p.requires_grad
+        }
+        self.collected_params: dict[str, torch.Tensor] = {}
+
+    def update(self, model: torch.nn.Module):
         """
         Update currently maintained parameters.
         Call this every time the parameters are updated, such as the result of
         the `optimizer.step()` call.
         Args:
-          parameters: Iterable of `torch.nn.Parameter`; usually the same set of
-            parameters used to initialize this object.
+          model: The `torch.nn.Module` containing the parameters to update.
         """
         decay = self.decay
         if self.num_updates is not None:
             self.num_updates += 1
             decay = min(decay, (1 + self.num_updates) / (10 + self.num_updates))
-        one_minus_decay = 1.0 - decay
-        with torch.no_grad():
-            parameters = [p for p in parameters if p.requires_grad]
-            for s_param, param in zip(self.shadow_params, parameters, strict=True):
-                s_param.sub_(one_minus_decay * (s_param - param))
 
-    def compatible(self, parameters):
-        if len(self.shadow_params) != len(parameters):
-            print(
-                f"Model has {len(self.shadow_params)} parameter tensors, the incoming ema"
-                f"{len(parameters)}"
+        one_minus_decay = 1.0 - decay
+
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad and name in self.shadow_params:
+                    s_param = self.shadow_params[name]
+                    s_param.sub_(one_minus_decay * (s_param - param))
+
+    def compatible(self, state_dict: dict[str, Any]) -> bool:
+        """
+        Check if the model parameters are compatible with the stored EMA parameters.
+        Args:
+            state_dict: The state dictionary of EMA to check compatibility with.
+        """
+        if state_dict.get("version", None) != "20251223":
+            warnings.warn("Incompatible version for EMA state dict.", UserWarning)
+            return False
+
+        incoming_params = state_dict["shadow_params"]
+        if len(incoming_params) != len(self.shadow_params):
+            warnings.warn(
+                f"Parameter count mismatch: "
+                f"EMA has {len(self.shadow_params)} vs Model has {len(incoming_params)}"
             )
             return False
 
-        for s_param, param in zip(self.shadow_params, parameters, strict=True):
+        for name, s_param in self.shadow_params.items():
+            if name not in incoming_params:
+                warnings.warn(f"Key {name} not found in incoming model.")
+                return False
+
+            param = incoming_params[name]
             if param.data.shape != s_param.data.shape:
-                print(
-                    f"Model has parameter tensor of shape {s_param.data.shape},"
-                    f" the incoming ema {param.data.shape}"
+                warnings.warn(
+                    f"Parameter {name} shape mismatch: "
+                    f"EMA {s_param.data.shape} vs Model {param.data.shape}"
                 )
                 return False
         return True
 
-    def copy_to(self, parameters):
+    def copy_to(self, model: torch.nn.Module):
         """
         Copy current parameters into given collection of parameters.
         Args:
-          parameters: Iterable of `torch.nn.Parameter`; the parameters to be
-            updated with the stored moving averages.
+          model: The `torch.nn.Module` to update with the stored moving averages.
         """
-        parameters = [p for p in parameters if p.requires_grad]
-        for s_param, param in zip(self.shadow_params, parameters, strict=True):
-            if param.requires_grad:
-                param.data.copy_(s_param.data)
+        for name, param in model.named_parameters():
+            if param.requires_grad and name in self.shadow_params:
+                param.data.copy_(self.shadow_params[name].data)
 
-    def store(self, parameters):
+    def store(self, model: torch.nn.Module):
         """
         Save the current parameters for restoring later.
         Args:
-          parameters: Iterable of `torch.nn.Parameter`; the parameters to be
-            temporarily stored.
+          model: The `torch.nn.Module` whose parameters are to be temporarily stored.
         """
-        self.collected_params = [param.clone() for param in parameters]
+        self.collected_params = {
+            name: param.clone() for name, param in model.named_parameters()
+        }
 
-    def restore(self, parameters):
+    def restore(self, model: torch.nn.Module):
         """
         Restore the parameters stored with the `store` method.
         Useful to validate the model with EMA parameters without affecting the
@@ -87,23 +116,31 @@ class ExponentialMovingAverage:
         `copy_to` method. After validation (or model saving), use this to
         restore the former parameters.
         Args:
-          parameters: Iterable of `torch.nn.Parameter`; the parameters to be
-            updated with the stored parameters.
+          model: The `torch.nn.Module` to update with the stored parameters.
         """
-        for c_param, param in zip(self.collected_params, parameters, strict=True):
-            param.data.copy_(c_param.data)
+        for name, param in model.named_parameters():
+            if name in self.collected_params:
+                param.data.copy_(self.collected_params[name].data)
 
     def state_dict(self):
         return dict(
             decay=self.decay,
             num_updates=self.num_updates,
             shadow_params=self.shadow_params,
+            version="20251223",
         )
 
-    def load_state_dict(self, state_dict, device):
+    def load_state_dict(
+        self,
+        state_dict: dict[str, Any],
+        device: torch.device,
+    ):
         self.decay = state_dict["decay"]
         self.num_updates = state_dict["num_updates"]
-        self.shadow_params = [tensor.to(device) for tensor in state_dict["shadow_params"]]
+        # Restore as dictionary
+        self.shadow_params = {
+            k: v.to(device) for k, v in state_dict["shadow_params"].items()
+        }
 
-    def to(self, device):
-        self.shadow_params = [tensor.to(device) for tensor in self.shadow_params]
+    def to(self, device: torch.device):
+        self.shadow_params = {k: v.to(device) for k, v in self.shadow_params.items()}
