@@ -6,7 +6,6 @@ from kfold.data.model_input import FoldingInput
 from kfold.model.layers.alphafold3.transition import Transition
 from kfold.model.layers.primitives import (
     LayerNorm,
-    Linear,
     LinearNoBias,
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
@@ -46,7 +45,10 @@ class OuterProductMean(torch.nn.Module):
         self.layernorm = LayerNorm(c_in)
         self.linear_a = LinearNoBias(c_in, c_hidden, init="default")
         self.linear_b = LinearNoBias(c_in, c_hidden, init="default")
-        self.linear_o = Linear(c_hidden * c_hidden, c_out, init="final")
+        # NOTE (SeonghwanSeo): LinearNoBias is used instead of Linear
+        # in contrast to AF3, since we do not want to the number of
+        # ensemble structure members to affect the output bias.
+        self.linear_o = LinearNoBias(c_hidden * c_hidden, c_out, init="final")
 
     def _outer_product_mean(
         self, a: torch.Tensor, b: torch.Tensor, mask: torch.Tensor
@@ -406,7 +408,7 @@ class EnsembleModule(torch.nn.Module):
         # Compute input projections
         e: torch.Tensor = f_input.pretrained.structure_embedding  # [B, L, E, c_struct]
         # FIXME: add a better way to handle missing structure embeddings
-        struct_mask = (e == 0).all(-1)  # [B, L, E]
+        struct_mask = (e != 0).any(-1)  # [B, L, E]
 
         e = self.linear_struct(e)  # [B, L, E, c_e]
         e = e + self.linear_s_input(s_inputs).unsqueeze(-2)  # [B, L, E, c_e]
