@@ -239,7 +239,7 @@ def featurize_structure(
         if np.issubdtype(data.dtype, np.floating):
             return data.astype(np.float32, copy=False)
         elif np.issubdtype(data.dtype, np.integer):
-            return data.astype(np.long, copy=False)
+            return data.astype(np.int64, copy=False)
         elif np.issubdtype(data.dtype, np.bool_):
             return data
         else:
@@ -319,13 +319,13 @@ def featurize_structure(
 
     # NOTE: Token index should be remapped due cropping
     token_dict["org_token_index"] = token_dict["token_index"]
-    token_dict["token_index"] = np.arange(num_tokens, dtype=np.long)
+    token_dict["token_index"] = np.arange(num_tokens, dtype=np.int64)
     token_dict["pocket_contact_type"] = np.full(
-        (num_tokens,), C.constraint.ConstraintType.UNSPECIFIED, dtype=np.long
+        (num_tokens,), C.constraint.ConstraintType.UNSPECIFIED, dtype=np.int64
     )
 
     # Add frame information
-    token_dict["frames_index"] = np.zeros((num_tokens, 3), dtype=np.long)
+    token_dict["frames_index"] = np.zeros((num_tokens, 3), dtype=np.int64)
     token_dict["frames_mask"] = np.zeros((num_tokens,), dtype=np.bool_)
     for tidx in range(num_tokens):
         is_standard = token_dict["is_standard"][tidx]
@@ -389,7 +389,7 @@ def featurize_structure(
         v = ref_space_dict[ref_key]
         ref_space_uid.extend([v] * token_dict["num_atoms"][tidx])
         ref_space_natoms[v] += token_dict["num_atoms"][tidx]
-    atom_dict["ref_space_uid"] = np.array(ref_space_uid, dtype=np.long)
+    atom_dict["ref_space_uid"] = np.array(ref_space_uid, dtype=np.int64)
 
     # Random augmentation (stochasticity)
     # TODO: random sample from multiple ETKDG conformers.
@@ -424,7 +424,7 @@ def featurize_structure(
     # e.g., [0, 3, 4, 5, 8] -> [0, 1, 2, 3, 4]
     original_token_index = token_dict["org_token_index"]
     token_index = token_dict["token_index"]
-    token_map = np.zeros(original_token_index.max() + 1, dtype=np.long) - 1
+    token_map = np.zeros(original_token_index.max() + 1, dtype=np.int64) - 1
     token_map[original_token_index] = token_index
     bond_dict["token_index"] = token_map[bond_dict["token_index"]]
 
