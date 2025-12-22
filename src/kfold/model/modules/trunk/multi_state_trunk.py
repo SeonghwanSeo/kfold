@@ -62,7 +62,7 @@ class MultiStateModuleConfig: ...
 @TRUNK.register()
 class MultiStateApoTrunk(BaseTrunk):
     class Config(BaseTrunk.Config):
-        """Configuration for the Pairformer module.
+        """Configuration for the MultiStateApoTrunk module.
 
         Parameters
         ----------
@@ -111,7 +111,7 @@ class MultiStateApoTrunk(BaseTrunk):
         tri_attn_chunk_threshold: int = 384
 
     def __init__(self, cfg: Config):
-        """Initialize the Pairformer module."""
+        """Initialize the MultiStateApoTrunk module."""
         super().__init__(cfg)
         self.use_ensemble: bool = cfg.use_ensemble
         self.use_multi_state: bool = cfg.use_multi_state

@@ -606,7 +606,7 @@ def load_pretrained_structure_embedding(
     Returns
     -------
     embedding : torch.Tensor
-        Loaded embedding tensor of shape [Ntoken, Nfeat].
+        Loaded embedding tensor of shape [Ntoken, Nstruct, Nfeat].
     """
     rng = rng or np.random.default_rng()
 
