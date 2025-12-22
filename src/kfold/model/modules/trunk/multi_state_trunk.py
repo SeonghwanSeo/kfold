@@ -3,7 +3,7 @@
 Compared to AlphaFold3 trunk with MSAModule and TemplateModule,
 KFold replace these modules with custom modules to feed apo information.
 
-There are four source to get apo structures:
+There are four sources to get apo structures:
 1. Experimental apo structures
 2. Experimental holo structures
 3. Predicted apo structures (e.g., AlphaFold2, ESMFold)
@@ -169,9 +169,9 @@ class MultiStateApoTrunk(BaseTrunk):
         ----------
         s_inputs : torch.Tensor
             Tensor of shape (B, L, C_s) containing input single features
-        s_inits: torch.Tensor
+        s_init: torch.Tensor
             Tensor of shape (B, L, C_s) containing initial single representation
-        z_inits: torch.Tensor
+        z_init: torch.Tensor
             Tensor of shape (B, L, L, C_s) containing initial pair representation
         f_input : FoldingInput
             The input features.
@@ -207,7 +207,7 @@ class MultiStateApoTrunk(BaseTrunk):
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
 
                 if self.use_multi_state:
-                    raise NotImplementedError("Template Embedder is not implemented yet")
+                    raise NotImplementedError("MultiStateEmbedder is not implemented yet")
 
                 if self.use_ensemble:
                     z = self.ensemble_module(

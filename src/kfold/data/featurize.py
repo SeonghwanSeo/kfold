@@ -90,7 +90,10 @@ class InputFeaturizer:
 
         # Add pre-computed embeddings
         f_input_upd = self.add_precomputed_embedding(
-            f_input, seq_embedding_paths, struct_embedding_paths
+            f_input,
+            seq_embedding_paths,
+            struct_embedding_paths,
+            rng=rng,
         )
 
         return f_input_upd
@@ -111,8 +114,9 @@ class InputFeaturizer:
     def add_precomputed_embedding(
         self,
         f_input: model_input.FoldingInput,
-        seq_embedding_paths: dict[int, Path] | None = None,
-        struct_embedding_paths: dict[int, Path] | None = None,
+        seq_embedding_paths: dict[int, Path] | None,
+        struct_embedding_paths: dict[int, Path] | None,
+        rng: np.random.Generator | None,
     ) -> model_input.FoldingInput:
         """Add pre-trained embeddings to the model input from pre-computed files.
 
@@ -124,6 +128,8 @@ class InputFeaturizer:
             Mapping from entity_id to file path of the pre-computed sequence embedding.
         struct_embedding_paths : dict[int, Path] | None
             Mapping from entity_id to file path of the pre-computed structure embedding.
+        rng : np.random.Generator
+            Random number generator for augmentation.
 
         Returns
         -------
@@ -138,7 +144,9 @@ class InputFeaturizer:
                 "seq_embedding_paths must be provided when seq_embedding_dim is set."
             )
             pretrained_dict["sequence_embedding"] = load_pretrained_sequence_embedding(
-                f_input, seq_embedding_paths, self.seq_embedding_dim
+                f_input,
+                paths=seq_embedding_paths,
+                embedding_dim=self.seq_embedding_dim,
             )
         else:
             assert seq_embedding_paths is None or len(seq_embedding_paths) == 0, (
@@ -152,7 +160,11 @@ class InputFeaturizer:
                 " when struct_embedding_dim is set."
             )
             pretrained_dict["structure_embedding"] = load_pretrained_structure_embedding(
-                f_input, struct_embedding_paths, self.struct_embedding_dim
+                f_input,
+                paths=struct_embedding_paths,
+                embedding_dim=self.struct_embedding_dim,
+                max_ensembles=self.max_struct_ensembles,
+                rng=rng,
             )
         else:
             assert struct_embedding_paths is None or len(struct_embedding_paths) == 0, (

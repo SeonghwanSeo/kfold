@@ -54,6 +54,7 @@ class OuterProductMean(torch.nn.Module):
         self, a: torch.Tensor, b: torch.Tensor, mask: torch.Tensor
     ) -> torch.Tensor:
         """Compute the outer product mean.
+
         Parameters
         ----------
         a : torch.Tensor
@@ -319,7 +320,7 @@ class EnsembleModule(torch.nn.Module):
         z_dropout: float = 0.25,
         blocks_per_ckpt: int | None = None,
     ) -> None:
-        """Initialize the MSA module.
+        """Initialize the Ensemble module.
 
         Parameters
         ----------
