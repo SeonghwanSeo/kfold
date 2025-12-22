@@ -9,7 +9,7 @@ There are four source to get apo structures:
 3. Predicted apo structures (e.g., AlphaFold2, ESMFold)
 4. Permutated structures from KFold's apo-permutation module.
 
-Source 1-33 provide the multi-state information of the protein.
+Source 1-3 provide the multi-state information of the protein.
 Source 4 provides local flexibility information of the protein.
 
 The KFoldTrunk module consists of the following sub-modules:
