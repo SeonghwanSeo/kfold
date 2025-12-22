@@ -6,6 +6,7 @@ import torch
 from tqdm import tqdm
 
 from kfold.model.modules.sequence_encoder.esmc import ESMC, ESMCConfig
+from kfold.utils.files import load_fasta
 
 try:
     import esm  # noqa: F401
@@ -28,8 +29,8 @@ def parse_args():
         "-i",
         "--input",
         type=Path,
+        required=True,
         help="Path to the fasta file containing protein sequences.",
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/rcsb_protein_sequences.fasta",
     )
     parser.add_argument(
         "--model",
@@ -48,7 +49,7 @@ def parse_args():
     parser.add_argument(
         "--budget_size",
         type=int,
-        default=2048 * 64,
+        default=2048 * 32,
         help="Budget size for ESM model.",
     )
     return parser.parse_args()
@@ -67,18 +68,7 @@ def main(args):
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Read fasta file
-    sequences: dict[tuple[str, int], str] = {}
-    with open(args.input) as f:
-        lines = f.readlines()
-        assert len(lines) % 2 == 0, "Fasta file should have even number of lines."
-        for i in range(0, len(lines), 2):
-            header = lines[i].strip()
-            seq_id = header[1:]  # Remove '>' character
-            seq = lines[i + 1].strip()
-            # Key format: {pdb_id}_{entity_id}_protein
-            pdb_id, entity_id, suffix = seq_id.split("_")
-            assert suffix == "protein", f"Unexpected suffix in header: {suffix}"
-            sequences[(pdb_id, int(entity_id))] = seq
+    sequences: dict[str, str] = load_fasta(args.input)
 
     # Process each sequence and store embeddings
     all_keys = sorted(sequences.keys(), key=lambda x: (len(sequences[x]), x))
@@ -87,48 +77,32 @@ def main(args):
 
     # Process in batches
     budget = 0
-    batch_sequences: list[str] = []
-    batch_keys: list[tuple[str, int]] = []
-    for i in tqdm(range(len(all_keys)), desc="Processing sequences"):
-        key = all_keys[i]
+    batches: list[list[str]] = []
+    last_batch: list[str] = []
+    for key in all_keys:
         seq = sequences[key]
         seq_len = len(seq) + 2  # +2 for special tokens
-
         # Check if adding this sequence exceeds budget
         if (budget + seq_len) > args.budget_size:
-            embeddings = model.encode(batch_sequences)
-            for idx, key_i in enumerate(batch_keys):
-                emb = embeddings[idx].cpu()
-                pdb_id, entity_id = key_i
-                save_path = (
-                    args.output_dir
-                    / pdb_id[:2]
-                    / pdb_id
-                    / f"{pdb_id}_{entity_id}_protein.pt"
-                )
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(emb, save_path)
-            del embeddings
-
+            batches.append(last_batch)
             # Reset batch
             budget = 0
-            batch_sequences = []
-            batch_keys = []
-
         # Add current sequence to batch
-        batch_sequences.append(seq)
-        batch_keys.append(key)
+        last_batch.append(key)
         budget += seq_len
+    # Add the last batch if not empty
+    if last_batch:
+        batches.append(last_batch)
 
-    # Process any remaining sequences in the last batch
-    if len(batch_sequences) > 0:
+    logger.info(f"Total batches to process: {len(batches)}")
+
+    # Process batches
+    for batch_keys in tqdm(batches, desc="Processing sequences"):
+        batch_sequences = [sequences[key] for key in batch_keys]
         embeddings = model.encode(batch_sequences)
-        for idx, key_i in enumerate(batch_keys):
-            emb = embeddings[idx].cpu()
-            pdb_id, entity_id = key_i
-            save_path = (
-                args.output_dir / pdb_id[:2] / pdb_id / f"{pdb_id}_{entity_id}_protein.pt"
-            )
+        for key, emb in zip(batch_keys, embeddings, strict=True):
+            emb = emb.cpu()
+            save_path = args.output_dir / f"{key}.pt"
             save_path.parent.mkdir(parents=True, exist_ok=True)
             torch.save(emb, save_path)
 

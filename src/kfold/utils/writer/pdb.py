@@ -10,16 +10,6 @@ from kfold.data.structure import TokenizedStructure
 from kfold.utils import errors
 
 
-# === Simple wrappers === #
-def to_pdbstring_apo(
-    structure: TokenizedStructure,
-    conformer_id: int = 0,
-) -> str:
-    return to_pdbstring(
-        structure, conformer_id=conformer_id, is_predicted=False, save_apo=True
-    )
-
-
 # === Core implementation === #
 @lru_cache(maxsize=1)
 def _get_periodic_table() -> Chem.PeriodicTable:
@@ -27,7 +17,7 @@ def _get_periodic_table() -> Chem.PeriodicTable:
 
 
 def to_pdbstring(
-    structure: TokenizedStructure,
+    struct: TokenizedStructure,
     conformer_id: int = 0,
     is_predicted: bool = True,
     save_apo: bool = False,
@@ -36,7 +26,7 @@ def to_pdbstring(
 
     Parameters
     ----------
-    structure : TokenizedStructure
+    struct : TokenizedStructure
         The input structure
     conformer_id : int, optional
         The conformer ID to write (default is 0)
@@ -50,13 +40,13 @@ def to_pdbstring(
     str
         the output PDB file
     """
-    tokens = structure.token  # [Ntoken, ...]
-    atoms = structure.atom  # [Ntoken, 24, ...]
+    tokens = struct.token  # [Ntoken, ...]
+    atoms = struct.atom  # [Ntoken, 24, ...]
 
-    if structure.num_chains > 52:
+    if struct.num_chains > 52:
         raise errors.PDBWriterMaxChainError(
             "PDB format supports a maximum of 52 chains (A-Z, a-z). "
-            f"Found {structure.num_chains} chains."
+            f"Found {struct.num_chains} chains."
         )
 
     # Atom informations
@@ -96,7 +86,7 @@ def to_pdbstring(
         if should_terminate:
             asym_id = last_asym_id
             chain_tag = chain_id_iter[asym_id - 1]
-            res_name = C.residue.residue_index_to_name[tokens.res_type[i - 1]].name
+            res_name = C.residue.residue_id_to_name[tokens.res_type[i - 1]].name
             residue_index = tokens.residue_index[i - 1]
             # Close the chain.
             chain_end = "TER"
@@ -113,7 +103,7 @@ def to_pdbstring(
         chain_tag = chain_id_iter[asym_id - 1]
 
         # Residue Information
-        res_name = C.residue.residue_index_to_name[tokens.res_type[i]].name
+        res_name = C.residue.residue_id_to_name[tokens.res_type[i]].name
         residue_index = tokens.residue_index[i]
 
         # Atom Information
@@ -151,7 +141,7 @@ def to_pdbstring(
             atom_index += 1
 
     # Dump CONECT records.
-    bonds = structure.bond  # [Nbond, ...]
+    bonds = struct.bond  # [Nbond, ...]
     for bidx in range(len(bonds)):
         i1, i2 = bonds.token_index[bidx]
         # Remap

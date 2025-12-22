@@ -1,4 +1,3 @@
-import os
 import warnings
 from collections import defaultdict
 from pathlib import Path
@@ -7,7 +6,6 @@ import numpy as np
 import torch
 
 import kfold.constants as C
-from kfold.constants.residue import residue_index_to_name
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
 from . import model_input, structure
@@ -21,8 +19,6 @@ class InputFeaturizer:
         self,
         augment_ref_pos: bool = True,
         synchronize_ref_pos_augmentation: bool = False,
-        seq_embedding_path: str | Path | None = None,
-        struct_embedding_path: str | Path | None = None,
         seq_embedding_dim: int | None = None,
         struct_embedding_dim: int | None = None,
         max_struct_ensembles: int = 1,
@@ -37,10 +33,6 @@ class InputFeaturizer:
             Whether to synchronize the random augmentation for ref_pos across all atoms,
             default: False.
             NOTE: This flag is just for running Boltz1 in this repository. (Boltz1: True)
-        seq_embedding_path : str | Path | None, optional
-            Path of directory containing pre-computed sequence embeddings.
-        struct_embedding_path : str | Path | None, optional
-            Path of directory containing pre-computed structure embeddings.
         seq_embedding_dim : int | None, optional
             Dimension of the sequence embedding.
         struct_embedding_dim : int | None, optional
@@ -53,39 +45,24 @@ class InputFeaturizer:
         self.synchronize_ref_pos_augmentation: bool = synchronize_ref_pos_augmentation
 
         # Precomputed embeddings
-        self.seq_embedding_path: Path | None = (
-            Path(seq_embedding_path) if seq_embedding_path is not None else None
-        )
-        self.struct_embedding_path: Path | None = (
-            Path(struct_embedding_path) if struct_embedding_path is not None else None
-        )
-        if self.seq_embedding_path is not None:
-            assert self.seq_embedding_path.exists(), (
-                f"seq_embedding_path does not exists ({self.seq_embedding_path})"
-            )
-            assert seq_embedding_dim is not None, (
-                "seq_embedding_dim must be provided when seq_embedding_path is not None."
-            )
-            self.seq_embedding_dim: int = seq_embedding_dim
-        else:
-            assert seq_embedding_dim is None, (
-                "seq_embedding_dim must be None when seq_embedding_path is None."
-            )
-        if self.struct_embedding_path is not None:
-            assert self.struct_embedding_path.exists(), (
-                f"struct_embedding_path does not exists ({self.struct_embedding_path})"
-            )
-            assert struct_embedding_dim is not None, (
-                "struct_embedding_dim must be provided when struct_embedding_path is not"
-                " None."
-            )
-            self.struct_embedding_dim: int = struct_embedding_dim
-            self.max_struct_ensembles: int = max_struct_ensembles
+        self.seq_embedding_dim: int | None = seq_embedding_dim
+        self.struct_embedding_dim: int | None = struct_embedding_dim
+        self.max_struct_ensembles: int = max_struct_ensembles
+
+    def __call__(
+        self,
+        struct: structure.TokenizedStructure,
+        seq_embedding_paths: dict[int, Path] | None = None,
+        struct_embedding_paths: dict[int, Path] | None = None,
+        rng: np.random.Generator | None = None,
+    ) -> model_input.FoldingInput:
+        return self.run(struct, seq_embedding_paths, struct_embedding_paths, rng)
 
     def run(
         self,
         struct: structure.TokenizedStructure,
-        name: str | None = None,
+        seq_embedding_paths: dict[int, Path] | None = None,
+        struct_embedding_paths: dict[int, Path] | None = None,
         rng: np.random.Generator | None = None,
     ) -> model_input.FoldingInput:
         """Featurize a tokenized structure into model input features.
@@ -94,14 +71,16 @@ class InputFeaturizer:
         ----------
         struct : structure.TokenizedStructure
             The tokenized structure to featurize.
-        name : str | None
-            Name of the structure, used as filename for pre-computed embeddings.
+        seq_embedding_paths : dict[int, Path] | None
+            Mapping from entity_id to file path of the pre-computed sequence embedding.
+        struct_embedding_paths : dict[int, Path] | None
+            Mapping from entity_id to file path of the pre-computed structure embedding.
         rng : np.random.Generator
             Random number generator for augmentation.
 
         Returns
         -------
-        f_input: FoldingInput
+        f_input_upd: FoldingInput
             The featurized model input
         """
         rng = rng or np.random.default_rng()
@@ -110,9 +89,11 @@ class InputFeaturizer:
         f_input = self.to_folding_input(struct, rng)
 
         # Add pre-computed embeddings
-        f_input = self.add_precomputed_embedding(f_input, name, rng=rng)
+        f_input_upd = self.add_precomputed_embedding(
+            f_input, seq_embedding_paths, struct_embedding_paths
+        )
 
-        return f_input
+        return f_input_upd
 
     def to_folding_input(
         self,
@@ -130,8 +111,8 @@ class InputFeaturizer:
     def add_precomputed_embedding(
         self,
         f_input: model_input.FoldingInput,
-        name: str | None,
-        rng: np.random.Generator,
+        seq_embedding_paths: dict[int, Path] | None = None,
+        struct_embedding_paths: dict[int, Path] | None = None,
     ) -> model_input.FoldingInput:
         """Add pre-trained embeddings to the model input from pre-computed files.
 
@@ -139,57 +120,45 @@ class InputFeaturizer:
         ----------
         f_input : model_input.FoldingInput
             The model input to add pretrained features.
-        name : str | None
-            Name of the structure, used as filename for pre-computed embeddings.
+        seq_embedding_paths : dict[int, Path] | None
+            Mapping from entity_id to file path of the pre-computed sequence embedding.
+        struct_embedding_paths : dict[int, Path] | None
+            Mapping from entity_id to file path of the pre-computed structure embedding.
 
         Returns
         -------
         f_input_upd: FoldingInput
             The featurized model input with pretrained features added.
         """
-        if self.seq_embedding_path is None and self.struct_embedding_path is None:
-            return f_input
-        assert name is not None, (
-            "Name must be provided when using pre-computed embeddings."
-        )
-        assert len(name) >= 4, "Name must be at least 4 characters long."
 
-        def get_prefix(name: str, root_dir: Path) -> str:
-            """Get the prefix for pre-computed embedding files.
-            Example:
-                pdb_id: 6oim
-                root_dir: /path/to/embeddings/
-                returns:
-                  - /path/to/embeddings/oi/6oim/6oim_
-                  - /path/to/embeddings/6o/6oim/6oim_ (fallback)
-            """
-            # Try subdir with 2nd and 3rd chars first
-            subdir = root_dir / name[1:3] / name
-            if not subdir.exists():
-                subdir = root_dir / name[0:2] / name
-            prefix = str(subdir / f"{name}_")
-            return prefix
-
-        pretrained_dict = {}
-        if self.seq_embedding_path is not None:
-            seq_embedding_prefix = get_prefix(name, self.seq_embedding_path)
-            seq_embedding = load_pretrained_sequence_embedding(
-                f_input,
-                prefix=seq_embedding_prefix,
-                embedding_dim=self.seq_embedding_dim,
+        pretrained_dict: dict[str, torch.Tensor] = {}
+        if self.seq_embedding_dim is not None:
+            assert self.seq_embedding_dim > 0, "seq_embedding_dim must be positive."
+            assert seq_embedding_paths is not None, (
+                "seq_embedding_paths must be provided when seq_embedding_dim is set."
             )
-            pretrained_dict["sequence_embedding"] = seq_embedding
-
-        if self.struct_embedding_path is not None:
-            struct_embedding_prefix = get_prefix(name, self.struct_embedding_path)
-            struct_embedding = load_pretrained_structure_embedding(
-                f_input,
-                prefix=struct_embedding_prefix,
-                embedding_dim=self.struct_embedding_dim,
-                max_ensembles=self.max_struct_ensembles,
-                rng=rng,
+            pretrained_dict["sequence_embedding"] = load_pretrained_sequence_embedding(
+                f_input, seq_embedding_paths, self.seq_embedding_dim
             )
-            pretrained_dict["structure_embedding"] = struct_embedding
+        else:
+            assert seq_embedding_paths is None or len(seq_embedding_paths) == 0, (
+                "seq_embedding_paths must be None when seq_embedding_dim is not set."
+            )
+
+        if self.struct_embedding_dim is not None:
+            assert self.struct_embedding_dim > 0, "struct_embedding_dim must be positive."
+            assert struct_embedding_paths is not None, (
+                "struct_embedding_paths must be provided"
+                " when struct_embedding_dim is set."
+            )
+            pretrained_dict["structure_embedding"] = load_pretrained_structure_embedding(
+                f_input, struct_embedding_paths, self.struct_embedding_dim
+            )
+        else:
+            assert struct_embedding_paths is None or len(struct_embedding_paths) == 0, (
+                "struct_embedding_paths must be None when "
+                "struct_embedding_dim is not set."
+            )
 
         # Replace the pretrained features in FoldingInput
         new_pretrained = f_input.pretrained.copy_with(**pretrained_dict)
@@ -318,6 +287,8 @@ def featurize_structure(
         k: cast(v)[atom_to_token, atom_in_token_idx]  # Fancy indexing - no loop!
         for k, v in atom_data.to_dict().items()
     }
+    atom_dict["apo_coords"] = np.nan_to_num(atom_dict["apo_coords"], nan=0.0)
+    atom_dict["ref_pos"] = np.nan_to_num(atom_dict["ref_pos"], nan=0.0)
     atom_dict["token_index"] = atom_to_token
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
@@ -365,7 +336,7 @@ def featurize_structure(
         if not is_standard:
             # Skip non-standard residues
             continue
-        res_name = residue_index_to_name[int(token_data.res_type[tidx])]
+        res_name = C.residue.residue_id_to_name[int(token_data.res_type[tidx])]
         if res_name is C.residue.ResidueName.UNK:
             # Skip unknown residues
             continue
@@ -518,7 +489,7 @@ def featurize_structure(
 
 def load_pretrained_sequence_embedding(
     f_input: model_input.FoldingInput,
-    prefix: str,
+    paths: dict[int, Path],
     embedding_dim: int,
 ) -> torch.Tensor:
     """Load pre-trained sequence embedding from a file.
@@ -527,8 +498,8 @@ def load_pretrained_sequence_embedding(
     ----------
     f_input : model_input.FoldingInput
         The model input containing chain and token layouts.
-    prefix : str
-        Prefix for the path to pre-computed embeddings.
+    paths : dict[int, str | Path]
+        Mapping from entity_id to file path of the pre-computed embedding.
     embedding_dim : int
         Dimension of the embedding.
 
@@ -547,14 +518,15 @@ def load_pretrained_sequence_embedding(
         entity_id = int(entity_ids[cidx].item())
         asym_id = f_input.chain.asym_id[cidx].item()
         chain_type = C.ChainType(int(f_input.chain.chain_type[cidx]))
+
         if entity_id in cached_embeddings:
             # Use cached embedding if already loaded
             embedding_tensor = cached_embeddings[entity_id]
         else:
-            # Load embedding for this entity_id and chain_type (bf16 to save memory)
-            filename = f"{prefix}{entity_id}_{chain_type.name.lower()}.pt"
-            if os.path.exists(filename):
-                embedding_tensor = torch.load(filename, "cpu", weights_only=True)
+            # Load embedding from file
+            emb_path = paths.get(entity_id, None)
+            if emb_path is not None and Path(emb_path).exists():
+                embedding_tensor = torch.load(emb_path, "cpu", weights_only=True)
             else:
                 embedding_tensor = None
             cached_embeddings[entity_id] = embedding_tensor
@@ -566,7 +538,7 @@ def load_pretrained_sequence_embedding(
                 print_warning: bool = True  # For debugging purpose
                 if print_warning and chain_type is C.ChainType.PROTEIN:
                     warnings.warn(
-                        f"Precomputed Embedding file not found: {filename}."
+                        f"Precomputed Embedding file not found: {emb_path}."
                         f" Zero tensor is used instead.",
                         UserWarning,
                         stacklevel=2,
@@ -601,7 +573,7 @@ def load_pretrained_sequence_embedding(
 
 def load_pretrained_structure_embedding(
     f_input: model_input.FoldingInput,
-    prefix: str,
+    paths: dict[int, Path],
     embedding_dim: int,
     max_ensembles: int = 5,
     rng: np.random.Generator | None = None,
@@ -612,8 +584,8 @@ def load_pretrained_structure_embedding(
     ----------
     f_input : model_input.FoldingInput
         The model input containing chain and token layouts.
-    prefix : str
-        Prefix for the path to pre-computed embeddings.
+    paths : dict[int, str | Path]
+        Mapping from entity_id to file path of the pre-computed embedding.
     embedding_dim : int
         Dimension of the embedding.
     max_ensembles : int
@@ -644,10 +616,10 @@ def load_pretrained_structure_embedding(
             embedding_tensor = cached_embeddings[entity_id]
         else:
             # Load embedding for this entity_id and chain_type (bf16 to save memory)
-            filename = f"{prefix}{entity_id}_{chain_type.name.lower()}.pt"
-            if os.path.exists(filename):
+            emb_path = paths.get(entity_id, None)
+            if emb_path is not None and Path(emb_path).exists():
                 # HACK: this is hard-coded
-                embedding_tensor = torch.load(filename, "cpu")
+                embedding_tensor = torch.load(emb_path, "cpu", weights_only=True)
                 # [Nstruct, Nres, Nfeat] or [Nres, Nfeat]
                 assert embedding_tensor.ndim in (2, 3), (
                     f"Precomputed structure embedding must be 2D or 3D tensor,"
@@ -659,6 +631,7 @@ def load_pretrained_structure_embedding(
 
                 if embedding_tensor.shape[0] > max_ensembles:
                     # Randomly select max_ensembles structures
+                    # TODO: label original apo / permuted apo.
                     selected_indices = rng.choice(
                         embedding_tensor.shape[0],
                         size=max_ensembles,
@@ -679,7 +652,7 @@ def load_pretrained_structure_embedding(
                 print_warning: bool = True  # For debugging purpose
                 if print_warning and chain_type is C.ChainType.PROTEIN:
                     warnings.warn(
-                        f"Precomputed Embedding file not found: {filename}."
+                        f"Precomputed Embedding file not found: {emb_path}."
                         f" Zero tensor is used instead.",
                         UserWarning,
                         stacklevel=2,

@@ -48,13 +48,13 @@ class ResidueName(enum.StrEnum):
     @property
     def index(self) -> int:
         """Get the index of the residue in the enum."""
-        return residue_name_to_index[self]
+        return residue_name_to_id[self]
 
 
-residue_name_to_index: dict[ResidueName, int] = {
+residue_name_to_id: dict[ResidueName, int] = {
     atom: idx for idx, atom in enumerate(ResidueName)
 }
-residue_index_to_name: dict[int, ResidueName] = {
+residue_id_to_name: dict[int, ResidueName] = {
     idx: atom for idx, atom in enumerate(ResidueName)
 }
 
@@ -64,6 +64,9 @@ PROTEIN_AMINO_ACIDS: tuple[str, ...] = (
     "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I",
     "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V",
     "X"
+)  # fmt: skip
+PROTEIN_AMINO_ACIDS_EXTENDED: tuple[str, ...] = (
+    *PROTEIN_AMINO_ACIDS, "B", "Z", "J", "U", "O"
 )  # fmt: skip
 PROTEIN_RESIDUES_STR: tuple[str, ...] = (
     "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE",

@@ -1,5 +1,7 @@
 """Define training modules for k-fold"""
 
+from collections.abc import Mapping
+
 import gc
 import pathlib
 from dataclasses import dataclass
@@ -14,7 +16,7 @@ from torchmetrics import MeanMetric
 from kfold import constants as C
 from kfold.config import to_dict
 from kfold.data.model_input import FoldingInput
-from kfold.model.models.kfold import KFold
+from kfold.model.models.kfold import KFold, KFoldConfig
 from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
@@ -69,7 +71,7 @@ class TrainingConfig:
     train_confidence_head: bool = False
 
     # trunk recycling
-    num_cycles: int = 4
+    num_recycles: int = 3
     # for structure model training
     diffusion_batch_size: int = 48
     # for confidence module training
@@ -81,7 +83,7 @@ class TrainingConfig:
 class ValidationConfig:
     """Validation step configuration."""
 
-    num_cycles: int = 4
+    num_recycles: int = 4
     num_steps: int = 20
     num_diffusion_samples: int = 5
     symmetry_correction: bool = True
@@ -103,7 +105,7 @@ class LossConfig:
 class KFoldTrainingModule(pl.LightningModule):
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.global_config = config
+        self.global_config: DictConfig = config
         self.config: TrainConfig = self.global_config.train
         self.training_config: TrainingConfig = self.config.training
         self.validation_config: ValidationConfig = self.config.validation
@@ -117,9 +119,9 @@ class KFoldTrainingModule(pl.LightningModule):
         self.train_confidence_head: bool = self.training_config.train_confidence_head
 
         # Initialize model here
-        self.model: KFold
-        model_cls = MAIN_MODULE[self.global_config.model._class_]
-        self.model = model_cls(self.global_config)
+        model_config: KFoldConfig = self.global_config.model
+        model_cls = MAIN_MODULE[model_config._class_]
+        self.model: KFold = model_cls(model_config)
 
         # Freeze parts of the model if needed
         self.freeze_submodules()
@@ -248,7 +250,7 @@ class KFoldTrainingModule(pl.LightningModule):
     def forward(
         self,
         f_input: FoldingInput,
-        num_cycles: int = 4,
+        num_recycles: int = 3,
         num_steps: int = 20,
         num_diffusion_samples: int = 1,
         diffusion_batch_size: int = 48,
@@ -257,7 +259,7 @@ class KFoldTrainingModule(pl.LightningModule):
         if mode == "train":
             return self.model(
                 f_input,
-                num_cycles=num_cycles,
+                num_recycles=num_recycles,
                 num_steps=num_steps,
                 num_diffusion_samples=num_diffusion_samples,
                 diffusion_batch_size=diffusion_batch_size,
@@ -268,7 +270,7 @@ class KFoldTrainingModule(pl.LightningModule):
         elif mode == "validation":
             dict_out, _ = self.model.sample(
                 f_input,
-                num_cycles=num_cycles,
+                num_recycles=num_recycles,
                 num_steps=num_steps,
                 num_diffusion_samples=num_diffusion_samples,
             )
@@ -286,12 +288,12 @@ class KFoldTrainingModule(pl.LightningModule):
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
         # Sample recycling steps
-        num_cycles = np.random.randint(1, training_config.num_cycles + 1)
+        num_recycles = np.random.randint(0, training_config.num_recycles + 1)
 
         # Compute the forward pass
         out: dict[str, torch.Tensor] = self(
             f_input=f_input,
-            num_cycles=num_cycles,
+            num_recycles=num_recycles,
             num_steps=training_config.num_steps,
             num_diffusion_samples=training_config.num_diffusion_samples,
             diffusion_batch_size=training_config.diffusion_batch_size,
@@ -373,7 +375,7 @@ class KFoldTrainingModule(pl.LightningModule):
         try:
             out = self(
                 f_input=f_input,
-                num_cycles=val_config.num_cycles,
+                num_recycles=val_config.num_recycles,
                 num_steps=val_config.num_steps,
                 num_diffusion_samples=num_diffusion_samples,
                 mode="validation",
@@ -670,6 +672,22 @@ class KFoldTrainingModule(pl.LightningModule):
                     "Warning: EMA state not loaded due to incompatible model parameters."
                 )
             self.ema.to(self.device)
+
+    def load_state_dict(
+        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
+    ) -> None:
+        if "distogram_loss.boundaries" in state_dict:
+            import warnings
+
+            warnings.warn(
+                "Loading from a checkpoint with distogram boundaries. "
+                "The boundaries are now registered buffers and will be ignored. "
+                "In future versions, this is likely to raise an error.",
+            )
+            state_dict = dict(state_dict)
+            del state_dict["distogram_loss.boundaries"]
+
+        super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     # === Helper functions === #
     def save_structure(

@@ -102,7 +102,7 @@ class AF3PairformerTrunk(BaseTrunk):
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         f_input: FoldingInput,
-        num_cycles: int,
+        num_recycles: int,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -118,7 +118,7 @@ class AF3PairformerTrunk(BaseTrunk):
             Tensor of shape (B, L, L, C_s) containing initial pair representation
         f_input : FoldingInput
             The input features.
-        num_cycles : int
+        num_recycles : int
             The number of recycling steps.
 
         Returns
@@ -140,8 +140,8 @@ class AF3PairformerTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
-        for i in range(1, num_cycles + 1):
-            enable_grad = self.training and i == num_cycles
+        for i in range(0, num_recycles + 1):
+            enable_grad = self.training and i == num_recycles
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():

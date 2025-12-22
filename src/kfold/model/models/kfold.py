@@ -1,14 +1,24 @@
-from omegaconf import DictConfig
+import dataclasses
 
 from kfold.utils.registry import MAIN_MODULE
 
-from .base import BaseFoldingModel
+from .base import BaseFoldingModel, BaseFoldingModelConfig
+
+
+@dataclasses.dataclass(kw_only=True)
+class KFoldConfig(BaseFoldingModelConfig):
+    _class_: str = "KFold"
+    # TODO: define encoders
+    # sequence_encoder: BaseConfig
+    # structure_encoder: BaseConfig
 
 
 @MAIN_MODULE.register()
 class KFold(BaseFoldingModel):
-    def __init__(self, global_config: DictConfig):
-        super().__init__(global_config)
+    def __init__(self, config: KFoldConfig):
+        super().__init__(config)
+        self.channel_seq_encoder: int = config.input_embedder.channel_seq_encoder
+        self.channel_struct_encoder: int = config.input_embedder.channel_struct_encoder
         # self.sequence_encoder: submodules.sequence_encoder.BaseSequenceEncoder = (
         #     Registry.instantiate(model_config.sequence_encoder)
         # )
