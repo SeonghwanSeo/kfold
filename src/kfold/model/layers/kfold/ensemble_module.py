@@ -46,7 +46,7 @@ class OuterProductMean(torch.nn.Module):
         self.linear_a = LinearNoBias(c_in, c_hidden, init="default")
         self.linear_b = LinearNoBias(c_in, c_hidden, init="default")
         # NOTE (SeonghwanSeo): LinearNoBias is used instead of Linear
-        # in contrast to AF3, since we do not want to the number of
+        # in contrast to AF3, since we do not want the number of
         # ensemble structure members to affect the output bias.
         self.linear_o = LinearNoBias(c_hidden * c_hidden, c_out, init="final")
 
@@ -172,7 +172,7 @@ class OuterProductMean(torch.nn.Module):
         Returns
         -------
         torch.Tensor
-            The output tensor (*, L, c_out).
+            The output tensor (*, L, L, c_out).
         """
         # Compute projections
         mask_float = mask.to(e)[..., None]  # (*, L, E, 1)

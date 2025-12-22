@@ -18,6 +18,11 @@ class Linear(nn.Linear):
         init: str = "default",
     ):
         super().__init__(in_features, out_features, bias)
+
+        # Before initialization, set bias to zero if it exists
+        if bias:
+            initialize.zero_init_(self.bias)
+
         if init == "default":
             initialize.lecun_normal_init_(self.weight)
         elif init == "relu":
