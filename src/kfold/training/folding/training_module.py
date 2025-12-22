@@ -1,9 +1,8 @@
 """Define training modules for k-fold"""
 
-from collections.abc import Mapping
-
 import gc
 import pathlib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -83,7 +82,7 @@ class TrainingConfig:
 class ValidationConfig:
     """Validation step configuration."""
 
-    num_recycles: int = 4
+    num_recycles: int = 3
     num_steps: int = 20
     num_diffusion_samples: int = 5
     symmetry_correction: bool = True
@@ -619,35 +618,31 @@ class KFoldTrainingModule(pl.LightningModule):
 
     @ema.setter
     def ema(self, value: ExponentialMovingAverage):
-        self._ema = value
+        self._ema: ExponentialMovingAverage = value
 
     def on_train_start(self) -> None:
         if self.use_ema:
             if not self.is_ema_initialized:
                 ema_decay = self.optimizer_config.ema_decay
-                self.ema = ExponentialMovingAverage(
-                    parameters=self.parameters(), decay=ema_decay
-                )
+                self.ema = ExponentialMovingAverage(self, decay=ema_decay)
             self.ema.to(self.device)
 
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
         optimizer.step(closure=optimizer_closure)
         if self.use_ema:
-            self.ema.update(self.parameters())
+            self.ema.update(self)
 
     def prepare_train(self) -> None:
         if self.use_ema:
-            self.ema.restore(self.parameters())
+            self.ema.restore(self)
 
     def prepare_eval(self) -> None:
         if self.use_ema:
             if not self.is_ema_initialized:
                 ema_decay = self.optimizer_config.ema_decay
-                self.ema = ExponentialMovingAverage(
-                    parameters=self.parameters(), decay=ema_decay
-                )
-            self.ema.store(self.parameters())
-            self.ema.copy_to(self.parameters())
+                self.ema = ExponentialMovingAverage(self, decay=ema_decay)
+            self.ema.store(self)
+            self.ema.copy_to(self)
 
     def on_validation_start(self):
         self.prepare_eval()
@@ -662,10 +657,8 @@ class KFoldTrainingModule(pl.LightningModule):
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         if self.use_ema and "ema" in checkpoint:
             ema_decay = self.optimizer_config.ema_decay
-            self.ema = ExponentialMovingAverage(
-                parameters=self.parameters(), decay=ema_decay
-            )
-            if self.ema.compatible(checkpoint["ema"]["shadow_params"]):
+            self.ema = ExponentialMovingAverage(self, decay=ema_decay)
+            if self.ema.compatible(checkpoint["ema"]):
                 self.ema.load_state_dict(checkpoint["ema"], device=torch.device("cpu"))
             else:
                 print(
