@@ -4,6 +4,7 @@ import torch
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.layers.pairmixer.pairmixer import PairmixerStack
+from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
@@ -156,6 +157,152 @@ class PairmixerTrunk(BaseTrunk):
                     s,
                     z,
                     mask=f_input.token.pad_mask,
+                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                )
+
+                # Line 13
+                s_hat, z_hat = s, z
+
+        s_trunk, z_trunk = s_hat, z_hat
+        return s_trunk, z_trunk
+
+
+
+@TRUNK.register()
+class PairmixerformerTrunk(BaseTrunk):
+    """Intermediate trunk module with Pairmixer early on,
+    Pairformer later."""
+
+    class Config(BaseTrunk.Config):
+
+        channel_s: int = 384
+        channel_z: int = 128
+        num_blocks: int = 48
+        dropout: float = 0.25
+        use_msa: bool = False
+        use_template: bool = False
+        use_cuequiv_kernels: bool = False
+        blocks_per_ckpt: int | None = None
+        pairmixer_blocks: int = 42
+        num_heads: int = 16
+        pairwise_head_width: int = 32
+        pairwise_num_heads: int = 4
+        chunk_threshold: int = 384
+
+
+    def __init__(self, cfg: Config):
+        """Initialize the Pairmixerformer module."""
+        super().__init__(cfg)
+
+        if cfg.num_blocks < cfg.pairmixer_blocks:
+            raise ValueError(f"pairmixer_blocks ({cfg.pairmixer_blocks}) must be less than or equal to num_blocks ({cfg.num_blocks})")
+
+        self.use_msa: bool = cfg.use_msa
+        self.use_template: bool = cfg.use_template
+        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
+        self.chunk_threshold: int = cfg.chunk_threshold
+
+        if self.use_template:
+            raise NotImplementedError("Template Embedder is not implemented yet")
+        if self.use_msa:
+            raise NotImplementedError("MSA Module is not implemented yet")
+        
+        self.pairmixer_module: PairmixerStack = PairmixerStack(
+            channel_z=cfg.channel_z,
+            num_blocks=cfg.pairmixer_blocks,
+            dropout=cfg.dropout,
+            blocks_per_ckpt=cfg.blocks_per_ckpt,
+        )
+
+        self.pairformer_module: PairformerStack = PairformerStack(
+            channel_s=cfg.channel_s,
+            channel_z=cfg.channel_z,
+            num_blocks=cfg.num_blocks - cfg.pairmixer_blocks,
+            num_heads=cfg.num_heads,
+            dropout=cfg.dropout,
+            pairwise_head_width=cfg.pairwise_head_width,
+            pairwise_num_heads=cfg.pairwise_num_heads,
+            blocks_per_ckpt=cfg.blocks_per_ckpt,
+        )
+
+        self.layernorm_s = LayerNorm(cfg.channel_s)
+        self.layernorm_z = LayerNorm(cfg.channel_z)
+        self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
+        self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
+
+    def do_compile(self):
+        self.pairmixer_module = torch.compile(
+            self.pairmixer_module, dynamic=False, fullgraph=False
+        )  # type: ignore
+        self.pairformer_module = torch.compile(
+            self.pairformer_module, dynamic=False, fullgraph=False
+        )  # type: ignore
+
+    def forward(
+        self,
+        s_inputs: torch.Tensor,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
+        f_input: FoldingInput,
+        num_cycles: int,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Perform the forward pass.
+        """
+        if not self.training:
+            if z_init.shape[1] > self.chunk_threshold:
+                chunk_size_tri_attn = 128
+            else:
+                chunk_size_tri_attn = 512
+        else:
+            chunk_size_tri_attn = None
+
+        s_hat = torch.zeros_like(s_init)
+        z_hat = torch.zeros_like(z_init)
+
+        for i in range(1, num_cycles + 1):
+            enable_grad = self.training and i == num_cycles
+
+            with torch.set_grad_enabled(enable_grad):
+                if enable_grad and torch.is_autocast_enabled():
+                    torch.clear_autocast_cache()
+
+                # Line 8
+                z = z_init + self.linear_z(self.layernorm_z(z_hat))
+
+                # Line 9: TemplateEmbedder
+                if self.use_template:
+                    raise NotImplementedError("Template Embedder is not implemented yet")
+
+                # Line 10: MSAModule
+                if self.use_msa:
+                    raise NotImplementedError("MSA Module is not implemented yet")
+
+                # Line 11
+                s = s_init + self.linear_s(self.layernorm_s(s_hat))
+
+                # Line 12
+                # Revert to uncompiled version for validation
+                if self.is_compiled and not self.training:
+                    pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
+                    pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
+                else:
+                    pairmixer_module = self.pairmixer_module
+                    pairformer_module = self.pairformer_module
+
+                s, z = pairmixer_module(
+                    s,
+                    z,
+                    mask=f_input.token.pad_mask,
+                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                )
+
+                s, z = pairformer_module(
+                    s,
+                    z,
+                    mask=f_input.token.pad_mask,
+                    chunk_size_tri_attn=chunk_size_tri_attn,
+                    use_cuequiv_attn=self.use_cuequiv_kernels,
                     use_cuequiv_mul=self.use_cuequiv_kernels,
                 )
 
