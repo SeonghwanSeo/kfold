@@ -1,0 +1,61 @@
+model:
+  _yaml_: "model/kfold-ensemble-edm.yaml"
+  input_embedder:
+    channel_seq_encoder: 2560
+  trunk:
+    use_ensemble: true
+    pairformer:
+      num_blocks: 16
+    ensemble_module:
+      channel_struct_input: 1280
+      num_blocks: 1
+    use_cuequiv_kernels: true
+  score_model:
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 8
+    atom_decoder_blocks: 1
+
+train:
+  _yaml_: "train/structure_only.yaml"
+
+  name: mini-edm-esm2-saprot-ensemble5-rbf
+  out_dir: ./experiments/
+  seed: 42
+
+  global_hparams:
+    max_chains: 20
+    max_tokens: 384
+    batch_size: 4
+    diffusion_batch_size: 48
+    global_batch_size: 128
+    num_global_steps_per_epoch: 1000
+
+  # pytorch lightning trainer hparams
+  trainer:
+    strategy: "auto"
+    devices: 8
+    num_nodes: 4
+    precision: bf16-mixed
+
+  data:
+    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
+    manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
+    symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
+    split_path: ./assets/splits/kfold_v251213/
+    num_workers: 8
+
+    paths:
+      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esm2_3b_bf16/
+      struct_embedding_path: /cache/wykim_lab/kfold_data/pretrained/saprot_ensemble_5/
+
+    featurization_args:
+      seq_embedding_dim: 2560
+      struct_embedding_dim: 1280
+      max_struct_ensembles: 5
+
+  wandb:
+    use: false
+    project: "KFold-Combined"
+    group: "251213"
+    entity: K-Fold
+    tags: ["v251213", "mini", "edm", "esm2", "saprot", "rbf"]

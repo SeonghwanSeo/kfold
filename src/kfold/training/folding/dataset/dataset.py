@@ -284,7 +284,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         else:
             subdir = root_dir / name[0:2] / name
             if not subdir.exists():
-                return None
+                return {}
             assert subdir.is_dir()
 
         embedding_paths: dict[int, Path] = {}
