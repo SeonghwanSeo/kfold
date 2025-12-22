@@ -95,7 +95,6 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         channel_atompair: int = 16
         channel_seq_encoder: int | None = None
         channel_struct_encoder: int | None = None
-        gating: bool = True
         atoms_per_window_queries: int = 32
         atoms_per_window_keys: int = 128
         atom_encoder_blocks: int = 3
