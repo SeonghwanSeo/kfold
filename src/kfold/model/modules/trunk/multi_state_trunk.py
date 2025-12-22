@@ -197,13 +197,14 @@ class MultiStateApoTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
-        for i in range(1, num_recycles + 1):
+        for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
+                s = s_init + self.linear_s(self.layernorm_s(s_hat))
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
 
                 if self.use_multi_state:
@@ -217,8 +218,6 @@ class MultiStateApoTrunk(BaseTrunk):
                         use_cuequiv_mul=self.use_cuequiv_kernels,
                         use_cuequiv_attn=self.use_cuequiv_kernels,
                     )
-
-                s = s_init + self.linear_s(self.layernorm_s(s_hat))
 
                 # Revert to uncompiled version for validation
                 s, z = self.pairformer_module(
