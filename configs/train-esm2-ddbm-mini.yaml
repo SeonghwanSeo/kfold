@@ -1,11 +1,10 @@
 model:
-  _yaml_: "model/kfold-ecsi.yaml"
+  _yaml_: "model/kfold-ddbm.yaml"
   input_embedder:
-    channel_seq_encoder: 1152
-    use_apo: true
+    channel_seq_encoder: 2560
   trunk:
-    use_cuequiv_kernels: true
     num_blocks: 16
+    use_cuequiv_kernels: true
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -37,14 +36,14 @@ train:
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
-    split_path: ./assets/splits/boltz1
+    split_path: ./assets/splits/kfold_v251213/
     num_workers: 8
 
     paths:
-      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esmc_600m_bf16/
+      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esm2_3b_bf16/
 
     featurization_args:
-      seq_embedding_dim: 1152
+      seq_embedding_dim: 2560
 
     apo_perturbation_args:
       use_symmetry_correction: true # align apo to holo symmetry

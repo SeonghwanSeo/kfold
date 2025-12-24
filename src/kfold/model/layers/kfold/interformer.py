@@ -1,15 +1,37 @@
-"""Section 3.6 Pairformer Stack of AlphaFold 3 paper."""
+"""Modified Pairformer architecture for KFold.
 
-# started from code from https://github.com/jwohlwend/boltz, MIT License,
+Unlike the standard AlphaFold3 Pairformer, which primarily passes information
+from the pairwise representation `z` to the single representation `s` (z -> s),
+this architecture enables a fully bidirectional information flow (s <-> z).
+
+NOTE: This bidirectional coupling is designed to capture the dynamic interplay
+between evolutionary pre-trained sequence features (single representation)
+and residue-residue interaction features (pairwise representation).
+
+Motivation:
+This is motivated by the need to effectively integrate evolutionary
+information and interaction features, which is already performed in AlphaFold3's
+MSAModule: `m -> z` and `z -> m`.
+
+Approach:
+This is achieved by integrating a `PairwiseProdDiff` module—inspired by
+ESMFold—which updates the pairwise embeddings using both the element-wise
+difference and product of the single embeddings.
+"""
 
 from functools import partial
 
 import torch
 import torch.nn as nn
 
+from kfold.model.layers.alphafold3.transformers import AttentionPairBias
+from kfold.model.layers.alphafold3.transition import Transition
 from kfold.model.layers.primitives import (
     DropoutColumnwise,
     DropoutRowwise,
+    LayerNorm,
+    Linear,
+    LinearNoBias,
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
     TriangleMultiplicationIncoming,
@@ -17,14 +39,9 @@ from kfold.model.layers.primitives import (
 )
 from kfold.utils.checkpointing import checkpoint_blocks
 
-from .transformers import AttentionPairBias
-from .transition import Transition
 
-
-class PairformerStack(nn.Module):
-    """Pairformer stack.
-    See Section 3.6 Algorithm 20 Pairformer Stack
-    """
+class InterformerStack(nn.Module):
+    """Interformer stack."""
 
     def __init__(
         self,
@@ -35,8 +52,8 @@ class PairformerStack(nn.Module):
         num_blocks: int = 48,
         dropout: float = 0.25,
         blocks_per_ckpt: int | None = None,
-    ):
-        """Initialize the Pairformer module."""
+    ) -> None:
+        """Initialize the Interformer module."""
         super().__init__()
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
@@ -50,7 +67,7 @@ class PairformerStack(nn.Module):
         self.blocks = nn.ModuleList()
         for _ in range(num_blocks):
             self.blocks.append(
-                PairformerBlock(
+                InterformerBlock(
                     self.channel_s,
                     self.channel_z,
                     self.num_heads_attn,
@@ -122,10 +139,52 @@ class PairformerStack(nn.Module):
         return s, z
 
 
-class PairformerBlock(nn.Module):
-    """Pairformer block.
-    See Section 3.6 Algorithm 20 Pairformer Stack : Line [2-8]
+class PairwiseProdDiff(nn.Module):
+    """Convert single embeddings to pairwise embeddings.
+    Inspired by ESMFold's implementation.
     """
+
+    def __init__(self, c_in: int, c_out: int) -> None:
+        super().__init__()
+        assert c_out % 2 == 0, "c_out must be even."
+
+        c_hidden = c_out // 2
+
+        self.layernorm = LayerNorm(c_in)
+        self.linear_in = LinearNoBias(c_in, c_hidden * 2, init="default")
+        self.linear_out = Linear(c_hidden * 2, c_out, init="final")
+
+    def forward(self, s: torch.Tensor) -> torch.Tensor:
+        """Compute pairwise embeddings from single representations using
+        element-wise differences and products.
+
+        Parameters
+        ----------
+        s : torch.Tensor
+            The single representation (*, L, c_in).
+
+        Returns
+        -------
+        torch.Tensor
+            The output tensor (*, L, L, c_out).
+        """
+        s = self.layernorm(s)
+        s_i, s_j = torch.chunk(
+            self.linear_in(s), 2, dim=-1
+        )  # (*, L, c_hid), (*, L, c_hid)
+
+        s_i = s_i.unsqueeze(-2)  # (*, L, 1, c_hidden)
+        s_j = s_j.unsqueeze(-3)  # (*, 1, L, c_hidden)
+
+        # Combine Diff (Asymmetry) and Prod (Correlation)
+        z = torch.cat([s_i - s_j, s_i * s_j], dim=-1)  # (*, L, L, c_hidden * 2)
+
+        z = self.linear_out(z)  # (*, L, L, c_out)
+        return z
+
+
+class InterformerBlock(nn.Module):
+    """A single Interformer block."""
 
     def __init__(
         self,
@@ -134,8 +193,8 @@ class PairformerBlock(nn.Module):
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         dropout: float = 0.25,
-    ):
-        """Initialize the Pairformer module.
+    ) -> None:
+        """Initialize the Interformer module.
 
         Parameters
         ----------
@@ -154,6 +213,8 @@ class PairformerBlock(nn.Module):
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
         self.dropout: float = dropout
+
+        self.pairwise_proj = PairwiseProdDiff(channel_s, channel_z)
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
@@ -189,11 +250,12 @@ class PairformerBlock(nn.Module):
         use_cuequiv_mul: bool = False,
         use_cuequiv_attn: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Perform the forward pass.
-        See Section 3.6 Algorithm 20 Pairformer Stack
-        """
+        """Perform the forward pass."""
 
-        # Line 2
+        # Single to pair update
+        z = z + self.pairwise_proj(s)
+
+        # Triangle attention and multiplication on z
         z = z + self.dropout_rowwise(
             self.tri_mul_out(
                 z,
@@ -201,8 +263,6 @@ class PairformerBlock(nn.Module):
                 use_kernels=use_cuequiv_mul,
             )
         )
-
-        # Line 3
         z = z + self.dropout_rowwise(
             self.tri_mul_in(
                 z,
@@ -210,8 +270,6 @@ class PairformerBlock(nn.Module):
                 use_kernels=use_cuequiv_mul,
             )
         )
-
-        # Line 4
         z = z + self.dropout_rowwise(
             self.tri_att_start(
                 z,
@@ -220,8 +278,6 @@ class PairformerBlock(nn.Module):
                 use_kernels=use_cuequiv_attn,
             )
         )
-
-        # Line 5
         z = z + self.dropout_columnwise(
             self.tri_att_end(
                 z,
@@ -231,18 +287,15 @@ class PairformerBlock(nn.Module):
             )
         )
 
-        # Line 6
         z = z + self.transition_z(z)
 
-        # Line 7
+        # Attention from z to s
         s = s + self.attention(
             s,  # [B, L, C_s]
             None,
             z,  # [B, L, L, C_z]
             attn_mask=single_mask,  # [B, L]
         )
-
-        # Line 8
         s = s + self.transition_s(s)
 
         return s, z
