@@ -38,7 +38,7 @@ def parse_args():
     )
     parser.add_argument(
         "-i",
-        "--input_data",
+        "--input",
         type=pathlib.Path,
         required=True,
         help="Path to the input(s) for inference (file or directory).",
@@ -123,7 +123,7 @@ def main():
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
     input_queries: list[InputFile] = parse_input_files(
-        args.input_data,
+        args.input,
         ccd=ccd,
         skip_invalid=True,
     )

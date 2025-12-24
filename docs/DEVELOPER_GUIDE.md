@@ -91,6 +91,12 @@ python scripts/validate.py --config configs/train-af3.yaml --checkpoint /path/to
 
 ## Inference Framework
 
+### Inference
+
+```bash
+python scripts/inference.py --config <config_path> --checkpoint <checkpoint_path> --input <input_yaml> --out_dir <output_directory>
+```
+
 ### Benchmarking
 
 ## Implementation Guidelines
