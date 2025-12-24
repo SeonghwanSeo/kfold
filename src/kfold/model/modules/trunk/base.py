@@ -14,7 +14,6 @@ class BaseTrunk(torch.nn.Module, ABC):
     class Config(BaseConfig):
         channel_s: int = 384
         channel_z: int = 128
-        num_blocks: int = 48
 
     def __init__(self, cfg: Config):
         super().__init__()

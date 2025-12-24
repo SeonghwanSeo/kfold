@@ -91,7 +91,7 @@ class OuterProductMean(torch.nn.Module):
         a: torch.Tensor,
         b: torch.Tensor,
         mask: torch.Tensor,
-        chunk_size: int = 128,
+        chunk_size: int = 256,
     ) -> torch.Tensor:
         """Compute in chunks to save memory
 
@@ -375,6 +375,8 @@ class EnsembleModule(torch.nn.Module):
         f_input: FoldingInput,
         z: torch.Tensor,
         s_inputs: torch.Tensor,
+        chunk_size_opm: int | None = None,
+        chunk_size_tri_attn: int | None = None,
         use_cuequiv_mul: bool = True,
         use_cuequiv_attn: bool = True,
     ) -> torch.Tensor:
@@ -396,15 +398,11 @@ class EnsembleModule(torch.nn.Module):
 
         """
         # Set chunk sizes
-        if not self.training:
-            chunk_size_opm = 128
-            if z.shape[1] > 384:
-                chunk_size_tri_attn = 128
-            else:
-                chunk_size_tri_attn = 512
-        else:
-            chunk_size_opm = None
-            chunk_size_tri_attn = None
+        if self.training:
+            assert chunk_size_opm is None, "During training, chunk_size_opm must be None."
+            assert chunk_size_tri_attn is None, (
+                "During training, chunk_size_tri_attn must be None."
+            )
 
         # Compute input projections
         e: torch.Tensor = f_input.pretrained.structure_embedding  # [B, L, E, c_struct]
