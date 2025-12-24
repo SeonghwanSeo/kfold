@@ -31,7 +31,6 @@ from kfold.model.layers.primitives import (
     DropoutRowwise,
     LayerNorm,
     Linear,
-    LinearNoBias,
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
     TriangleMultiplicationIncoming,
@@ -151,7 +150,7 @@ class PairwiseProdDiff(nn.Module):
         c_hidden = c_out // 2
 
         self.layernorm = LayerNorm(c_in)
-        self.linear_in = LinearNoBias(c_in, c_hidden * 2, init="default")
+        self.linear_in = Linear(c_in, c_hidden * 2, init="default")
         self.linear_out = Linear(c_hidden * 2, c_out, init="final")
 
     def forward(self, s: torch.Tensor) -> torch.Tensor:
@@ -177,6 +176,9 @@ class PairwiseProdDiff(nn.Module):
         s_j = s_j.unsqueeze(-3)  # (*, 1, L, c_hidden)
 
         # Combine Diff (Asymmetry) and Prod (Correlation)
+        # NOTE: summation is derived from production operation with linear bias
+        # (W1(s_i) + b1) * (W2(s_j) + b2)
+        #   = W1(s_i)W2(s_j) + b1*W2(s_j) + b2*W1(s_i) + b1*b2
         z = torch.cat([s_i - s_j, s_i * s_j], dim=-1)  # (*, L, L, c_hidden * 2)
 
         z = self.linear_out(z)  # (*, L, L, c_out)
