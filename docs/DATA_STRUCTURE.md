@@ -39,7 +39,8 @@ K-Fold utilizes a data processing framework and data structures inspired by the 
 * **During data-processing** (in `Dataset.__getitem__`):
     1.  **Pre-cropping:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface tokens. (See AlphaFold3 SI Section 2.5.4)
     2.  **Cropping:** Crops the tokenized structure to fit the maximum length.
-    3.  **Featurization:** `kfold.data.structure.TokenizedStructure` → Model input (`kfold.data.model_input.FoldingInput`, dataclass of PyTorch tensors).
+    3.  **Apo perturbation:** Applies random perturbation to apo structure coordinates for data augmentation.
+    4.  **Featurization:** `kfold.data.structure.TokenizedStructure` → Model input (`kfold.data.model_input.FoldingInput`, dataclass of PyTorch tensors).
 
 ---
 
