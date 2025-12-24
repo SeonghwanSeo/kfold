@@ -113,49 +113,10 @@ def tokenize_structure(
     """
 
     # Define field types
-    residue_field_dtype: dict[str, type | np.dtype] = {
-        "name": np.dtype("<U5"),
-        "res_type": np.int8,  # 0-31
-        "chain_type": np.int8,  # 0-3
-        "entity_id": np.int16,
-        "asym_id": np.int16,
-        "sym_id": np.int16,
-        "residue_index": np.int32,
-        "num_tokens": np.int32,
-        "num_atoms": np.int32,  # 0-23
-        "resolved_mask": np.bool_,
-        "is_standard": np.bool_,
-    }
-    token_field_dtype: dict[str, type] = {
-        "res_type": np.int8,  # 0-31
-        "chain_type": np.int8,  # 0-3
-        "entity_id": np.int16,
-        "asym_id": np.int16,
-        "sym_id": np.int16,
-        "token_index": np.int32,
-        "residue_index": np.int32,
-        "disto_index": np.int8,  # 0-23
-        "center_index": np.int8,  # 0-23
-        "num_atoms": np.int8,  # 0-23
-        "resolved_mask": np.bool_,
-        "is_standard": np.bool_,
-    }
-    atom_field_dtype: dict[str, type] = {
-        "ref_charge": np.float16,
-        "ref_element": np.int8,
-        "ref_atom_name_chars": np.int8,  # 0-63
-        "ref_pos": np.float32,
-        "coords": np.float32,
-        "apo_coords": np.float32,
-        "resolved_mask": np.bool_,
-        "pad_mask": np.bool_,
-    }
-    bond_field_dtype: dict[str, type] = {
-        "asym_id": np.int16,
-        "token_index": np.int32,
-        "atom_index": np.int8,  # 0-23
-        "bond_type": np.int8,
-    }
+    residue_field_dtype: dict[str, type] = structure.Residue.get_default_dtype()
+    token_field_dtype: dict[str, type] = structure.Token.get_default_dtype()
+    atom_field_dtype: dict[str, type] = structure.Atom.get_default_dtype()
+    bond_field_dtype: dict[str, type] = structure.Bond.get_default_dtype()
 
     if not boltz_data.mask.any():
         raise BoltzDataProcessingError("No valid chains in the boltz_data.")

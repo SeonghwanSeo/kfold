@@ -1,8 +1,7 @@
 model:
   _yaml_: "model/kfold-edm.yaml"
   input_embedder:
-    channel_seq_encoder: 2560
-    channel_struct_encoder: 1280
+    channel_seq_encoder: 1152
   trunk:
     use_cuequiv_kernels: true
     num_blocks: 16
@@ -41,16 +40,14 @@ train:
     num_workers: 8
 
     paths:
-      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esm2_3b_bf16/
-      struct_embedding_path: /cache/wykim_lab/kfold_data/pretrained/saprot_650m/
+      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esmc_600m_bf16/
 
     featurization_args:
-      seq_embedding_dim: 2560
-      struct_embedding_dim: 1280
+      seq_embedding_dim: 1152
 
   wandb:
     use: false
     project: "KFold-Combined"
     group: "251213"
     entity: K-Fold
-    tags: ["mini", "edm", "esm2", "saprot", "rbf"]
+    tags: ["mini", "edm", "esm2", "rbf"]

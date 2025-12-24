@@ -1,0 +1,24 @@
+_registry_: "trunk"
+_class_: "MultiStateApoTrunk"
+channel_s: 384
+channel_z: 128
+pairformer:
+  num_heads_attn: 16
+  num_heads_tri_attn: 4
+  num_blocks: 48
+  dropout: 0.25
+ensemble_module:
+  channel_struct_input: 0 # to be filled in by the ensemble config
+  channel_struct: 128
+  channel_hidden_opm: 32
+  num_heads_pwa: 8
+  num_heads_tri_attn: 4
+  num_blocks: 4
+  struct_dropout: 0.15
+  z_dropout: 0.25
+multi_state_module: {}
+use_ensemble: True
+use_multi_state: False
+use_cuequiv_kernels: True
+blocks_per_ckpt: 1
+

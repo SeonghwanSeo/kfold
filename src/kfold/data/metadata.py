@@ -54,6 +54,7 @@ class ChainInfo(JsonSerializable):
     num_residues: int
     cluster_id: str
     valid: bool = True
+    description: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding None values."""
@@ -97,7 +98,7 @@ class Metadata:
 
     def __post_init__(self):
         # FIXME: we may want to add more sources later
-        assert self.source in {"rcsb"}, f"Unsupported source: {self.source}"
+        assert self.source in {"rcsb", "query"}, f"Unsupported source: {self.source}"
 
     @property
     def num_chains(self) -> int:

@@ -15,7 +15,7 @@
 # limitations under the License.
 
 import math
-from functools import partial, partialmethod
+from functools import partial
 
 import torch
 import torch.nn as nn
@@ -256,18 +256,20 @@ class TriangleAttention(nn.Module):
     def __init__(
         self,
         c_in: int,
-        c_hidden: int,
         no_heads: int,
-        starting: bool = True,
+        starting: bool,
         inf: float = 1e9,
     ) -> None:
         super().__init__()
+        assert c_in % no_heads == 0, (
+            f"c_in ({c_in}) must be divisible by no_heads ({no_heads})"
+        )
 
-        self.c_in = c_in
-        self.c_hidden = c_hidden
-        self.no_heads = no_heads
-        self.starting = starting
-        self.inf = inf
+        self.c_in: int = c_in
+        self.c_hidden: int = c_in // no_heads
+        self.no_heads: int = no_heads
+        self.starting: bool = starting
+        self.inf: float = inf
 
         self.layer_norm = LayerNorm(self.c_in)
 
@@ -366,7 +368,10 @@ class TriangleAttention(nn.Module):
 
         # [*, I, 1, 1, J]
         mask = mask[..., :, None, None, :]
-        mask_bias = self.inf * (mask - 1)
+        if mask.dtype == torch.bool:
+            mask_bias = -self.inf * (~mask).to(x.dtype)
+        else:
+            mask_bias = self.inf * (mask - 1)
 
         # [*, H, I, J]
         triangle_bias = permute_final_dims(self.linear(x), (2, 0, 1))
@@ -400,10 +405,15 @@ class TriangleAttention(nn.Module):
 
 
 # Implements Algorithm 14
-TriangleAttentionStartingNode = TriangleAttention
+class TriangleAttentionStartingNode(TriangleAttention):
+    """See Section 3.4 Algorithm 14 in the AlphaFold3 paper."""
+
+    def __init__(self, c_in: int, no_heads: int, inf: float = 1e9) -> None:
+        super().__init__(c_in, no_heads, starting=True, inf=inf)
 
 
 class TriangleAttentionEndingNode(TriangleAttention):
     """See Section 3.4 Algorithm 15 in the AlphaFold3 paper."""
 
-    __init__ = partialmethod(TriangleAttention.__init__, starting=False)
+    def __init__(self, c_in: int, no_heads: int, inf: float = 1e9) -> None:
+        super().__init__(c_in, no_heads, starting=False, inf=inf)

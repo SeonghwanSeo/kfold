@@ -30,7 +30,7 @@ def create_mock_structure():
     # Residue
     residue = Residue(
         name=np.array(["ALA"]),
-        res_type=np.array([C.residue.residue_name_to_index[C.residue.ResidueName.ALA]]),
+        res_type=np.array([C.residue.residue_name_to_id[C.residue.ResidueName.ALA]]),
         chain_type=np.array([C.chain.ChainType.PROTEIN.value]),
         entity_id=np.array([1]),
         asym_id=np.array([1]),
@@ -44,7 +44,7 @@ def create_mock_structure():
 
     # Token
     token = Token(
-        res_type=np.array([C.residue.residue_name_to_index[C.residue.ResidueName.ALA]]),
+        res_type=np.array([C.residue.residue_name_to_id[C.residue.ResidueName.ALA]]),
         chain_type=np.array([C.chain.ChainType.PROTEIN.value]),
         entity_id=np.array([1]),
         asym_id=np.array([1]),

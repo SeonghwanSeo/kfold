@@ -405,9 +405,17 @@ class ApoPerturbation:
                 UserWarning,
             )
             return None
+    def __call__(
+        self,
+        struct: TokenizedStructure,
+        rng: np.random.Generator | None = None,
+    ) -> TokenizedStructure:
+        return self.run(struct, rng)
 
     def run(
-        self, struct: TokenizedStructure, rng: np.random.Generator | None = None
+        self,
+        struct: TokenizedStructure,
+        rng: np.random.Generator | None = None,
     ) -> TokenizedStructure:
         """Sample the apo structure and apply augmentation if needed.
 
@@ -425,7 +433,7 @@ class ApoPerturbation:
             NOTE: if there is multiple apo structures, one of them is sampled randomly
             and augmented.
         """
-        rng = rng or np.random.default_rng(self.seed)
+        rng = rng or np.random.default_rng()
 
         # Sample an apo structure for each chain and apply augmentation if needed
         apo_coords, apo_mask = self.sample_and_augment_apo_structure(struct, rng)
@@ -969,7 +977,7 @@ class ApoPerturbation:
             for local_res_idx, token_local_idx in residue_to_token_map.items():
                 token_idx = token_st + token_local_idx
                 res_type = int(struct.token.res_type[token_idx])
-                res_name = C.residue.residue_index_to_name[res_type]
+                res_name = C.residue.residue_id_to_name[res_type]
 
                 k_atoms = C.atom.residue_atoms.get(res_name, None)
                 if k_atoms is None:
@@ -1309,7 +1317,7 @@ class ApoPerturbation:
         mask = mask.reshape(Ntoken * 24)
         # Apply random rotation or simple centering(no rotation)
         augmented_coords = center_random_augmentation(
-            coords, mask, augmentation=self.use_random_rotation
+            coords, mask, augmentation=self.use_random_rotation, rng=rng
         )
         return augmented_coords.reshape(Ntoken, 24, 3)
 
@@ -1615,7 +1623,7 @@ class ApoPerturbation:
                 continue
 
             restype = int(struct.token.res_type[i])
-            res_name = C.residue.residue_index_to_name[restype]
+            res_name = C.residue.residue_id_to_name[restype]
             perms = get_ambiguous_atoms_in_residue(res_name)
             if len(perms) <= 1:
                 # No ambiguous atoms, skip

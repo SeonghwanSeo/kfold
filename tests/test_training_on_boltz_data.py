@@ -91,7 +91,7 @@ if __name__ == "__main__":
             optimizer.zero_grad()
             forward_out = model(
                 f_input=f_input,
-                num_cycles=4,
+                num_recycles=3,
                 num_steps=20,
                 num_diffusion_samples=1,
                 diffusion_batch_size=diffusion_batch_size,

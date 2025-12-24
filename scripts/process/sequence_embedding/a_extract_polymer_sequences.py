@@ -25,7 +25,7 @@ def parse_args():
         "--processed_lmdb_path",
         type=Path,
         help="Path to the processed LMDB dataset.",
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251120.lmdb/",
+        default="/cache/wykim_lab/kfold_data/structures/kfold_rcsb_processed_v251120.lmdb/",
     )
     parser.add_argument(
         "--output_path",
