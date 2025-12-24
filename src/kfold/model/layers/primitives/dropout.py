@@ -48,7 +48,7 @@ class DropoutRowwise(nn.Module):
         if training is None:
             training = self.training
 
-        if not training:
+        if not training or self.dropout == 0.0:
             return x
 
         # Apply dropout
@@ -67,7 +67,7 @@ class DropoutColumnwise(nn.Module):
         if training is None:
             training = self.training
 
-        if not training:
+        if not training or self.dropout == 0.0:
             return x
 
         # Apply dropout

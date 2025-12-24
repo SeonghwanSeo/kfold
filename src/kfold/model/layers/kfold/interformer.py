@@ -53,7 +53,7 @@ class InterformerStack(nn.Module):
         dropout: float = 0.25,
         blocks_per_ckpt: int | None = None,
     ) -> None:
-        """Initialize the Pairformer module."""
+        """Initialize the Interformer module."""
         super().__init__()
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
@@ -155,7 +155,8 @@ class PairwiseProdDiff(nn.Module):
         self.linear_out = Linear(c_hidden * 2, c_out, init="final")
 
     def forward(self, s: torch.Tensor) -> torch.Tensor:
-        """Compute the
+        """Compute pairwise embeddings from single representations using
+        element-wise differences and products.
 
         Parameters
         ----------

@@ -104,7 +104,7 @@ class OuterProductMean(torch.nn.Module):
         mask : torch.Tensor
             The mask tensor (*, L, E).
         chunk_size : int
-            The chunk size for processing, default 128.
+            The chunk size for processing.
 
         Returns
         -------
