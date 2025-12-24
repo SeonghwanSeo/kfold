@@ -1,8 +1,8 @@
 _registry_: "trunk"
-_class_: "MultiStateApoTrunk"
+_class_: "KFoldTrunk"
 channel_s: 384
 channel_z: 128
-pairformer:
+interformer:
   num_heads_attn: 16
   num_heads_tri_attn: 4
   num_blocks: 48
@@ -17,7 +17,7 @@ ensemble_module:
   struct_dropout: 0.15
   z_dropout: 0.25
 multi_state_module: {}
-use_ensemble: True
+use_ensemble: False
 use_multi_state: False
 use_cuequiv_kernels: True
 blocks_per_ckpt: 1

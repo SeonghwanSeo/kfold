@@ -9,8 +9,10 @@ input_embedder:
   use_apo: true
 
 trunk:
-  _yaml_: "module/trunk/af3.yaml"
+  _yaml_: "module/trunk/kfold.yaml"
   use_cuequiv_kernels: true
+  use_ensemble: False
+  use_multi_state: False
 
 structure_module:
   _yaml_: "module/structure_module/af3.yaml"
