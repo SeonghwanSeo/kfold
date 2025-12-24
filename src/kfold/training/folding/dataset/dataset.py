@@ -472,11 +472,12 @@ class ValidationDataset(SafeLoadingDataset):
             List of samples to use in the dataset.
         """
         # To validate the folding performance in usage scenario, where holo
-        # structures are not available, we disable symmetry correction and
-        # holo replacement during apo perturbation.
+        # structures are not available, we disable symmetry correction,
+        # holo replacement, and perturbation during apo perturbation.
         apo_perturbation_args = apo_perturbation_args.copy()
         apo_perturbation_args["use_symmetry_correction"] = False
         apo_perturbation_args["prob_replace_to_holo"] = 0.0
+        apo_perturbation_args["use_perturbation"] = False
 
         super().__init__(
             records,
