@@ -3,9 +3,8 @@
 For Biomolecular Structure Representations'.
 
 Implementation follows details in https://doi.org/10.48550/arXiv.2510.18870.
-"""
 
-"""The following explains the authors' rationale for the adjustments.
+The following explains the authors' rationale for the adjustments.
 
 Removing sequence updates
  - The MSA representation, obtained via the MSA Module, should sufficiently
@@ -30,9 +29,7 @@ symmetric and cheaper replacement for the attention, and networks that use
 only the attention or multiplicative update are both able to produce high-
 accuracy structures. However, the combination of the two updates is more
 accurate."
-"""
 
-"""
 NOTE: recall that the Pairformer stack architecture is used in largely three
 contexts in AlphaFold3:
 
@@ -56,16 +53,14 @@ from functools import partial
 import torch
 import torch.nn as nn
 
+from kfold.model.layers.alphafold3.transformers import AttentionPairBias
+from kfold.model.layers.alphafold3.transition import Transition
 from kfold.model.layers.primitives.dropout import get_dropout_mask
 from kfold.model.layers.primitives.triangle_multiplication import (
-    TriangleMultiplicationOutgoing,
     TriangleMultiplicationIncoming,
+    TriangleMultiplicationOutgoing,
 )
 from kfold.utils.checkpointing import checkpoint_blocks
-
-from kfold.model.layers.alphafold3.transition import Transition
-from kfold.model.layers.alphafold3.transformers import AttentionPairBias
-
 
 
 class PairmixerStack(nn.Module):
@@ -85,7 +80,7 @@ class PairmixerStack(nn.Module):
         self.channel_z: int = channel_z
         self.num_blocks: int = num_blocks
         self.dropout: float = dropout
-        
+
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
         self.blocks = nn.ModuleList()
@@ -220,9 +215,9 @@ class PairmixerBlock(nn.Module):
 # NOTE: the following two classes implement the Pairmixer Stack
 # to be used in the confidence module.
 
+
 class PairmixerWithSeqAttnModule(nn.Module):
-    """Pairmixer with sequence attention module.
-    """
+    """Pairmixer with sequence attention module."""
 
     def __init__(
         self,
@@ -233,8 +228,7 @@ class PairmixerWithSeqAttnModule(nn.Module):
         dropout: float = 0.25,
         blocks_per_ckpt: int | None = None,
     ) -> None:
-        """Initialize the Pairmixer with sequence attention updates.
-        """
+        """Initialize the Pairmixer with sequence attention updates."""
         super().__init__()
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
@@ -244,7 +238,7 @@ class PairmixerWithSeqAttnModule(nn.Module):
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
         self.blocks = nn.ModuleList()
-        for _ in range (num_blocks):
+        for _ in range(num_blocks):
             self.blocks.append(
                 PairmixerWithSeqAttnBlock(
                     self.channel_s,
@@ -262,8 +256,7 @@ class PairmixerWithSeqAttnModule(nn.Module):
         use_cuequiv_mul: bool = False,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Perform the forward pass.
-        """
+        """Perform the forward pass."""
 
         pair_mask = mask[..., None] & mask[..., None, :]
 
@@ -292,10 +285,8 @@ class PairmixerWithSeqAttnModule(nn.Module):
         return s, z
 
 
-
 class PairmixerWithSeqAttnBlock(nn.Module):
-    """Pairmixer with sequence attention block.
-    """
+    """Pairmixer with sequence attention block."""
 
     def __init__(
         self,
@@ -350,12 +341,7 @@ class PairmixerWithSeqAttnBlock(nn.Module):
         z = z + self.transition_z(z)
 
         # single rep updates
-        s = s + self.attention(
-            s,
-            None,
-            z,
-            attn_mask=single_mask
-        )
+        s = s + self.attention(s, None, z, attn_mask=single_mask)
         s = s + self.transition_s(s)
 
         return s, z

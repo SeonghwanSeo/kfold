@@ -405,6 +405,7 @@ class ApoPerturbation:
                 UserWarning,
             )
             return None
+
     def __call__(
         self,
         struct: TokenizedStructure,
@@ -433,7 +434,7 @@ class ApoPerturbation:
             NOTE: if there is multiple apo structures, one of them is sampled randomly
             and augmented.
         """
-        rng = rng or np.random.default_rng()
+        rng = rng or np.random.default_rng(self.seed)
 
         # Sample an apo structure for each chain and apply augmentation if needed
         apo_coords, apo_mask = self.sample_and_augment_apo_structure(struct, rng)
@@ -1317,7 +1318,7 @@ class ApoPerturbation:
         mask = mask.reshape(Ntoken * 24)
         # Apply random rotation or simple centering(no rotation)
         augmented_coords = center_random_augmentation(
-            coords, mask, augmentation=self.use_random_rotation, rng=rng
+            coords, mask, augmentation=self.use_random_rotation
         )
         return augmented_coords.reshape(Ntoken, 24, 3)
 
