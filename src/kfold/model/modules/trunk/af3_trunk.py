@@ -24,16 +24,14 @@ class AF3PairformerTrunk(BaseTrunk):
             The token single embedding size.
         channel_z : int
             The token pairwise embedding size.
+        num_heads_attn : int, optional
+            The number of attention heads, by default 16
+        num_heads_tri_attn : int, optional
+            The number of triangle attention heads, by default 4
         num_blocks : int
             The number of blocks.
-        num_heads : int, optional
-            The number of heads, by default 16
         dropout : float, optional
             The dropout rate, by default 0.25
-        pairwise_head_width : int, optional
-            The pairwise head width, by default 32
-        pairwise_num_heads : int, optional
-            The number of pairwise heads, by default 4
         use_template: bool, optional
             Whether to use template, by default False
         use_msa: bool, optional
@@ -46,11 +44,10 @@ class AF3PairformerTrunk(BaseTrunk):
 
         channel_s: int = 384
         channel_z: int = 128
+        num_heads_attn: int = 16
+        num_heads_tri_attn: int = 4
         num_blocks: int = 48
-        num_heads: int = 16
         dropout: float = 0.25
-        pairwise_head_width: int = 32
-        pairwise_num_heads: int = 4
         use_msa: bool = False
         use_template: bool = False
         use_cuequiv_kernels: bool = False
@@ -76,11 +73,10 @@ class AF3PairformerTrunk(BaseTrunk):
         self.pairformer_module: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
+            num_heads_attn=cfg.num_heads_attn,
+            num_heads_tri_attn=cfg.num_heads_tri_attn,
             num_blocks=cfg.num_blocks,
-            num_heads=cfg.num_heads,
             dropout=cfg.dropout,
-            pairwise_head_width=cfg.pairwise_head_width,
-            pairwise_num_heads=cfg.pairwise_num_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
@@ -106,7 +102,7 @@ class AF3PairformerTrunk(BaseTrunk):
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         f_input: FoldingInput,
-        num_cycles: int,
+        num_recycles: int,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -122,7 +118,7 @@ class AF3PairformerTrunk(BaseTrunk):
             Tensor of shape (B, L, L, C_s) containing initial pair representation
         f_input : FoldingInput
             The input features.
-        num_cycles : int
+        num_recycles : int
             The number of recycling steps.
 
         Returns
@@ -144,8 +140,8 @@ class AF3PairformerTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
-        for i in range(1, num_cycles + 1):
-            enable_grad = self.training and i == num_cycles
+        for i in range(0, num_recycles + 1):
+            enable_grad = self.training and i == num_recycles
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():

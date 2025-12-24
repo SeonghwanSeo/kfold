@@ -1,13 +1,24 @@
 import itertools
+import os
+import pickle
+import warnings
 from collections import OrderedDict, defaultdict
 from functools import lru_cache
+from pathlib import Path
 
+import lmdb
 import numpy as np
+import torch
+from rieprody.proteins.protein_perturbation import ProteinPerturbationModule
 
 import kfold.constants as C
 from kfold.data.structure import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation
-from kfold.utils.geometry.rigid_align import compute_rmsd, weighted_rigid_align
+from kfold.utils.geometry.rigid_align import (
+    compute_rmsd,
+    rigid_align,
+    weighted_rigid_align,
+)
 
 ResUID = tuple[int, int]  # (asym_id, residue_index)
 
@@ -95,6 +106,14 @@ class ApoPerturbation:
         prob_replace_to_holo: float = 0.0,
         mask_nucleic_acids: bool = False,
         ccd_symmetry_dict: dict | None = None,
+        seed: int | None = 42,
+        metric_lmdb_path: Path | str | None = None,
+        metric_comp: dict | None = None,
+        random_walk: dict | None = None,
+        langevin: dict | None = None,
+        rmsd_threshold: float = 15.0,
+        log_stats: bool = False,
+        log_stats_interval: int = 1000,
     ):
         """Initialize ApoPerturbation.
         Parameters
@@ -119,6 +138,48 @@ class ApoPerturbation:
             is prepared.
         ccd_symmetry_dict: dict | None
             Dictionary containing symmetry information for CCD entries.
+        seed : int | None, optional
+            Random seed for stochastic operations.
+        metric_lmdb_path : Path | str | None, optional
+            Path to LMDB file containing pre-computed metric information.
+        metric_comp : dict | None, optional
+            Configuration for metric computation. Should contain:
+            - apo_internal_coord_metric_calculation_device
+            - apo_internal_coord_metric_calculation_precision
+            - apo_internal_coord_metric_save_precision
+        random_walk : dict | None, optional
+            Configuration for random walk. Should contain:
+            - apo_internal_coord_random_walk_device
+            - apo_internal_coord_random_walk_precision
+            - consider_side_chain_in_metric
+            - fixed_bb_angles
+            - total_time (maximum total simulation time; sampled uniformly each call)
+            - total_time_min (optional minimum; default: 0.0)
+            - num_steps
+            - metric_calculation_period
+            - metric (optional, default: "lagrangian")
+            - with_christoffel_term (optional, default: False)
+            - use_precomputed_metric (optional, default: True)
+            - kabsch_aligned_traj (optional, default: True)
+        langevin : dict | None, optional
+            Configuration for Langevin-dynamics-based perturbation.
+            Used as a fallback for proteins when RieProDy perturbation is unavailable,
+            and as the default perturbation for nucleic acids when perturbation is
+            enabled.
+            Expected keys (all optional):
+            - num_steps (int, default: 64)
+            - dt (float, default: 0.25)
+            - res_r (float, default: 4.0)
+            - ent_r (float, default: 10.0)
+            - sphere_r (float, default: 10.0)
+            - bond_coef (float, default: 2.0)
+        rmsd_threshold : float, optional
+            RMSD threshold in Angstroms. If perturbation causes RMSD > threshold,
+            original coordinates are used instead. Default: 15.0
+        log_stats : bool, optional
+            Whether to log perturbation statistics periodically. Default: False
+        log_stats_interval : int, optional
+            Log statistics every N chain perturbations. Default: 1000
         """
         self.use_perturbation: bool = use_perturbation
         self.use_random_rotation: bool = use_random_rotation
@@ -126,12 +187,231 @@ class ApoPerturbation:
         self.prob_perturbation: float = prob_perturbation
         self.prob_replace_to_holo: float = prob_replace_to_holo
         self.mask_nucleic_acids: bool = mask_nucleic_acids
+        self.seed: int | None = seed
+        self.rmsd_threshold: float = rmsd_threshold
+        self.log_stats: bool = log_stats
+        self.log_stats_interval: int = log_stats_interval
 
         if self.use_symmetry_correction:
             assert ccd_symmetry_dict is not None, (
                 "CCD symmetry dictionary must be provided for symmetry correction."
             )
             self.ccd_symmetry_dict: dict = ccd_symmetry_dict
+
+        # Apo perturbation setup
+        self.metric_lmdb_path: Path | None = None
+        if metric_lmdb_path is not None:
+            self.metric_lmdb_path = Path(metric_lmdb_path)
+            if not self.metric_lmdb_path.exists():
+                raise FileNotFoundError(
+                    f"Metric LMDB path does not exist: {self.metric_lmdb_path}"
+                )
+
+        self.metric_comp: dict | None = metric_comp
+        self.random_walk: dict | None = random_walk
+        self.langevin: dict | None = langevin
+
+        # Initialize RieProDy module if perturbation is enabled
+        self._rieprody_module: ProteinPerturbationModule | None = None
+        if self.use_perturbation and metric_comp is not None and random_walk is not None:
+            # Create a simple config-like object from dict
+            class SimpleConfig:
+                def __init__(self, config_dict: dict):
+                    for key, value in config_dict.items():
+                        if isinstance(value, dict):
+                            setattr(self, key, SimpleConfig(value))
+                        else:
+                            setattr(self, key, value)
+
+            # Combine metric_comp and random_walk into a config structure
+            # Note: dataset fields are only used in preprocess() which we don't use
+            # They are set to minimal values to avoid AttributeError in __init__
+            from pathlib import Path as PathLib
+
+            from omegaconf import OmegaConf
+
+            # OmegaConf DictConfig -> plain dict (wrapped by SimpleConfig below)
+            metric_comp_dict = (
+                OmegaConf.to_container(metric_comp, resolve=True)
+                if not isinstance(metric_comp, dict)
+                else dict(metric_comp)
+            )
+            random_walk_dict = (
+                OmegaConf.to_container(random_walk, resolve=True)
+                if not isinstance(random_walk, dict)
+                else dict(random_walk)
+            )
+            assert isinstance(metric_comp_dict, dict)
+            assert isinstance(random_walk_dict, dict)
+
+            # RieProDy's __init__ accesses this path (we don't call preprocess()).
+            metric_comp_dict.setdefault(
+                "apo_internal_coord_metric_information_path", str(PathLib("."))
+            )
+
+            config_dict = {
+                "metric_comp": metric_comp_dict,
+                "random_walk": random_walk_dict,
+                "dataset": {
+                    "data_dir": PathLib(
+                        "."
+                    ),  # Not used in read_computed_data/solve_riemannian_brownian_motion
+                    "cache_path": PathLib(
+                        "."
+                    ),  # Not used in read_computed_data/solve_riemannian_brownian_motion
+                    "preprocess_num_workers": 1,  # Not used in preprocess() here
+                },
+            }
+            config = SimpleConfig(config_dict)
+            self._rieprody_module = ProteinPerturbationModule(config=config, records=None)
+
+        # Lazy initialization of LMDB
+        self._lmdb_env: lmdb.Environment | None = None
+
+        # Debug / diagnostics (prints only on exceptions)
+        self._debug_apo_perturbation: bool = (
+            os.environ.get("KFOLD_APO_PERTURB_DEBUG", "0") == "1"
+        )
+        try:
+            self._debug_apo_perturbation_max_errors: int = int(
+                os.environ.get("KFOLD_APO_PERTURB_DEBUG_MAX", "3")
+            )
+        except ValueError:
+            self._debug_apo_perturbation_max_errors = 3
+        self._debug_apo_perturbation_error_count: int = 0
+
+        self._stats_total_perturbations: int = 0
+        self._stats_rmsd_filtered: int = 0
+        self._stats_shape_mismatch: int = 0
+        self._stats_success: int = 0
+        self._stats_langevin_used: int = 0
+
+    def _sample_random_walk_total_time(self, rng: np.random.Generator) -> float:
+        """Sample random-walk total_time for Riemannian Brownian motion.
+
+        Interpretation:
+        - `random_walk.total_time` is treated as the maximum value (max_time).
+        - Optionally, `random_walk.total_time_min` can be provided as the minimum value.
+        - If max_time == min_time, the value is treated as fixed.
+        - Otherwise, we sample uniformly from [min_time, max_time).
+        """
+        if self.random_walk is None:
+            return 0.1
+
+        max_time = float(self.random_walk.get("total_time", 0.1))
+        min_time = float(self.random_walk.get("total_time_min", 0.0))
+
+        if max_time < min_time:
+            warnings.warn(
+                (
+                    f"random_walk.total_time ({max_time}) < "
+                    f"random_walk.total_time_min ({min_time}). Swapping the bounds."
+                ),
+                UserWarning,
+            )
+            min_time, max_time = max_time, min_time
+
+        if max_time == min_time:
+            return max_time
+
+        return float(rng.uniform(min_time, max_time))
+
+    @property
+    def lmdb_env(self) -> lmdb.Environment | None:
+        """Lazy initialization of LMDB environment."""
+        if self._lmdb_env is None and self.metric_lmdb_path is not None:
+            self._lmdb_env = lmdb.open(
+                str(self.metric_lmdb_path),
+                readonly=True,
+                lock=False,
+                readahead=False,
+                meminit=False,
+            )
+        return self._lmdb_env
+
+    def get_perturbation_stats(self) -> dict[str, float]:
+        """Get perturbation statistics as a dictionary with counts and percentages."""
+        total = self._stats_total_perturbations
+        if total == 0:
+            return {
+                "total": 0,
+                "success": 0,
+                "rmsd_filtered": 0,
+                "shape_mismatch": 0,
+                "success_pct": 0.0,
+                "rmsd_filtered_pct": 0.0,
+                "shape_mismatch_pct": 0.0,
+            }
+        return {
+            "total": total,
+            "success": self._stats_success,
+            "rmsd_filtered": self._stats_rmsd_filtered,
+            "shape_mismatch": self._stats_shape_mismatch,
+            "success_pct": 100.0 * self._stats_success / total,
+            "rmsd_filtered_pct": 100.0 * self._stats_rmsd_filtered / total,
+            "shape_mismatch_pct": 100.0 * self._stats_shape_mismatch / total,
+        }
+
+    def reset_perturbation_stats(self) -> None:
+        """Reset all perturbation statistics counters."""
+        self._stats_total_perturbations = 0
+        self._stats_rmsd_filtered = 0
+        self._stats_shape_mismatch = 0
+        self._stats_success = 0
+
+    def _log_perturbation_stats(self) -> None:
+        stats = self.get_perturbation_stats()
+        print(
+            f"[ApoPerturbation] n={stats['total']}: "
+            f"success={stats['success_pct']:.1f}%, "
+            f"rmsd_filtered={stats['rmsd_filtered_pct']:.1f}%, "
+            f"shape_mismatch={stats['shape_mismatch_pct']:.1f}%"
+        )
+
+    def _load_metric_from_lmdb(self, record_id: str, entity_id: int) -> dict | None:
+        """Load pre-computed metric data from LMDB.
+
+        Parameters
+        ----------
+        record_id : str
+            Record ID (PDB ID).
+        entity_id : int
+            Entity ID (1-based).
+
+        Returns
+        -------
+        dict | None
+            Metric data dictionary or None if not found.
+        """
+        if self.lmdb_env is None:
+            return None
+
+        # Convert entity_id (1-based) to entity_index (0-based)
+        entity_index = entity_id - 1
+        key = f"{record_id}-{entity_index}".encode()
+
+        try:
+            with self.lmdb_env.begin(write=False) as txn:
+                value_bytes = txn.get(key)
+                if value_bytes is None:
+                    return None
+
+                data = pickle.loads(value_bytes)
+                return data
+        except Exception as e:
+            # Log error but don't raise - return None to skip perturbation
+            warnings.warn(
+                f"Failed to load metric data for {record_id}-{entity_index}: {e}",
+                UserWarning,
+            )
+            return None
+
+    def __call__(
+        self,
+        struct: TokenizedStructure,
+        rng: np.random.Generator | None = None,
+    ) -> TokenizedStructure:
+        return self.run(struct, rng)
 
     def run(
         self,
@@ -154,7 +434,7 @@ class ApoPerturbation:
             NOTE: if there is multiple apo structures, one of them is sampled randomly
             and augmented.
         """
-        rng = rng or np.random.default_rng()
+        rng = rng or np.random.default_rng(self.seed)
 
         # Sample an apo structure for each chain and apply augmentation if needed
         apo_coords, apo_mask = self.sample_and_augment_apo_structure(struct, rng)
@@ -240,8 +520,15 @@ class ApoPerturbation:
 
                 # Apply apo perturbation (skip if it is replaced to holo coords)
                 chain_type = C.ChainType(struct.chain.chain_type[chain_i])
+                if (
+                    chain_type in (C.ChainType.DNA, C.ChainType.RNA)
+                    and self.use_perturbation
+                ):
+                    # For nucleic acids, we define apo_mask from holo-resolved atoms so
+                    # the model can use the generated apo prior (LD starts from random).
+                    chain_apo_mask = struct.atom.resolved_mask[st:end].astype(bool)
                 chain_apo_coords = self.apply_perturbation(
-                    chain_apo_coords, chain_apo_mask, chain_type, rng
+                    chain_apo_coords, chain_apo_mask, chain_type, rng, struct, chain_i
                 )
 
             # TODO: (SeonghwanSeo) Remove this after NA apo prediction is prepared.
@@ -323,7 +610,153 @@ class ApoPerturbation:
 
         return sampled_chain_coords, sampled_chain_mask
 
-    # === Apo perturbation / augmentation === #
+    # Apo perturbation
+    def _convert_to_rieprody_data(
+        self,
+        struct: TokenizedStructure,
+        chain_i: int,
+        metric_data: dict,
+        apo_coords: np.ndarray,
+    ) -> dict:
+        """Convert TokenizedStructure data to RieProDy format.
+
+        Parameters
+        ----------
+        struct : TokenizedStructure
+            Tokenized structure.
+        chain_i : int
+            Chain index.
+        metric_data : dict
+            Pre-computed metric data from LMDB.
+        apo_coords : np.ndarray
+            Apo coordinates for the chain [Ntoken, 24, 3].
+
+        Returns
+        -------
+        data : dict
+            Data dictionary compatible with RieProDy's read_computed_data.
+        """
+
+        # Convert numpy arrays to torch tensors
+        # Note: RieProDy expects torch tensors
+        def to_torch(arr: np.ndarray, dtype: torch.dtype = torch.float32) -> torch.Tensor:
+            if isinstance(arr, torch.Tensor):
+                return arr
+            return torch.from_numpy(arr).to(dtype)
+
+        # Create a Data-like object compatible with RieProDy.
+        # RieProDy expects `data["receptor"].to(device)` to exist.
+        class _RieProDyReceptorData:
+            def to(self, device: torch.device | str):
+                for k, v in self.__dict__.items():
+                    if isinstance(v, torch.Tensor):
+                        setattr(self, k, v.to(device))
+                return self
+
+        receptor_data = _RieProDyReceptorData()
+
+        # Set sequence from metric_data (pre-computed)
+        receptor_data.sequence = metric_data["sequence"]
+        num_res = len(receptor_data.sequence)
+
+        # Use metric data fields (already in correct format from LMDB)
+        # We need consider_side_chain early to interpret q-dim.
+        consider_side_chain = True
+        if self.random_walk is not None:
+            consider_side_chain = bool(
+                self.random_walk.get("consider_side_chain_in_metric", True)
+            )
+
+        receptor_data.internal_coords_mask_R8_to_q = to_torch(
+            metric_data["internal_coords_mask_R8_to_q"], dtype=torch.bool
+        )
+
+        # Match RDBDock: unpack packed metric_inv_cholesky via RieProDy utility.
+        # RieProDy expects `metric_inv_cholesky` shaped like [R, 8, R, 8].
+        metric_inv_cholesky = to_torch(metric_data["metric_inv_cholesky"]).to(
+            torch.float32
+        )
+        if metric_inv_cholesky.ndim in (1, 2):
+            metric_inv_cholesky = ProteinPerturbationModule.unpack_metric_inv_cholesky(
+                metric_inv_cholesky,
+                num_res,
+                side_chain=consider_side_chain,
+            )
+
+        receptor_data.metric_inv_cholesky = metric_inv_cholesky
+        receptor_data.mp_nerf_image_R = to_torch(metric_data["mp_nerf_image_R"])
+        receptor_data.initial_q_R8 = to_torch(metric_data["initial_q_R8"])
+        receptor_data.mp_nerf_non_empty_atom_mask_R14 = to_torch(
+            metric_data["mp_nerf_non_empty_atom_mask_R14"], dtype=torch.bool
+        )
+        receptor_data.rot_atom_mask = to_torch(
+            metric_data["rot_atom_mask"], dtype=torch.bool
+        )
+
+        # Additional required fields from metric_data
+        # cloud_mask / reverse_cloud_mask
+        if "cloud_mask" in metric_data and metric_data["cloud_mask"] is not None:
+            cloud_mask = to_torch(metric_data["cloud_mask"], dtype=torch.bool)
+            if cloud_mask.ndim == 1 and cloud_mask.numel() == num_res * 14:
+                cloud_mask = cloud_mask.view(num_res, 14)
+            receptor_data.cloud_mask = cloud_mask
+
+            if (
+                "reverse_cloud_mask" in metric_data
+                and metric_data["reverse_cloud_mask"] is not None
+            ):
+                receptor_data.reverse_cloud_mask = to_torch(
+                    metric_data["reverse_cloud_mask"], dtype=torch.long
+                )
+            else:
+                counts = cloud_mask.to(torch.long).sum(dim=-1)
+                receptor_data.reverse_cloud_mask = torch.repeat_interleave(
+                    torch.arange(len(counts), device=counts.device), counts
+                )
+
+            # R3 masks are required when consider_side_chain_in_metric=False
+            if not consider_side_chain:
+                if (
+                    "cloud_mask_R3" in metric_data
+                    and metric_data["cloud_mask_R3"] is not None
+                ):
+                    cloud_mask_r3 = to_torch(
+                        metric_data["cloud_mask_R3"], dtype=torch.bool
+                    )
+                    if cloud_mask_r3.ndim == 1 and cloud_mask_r3.numel() == num_res * 3:
+                        cloud_mask_r3 = cloud_mask_r3.view(num_res, 3)
+                else:
+                    cloud_mask_r3 = cloud_mask[:, :3].clone()
+                receptor_data.cloud_mask_R3 = cloud_mask_r3
+
+                if (
+                    "reverse_cloud_mask_R3" in metric_data
+                    and metric_data["reverse_cloud_mask_R3"] is not None
+                ):
+                    receptor_data.reverse_cloud_mask_R3 = to_torch(
+                        metric_data["reverse_cloud_mask_R3"], dtype=torch.long
+                    )
+                else:
+                    counts3 = cloud_mask_r3.to(torch.long).sum(dim=-1)
+                    receptor_data.reverse_cloud_mask_R3 = torch.repeat_interleave(
+                        torch.arange(len(counts3), device=counts3.device), counts3
+                    )
+        if "point_ref_mask" in metric_data:
+            receptor_data.point_ref_mask = to_torch(
+                metric_data["point_ref_mask"], dtype=torch.long
+            )
+        if "bond_mask" in metric_data:
+            receptor_data.bond_mask = to_torch(metric_data["bond_mask"])
+        if "apo_angles_mask" in metric_data:
+            receptor_data.apo_angles_mask = to_torch(metric_data["apo_angles_mask"])
+        elif "angles_mask" in metric_data:
+            receptor_data.apo_angles_mask = to_torch(metric_data["angles_mask"])
+        if "chi2rot_atom_mask" in metric_data:
+            receptor_data.chi2rot_atom_mask = to_torch(metric_data["chi2rot_atom_mask"])
+        if "chi2ref_atom_mask" in metric_data:
+            receptor_data.chi2ref_atom_mask = to_torch(metric_data["chi2ref_atom_mask"])
+
+        return {"receptor": receptor_data}
 
     def apply_perturbation(
         self,
@@ -331,6 +764,8 @@ class ApoPerturbation:
         mask: np.ndarray,
         chain_type: C.ChainType,
         rng: np.random.Generator,
+        struct: TokenizedStructure | None = None,
+        chain_i: int | None = None,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates.
 
@@ -344,18 +779,519 @@ class ApoPerturbation:
             Type of the chain (e.g., PROTEIN, NUCLEIC_ACID, LIGAND),
         rng : np.random.Generator
             Random number generator for stochastic operations.
+        struct : TokenizedStructure | None, optional
+            Tokenized structure. Required for RieProDy perturbation.
+        chain_i : int | None, optional
+            Chain index. Required for RieProDy perturbation.
 
         Returns
         -------
         perturbed_apo_coords : np.ndarray
             Perturbed apo structure coordinates of shape [Ntoken, 24, 3].
         """
-        # TODO: Implement specific perturbation logic here.
         if not self.use_perturbation:
             return apo_coords
+
+        # Nucleic acids: always apply Langevin perturbation (when enabled).
+        if chain_type in (C.ChainType.DNA, C.ChainType.RNA):
+            if struct is None or chain_i is None:
+                warnings.warn(
+                    "struct and chain_i are required for Langevin perturbation. "
+                    "Skipping perturbation.",
+                    UserWarning,
+                )
+                return apo_coords
+            record_id = struct.metadata.id if struct.metadata else None
+            entity_id = int(struct.chain.entity_id[chain_i]) if struct is not None else -1
+            return self.langevin_dynamics_perturbation(
+                # NOTE: For nucleic acids, Langevin dynamics starts from random
+                # atomic positions (Gaussian init) and does NOT use input apo_coords.
+                apo_coords=None,
+                mask=mask,
+                rng=rng,
+                struct=struct,
+                chain_i=chain_i,
+                record_id=record_id or "<unknown>",
+                entity_id=entity_id,
+            )
+
+        # For other chain types, optionally skip perturbation by probability.
+        # (Protein policy below still respects prob_perturbation.)
         if rng.random() > self.prob_perturbation:
             return apo_coords
-        raise NotImplementedError("Apo perturbation logic is not implemented yet.")
+
+        # Only apply perturbation to proteins (ligands/others: no perturbation).
+        if chain_type != C.ChainType.PROTEIN:
+            return apo_coords
+
+        if struct is None or chain_i is None:
+            warnings.warn(
+                "struct and chain_i are required for apo perturbation. "
+                "Skipping perturbation.",
+                UserWarning,
+            )
+            return apo_coords
+
+        # Get record ID and entity for LMDB lookup
+        record_id = struct.metadata.id if struct.metadata else None
+        entity_id = int(struct.chain.entity_id[chain_i])
+
+        # Try metric-based RieProDy perturbation only when we can look up LMDB.
+        metric_data = None
+        if self.metric_lmdb_path is not None and record_id is not None:
+            metric_data = self._load_metric_from_lmdb(record_id, entity_id)
+
+        if metric_data is not None:
+            return self.rieprody_perturbation(
+                apo_coords=apo_coords,
+                mask=mask,
+                rng=rng,
+                struct=struct,
+                chain_i=chain_i,
+                metric_data=metric_data,
+                record_id=record_id,
+                entity_id=entity_id,
+            )
+
+        # Fallback: Langevin dynamics
+        return self.langevin_dynamics_perturbation(
+            apo_coords=apo_coords,
+            mask=mask,
+            rng=rng,
+            struct=struct,
+            chain_i=chain_i,
+            record_id=record_id or "<unknown>",
+            entity_id=entity_id,
+        )
+
+    def rieprody_perturbation(
+        self,
+        apo_coords: np.ndarray,
+        mask: np.ndarray,
+        rng: np.random.Generator,
+        struct: TokenizedStructure,
+        chain_i: int,
+        metric_data: dict,
+        record_id: str | None = None,
+        entity_id: int | None = None,
+    ) -> np.ndarray:
+        """Metric-based perturbation using pre-computed LMDB metric + RieProDy RBM."""
+        self._stats_total_perturbations += 1
+
+        if (
+            self.log_stats
+            and self.log_stats_interval > 0
+            and self._stats_total_perturbations % self.log_stats_interval == 0
+        ):
+            self._log_perturbation_stats()
+
+        if self._rieprody_module is None:
+            warnings.warn(
+                "RieProDy module is not initialized. Skipping perturbation.",
+                UserWarning,
+            )
+            return apo_coords
+
+        try:
+            rieprody_data: dict | None = None
+
+            # Convert data to RieProDy format
+            rieprody_data = self._convert_to_rieprody_data(
+                struct, chain_i, metric_data, apo_coords
+            )
+            self._rieprody_module.read_computed_data(rieprody_data)
+
+            # NOTE: perturbation via RieProDy's Riemannian Brownian Motion.
+            params = {
+                "total_time": self._sample_random_walk_total_time(rng),
+                "num_steps": self.random_walk.get("num_steps", 10),
+                "metric": self.random_walk.get("metric", "lagrangian"),
+                "with_christoffel_term": self.random_walk.get(
+                    "with_christoffel_term", False
+                ),
+                "metric_calculation_period": self.random_walk.get(
+                    "metric_calculation_period", 1
+                ),
+                "use_precomputed_metric": self.random_walk.get(
+                    "use_precomputed_metric", True
+                ),
+                "kabsch_aligned_traj": self.random_walk.get("kabsch_aligned_traj", True),
+                "return_as_N3": False,
+                "return_q": False,
+            }
+            perturbed_coords = self._rieprody_module.solve_riemannian_brownian_motion(
+                **params
+            )  # [num_steps+1, R, 14, 3]
+            if torch.isnan(perturbed_coords).any() or torch.isinf(perturbed_coords).any():
+                print(
+                    "[DEBUG] NaN/Inf detected in RieProDy output!"
+                    f"(Record: {record_id}, Entity: {entity_id})"
+                )
+                return apo_coords  # Fallback to original coords
+            # --------------------------
+
+            if perturbed_coords.ndim != 4:
+                warnings.warn(
+                    f"Unexpected perturbed_coords shape: {perturbed_coords.shape}. "
+                    "Using original coordinates.",
+                    UserWarning,
+                )
+                return apo_coords
+
+            if not torch.isfinite(perturbed_coords).all():
+                warnings.warn(
+                    "perturbed_coords contains NaNs or Infs. Using original coordinates.",
+                    UserWarning,
+                )
+                return apo_coords
+
+            perturbed_r14 = perturbed_coords[-1].detach().cpu().numpy()  # [R, 14, 3]
+            num_tokens = int(apo_coords.shape[0])
+            num_residues = int(perturbed_r14.shape[0])
+
+            token_st: int = int(struct.chain.token_start[chain_i])
+            token_end: int = token_st + num_tokens
+
+            cloud_mask = metric_data.get("cloud_mask", None)
+            if cloud_mask is None:
+                warnings.warn(
+                    "metric_data is missing 'cloud_mask'. "
+                    "Skipping RieProDy->kfold atom-order conversion.",
+                    UserWarning,
+                )
+                return apo_coords
+            cloud_mask = np.asarray(cloud_mask).astype(bool)  # [R, 14]
+            if cloud_mask.ndim == 1 and cloud_mask.size == num_residues * 14:
+                cloud_mask = cloud_mask.reshape(num_residues, 14)
+
+            first_residue_idx = int(struct.token.residue_index[token_st])  # 1-based
+            residue_to_token_map: dict[int, int] = {}
+            for token_local_idx, token_idx in enumerate(range(token_st, token_end)):
+                residue_idx = int(struct.token.residue_index[token_idx])
+                local_residue_idx = residue_idx - first_residue_idx
+                if 0 <= local_residue_idx < num_residues:
+                    residue_to_token_map[local_residue_idx] = token_local_idx
+
+            output_coords = apo_coords.copy()
+            overwritten_mask = np.zeros(mask.shape, dtype=bool)  # [Ntoken, 24]
+
+            for local_res_idx, token_local_idx in residue_to_token_map.items():
+                token_idx = token_st + token_local_idx
+                res_type = int(struct.token.res_type[token_idx])
+                res_name = C.residue.residue_id_to_name[res_type]
+
+                k_atoms = C.atom.residue_atoms.get(res_name, None)
+                if k_atoms is None:
+                    continue
+                na = len(k_atoms)
+                if na == 0 or na > 24:
+                    continue
+
+                if local_res_idx >= cloud_mask.shape[0]:
+                    continue
+
+                cm = cloud_mask[local_res_idx]
+                if cm.shape[0] != 14:
+                    coords_rie_valid = perturbed_r14[local_res_idx, :na, :]
+                else:
+                    coords_rie_valid = perturbed_r14[local_res_idx, cm, :]
+
+                num_valid_atoms = coords_rie_valid.shape[0]
+                if num_valid_atoms < na:
+                    continue
+
+                perm_rie_to_k = C.atom.RIEPRODY_TO_KFOLD_ATOM_ORDER.get(
+                    res_name, tuple(range(na))
+                )
+                if len(perm_rie_to_k) != na:
+                    perm_rie_to_k = tuple(range(na))
+
+                max_perm_idx = max(perm_rie_to_k) if perm_rie_to_k else 0
+                if max_perm_idx >= num_valid_atoms:
+                    continue
+
+                coords_k = coords_rie_valid[np.asarray(perm_rie_to_k, dtype=np.int32)]
+                output_coords[token_local_idx, :na, :] = coords_k.astype(np.float32)
+                overwritten_mask[token_local_idx, :na] = True
+
+            align_mask = overwritten_mask & mask
+
+            if not np.isfinite(output_coords).all():
+                warnings.warn(
+                    "output_coords contains NaNs or Infs before alignment. "
+                    "Using original coordinates.",
+                    UserWarning,
+                )
+                return apo_coords
+
+            if int(np.sum(align_mask)) >= 4:
+                flat = output_coords.reshape(num_tokens * 24, 3)
+                target = apo_coords.reshape(num_tokens * 24, 3)
+                flat_mask = align_mask.reshape(num_tokens * 24).astype(np.float32)
+                aligned = rigid_align(flat, target, flat_mask)
+                output_coords = aligned.reshape(num_tokens, 24, 3).astype(np.float32)
+
+                rmsd = compute_rmsd(
+                    output_coords.reshape(num_tokens * 24, 3),
+                    apo_coords.reshape(num_tokens * 24, 3),
+                    flat_mask,
+                    align=True,
+                )
+                if rmsd > self.rmsd_threshold:
+                    self._stats_rmsd_filtered += 1
+                    return apo_coords
+
+            self._stats_success += 1
+            return output_coords
+        except Exception as e:
+            self._debug_apo_perturbation_error_count += 1
+            should_dump = (
+                self._debug_apo_perturbation
+                and self._debug_apo_perturbation_error_count
+                <= self._debug_apo_perturbation_max_errors
+            )
+
+            def _shape_dtype(x) -> str:
+                try:
+                    if isinstance(x, torch.Tensor):
+                        return f"torch[{tuple(x.shape)}]/{x.dtype}"
+                    if isinstance(x, np.ndarray):
+                        return f"np[{x.shape}]/{x.dtype}"
+                    if isinstance(x, (list, tuple)):
+                        return f"{type(x).__name__}[len={len(x)}]"
+                    return f"{type(x).__name__}"
+                except Exception:
+                    return f"{type(x).__name__}"
+
+            extra = ""
+            if should_dump:
+                import traceback
+
+                key_candidates = [
+                    "sequence",
+                    "metric_inv_cholesky",
+                    "internal_coords_mask_R8_to_q",
+                    "cloud_mask",
+                    "cloud_mask_R3",
+                    "reverse_cloud_mask",
+                    "reverse_cloud_mask_R3",
+                    "point_ref_mask",
+                    "mp_nerf_non_empty_atom_mask_R14",
+                    "mp_nerf_image_R",
+                    "initial_q_R8",
+                    "rot_atom_mask",
+                ]
+                metric_shapes = {
+                    k: _shape_dtype(metric_data.get(k, None)) for k in key_candidates
+                }
+                receptor_shapes = None
+                try:
+                    if rieprody_data is not None and "receptor" in rieprody_data:
+                        receptor = rieprody_data["receptor"]
+                        receptor_shapes = {
+                            k: _shape_dtype(v)
+                            for k, v in getattr(receptor, "__dict__", {}).items()
+                        }
+                except Exception:
+                    receptor_shapes = {"<error>": "failed to introspect receptor_data"}
+
+                extra = (
+                    "\n--- ApoPerturbation debug dump (on exception) ---\n"
+                    f"record_id={record_id} entity_id={entity_id} chain_i={chain_i}\n"
+                    f"apo_coords={_shape_dtype(apo_coords)} mask={_shape_dtype(mask)}\n"
+                    f"metric_keys={sorted(list(metric_data.keys()))[:50]}\n"
+                    f"metric_shapes={metric_shapes}\n"
+                    f"receptor_shapes={receptor_shapes}\n"
+                    f"traceback:\n{traceback.format_exc()}\n"
+                    "--- end debug dump ---\n"
+                )
+
+            warnings.warn(
+                f"Error during metric-based perturbation: {e}. "
+                "Using original coordinates.",
+                UserWarning,
+            )
+            if extra:
+                warnings.warn(extra, UserWarning)
+            return apo_coords
+
+    def langevin_dynamics_perturbation(
+        self,
+        apo_coords: np.ndarray | None,
+        mask: np.ndarray,
+        rng: np.random.Generator,
+        struct: TokenizedStructure,
+        chain_i: int,
+        record_id: str,
+        entity_id: int,
+    ) -> np.ndarray:
+        """Fallback perturbation when LMDB metric data is missing."""
+        self._stats_total_perturbations += 1
+        self._stats_langevin_used += 1
+
+        # === Hyperparameters (Algorithm S3 defaults) ===
+        cfg = self.langevin or {}
+        num_steps = int(cfg.get("num_steps", 64))
+        dt = float(cfg.get("dt", 0.25))
+        res_r = float(cfg.get("res_r", 4.0))
+        ent_r = float(cfg.get("ent_r", 10.0))
+        sphere_r = float(cfg.get("sphere_r", 10.0))
+        bond_coef = float(cfg.get("bond_coef", 2.0))
+
+        if num_steps <= 0 or dt <= 0.0:
+            return apo_coords
+
+        # === Chain slice ===
+        token_st: int = int(struct.chain.token_start[chain_i])
+        num_tokens: int = int(struct.chain.num_tokens[chain_i])
+        token_end: int = token_st + num_tokens
+
+        # Sanity: mask is a per-chain slice ([L,24]) and (optional) apo_coords is [L,24,3]
+        if mask.shape != (num_tokens, 24):
+            self._stats_shape_mismatch += 1
+            if apo_coords is None:
+                return np.zeros((num_tokens, 24, 3), dtype=np.float32)
+            return apo_coords
+        if apo_coords is not None and apo_coords.shape[:2] != (num_tokens, 24):
+            self._stats_shape_mismatch += 1
+            return apo_coords
+
+        chain_type = C.ChainType(struct.chain.chain_type[chain_i])
+        update_mask = mask.astype(bool, copy=False)
+
+        # === Initialize X0 ===
+        if apo_coords is None:
+            x = np.zeros((num_tokens, 24, 3), dtype=np.float32)
+        else:
+            x = apo_coords.astype(np.float32, copy=True)
+        if chain_type in (C.ChainType.DNA, C.ChainType.RNA):
+            # Start from random atomic positions for nucleic acids.
+            # Scale by sphere_r so global compactness term has the right magnitude.
+            x = rng.normal(loc=0.0, scale=sphere_r, size=x.shape).astype(np.float32)
+            x[~update_mask] = 0.0
+
+        # === Build group indices for S_residue and S_entity (asym_id) ===
+        # Residue grouping uses residue_index within this chain slice.
+        residue_index = struct.token.residue_index[token_st:token_end].astype(np.int32)
+        # Map (residue_index -> list of token indices)
+        res_to_tokens: dict[int, list[int]] = defaultdict(list)
+        for i, ridx in enumerate(residue_index.tolist()):
+            res_to_tokens[int(ridx)].append(i)
+
+        # Entity grouping is per asym_id (physical chain instance). Within a single chain
+        # slice, this is just a single group (the chain mean).
+
+        # === Build bond adjacency for S_bond ===
+        # Flattened atom index: flat = token_local * 24 + atom_in_token (0..23)
+        n_flat = num_tokens * 24
+        neighbors: list[list[int]] = [[] for _ in range(n_flat)]
+
+        try:
+            bond_token = struct.bond.token_index.astype(np.int32, copy=False)  # [Nbond,2]
+            bond_atom = struct.bond.atom_index.astype(np.int32, copy=False)  # [Nbond,2]
+            # Filter bonds where both endpoints are within this chain slice.
+            in_slice = (bond_token[:, 0] >= token_st) & (bond_token[:, 0] < token_end)
+            in_slice &= (bond_token[:, 1] >= token_st) & (bond_token[:, 1] < token_end)
+            idxs = np.where(in_slice)[0]
+            for b in idxs.tolist():
+                t1 = int(bond_token[b, 0] - token_st)
+                t2 = int(bond_token[b, 1] - token_st)
+                a1 = int(bond_atom[b, 0])
+                a2 = int(bond_atom[b, 1])
+                if not (0 <= a1 < 24 and 0 <= a2 < 24):
+                    continue
+                i1 = t1 * 24 + a1
+                i2 = t2 * 24 + a2
+                neighbors[i1].append(i2)
+                neighbors[i2].append(i1)
+        except Exception:
+            # If bonds are missing/unavailable, just skip bond term.
+            pass
+
+        # === Helper: masked mean over a group of tokens ===
+        def _mean_coords_for_tokens(token_ids: list[int]) -> np.ndarray:
+            # Returns array shaped [len(token_ids), 24, 3] filled with the group mean
+            # broadcasted to each token, or zeros if no valid atoms.
+            # We compute mean over all atoms in the group that are in update_mask.
+            group_mask = update_mask[token_ids]  # [G,24]
+            if not np.any(group_mask):
+                return np.zeros((len(token_ids), 24, 3), dtype=np.float32)
+            coords = x[token_ids]  # [G,24,3]
+            w = group_mask.astype(np.float32)[..., None]  # [G,24,1]
+            denom = float(w.sum())
+            if denom <= 0.0:
+                return np.zeros((len(token_ids), 24, 3), dtype=np.float32)
+            mean = (coords * w).sum(axis=(0, 1), keepdims=False) / denom  # [3]
+            out = np.broadcast_to(mean.reshape(1, 1, 3), (len(token_ids), 24, 3)).copy()
+            return out.astype(np.float32, copy=False)
+
+        # === Langevin dynamics (Algorithm S3) ===
+        res_r2 = res_r * res_r
+        ent_r2 = ent_r * ent_r
+        sphere_r2 = sphere_r * sphere_r
+        noise_scale = float(2.0 * np.sqrt(dt))
+
+        for _ in range(num_steps):
+            # d_entity: chain mean
+            if np.any(update_mask):
+                w_all = update_mask.astype(np.float32)[..., None]
+                denom_all = float(w_all.sum())
+                if denom_all > 0.0:
+                    mean_chain = (x * w_all).sum(axis=(0, 1)) / denom_all  # [3]
+                else:
+                    mean_chain = np.zeros((3,), dtype=np.float32)
+            else:
+                mean_chain = np.zeros((3,), dtype=np.float32)
+
+            d_ent = mean_chain.reshape(1, 1, 3) - x  # [L,24,3]
+
+            # d_residue: residue mean
+            d_res = np.zeros_like(x, dtype=np.float32)
+            for token_ids in res_to_tokens.values():
+                mean_broadcast = _mean_coords_for_tokens(token_ids)  # [G,24,3]
+                d_res[token_ids] = mean_broadcast - x[token_ids]
+
+            # d_bond: neighbor mean (per atom)
+            d_bond = np.zeros_like(x, dtype=np.float32)
+            flat_x = x.reshape(n_flat, 3)
+            flat_mask = update_mask.reshape(n_flat)
+            for i in range(n_flat):
+                if not flat_mask[i]:
+                    continue
+                nb = neighbors[i]
+                if not nb:
+                    continue
+                # Mean of neighbor coords (masked neighbors only)
+                nb_idx = [j for j in nb if flat_mask[j]]
+                if not nb_idx:
+                    continue
+                mean_nb = flat_x[nb_idx].mean(axis=0)
+                d_bond.reshape(n_flat, 3)[i] = mean_nb - flat_x[i]
+
+            # drift
+            drift = bond_coef * d_bond + d_ent / ent_r2 + d_res / res_r2 - x / sphere_r2
+
+            eps = rng.normal(loc=0.0, scale=1.0, size=x.shape).astype(np.float32)
+            x = x + dt * drift + noise_scale * eps
+            x[~update_mask] = 0.0
+
+        # Centering (masked mean to origin)
+        if np.any(update_mask):
+            w = update_mask.astype(np.float32)[..., None]
+            denom = float(w.sum())
+            if denom > 0.0:
+                center = (x * w).sum(axis=(0, 1)) / denom
+                x = x - center.reshape(1, 1, 3)
+                x[~update_mask] = 0.0
+
+        if not np.isfinite(x).all():
+            # Safety fallback
+            if apo_coords is None:
+                return np.zeros((num_tokens, 24, 3), dtype=np.float32)
+            return apo_coords
+
+        self._stats_success += 1
+        return x.astype(np.float32, copy=False)
 
     def apply_random_rotation(
         self, apo_coords: np.ndarray, mask: np.ndarray, rng: np.random.Generator
@@ -382,7 +1318,7 @@ class ApoPerturbation:
         mask = mask.reshape(Ntoken * 24)
         # Apply random rotation or simple centering(no rotation)
         augmented_coords = center_random_augmentation(
-            coords, mask, augmentation=self.use_random_rotation, rng=rng
+            coords, mask, augmentation=self.use_random_rotation
         )
         return augmented_coords.reshape(Ntoken, 24, 3)
 
@@ -688,7 +1624,7 @@ class ApoPerturbation:
                 continue
 
             restype = int(struct.token.res_type[i])
-            res_name = C.residue.residue_index_to_name[restype]
+            res_name = C.residue.residue_id_to_name[restype]
             perms = get_ambiguous_atoms_in_residue(res_name)
             if len(perms) <= 1:
                 # No ambiguous atoms, skip

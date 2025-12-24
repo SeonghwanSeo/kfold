@@ -94,7 +94,7 @@ def parse_args():
 
 
 def extract_apo_coords(
-    apo_chain: dict[int, tuple[str, dict[str, Point3D]]],
+    apo_chain: tuple[dict[int, str], dict[int, dict[str, Point3D]]],
     residue_indices: np.ndarray,
     num_atoms: np.ndarray,
     res_types: np.ndarray,
@@ -105,19 +105,20 @@ def extract_apo_coords(
     chain_apo_coords = np.zeros((num_tokens, 24, 3), dtype=np.float32)
     chain_apo_mask = np.zeros((num_tokens, 24), dtype=bool)
 
+    apo_sequences, apo_coordinates = apo_chain
     for token_idx in range(num_tokens):
         # === Get residue information === #
         res_idx = int(residue_indices[token_idx])  # 1-based index
         res_type = int(res_types[token_idx])
-        res_name = C.residue.residue_index_to_name[res_type]
+        res_name = C.residue.residue_id_to_name[res_type]
 
         if res_idx not in apo_chain:
             # Missing residue in apo structure
             logging.debug(f"Missing residue in apo structure: {res_idx} {res_name}")
             continue
 
-        apo_res_name = C.residue.ResidueName(apo_chain[res_idx][0])
-        apo_atom_coords: dict[str, Point3D] = apo_chain[res_idx][1]
+        apo_res_name = C.residue.ResidueName(apo_sequences[res_idx])
+        apo_atom_coords: dict[str, Point3D] = apo_coordinates[res_idx]
         assert res_name == apo_res_name, (
             f"Residue name mismatch! {res_name} vs {apo_res_name}"
             f" at residue index {res_idx}"
@@ -226,9 +227,8 @@ def parse_structure(
                     apo_chain = entity_apo_chains[entity_id]
                 elif apo_chain_pdb_path.exists():
                     # Load apo structure
-                    apo_chain = load_apo_chain(apo_chain_pdb_path)
                     # Cache the loaded apo structure
-                    entity_apo_chains[entity_id] = apo_chain
+                    entity_apo_chains[entity_id] = load_apo_chain(apo_chain_pdb_path)
                 else:
                     # Apo structure not found
                     apo_chain = None

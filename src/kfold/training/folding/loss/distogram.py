@@ -11,7 +11,7 @@ class DistogramLoss(torch.nn.Module):
         self.num_bins: int = num_bins
 
         boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)  # [num_bins - 1]
-        self.register_buffer("boundaries", boundaries)
+        self.register_buffer("boundaries", boundaries, persistent=False)
 
     def forward(
         self,

@@ -2,10 +2,10 @@ model:
   _yaml_: "model/kfold-edm.yaml"
   input_embedder:
     channel_seq_encoder: 2560
-    channel_struct_encoder: 1280
   trunk:
+    interformer:
+      num_blocks: 16
     use_cuequiv_kernels: true
-    num_blocks: 16
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -14,7 +14,7 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: mini-esm2-saprot-rbf-edm
+  name: mini-esm2-rbf-edm
   out_dir: ./experiments/
   seed: 42
 
@@ -24,7 +24,7 @@ train:
     batch_size: 4
     diffusion_batch_size: 48
     global_batch_size: 128
-    num_global_steps_per_epoch: 500
+    num_global_steps_per_epoch: 1000
 
   # pytorch lightning trainer hparams
   trainer:
@@ -42,15 +42,13 @@ train:
 
     paths:
       seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esm2_3b_bf16/
-      struct_embedding_path: /cache/wykim_lab/kfold_data/pretrained/saprot_650m/
 
     featurization_args:
       seq_embedding_dim: 2560
-      struct_embedding_dim: 1280
 
   wandb:
     use: false
     project: "KFold-Combined"
-    group: "251213"
+    group: "251224"
     entity: K-Fold
-    tags: ["mini", "edm", "esm2", "saprot", "rbf"]
+    tags: ["mini", "edm", "esm2", "rbf"]

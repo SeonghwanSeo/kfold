@@ -1,5 +1,6 @@
 import copy
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from functools import cached_property
 from typing import Any, Generic, Self, TypeVar
 
@@ -168,6 +169,28 @@ class PlainLayout(ArrayObj[ArrayT], ABC):
                 f"Pad shape must be greater than or equal to layout shape: "
                 f"{pad_shape} < {self.layout_shape}"
             )
+
+    @classmethod
+    def concatenate(cls, data_list: Sequence[Self], dim: int = 0) -> Self:
+        """Concatenate multiple data_list along the specified dimension."""
+        assert len(data_list) > 0, "data_list must not be empty."
+        ref_layout = data_list[0]
+
+        field_dict: dict[str, list[ArrayT]] = {k: [] for k in ref_layout.keys()}
+        for layout in data_list:
+            for name, arr in layout.to_dict().items():
+                field_dict[name].append(arr)
+
+        if isinstance(ref_layout, TensorObj):
+            concatenated_fields = {
+                name: torch.cat(tensors, dim=dim) for name, tensors in field_dict.items()
+            }
+        else:  # numpy array
+            concatenated_fields = {
+                name: np.concatenate(tensors, axis=dim)
+                for name, tensors in field_dict.items()
+            }
+        return cls.from_dict(concatenated_fields)
 
 
 class TensorLayout(TensorObj, PlainLayout):

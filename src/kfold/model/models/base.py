@@ -1,63 +1,72 @@
+import dataclasses
+import pathlib
 import time
 import warnings
+from typing import Self
 
 import torch
-from omegaconf import DictConfig
 
 import kfold.model.modules as submodules
 from kfold.data.model_input import FoldingInput
-from kfold.utils.registry import MAIN_MODULE, Registry
+from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
+
+
+@dataclasses.dataclass(kw_only=True)
+class BaseFoldingModelConfig:
+    _class_: str = "BaseFoldingModel"
+    input_embedder: BaseConfig
+    trunk: BaseConfig
+    score_model: BaseConfig
+    structure_module: BaseConfig
+    distogram_head: BaseConfig
+    # confidence_head: Baseconfig
 
 
 @MAIN_MODULE.register()
 class BaseFoldingModel(torch.nn.Module):
-    def __init__(self, global_config: DictConfig):
+    def __init__(self, config: BaseFoldingModelConfig):
         super().__init__()
-        self.config = global_config
+        self.config: BaseFoldingModelConfig = config
 
         # Initialize sub-modules here using the config
-        model_config = global_config.model
-
         self.input_embedder: submodules.input_embedder.BaseInputEmbedder = (
-            Registry.instantiate(model_config.input_embedder)
+            Registry.instantiate(config.input_embedder)
         )
 
-        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(model_config.trunk)
+        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(config.trunk)
 
         self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
-            model_config.score_model
+            config.score_model
         )
 
         # NOTE: structure module is not a torch.nn.Module
         # This handles diffusion sampling as well
         self.structure_module: submodules.structure_module.BaseStructureModule = (
-            Registry.instantiate(
-                model_config.structure_module, score_model=self.score_model
-            )
+            Registry.instantiate(config.structure_module, score_model=self.score_model)
         )
 
         # Heads
         self.distogram_head: submodules.distogram_head.BaseDistogramHead = (
-            Registry.instantiate(model_config.distogram_head)
+            Registry.instantiate(config.distogram_head)
         )
 
         # self.confidence_head: submodules.confidence_head.BaseConfidenceHead = (
-        #     Registry.instantiate(model_config.confidence_head)
+        #     Registry.instantiate(config.confidence_head)
         # )
 
         # Compile submodules
         # NOTE: (SeonghwanSeo) This is very slow... Right now, just disable them.
-        if getattr(model_config, "compile_trunk", False):
-            self.trunk.compile(getattr(model_config, "compile_trunk", False))
-        if getattr(model_config, "compile_score_model", False):
-            self.score_model.compile(getattr(model_config, "compile_score_model", False))
-        # if getattr(model_config, "compile_confidence_head", False):
+        if getattr(config, "compile_trunk", False):
+            self.trunk.compile(getattr(config, "compile_trunk", False))
+        if getattr(config, "compile_score_model", False):
+            self.score_model.compile(getattr(config, "compile_score_model", False))
+        # if getattr(config, "compile_confidence_head", False):
         #     self.confidence_head.compile()
 
     def forward(
         self,
         f_input: FoldingInput,
-        num_cycles: int = 4,
+        num_recycles: int = 3,
         num_steps: int = 20,
         num_diffusion_samples: int = 1,
         diffusion_batch_size: int = 48,
@@ -72,7 +81,7 @@ class BaseFoldingModel(torch.nn.Module):
         ----------
         f_input : FoldingInput
             Input data for folding model. Preferred to be batched.
-        num_cycles : int
+        num_recycles : int
             Number of recycling cycles in trunk.
 
         # For diffusion sampling:
@@ -149,7 +158,7 @@ class BaseFoldingModel(torch.nn.Module):
             s_init,
             z_init,
             f_input,
-            num_cycles,
+            num_recycles,
         )
 
         if sample_structures:
@@ -202,9 +211,9 @@ class BaseFoldingModel(torch.nn.Module):
     def sample(
         self,
         f_input: FoldingInput,
-        num_cycles: int,
-        num_steps: int,
-        num_diffusion_samples: int,
+        num_recycles: int = 10,
+        num_steps: int = 200,
+        num_diffusion_samples: int = 5,
     ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         """Forward pass of KFold model for model training.
 
@@ -212,7 +221,7 @@ class BaseFoldingModel(torch.nn.Module):
         ----------
         f_input : FoldingInput
             Input data for folding model.
-        num_cycles : int
+        num_recycles : int
             Number of recycling cycles in trunk.
         num_steps : int
             Number of diffusion steps for training.
@@ -241,7 +250,7 @@ class BaseFoldingModel(torch.nn.Module):
             s_init,
             z_init,
             f_input,
-            num_cycles,
+            num_recycles,
         )
         et = time.time()
         time_logs["trunk"] = et - st
@@ -313,3 +322,39 @@ class BaseFoldingModel(torch.nn.Module):
                 )
             f_input = FoldingInput.from_list([f_input])
         return f_input
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        model_config: BaseFoldingModelConfig,
+        ckpt_path: str | pathlib.Path,
+        use_ema: bool = False,
+        strict: bool = True,
+    ) -> Self:
+        """Load model from checkpoint."""
+        # Initialize model
+        model_cls = MAIN_MODULE[model_config._class_]
+        model: torch.nn.Module = model_cls(model_config)
+
+        # Load checkpoint
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+
+        if "state_dict" not in ckpt:
+            # Assume the checkpoint is a state_dict itself
+            state_dict = ckpt
+        elif use_ema:
+            # Load EMA weights
+            state_dict = ckpt["ema"]
+        else:
+            # Load regular weights
+            state_dict = ckpt["state_dict"]
+
+        state_dict = {
+            k.replace("model.", "", 1): v
+            for k, v in state_dict.items()
+            if k.startswith("model.")
+        }
+
+        model.load_state_dict(state_dict, strict=strict)
+
+        return model

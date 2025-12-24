@@ -1,24 +1,29 @@
 model:
-  _yaml_: "model/kfold-edm.yaml"
+  _yaml_: "model/kfold-ddbm.yaml"
   input_embedder:
-    channel_seq_encoder: 1152
+    channel_seq_encoder: 2560
   trunk:
+    num_blocks: 16
     use_cuequiv_kernels: true
+  score_model:
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 8
+    atom_decoder_blocks: 1
 
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: esmc-edm-base
+  name: esmc-ddbm-mini
   out_dir: ./experiments/
   seed: 42
 
   global_hparams:
     max_chains: 20
     max_tokens: 384
-    batch_size: 2
+    batch_size: 4
     diffusion_batch_size: 48
     global_batch_size: 128
-    num_global_steps_per_epoch: 250
+    num_global_steps_per_epoch: 1000
 
   # pytorch lightning trainer hparams
   trainer:
@@ -31,17 +36,21 @@ train:
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
-    split_path: ./assets/splits/boltz1
+    split_path: ./assets/splits/kfold_v251213/
     num_workers: 8
 
     paths:
-      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esmc_600m_bf16/
+      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esm2_3b_bf16/
 
     featurization_args:
-      seq_embedding_dim: 1152
+      seq_embedding_dim: 2560
+
+    apo_perturbation_args:
+      use_symmetry_correction: true # align apo to holo symmetry
+      mask_nucleic_acids: false # use holo structures as DNA/RNA apo structures
 
   wandb:
     use: false
-    project: "EDM-esmc"
-    group: esmc # set your group name
+    project: "KFold-esm"
+    group: esm # set your group name
     entity: K-Fold # set your entity name

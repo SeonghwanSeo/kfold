@@ -352,7 +352,7 @@ def get_ambiguous_atom_indices(res_type: int) -> ResidueSymmetry:
     ResidueSymmetry(=list[AtomSwaps])
         A list of atom swaps for the residue.
     """
-    res_name = C.residue.residue_index_to_name[res_type]
+    res_name = C.residue.residue_id_to_name[res_type]
     if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS:
         # If there is no ambiguous atoms, return empty list
         return []

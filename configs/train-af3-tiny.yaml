@@ -1,8 +1,8 @@
 model:
   _yaml_: "model/af3.yaml"
   trunk:
-    use_cuequiv_kernels: true
     num_blocks: 8
+    use_cuequiv_kernels: true
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -21,7 +21,7 @@ train:
     batch_size: 4
     diffusion_batch_size: 48
     global_batch_size: 256
-    num_global_steps_per_epoch: 500
+    num_global_steps_per_epoch: 1000
 
   # pytorch lightning trainer hparams
   trainer:

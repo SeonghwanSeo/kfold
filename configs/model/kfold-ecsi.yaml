@@ -1,0 +1,24 @@
+# === Model Configuration === #
+_registry_: "main_module"
+_class_: KFold
+
+input_embedder:
+  _yaml_: "module/input_embedder/pretrained.yaml"
+  channel_seq_encoder: null # Should be overriden
+  channel_struct_encoder: null # Should be overriden
+  use_apo: false
+
+trunk:
+  _yaml_: "module/trunk/af3.yaml"
+  use_cuequiv_kernels: true
+
+structure_module:
+  _yaml_: "module/structure_module/ecsi.yaml"
+
+score_model:
+  _yaml_: "module/score_model/apo_conditioned.yaml"
+  channel_coords: 6
+  use_apo: false
+
+distogram_head:
+  _yaml_: "module/distogram_head/af3.yaml"
