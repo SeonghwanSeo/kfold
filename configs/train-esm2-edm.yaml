@@ -18,7 +18,7 @@ train:
     batch_size: 2
     diffusion_batch_size: 48
     global_batch_size: 128
-    num_global_steps_per_epoch: 250
+    num_global_steps_per_epoch: 1000
 
   # pytorch lightning trainer hparams
   trainer:
