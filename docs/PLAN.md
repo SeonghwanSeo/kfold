@@ -19,7 +19,7 @@ If the features listed below are completed, I will include the corresponding PR 
     - [ ] RNA (from Langevin dynamics)
     - [x] Ligand (ETKDG; single conformer) - [#23](https://github.com/SeonghwanSeo/kfold/pull/23)
 - [ ] **Multiple apo structures** if possible (in particular, ligand)
-    - [ ] Protein: Consider AlphaFold2 / OpenFold predicted structures
+    - [ ] Protein: Consider AlphaFold2 / OpenFold predicted structures and Holo structures as well.
     - [ ] Ligand: AlphaFold uses different conformers for each seed. (Boltz2: uses 10 different conformers as `ref_pos` for ligands)
 
 ### Data featurization
@@ -29,7 +29,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Implement cropping algorithm used in AF-M/AF3. - [#83](https://github.com/SeonghwanSeo/kfold/pull/83), [#86](https://github.com/SeonghwanSeo/kfold/pull/86)
 - [x] Implement Better cropping algorithm for **apo-to-holo** scheme. - [#85](https://github.com/SeonghwanSeo/kfold/pull/85)
 - [x] Implement symmetry alignment between apo and holo structures. - [#92](https://github.com/SeonghwanSeo/kfold/pull/92)
-- [x] Implement apo perturbation module.
+- [x] Implement apo perturbation module. - [#115](https://github.com/SeonghwanSeo/kfold/pull/115)
 - [ ] Implement contact conditioning features as in Boltz1.
 
 ### Model implementation
