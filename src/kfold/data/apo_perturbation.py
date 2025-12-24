@@ -110,6 +110,7 @@ class ApoPerturbation:
         metric_lmdb_path: Path | str | None = None,
         metric_comp: dict | None = None,
         random_walk: dict | None = None,
+        langevin: dict | None = None,
         rmsd_threshold: float = 15.0,
         log_stats: bool = False,
         log_stats_interval: int = 1000,
@@ -160,6 +161,18 @@ class ApoPerturbation:
             - with_christoffel_term (optional, default: False)
             - use_precomputed_metric (optional, default: True)
             - kabsch_aligned_traj (optional, default: True)
+        langevin : dict | None, optional
+            Configuration for Langevin-dynamics-based perturbation.
+            Used as a fallback for proteins when RieProDy perturbation is unavailable,
+            and as the default perturbation for nucleic acids when perturbation is
+            enabled.
+            Expected keys (all optional):
+            - num_steps (int, default: 64)
+            - dt (float, default: 0.25)
+            - res_r (float, default: 4.0)
+            - ent_r (float, default: 10.0)
+            - sphere_r (float, default: 10.0)
+            - bond_coef (float, default: 2.0)
         rmsd_threshold : float, optional
             RMSD threshold in Angstroms. If perturbation causes RMSD > threshold,
             original coordinates are used instead. Default: 15.0
@@ -196,6 +209,7 @@ class ApoPerturbation:
 
         self.metric_comp: dict | None = metric_comp
         self.random_walk: dict | None = random_walk
+        self.langevin: dict | None = langevin
 
         # Initialize RieProDy module if perturbation is enabled
         self._rieprody_module: ProteinPerturbationModule | None = None
@@ -270,6 +284,7 @@ class ApoPerturbation:
         self._stats_rmsd_filtered: int = 0
         self._stats_shape_mismatch: int = 0
         self._stats_success: int = 0
+        self._stats_langevin_used: int = 0
 
     def _sample_random_walk_total_time(self, rng: np.random.Generator) -> float:
         """Sample random-walk total_time for Riemannian Brownian motion.
@@ -496,6 +511,13 @@ class ApoPerturbation:
 
                 # Apply apo perturbation (skip if it is replaced to holo coords)
                 chain_type = C.ChainType(struct.chain.chain_type[chain_i])
+                if (
+                    chain_type in (C.ChainType.DNA, C.ChainType.RNA)
+                    and self.use_perturbation
+                ):
+                    # For nucleic acids, we define apo_mask from holo-resolved atoms so
+                    # the model can use the generated apo prior (LD starts from random).
+                    chain_apo_mask = struct.atom.resolved_mask[st:end].astype(bool)
                 chain_apo_coords = self.apply_perturbation(
                     chain_apo_coords, chain_apo_mask, chain_type, rng, struct, chain_i
                 )
@@ -760,10 +782,36 @@ class ApoPerturbation:
         """
         if not self.use_perturbation:
             return apo_coords
+
+        # Nucleic acids: always apply Langevin perturbation (when enabled).
+        if chain_type in (C.ChainType.DNA, C.ChainType.RNA):
+            if struct is None or chain_i is None:
+                warnings.warn(
+                    "struct and chain_i are required for Langevin perturbation. "
+                    "Skipping perturbation.",
+                    UserWarning,
+                )
+                return apo_coords
+            record_id = struct.metadata.id if struct.metadata else None
+            entity_id = int(struct.chain.entity_id[chain_i]) if struct is not None else -1
+            return self.langevin_dynamics_perturbation(
+                # NOTE: For nucleic acids, Langevin dynamics starts from random
+                # atomic positions (Gaussian init) and does NOT use input apo_coords.
+                apo_coords=None,
+                mask=mask,
+                rng=rng,
+                struct=struct,
+                chain_i=chain_i,
+                record_id=record_id or "<unknown>",
+                entity_id=entity_id,
+            )
+
+        # For other chain types, optionally skip perturbation by probability.
+        # (Protein policy below still respects prob_perturbation.)
         if rng.random() > self.prob_perturbation:
             return apo_coords
 
-        # Only apply perturbation to proteins
+        # Only apply perturbation to proteins (ligands/others: no perturbation).
         if chain_type != C.ChainType.PROTEIN:
             return apo_coords
 
@@ -775,37 +823,16 @@ class ApoPerturbation:
             )
             return apo_coords
 
-        if self.metric_lmdb_path is None:
-            warnings.warn(
-                "metric_lmdb_path is not provided. Skipping perturbation.",
-                UserWarning,
-            )
-            return apo_coords
-
         # Get record ID and entity for LMDB lookup
         record_id = struct.metadata.id if struct.metadata else None
-        if record_id is None:
-            warnings.warn(
-                "Record ID not found in metadata. Skipping perturbation.",
-                UserWarning,
-            )
-            return apo_coords
         entity_id = int(struct.chain.entity_id[chain_i])
 
-        metric_data = self._load_metric_from_lmdb(record_id, entity_id)
-        if metric_data is None:
-            # Fallback path (e.g., ~7% samples have no metric entry)
-            return self.langevin_dynamics_perturbation(
-                apo_coords=apo_coords,
-                mask=mask,
-                rng=rng,
-                struct=struct,
-                chain_i=chain_i,
-                record_id=record_id,
-                entity_id=entity_id,
-            )
+        # Try metric-based RieProDy perturbation only when we can look up LMDB.
+        metric_data = None
+        if self.metric_lmdb_path is not None and record_id is not None:
+            metric_data = self._load_metric_from_lmdb(record_id, entity_id)
 
-        else:
+        if metric_data is not None:
             return self.rieprody_perturbation(
                 apo_coords=apo_coords,
                 mask=mask,
@@ -816,6 +843,17 @@ class ApoPerturbation:
                 record_id=record_id,
                 entity_id=entity_id,
             )
+
+        # Fallback: Langevin dynamics
+        return self.langevin_dynamics_perturbation(
+            apo_coords=apo_coords,
+            mask=mask,
+            rng=rng,
+            struct=struct,
+            chain_i=chain_i,
+            record_id=record_id or "<unknown>",
+            entity_id=entity_id,
+        )
 
     def rieprody_perturbation(
         self,
@@ -1070,7 +1108,7 @@ class ApoPerturbation:
 
     def langevin_dynamics_perturbation(
         self,
-        apo_coords: np.ndarray,
+        apo_coords: np.ndarray | None,
         mask: np.ndarray,
         rng: np.random.Generator,
         struct: TokenizedStructure,
@@ -1079,10 +1117,172 @@ class ApoPerturbation:
         entity_id: int,
     ) -> np.ndarray:
         """Fallback perturbation when LMDB metric data is missing."""
-        # TODO: implement Langevin-dynamics-based perturbation as a fallback path.
-        # For now, keep coordinates unchanged.
-        print("Langevin-dynamics-based perturbation is called, but not implemented yet.")
-        return apo_coords
+        self._stats_total_perturbations += 1
+        self._stats_langevin_used += 1
+
+        # === Hyperparameters (Algorithm S3 defaults) ===
+        cfg = self.langevin or {}
+        num_steps = int(cfg.get("num_steps", 64))
+        dt = float(cfg.get("dt", 0.25))
+        res_r = float(cfg.get("res_r", 4.0))
+        ent_r = float(cfg.get("ent_r", 10.0))
+        sphere_r = float(cfg.get("sphere_r", 10.0))
+        bond_coef = float(cfg.get("bond_coef", 2.0))
+
+        if num_steps <= 0 or dt <= 0.0:
+            return apo_coords
+
+        # === Chain slice ===
+        token_st: int = int(struct.chain.token_start[chain_i])
+        num_tokens: int = int(struct.chain.num_tokens[chain_i])
+        token_end: int = token_st + num_tokens
+
+        # Sanity: mask is a per-chain slice ([L,24]) and (optional) apo_coords is [L,24,3]
+        if mask.shape != (num_tokens, 24):
+            self._stats_shape_mismatch += 1
+            if apo_coords is None:
+                return np.zeros((num_tokens, 24, 3), dtype=np.float32)
+            return apo_coords
+        if apo_coords is not None and apo_coords.shape[:2] != (num_tokens, 24):
+            self._stats_shape_mismatch += 1
+            return apo_coords
+
+        chain_type = C.ChainType(struct.chain.chain_type[chain_i])
+        update_mask = mask.astype(bool, copy=False)
+
+        # === Initialize X0 ===
+        if apo_coords is None:
+            x = np.zeros((num_tokens, 24, 3), dtype=np.float32)
+        else:
+            x = apo_coords.astype(np.float32, copy=True)
+        if chain_type in (C.ChainType.DNA, C.ChainType.RNA):
+            # Start from random atomic positions for nucleic acids.
+            # Scale by sphere_r so global compactness term has the right magnitude.
+            x = rng.normal(loc=0.0, scale=sphere_r, size=x.shape).astype(np.float32)
+            x[~update_mask] = 0.0
+
+        # === Build group indices for S_residue and S_entity (asym_id) ===
+        # Residue grouping uses residue_index within this chain slice.
+        residue_index = struct.token.residue_index[token_st:token_end].astype(np.int32)
+        # Map (residue_index -> list of token indices)
+        res_to_tokens: dict[int, list[int]] = defaultdict(list)
+        for i, ridx in enumerate(residue_index.tolist()):
+            res_to_tokens[int(ridx)].append(i)
+
+        # Entity grouping is per asym_id (physical chain instance). Within a single chain
+        # slice, this is just a single group (the chain mean).
+
+        # === Build bond adjacency for S_bond ===
+        # Flattened atom index: flat = token_local * 24 + atom_in_token (0..23)
+        n_flat = num_tokens * 24
+        neighbors: list[list[int]] = [[] for _ in range(n_flat)]
+
+        try:
+            bond_token = struct.bond.token_index.astype(np.int32, copy=False)  # [Nbond,2]
+            bond_atom = struct.bond.atom_index.astype(np.int32, copy=False)  # [Nbond,2]
+            # Filter bonds where both endpoints are within this chain slice.
+            in_slice = (bond_token[:, 0] >= token_st) & (bond_token[:, 0] < token_end)
+            in_slice &= (bond_token[:, 1] >= token_st) & (bond_token[:, 1] < token_end)
+            idxs = np.where(in_slice)[0]
+            for b in idxs.tolist():
+                t1 = int(bond_token[b, 0] - token_st)
+                t2 = int(bond_token[b, 1] - token_st)
+                a1 = int(bond_atom[b, 0])
+                a2 = int(bond_atom[b, 1])
+                if not (0 <= a1 < 24 and 0 <= a2 < 24):
+                    continue
+                i1 = t1 * 24 + a1
+                i2 = t2 * 24 + a2
+                neighbors[i1].append(i2)
+                neighbors[i2].append(i1)
+        except Exception:
+            # If bonds are missing/unavailable, just skip bond term.
+            pass
+
+        # === Helper: masked mean over a group of tokens ===
+        def _mean_coords_for_tokens(token_ids: list[int]) -> np.ndarray:
+            # Returns array shaped [len(token_ids), 24, 3] filled with the group mean
+            # broadcasted to each token, or zeros if no valid atoms.
+            # We compute mean over all atoms in the group that are in update_mask.
+            group_mask = update_mask[token_ids]  # [G,24]
+            if not np.any(group_mask):
+                return np.zeros((len(token_ids), 24, 3), dtype=np.float32)
+            coords = x[token_ids]  # [G,24,3]
+            w = group_mask.astype(np.float32)[..., None]  # [G,24,1]
+            denom = float(w.sum())
+            if denom <= 0.0:
+                return np.zeros((len(token_ids), 24, 3), dtype=np.float32)
+            mean = (coords * w).sum(axis=(0, 1), keepdims=False) / denom  # [3]
+            out = np.broadcast_to(mean.reshape(1, 1, 3), (len(token_ids), 24, 3)).copy()
+            return out.astype(np.float32, copy=False)
+
+        # === Langevin dynamics (Algorithm S3) ===
+        res_r2 = res_r * res_r
+        ent_r2 = ent_r * ent_r
+        sphere_r2 = sphere_r * sphere_r
+        noise_scale = float(2.0 * np.sqrt(dt))
+
+        for _ in range(num_steps):
+            # d_entity: chain mean
+            if np.any(update_mask):
+                w_all = update_mask.astype(np.float32)[..., None]
+                denom_all = float(w_all.sum())
+                if denom_all > 0.0:
+                    mean_chain = (x * w_all).sum(axis=(0, 1)) / denom_all  # [3]
+                else:
+                    mean_chain = np.zeros((3,), dtype=np.float32)
+            else:
+                mean_chain = np.zeros((3,), dtype=np.float32)
+
+            d_ent = mean_chain.reshape(1, 1, 3) - x  # [L,24,3]
+
+            # d_residue: residue mean
+            d_res = np.zeros_like(x, dtype=np.float32)
+            for token_ids in res_to_tokens.values():
+                mean_broadcast = _mean_coords_for_tokens(token_ids)  # [G,24,3]
+                d_res[token_ids] = mean_broadcast - x[token_ids]
+
+            # d_bond: neighbor mean (per atom)
+            d_bond = np.zeros_like(x, dtype=np.float32)
+            flat_x = x.reshape(n_flat, 3)
+            flat_mask = update_mask.reshape(n_flat)
+            for i in range(n_flat):
+                if not flat_mask[i]:
+                    continue
+                nb = neighbors[i]
+                if not nb:
+                    continue
+                # Mean of neighbor coords (masked neighbors only)
+                nb_idx = [j for j in nb if flat_mask[j]]
+                if not nb_idx:
+                    continue
+                mean_nb = flat_x[nb_idx].mean(axis=0)
+                d_bond.reshape(n_flat, 3)[i] = mean_nb - flat_x[i]
+
+            # drift
+            drift = bond_coef * d_bond + d_ent / ent_r2 + d_res / res_r2 - x / sphere_r2
+
+            eps = rng.normal(loc=0.0, scale=1.0, size=x.shape).astype(np.float32)
+            x = x + dt * drift + noise_scale * eps
+            x[~update_mask] = 0.0
+
+        # Centering (masked mean to origin)
+        if np.any(update_mask):
+            w = update_mask.astype(np.float32)[..., None]
+            denom = float(w.sum())
+            if denom > 0.0:
+                center = (x * w).sum(axis=(0, 1)) / denom
+                x = x - center.reshape(1, 1, 3)
+                x[~update_mask] = 0.0
+
+        if not np.isfinite(x).all():
+            # Safety fallback
+            if apo_coords is None:
+                return np.zeros((num_tokens, 24, 3), dtype=np.float32)
+            return apo_coords
+
+        self._stats_success += 1
+        return x.astype(np.float32, copy=False)
 
     def apply_random_rotation(
         self, apo_coords: np.ndarray, mask: np.ndarray, rng: np.random.Generator
