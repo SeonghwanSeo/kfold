@@ -81,7 +81,7 @@ def parse_args():
         help="Path to the CCD data file.",
     )
     parser.add_argument(
-        "--devices",
+        "--num_gpus",
         type=int,
         help="Number of GPUs to use for inference.",
     )
@@ -108,8 +108,8 @@ def main():
 
     # Determine the number of devices
     devices: str | int = "auto"
-    if args.devices is not None:
-        devices = args.devices
+    if args.num_gpus is not None:
+        devices = args.num_gpus
 
     # Load model and setup inference client
     config = load_config(args.config)
