@@ -29,9 +29,9 @@ pre-commit install
 ```bash
 # Single-GPU Inference
 python scripts/inference.py \
-  --config {CONFIG_PATH} \
-  --checkpoint {CKPT_PATH} \
-  --input {INPUT_YAML_PATH_OR_DIR} \
+  --config <CONFIG_PATH> \
+  --checkpoint <CKPT_PATH> \
+  --input <INPUT_YAML_PATH_OR_DIR> \
   --out_dir ./inference_results/ \
   --num_recycles 10 \
   --num_steps 200 \
@@ -39,9 +39,9 @@ python scripts/inference.py \
 
 # Multi-GPU Inference
 python scripts/inference_multigpu.py \
-  --config {CONFIG_PATH} \
-  --checkpoint {CKPT_PATH} \
-  --input {INPUT_YAML_PATH_OR_DIR} \
+  --config <CONFIG_PATH> \
+  --checkpoint <CKPT_PATH> \
+  --input <INPUT_YAML_PATH_OR_DIR> \
   --out_dir ./inference_results/ \
   --num_recycles 10 \
   --num_steps 200 \
@@ -61,8 +61,8 @@ python scripts/inference_multigpu.py \
 
 ```bash
 python scripts/inference.py \
-  --config {CONFIG_PATH} \
-  --checkpoint {CKPT_PATH} \
+  --config <CONFIG_PATH> \
+  --checkpoint <CKPT_PATH> \
   --input ./examples/queries/casp15_h1106.yaml \
   --out_dir ./out/
 ```
@@ -71,8 +71,8 @@ python scripts/inference.py \
 
 ```bash
 python scripts/inference_multigpu.py \
-  --config {CONFIG_PATH} \
-  --checkpoint {CKPT_PATH} \
+  --config <CONFIG_PATH> \
+  --checkpoint <CKPT_PATH> \
   --input ./examples/queries/ \
   --out_dir ./out/
 ```
@@ -99,4 +99,3 @@ python ./scripts/train.py --config ./configs/train-af3.yaml --wandb --num_gpus .
 ### Evaluation
 
 See [`docs/EVALUATION.md`](./docs/EVALUATION.md) for detailed evaluation instructions.
-
