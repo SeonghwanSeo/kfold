@@ -3,8 +3,8 @@
 import torch
 
 from kfold.data.model_input import FoldingInput
-from kfold.model.layers.pairmixer.pairmixer import PairmixerStack
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
+from kfold.model.layers.pairmixer.pairmixer import PairmixerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
@@ -13,8 +13,7 @@ from .base import BaseTrunk
 
 @TRUNK.register()
 class PairmixerTrunk(BaseTrunk):
-    """AF3-like trunk with the Pairmixer module.
-    """
+    """AF3-like trunk with the Pairmixer module."""
 
     class Config(BaseTrunk.Config):
         """Configuration for the Pairmixer module.
@@ -93,7 +92,7 @@ class PairmixerTrunk(BaseTrunk):
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         f_input: FoldingInput,
-        num_cycles: int,
+        num_recycles: int,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -109,7 +108,7 @@ class PairmixerTrunk(BaseTrunk):
             Tensor of shape (B, L, L, C_s) containing initial pair representation
         f_input : FoldingInput
             The input features.
-        num_cycles : int
+        num_recycles : int
             The number of recycling steps.
 
         Returns
@@ -124,8 +123,8 @@ class PairmixerTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
-        for i in range(1, num_cycles + 1):
-            enable_grad = self.training and i == num_cycles
+        for i in range(0, num_recycles + 1):
+            enable_grad = self.training and i == num_recycles
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
@@ -167,35 +166,34 @@ class PairmixerTrunk(BaseTrunk):
         return s_trunk, z_trunk
 
 
-
 @TRUNK.register()
 class PairmixerformerTrunk(BaseTrunk):
     """Intermediate trunk module with Pairmixer early on,
     Pairformer later."""
 
     class Config(BaseTrunk.Config):
-
         channel_s: int = 384
         channel_z: int = 128
-        num_blocks: int = 48
         dropout: float = 0.25
         use_msa: bool = False
         use_template: bool = False
         use_cuequiv_kernels: bool = False
         blocks_per_ckpt: int | None = None
+        num_heads_attn: int = 16
+        num_heads_tri_attn: int = 4
+        num_blocks: int = 48
         pairmixer_blocks: int = 42
-        num_heads: int = 16
-        pairwise_head_width: int = 32
-        pairwise_num_heads: int = 4
         chunk_threshold: int = 384
-
 
     def __init__(self, cfg: Config):
         """Initialize the Pairmixerformer module."""
         super().__init__(cfg)
 
         if cfg.num_blocks < cfg.pairmixer_blocks:
-            raise ValueError(f"pairmixer_blocks ({cfg.pairmixer_blocks}) must be less than or equal to num_blocks ({cfg.num_blocks})")
+            raise ValueError(
+                f"pairmixer_blocks ({cfg.pairmixer_blocks}) must be less than or equal"
+                f" to num_blocks ({cfg.num_blocks})"
+            )
 
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
@@ -206,7 +204,7 @@ class PairmixerformerTrunk(BaseTrunk):
             raise NotImplementedError("Template Embedder is not implemented yet")
         if self.use_msa:
             raise NotImplementedError("MSA Module is not implemented yet")
-        
+
         self.pairmixer_module: PairmixerStack = PairmixerStack(
             channel_z=cfg.channel_z,
             num_blocks=cfg.pairmixer_blocks,
@@ -218,10 +216,9 @@ class PairmixerformerTrunk(BaseTrunk):
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             num_blocks=cfg.num_blocks - cfg.pairmixer_blocks,
-            num_heads=cfg.num_heads,
+            num_heads_attn=cfg.num_heads_attn,
+            num_heads_tri_attn=cfg.num_heads_tri_attn,
             dropout=cfg.dropout,
-            pairwise_head_width=cfg.pairwise_head_width,
-            pairwise_num_heads=cfg.pairwise_num_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
@@ -244,11 +241,10 @@ class PairmixerformerTrunk(BaseTrunk):
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         f_input: FoldingInput,
-        num_cycles: int,
+        num_recycles: int,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Perform the forward pass.
-        """
+        """Perform the forward pass."""
         if not self.training:
             if z_init.shape[1] > self.chunk_threshold:
                 chunk_size_tri_attn = 128
@@ -260,8 +256,8 @@ class PairmixerformerTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
-        for i in range(1, num_cycles + 1):
-            enable_grad = self.training and i == num_cycles
+        for i in range(0, num_recycles + 1):
+            enable_grad = self.training and i == num_recycles
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():

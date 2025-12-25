@@ -1,24 +1,42 @@
 """KFold trunk module.
 
-Compared to AlphaFold3 trunk with MSAModule and TemplateModule,
-KFold replace these modules with custom modules to feed apo information.
+Compared to the AlphaFold3 trunk (which comprises the MSAModule, TemplateModule,
+and Pairformer), KFold replaces these components with custom modules designed to
+incorporate apo structure information and evolutionary pre-trained sequence
+features.
 
-There are four sources to get apo structures:
+1. Feeding apo structure information
+------------------------------------
+There are four sources for apo structures:
 1. Experimental apo structures
 2. Experimental holo structures
 3. Predicted apo structures (e.g., AlphaFold2, ESMFold)
-4. Permutated structures from KFold's apo-permutation module.
+4. Permuted structures from KFold's apo-permutation module.
 
-Source 1-3 provide the multi-state information of the protein.
-Source 4 provides local flexibility information of the protein.
+Sources 1-3 provide multi-state information about the protein.
+Source 4 provides local flexibility information.
 
-The KFoldTrunk module consists of the following sub-modules:
+2. Bidirectional information flow (Single <-> Pairwise)
+-------------------------------------------------------
+The InterformerStack is a modified version of the AlphaFold3 PairformerStack.
+In InterformerStack, the information flow between single (s) and pairwise (z)
+representations is fully bidirectional (s <-> z). This enables a more integrated
+representation that captures the interplay between evolutionary features and
+interaction features.
+
+Sub-modules
+-----------
+The KFoldTrunk module consists of the following:
     - EnsembleModule (Modified MSA Module):
-        Handle the pre-trained embeddings from multiple apo structures.
-        input shape: (B, L, N_apo, c_struct)
+        Handles pre-trained embeddings from multiple apo structures.
+        Input shape: (B, L, N_apo, c_struct)
     - MultiStateModule (Modified Template Embedder, Not implemented yet):
-        Directly use multi-state apo coordinates.
-        input shape: (B, Natom, Napo, 3)
+        Directly uses multi-state apo coordinates.
+        Input shape: (B, N_atom, N_apo, 3)
+    - InterformerStack (Modified Pairformer Stack):
+        Performs bidirectional updates between single (s) and pairwise (z)
+        representations.
+        Input shape: s: (B, L, c_s), z: (B, L, L, c_z)
 """
 
 import dataclasses
@@ -26,8 +44,8 @@ import dataclasses
 import torch
 
 from kfold.data.model_input import FoldingInput
-from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.kfold.ensemble_module import EnsembleModule
+from kfold.model.layers.kfold.interformer import InterformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
@@ -35,7 +53,7 @@ from .base import BaseTrunk
 
 
 @dataclasses.dataclass(kw_only=True)
-class PairformerConfig:
+class InterformerConfig:
     num_heads_attn: int = 16
     num_heads_tri_attn: int = 4
     num_blocks: int = 48
@@ -60,9 +78,9 @@ class MultiStateModuleConfig: ...
 
 
 @TRUNK.register()
-class MultiStateApoTrunk(BaseTrunk):
+class KFoldTrunk(BaseTrunk):
     class Config(BaseTrunk.Config):
-        """Configuration for the MultiStateApoTrunk module.
+        """Configuration for the KFoldTrunk module.
 
         Parameters
         ----------
@@ -74,8 +92,6 @@ class MultiStateApoTrunk(BaseTrunk):
             The number of attention heads, by default 16
         num_heads_tri_attn : int, optional
             The number of triangle attention heads, by default 4
-        num_blocks : int
-            The number of blocks.
         dropout : float, optional
             The dropout rate, by default 0.25
         use_ensemble: bool, optional
@@ -92,14 +108,17 @@ class MultiStateApoTrunk(BaseTrunk):
         channel_z: int = 128
 
         # pairformer
-        pairformer: PairformerConfig = dataclasses.field(default_factory=PairformerConfig)
+        interformer: InterformerConfig = dataclasses.field(
+            default_factory=InterformerConfig
+        )
 
-        # ensemble module options
+        # ensemble module (optional)
         use_ensemble: bool = False
         ensemble_module: EnsembleModuleConfig = dataclasses.field(
             default_factory=EnsembleModuleConfig
         )
 
+        # multi-state module (optional)
         use_multi_state: bool = False
         multi_state_module: MultiStateModuleConfig = dataclasses.field(
             default_factory=MultiStateModuleConfig
@@ -134,13 +153,13 @@ class MultiStateApoTrunk(BaseTrunk):
         if self.use_multi_state:
             raise NotImplementedError("Multi-State Module is not implemented yet")
 
-        self.pairformer_module: PairformerStack = PairformerStack(
+        self.pairformer_module: InterformerStack = InterformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
-            num_heads_attn=cfg.pairformer.num_heads_attn,
-            num_heads_tri_attn=cfg.pairformer.num_heads_tri_attn,
-            num_blocks=cfg.pairformer.num_blocks,
-            dropout=cfg.pairformer.dropout,
+            num_heads_attn=cfg.interformer.num_heads_attn,
+            num_heads_tri_attn=cfg.interformer.num_heads_tri_attn,
+            num_blocks=cfg.interformer.num_blocks,
+            dropout=cfg.interformer.dropout,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
@@ -186,11 +205,13 @@ class MultiStateApoTrunk(BaseTrunk):
             The updated tensor of shape (B, L, L, c_z).
         """
         if not self.training:
+            chunk_size_opm = 512
             if z_init.shape[1] > self.chunk_threshold:
                 chunk_size_tri_attn = 128
             else:
                 chunk_size_tri_attn = 512
         else:
+            chunk_size_opm = None
             chunk_size_tri_attn = None
 
         # Line 6, z_hat, s_hat = 0, 0
@@ -215,11 +236,12 @@ class MultiStateApoTrunk(BaseTrunk):
                         f_input,
                         z,
                         s_inputs,
+                        chunk_size_opm=chunk_size_opm,
+                        chunk_size_tri_attn=chunk_size_tri_attn,
                         use_cuequiv_mul=self.use_cuequiv_kernels,
                         use_cuequiv_attn=self.use_cuequiv_kernels,
                     )
 
-                # Revert to uncompiled version for validation
                 s, z = self.pairformer_module(
                     s,
                     z,

@@ -103,14 +103,33 @@ This section describes the additional implementations which are not part of the 
 ### Pre-trained Representation Model
 
 1. **Pre-trained Language Model Integration**: We integrated pre-trained language models to enhance the sequence representation of each chain in the complex structure. This replaces the needs of MSA-based representation.
+  ```python
+  two_linear_mlp = nn.Sequential(
+      nn.Linear(esm_dim, hidden_dim),
+      nn.ReLU(),
+      nn.Linear(hidden_dim, hidden_dim),
+  )
+  s_inputs = s_inputs + two_linear_mlp(lm_embedding)
+  ```
 
-2. **Pre-trained Structure Representation Model Integration**: Not yet implemented (to be added later).
+2. **Pre-trained Structure Representation Model Integration**: We integrated pre-trained structure representation models to introduce structural priors from the **apo** structure. To feed the multiple structure embeddings (from structure ensemble), we introduce `EnsembleModule`, which is the modified version of `MSAModule`.
 
 ### Apo Feature Embedding
 
 1. **Modified AtomAttentionEncoder**: We modified the input feature embedding architecture (`AtomAttentionEncoder`) to incorporate features derived from the **apo** structure:
   - Local structure: Similar to the **ref_pos** embedding in AF3, pairwise offset vectors between atoms in the **apo** structure are computed and embedded to provide local context.
   - Global structure: Pairwise distance maps (token-level) are computed and embedded with RBF to provide spatial context.
+  - TODO: Currently, only the `InputFeatureEmbedder` uses this modified module. In future, we may want to explore using this module in score model as well.
+
+### Trunk
+1. **RBF Embedding for Apo Features**: In the trunk module, we added RBF embedding of pairwise distance maps from the **apo** structure to the pair representation update module. This allows the trunk to effectively utilize global structural information from the **apo** state.
+
+2. **Interformer**: We modified the `Pairformer` module to `Interformer`, which allows bi-directional information flow between single (`s`) and pair (`z`) representations. This is crucial to enrich the evolutionary pre-trained sequence features with interaction context from the pair representation.
+
+3. **EnsembleModule**: We modified the `MSAModule` to `EnsembleModule`, which allows the integration of multiple structure embeddings (from structure ensemble). This is essential for modeling the **flexibility** of the **apo** state, based on multiple pre-trained structure representations from the ensemble of **apo** structures.
+
+4. **MultiStateModule**: TODO: To be added once the AlphaFold2 predicted structures are integrated as additional inputs.
+
 
 ### Structure Module
 1. **Diffusion Bridge**: We implemented a diffusion bridge module that learns the dynamics between **apo** and **holo** states. This module is designed to take both **apo** and **holo** structures as input during training, allowing the model to learn the transition dynamics effectively.
@@ -128,23 +147,5 @@ The following items require future implementation.
 ### Data Processing
 
 1. **Sequence Layout**: To be added for integrating with pre-trained language models.
-2. **Apo Perturbation**: To be added once the Apo perturbation module is complete.
-3. **Interface Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
+2. **Interface Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
     - NOTE: Generalize this to multi-modal interface conditioning.
-
-### Structure Module
-
-1. **Abstraction for Structure Module**: We may want to use not only diffusion models but also flow-matching models or other generative models as the structure module. Therefore, we need to abstract the structure module more generally.
-    - Currently, the structure module is tightly coupled with the diffusion model. In future, we need to decouple this, i.e., BaseStructureModule, BaseDiffusionModule, BaseFlowMatchingModule, etc.
-
-### Benchmark
-
-1. **Evaluation Metrics**: Installation of evaluation tools and script writing.
-
---- 
-
-## TODO
-
-1. Search hyperparameters related to PDB weighted sampling (chain/interface weights)
-2. Test the performance with/without single-chain structure datas in the training set.
-

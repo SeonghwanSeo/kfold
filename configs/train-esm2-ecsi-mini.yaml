@@ -1,11 +1,11 @@
 model:
   _yaml_: "model/kfold-ecsi.yaml"
   input_embedder:
-    channel_seq_encoder: 1152
+    channel_seq_encoder: 2560
     use_apo: true
   trunk:
-    use_cuequiv_kernels: true
     num_blocks: 16
+    use_cuequiv_kernels: true
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -24,7 +24,7 @@ train:
     batch_size: 4
     diffusion_batch_size: 48
     global_batch_size: 128
-    num_global_steps_per_epoch: 500
+    num_global_steps_per_epoch: 1000
 
   # pytorch lightning trainer hparams
   trainer:
@@ -41,10 +41,10 @@ train:
     num_workers: 8
 
     paths:
-      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esmc_600m_bf16/
+      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esm2_3b_bf16/
 
     featurization_args:
-      seq_embedding_dim: 1152
+      seq_embedding_dim: 2560
 
     apo_perturbation_args:
       use_symmetry_correction: true # align apo to holo symmetry
