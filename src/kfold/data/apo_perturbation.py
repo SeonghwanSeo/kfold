@@ -102,6 +102,8 @@ class ApoPerturbation:
         use_perturbation: bool = False,
         use_random_rotation: bool = False,
         use_symmetry_correction: bool = False,
+        use_entity_random_translation: bool = False,
+        entity_random_translation_sigma: float = 0.0,
         prob_perturbation: float = 0.5,
         prob_replace_to_holo: float = 0.0,
         mask_nucleic_acids: bool = False,
@@ -125,6 +127,15 @@ class ApoPerturbation:
         use_symmetry_correction : bool, optional
             Whether to correct for symmetry to holo structures.
             NOTE: This is used during training only.
+        use_entity_random_translation : bool, optional
+            Whether to apply an entity-level random translation before caching
+            synchronized apo structures. A single translation vector is sampled per
+            entity_key=(entity_id,num_tokens,num_atoms) and applied to apo_mask=True
+            atoms only.
+        entity_random_translation_sigma : float, optional
+            Standard deviation (Angstrom) for the entity-level random translation
+            sampled from N(0, sigma^2) independently per axis. If sigma <= 0, this
+            is treated as disabled.
         prob_perturbation : float, optional
             Probability of applying perturbation to apo structures.
         prob_replace_to_holo : float, optional
@@ -184,6 +195,10 @@ class ApoPerturbation:
         self.use_perturbation: bool = use_perturbation
         self.use_random_rotation: bool = use_random_rotation
         self.use_symmetry_correction: bool = use_symmetry_correction
+        self.use_entity_random_translation: bool = use_entity_random_translation
+        self.entity_random_translation_sigma: float = float(
+            entity_random_translation_sigma
+        )
         self.prob_perturbation: float = prob_perturbation
         self.prob_replace_to_holo: float = prob_replace_to_holo
         self.mask_nucleic_acids: bool = mask_nucleic_acids
@@ -285,6 +300,50 @@ class ApoPerturbation:
         self._stats_shape_mismatch: int = 0
         self._stats_success: int = 0
         self._stats_langevin_used: int = 0
+
+        if self.entity_random_translation_sigma < 0.0:
+            raise ValueError(
+                "entity_random_translation_sigma must be >= 0.0 "
+                f"(got {self.entity_random_translation_sigma})."
+            )
+
+    @staticmethod
+    def _apply_masked_translation(
+        coords: np.ndarray, mask: np.ndarray, translation: np.ndarray
+    ) -> np.ndarray:
+        """Apply a 3D translation to masked atoms only (mask=False atoms unchanged)."""
+        if coords.size == 0:
+            return coords
+        if translation is None or translation.shape != (3,):
+            return coords
+        if not np.any(mask):
+            return coords
+        if np.allclose(translation, 0.0):
+            return coords
+
+        out = coords.astype(np.float32, copy=True)
+        mask_bool = mask.astype(bool, copy=False)
+        out[mask_bool] += translation.astype(np.float32, copy=False)
+        return out
+
+    def _get_or_sample_entity_translation(
+        self,
+        entity_key: tuple[int, int, int],
+        rng: np.random.Generator,
+        cache: dict[tuple[int, int, int], np.ndarray],
+    ) -> np.ndarray:
+        """Return a cached entity translation or sample a new one."""
+        if (
+            not self.use_entity_random_translation
+        ) or self.entity_random_translation_sigma <= 0.0:
+            return np.zeros((3,), dtype=np.float32)
+        if entity_key in cache:
+            return cache[entity_key]
+
+        sigma = float(self.entity_random_translation_sigma)
+        t = rng.normal(loc=0.0, scale=sigma, size=(3,)).astype(np.float32)
+        cache[entity_key] = t
+        return t
 
     def _sample_random_walk_total_time(self, rng: np.random.Generator) -> float:
         """Sample random-walk total_time for Riemannian Brownian motion.
@@ -483,6 +542,7 @@ class ApoPerturbation:
         # tokens or atoms due to PTM, therefore, we need to distinguish this.
         entity_apo_coords: dict[tuple[int, int, int], np.ndarray] = {}
         entity_apo_masks: dict[tuple[int, int, int], np.ndarray] = {}
+        entity_translations: dict[tuple[int, int, int], np.ndarray] = {}
 
         # Process each chain
         chain_apo_coords_list: list[np.ndarray] = []
@@ -537,6 +597,14 @@ class ApoPerturbation:
                 if chain_type in (C.ChainType.DNA, C.ChainType.RNA):
                     chain_apo_coords = np.zeros_like(chain_apo_coords)
                     chain_apo_mask = np.zeros_like(chain_apo_mask)
+
+            # Entity-level random translation (applied before caching).
+            t = self._get_or_sample_entity_translation(
+                entity_key, rng, entity_translations
+            )
+            chain_apo_coords = self._apply_masked_translation(
+                chain_apo_coords, chain_apo_mask, t
+            )
 
             # Store for synchronized apo structures
             entity_apo_coords[entity_key] = chain_apo_coords
