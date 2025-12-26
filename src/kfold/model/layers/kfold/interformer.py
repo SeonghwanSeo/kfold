@@ -50,28 +50,22 @@ class InterformerStack(nn.Module):
         num_heads_tri_attn: int = 4,
         num_blocks: int = 48,
         dropout: float = 0.25,
+        skip_tri_attn: bool = False,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         """Initialize the Interformer module."""
         super().__init__()
-        self.channel_s: int = channel_s
-        self.channel_z: int = channel_z
-        self.num_heads_attn: int = num_heads_attn
-        self.num_heads_tri_attn: int = num_heads_tri_attn
-        self.dropout: float = dropout
-        self.num_blocks: int = num_blocks
-
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
-
         self.blocks = nn.ModuleList()
         for _ in range(num_blocks):
             self.blocks.append(
                 InterformerBlock(
-                    self.channel_s,
-                    self.channel_z,
-                    self.num_heads_attn,
-                    self.num_heads_tri_attn,
-                    self.dropout,
+                    channel_s,
+                    channel_z,
+                    num_heads_attn,
+                    num_heads_tri_attn,
+                    skip_tri_attn,
+                    dropout,
                 )
             )
 
@@ -196,6 +190,7 @@ class InterformerBlock(nn.Module):
         channel_z: int = 128,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
+        skip_tri_attn: bool = False,
         dropout: float = 0.25,
     ) -> None:
         """Initialize the Interformer module.
@@ -210,12 +205,17 @@ class InterformerBlock(nn.Module):
             The number of attention heads, by default 16
         num_heads_tri_attn : int, optional
             The number of triangle attention heads, by default 4
+        skip_tri_attn : bool, optional
+            Whether to skip triangle attention, by default False
         dropout : float, optional
             The dropout rate, by default 0.25
         """
         super().__init__()
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
+        self.num_heads_attn: int = num_heads_attn
+        self.num_heads_tri_attn: int = num_heads_tri_attn
+        self.skip_tri_attn: bool = skip_tri_attn
         self.dropout: float = dropout
 
         self.pairwise_proj = PairwiseProdDiff(channel_s, channel_z)
@@ -223,12 +223,13 @@ class InterformerBlock(nn.Module):
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
 
-        self.tri_att_start = TriangleAttentionStartingNode(
-            channel_z, num_heads_tri_attn, inf=1e9
-        )
-        self.tri_att_end = TriangleAttentionEndingNode(
-            channel_z, num_heads_tri_attn, inf=1e9
-        )
+        if not self.skip_tri_attn:
+            self.tri_att_start = TriangleAttentionStartingNode(
+                channel_z, num_heads_tri_attn, inf=1e9
+            )
+            self.tri_att_end = TriangleAttentionEndingNode(
+                channel_z, num_heads_tri_attn, inf=1e9
+            )
 
         self.attention = AttentionPairBias(
             channel_a=channel_s,
@@ -255,10 +256,10 @@ class InterformerBlock(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass."""
 
-        # Single to pair update
+        # Information flow from single (s) to pairwise (z)
         z = z + self.pairwise_proj(s)
 
-        # Triangle attention and multiplication on z
+        # Triangle multiplicative update
         z = z + self.dropout_rowwise(
             self.tri_mul_out(
                 z,
@@ -273,26 +274,29 @@ class InterformerBlock(nn.Module):
                 use_kernels=use_cuequiv_kernels,
             )
         )
-        z = z + self.dropout_rowwise(
-            self.tri_att_start(
-                z,
-                mask=pair_mask,
-                chunk_size=chunk_size_tri_attn,
-                use_kernels=use_cuequiv_kernels,
+        if not self.skip_tri_attn:
+            # Triangle attention update
+            z = z + self.dropout_rowwise(
+                self.tri_att_start(
+                    z,
+                    mask=pair_mask,
+                    chunk_size=chunk_size_tri_attn,
+                    use_kernels=use_cuequiv_kernels,
+                )
             )
-        )
-        z = z + self.dropout_columnwise(
-            self.tri_att_end(
-                z,
-                mask=pair_mask,
-                chunk_size=chunk_size_tri_attn,
-                use_kernels=use_cuequiv_kernels,
+            z = z + self.dropout_columnwise(
+                self.tri_att_end(
+                    z,
+                    mask=pair_mask,
+                    chunk_size=chunk_size_tri_attn,
+                    use_kernels=use_cuequiv_kernels,
+                )
             )
-        )
 
+        # Transition for pairwise representation
         z = z + self.transition_z(z)
 
-        # Attention from z to s
+        # Information flow from pairwise (z) to single (s)
         s = s + self.attention(
             s,  # [B, L, C_s]
             None,
