@@ -538,8 +538,7 @@ class AtomTransformer(nn.Module):
         )
 
         # NOTE: mask the key positions only (masking query is not required)
-        mask = mask  # [B, La, 1]
-        attn_mask = local_attn_index.to_key(mask[..., None]).squeeze(-1)  # [B, W, Lk]
+        attn_mask = local_attn_index.to_key(mask[..., None]).squeeze(-1)  # [..., W, Lk]
 
         # main transformer
         q = self.diffusion_transformer(

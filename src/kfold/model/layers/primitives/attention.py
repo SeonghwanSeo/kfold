@@ -6,7 +6,7 @@ import torch.nn.functional as F
 try:
     from cuequivariance_torch import attention_pair_bias as cueq_attention_pair_bias
 except ImportError:
-    triangle_attention = None
+    cueq_attention_pair_bias = None
 
 from .utils import add, mul, permute_final_dims
 
@@ -104,21 +104,21 @@ def attention_pair_bias(
     mask : torch.Tensor
         The attention mask tensor of shape (B, *, Lk)
     w_proj_z : torch.Tensor
-        The weight tensor for projecting z, default None
+        The weight tensor for projecting z
     w_proj_g : torch.Tensor
         The weight tensor for projecting g
     w_proj_o : torch.Tensor
         The weight tensor for projecting o
     w_ln_z : torch.Tensor
-        The weight tensor for layer norm on z, default None
+        The weight tensor for layer norm on z
     b_ln_z : Optional[torch.Tensor]
-        The bias tensor for layer norm on z, default None
+        The bias tensor for layer norm on z
     b_proj_z : torch.Tensor
-        The bias tensor for projecting z, default None
+        The bias tensor for projecting z
     b_proj_g : Optional[torch.Tensor]
-        The bias tensor for projecting g, default None
+        The bias tensor for projecting g
     b_proj_o : Optional[torch.Tensor]
-        The bias tensor for projecting o, default None
+        The bias tensor for projecting o
     num_heads : int
         The number of attention heads, default 32
     inf : float
@@ -128,7 +128,7 @@ def attention_pair_bias(
     attn_scale : Optional[float]
         The scaling factor for the query-key dot product, default None
     use_kernels : bool
-        Whether to use the custom kernel if available, default True
+        Whether to use the custom kernel if available, default False
     """
     if use_kernels:
         assert cueq_attention_pair_bias is not None, (

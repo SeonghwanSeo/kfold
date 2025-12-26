@@ -287,7 +287,6 @@ class TriangleAttention(nn.Module):
         self,
         x: torch.Tensor,
         tri_bias: torch.Tensor,
-        mask_bias: torch.Tensor,
         mask: torch.Tensor,
         chunk_size: int,
         use_kernels: bool = False,
@@ -315,7 +314,6 @@ class TriangleAttention(nn.Module):
             "q_x": x,
             "kv_x": x,
             "tri_bias": tri_bias,
-            "mask_bias": mask_bias,
             "mask": mask,
         }
 
