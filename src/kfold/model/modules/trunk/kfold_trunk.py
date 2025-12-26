@@ -58,6 +58,7 @@ class InterformerConfig:
     num_heads_tri_attn: int = 4
     num_blocks: int = 48
     dropout: float = 0.25
+    skip_tri_attn: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -160,6 +161,7 @@ class KFoldTrunk(BaseTrunk):
             num_heads_tri_attn=cfg.interformer.num_heads_tri_attn,
             num_blocks=cfg.interformer.num_blocks,
             dropout=cfg.interformer.dropout,
+            skip_tri_attn=cfg.interformer.skip_tri_attn,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
