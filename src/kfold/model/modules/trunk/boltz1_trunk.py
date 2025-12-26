@@ -48,14 +48,13 @@ class Boltz1PairformerTrunk(BaseTrunk):
         pairwise_num_heads: int = 4
         use_msa: bool = False
         use_template: bool = False
-        use_cuequiv_kernels: bool = False
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairformer module."""
-        super().__init__(cfg)
+        super().__init__(cfg, kernel_config)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_kernels: bool = cfg.use_cuequiv_kernels
+        self.use_kernels: bool = self.kernel_config.cuequivariance
 
         if self.use_template:
             raise NotImplementedError(

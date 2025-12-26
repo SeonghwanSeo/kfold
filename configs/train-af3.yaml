@@ -1,7 +1,5 @@
 model:
   _yaml_: "model/af3.yaml"
-  trunk:
-    use_cuequiv_kernels: true
 
 train:
   _yaml_: "train/structure_only.yaml"

@@ -2,8 +2,6 @@ model:
   _yaml_: "model/kfold-edm.yaml"
   input_embedder:
     channel_seq_encoder: 2560
-  trunk:
-    use_cuequiv_kernels: true
 
 train:
   _yaml_: "train/structure_only.yaml"

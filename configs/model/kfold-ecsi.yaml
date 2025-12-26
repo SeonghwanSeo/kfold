@@ -2,6 +2,11 @@
 _registry_: "main_module"
 _class_: KFold
 
+# kernel settings
+kernel:
+  cuequivariance: true
+
+# Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/pretrained.yaml"
   channel_seq_encoder: null # Should be overriden
@@ -10,7 +15,6 @@ input_embedder:
 
 trunk:
   _yaml_: "module/trunk/af3.yaml"
-  use_cuequiv_kernels: true
 
 structure_module:
   _yaml_: "module/structure_module/ecsi.yaml"

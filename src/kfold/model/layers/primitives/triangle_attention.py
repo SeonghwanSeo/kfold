@@ -100,6 +100,7 @@ class MultiHeadAttention(nn.Module):
         c_hidden: int,
         no_heads: int,
         gating: bool = True,
+        inf: float = 1e9,
     ):
         """Initialize the attention layer.
 
@@ -121,12 +122,13 @@ class MultiHeadAttention(nn.Module):
         """
         super().__init__()
 
-        self.c_q = c_q
-        self.c_k = c_k
-        self.c_v = c_v
-        self.c_hidden = c_hidden
-        self.no_heads = no_heads
-        self.gating = gating
+        self.c_q: int = c_q
+        self.c_k: int = c_k
+        self.c_v: int = c_v
+        self.c_hidden: int = c_hidden
+        self.no_heads: int = no_heads
+        self.gating: bool = gating
+        self.inf: float = inf
 
         # DISCREPANCY: c_hidden is not the per-head channel dimension, as
         # stated in the supplement, but the overall channel dimension.
@@ -196,7 +198,6 @@ class MultiHeadAttention(nn.Module):
         q_x: torch.Tensor,
         kv_x: torch.Tensor,
         tri_bias: torch.Tensor,
-        mask_bias: torch.Tensor,
         mask: torch.Tensor,
         use_kernels: bool = False,
     ) -> torch.Tensor:
@@ -210,8 +211,6 @@ class MultiHeadAttention(nn.Module):
             [*, K, C_k] key data
         tri_bias : torch.Tensor
             [*, H, Q, K] triangular bias
-        mask_bias : torch.Tensor
-            [*, H, Q, K] mask bias
         mask : torch.Tensor
             [*, Q, K] mask
         use_kernels : bool, default=False
@@ -241,6 +240,10 @@ class MultiHeadAttention(nn.Module):
             )
             o = o.transpose(-2, -3)
         else:
+            if mask.dtype == torch.bool:
+                mask_bias = -self.inf * (~mask).to(q.dtype)
+            else:
+                mask_bias = self.inf * (mask - 1)
             biases = [mask_bias, tri_bias]
             o = _attention(q, k, v, biases)
             o = o.transpose(-2, -3)
@@ -284,7 +287,6 @@ class TriangleAttention(nn.Module):
         self,
         x: torch.Tensor,
         tri_bias: torch.Tensor,
-        mask_bias: torch.Tensor,
         mask: torch.Tensor,
         chunk_size: int,
         use_kernels: bool = False,
@@ -312,7 +314,6 @@ class TriangleAttention(nn.Module):
             "q_x": x,
             "kv_x": x,
             "tri_bias": tri_bias,
-            "mask_bias": mask_bias,
             "mask": mask,
         }
 
@@ -368,22 +369,21 @@ class TriangleAttention(nn.Module):
 
         # [*, I, 1, 1, J]
         mask = mask[..., :, None, None, :]
-        if mask.dtype == torch.bool:
-            mask_bias = -self.inf * (~mask).to(torch.float32)
-        else:
-            mask_bias = self.inf * (mask - 1).to(torch.float32)
 
-        # [*, H, I, J]
-        triangle_bias = permute_final_dims(self.linear(x), (2, 0, 1))
+        with torch.autocast(x.device.type, dtype=torch.float32, enabled=use_kernels):
+            # NOTE: casting to float32 for cuequiv kernels.
+            triangle_bias = self.linear(x)
 
-        # [*, 1, H, I, J]
-        triangle_bias = triangle_bias.unsqueeze(-4)
+            # [*, H, I, J]
+            triangle_bias = permute_final_dims(triangle_bias, (2, 0, 1))
+
+            # [*, 1, H, I, J]
+            triangle_bias = triangle_bias.unsqueeze(-4)
 
         if chunk_size is not None and not use_kernels:
             x = self._chunk(
                 x,
                 triangle_bias,
-                mask_bias,
                 mask,
                 chunk_size,
                 use_kernels=use_kernels,
@@ -393,7 +393,6 @@ class TriangleAttention(nn.Module):
                 x,
                 x,
                 triangle_bias,
-                mask_bias,
                 mask,
                 use_kernels=use_kernels,
             )

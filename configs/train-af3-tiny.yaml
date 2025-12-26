@@ -2,7 +2,6 @@ model:
   _yaml_: "model/af3.yaml"
   trunk:
     num_blocks: 8
-    use_cuequiv_kernels: true
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
