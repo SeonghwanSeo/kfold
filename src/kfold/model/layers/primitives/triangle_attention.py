@@ -369,9 +369,9 @@ class TriangleAttention(nn.Module):
         # [*, I, 1, 1, J]
         mask = mask[..., :, None, None, :]
         if mask.dtype == torch.bool:
-            mask_bias = -self.inf * (~mask).to(x.dtype)
+            mask_bias = -self.inf * (~mask).to(torch.float32)
         else:
-            mask_bias = self.inf * (mask - 1)
+            mask_bias = self.inf * (mask - 1).to(torch.float32)
 
         # [*, H, I, J]
         triangle_bias = permute_final_dims(self.linear(x), (2, 0, 1))
