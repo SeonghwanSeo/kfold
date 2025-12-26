@@ -19,6 +19,4 @@ ensemble_module:
 multi_state_module: {}
 use_ensemble: False
 use_multi_state: False
-use_cuequiv_kernels: True
 blocks_per_ckpt: 1
-

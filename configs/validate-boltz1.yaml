@@ -1,8 +1,8 @@
 model:
   _yaml_: "model/boltz1-full.yaml"
-  trunk:
-    use_cuequiv_kernels: false # true can return slightly different results.
   load_weight: true
+  kernel:
+    cuequivariance: true
 
 train:
   _yaml_: "train/structure_only.yaml"
