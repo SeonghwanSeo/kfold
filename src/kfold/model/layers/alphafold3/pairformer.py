@@ -65,8 +65,7 @@ class PairformerStack(nn.Module):
         z: torch.Tensor,
         mask: torch.Tensor,
         chunk_size_tri_attn: int | None = None,
-        use_cuequiv_mul: bool = False,
-        use_cuequiv_attn: bool = False,
+        use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -78,6 +77,10 @@ class PairformerStack(nn.Module):
             The pairwise embeddings
         mask : torch.Tensor
             The token mask
+        chunk_size_tri_attn : int | None, optional
+            The chunk size for triangle attention, by default None
+        use_cuequiv_kernels : bool, optional
+            Whether to use CuEQuiv kernels, by default False
 
         Returns
         -------
@@ -100,8 +103,7 @@ class PairformerStack(nn.Module):
                 single_mask=mask.float(),
                 pair_mask=pair_mask.float(),
                 chunk_size_tri_attn=chunk_size_tri_attn,
-                use_cuequiv_mul=use_cuequiv_mul,
-                use_cuequiv_attn=use_cuequiv_attn,
+                use_cuequiv_kernels=use_cuequiv_kernels,
             )
             for b in self.blocks
         ]
@@ -186,8 +188,7 @@ class PairformerBlock(nn.Module):
         single_mask: torch.Tensor,
         pair_mask: torch.Tensor,
         chunk_size_tri_attn: int | None = None,
-        use_cuequiv_mul: bool = False,
-        use_cuequiv_attn: bool = False,
+        use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
         See Section 3.6 Algorithm 20 Pairformer Stack
@@ -198,7 +199,7 @@ class PairformerBlock(nn.Module):
             self.tri_mul_out(
                 z,
                 pair_mask,
-                use_kernels=use_cuequiv_mul,
+                use_kernels=use_cuequiv_kernels,
             )
         )
 
@@ -207,7 +208,7 @@ class PairformerBlock(nn.Module):
             self.tri_mul_in(
                 z,
                 mask=pair_mask,
-                use_kernels=use_cuequiv_mul,
+                use_kernels=use_cuequiv_kernels,
             )
         )
 
@@ -217,7 +218,7 @@ class PairformerBlock(nn.Module):
                 z,
                 mask=pair_mask,
                 chunk_size=chunk_size_tri_attn,
-                use_kernels=use_cuequiv_attn,
+                use_kernels=use_cuequiv_kernels,
             )
         )
 
@@ -227,7 +228,7 @@ class PairformerBlock(nn.Module):
                 z,
                 mask=pair_mask,
                 chunk_size=chunk_size_tri_attn,
-                use_kernels=use_cuequiv_attn,
+                use_kernels=use_cuequiv_kernels,
             )
         )
 
@@ -240,6 +241,7 @@ class PairformerBlock(nn.Module):
             None,
             z,  # [B, L, L, C_z]
             attn_mask=single_mask,  # [B, L]
+            use_kernels=use_cuequiv_kernels,
         )
 
         # Line 8

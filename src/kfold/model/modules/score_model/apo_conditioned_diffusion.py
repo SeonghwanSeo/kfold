@@ -72,8 +72,8 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
         conditioning_transition_layers: int = 2
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config) -> None:
-        super().__init__(cfg)
+    def __init__(self, cfg: Config, kernel_config):
+        super().__init__(cfg, kernel_config)
 
         diffusion_stack_class = DiffusionModuleWithApo if cfg.use_apo else DiffusionModule
 
@@ -139,4 +139,5 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
             s_trunk,
             z_trunk,
             model_cache,
+            use_cuequiv_kernels=self.kernel_config.cuequivariance,
         )

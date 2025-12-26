@@ -12,9 +12,10 @@ class BaseScoreModel(torch.nn.Module, ABC):
     See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3
     """
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, kernel_config):
         super().__init__()
         self.cfg = cfg
+        self.kernel_config = kernel_config
         self.is_compiled: bool = False
 
     def compile(self, compile: bool = True):

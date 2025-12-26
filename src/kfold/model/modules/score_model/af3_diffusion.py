@@ -70,8 +70,8 @@ class AF3DiffusionModule(BaseScoreModel):
         conditioning_transition_layers: int = 2
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config) -> None:
-        super().__init__(cfg)
+    def __init__(self, cfg: Config, kernel_config):
+        super().__init__(cfg, kernel_config)
 
         self.diffusion_stack = DiffusionModule(
             channel_s=cfg.channel_s,
@@ -122,6 +122,9 @@ class AF3DiffusionModule(BaseScoreModel):
             The trunk single representation, shape [B, Lt, c_s].
         z_trunk : torch.Tensor
             The trunk pair representation, shape [B, Lt, c_z].
+        model_cache : dict | None, optional
+            The model cache for storing intermediate results to speed up
+            computation, by default None.
 
         Returns
         -------
@@ -136,4 +139,5 @@ class AF3DiffusionModule(BaseScoreModel):
             s_trunk,
             z_trunk,
             model_cache,
+            use_cuequiv_kernels=self.kernel_config.cuequivariance,
         )

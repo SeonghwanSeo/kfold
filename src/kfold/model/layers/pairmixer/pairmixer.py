@@ -55,7 +55,10 @@ import torch.nn as nn
 
 from kfold.model.layers.alphafold3.transformers import AttentionPairBias
 from kfold.model.layers.alphafold3.transition import Transition
-from kfold.model.layers.primitives.dropout import get_dropout_mask
+from kfold.model.layers.primitives.dropout import (
+    DropoutColumnwise,
+    DropoutRowwise,
+)
 from kfold.model.layers.primitives.triangle_multiplication import (
     TriangleMultiplicationIncoming,
     TriangleMultiplicationOutgoing,
@@ -97,7 +100,7 @@ class PairmixerStack(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_cuequiv_mul: bool = False,
+        use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Perform the forward pass.
@@ -110,8 +113,8 @@ class PairmixerStack(nn.Module):
             The pairwise embeddings
         mask : torch.Tensor
             The token mask
-        use_cuequiv_mul : bool, optional
-            Whether to use Cuequiv multiplication, by default False
+        use_cuequiv_kernels : bool, optional
+            Whether to use cuequiv kernels in triangle multiplication,
 
         Returns
         -------
@@ -128,7 +131,7 @@ class PairmixerStack(nn.Module):
             partial(
                 b,
                 pair_mask=pair_mask.float(),
-                use_cuequiv_mul=use_cuequiv_mul,
+                use_cuequiv_kernels=use_cuequiv_kernels,
             )
             for b in self.blocks
         ]
@@ -175,31 +178,36 @@ class PairmixerBlock(nn.Module):
 
         self.transition_z = Transition(channel_z, expansion_factor=4)
 
+        self.dropout_rowwise = DropoutRowwise(dropout)
+        self.dropout_columnwise = DropoutColumnwise(dropout)
+
     def forward(
         self,
         s: torch.Tensor,
         z: torch.Tensor,
         pair_mask: torch.Tensor,
-        use_cuequiv_mul: bool = False,
+        use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
         See Section 3.6 Algorithm 20 Pairformer Stack
         """
 
         # Line 2
-        dropout = get_dropout_mask(z, self.dropout, self.training)
-        z = z + dropout * self.tri_mul_out(
-            z,
-            mask=pair_mask,
-            use_kernels=use_cuequiv_mul,
+        z = z + self.dropout_rowwise(
+            self.tri_mul_out(
+                z,
+                pair_mask,
+                use_kernels=use_cuequiv_kernels,
+            )
         )
 
         # Line 3
-        dropout = get_dropout_mask(z, self.dropout, self.training)
-        z = z + dropout * self.tri_mul_in(
-            z,
-            mask=pair_mask,
-            use_kernels=use_cuequiv_mul,
+        z = z + self.dropout_rowwise(
+            self.tri_mul_in(
+                z,
+                mask=pair_mask,
+                use_kernels=use_cuequiv_kernels,
+            )
         )
 
         # Line 4, 5 removed (no attention)
@@ -253,7 +261,7 @@ class PairmixerWithSeqAttnModule(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        use_cuequiv_mul: bool = False,
+        use_cuequiv_kernels: bool = False,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass."""
@@ -265,7 +273,7 @@ class PairmixerWithSeqAttnModule(nn.Module):
                 b,
                 single_mask=mask.float(),
                 pair_mask=pair_mask.float(),
-                use_cuequiv_mul=use_cuequiv_mul,
+                use_cuequiv_kernels=use_cuequiv_kernels,
             )
             for b in self.blocks
         ]
@@ -315,27 +323,31 @@ class PairmixerWithSeqAttnBlock(nn.Module):
         self.transition_s = Transition(channel_s, expansion_factor=4)
         self.transition_z = Transition(channel_z, expansion_factor=4)
 
+        self.dropout_rowwise = DropoutRowwise(dropout)
+        self.dropout_columnwise = DropoutColumnwise(dropout)
+
     def forward(
         self,
         s: torch.Tensor,
         z: torch.Tensor,
         single_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        use_cuequiv_mul: bool = False,
+        use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # pairwise rep updates
-        dropout = get_dropout_mask(z, self.dropout, self.training)
-        z = z + dropout * self.tri_mul_out(
-            z,
-            mask=pair_mask,
-            use_kernels=use_cuequiv_mul,
+        z = z + self.dropout_rowwise(
+            self.tri_mul_out(
+                z,
+                pair_mask,
+                use_kernels=use_cuequiv_kernels,
+            )
         )
-
-        dropout = get_dropout_mask(z, self.dropout, self.training)
-        z = z + dropout * self.tri_mul_in(
-            z,
-            mask=pair_mask,
-            use_kernels=use_cuequiv_mul,
+        z = z + self.dropout_rowwise(
+            self.tri_mul_in(
+                z,
+                mask=pair_mask,
+                use_kernels=use_cuequiv_kernels,
+            )
         )
 
         z = z + self.transition_z(z)

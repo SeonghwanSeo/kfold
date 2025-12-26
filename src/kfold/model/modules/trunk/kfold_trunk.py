@@ -68,8 +68,8 @@ class EnsembleModuleConfig:
     num_heads_pwa: int = 8
     num_heads_tri_attn: int = 4
     num_blocks: int = 4
-    struct_dropout: float = 0.15
-    z_dropout: float = 0.25
+    dropout_struct: float = 0.15
+    dropout_z: float = 0.25
 
 
 # TODO: Define the configuration for MultiStateModule when implemented
@@ -98,8 +98,6 @@ class KFoldTrunk(BaseTrunk):
             Whether to use EnsembleModule, by default True
         use_multi_state: bool, optional
             Whether to use MultiStateModule, by default False
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuequivariance kernels, by default False
         tri_attn_chunk_threshold : int, optional
             The threshold for chunking in triangle attention, by default 384
         """
@@ -125,13 +123,12 @@ class KFoldTrunk(BaseTrunk):
         )
 
         # other options
-        use_cuequiv_kernels: bool = False
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config=None):
         """Initialize the MultiStateApoTrunk module."""
-        super().__init__(cfg)
+        super().__init__(cfg, kernel_config)
         self.use_ensemble: bool = cfg.use_ensemble
         self.use_multi_state: bool = cfg.use_multi_state
 
@@ -145,8 +142,8 @@ class KFoldTrunk(BaseTrunk):
                 num_heads_pwa=cfg.ensemble_module.num_heads_pwa,
                 num_heads_tri_attn=cfg.ensemble_module.num_heads_tri_attn,
                 num_blocks=cfg.ensemble_module.num_blocks,
-                struct_dropout=cfg.ensemble_module.struct_dropout,
-                z_dropout=cfg.ensemble_module.z_dropout,
+                dropout_struct=cfg.ensemble_module.dropout_struct,
+                dropout_z=cfg.ensemble_module.dropout_z,
                 blocks_per_ckpt=cfg.blocks_per_ckpt,
             )
 
@@ -170,7 +167,6 @@ class KFoldTrunk(BaseTrunk):
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
         # Other options
-        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
     def forward(
@@ -205,13 +201,11 @@ class KFoldTrunk(BaseTrunk):
             The updated tensor of shape (B, L, L, c_z).
         """
         if not self.training:
-            chunk_size_opm = 512
             if z_init.shape[1] > self.chunk_threshold:
                 chunk_size_tri_attn = 128
             else:
                 chunk_size_tri_attn = 512
         else:
-            chunk_size_opm = None
             chunk_size_tri_attn = None
 
         # Line 6, z_hat, s_hat = 0, 0
@@ -236,10 +230,8 @@ class KFoldTrunk(BaseTrunk):
                         f_input,
                         z,
                         s_inputs,
-                        chunk_size_opm=chunk_size_opm,
                         chunk_size_tri_attn=chunk_size_tri_attn,
-                        use_cuequiv_mul=self.use_cuequiv_kernels,
-                        use_cuequiv_attn=self.use_cuequiv_kernels,
+                        use_cuequiv_kernels=self.kernel_config.cuequivariance,
                     )
 
                 s, z = self.pairformer_module(
@@ -247,8 +239,7 @@ class KFoldTrunk(BaseTrunk):
                     z,
                     mask=f_input.token.pad_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
-                    use_cuequiv_attn=self.use_cuequiv_kernels,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                    use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
                 # Line 13
