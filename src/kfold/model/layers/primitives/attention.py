@@ -1,6 +1,14 @@
-import torch
+import math
 
-from .utils import add, div
+import torch
+import torch.nn.functional as F
+
+try:
+    from cuequivariance_torch import attention_pair_bias as cueq_attention_pair_bias
+except ImportError:
+    triangle_attention = None
+
+from .utils import add, mul, permute_final_dims
 
 
 def attention(
@@ -39,7 +47,7 @@ def attention(
         bias = bias.to(torch.float32) if bias is not None else None
 
         if scale is not None:
-            query = div(query, scale, inplace=inplace)
+            query = mul(query, scale, inplace=inplace)
 
         # Compute attention weights
         attn = torch.einsum("...qc,...kc->...qk", query, key)
@@ -53,5 +61,143 @@ def attention(
 
     # Compute output
     out = torch.einsum("...qk,...kc->...qc", attn.to(value.dtype), value)
+
+    return out
+
+
+def attention_pair_bias(
+    s: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    z: torch.Tensor,
+    mask: torch.Tensor,
+    w_proj_z: torch.Tensor,
+    w_proj_g: torch.Tensor,
+    w_proj_o: torch.Tensor,
+    w_ln_z: torch.Tensor,
+    b_ln_z: torch.Tensor | None,
+    b_proj_z: torch.Tensor | None,
+    b_proj_g: torch.Tensor | None,
+    b_proj_o: torch.Tensor | None,
+    num_heads: int = 32,
+    inf: float = 1e6,
+    eps: float = 1e-5,
+    attn_scale: float | None = None,
+    use_kernels: bool = False,
+) -> torch.Tensor:
+    """Compute the attention operation with pair bias using a custom kernel if available.
+    Parameters
+    ----------
+    s : torch.Tensor
+        The input tensor of shape (B, *, L, C)
+        where B is the batch size, N is the number of samples,
+        L is the sequence length, and C is the feature dimension.
+    q : torch.Tensor
+        The query tensor of shape (B, *, H, Lq, C_h)
+    k : torch.Tensor
+        The key tensor of shape (B, *, H, Lk, C_h)
+    v : torch.Tensor
+        The value tensor of shape (B, *, H, Lk, C_h)
+    z : torch.Tensor
+        The pair bias tensor of shape (B, *, Lq, Lk, C_z)
+    mask : torch.Tensor
+        The attention mask tensor of shape (B, *, Lk)
+    w_proj_z : torch.Tensor
+        The weight tensor for projecting z, default None
+    w_proj_g : torch.Tensor
+        The weight tensor for projecting g
+    w_proj_o : torch.Tensor
+        The weight tensor for projecting o
+    w_ln_z : torch.Tensor
+        The weight tensor for layer norm on z, default None
+    b_ln_z : Optional[torch.Tensor]
+        The bias tensor for layer norm on z, default None
+    b_proj_z : torch.Tensor
+        The bias tensor for projecting z, default None
+    b_proj_g : Optional[torch.Tensor]
+        The bias tensor for projecting g, default None
+    b_proj_o : Optional[torch.Tensor]
+        The bias tensor for projecting o, default None
+    num_heads : int
+        The number of attention heads, default 32
+    inf : float
+        The value to use for masking, default 1e6
+    eps : float
+        The epsilon value for numerical stability, default 1e-5
+    attn_scale : Optional[float]
+        The scaling factor for the query-key dot product, default None
+    use_kernels : bool
+        Whether to use the custom kernel if available, default True
+    """
+    if use_kernels:
+        assert cueq_attention_pair_bias is not None, (
+            "cuequivariance_torch is not installed."
+        )
+        L = s.shape[-2]
+        Lq = q.shape[-2]
+        Lk = k.shape[-2]
+        if not (L == Lq == Lk):
+            raise NotImplementedError(
+                "cueq_attention_pair_bias only supports Lq == Lk == L."
+            )
+        # Merge batch dims for compatibility
+        batch_dims = s.shape[:-2]
+        s = s.flatten(0, -3)  # [B*N, L, C]
+        q = q.flatten(0, -4)  # [B*N, H, Q, C_h]
+        k = k.flatten(0, -4)  # [B*N, H, K, C_h]
+        v = v.flatten(0, -4)  # [B*N, H, K, C_h]
+        z = z.flatten(0, -4)  # [B*N, Q, K, C_z]
+        mask = mask.flatten(0, -2)  # [B*N, K]
+
+        out, _ = cueq_attention_pair_bias(
+            s,
+            q,
+            k,
+            v,
+            z,
+            mask,
+            num_heads,
+            w_proj_z,
+            w_proj_g,
+            w_proj_o,
+            w_ln_z,
+            b_ln_z,
+            b_proj_z,
+            b_proj_g,
+            b_proj_o,
+            inf,
+            eps,
+            attn_scale,
+            return_z_proj=False,
+        )
+        out = out.unflatten(0, batch_dims)  # restore batch dims
+
+    else:
+        # layernorm on z
+        z_ln = F.layer_norm(z, z.shape[-1:], w_ln_z, b_ln_z)  # [B, Q, K, C_z]
+        # project z to get attention bias
+        attn_bias = F.linear(z_ln, w_proj_z, b_proj_z)  # [B, Q, K, H]
+        attn_bias = permute_final_dims(attn_bias, (2, 0, 1))  # [B, H, Q, K]
+        del z_ln
+        attn_bias = attn_bias - inf * (
+            1 - mask.float()[..., None, None, :]
+        )  # [B, H, Q, K]
+
+        # === Attention === #
+        if attn_scale is None:
+            attn_scale = 1 / math.sqrt(q.shape[-1])
+        Av = attention(
+            q,  # [B, N, H, Q, C_h]
+            k,  # [B, N, H, K, C_h]
+            v,  # [B, N, H, K, C_h]
+            bias=attn_bias,  # [B, N, H, Q, K]
+            scale=attn_scale,
+        )  # [B, N, H, Q, C_h]
+        Av = permute_final_dims(Av, (1, 0, 2))  # [B, N, Q, H, C_h]
+        Av = Av.reshape(s.shape)  # [B, N, Q, C]
+
+        g = F.sigmoid(F.linear(s, w_proj_g, b_proj_g))  # [B, N, L, C]
+        out = F.linear(g * Av, w_proj_o, b_proj_o)  # [B, N, L, C]
 
     return out
