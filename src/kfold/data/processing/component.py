@@ -161,6 +161,11 @@ class Component:
     symmetries: tuple[list[int], ...] = ()  # Permutational symmetries
     properties: dict = dataclasses.field(default_factory=dict)  # Additional properties
 
+    @property
+    def num_atoms(self) -> int:
+        """Get the number of atoms in the component."""
+        return len(self.atom_names)
+
     def to_dict(self) -> dict:
         """Convert the Component instance to a dictionary without deepcopy"""
         fields = dataclasses.fields(self)
@@ -205,6 +210,10 @@ class Component:
                 f"Invalid conformer_type: {conformer_type}. "
                 f"Available options are: {available_types}"
             )
+
+        # If there is only one heavy atom, return zero coordinates
+        if self.num_atoms == 1:
+            return np.zeros((1, 3), dtype=np.float32)
 
         rng = rng or np.random.default_rng()
 
