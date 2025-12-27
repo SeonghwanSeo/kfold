@@ -94,6 +94,15 @@ def get_molecule_symmetries(
     return all_syms
 
 
+class SimpleConfig:
+    def __init__(self, config_dict: dict):
+        for key, value in config_dict.items():
+            if isinstance(value, dict):
+                setattr(self, key, SimpleConfig(value))
+            else:
+                setattr(self, key, value)
+
+
 class ApoPerturbation:
     """Class to handle apo structure perturbation."""
 
@@ -228,16 +237,8 @@ class ApoPerturbation:
 
         # Initialize RieProDy module if perturbation is enabled
         self._rieprody_module: ProteinPerturbationModule | None = None
+        self._rieprody_config: SimpleConfig | None = None
         if self.use_perturbation and metric_comp is not None and random_walk is not None:
-            # Create a simple config-like object from dict
-            class SimpleConfig:
-                def __init__(self, config_dict: dict):
-                    for key, value in config_dict.items():
-                        if isinstance(value, dict):
-                            setattr(self, key, SimpleConfig(value))
-                        else:
-                            setattr(self, key, value)
-
             # Combine metric_comp and random_walk into a config structure
             # Note: dataset fields are only used in preprocess() which we don't use
             # They are set to minimal values to avoid AttributeError in __init__
@@ -278,7 +279,10 @@ class ApoPerturbation:
                 },
             }
             config = SimpleConfig(config_dict)
-            self._rieprody_module = ProteinPerturbationModule(config=config, records=None)
+            self._rieprody_config = config
+            # NOTE: We do not initialize _rieprody_module here to avoid memory leak
+            # caused by state accumulation in read_computed_data.
+            # Instead, we create a fresh instance in each call.
 
         # Lazy initialization of LMDB
         self._lmdb_env: lmdb.Environment | None = None
@@ -953,7 +957,7 @@ class ApoPerturbation:
         ):
             self._log_perturbation_stats()
 
-        if self._rieprody_module is None:
+        if self._rieprody_config is None:
             warnings.warn(
                 "RieProDy module is not initialized. Skipping perturbation.",
                 UserWarning,
@@ -967,7 +971,13 @@ class ApoPerturbation:
             rieprody_data = self._convert_to_rieprody_data(
                 struct, chain_i, metric_data, apo_coords
             )
-            self._rieprody_module.read_computed_data(rieprody_data)
+
+            # Create a fresh module instance to prevent memory leak
+            # from state accumulation
+            rieprody_module = ProteinPerturbationModule(
+                config=self._rieprody_config, records=None
+            )
+            rieprody_module.read_computed_data(rieprody_data)
 
             # NOTE: perturbation via RieProDy's Riemannian Brownian Motion.
             params = {
@@ -987,7 +997,7 @@ class ApoPerturbation:
                 "return_as_N3": False,
                 "return_q": False,
             }
-            perturbed_coords = self._rieprody_module.solve_riemannian_brownian_motion(
+            perturbed_coords = rieprody_module.solve_riemannian_brownian_motion(
                 **params
             )  # [num_steps+1, R, 14, 3]
             if torch.isnan(perturbed_coords).any() or torch.isinf(perturbed_coords).any():
