@@ -189,7 +189,7 @@ class KFoldTrunk(BaseTrunk):
             self.pairformer_module,
             mode=mode,
             dynamic=False,
-            fullgraph=True,
+            fullgraph=False,
         )  # type: ignore
 
     def forward(

@@ -96,7 +96,7 @@ class AF3DiffusionModule(BaseScoreModel):
         """Compile the trunk module."""
         self.diffusion_stack = torch.compile(
             self.diffusion_stack,
-            mode=mode,
+            mode="default",  # reduce-overhead mode has issues on DDP.
             dynamic=False,
             fullgraph=False,
         )  # type: ignore
@@ -140,6 +140,9 @@ class AF3DiffusionModule(BaseScoreModel):
         r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """
+        if self.training:
+            assert model_cache is None, "model_cache is only used during evaluation."
+
         # Revert to uncompiled version for validation
         diffusion_stack: DiffusionModule
         if self.is_compiled and not self.training:
