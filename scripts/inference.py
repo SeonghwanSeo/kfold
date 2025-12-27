@@ -188,7 +188,7 @@ def main():
         # Save apo structure
         apo_save_path = save_dir / "apo.cif"
         try:
-            struct.write(apo_save_path, save_apo=True)
+            struct.write(apo_save_path, conformer_id=0, save_apo=True)
         except Exception as e:
             print(f"Warning: Failed to save apo structure for {name}: {e}")
 
