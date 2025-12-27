@@ -72,14 +72,17 @@ class PairmixerTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
         self.pairmixer_module = torch.compile(
-            self.pairmixer_module, dynamic=False, fullgraph=False
+            self.pairmixer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
 
     def forward(
@@ -119,12 +122,24 @@ class PairmixerTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
+        # Revert to uncompiled version for validation
+        pairmixer_module: PairmixerStack
+        if self.is_compiled and not self.training:
+            pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
+        else:
+            pairmixer_module = self.pairmixer_module
+
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+
+                if self.is_compiled and enable_grad and i > 0:
+                    # Clone the tensors for compilation.
+                    s_hat = s_hat.clone()
+                    z_hat = z_hat.clone()
 
                 # Line 8
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
@@ -141,13 +156,6 @@ class PairmixerTrunk(BaseTrunk):
                 s = s_init + self.linear_s(self.layernorm_s(s_hat))
 
                 # Line 12
-                # Revert to uncompiled version for validation
-                pairmixer_module: PairmixerStack
-                if self.is_compiled and not self.training:
-                    pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
-                else:
-                    pairmixer_module = self.pairmixer_module
-
                 s, z = pairmixer_module(
                     s,
                     z,
@@ -180,9 +188,9 @@ class PairmixerformerTrunk(BaseTrunk):
         pairmixer_blocks: int = 42
         chunk_threshold: int = 384
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairmixerformer module."""
-        super().__init__(cfg)
+        super().__init__(cfg, kernel_config)
 
         if cfg.num_blocks < cfg.pairmixer_blocks:
             raise ValueError(
@@ -221,12 +229,18 @@ class PairmixerformerTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         self.pairmixer_module = torch.compile(
-            self.pairmixer_module, dynamic=False, fullgraph=False
+            self.pairmixer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
         self.pairformer_module = torch.compile(
-            self.pairformer_module, dynamic=False, fullgraph=False
+            self.pairformer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
 
     def forward(
@@ -248,6 +262,14 @@ class PairmixerformerTrunk(BaseTrunk):
         else:
             chunk_size_tri_attn = None
 
+        # Revert to uncompiled version for validation
+        if self.is_compiled and not self.training:
+            pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
+            pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
+        else:
+            pairmixer_module = self.pairmixer_module
+            pairformer_module = self.pairformer_module
+
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
@@ -257,6 +279,11 @@ class PairmixerformerTrunk(BaseTrunk):
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+
+                if self.is_compiled and enable_grad and i > 0:
+                    # Clone the tensors for compilation.
+                    s_hat = s_hat.clone()
+                    z_hat = z_hat.clone()
 
                 # Line 8
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
@@ -273,14 +300,6 @@ class PairmixerformerTrunk(BaseTrunk):
                 s = s_init + self.linear_s(self.layernorm_s(s_hat))
 
                 # Line 12
-                # Revert to uncompiled version for validation
-                if self.is_compiled and not self.training:
-                    pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
-                    pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
-                else:
-                    pairmixer_module = self.pairmixer_module
-                    pairformer_module = self.pairformer_module
-
                 s, z = pairmixer_module(
                     s,
                     z,

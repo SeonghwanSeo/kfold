@@ -171,6 +171,27 @@ class KFoldTrunk(BaseTrunk):
         # Other options
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
+    def do_compile(self, mode: str = "default"):
+        """Compile the trunk module."""
+        # NOTE: you should compile the submodules inside the trunk
+        # since the computation graph is changed depending on the
+        # number of recycling steps. Thus, compile the sub module
+        # instead of the whole trunk module.
+        if self.use_ensemble:
+            self.ensemble_module = torch.compile(
+                self.ensemble_module,
+                mode=mode,
+                dynamic=False,
+                fullgraph=False,
+            )  # type: ignore
+
+        self.pairformer_module = torch.compile(
+            self.pairformer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=True,
+        )  # type: ignore
+
     def forward(
         self,
         s_inputs: torch.Tensor,
@@ -210,7 +231,14 @@ class KFoldTrunk(BaseTrunk):
         else:
             chunk_size_tri_attn = None
 
-        # Line 6, z_hat, s_hat = 0, 0
+        # Revert to uncompiled version for validation
+        pairformer_module: InterformerStack
+        if self.is_compiled and not self.training:
+            pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
+        else:
+            pairformer_module = self.pairformer_module
+
+        # z_hat, s_hat = 0, 0
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
@@ -220,6 +248,11 @@ class KFoldTrunk(BaseTrunk):
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+
+                if self.is_compiled and enable_grad and i > 0:
+                    # Clone the tensors for compilation.
+                    s_hat = s_hat.clone()
+                    z_hat = z_hat.clone()
 
                 s = s_init + self.linear_s(self.layernorm_s(s_hat))
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
@@ -236,7 +269,7 @@ class KFoldTrunk(BaseTrunk):
                         use_cuequiv_kernels=self.kernel_config.cuequivariance,
                     )
 
-                s, z = self.pairformer_module(
+                s, z = pairformer_module(
                     s,
                     z,
                     mask=f_input.token.pad_mask,
@@ -244,7 +277,6 @@ class KFoldTrunk(BaseTrunk):
                     use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
-                # Line 13
                 s_hat, z_hat = s, z
 
         s_trunk, z_trunk = s_hat, z_hat

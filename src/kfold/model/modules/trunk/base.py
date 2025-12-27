@@ -21,13 +21,13 @@ class BaseTrunk(torch.nn.Module, ABC):
         self.kernel_config = kernel_config
         self.is_compiled: bool = False
 
-    def compile(self, compile: bool = True):
+    def compile(self, compile: bool = True, mode: str = "default"):
         """Compile the trunk module."""
         if compile:
-            self.do_compile()
+            self.do_compile(mode)
             self.is_compiled = True
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the

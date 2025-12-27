@@ -65,6 +65,56 @@ def attention(
     return out
 
 
+@torch.compiler.disable
+def kernel_attention_pair_bias(
+    s: torch.Tensor,
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    z: torch.Tensor,
+    mask: torch.Tensor,
+    w_proj_z: torch.Tensor,
+    w_proj_g: torch.Tensor,
+    w_proj_o: torch.Tensor,
+    w_ln_z: torch.Tensor,
+    b_ln_z: torch.Tensor | None,
+    b_proj_z: torch.Tensor | None,
+    b_proj_g: torch.Tensor | None,
+    b_proj_o: torch.Tensor | None,
+    num_heads: int = 32,
+    inf: float = 1e6,
+    eps: float = 1e-5,
+    attn_scale: float | None = None,
+) -> torch.Tensor:
+    """A wrapper for attention_pair_bias with kernel support disabled."""
+    if cueq_attention_pair_bias is None:
+        raise ImportError(
+            "cuequivariance_torch is not installed. Please install it to use the kernel."
+        )
+    out, _ = cueq_attention_pair_bias(
+        s,
+        q,
+        k,
+        v,
+        z,
+        mask,
+        num_heads,
+        w_proj_z,
+        w_proj_g,
+        w_proj_o,
+        w_ln_z,
+        b_ln_z,
+        b_proj_z,
+        b_proj_g,
+        b_proj_o,
+        inf,
+        eps,
+        attn_scale,
+        return_z_proj=False,
+    )
+    return out
+
+
 def attention_pair_bias(
     s: torch.Tensor,
     q: torch.Tensor,
@@ -131,9 +181,6 @@ def attention_pair_bias(
         Whether to use the custom kernel if available, default False
     """
     if use_kernels:
-        assert cueq_attention_pair_bias is not None, (
-            "cuequivariance_torch is not installed."
-        )
         L = s.shape[-2]
         Lq = q.shape[-2]
         Lk = k.shape[-2]
@@ -150,14 +197,13 @@ def attention_pair_bias(
         z = z.flatten(0, -4)  # [B*N, Q, K, C_z]
         mask = mask.flatten(0, -2)  # [B*N, K]
 
-        out, _ = cueq_attention_pair_bias(
+        out = kernel_attention_pair_bias(
             s,
             q,
             k,
             v,
             z,
             mask,
-            num_heads,
             w_proj_z,
             w_proj_g,
             w_proj_o,
@@ -166,11 +212,11 @@ def attention_pair_bias(
             b_proj_z,
             b_proj_g,
             b_proj_o,
+            num_heads,
             inf,
             eps,
             attn_scale,
-            return_z_proj=False,
-        )
+        )  # [B*N, L, C]
         out = out.unflatten(0, batch_dims)  # restore batch dims
 
     else:
