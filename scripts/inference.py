@@ -185,6 +185,13 @@ def main():
         with open(save_dir / "query.yaml", "w") as f:
             f.write(query.yaml)
 
+        # Save apo structure
+        apo_save_path = save_dir / "apo.cif"
+        try:
+            struct.write(apo_save_path, conformer_id=0, save_apo=True)
+        except Exception as e:
+            print(f"Warning: Failed to save apo structure for {name}: {e}")
+
         # Save sampled structures
         new_struct: structure.TokenizedStructure = struct.replace_atom_coords(
             model_out["sample_coordinates"].cpu().numpy()
