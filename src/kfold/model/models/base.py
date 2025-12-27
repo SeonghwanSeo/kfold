@@ -12,8 +12,14 @@ from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
 
 
 @dataclasses.dataclass(kw_only=True)
+class KernelConfig:
+    cuequivariance: bool = False
+
+
+@dataclasses.dataclass(kw_only=True)
 class BaseFoldingModelConfig:
     _class_: str = "BaseFoldingModel"
+    kernel: KernelConfig
     input_embedder: BaseConfig
     trunk: BaseConfig
     score_model: BaseConfig
@@ -27,16 +33,19 @@ class BaseFoldingModel(torch.nn.Module):
     def __init__(self, config: BaseFoldingModelConfig):
         super().__init__()
         self.config: BaseFoldingModelConfig = config
+        kernel_config = config.kernel
 
         # Initialize sub-modules here using the config
         self.input_embedder: submodules.input_embedder.BaseInputEmbedder = (
             Registry.instantiate(config.input_embedder)
         )
 
-        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(config.trunk)
+        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(
+            config.trunk, kernel_config=kernel_config
+        )
 
         self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
-            config.score_model
+            config.score_model, kernel_config=kernel_config
         )
 
         # NOTE: structure module is not a torch.nn.Module

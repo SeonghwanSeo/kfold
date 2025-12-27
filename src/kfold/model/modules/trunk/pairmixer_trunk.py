@@ -32,8 +32,6 @@ class PairmixerTrunk(BaseTrunk):
             Whether to use template, by default False
         use_msa: bool, optional
             Whether to use MSA, by default False
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuequivariance kernels, by default False
         blocks_per_ckpt : int, optional
             The number of blocks per checkpoint, by default None
         """
@@ -44,15 +42,13 @@ class PairmixerTrunk(BaseTrunk):
         dropout: float = 0.25
         use_msa: bool = False
         use_template: bool = False
-        use_cuequiv_kernels: bool = False
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairmixer module."""
-        super().__init__(cfg)
+        super().__init__(cfg, kernel_config)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
 
         if self.use_template:
             raise NotImplementedError(
@@ -156,7 +152,7 @@ class PairmixerTrunk(BaseTrunk):
                     s,
                     z,
                     mask=f_input.token.pad_mask,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                    use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
                 # Line 13
@@ -177,7 +173,6 @@ class PairmixerformerTrunk(BaseTrunk):
         dropout: float = 0.25
         use_msa: bool = False
         use_template: bool = False
-        use_cuequiv_kernels: bool = False
         blocks_per_ckpt: int | None = None
         num_heads_attn: int = 16
         num_heads_tri_attn: int = 4
@@ -197,7 +192,6 @@ class PairmixerformerTrunk(BaseTrunk):
 
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
         self.chunk_threshold: int = cfg.chunk_threshold
 
         if self.use_template:
@@ -242,6 +236,7 @@ class PairmixerformerTrunk(BaseTrunk):
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
+        use_cuequiv_kernels: bool = False,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass."""
@@ -290,7 +285,7 @@ class PairmixerformerTrunk(BaseTrunk):
                     s,
                     z,
                     mask=f_input.token.pad_mask,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                    use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
                 s, z = pairformer_module(
@@ -298,8 +293,7 @@ class PairmixerformerTrunk(BaseTrunk):
                     z,
                     mask=f_input.token.pad_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
-                    use_cuequiv_attn=self.use_cuequiv_kernels,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                    use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
                 # Line 13

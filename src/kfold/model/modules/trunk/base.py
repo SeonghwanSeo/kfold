@@ -15,9 +15,10 @@ class BaseTrunk(torch.nn.Module, ABC):
         channel_s: int = 384
         channel_z: int = 128
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         super().__init__()
         self.cfg = cfg
+        self.kernel_config = kernel_config
         self.is_compiled: bool = False
 
     def compile(self, compile: bool = True):

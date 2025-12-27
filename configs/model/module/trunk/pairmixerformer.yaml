@@ -7,7 +7,6 @@ pairmixer_blocks: 42
 dropout: 0.25
 use_msa: False
 use_template: False
-use_cuequiv_kernels: True
 blocks_per_ckpt: 1
 # following 2 are parameters for pairformer
 num_heads_attn: 16

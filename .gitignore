@@ -1,6 +1,7 @@
 experiments/
 wandb/
 benchmark/
+inference_results/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

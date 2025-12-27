@@ -66,8 +66,8 @@ class Boltz1DiffusionModule(BaseScoreModel):
         conditioning_transition_layers: int = 2
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config) -> None:
-        super().__init__(cfg)
+    def __init__(self, cfg: Config, kernel_config: dict):
+        super().__init__(cfg, kernel_config)
 
         self.diffusion_stack = DiffusionModule(
             token_s=cfg.channel_s,

@@ -5,7 +5,6 @@ model:
   trunk:
     interformer:
       num_blocks: 16
-    use_cuequiv_kernels: true
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
