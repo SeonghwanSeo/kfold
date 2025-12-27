@@ -122,6 +122,13 @@ class KFoldInferenceClient(pl.LightningModule):
         sample_coords: torch.Tensor = model_out["sample_coordinates"]
         sample_coords_arr = sample_coords.cpu().numpy()
         new_struct = struct.replace_atom_coords(sample_coords_arr)
+
+        try:
+            save_path = save_dir / "apo.cif"
+            new_struct.write(save_path, 0, save_apo=True)
+        except Exception as e:
+            logger.error(f"Error saving apo structure for {name}: {e}")
+
         try:
             for i in range(num_diffusion_samples):
                 save_path = save_dir / f"sample-{i}.cif"
