@@ -595,6 +595,11 @@ def parse_polymer_sequence(
         k: np.array(bond_dict[k], dtype=bond_dtypes[k]) for k in bond_dict
     }
 
+    # Fill nans in atom coordinates with zeros
+    # TODO: Remove these lines and handle nans properly in future steps (apo perturbation)
+    atom_arr["apo_coords"] = np.nan_to_num(atom_arr["apo_coords"], nan=0.0)
+    atom_arr["ref_pos"] = np.nan_to_num(atom_arr["ref_pos"], nan=0.0)
+
     # Add Napo/Nholo dimension (N, 24, 1, 3) / (N, 24, 1)
     atom_arr["coords"] = np.expand_dims(atom_arr["coords"], axis=-2)
     atom_arr["apo_coords"] = np.expand_dims(atom_arr["apo_coords"], axis=-2)
