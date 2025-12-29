@@ -134,7 +134,7 @@ class KFoldTrainingModule(pl.LightningModule):
         # Pre-sample recycling steps for training
         # This ensures all GPUs use the same recycling schedule
         rng = np.random.default_rng(seed=42)
-        self.recycles_per_step: list[int] = rng.integers(
+        self.recycles_per_step: np.ndarray = rng.integers(
             0,
             self.training_config.num_recycles + 1,
             size=100_000,
