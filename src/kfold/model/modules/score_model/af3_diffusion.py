@@ -92,6 +92,15 @@ class AF3DiffusionModule(BaseScoreModel):
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
+    def do_compile(self, mode: str = "default"):
+        """Compile the trunk module."""
+        self.diffusion_stack = torch.compile(
+            self.diffusion_stack,
+            mode="default",  # reduce-overhead mode has issues on DDP.
+            dynamic=False,
+            fullgraph=False,
+        )  # type: ignore
+
     def forward(
         self,
         r_noisy: torch.Tensor,
@@ -131,7 +140,17 @@ class AF3DiffusionModule(BaseScoreModel):
         r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """
-        return self.diffusion_stack(
+        if self.training:
+            assert model_cache is None, "model_cache is only used during evaluation."
+
+        # Revert to uncompiled version for validation
+        diffusion_stack: DiffusionModule
+        if self.is_compiled and not self.training:
+            diffusion_stack = self.diffusion_stack._orig_mod  # noqa: SLF001
+        else:
+            diffusion_stack = self.diffusion_stack
+
+        return diffusion_stack(
             r_noisy,
             c_noise,
             f_input,

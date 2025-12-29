@@ -6,6 +6,11 @@ _class_: KFold
 kernel:
   cuequivariance: true
 
+# compilation settings
+compile_trunk: false
+compile_score_model: false
+compile_mode: 'default'
+
 # Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/pretrained.yaml"

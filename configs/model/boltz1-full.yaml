@@ -6,6 +6,11 @@ _class_: Boltz1
 load_weight: false
 freeze_weight: false
 
+# compilation settings
+compile_trunk: false
+compile_score_model: false
+compile_mode: 'default'
+
 # kernel settings
 kernel:
   cuequivariance: true

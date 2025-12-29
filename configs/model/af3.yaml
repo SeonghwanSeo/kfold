@@ -2,6 +2,11 @@
 _registry_: "main_module"
 _class_: AlphaFold3
 
+# compilation settings
+compile_trunk: false
+compile_score_model: false
+compile_mode: 'default'
+
 # kernel settings
 kernel:
   cuequivariance: true
