@@ -4,13 +4,22 @@ from kfold.data.model_input import FoldingInput
 
 
 class DistogramLoss(torch.nn.Module):
-    def __init__(self, min_dist: float, max_dist: float, num_bins: int) -> None:
+    def __init__(
+        self,
+        min_dist: float = 2.0,
+        max_dist: float = 22.0,
+        num_bins: int = 64,
+    ) -> None:
         super().__init__()
         self.min_dist: float = min_dist
         self.max_dist: float = max_dist
         self.num_bins: int = num_bins
 
-        boundaries = torch.linspace(min_dist, max_dist, num_bins - 1)  # [num_bins - 1]
+        bin_size: float = (max_dist - min_dist) / num_bins
+        first_bin = min_dist + bin_size  # =2.3125
+        last_bin = max_dist - bin_size  # =21.6875
+
+        boundaries = torch.linspace(first_bin, last_bin, num_bins - 1)  # [num_bins - 1]
         self.register_buffer("boundaries", boundaries, persistent=False)
 
     def forward(
@@ -33,7 +42,7 @@ class DistogramLoss(torch.nn.Module):
             The computed distogram loss of shape (B,).
         """
 
-        with torch.autocast("cuda", enabled=False):
+        with torch.autocast("cuda", enabled=False), torch.no_grad():
             boundaries: torch.Tensor = self.boundaries  # [num_bins - 1] # type: ignore
             pdist_disto = torch.cdist(
                 f_input.token.disto_coords,

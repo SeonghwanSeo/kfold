@@ -96,7 +96,7 @@ class WeightedMSELoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        memory_efficient: bool = True,
+        remove_pad: bool = False,
     ) -> torch.Tensor:
         """Compute the weighted MSE loss.
 
@@ -108,8 +108,8 @@ class WeightedMSELoss(torch.nn.Module):
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
-        memory_efficient : bool
-            Whether to use memory efficient implementation.
+        remove_pad : bool
+            Whether to minimize the padding for memory efficiency.
 
         Returns
         -------
@@ -122,7 +122,7 @@ class WeightedMSELoss(torch.nn.Module):
         w = self.get_atom_weights(f_input)  # [B, L]
         mask = f_input.atom.resolved_mask  # [B, L]
 
-        if memory_efficient:
+        if remove_pad:
             # Minimize the number of padding
             pad_mask = f_input.atom.pad_mask  # [B, L]
             max_atoms = int(pad_mask.sum(dim=-1).max().clamp(min=1))

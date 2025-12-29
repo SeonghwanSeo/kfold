@@ -38,10 +38,11 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Add Boltz1 layers - [#29](https://github.com/SeonghwanSeo/kfold/pull/29)
     - [x] Load pre-trained weights from Boltz1.
     - [x] Introduce Cu-equivariance kernels for acceleration.
-    - [x] Check the validation results are consistent with Boltz1 official repository. 
+    - [x] Check the validation results are consistent with Boltz1 official repository.
 - [x] Implement initial diffusion bridge framework - [#48]
 - [x] Integrate to pre-trained sequence/structure embeddings and train. - [#62](https://github.com/SeonghwanSeo/kfold/pull/62)
 - [x] Add apo information (e.g., distance map) before Pairformer trunk - [#80](https://github.com/SeonghwanSeo/kfold/pull/80)
+    - [x] Add one-hot distogram option (contact map) - [#140](https://github.com/SeonghwanSeo/kfold/pull/140)
 - [x] Add apo-conditioned diffusion score model in Structure module - [#96](https://github.com/SeonghwanSeo/kfold/pull/96)
 - [x] Add `EnsembleModule` to feed multiple pre-trained structure embeddings from structure ensemble - [#120](https://github.com/SeonghwanSeo/kfold/pull/120)
 - [x] Add `Interformer` to allow bi-directional information flow between single (`s`) and pair (`z`) representations - [#124](https://github.com/SeonghwanSeo/kfold/pull/124)
@@ -54,6 +55,7 @@ If the features listed below are completed, I will include the corresponding PR 
     - [x] Add **validation metrics**. - [#33](https://github.com/SeonghwanSeo/kfold/pull/3)
     - [x] Add chain-permutation and atom-swapping for symmetry correction. - [#67](https://github.com/SeonghwanSeo/kfold/pull/67)
 - [x] Correct **cropping algorithm** to match training losses and validation metrics to Boltz1. - [#71](https://github.com/SeonghwanSeo/kfold/pull/71)
+- [x] Add **compile** option for training - [#138](https://github.com/SeonghwanSeo/kfold/pull/138)
 - [ ] Implement multi-dataset training pipeline (e.g., RCSB + AFDB + ...)
 
 ### Inference

@@ -19,6 +19,9 @@ class KernelConfig:
 @dataclasses.dataclass(kw_only=True)
 class BaseFoldingModelConfig:
     _class_: str = "BaseFoldingModel"
+    compile_trunk: bool = False
+    compile_score_model: bool = False
+    compile_mode: str = "default"
     kernel: KernelConfig
     input_embedder: BaseConfig
     trunk: BaseConfig
@@ -65,12 +68,8 @@ class BaseFoldingModel(torch.nn.Module):
 
         # Compile submodules
         # NOTE: (SeonghwanSeo) This is very slow... Right now, just disable them.
-        if getattr(config, "compile_trunk", False):
-            self.trunk.compile(getattr(config, "compile_trunk", False))
-        if getattr(config, "compile_score_model", False):
-            self.score_model.compile(getattr(config, "compile_score_model", False))
-        # if getattr(config, "compile_confidence_head", False):
-        #     self.confidence_head.compile()
+        self.trunk.compile(config.compile_trunk, config.compile_mode)
+        self.score_model.compile(config.compile_score_model, config.compile_mode)
 
     def forward(
         self,

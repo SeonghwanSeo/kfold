@@ -94,14 +94,17 @@ class Boltz1PairformerTrunk(BaseTrunk):
         init.gating_init_(self.s_recycle.weight)
         init.gating_init_(self.z_recycle.weight)
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
         self.pairformer_module = torch.compile(
-            self.pairformer_module, dynamic=False, fullgraph=False
+            self.pairformer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
 
     def forward(
