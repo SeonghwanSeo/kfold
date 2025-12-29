@@ -35,6 +35,7 @@ class RBF(torch.nn.Module):
 
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         """Forward pass of RBF encoding.
+
         Parameters
         ----------
         dist : torch.Tensor
@@ -75,7 +76,8 @@ class Distogram(torch.nn.Module):
         self.num_bins: int = num_bins
 
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
-        """Forward pass of RBF encoding.
+        """Forward pass of distogram encoding.
+
         Parameters
         ----------
         dist : torch.Tensor
@@ -83,7 +85,7 @@ class Distogram(torch.nn.Module):
         Returns
         -------
         distogram : torch.Tensor
-            Tensor of shape (..., num_bins) containing one-hot distance mp
+            Tensor of shape (..., num_bins) containing one-hot distance map
         """
         boundaries: torch.Tensor = self.boundaries  # type: ignore
         distogram = (dist.unsqueeze(-1) > boundaries).sum(dim=-1).long()
