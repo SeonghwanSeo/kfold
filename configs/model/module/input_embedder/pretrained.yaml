@@ -13,3 +13,7 @@ atom_encoder_heads: 4
 max_relative_token: 32
 max_relative_chain: 2
 use_apo: false
+apo_distmap_type: 'rbf'
+apo_min_dist: 2.0
+apo_max_dist: 22.0
+apo_num_bins: 64
