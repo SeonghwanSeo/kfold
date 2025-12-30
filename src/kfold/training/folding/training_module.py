@@ -704,7 +704,7 @@ class KFoldTrainingModule(pl.LightningModule):
         rmsd_list: list[float],
         lddt_list: list[float],
     ):
-        from kfold.data.structure import TokenizedStructure
+        from kfold.data.tokenized import TokenizedStructure
 
         full_dict = full_struct_list[0]
         name: str = full_dict["id"]

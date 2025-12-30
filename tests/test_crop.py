@@ -7,7 +7,7 @@ import numpy as np
 from tqdm import tqdm
 
 from kfold.data.metadata import Metadata
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.training.folding.dataset.cropper.multi_anchor import MultiAnchorCropper
 from kfold.training.folding.dataset.datamodule import load_manifest
 

@@ -33,7 +33,7 @@ from tqdm import tqdm
 
 import kfold.constants as C
 from kfold.constants.chain import ChainType
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils import errors
 from kfold.utils.boltz.process import tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure

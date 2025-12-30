@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 import kfold.constants as C
-from kfold.data import apo_perturbation, featurize, metadata, model_input, structure
+from kfold.data import apo_perturbation, featurize, metadata, model_input, tokenized
 from kfold.data.processing.component import CCD, Component
 from kfold.utils.files import load_apo_chain
 
@@ -46,7 +46,7 @@ class InputDataPipeline:
     def process_input_file(
         self, input_file: query.InputFile
     ) -> tuple[
-        structure.TokenizedStructure,
+        tokenized.TokenizedStructure,
         model_input.FoldingInput,
     ]:
         """Process an InputFile into model-ready inputs.
@@ -84,7 +84,7 @@ class InputDataPipeline:
         self,
         input_file: query.InputFile,
         rng: np.random.Generator | None = None,
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         """Prepare the tokenized structure from the input file.
 
         Parameters
@@ -97,7 +97,7 @@ class InputDataPipeline:
         struct : TokenizedStructure
             The tokenized structure representation.
         """
-        chain_structs: list[structure.TokenizedStructure] = []
+        chain_structs: list[tokenized.TokenizedStructure] = []
         entity_id_iter = itertools.count(1)
         asym_id_iter = itertools.count(1)
         for seq in input_file.sequences:
@@ -137,7 +137,7 @@ class InputDataPipeline:
         # TODO: add constraints if needed
 
         # Concatenate all chains into a single TokenizedStructure
-        struct = structure.TokenizedStructure.concatenate(chain_structs)
+        struct = tokenized.TokenizedStructure.concatenate(chain_structs)
         return struct
 
     def prepare_metadata_from_input_file(
@@ -350,7 +350,7 @@ def parse_polymer_sequence(
     seq: query.PolymerSequence,
     ccd: CCD,
     rng: np.random.Generator | None = None,
-) -> structure.TokenizedStructure:
+) -> tokenized.TokenizedStructure:
     """Parse a polymer chain from the sequence input.
 
     Parameters
@@ -378,16 +378,16 @@ def parse_polymer_sequence(
 
     # Initialize data dictionaries
     residue_dict: dict[str, list] = {
-        field.name: [] for field in dataclasses.fields(structure.Residue)
+        field.name: [] for field in dataclasses.fields(tokenized.ResidueArray)
     }
     token_dict: dict[str, list] = {
-        field.name: [] for field in dataclasses.fields(structure.Token)
+        field.name: [] for field in dataclasses.fields(tokenized.TokenArray)
     }
     atom_dict: dict[str, list] = {
-        field.name: [] for field in dataclasses.fields(structure.Atom)
+        field.name: [] for field in dataclasses.fields(tokenized.AtomArray)
     }
     bond_dict: dict[str, list] = {
-        field.name: [] for field in dataclasses.fields(structure.Bond)
+        field.name: [] for field in dataclasses.fields(tokenized.BondArray)
     }
 
     # Load sequence and modifications
@@ -576,11 +576,11 @@ def parse_polymer_sequence(
         token_idx += num_tokens
 
     # Convert lists to numpy arrays
-    chain_dtypes = structure.Chain.get_default_dtype()
-    res_dtypes = structure.Residue.get_default_dtype()
-    token_dtypes = structure.Token.get_default_dtype()
-    atom_dtypes = structure.Atom.get_default_dtype()
-    bond_dtypes = structure.Bond.get_default_dtype()
+    chain_dtypes = tokenized.ChainArray.get_default_dtype()
+    res_dtypes = tokenized.ResidueArray.get_default_dtype()
+    token_dtypes = tokenized.TokenArray.get_default_dtype()
+    atom_dtypes = tokenized.AtomArray.get_default_dtype()
+    bond_dtypes = tokenized.BondArray.get_default_dtype()
 
     residue_arr: dict[str, np.ndarray] = {
         k: np.array(residue_dict[k], dtype=res_dtypes[k]) for k in residue_dict
@@ -610,10 +610,10 @@ def parse_polymer_sequence(
     bond_arr["token_index"] = bond_arr["token_index"].reshape(-1, 2)
     bond_arr["atom_index"] = bond_arr["atom_index"].reshape(-1, 2)
 
-    residue_layout = structure.Residue(**residue_arr)
-    token_layout = structure.Token(**token_arr)
-    atom_layout = structure.Atom(**atom_arr)
-    bond_layout = structure.Bond(**bond_arr)
+    residue_layout = tokenized.ResidueArray(**residue_arr)
+    token_layout = tokenized.TokenArray(**token_arr)
+    atom_layout = tokenized.AtomArray(**atom_arr)
+    bond_layout = tokenized.BondArray(**bond_arr)
 
     # Construct chain-level data
     chain_dict = {
@@ -625,12 +625,12 @@ def parse_polymer_sequence(
         "num_tokens": [len(token_layout)],
         "num_atoms": [np.sum(residue_layout.num_atoms)],
     }
-    chain_layout = structure.Chain(
+    chain_layout = tokenized.ChainArray(
         **{k: np.array(chain_dict[k], dtype=chain_dtypes[k]) for k in chain_dict}
     )
 
     # Construct TokenizedStructure
-    struct = structure.TokenizedStructure(
+    struct = tokenized.TokenizedStructure(
         chain=chain_layout,
         residue=residue_layout,
         token=token_layout,
@@ -645,7 +645,7 @@ def parse_ligand_sequence(
     seq: query.LigandSequence,
     ccd: CCD,
     rng: np.random.Generator | None = None,
-) -> structure.TokenizedStructure:
+) -> tokenized.TokenizedStructure:
     """Parse a polymer chain from the sequence input.
 
     Parameters
@@ -676,16 +676,16 @@ def parse_ligand_sequence(
 
     # Parse residues
     residue_dict: dict[str, list] = {
-        field.name: [] for field in dataclasses.fields(structure.Residue)
+        field.name: [] for field in dataclasses.fields(tokenized.ResidueArray)
     }
     token_dict: dict[str, list] = {
-        field.name: [] for field in dataclasses.fields(structure.Token)
+        field.name: [] for field in dataclasses.fields(tokenized.TokenArray)
     }
     atom_dict: dict[str, list] = {
-        field.name: [] for field in dataclasses.fields(structure.Atom)
+        field.name: [] for field in dataclasses.fields(tokenized.AtomArray)
     }
     bond_dict: dict[str, list] = {
-        field.name: [] for field in dataclasses.fields(structure.Bond)
+        field.name: [] for field in dataclasses.fields(tokenized.BondArray)
     }
 
     # Load ccd or smiles
@@ -794,11 +794,11 @@ def parse_ligand_sequence(
         token_idx += num_tokens
 
     # Convert lists to numpy arrays
-    chain_dtypes = structure.Chain.get_default_dtype()
-    res_dtypes = structure.Residue.get_default_dtype()
-    token_dtypes = structure.Token.get_default_dtype()
-    atom_dtypes = structure.Atom.get_default_dtype()
-    bond_dtypes = structure.Bond.get_default_dtype()
+    chain_dtypes = tokenized.ChainArray.get_default_dtype()
+    res_dtypes = tokenized.ResidueArray.get_default_dtype()
+    token_dtypes = tokenized.TokenArray.get_default_dtype()
+    atom_dtypes = tokenized.AtomArray.get_default_dtype()
+    bond_dtypes = tokenized.BondArray.get_default_dtype()
 
     residue_arr: dict[str, np.ndarray] = {
         k: np.array(residue_dict[k], dtype=res_dtypes[k]) for k in residue_dict
@@ -823,10 +823,10 @@ def parse_ligand_sequence(
     bond_arr["token_index"] = bond_arr["token_index"].reshape(-1, 2)
     bond_arr["atom_index"] = bond_arr["atom_index"].reshape(-1, 2)
 
-    residue_layout = structure.Residue(**residue_arr)
-    token_layout = structure.Token(**token_arr)
-    atom_layout = structure.Atom(**atom_arr)
-    bond_layout = structure.Bond(**bond_arr)
+    residue_layout = tokenized.ResidueArray(**residue_arr)
+    token_layout = tokenized.TokenArray(**token_arr)
+    atom_layout = tokenized.AtomArray(**atom_arr)
+    bond_layout = tokenized.BondArray(**bond_arr)
 
     # Construct chain-level data
     chain_dict = {
@@ -838,12 +838,12 @@ def parse_ligand_sequence(
         "num_tokens": [len(token_layout)],
         "num_atoms": [np.sum(residue_layout.num_atoms)],
     }
-    chain_layout = structure.Chain(
+    chain_layout = tokenized.ChainArray(
         **{k: np.array(chain_dict[k], dtype=chain_dtypes[k]) for k in chain_dict}
     )
 
     # Construct TokenizedStructure
-    struct = structure.TokenizedStructure(
+    struct = tokenized.TokenizedStructure(
         chain=chain_layout,
         residue=residue_layout,
         token=token_layout,

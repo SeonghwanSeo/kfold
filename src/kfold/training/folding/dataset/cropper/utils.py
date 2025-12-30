@@ -7,7 +7,7 @@ import numpy as np
 from scipy.spatial.distance import cdist
 
 import kfold.constants as C
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 
 AnyT = TypeVar("AnyT")
 

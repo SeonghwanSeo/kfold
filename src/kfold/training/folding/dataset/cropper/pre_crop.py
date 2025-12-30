@@ -1,6 +1,6 @@
 import numpy as np
 
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
 from . import utils

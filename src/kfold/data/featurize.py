@@ -8,7 +8,7 @@ import torch
 import kfold.constants as C
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
-from . import model_input, structure
+from . import model_input, tokenized
 from .utils import frame_utils
 
 
@@ -51,7 +51,7 @@ class InputFeaturizer:
 
     def __call__(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         seq_embedding_paths: dict[int, Path] | None = None,
         struct_embedding_paths: dict[int, Path] | None = None,
         rng: np.random.Generator | None = None,
@@ -60,7 +60,7 @@ class InputFeaturizer:
 
     def run(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         seq_embedding_paths: dict[int, Path] | None = None,
         struct_embedding_paths: dict[int, Path] | None = None,
         rng: np.random.Generator | None = None,
@@ -69,7 +69,7 @@ class InputFeaturizer:
 
         Parameters
         ----------
-        struct : structure.TokenizedStructure
+        struct : TokenizedStructure
             The tokenized structure to featurize.
         seq_embedding_paths : dict[int, Path] | None
             Mapping from entity_id to file path of the pre-computed sequence embedding.
@@ -100,7 +100,7 @@ class InputFeaturizer:
 
     def to_folding_input(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         rng: np.random.Generator,
     ) -> model_input.FoldingInput:
         """Convert the tokenized structure to model input features."""
@@ -226,7 +226,7 @@ def do_augment_ref_pos(
 
 
 def featurize_structure(
-    struct: structure.TokenizedStructure,
+    struct: tokenized.TokenizedStructure,
     augment_ref_pos: bool = True,
     synchronize_ref_pos_augmentation: bool = False,
     rng: np.random.Generator | None = None,
@@ -235,7 +235,7 @@ def featurize_structure(
 
     Parameters
     ----------
-    struct : structure.TokenizedStructure
+    struct : TokenizedStructure
         The tokenized structure to featurize.
     augment_ref_pos : bool
         Whether to apply random augmentation to ref_pos,

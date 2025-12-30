@@ -1,7 +1,7 @@
 import numpy as np
 
 import kfold.constants as C
-from kfold.data import metadata, structure
+from kfold.data import metadata, tokenized
 from kfold.utils.errors import BoltzDataProcessingError
 
 from .structure import BoltzStructure
@@ -95,7 +95,7 @@ def parse_record(record_json: dict) -> metadata.Metadata:
 
 def tokenize_structure(
     boltz_data: BoltzStructure, metadata: metadata.Metadata | None = None
-) -> structure.TokenizedStructure:
+) -> tokenized.TokenizedStructure:
     """Tokenize structure.
 
     Parameters
@@ -113,10 +113,10 @@ def tokenize_structure(
     """
 
     # Define field types
-    residue_field_dtype: dict[str, type] = structure.Residue.get_default_dtype()
-    token_field_dtype: dict[str, type] = structure.Token.get_default_dtype()
-    atom_field_dtype: dict[str, type] = structure.Atom.get_default_dtype()
-    bond_field_dtype: dict[str, type] = structure.Bond.get_default_dtype()
+    residue_field_dtype: dict[str, type] = tokenized.ResidueArray.get_default_dtype()
+    token_field_dtype: dict[str, type] = tokenized.TokenArray.get_default_dtype()
+    atom_field_dtype: dict[str, type] = tokenized.AtomArray.get_default_dtype()
+    bond_field_dtype: dict[str, type] = tokenized.BondArray.get_default_dtype()
 
     if not boltz_data.mask.any():
         raise BoltzDataProcessingError("No valid chains in the boltz_data.")
@@ -386,7 +386,7 @@ def tokenize_structure(
     Nt = token_arr["res_type"].shape[0]
     Nb = bond_arr["bond_type"].shape[0]
 
-    chain_structure = structure.Chain(
+    chain_structure = tokenized.ChainArray(
         chain_type=chain_arr["chain_type"].reshape(Nc),
         entity_id=chain_arr["entity_id"].reshape(Nc),
         asym_id=chain_arr["asym_id"].reshape(Nc),
@@ -395,7 +395,7 @@ def tokenize_structure(
         num_atoms=chain_arr["num_atoms"].reshape(Nc),
         num_tokens=chain_arr["num_tokens"].reshape(Nc),
     )
-    residue_structure = structure.Residue(
+    residue_structure = tokenized.ResidueArray(
         name=residue_arr["name"],
         res_type=residue_arr["res_type"],
         chain_type=residue_arr["chain_type"],
@@ -408,7 +408,7 @@ def tokenize_structure(
         resolved_mask=residue_arr["resolved_mask"],
         is_standard=residue_arr["is_standard"],
     )
-    token_structure = structure.Token(
+    token_structure = tokenized.TokenArray(
         res_type=token_arr["res_type"].reshape(Nt),
         chain_type=token_arr["chain_type"].reshape(Nt),
         entity_id=token_arr["entity_id"].reshape(Nt),
@@ -422,7 +422,7 @@ def tokenize_structure(
         resolved_mask=token_arr["resolved_mask"].reshape(Nt),
         is_standard=token_arr["is_standard"].reshape(Nt),
     )
-    atom_structure = structure.Atom(
+    atom_structure = tokenized.AtomArray(
         ref_atom_name_chars=atom_arr["ref_atom_name_chars"].reshape(Nt, 24, 4),
         ref_element=atom_arr["ref_element"].reshape(Nt, 24),
         ref_charge=atom_arr["ref_charge"].reshape(Nt, 24),
@@ -433,14 +433,14 @@ def tokenize_structure(
         apo_mask=atom_arr["apo_mask"].reshape(Nt, 24, 1),
         pad_mask=atom_arr["pad_mask"].reshape(Nt, 24),
     )
-    bond_structure = structure.Bond(
+    bond_structure = tokenized.BondArray(
         asym_id=bond_arr["asym_id"].reshape(Nb, 2),
         token_index=bond_arr["token_index"].reshape(Nb, 2),
         atom_index=bond_arr["atom_index"].reshape(Nb, 2),
         bond_type=bond_arr["bond_type"].reshape(Nb),
     )
 
-    return structure.TokenizedStructure(
+    return tokenized.TokenizedStructure(
         chain=chain_structure,
         residue=residue_structure,
         token=token_structure,

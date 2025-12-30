@@ -9,7 +9,7 @@ import torch
 
 import kfold.constants as C
 from kfold.data.model_input import FoldingInput
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 
 # TODO(SeonghwanSeo):
 # - Consider partial crop of ligand molecules.

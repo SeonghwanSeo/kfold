@@ -4,7 +4,7 @@ from pathlib import Path
 import lmdb
 from tqdm import tqdm
 
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.training.folding.dataset.datamodule import load_manifest
 
 LMDB_PATH = Path("/cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/")

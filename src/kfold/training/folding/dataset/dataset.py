@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from typing_extensions import override
 
-from kfold.data import apo_perturbation, featurize, metadata, model_input, structure
+from kfold.data import apo_perturbation, featurize, metadata, model_input, tokenized
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper, PreCropper
@@ -97,16 +97,16 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     @abstractmethod
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         """Get the tokenized structure for the given index."""
 
     # === Optional to-override in subclasses === #
     def pre_crop_structure(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         """Pre-crop the folding input structure as needed.
         See Section 2.5.4 of AlphaFold3 SI
 
@@ -118,10 +118,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def crop_structure(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         """Crop the folding input structure as needed."""
         return struct
 
@@ -213,15 +213,15 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def augment_apo_structure(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         rng: np.random.Generator | None = None,
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         """Apply random perturbation/rotation to apo structure"""
         return self.apo_perturbation(struct, rng=rng)
 
     def featurize(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         record: metadata.Metadata,
         rng: np.random.Generator | None = None,
     ) -> model_input.FoldingInput:
@@ -250,7 +250,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def find_precomputed_embeddings(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         name: str,
         root_dir: Path | None = None,
     ) -> dict[int, Path] | None:
@@ -258,7 +258,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         Parameters
         ----------
-        struct : structure.TokenizedStructure
+        struct : tokenized.TokenizedStructure
             The tokenized structure.
         name : str
             The name/ID of the structure.
@@ -383,10 +383,10 @@ class TrainingDataset(SafeLoadingDataset):
     @override
     def pre_crop_structure(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_chains < struct.num_chains:
@@ -402,10 +402,10 @@ class TrainingDataset(SafeLoadingDataset):
     @override
     def crop_structure(
         self,
-        struct: structure.TokenizedStructure,
+        struct: tokenized.TokenizedStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_tokens < struct.num_tokens:
@@ -516,7 +516,7 @@ class LMDBDatabase:
             )
         return self._lmdb_env
 
-    def load_from_lmdb(self, record: metadata.Metadata) -> structure.TokenizedStructure:
+    def load_from_lmdb(self, record: metadata.Metadata) -> tokenized.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         name = record.id
         key_bytes = name.encode("utf-8")
@@ -527,7 +527,7 @@ class LMDBDatabase:
 
         # Use io.BytesIO to wrap the raw bytes
         with io.BytesIO(value_bytes) as byte_stream:
-            struct = structure.TokenizedStructure.load_npz(byte_stream)
+            struct = tokenized.TokenizedStructure.load_npz(byte_stream)
         struct = struct.copy_with(metadata=record)
         return struct
 
@@ -570,7 +570,7 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         return self.load_from_lmdb(record)
 
@@ -601,6 +601,6 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
 
     def load_tokenized_structure(
         self, record: metadata.Metadata
-    ) -> structure.TokenizedStructure:
+    ) -> tokenized.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         return self.load_from_lmdb(record)

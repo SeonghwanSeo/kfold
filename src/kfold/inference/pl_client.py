@@ -7,7 +7,7 @@ import lightning.pytorch as pl
 import torch
 
 from kfold.data.model_input import FoldingInput
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.model.models.kfold import KFold
 
 from .query import InputFile

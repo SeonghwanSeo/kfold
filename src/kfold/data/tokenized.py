@@ -12,12 +12,18 @@ from kfold.data.layout import PlainLayout
 from kfold.data.metadata import Metadata
 from kfold.utils.misc import check_array
 
-__all__ = ["Chain", "Token", "Atom", "Bond", "TokenizedStructure"]
+__all__ = [
+    "ChainArray",
+    "TokenArray",
+    "AtomArray",
+    "BondArray",
+    "TokenizedStructure",
+]
 
 
 # === Tokenized data structures === #
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class Chain(PlainLayout[np.ndarray]):
+class ChainArray(PlainLayout[np.ndarray]):
     """Chain information.
 
     Shape: [Nchain, ...]
@@ -126,7 +132,7 @@ class Chain(PlainLayout[np.ndarray]):
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class Residue(PlainLayout[np.ndarray]):
+class ResidueArray(PlainLayout[np.ndarray]):
     """Residue information.
 
     Attributes
@@ -281,7 +287,7 @@ class Residue(PlainLayout[np.ndarray]):
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class Token(PlainLayout[np.ndarray]):
+class TokenArray(PlainLayout[np.ndarray]):
     """Token information.
 
     Attributes
@@ -397,7 +403,7 @@ class Token(PlainLayout[np.ndarray]):
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class Atom(PlainLayout[np.ndarray]):
+class AtomArray(PlainLayout[np.ndarray]):
     """Atom information.
 
     Shape: [Ntoken, 24, ...]
@@ -483,7 +489,7 @@ class Atom(PlainLayout[np.ndarray]):
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
-class Bond(PlainLayout[np.ndarray]):
+class BondArray(PlainLayout[np.ndarray]):
     """Bond information.
 
     Shape: [Nbond, ...]
@@ -537,23 +543,23 @@ class TokenizedStructure:
 
     Attributes
     ----------
-    chain: Chain
+    chain: ChainArray
         Chain information.
-    token: Token
+    token: TokenArray
         Token information.
-    atom: Atom
+    atom: AtomArray
         Atom information.
-    bond: Bond
+    bond: BondArray
         Bond information.
     metadata: Metadata
         Metadata information.
     """
 
-    chain: Chain
-    residue: Residue
-    token: Token
-    atom: Atom
-    bond: Bond
+    chain: ChainArray
+    residue: ResidueArray
+    token: TokenArray
+    atom: AtomArray
+    bond: BondArray
     metadata: Metadata | None = None
 
     @property
@@ -661,11 +667,11 @@ class TokenizedStructure:
         """Reconstruct from NPZ dictionary."""
         reconstructed = {}
         for prefix, struct_cls in [
-            ("chain.", Chain),
-            ("residue.", Residue),
-            ("token.", Token),
-            ("atom.", Atom),
-            ("bond.", Bond),
+            ("chain.", ChainArray),
+            ("residue.", ResidueArray),
+            ("token.", TokenArray),
+            ("atom.", AtomArray),
+            ("bond.", BondArray),
         ]:
             struct_data = {
                 key[len(prefix) :]: value
@@ -828,10 +834,12 @@ class TokenizedStructure:
             Concatenated structure.
         """
         # Concatenate chain, residue, token, atom
-        concat_chain = Chain.concatenate([struct.chain for struct in structures])
-        concat_residue = Residue.concatenate([struct.residue for struct in structures])
-        concat_token = Token.concatenate([struct.token for struct in structures])
-        concat_atom = Atom.concatenate([struct.atom for struct in structures])
+        concat_chain = ChainArray.concatenate([struct.chain for struct in structures])
+        concat_residue = ResidueArray.concatenate(
+            [struct.residue for struct in structures]
+        )
+        concat_token = TokenArray.concatenate([struct.token for struct in structures])
+        concat_atom = AtomArray.concatenate([struct.atom for struct in structures])
 
         # Adjust token indices
         concat_token = concat_token.copy_with(
@@ -847,7 +855,7 @@ class TokenizedStructure:
             adjusted_bond = bond.copy_with(token_index=adjusted_token_index)
             bond_list.append(adjusted_bond)
             token_offset += int(struct.num_tokens)
-        concat_bond = Bond.concatenate(bond_list)
+        concat_bond = BondArray.concatenate(bond_list)
 
         return cls(
             chain=concat_chain,

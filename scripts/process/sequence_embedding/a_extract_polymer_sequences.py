@@ -9,7 +9,7 @@ import lmdb
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 
 logger = logging.getLogger(__name__)
 

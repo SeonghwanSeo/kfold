@@ -9,7 +9,7 @@ import torch
 from tqdm import tqdm
 
 from kfold.data.featurize import InputFeaturizer
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.boltz.process import parse_record, tokenize_structure
 from kfold.utils.boltz.structure import BoltzStructure
 from kfold.utils.boltz.utils.featurizer import featurize as boltz_featurize

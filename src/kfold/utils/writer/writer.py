@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 
 from .mmcif import to_mmcifstring
 from .pdb import to_pdbstring

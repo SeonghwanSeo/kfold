@@ -32,7 +32,7 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.apo_perturbation import ApoPerturbation
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
 

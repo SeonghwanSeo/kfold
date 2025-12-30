@@ -5,7 +5,7 @@ import torch
 
 from kfold.config import load_config
 from kfold.data.model_input import FoldingInput
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.model.models.boltz1 import Boltz1
 from kfold.training.folding.dataset.datamodule import TrainingDataModule
 

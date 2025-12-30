@@ -6,7 +6,7 @@ import torch
 from tqdm import tqdm
 
 from kfold.config import load_config
-from kfold.data import model_input, structure
+from kfold.data import model_input, tokenized
 from kfold.data.processing.component import CCD
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.query import InputFile, parse_input_files
@@ -146,7 +146,7 @@ def main():
 
         # Unpack batch
         query: InputFile = batch[0]
-        struct: structure.TokenizedStructure = batch[1]
+        struct: tokenized.TokenizedStructure = batch[1]
         f_input: model_input.FoldingInput = batch[2]
 
         if not f_input.is_batched:
@@ -193,7 +193,7 @@ def main():
             print(f"Warning: Failed to save apo structure for {name}: {e}")
 
         # Save sampled structures
-        new_struct: structure.TokenizedStructure = struct.replace_atom_coords(
+        new_struct: tokenized.TokenizedStructure = struct.replace_atom_coords(
             model_out["sample_coordinates"].cpu().numpy()
         )
         for i in range(args.num_samples):

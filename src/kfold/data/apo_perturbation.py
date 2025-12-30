@@ -12,7 +12,7 @@ import torch
 from rieprody.proteins.protein_perturbation import ProteinPerturbationModule
 
 import kfold.constants as C
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import (
     compute_rmsd,
