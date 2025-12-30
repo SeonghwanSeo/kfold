@@ -1,6 +1,7 @@
 import enum
 from functools import lru_cache
 
+from .ccd import CCD_NAME_TO_ONE_LETTER
 from .chain import ChainType
 
 
@@ -58,7 +59,6 @@ residue_id_to_name: dict[int, ResidueName] = {
     idx: atom for idx, atom in enumerate(ResidueName)
 }
 
-
 # one-letter codes for standard amino acids and nucleic acid bases
 PROTEIN_AMINO_ACIDS: tuple[str, ...] = (
     "A", "R", "N", "D", "C", "Q", "E", "G", "H", "I",
@@ -74,11 +74,26 @@ PROTEIN_RESIDUES_STR: tuple[str, ...] = (
     "UNK"
 )  # fmt: skip
 
-RNA_BASES: tuple[str, ...] = ("A", "G", "C", "U", "N")
-RNA_RESIDUES_STR: tuple[str, ...] = ("A", "G", "C", "U", "N")
+# AA mapping for apo-structure prediction / sequence embedding
+PROTEIN_AMINO_ACID_MAPPING: dict[str, str] = {
+    "B": "D",  # Aspartic acid or Asparagine
+    "Z": "E",  # Glutamic acid or Glutamine
+    "J": "X",  # Leucine or Isoleucine mapped to Unknown
+    "U": "C",  # Selenocysteine mapped to Cysteine
+    "O": "X",  # Pyrrolysine mapped to Unknown
+}
 
 DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
 DNA_RESIDUES_STR: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
+
+RNA_BASES: tuple[str, ...] = ("A", "G", "C", "U", "N")
+RNA_RESIDUES_STR: tuple[str, ...] = ("A", "G", "C", "U", "N")
+
+STANDARD_RESIDUES_STR: tuple[str, ...] = (
+    *PROTEIN_RESIDUES_STR,
+    *RNA_RESIDUES_STR,
+    *DNA_RESIDUES_STR,
+)
 
 PROTEIN_RESIDUES: tuple[ResidueName, ...] = tuple(
     ResidueName[name] for name in PROTEIN_RESIDUES_STR
@@ -178,20 +193,25 @@ def map_one_letter_to_residue_name(one_letter: str, ctype: ChainType) -> Residue
 
 
 @lru_cache
-def get_one_letter(residue_name: str | ResidueName, ctype: ChainType) -> str:
+def get_one_letter(residue_name: str | ResidueName, unk: str) -> str:
     """Get the one-letter code for a given residue name."""
     assert residue_name != ResidueName.PAD, (
         "Padding residue does not have a one-letter code."
     )
-    if isinstance(residue_name, str):
-        residue_name = get_residue_name_with_unk(residue_name, ctype)
+    if isinstance(residue_name, ResidueName):
+        residue_name = residue_name.name
 
-    match ctype:
-        case ChainType.PROTEIN:
-            return protein_residue_name_to_one_letter[residue_name]
-        case ChainType.RNA:
-            return rna_residue_name_to_one_letter[residue_name]
-        case ChainType.DNA:
-            return dna_residue_name_to_one_letter[residue_name]
-        case _:
-            raise ValueError(f"Unsupported chain type: {ctype}")
+    return convert_ccd_name_to_one_letter(residue_name, unk=unk)
+
+
+@lru_cache(maxsize=128)
+def convert_ccd_name_to_one_letter(ccd_code: str, unk: str) -> str:
+    """Map a CCD three-letter code to a one-letter amino acid code.
+
+    Args:
+        ccd_code (str): The three-letter CCD code.
+
+    Returns:
+        str: The corresponding one-letter amino acid code.
+    """
+    return CCD_NAME_TO_ONE_LETTER.get(ccd_code, unk)
