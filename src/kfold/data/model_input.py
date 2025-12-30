@@ -9,17 +9,17 @@ from kfold.data.layout import TensorLayout
 from kfold.utils.misc import check_tensor
 
 __all__ = [
-    "ChainLayout",
-    "TokenLayout",
-    "AtomLayout",
-    "BondLayout",
+    "ChainTensor",
+    "TokenTensor",
+    "AtomTensor",
+    "BondTensor",
     "FoldingInput",
 ]
 
 
 # === Layout dataclasses (chain-level, token-level, atom-level, bond-level) === #
 @dataclasses.dataclass(frozen=True, slots=True)
-class ChainLayout(TensorLayout):
+class ChainTensor(TensorLayout):
     """Chain-level layout information.
 
     Shape: [Nchain, ...] or [B, Nchain, ...]
@@ -137,7 +137,7 @@ class ChainLayout(TensorLayout):
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class TokenLayout(TensorLayout):
+class TokenTensor(TensorLayout):
     """Token-level layout information.
 
     Attributes
@@ -323,7 +323,7 @@ class TokenLayout(TensorLayout):
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class AtomLayout(TensorLayout):
+class AtomTensor(TensorLayout):
     """Atom-level layout information for molecular structures.
 
     Shape: [Natom, ...] or [B, Natom, ...]
@@ -452,7 +452,7 @@ class AtomLayout(TensorLayout):
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class BondLayout(TensorLayout):
+class BondTensor(TensorLayout):
     """Bond-level layout information for molecular structures.
 
     Shape: [Nbond, ...] or [B, Nbond, ...]
@@ -554,7 +554,7 @@ class BondLayout(TensorLayout):
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class PretrainedLayout(TensorLayout):
+class PretrainedTensor(TensorLayout):
     """Token-level layout including pretrained embedding information.
 
     Attributes
@@ -644,11 +644,11 @@ class PretrainedLayout(TensorLayout):
 class FoldingInput:
     """Input of co-folding"""
 
-    chain: ChainLayout
-    token: TokenLayout
-    atom: AtomLayout
-    bond: BondLayout
-    pretrained: PretrainedLayout
+    chain: ChainTensor
+    token: TokenTensor
+    atom: AtomTensor
+    bond: BondTensor
+    pretrained: PretrainedTensor
 
     def __post_init__(self):
         # check all layouts are on the same device
@@ -790,11 +790,11 @@ class FoldingInput:
                     "All bond layouts must have the same length."
                 )
 
-        batched_chain = ChainLayout.from_list([data.chain for data in data_list])
-        batched_token = TokenLayout.from_list([data.token for data in data_list])
-        batched_atom = AtomLayout.from_list([data.atom for data in data_list])
-        batched_bond = BondLayout.from_list([data.bond for data in data_list])
-        batched_pretrained = PretrainedLayout.from_list(
+        batched_chain = ChainTensor.from_list([data.chain for data in data_list])
+        batched_token = TokenTensor.from_list([data.token for data in data_list])
+        batched_atom = AtomTensor.from_list([data.atom for data in data_list])
+        batched_bond = BondTensor.from_list([data.bond for data in data_list])
+        batched_pretrained = PretrainedTensor.from_list(
             [data.pretrained for data in data_list]
         )
 

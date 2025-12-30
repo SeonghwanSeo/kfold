@@ -466,23 +466,23 @@ def featurize_structure(
     }
 
     # === Convert to tensors ===
-    chain_layout = model_input.ChainLayout(
+    chain_layout = model_input.ChainTensor(
         **{k: torch.from_numpy(v) for k, v in chain_dict.items()}
     )
 
-    token_layout = model_input.TokenLayout(
+    token_layout = model_input.TokenTensor(
         **{k: torch.from_numpy(v) for k, v in token_dict.items()}
     )
 
-    atom_layout = model_input.AtomLayout(
+    atom_layout = model_input.AtomTensor(
         **{k: torch.from_numpy(v) for k, v in atom_dict.items()}
     )
 
-    bond_layout = model_input.BondLayout(
+    bond_layout = model_input.BondTensor(
         **{k: torch.from_numpy(v) for k, v in bond_dict.items()}
     )
 
-    pretrained_layout = model_input.PretrainedLayout(
+    pretrained_layout = model_input.PretrainedTensor(
         **{k: torch.from_numpy(v) for k, v in pretrained_dict.items()}
     )
 
