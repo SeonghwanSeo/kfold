@@ -213,7 +213,7 @@ def tokenize_structure(
 
             res_name = residue["name"]
             # NOTE: Ligands are mapped to UNK amino acid
-            res_type = C.residue.get_residue_name_with_unk(str(res_name), ctype).index
+            res_type = C.residue.get_residue_name_with_unk(str(res_name), ctype).value
 
             # Insert residue info
             residue_info["name"].append(res_name)
@@ -268,7 +268,7 @@ def tokenize_structure(
                 global_token_index += 1
             else:
                 # Ligands, Modifications, Covalent inhibitors
-                unk_type = C.residue.ResidueName.UNK.index  # use unknown residue name
+                unk_type = C.residue.ResidueName.UNK.value  # use unknown residue name
 
                 for atom_idx, atom in zip(
                     range(atom_start, atom_end), residue_atoms, strict=True

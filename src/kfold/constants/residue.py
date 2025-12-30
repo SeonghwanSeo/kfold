@@ -1,3 +1,4 @@
+from typing import Self
 import enum
 from functools import lru_cache
 
@@ -5,59 +6,61 @@ from .ccd import CCD_NAME_TO_ONE_LETTER
 from .chain import ChainType
 
 
-class ResidueName(enum.StrEnum):
+class ResidueName(enum.IntEnum):
     # pad
-    PAD = "[PAD]"  # We use padding token instead of gap ("-") for MSA.
+    PAD = 0  # We use padding token instead of gap ("-") for MSA.
 
     # protein
-    ALA = "ALA"
-    ARG = "ARG"
-    ASN = "ASN"
-    ASP = "ASP"
-    CYS = "CYS"
-    GLN = "GLN"
-    GLU = "GLU"
-    GLY = "GLY"
-    HIS = "HIS"
-    ILE = "ILE"
-    LEU = "LEU"
-    LYS = "LYS"
-    MET = "MET"
-    PHE = "PHE"
-    PRO = "PRO"
-    SER = "SER"
-    THR = "THR"
-    TRP = "TRP"
-    TYR = "TYR"
-    VAL = "VAL"
-    UNK = "UNK"
+    ALA = 1
+    ARG = 2
+    ASN = 3
+    ASP = 4
+    CYS = 5
+    GLN = 6
+    GLU = 7
+    GLY = 8
+    HIS = 9
+    ILE = 10
+    LEU = 11
+    LYS = 12
+    MET = 13
+    PHE = 14
+    PRO = 15
+    SER = 16
+    THR = 17
+    TRP = 18
+    TYR = 19
+    VAL = 20
+    UNK = 21
 
     # rna
-    A = "A"
-    G = "G"
-    C = "C"
-    U = "U"
-    N = "N"
+    A = 22
+    G = 23
+    C = 24
+    U = 25
+    N = 26
 
     # dna
-    DA = "DA"
-    DG = "DG"
-    DC = "DC"
-    DT = "DT"
-    DN = "DN"
+    DA = 27
+    DG = 28
+    DC = 29
+    DT = 30
+    DN = 31
 
-    @property
-    def index(self) -> int:
-        """Get the index of the residue in the enum."""
-        return residue_name_to_id[self]
+    @classmethod
+    def from_string(cls, name: str) -> Self:
+        return cls[name]
+
+    @classmethod
+    def from_string_with_unk(cls, name: str) -> Self:
+        try:
+            return cls[name]
+        except KeyError:
+            return cls["UNK"]
 
 
-residue_name_to_id: dict[ResidueName, int] = {
-    atom: idx for idx, atom in enumerate(ResidueName)
-}
-residue_id_to_name: dict[int, ResidueName] = {
-    idx: atom for idx, atom in enumerate(ResidueName)
-}
+residue_name_to_id: dict[ResidueName, int] = {res: res.value for res in ResidueName}
+residue_id_to_name: dict[int, ResidueName] = {res.value: res for res in ResidueName}
 
 # one-letter codes for standard amino acids and nucleic acid bases
 PROTEIN_AMINO_ACIDS: tuple[str, ...] = (
