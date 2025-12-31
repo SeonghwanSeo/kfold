@@ -1,6 +1,5 @@
 import kfold.constants as C
 from kfold.data.metadata import Metadata
-from kfold.utils.modality_utils.ligand import LIGAND_EXCLUSIONS
 from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
@@ -40,7 +39,7 @@ class CompositionFilter(BaseFilter):
                 for chain in record.chains
                 if not (
                     chain.chain_type == C.chain.ChainType.LIGAND
-                    and chain.chain_name in LIGAND_EXCLUSIONS
+                    and chain.chain_name in C.ccd.LIGAND_EXCLUSIONS
                 )
             ]
 
