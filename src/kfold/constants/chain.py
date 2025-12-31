@@ -7,6 +7,7 @@ class ChainType(IntEnum):
     DNA = 1
     RNA = 2
     LIGAND = 3
+    ION = 4
 
     @property
     def is_polymer(self) -> bool:
@@ -14,7 +15,7 @@ class ChainType(IntEnum):
 
     @property
     def is_nonpolymer(self) -> bool:
-        return self == ChainType.LIGAND
+        return self in {ChainType.LIGAND, ChainType.ION}
 
     def __str__(self) -> str:
         if self == ChainType.PROTEIN:
@@ -25,6 +26,8 @@ class ChainType(IntEnum):
             return "RNA"
         elif self == ChainType.LIGAND:
             return "Ligand"
+        elif self == ChainType.ION:
+            return "Ion"
         else:
             raise ValueError(f"Unknown ChainType: {self.value}")
 
