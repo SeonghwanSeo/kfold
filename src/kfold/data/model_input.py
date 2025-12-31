@@ -18,7 +18,7 @@ __all__ = [
 
 
 # === Layout dataclasses (chain-level, token-level, atom-level, bond-level) === #
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class ChainTensor(TensorLayout):
     """Chain-level layout information.
 
@@ -136,7 +136,7 @@ class ChainTensor(TensorLayout):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class TokenTensor(TensorLayout):
     """Token-level layout information.
 
@@ -322,7 +322,7 @@ class TokenTensor(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class AtomTensor(TensorLayout):
     """Atom-level layout information for molecular structures.
 
@@ -451,7 +451,7 @@ class AtomTensor(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class BondTensor(TensorLayout):
     """Bond-level layout information for molecular structures.
 
@@ -553,7 +553,7 @@ class BondTensor(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True)
 class PretrainedTensor(TensorLayout):
     """Token-level layout including pretrained embedding information.
 
@@ -640,7 +640,7 @@ class PretrainedTensor(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclasses.dataclass(frozen=True, slots=False)
+@dataclasses.dataclass(frozen=True)
 class FoldingInput:
     """Input of co-folding"""
 

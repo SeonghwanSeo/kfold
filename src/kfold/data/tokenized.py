@@ -21,8 +21,23 @@ __all__ = [
 ]
 
 
+def full_false(shape: tuple[int, ...]) -> np.ndarray:
+    """Create an array of the given shape filled with False."""
+    return np.zeros(shape, dtype=bool)
+
+
+def full_minus_one(shape: tuple[int, ...]) -> np.ndarray:
+    """Create an array of the given shape filled with -1."""
+    return np.full(shape, -1, dtype=np.int64)
+
+
+def full_nan(shape: tuple[int, ...]) -> np.ndarray:
+    """Create an array of the given shape filled with NaN."""
+    return np.full(shape, np.nan, dtype=np.float32)
+
+
 # === Tokenized data structures === #
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class ChainArray(PlainLayout[np.ndarray]):
     """Chain information.
 
@@ -87,19 +102,6 @@ class ChainArray(PlainLayout[np.ndarray]):
         check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=shape)
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
 
-    @classmethod
-    def get_default_dtype(cls) -> dict[str, type]:
-        """Get default dtypes for each field."""
-        return {
-            "chain_type": np.uint8,
-            "entity_id": np.uint16,
-            "asym_id": np.uint16,
-            "sym_id": np.uint16,
-            "num_residues": np.uint32,
-            "num_tokens": np.uint32,
-            "num_atoms": np.uint32,
-        }
-
     @cached_property
     def is_protein(self) -> np.ndarray:
         """Boolean tensor indicating whether the chain is protein."""
@@ -123,15 +125,37 @@ class ChainArray(PlainLayout[np.ndarray]):
     @cached_property
     def residue_start(self) -> np.ndarray:
         """Starting indices of residues for each chain."""
-        return np.cumsum(self.num_residues, dtype=np.int32) - self.num_residues
+        return np.cumsum(self.num_residues, dtype=np.int64) - self.num_residues
 
     @cached_property
     def token_start(self) -> np.ndarray:
         """Starting indices of tokens for each chain."""
-        return np.cumsum(self.num_tokens, dtype=np.int32) - self.num_tokens
+        return np.cumsum(self.num_tokens, dtype=np.int64) - self.num_tokens
+
+    @classmethod
+    def get_empty(cls, num_chains: int) -> Self:
+        """Get an empty ChainArray with the specified number of chains."""
+        return cls(
+            chain_type=full_minus_one((num_chains,)),
+            entity_id=full_minus_one((num_chains,)),
+            asym_id=full_minus_one((num_chains,)),
+            sym_id=full_minus_one((num_chains,)),
+            num_residues=full_minus_one((num_chains,)),
+            num_tokens=full_minus_one((num_chains,)),
+            num_atoms=full_minus_one((num_chains,)),
+        )
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the ChainArray."""
+        for field in dataclasses.fields(self):
+            array = getattr(self, field.name)
+            if np.any(array < 0):
+                raise ValueError(
+                    f"ChainArray field '{field.name}' contains negative values."
+                )
 
 
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class ResidueArray(PlainLayout[np.ndarray]):
     """Residue information.
 
@@ -156,8 +180,6 @@ class ResidueArray(PlainLayout[np.ndarray]):
         Number of tokens per residue of shape [L,].
     num_atoms: np.ndarray (int)
         Number of atoms per residue of shape [L,].
-    resolved_mask: np.ndarray (bool)
-        Mask tensor of shape [L,], indicating residues to be resolved.
     is_standard: np.ndarray (bool)
         Boolean tensor of shape [L,], indicating whether the residue is standard.
 
@@ -184,7 +206,6 @@ class ResidueArray(PlainLayout[np.ndarray]):
     residue_index: np.ndarray  # [L,], int
     num_tokens: np.ndarray  # [L,], int
     num_atoms: np.ndarray  # [L,], int
-    resolved_mask: np.ndarray  # [L,], bool
     is_standard: np.ndarray  # [L,], bool
 
     @cached_property
@@ -193,7 +214,7 @@ class ResidueArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.name, name="name", dtype=np.dtype("<U5"), shape=shape)
+        check_array(self.name, name="name", dtype=np.dtype("<U6"), shape=shape)
         check_array(self.res_type, name="res_type", dtype=np.integer, shape=shape)
         check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
         check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
@@ -204,25 +225,7 @@ class ResidueArray(PlainLayout[np.ndarray]):
         )
         check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=shape)
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
-        check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
         check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
-
-    @classmethod
-    def get_default_dtype(cls) -> dict[str, type | np.dtype]:
-        """Get default dtypes for each field."""
-        return {
-            "name": np.dtype("<U5"),
-            "res_type": np.uint8,  # 0-31
-            "chain_type": np.uint8,  # 0-3
-            "entity_id": np.uint16,
-            "asym_id": np.uint16,
-            "sym_id": np.uint16,
-            "residue_index": np.uint32,
-            "num_tokens": np.uint32,
-            "num_atoms": np.uint8,  # 0-23
-            "resolved_mask": np.bool_,
-            "is_standard": np.bool_,
-        }
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -247,7 +250,7 @@ class ResidueArray(PlainLayout[np.ndarray]):
     @cached_property
     def token_start(self) -> np.ndarray:
         """Starting indices of tokens for each chain."""
-        return np.cumsum(self.num_tokens, dtype=np.int32) - self.num_tokens
+        return np.cumsum(self.num_tokens, dtype=np.int64) - self.num_tokens
 
     # === Utility functions === #
     @cached_property
@@ -285,8 +288,33 @@ class ResidueArray(PlainLayout[np.ndarray]):
             )
         return uid_to_index[res_uid]
 
+    @classmethod
+    def get_empty(cls, num_residues: int) -> Self:
+        """Get an empty ResidueArray with the specified number of residues."""
+        return cls(
+            name=np.array([""] * num_residues, dtype=np.dtype("<U6")),
+            res_type=full_minus_one((num_residues,)),
+            chain_type=full_minus_one((num_residues,)),
+            entity_id=full_minus_one((num_residues,)),
+            asym_id=full_minus_one((num_residues,)),
+            sym_id=full_minus_one((num_residues,)),
+            residue_index=full_minus_one((num_residues,)),
+            num_tokens=full_minus_one((num_residues,)),
+            num_atoms=full_minus_one((num_residues,)),
+            is_standard=full_false((num_residues,)),
+        )
 
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the ResidueArray."""
+        for field in dataclasses.fields(self):
+            array = getattr(self, field.name)
+            if np.any(array < 0) and field.name not in ["name", "is_standard"]:
+                raise ValueError(
+                    f"ResidueArray field '{field.name}' contains negative values."
+                )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class TokenArray(PlainLayout[np.ndarray]):
     """Token information.
 
@@ -313,8 +341,6 @@ class TokenArray(PlainLayout[np.ndarray]):
         Distogram atom index of shape [L,], used for distogram calculations.
     center_index: np.ndarray (int)
         Center atom index of shape [L,], used for center calculations.
-    resolved_mask: np.ndarray (bool)
-        Mask tensor of shape [L,], indicating tokens to be resolved.
     is_standard: np.ndarray (bool)
         Boolean tensor of shape [L,], indicating whether the token is standard.
 
@@ -340,7 +366,6 @@ class TokenArray(PlainLayout[np.ndarray]):
     num_atoms: np.ndarray  # [L,], int
     disto_index: np.ndarray  # [L,], int
     center_index: np.ndarray  # [L,], int
-    resolved_mask: np.ndarray  # [L,], bool
     is_standard: np.ndarray  # [L,], bool
 
     @cached_property
@@ -360,26 +385,7 @@ class TokenArray(PlainLayout[np.ndarray]):
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
         check_array(self.disto_index, name="disto_index", dtype=np.integer, shape=shape)
         check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
-        check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
         check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
-
-    @classmethod
-    def get_default_dtype(cls) -> dict[str, type | np.dtype]:
-        """Get default dtypes for each field."""
-        return {
-            "res_type": np.uint8,  # 0-31
-            "chain_type": np.uint8,  # 0-3
-            "entity_id": np.uint16,
-            "asym_id": np.uint16,
-            "sym_id": np.uint16,
-            "token_index": np.uint32,
-            "residue_index": np.uint32,
-            "disto_index": np.uint8,  # 0-23
-            "center_index": np.uint8,  # 0-23
-            "num_atoms": np.uint8,  # 0-23
-            "resolved_mask": np.bool_,
-            "is_standard": np.bool_,
-        }
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -401,8 +407,34 @@ class TokenArray(PlainLayout[np.ndarray]):
         """Boolean tensor of shape [L,], indicating whether the token is ligand."""
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
+    @classmethod
+    def get_empty(cls, num_tokens: int) -> Self:
+        """Get an empty TokenArray with the specified number of tokens."""
+        return cls(
+            res_type=full_minus_one((num_tokens,)),
+            chain_type=full_minus_one((num_tokens,)),
+            entity_id=full_minus_one((num_tokens,)),
+            asym_id=full_minus_one((num_tokens,)),
+            sym_id=full_minus_one((num_tokens,)),
+            token_index=full_minus_one((num_tokens,)),
+            residue_index=full_minus_one((num_tokens,)),
+            num_atoms=full_minus_one((num_tokens,)),
+            disto_index=full_minus_one((num_tokens,)),
+            center_index=full_minus_one((num_tokens,)),
+            is_standard=full_false((num_tokens,)),
+        )
 
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the ResidueArray."""
+        for field in dataclasses.fields(self):
+            array = getattr(self, field.name)
+            if np.any(array < 0) and field.name not in ["is_standard"]:
+                raise ValueError(
+                    f"TokenArray field '{field.name}' contains negative values."
+                )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class AtomArray(PlainLayout[np.ndarray]):
     """Atom information.
 
@@ -420,28 +452,35 @@ class AtomArray(PlainLayout[np.ndarray]):
         Reference coordinates of shape [Ntoken, 24, 3].
         Generated from ETKDG or ccd
         (TODO (seonghwan): I think we can replace this to apo_coords)
+    ref_mask: np.ndarray (bool)
+        Boolean mask of shape [Ntoken, 24] indicating valid reference atoms.
     coords: np.ndarray (float32)
-        Holo (bound) state coordinates of shape [Ntoken, 24, Nholo, 3],
-        where Nholo is the number of ensemble holo conformations.
+        Holo (bound) state coordinates of shape [Ntoken, 24, 3],
         This is used as the ground truth for training, and may be set to 0
         for inference.
     apo_coords: np.ndarray (float32)
-        Apo (unbound) state coordinates of shape [Ntoken, 24, Napo, 3],
-        where Napo is the number of apo conformations.
+        Apo (unbound) state coordinates of shape [Ntoken, 24, 3],
     resolved_mask: np.ndarray (bool)
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
+    apo_mask: np.ndarray (bool)
+        Boolean mask of shape [Ntoken, 24] indicating valid apo atoms.
+    apo_plddt: np.ndarray (float32)
+        Predicted LDDT scores of shape [Ntoken, 24,].
     pad_mask: np.ndarray (bool)
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
     """
 
+    ref_uid: np.ndarray  # [Ntoken, 24], int
     ref_atom_name_chars: np.ndarray  # [Ntoken, 24, 4], int
     ref_element: np.ndarray  # [Ntoken, 24], int
     ref_charge: np.ndarray  # [Ntoken, 24,], float
     ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
-    coords: np.ndarray  # [Ntoken, 24, Nholo, 3], float32
-    apo_coords: np.ndarray  # [Ntoken, 24, Napo, 3], float32
+    ref_mask: np.ndarray  # [Ntoken, 24], bool
+    coords: np.ndarray  # [Ntoken, 24, 3], float32
     resolved_mask: np.ndarray  # [Ntoken, 24], bool
-    apo_mask: np.ndarray  # [Ntoken, 24, Napo], bool
+    apo_coords: np.ndarray  # [Ntoken, 24, 3], float32
+    apo_mask: np.ndarray  # [Ntoken, 24], bool
+    apo_plddt: np.ndarray  # [Ntoken, 24], float32
     pad_mask: np.ndarray  # [Ntoken, 24], bool
 
     @cached_property
@@ -450,6 +489,7 @@ class AtomArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
+        check_array(self.ref_uid, name="ref_uid", dtype=np.integer, shape=shape)
         check_array(
             self.ref_atom_name_chars,
             name="ref_atom_name_chars",
@@ -459,36 +499,58 @@ class AtomArray(PlainLayout[np.ndarray]):
         check_array(self.ref_element, name="ref_element", dtype=np.integer, shape=shape)
         check_array(self.ref_charge, name="ref_charge", dtype=np.floating, shape=shape)
         check_array(self.ref_pos, name="ref_pos", dtype=np.floating, shape=(*shape, 3))
+        check_array(self.ref_mask, name="ref_mask", dtype=np.bool_, shape=shape)
+        check_array(self.coords, name="coords", dtype=np.floating, shape=(*shape, 3))
         check_array(
-            self.coords,
-            name="coords",
-            dtype=np.floating,
-            shape=(*shape, -1, 3),
-        )
-        check_array(
-            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, -1, 3)
+            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, 3)
         )
         check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
-        check_array(self.apo_mask, name="apo_mask", dtype=np.bool_, shape=(*shape, -1))
+        check_array(self.apo_mask, name="apo_mask", dtype=np.bool_, shape=shape)
         check_array(self.pad_mask, name="pad_mask", dtype=np.bool_, shape=shape)
 
     @classmethod
-    def get_default_dtype(cls) -> dict[str, type | np.dtype]:
-        """Get default dtypes for each field."""
-        return {
-            "ref_atom_name_chars": np.uint8,  # 0-63
-            "ref_element": np.uint8,  # 0-127
-            "ref_charge": np.float16,
-            "ref_pos": np.float32,
-            "coords": np.float32,
-            "apo_coords": np.float32,
-            "resolved_mask": np.bool_,
-            "apo_mask": np.bool_,
-            "pad_mask": np.bool_,
-        }
+    def get_empty(cls, num_tokens: int) -> Self:
+        """Get an empty AtomArray with the specified number of tokens."""
+        num_atoms = C.MAX_NUM_ATOMS_PER_TOKEN
+        shape = (num_tokens, num_atoms)
+        return cls(
+            ref_uid=full_minus_one(shape),
+            ref_atom_name_chars=full_minus_one((*shape, 4)),
+            ref_element=full_minus_one(shape),
+            ref_charge=full_nan(shape),
+            ref_pos=full_nan((*shape, 3)),
+            coords=full_nan((*shape, 3)),
+            apo_coords=full_nan((*shape, 3)),
+            apo_plddt=full_nan(shape),
+            ref_mask=full_false(shape),
+            resolved_mask=full_false(shape),
+            apo_mask=full_false(shape),
+            pad_mask=full_false(shape),
+        )
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the ResidueArray."""
+        for field in dataclasses.fields(self):
+            array = getattr(self, field.name)
+            if np.any(array < 0) and field.name not in [
+                "ref_charge",
+                "ref_pos",
+                "coords",
+                "apo_coords",
+                "apo_plddt",
+                "ref_mask",
+                "resolved_mask",
+                "apo_mask",
+                "pad_mask",
+            ]:
+                raise ValueError(
+                    f"AtomArray field '{field.name}' contains negative values."
+                )
+            elif field.name == "ref_charge" and np.any(np.isnan(array)):
+                raise ValueError(f"AtomArray field '{field.name}' contains NaN values.")
 
 
-@dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
+@dataclasses.dataclass(frozen=True, kw_only=True)
 class BondArray(PlainLayout[np.ndarray]):
     """Bond information.
 
@@ -527,14 +589,23 @@ class BondArray(PlainLayout[np.ndarray]):
         check_array(self.bond_type, name="bond_type", dtype=np.integer, shape=shape)
 
     @classmethod
-    def get_default_dtype(cls) -> dict[str, type | np.dtype]:
-        """Get default dtypes for each field."""
-        return {
-            "asym_id": np.int16,
-            "token_index": np.int32,
-            "atom_index": np.uint8,  # 0-23
-            "bond_type": np.uint8,  # 0-5
-        }
+    def get_empty(cls, num_bonds: int) -> Self:
+        """Get an empty BondArray with the specified number of bonds."""
+        return cls(
+            asym_id=full_minus_one((num_bonds, 2)),
+            token_index=full_minus_one((num_bonds, 2)),
+            atom_index=full_minus_one((num_bonds, 2)),
+            bond_type=full_minus_one((num_bonds,)),
+        )
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the BondArray."""
+        for field in dataclasses.fields(self):
+            array = getattr(self, field.name)
+            if np.any(array < 0):
+                raise ValueError(
+                    f"BondArray field '{field.name}' contains negative values."
+                )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -601,6 +672,25 @@ class TokenizedStructure:
             f"  num_tokens: {num_tokens}\n"
             f"  num_bonds: {num_bonds}\n"
             f")"
+        )
+
+    @classmethod
+    def get_empty(
+        cls,
+        num_chains: int,
+        num_residues: int,
+        num_tokens: int,
+        num_bonds: int,
+        metadata: Metadata | None = None,
+    ) -> Self:
+        """Get an empty TokenizedStructure with the specified sizes."""
+        return cls(
+            chain=ChainArray.get_empty(num_chains),
+            residue=ResidueArray.get_empty(num_residues),
+            token=TokenArray.get_empty(num_tokens),
+            atom=AtomArray.get_empty(num_tokens),
+            bond=BondArray.get_empty(num_bonds),
+            metadata=metadata,
         )
 
     # === PDB/MMCIF writing === #
@@ -817,53 +907,6 @@ class TokenizedStructure:
             atom=cropped_atom,
             bond=cropped_bond,
             metadata=self.metadata,
-        )
-
-    @classmethod
-    def concatenate(cls, structures: list[Self]) -> Self:
-        """Concatenate multiple structures into one.
-
-        Parameters
-        ----------
-        structures: list[TokenizedStructure]
-            List of structures to concatenate.
-
-        Returns
-        -------
-        concatenated_structure: TokenizedStructure
-            Concatenated structure.
-        """
-        # Concatenate chain, residue, token, atom
-        concat_chain = ChainArray.concatenate([struct.chain for struct in structures])
-        concat_residue = ResidueArray.concatenate(
-            [struct.residue for struct in structures]
-        )
-        concat_token = TokenArray.concatenate([struct.token for struct in structures])
-        concat_atom = AtomArray.concatenate([struct.atom for struct in structures])
-
-        # Adjust token indices
-        concat_token = concat_token.copy_with(
-            token_index=np.arange(len(concat_token), dtype=concat_token.token_index.dtype)
-        )
-
-        # Adjust bond indices and concatenate
-        bond_list = []
-        token_offset = 0
-        for struct in structures:
-            bond = struct.bond
-            adjusted_token_index = bond.token_index + token_offset
-            adjusted_bond = bond.copy_with(token_index=adjusted_token_index)
-            bond_list.append(adjusted_bond)
-            token_offset += int(struct.num_tokens)
-        concat_bond = BondArray.concatenate(bond_list)
-
-        return cls(
-            chain=concat_chain,
-            residue=concat_residue,
-            token=concat_token,
-            atom=concat_atom,
-            bond=concat_bond,
-            metadata=None,
         )
 
     def reassign_token_indices(self) -> Self:
