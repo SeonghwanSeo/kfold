@@ -7,8 +7,16 @@ from typing import Any
 import numpy as np
 
 import kfold.constants as C
-from kfold.data import apo_perturbation, featurize, metadata, model_input, tokenized
-from kfold.data.processing.component import CCD, Component
+from kfold.data import (
+    metadata,
+    model_input,
+    tokenized,
+)
+from kfold.data.pipelines import (
+    apo_perturbation,
+    featurize,
+)
+from kfold.data.pipelines.ccd import CCD, Component
 from kfold.utils.files import load_apo_chain
 
 from . import query

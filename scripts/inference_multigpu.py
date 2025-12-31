@@ -6,7 +6,7 @@ import torch
 from lightning import pytorch as pl
 
 from kfold.config import load_config
-from kfold.data.processing.component import CCD
+from kfold.data.ccd import CCD
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.pl_client import InferenceConfig, KFoldInferenceClient
 from kfold.inference.query import InputFile, parse_input_files

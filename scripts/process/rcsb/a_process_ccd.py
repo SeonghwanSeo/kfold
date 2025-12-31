@@ -14,7 +14,7 @@ import numpy as np
 from rdkit import Chem, RDLogger, rdBase
 from tqdm import tqdm
 
-from kfold.data.processing.component import CCD, Component
+from kfold.data.ccd import CCD, Component
 
 try:
     # pdbeccdutils is required for reading RCSB CCD data

@@ -28,8 +28,6 @@ class ExperimentRecord(JsonSerializable):
     deposited: str | None = None
     released: str | None = None
     revised: str | None = None
-    num_chains: int | None = None
-    num_interfaces: int | None = None
     pH: float | None = None
     temperature: float | None = None
 
@@ -39,35 +37,26 @@ class PredictionRecord(JsonSerializable):
     """Metadata record from structure prediction."""
 
     # TODO: add more fields if necessary
-    model_name: str | None = None
+    model: str | None = None  # e.g., "AlphaFold2"
     plddt: float | None = None
-    pae_mean: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ChainInfo(JsonSerializable):
-    chain_type: C.chain.ChainType
-    chain_name: str  # same to auth_asym_id
+    chain_name: str  # User/Author-defined chain name
+    chain_type: int  # C.ChainType enum value
     entity_id: int  # starts from 1
     asym_id: int  # starts from 1
     sym_id: int  # starts from 1
     num_residues: int
-    cluster_id: str
+    cluster_id: str | None = None
     valid: bool = True
+    smiles: str | None = None
     description: str | None = None
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary, excluding None values."""
-        data = super(ChainInfo, self).to_dict()
-        data["chain_type"] = self.chain_type.name
-        return data
-
-    @classmethod
-    def from_dict(cls, data: dict) -> Self:
-        """Create ChainInfo from dictionary."""
-        data = data.copy()
-        data["chain_type"] = C.chain.ChainType[data["chain_type"]]
-        return cls(**data)
+    @property
+    def ctype(self) -> C.ChainType:
+        return C.ChainType(self.chain_type)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,14 +70,16 @@ class InterfaceInfo(JsonSerializable):
         assert len(self.asym_ids) == 2, "Interface must involve exactly two chains."
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Metadata:
     id: str
     source: str  # e.g., "rcsb"
     exp: ExperimentRecord | None = None
     prediction: PredictionRecord | None = None
-    chains: list[ChainInfo] = field(default_factory=list)
-    interfaces: list[InterfaceInfo] = field(default_factory=list)
+    chains: list[ChainInfo]
+    interfaces: list[InterfaceInfo] = field(
+        default_factory=list
+    )  # only used in training.
 
     def __repr__(self) -> str:
         return (
@@ -98,7 +89,35 @@ class Metadata:
 
     def __post_init__(self):
         # FIXME: we may want to add more sources later
-        assert self.source in {"rcsb", "query"}, f"Unsupported source: {self.source}"
+        assert self.source in {
+            "rcsb",  # experimentally determined structures from RCSB PDB
+            "prediction",  # synthetic structures from structure prediction
+            "query",  # User query for inference
+        }, f"Unsupported source: {self.source}"
+
+        if self.source == "query":
+            assert self.exp is None and self.prediction is None, (
+                "Query metadata should not have exp or prediction records."
+            )
+            assert len(self.interfaces) == 0, "Query metadata should not have interfaces."
+
+        # Check all asym_ids are unique
+        asym_id_set = set()
+        for chain in self.chains:
+            if chain.asym_id in asym_id_set:
+                raise ValueError(f"Duplicate asym_id found: {chain.asym_id}")
+            asym_id_set.add(chain.asym_id)
+
+    @property
+    def asym_ids(self) -> list[int]:
+        asym_ids = [chain.asym_id for chain in self.chains]
+        return asym_ids
+
+    def get_chain_by_asym_id(self, asym_id: int) -> ChainInfo:
+        for chain in self.chains:
+            if chain.asym_id == asym_id:
+                return chain
+        raise ValueError(f"Chain with asym_id {asym_id} not found.")
 
     @property
     def num_chains(self) -> int:

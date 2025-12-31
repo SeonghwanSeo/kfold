@@ -9,7 +9,7 @@ import pickle
 from rdkit import Chem, RDLogger, rdBase
 from tqdm import tqdm
 
-from kfold.data.processing.component import CCD, Component
+from kfold.data.ccd import CCD, Component
 
 # Set property saving
 Chem.SetDefaultPickleProperties(Chem.PropertyPickleOptions.AllProps)

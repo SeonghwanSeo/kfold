@@ -4,8 +4,8 @@ from typing import Any
 
 import torch
 
+from kfold.data.ccd import CCD
 from kfold.data.model_input import FoldingInput
-from kfold.data.processing.component import CCD
 from kfold.data.tokenized import TokenizedStructure
 
 from .data_pipeline import InputDataPipeline

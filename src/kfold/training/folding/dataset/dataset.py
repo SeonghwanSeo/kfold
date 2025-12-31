@@ -7,7 +7,8 @@ import numpy as np
 import torch
 from typing_extensions import override
 
-from kfold.data import apo_perturbation, featurize, metadata, model_input, tokenized
+from kfold.data import metadata, model_input, tokenized
+from kfold.data.pipelines import apo_perturbation, featurize
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper, PreCropper

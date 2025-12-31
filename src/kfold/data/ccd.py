@@ -3,26 +3,28 @@ import dataclasses
 import datetime
 import pathlib
 import pickle
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from functools import cached_property
 from typing import Any, Self, TypeVar
 
 import gemmi
 import numpy as np
 from rdkit import Chem
 
-from . import rdkit_utils
+from .utils import rdkit_utils
 
 # Helper function
 
 _T = TypeVar("_T")
+Point3D = tuple[float, float, float]
 
 
-def filter_items(items: list[_T], mask: list[Any]) -> list[_T]:
+def filter_items(items: Iterable[_T], mask: Iterable[Any]) -> list[_T]:
     """Filter items based on a boolean mask."""
     return [item for item, m in zip(items, mask, strict=True) if m]
 
 
-def get_ideal_coordinates(cif_block: gemmi.cif.Block) -> np.ndarray | None:
+def get_ideal_coordinates(cif_block: gemmi.cif.Block) -> dict[str, Point3D] | None:
     """Get the ideal coordinates as a numpy array.
 
     Parameters
@@ -32,9 +34,8 @@ def get_ideal_coordinates(cif_block: gemmi.cif.Block) -> np.ndarray | None:
 
     Returns
     -------
-    np.ndarray | None
-        An array of ideal coordinates with shape (n_atoms, 3),
-        or None if no ideal coordinates are available.
+    dict[str, Point3D] | None
+        A dictionary mapping atom names to their ideal coordinates.
     """
     # Return None if no coordinate information is available
     if "_chem_comp_atom.pdbx_model_Cartn_x_ideal" not in cif_block:
@@ -42,29 +43,28 @@ def get_ideal_coordinates(cif_block: gemmi.cif.Block) -> np.ndarray | None:
 
     missing_flag = {"?", "."}
 
+    names = cif_block.find_values("_chem_comp_atom.atom_id")
     x_coords = cif_block.find_values("_chem_comp_atom.pdbx_model_Cartn_x_ideal")
     y_coords = cif_block.find_values("_chem_comp_atom.pdbx_model_Cartn_y_ideal")
     z_coords = cif_block.find_values("_chem_comp_atom.pdbx_model_Cartn_z_ideal")
 
     num_atoms: int = len(x_coords)
-    ideal_coords: np.ndarray = np.full((num_atoms, 3), np.nan, dtype=np.float32)
+    coord_dict: dict[str, Point3D] = {}
     for i in range(num_atoms):
         x_i, y_i, z_i = x_coords[i], y_coords[i], z_coords[i]
         if all(v not in missing_flag for v in (x_i, y_i, z_i)):
-            ideal_coords[i, 0] = float(x_i)
-            ideal_coords[i, 1] = float(y_i)
-            ideal_coords[i, 2] = float(z_i)
+            coord_dict[names[i]] = (float(x_i), float(y_i), float(z_i))
 
-    if np.isnan(ideal_coords).all():
+    if len(coord_dict) == 0:
         # All coordinates are missing
         return None
 
-    return ideal_coords
+    return coord_dict
 
 
 def get_model_coordinates(
     cif_block: gemmi.cif.Block, date_cutoff: datetime.date | None = None
-) -> np.ndarray | None:
+) -> dict[str, Point3D] | None:
     """Get the model coordinates as a numpy array.
 
     Parameters
@@ -76,9 +76,8 @@ def get_model_coordinates(
 
     Returns
     -------
-    np.ndarray | None
-        An array of model coordinates with shape (n_atoms, 3),
-        or None if no model coordinates are available.
+    dict[str, Point3D] | None
+        A dictionary mapping atom names to their model coordinates.
     """
     # Return None if no coordinate information is available
     if "_chem_comp_atom.model_Cartn_x" not in cif_block:
@@ -95,24 +94,23 @@ def get_model_coordinates(
 
     missing_flag = {"?", "."}
 
+    names = cif_block.find_values("_chem_comp_atom.atom_id")
     x_coords = cif_block.find_values("_chem_comp_atom.model_Cartn_x")
     y_coords = cif_block.find_values("_chem_comp_atom.model_Cartn_y")
     z_coords = cif_block.find_values("_chem_comp_atom.model_Cartn_z")
 
     num_atoms: int = len(x_coords)
-    model_coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
+    coord_dict: dict[str, Point3D] = {}
     for i in range(num_atoms):
         x_i, y_i, z_i = x_coords[i], y_coords[i], z_coords[i]
         if all(v not in missing_flag for v in (x_i, y_i, z_i)):
-            model_coords[i, 0] = float(x_i)
-            model_coords[i, 1] = float(y_i)
-            model_coords[i, 2] = float(z_i)
+            coord_dict[names[i]] = (float(x_i), float(y_i), float(z_i))
 
-    if np.isnan(model_coords).all():
+    if len(coord_dict) == 0:
         # All coordinates are missing
         return None
 
-    return model_coords
+    return coord_dict
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -134,19 +132,17 @@ class Component:
         An array of formal charges with shape (n_atoms,).
     is_leaving_atom : np.ndarray (bool)
         A boolean array indicating leaving atoms with shape (n_atoms,).
-    etkdg_coords : np.ndarray (np.float32) | None
+    bonds : dict[tuple[str, str], int]
+        A dictionary of bond orders between atom pairs.
+    etkdg_coords : np.ndarray (np.float16) | None
         An array of pre-computed ektdg coordinates with shape (n_etkdg, n_atoms, 3).
-    ideal_coords : np.ndarray (np.float32) | None
+    ideal_coords : np.ndarray (np.float16) | None
         An array of ideal coordinates with shape (n_atoms, 3),
-    model_coords : np.ndarray (np.float32) | None
+    model_coords : np.ndarray (np.float16) | None
         An array of model coordinates with shape (n_atoms, 3),
     symmetries : tuple[list[int], ...]
         A tuple of arrays representing permutational symmetries.
         Only used in training.
-    properties : dict
-        A dictionary of additional properties.
-        Since rdkit Molecule objects' properties are often not serializable
-        during multiprocessing (num_workers>0), we store them here.
     """
 
     code: str
@@ -155,16 +151,31 @@ class Component:
     elements: np.ndarray  # (n_atoms,) with dtype=np.uint8
     charges: np.ndarray  # (n_atoms,) with dtype=np.int8
     is_leaving_atom: np.ndarray  # (n_atoms,) with dtype=bool
-    etkdg_coords: np.ndarray | None  # (n_conf, n_atoms, 3) with dtype=np.float32
-    ideal_coords: np.ndarray | None  # (n_atoms, 3) with dtype=np.float32
-    model_coords: np.ndarray | None  # (n_atoms, 3) with dtype=np.float32
-    symmetries: tuple[list[int], ...] = ()  # Permutational symmetries
-    properties: dict = dataclasses.field(default_factory=dict)  # Additional properties
+    bonds: dict[tuple[str, str], int]  # Bond orders between atom pairs
+    etkdg_coords: np.ndarray | None  # (n_conf, n_atoms, 3) with dtype=np.float16
+    ideal_coords: np.ndarray | None  # (n_atoms, 3) with dtype=np.float16
+    model_coords: np.ndarray | None  # (n_atoms, 3) with dtype=np.float16
+    symmetries: Sequence[list[int]] | None = None  # Permutational symmetries
 
     @property
     def num_atoms(self) -> int:
         """Get the number of atoms in the component."""
         return len(self.atom_names)
+
+    @property
+    def non_leaving_atom_names(self) -> tuple[str, ...]:
+        """Get the names of non-leaving atoms in the component."""
+        return tuple(filter_items(self.atom_names, ~self.is_leaving_atom))
+
+    @cached_property
+    def num_leaving_atoms(self) -> int:
+        """Get the number of leaving atoms in the component."""
+        return int(np.sum(self.is_leaving_atom))
+
+    @cached_property
+    def num_non_leaving_atoms(self) -> int:
+        """Get the number of non-leaving atoms in the component."""
+        return int(np.sum(~self.is_leaving_atom))
 
     def to_dict(self) -> dict:
         """Convert the Component instance to a dictionary without deepcopy"""
@@ -176,10 +187,21 @@ class Component:
         """Create a Component instance from a dictionary."""
         return cls(**data)
 
+    def get_atom_index_map(self) -> dict[str, int]:
+        """Get a mapping from atom names to their indices.
+
+        Returns
+        -------
+        dict[str, int]
+            A dictionary mapping atom names to their indices.
+        """
+        return {name: idx for idx, name in enumerate(self.atom_names)}
+
     def get_conformer(
         self,
         conformer_type: str,
         rng: np.random.Generator | None = None,
+        timeout: float = 30.0,
     ) -> np.ndarray | None:
         """Get the coordinates of the specified conformer type.
 
@@ -193,6 +215,10 @@ class Component:
               - etkdg-cached: pre-computed ETKDG conformer (if available).
               - ideal: CCD ideal conformer (if available).
               - nan: return NaN coordinates.
+        rng : np.random.Generator | None, optional
+            A random number generator for conformer generation (default is None).
+        timeout : float | None, optional
+            Timeout for conformer generation in seconds (not used currently).
 
         Returns
         -------
@@ -204,6 +230,8 @@ class Component:
         -----
         - In general case, `etkdg-cached` -> `etkdg` -> `ideal` -> `model` is preferred.
         """
+        cast = lambda x: x.astype(np.float32) if x is not None else None  # noqa: E731
+
         available_types = {"auto", "etkdg", "etkdg-cached", "ideal", "model", "nan"}
         if conformer_type not in available_types:
             raise ValueError(
@@ -225,7 +253,7 @@ class Component:
                 return coords
 
             # Then try to generate a new ETKDG conformer
-            coords = self.get_conformer("etkdg", rng)
+            coords = self.get_conformer("etkdg", rng, timeout)
             if coords is not None:
                 return coords
 
@@ -248,13 +276,14 @@ class Component:
         elif conformer_type == "etkdg":
             # Return a new ETKDG conformer
             mol = Chem.AddHs(self.mol)
-            mol = rdkit_utils.compute_rdkit_conformer(mol, rng=rng)
+            mol = rdkit_utils.compute_rdkit_conformer(mol, rng=rng, timeout=timeout)
             mol = Chem.RemoveHs(mol, sanitize=False)
             if mol.GetNumConformers() == 0:
                 # Failed to generate conformer
                 return None
             conf = mol.GetConformer(0)
             coords = np.array(conf.GetPositions(), dtype=np.float32)
+            coords -= np.mean(coords, axis=0, keepdims=True)  # Center the coordinates
             return coords
         elif conformer_type == "etkdg-cached":
             # Return one of pre-computed ektdg conformers
@@ -264,16 +293,19 @@ class Component:
             if num_confs == 0:
                 return None  # No conformers available
             elif num_confs == 1:
-                return self.etkdg_coords[0]  # Only one conformer available
+                return cast(self.etkdg_coords[0])  # Only one conformer available
             else:
                 # Randomly select one conformer
                 conf_idx = rng.integers(0, num_confs)
-                coords = self.etkdg_coords[conf_idx]
-                return coords
+                return cast(self.etkdg_coords[conf_idx])
         if conformer_type == "ideal":
-            return self.ideal_coords
+            if self.ideal_coords is None:
+                return None
+            return cast(self.ideal_coords)
         elif conformer_type == "model":
-            return self.model_coords
+            if self.model_coords is None:
+                return None
+            return cast(self.model_coords)
         elif conformer_type == "nan":
             n_atoms = len(self.atom_names)
             return np.full((n_atoms, 3), np.nan, dtype=np.float32)
@@ -286,11 +318,12 @@ class Component:
         code: str,
         mol: Chem.Mol,
         num_confs: int = 0,
-        ideal_conf_id: int | None = None,
-        model_conf_id: int | None = None,
-        etkdg_conf_ids: list[int] | None = None,
+        ideal_coords: dict[str, Point3D] | None = None,
+        model_coords: dict[str, Point3D] | None = None,
         compute_symmetry: bool = False,
         is_ccd_component: bool = False,
+        remove_hydrogens: bool = True,
+        sanitize: bool = True,
         rng: np.random.Generator | None = None,
     ) -> Self:
         """Create a Component instance from an RDKit molecule and coordinates.
@@ -303,16 +336,16 @@ class Component:
             The RDKit molecule object.
         num_confs : int, optional
             The number of etkdg conformers to generate (default is 0).
-        ideal_conf_id : int | None, optional
-            The conformer ID for ideal coordinates (default is None).
-        model_conf_id : int | None, optional
-            The conformer ID for model coordinates (default is None).
-        etkdg_conf_ids : list[int] | None, optional
-            The conformer IDs for etkdg coordinates (default is None).
+        ideal_coords : dict[str, Point3D] | None, optional
+            A dictionary of ideal coordinates (default is None).
+        model_coords : dict[str, Point3D] | None, optional
+            A dictionary of model coordinates (default is None).
         compute_symmetry : bool, optional
             Whether to compute permutational symmetries (default is False).
         is_ccd_component : bool, optional
             Whether the component is from CCD (default is False).
+        sanitize : bool, optional
+            Whether to sanitize the molecule (default is True).
         rng : np.random.Generator | None, optional
             A random number generator for conformer generation (default is None).
 
@@ -321,104 +354,39 @@ class Component:
         Component
             A Component instance with the specified properties.
         """
-        # 1. Remove hydrogens for processing
-        mol = Chem.Mol(mol)  # Create a copy to avoid modifying the original
-        success = rdkit_utils.sanitize_molecule(mol, allow_fail=True)
-        if not success:
-            print(f"Warning: Molecule {code} failed sanitization.")
+        # 1. Prepare molecule
+        if remove_hydrogens:
+            mol = Chem.RemoveAllHs(mol, sanitize=False)  # Remove hydrogens for processing
+        else:
+            mol = Chem.Mol(mol)  # Create a copy to avoid modifying the original
+        if sanitize:
+            # Sanitize molecule
+            success = rdkit_utils.sanitize_molecule(mol, allow_fail=True)
+            if not success:
+                print(f"Warning: Molecule {code} failed sanitization.")
 
-        # 2. Label ideal and model conformers if provided
-        ideal_conf: Chem.Conformer | None = None
-        if ideal_conf_id is not None:
-            ideal_conf = rdkit_utils.get_conformer(mol, ideal_conf_id)
-            if ideal_conf is not None:
-                ideal_conf = Chem.Conformer(ideal_conf)  # Create a copy
-                ideal_conf.SetProp("source", "ideal")
-
-        model_conf: Chem.Conformer | None = None
-        if model_conf_id is not None:
-            model_conf = rdkit_utils.get_conformer(mol, model_conf_id)
-            if model_conf is not None:
-                model_conf = Chem.Conformer(model_conf)  # Create a copy
-                model_conf.SetProp("source", "model")
-
-        # 3. Label etkdg conformers if provided and generate new ones if requested
-        etkdg_confs: list[Chem.Conformer] = []
-        if etkdg_conf_ids is not None:
-            for conf_id in etkdg_conf_ids:
-                etkdg_conf = rdkit_utils.get_conformer(mol, conf_id)
-                if etkdg_conf is not None:
-                    etkdg_conf = Chem.Conformer(etkdg_conf)  # Create a copy
-                    etkdg_conf.SetProp("source", "etkdg")
-                    etkdg_confs.append(etkdg_conf)
-
-        if num_confs > 0 and mol.GetNumHeavyAtoms() > 1:
-            # Only compute ETKDG for molecules with more than 1 atom
-            rng = rng or np.random.default_rng()
-            etkdg_mol = rdkit_utils.compute_rdkit_conformer(mol, num_confs, rng)
-
-            for conf in etkdg_mol.GetConformers():
-                conf.SetProp("source", "etkdg")
-                etkdg_confs.append(conf)
-
-        # 4. Combine conformers to extract heavy atom coordinates
-        mol.RemoveAllConformers()
-        if ideal_conf is not None:
-            mol.AddConformer(ideal_conf)
-        if model_conf is not None:
-            mol.AddConformer(model_conf)
-        for conf in etkdg_confs:
-            mol.AddConformer(conf)
-
-        # Remove hydrogens
-        mol = Chem.RemoveAllHs(mol, sanitize=False)
-
-        # Get coordinates
-        ideal_coords: np.ndarray | None = None
-        model_coords: np.ndarray | None = None
-        etkdg_coords_list: list[np.ndarray] = []
-        for conf in mol.GetConformers():
-            source = conf.GetProp("source")
-            coords = np.array(conf.GetPositions(), dtype=np.float32)
-            if source == "ideal":
-                ideal_coords = coords
-            elif source == "model":
-                model_coords = coords
-            elif source == "etkdg":
-                etkdg_coords_list.append(coords)
-
-        etkdg_coords: np.ndarray | None = None
-        if len(etkdg_coords_list) > 0:
-            etkdg_coords = np.stack(etkdg_coords_list, axis=0)
-
-        # 5. Get atom informations
-        # Get atom_name
+        # 2. Check and assign atom names
         has_atom_names = all(atom.HasProp("name") for atom in mol.GetAtoms())
-        if is_ccd_component:
-            # Ensure all atom names are present for CCD components
-            assert has_atom_names, (
-                "CCD component molecule is missing atom names. "
-                "Please ensure atom names are assigned."
-            )
         if not has_atom_names:
+            # Ensure all atom names are present for CCD components
+            assert not is_ccd_component, f"CCD component {code} is missing atom names."
             # Assign default atom names if missing
-            rdkit_utils.assign_atom_names(mol)
+            rdkit_utils.assign_atom_names(mol, max_name_length=4)
+
+        # 3. Get the reference molecule properties
+        # Get atom names
         ref_atom_names = [atom.GetProp("name") for atom in mol.GetAtoms()]
         assert all(name not in ("H", "D", "T") for name in ref_atom_names), (
             "Hydrogen atom names found in the molecule. "
-            "Please remove hydrogens before processing."
         )
-
         # Get elements
         ref_elements: np.ndarray = np.array(
             [atom.GetAtomicNum() for atom in mol.GetAtoms()], dtype=np.uint8
         )
-
         # Get formal charges
         ref_charges: np.ndarray = np.array(
             [atom.GetFormalCharge() for atom in mol.GetAtoms()], dtype=np.int8
         )
-
         # Get leaving atom mask
         check_leaving_atom = lambda atom: (  # noqa:E731
             atom.HasProp("leaving_atom") and atom.GetBoolProp("leaving_atom")
@@ -427,32 +395,94 @@ class Component:
             [check_leaving_atom(atom) for atom in mol.GetAtoms()],
             dtype=bool,
         )
+        # Get bonds
+        bonds: dict[tuple[str, str], int] = {}
+        for bond in mol.GetBonds():
+            atom1 = bond.GetBeginAtom()
+            atom2 = bond.GetEndAtom()
+            name1 = atom1.GetProp("name")
+            name2 = atom2.GetProp("name")
+            bond_key = (name1, name2) if name1 < name2 else (name2, name1)
+            bond_type = int(
+                bond.GetBondType()
+            )  # 1: single, 2: double, 3: triple, 12: aromatic
+            bonds[bond_key] = bond_type
+
+        # Generate etkdg conformers if requested
+        etkdg_coords_list: list[dict[str, Point3D]] = []
+        if num_confs > 0 and mol.GetNumHeavyAtoms() > 1:
+            # Only compute ETKDG for molecules with more than 1 atom
+            rng = rng or np.random.default_rng()
+            etkdg_mol = rdkit_utils.compute_rdkit_conformer(
+                mol, num_confs, add_hydrogens=True, rng=rng
+            )
+            for conf in etkdg_mol.GetConformers():
+                coords_dict: dict[str, Point3D] = {}
+                for atom in etkdg_mol.GetAtoms():
+                    if atom.HasProp("name"):
+                        atom_name = atom.GetProp("name")
+                        pos = conf.GetAtomPosition(atom.GetIdx())
+                        coords_dict[atom_name] = (pos.x, pos.y, pos.z)
+                etkdg_coords_list.append(coords_dict)
+
+        # Get coordinates
+        ideal_coords_arr: np.ndarray | None = None
+        model_coords_arr: np.ndarray | None = None
+        etkdg_coords_arr: np.ndarray | None = None
+
+        def to_array(
+            coords_dict: dict[str, Point3D], atom_names: list[str]
+        ) -> np.ndarray:
+            missing = (np.nan, np.nan, np.nan)
+            coords_arr = np.array(
+                [coords_dict.get(n, missing) for n in atom_names],
+                dtype=np.float32,
+            )
+            center = np.nanmean(coords_arr, axis=0, keepdims=True)
+            coords_arr -= center  # Center the coordinates
+            return coords_arr.astype(np.float16)  # Use float16 to save storage
+
+        if mol.GetNumHeavyAtoms() > 1:
+            if ideal_coords is not None:
+                ideal_coords_arr = to_array(ideal_coords, ref_atom_names)
+            if model_coords is not None:
+                model_coords_arr = to_array(model_coords, ref_atom_names)
+            if len(etkdg_coords_list) > 0:
+                etkdg_coords_arr = np.stack(
+                    [
+                        to_array(coords_dict, ref_atom_names)
+                        for coords_dict in etkdg_coords_list
+                    ]
+                )
 
         # 6. Compute symmetries if requested
         if compute_symmetry:
             symmetries = rdkit_utils.compute_molecule_symmetry(mol)
         else:
-            symmetries = ()
+            symmetries = None
 
         # 7. Clean up molecule properties and conformers
-        rdkit_utils.sanitize_molecule(mol, allow_fail=True)
         mol.RemoveAllConformers()
         for prop_name in mol.GetPropNames():
             mol.ClearProp(prop_name)
         for atom in mol.GetAtoms():
             for prop_name in atom.GetPropNames():
                 atom.ClearProp(prop_name)
+        for bond in mol.GetBonds():
+            for prop_name in bond.GetPropNames():
+                bond.ClearProp(prop_name)
 
         return cls(
             code=code,
             mol=mol,
             atom_names=tuple(ref_atom_names),
-            is_leaving_atom=is_leaving_atom,
             elements=ref_elements,
             charges=ref_charges,
-            ideal_coords=ideal_coords,
-            model_coords=model_coords,
-            etkdg_coords=etkdg_coords,
+            is_leaving_atom=is_leaving_atom,
+            bonds=bonds,
+            ideal_coords=ideal_coords_arr,
+            model_coords=model_coords_arr,
+            etkdg_coords=etkdg_coords_arr,
             symmetries=symmetries,
         )
 
@@ -471,7 +501,15 @@ class Component:
         # NOTE: chirality is already set in the original RDKit molecule
         mol = Chem.Mol(mol)
 
+        # Get ideal and model coordinates
+        ideal_coords = get_ideal_coordinates(cif_block)
+        model_coords = get_model_coordinates(cif_block, date_cutoff=date_cutoff)
+
+        # Remove molecule coordinates
+        mol.RemoveAllConformers()
+
         # Sanitize
+        mol = Chem.RemoveAllHs(mol, sanitize=False)
         success = rdkit_utils.sanitize_molecule(mol, allow_fail=True)
         if not success:
             print(f"Warning: Molecule {code} failed sanitization.")
@@ -482,33 +520,15 @@ class Component:
                 f"Atom in CCD component {code} is missing 'name' property."
             )
 
-        # Get ideal and model coordinates
-        ideal_coords = get_ideal_coordinates(cif_block)
-        model_coords = get_model_coordinates(cif_block, date_cutoff=date_cutoff)
-
-        # Add ideal and model conformers to the molecule
-        if ideal_coords is not None:
-            ideal_conf_id = rdkit_utils.add_conformer_with_coordinates(
-                mol, ideal_coords, set_chirality=False
-            )
-        else:
-            ideal_conf_id = None
-
-        if model_coords is not None:
-            model_conf_id = rdkit_utils.add_conformer_with_coordinates(
-                mol, model_coords, set_chirality=False
-            )
-        else:
-            model_conf_id = None
-
         return cls.from_mol(
             code=code,
             mol=mol,
             num_confs=num_confs,
-            ideal_conf_id=ideal_conf_id,
-            model_conf_id=model_conf_id,
+            ideal_coords=ideal_coords,
+            model_coords=model_coords,
             compute_symmetry=compute_symmetry,
             is_ccd_component=True,
+            sanitize=False,
             rng=rng,
         )
 
@@ -545,7 +565,6 @@ class Component:
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
             raise ValueError(f"Invalid SMILES string: {smiles}")
-        mol = Chem.AddHs(mol)  # Add hydrogens for conformer generation
         return cls.from_mol(
             code=code,
             mol=mol,

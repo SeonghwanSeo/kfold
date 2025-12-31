@@ -6,10 +6,10 @@ import numpy as np
 import torch
 
 import kfold.constants as C
+from kfold.data import model_input, tokenized
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
-from . import model_input, tokenized
-from .utils import frame_utils
+from . import frame_utils
 
 
 class InputFeaturizer:

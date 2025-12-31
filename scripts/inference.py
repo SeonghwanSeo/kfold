@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from kfold.config import load_config
 from kfold.data import model_input, tokenized
-from kfold.data.processing.component import CCD
+from kfold.data.ccd import CCD
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.query import InputFile, parse_input_files
 from kfold.model.models import KFold
