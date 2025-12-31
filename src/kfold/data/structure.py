@@ -9,7 +9,7 @@ import msgpack
 import numpy as np
 
 import kfold.constants as C
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.misc import check_array
 
 __all__ = [

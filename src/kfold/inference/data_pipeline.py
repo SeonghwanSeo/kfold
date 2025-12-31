@@ -8,15 +8,15 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data import (
-    metadata,
     model_input,
+    schema,
     tokenized,
 )
+from kfold.data.ccd import CCD, Component
 from kfold.data.pipelines import (
     apo_perturbation,
     featurize,
 )
-from kfold.data.pipelines.ccd import CCD, Component
 from kfold.utils.files import load_apo_chain
 
 from . import query
@@ -150,7 +150,7 @@ class InputDataPipeline:
 
     def prepare_metadata_from_input_file(
         self, input_file: query.InputFile
-    ) -> metadata.Metadata:
+    ) -> schema.Metadata:
         """Prepare the metadata from the input file.
 
         Parameters
@@ -166,7 +166,7 @@ class InputDataPipeline:
         # parse chain info
         entity_id_iter = itertools.count(1)
         asym_id_iter = itertools.count(1)
-        chain_infos: list[metadata.ChainInfo] = []
+        chain_infos: list[schema.ChainInfo] = []
         for seq in input_file.sequences:
             entity_id = next(entity_id_iter)
             chain_type = seq.ctype
@@ -176,7 +176,7 @@ class InputDataPipeline:
             for chain_name in chain_names:
                 asym_id = next(asym_id_iter)
                 sym_id = next(sym_id_iter)
-                chain_info = metadata.ChainInfo(
+                chain_info = schema.ChainInfo(
                     chain_type=chain_type,
                     chain_name=chain_name,
                     entity_id=entity_id,
@@ -189,12 +189,12 @@ class InputDataPipeline:
                 )
                 chain_infos.append(chain_info)
 
-        meta = metadata.Metadata(
+        metadata = schema.Metadata(
             id=input_file.name,
             source="query",
             chains=chain_infos,
         )
-        return meta
+        return metadata
 
     def collect_precomputed_embeddings(
         self, input_file: query.InputFile, key: str = "sequence"

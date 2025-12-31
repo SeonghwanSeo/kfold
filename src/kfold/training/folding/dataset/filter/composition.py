@@ -1,5 +1,5 @@
 import kfold.constants as C
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
@@ -29,14 +29,14 @@ class CompositionFilter(BaseFilter):
     def __init__(self, config: Config):
         self.remove_excluding_ligands: bool = config.remove_excluding_ligands
 
-    def filter(self, record: Metadata) -> bool:
-        chains = record.chains
+    def filter(self, metadata: Metadata) -> bool:
+        chains = metadata.chains
 
         if self.remove_excluding_ligands:
             # Remove ligands with excluded CCDs
             chains = [
                 chain
-                for chain in record.chains
+                for chain in metadata.chains
                 if not (
                     chain.chain_type == C.chain.ChainType.LIGAND
                     and chain.chain_name in C.ccd.LIGAND_EXCLUSIONS

@@ -9,7 +9,7 @@ import kfold.constants as C
 from kfold.data import model_input, tokenized
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
-from . import frame_utils
+from .utils import frame_utils
 
 
 class InputFeaturizer:

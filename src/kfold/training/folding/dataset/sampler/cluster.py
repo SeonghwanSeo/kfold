@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 
 import kfold.constants as C
-from kfold.data.metadata import ChainInfo, InterfaceInfo, Metadata
+from kfold.data.schema import ChainInfo, InterfaceInfo, Metadata
 from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample
@@ -151,7 +151,7 @@ class ClusterSampler(BaseSampler):
     sampling. For example, consider a complex with 3 chains, all belonging to the same
     cluster.
     e.g.)
-    If a record has 3 chains, all of which belong to the same cluster,
+    If a metadata has 3 chains, all of which belong to the same cluster,
     Boltz will estimate the cluster size as 3, while this will estimate it as 1
     if `allow_redundant` is False.
     """
@@ -200,20 +200,20 @@ class ClusterSampler(BaseSampler):
         self.interface_cluster_sizes: dict[str, int] = defaultdict(int)
         self.num_clusters_in_complex: dict[str, dict[str, int]] = {}
 
-    def get_samples(self, records: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
+    def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
         # Estimate cluster sizes
-        self.estimate_cluster_sizes(records)
+        self.estimate_cluster_sizes(metadatas)
 
         # Get samples and its weights
         samples: list[Sample] = []
         weights: list[float] = []
 
-        for record in records:
+        for metadata in metadatas:
             chain_dict: dict[int, ChainInfo] = {
-                chain.asym_id: chain for chain in record.chains
+                chain.asym_id: chain for chain in metadata.chains
             }
-            num_clusters_in_complex = self.num_clusters_in_complex.get(record.id, {})
-            for chain in record.chains:
+            num_clusters_in_complex = self.num_clusters_in_complex.get(metadata.id, {})
+            for chain in metadata.chains:
                 if not chain.valid:
                     continue
                 weight = get_chain_weight(
@@ -225,12 +225,12 @@ class ClusterSampler(BaseSampler):
                     self.alpha_ligand,
                 )
                 if not self.allow_redundant:
-                    # Adjust weight by number of clusters in the record
+                    # Adjust weight by number of clusters in the metadata
                     weight /= num_clusters_in_complex.get(get_chain_cluster_id(chain), 1)
-                samples.append(Sample(record, chain.asym_id))
+                samples.append(Sample(metadata, chain.asym_id))
                 weights.append(weight)
 
-            for interface in record.interfaces:
+            for interface in metadata.interfaces:
                 if not interface.valid:
                     continue
                 weight = get_interface_weight(
@@ -243,52 +243,52 @@ class ClusterSampler(BaseSampler):
                     self.alpha_ligand,
                 )
                 if not self.allow_redundant:
-                    # Adjust weight by number of clusters in the record
+                    # Adjust weight by number of clusters in the metadata
                     weight /= num_clusters_in_complex.get(
                         get_interface_cluster_id(interface, chain_dict), 1
                     )
-                samples.append(Sample(record, interface.asym_ids))
+                samples.append(Sample(metadata, interface.asym_ids))
                 weights.append(weight)
 
         # Normalize weights
         weights_arr = np.array(weights) / np.sum(weights)
         return samples, weights_arr
 
-    def estimate_cluster_sizes(self, records: list[Metadata]):
+    def estimate_cluster_sizes(self, datas: list[Metadata]):
         # Estimate cluster sizes of chains and interfaces
 
-        for record in records:
+        for metadata in datas:
             chain_dict: dict[int, ChainInfo] = {
-                chain.asym_id: chain for chain in record.chains
+                chain.asym_id: chain for chain in metadata.chains
             }
-            chain_clusters_in_record: list[str] = [
-                get_chain_cluster_id(chain) for chain in record.chains if chain.valid
+            chain_clusters_in_metadata: list[str] = [
+                get_chain_cluster_id(chain) for chain in metadata.chains if chain.valid
             ]
-            interface_clusters_in_record: list[str] = [
+            interface_clusters_in_metadata: list[str] = [
                 get_interface_cluster_id(interface, chain_dict)
-                for interface in record.interfaces
+                for interface in metadata.interfaces
                 if interface.valid
             ]
 
             if not self.allow_redundant:
                 # Store number of each cluster for each entry
                 num_clusters = defaultdict(int)
-                for cluster_id in chain_clusters_in_record:
+                for cluster_id in chain_clusters_in_metadata:
                     num_clusters[cluster_id] += 1
-                for cluster_id in interface_clusters_in_record:
+                for cluster_id in interface_clusters_in_metadata:
                     num_clusters[cluster_id] += 1
                 # Remove the count <= 1 to save memory
                 for cluster_id in list(num_clusters.keys()):
                     if num_clusters[cluster_id] <= 1:
                         del num_clusters[cluster_id]
                 if len(num_clusters) > 0:
-                    self.num_clusters_in_complex[record.id] = dict(num_clusters)
+                    self.num_clusters_in_complex[metadata.id] = dict(num_clusters)
 
-                # Remove redundant clusters in the record
-                chain_clusters_in_record = list(set(chain_clusters_in_record))
-                interface_clusters_in_record = list(set(interface_clusters_in_record))
+                # Remove redundant clusters in the metadata
+                chain_clusters_in_metadata = list(set(chain_clusters_in_metadata))
+                interface_clusters_in_metadata = list(set(interface_clusters_in_metadata))
 
-            for cluster_id in chain_clusters_in_record:
+            for cluster_id in chain_clusters_in_metadata:
                 self.chain_cluster_sizes[cluster_id] += 1
-            for cluster_id in interface_clusters_in_record:
+            for cluster_id in interface_clusters_in_metadata:
                 self.interface_cluster_sizes[cluster_id] += 1

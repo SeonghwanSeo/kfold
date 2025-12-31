@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from typing_extensions import override
 
-from kfold.data import metadata, model_input, tokenized
+from kfold.data import model_input, schema, tokenized
 from kfold.data.pipelines import apo_perturbation, featurize
 from kfold.utils.registry import Registry
 
@@ -33,7 +33,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def __init__(
         self,
-        records: list[metadata.Metadata],
+        metadatas: list[schema.Metadata],
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
         featurization_args: dict,
@@ -46,7 +46,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """
         Parameters
         ----------
-        records : list[metadata.Metadata]
+        metadatas : list[schema.Metadata]
             List of samples to use in the dataset.
         paths : dict[str, Path | None]
             Paths for various resources.
@@ -65,7 +65,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         seed : int | None
             Random seed for reproducibility.
         """
-        self.records: list[metadata.Metadata] = records
+        self.metadatas: list[schema.Metadata] = metadatas
         self.safe_load: bool = safe_load
         self.seed: int | None = seed
 
@@ -92,12 +92,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.paths: dict[str, Path | None] = paths
 
     def __len__(self) -> int:
-        return len(self.records)
+        return len(self.metadatas)
 
     # === TO-DO Implement in subclasses === #
     @abstractmethod
     def load_tokenized_structure(
-        self, record: metadata.Metadata
+        self, metadata: schema.Metadata
     ) -> tokenized.TokenizedStructure:
         """Get the tokenized structure for the given index."""
 
@@ -151,7 +151,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         trials = []
         for _ in range(num_trials):
-            sample: metadata.Metadata = self.records[index]
+            sample: schema.Metadata = self.metadatas[index]
             try:
                 return self.get_item(sample)
             except (KeyboardInterrupt, SystemExit) as e:
@@ -169,20 +169,20 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def get_item(
         self,
-        record: metadata.Metadata,
+        metadata: schema.Metadata,
         **kwargs,
     ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given sample."""
-        record_id: str = record.id
+        metadata_id: str = metadata.id
 
-        # Initialize random number generator (create new rng based on record_id)
+        # Initialize random number generator (create new rng based on metadata_id)
         if self.seed is not None:
-            rng = np.random.default_rng(self.seed + hash(record_id) % (1 << 15))
+            rng = np.random.default_rng(self.seed + hash(metadata_id) % (1 << 15))
         else:
             rng = np.random.default_rng()
 
         # Load tokenized structure
-        struct = self.load_tokenized_structure(record)
+        struct = self.load_tokenized_structure(metadata)
 
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
@@ -195,10 +195,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         cropped_struct = self.crop_structure(struct, rng=rng, **kwargs)
 
         # Featurization
-        f_input = self.featurize(cropped_struct, record, rng=rng)
+        f_input = self.featurize(cropped_struct, metadata, rng=rng)
 
         symmetry_dict = {}
-        symmetry_dict["id"] = record_id
+        symmetry_dict["id"] = metadata_id
         if self.return_structure:
             symmetry_dict["structure"] = struct
         if self.return_symmetry:
@@ -223,7 +223,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     def featurize(
         self,
         struct: tokenized.TokenizedStructure,
-        record: metadata.Metadata,
+        metadata: schema.Metadata,
         rng: np.random.Generator | None = None,
     ) -> model_input.FoldingInput:
         """Featurize the given tokenized structure."""
@@ -231,13 +231,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # sequence embeddings
         seq_emb_root = self.paths.get("seq_embedding_path", None)
         seq_embedding_paths = self.find_precomputed_embeddings(
-            struct, record.id, seq_emb_root
+            struct, metadata.id, seq_emb_root
         )
 
         # structure embeddings
         struct_emb_root = self.paths.get("struct_embedding_path", None)
         struct_embedding_paths = self.find_precomputed_embeddings(
-            struct, record.id, struct_emb_root
+            struct, metadata.id, struct_emb_root
         )
 
         # Featurization
@@ -305,7 +305,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 class TrainingDataset(SafeLoadingDataset):
     def __init__(
         self,
-        records: list[metadata.Metadata],
+        metadatas: list[schema.Metadata],
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
         featurization_args: dict,
@@ -320,7 +320,7 @@ class TrainingDataset(SafeLoadingDataset):
         """
         Parameters
         ----------
-        records : list[metadata.Metadata]
+        metadatas : list[schema.Metadata]
             List of samples to use in the dataset.
         paths : dict[str, Path | None]
             Paths for various resources.
@@ -351,7 +351,7 @@ class TrainingDataset(SafeLoadingDataset):
            using the provided `cropper`.
         """
         super().__init__(
-            records,
+            metadatas,
             paths,
             apo_perturbation_args,
             featurization_args,
@@ -373,7 +373,7 @@ class TrainingDataset(SafeLoadingDataset):
         if sampler_config is None:
             sampler_config = BaseSampler.Config()  # uniform sampler
         sampler = Registry.instantiate(sampler_config)
-        samples, weights = sampler.get_samples(records)
+        samples, weights = sampler.get_samples(metadatas)
         self.samples: list[Sample] = samples
         self.weights: np.ndarray | None = weights
 
@@ -434,17 +434,17 @@ class TrainingDataset(SafeLoadingDataset):
         num_trials: int = 10,
     ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure.
-        NOTE: This is overridden to use `self.samples` instead of `self.records`.
+        NOTE: This is overridden to use `self.samples` instead of `self.metadatas`.
         """
         trials = []
         for _ in range(num_trials):
             sample = self.samples[index]
             try:
-                return self.get_item(sample.metadata, asym_ids=sample.asym_id)
+                return self.get_item(sample.schema, asym_ids=sample.asym_id)
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
-                sample_id = sample.metadata.id
+                sample_id = sample.schema.id
                 print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
                 index = np.random.randint(0, len(self))
                 if not self.safe_load:
@@ -458,7 +458,7 @@ class TrainingDataset(SafeLoadingDataset):
 class ValidationDataset(SafeLoadingDataset):
     def __init__(
         self,
-        records: list[metadata.Metadata],
+        metadatas: list[schema.Metadata],
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
         featurization_args: dict,
@@ -469,7 +469,7 @@ class ValidationDataset(SafeLoadingDataset):
         """
         Parameters
         ----------
-        records : list[metadata.Metadata]
+        metadats : list[schema.Metadata]
             List of samples to use in the dataset.
         """
         # To validate the folding performance in usage scenario, where holo
@@ -481,7 +481,7 @@ class ValidationDataset(SafeLoadingDataset):
         apo_perturbation_args["use_perturbation"] = False
 
         super().__init__(
-            records,
+            metadatas,
             paths,
             apo_perturbation_args,
             featurization_args,
@@ -499,7 +499,7 @@ class LMDBDatabase:
     The `lmdb_env` property lazily initializes and caches the LMDB environment
     on first access, ensuring efficient resource usage. The `load_from_lmdb`
     method retrieves a tokenized structure from the LMDB database using a
-    record's ID as the key.
+    metadata's ID as the key.
     """
 
     lmdb_path: Path
@@ -517,9 +517,9 @@ class LMDBDatabase:
             )
         return self._lmdb_env
 
-    def load_from_lmdb(self, record: metadata.Metadata) -> tokenized.TokenizedStructure:
+    def load_from_lmdb(self, metadata: schema.Metadata) -> tokenized.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
-        name = record.id
+        name = metadata.id
         key_bytes = name.encode("utf-8")
         with self.lmdb_env.begin(write=False) as txn:
             value_bytes = txn.get(key_bytes)
@@ -529,7 +529,7 @@ class LMDBDatabase:
         # Use io.BytesIO to wrap the raw bytes
         with io.BytesIO(value_bytes) as byte_stream:
             struct = tokenized.TokenizedStructure.load_npz(byte_stream)
-        struct = struct.copy_with(metadata=record)
+        struct = struct.copy_with(schema=metadata)
         return struct
 
     def __del__(self):
@@ -540,7 +540,7 @@ class LMDBDatabase:
 class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
     def __init__(
         self,
-        records: list[metadata.Metadata],
+        metadatas: list[schema.Metadata],
         lmdb_path: Path,
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
@@ -555,7 +555,7 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
     ) -> None:
         TrainingDataset.__init__(
             self,
-            records,
+            metadatas,
             paths,
             apo_perturbation_args,
             featurization_args,
@@ -570,16 +570,16 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
         self.lmdb_path: Path = lmdb_path
 
     def load_tokenized_structure(
-        self, record: metadata.Metadata
+        self, metadata: schema.Metadata
     ) -> tokenized.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
-        return self.load_from_lmdb(record)
+        return self.load_from_lmdb(metadata)
 
 
 class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
     def __init__(
         self,
-        records: list[metadata.Metadata],
+        metadatas: list[schema.Metadata],
         lmdb_path: Path,
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
@@ -590,7 +590,7 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
     ) -> None:
         ValidationDataset.__init__(
             self,
-            records,
+            metadatas,
             paths,
             apo_perturbation_args,
             featurization_args,
@@ -601,7 +601,7 @@ class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
         self.lmdb_path: Path = lmdb_path
 
     def load_tokenized_structure(
-        self, record: metadata.Metadata
+        self, metadata: schema.Metadata
     ) -> tokenized.TokenizedStructure:
         """Load the tokenized structure from LMDB."""
-        return self.load_from_lmdb(record)
+        return self.load_from_lmdb(metadata)

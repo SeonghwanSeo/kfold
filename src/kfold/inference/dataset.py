@@ -61,7 +61,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         Parameters
         ----------
         input_files : list[InputFile]
-            List of input files containing metadata records.
+            List of input files containing metadatas.
         ccd : CCD
             Component for handling common chemical components.
         seq_embedding_dim : int | None

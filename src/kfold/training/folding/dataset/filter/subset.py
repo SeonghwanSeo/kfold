@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
@@ -10,7 +10,7 @@ from .base import BaseFilter
 
 @DATA_FILTER.register()
 class SubsetFilter(BaseFilter):
-    """Filter a data record based on a subset of the data."""
+    """Filter a data based on a subset of the data."""
 
     class Config(BaseFilter.Config):
         """
@@ -39,6 +39,6 @@ class SubsetFilter(BaseFilter):
         self.subset: set[str] = {s.lower() for s in subset}
         self.exclude: bool = config.exclude
 
-    def filter(self, record: Metadata) -> bool:
-        is_in_subset = record.id.lower() in self.subset
+    def filter(self, metadata: Metadata) -> bool:
+        is_in_subset = metadata.id.lower() in self.subset
         return not is_in_subset if self.exclude else is_in_subset

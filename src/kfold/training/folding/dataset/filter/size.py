@@ -1,6 +1,6 @@
 """Implement from https://github.com/jwohlwend/boltz"""
 
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
@@ -23,9 +23,9 @@ class NumChainFilter(BaseFilter):
         self.min_chains: int = config.min_chains
         self.max_chains: int = config.max_chains
 
-    def filter(self, record: Metadata) -> bool:
-        num_chains = record.num_chains
-        num_valid = sum(1 for chain in record.chains if chain.valid)
+    def filter(self, metadata: Metadata) -> bool:
+        num_chains = metadata.num_chains
+        num_valid = sum(1 for chain in metadata.chains if chain.valid)
         return (self.min_chains <= num_valid) and (num_chains <= self.max_chains)
 
 
@@ -47,6 +47,6 @@ class NumResidueFilter(BaseFilter):
         self.min_residues: int = config.min_residues
         self.max_residues: int = config.max_residues
 
-    def filter(self, record: Metadata) -> bool:
-        num_residues = sum(chain.num_residues for chain in record.chains)
+    def filter(self, metadata: Metadata) -> bool:
+        num_residues = sum(chain.num_residues for chain in metadata.chains)
         return self.min_residues <= num_residues <= self.max_residues

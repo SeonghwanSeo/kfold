@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_FILTER, BaseConfig
 
 
@@ -13,17 +13,17 @@ class BaseFilter(ABC):
     class Config(BaseConfig):
         """Configuration for BaseFilter."""
 
-    def __call__(self, record: Metadata) -> bool:
-        return self.filter(record)
+    def __call__(self, metadata: Metadata) -> bool:
+        return self.filter(metadata)
 
     @abstractmethod
-    def filter(self, record: Metadata) -> bool:
+    def filter(self, metadata: Metadata) -> bool:
         """Filter a data.
 
         Parameters
         ----------
-        record : Metadata
-            The record to consider filtering in / out.
+        metadata : Metadata
+            The metadata to consider filtering in / out.
 
         Returns
         -------

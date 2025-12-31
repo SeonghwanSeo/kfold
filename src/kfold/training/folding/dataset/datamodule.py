@@ -8,8 +8,8 @@ import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from kfold.data.metadata import Metadata
 from kfold.data.model_input import FoldingInput
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
 
 from .cropper import BaseCropper
@@ -45,8 +45,8 @@ def load_manifest(manifest_path: str | Path) -> list[Metadata]:
             manifest = pickle.load(f)
     else:
         raise ValueError(f"Unsupported manifest format: {format}")
-    all_records: list[Metadata] = [Metadata.from_dict(d) for d in manifest]
-    return all_records
+    all_metadatas: list[Metadata] = [Metadata.from_dict(d) for d in manifest]
+    return all_metadatas
 
 
 class DataModuleConfig(BaseConfig):
@@ -144,35 +144,35 @@ class TrainingDataModule(pl.LightningDataModule):
                 ids = set([line.strip().lower() for line in f if line.strip()])
             return ids
 
-        # Load records
-        all_records: list[Metadata] = load_manifest(self.manifest_path)
-        # By default, use all records
-        train_records = all_records
+        # Load metadatas
+        all_metadatas: list[Metadata] = load_manifest(self.manifest_path)
+        # By default, use all metadatas
+        train_metadatas = all_metadatas
 
         # If a train split file is provided, use it
         if (train_split_path := self.split_path / "train_ids.txt").exists():
             train_ids = load_split_ids(train_split_path)
-            train_records = [r for r in all_records if r.id.lower() in train_ids]
+            train_metadatas = [r for r in all_metadatas if r.id.lower() in train_ids]
             self.print_rank_zero(
                 f"Loaded train split file with {len(train_ids)} ids."
-                f" Total {len(train_records)} records selected."
+                f" Total {len(train_metadatas)} metadatas selected."
             )
         else:
-            self.print_rank_zero("No train split file found. Using all records.")
+            self.print_rank_zero("No train split file found. Using all metadatas.")
 
-        # If a validation/test split file is provided, exclude those records
+        # If a validation/test split file is provided, exclude those metadatas
         for fn in ["validation_ids.txt", "test_ids.txt"]:
             if (test_split_path := self.split_path / fn).exists():
                 exclude_ids = load_split_ids(test_split_path)
-                train_records = [
-                    r for r in train_records if r.id.lower() not in exclude_ids
+                train_metadatas = [
+                    r for r in train_metadatas if r.id.lower() not in exclude_ids
                 ]
 
         # Apply filters
-        train_records = [r for r in train_records if do_filter(r)]
+        train_metadatas = [r for r in train_metadatas if do_filter(r)]
 
         self.print_rank_zero(
-            f"Constructed training dataset with total {len(train_records)} records "
+            f"Constructed training dataset with total {len(train_metadatas)} metadatas "
             "after filtering."
         )
 
@@ -189,7 +189,7 @@ class TrainingDataModule(pl.LightningDataModule):
         ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
 
         return LMDBTrainingDataset(
-            records=train_records,
+            metadatas=train_metadatas,
             lmdb_path=self.lmdb_path,
             paths=self.paths,
             apo_perturbation_args=self.apo_perturbation_args,
@@ -206,20 +206,20 @@ class TrainingDataModule(pl.LightningDataModule):
     def construct_val_dataset(self) -> ValidationDataset:
         # HACK: (SeonghwanSeo): hard-coded path to rcsb set; single dataset
 
-        # Load records
-        all_records: list[Metadata] = load_manifest(self.manifest_path)
+        # Load metadatas
+        all_metadatas: list[Metadata] = load_manifest(self.manifest_path)
 
-        # get validation records
+        # get validation metadatas
         validation_split = self.split_path / "validation_ids.txt"
         with open(validation_split) as f:
             val_ids = set([line.strip().lower() for line in f if line.strip()])
-        val_records = [r for r in all_records if r.id.lower() in val_ids]
+        val_metadatas = [r for r in all_metadatas if r.id.lower() in val_ids]
 
-        # Sort validation records by length (for efficient batching)
-        val_records.sort(key=lambda r: r.num_valid_residues, reverse=False)
+        # Sort validation metadatas by length (for efficient batching)
+        val_metadatas.sort(key=lambda r: r.num_valid_residues, reverse=False)
 
         self.print_rank_zero(
-            f"Constructed validation dataset with {len(val_records)} records."
+            f"Constructed validation dataset with {len(val_metadatas)} metadatas."
         )
 
         # If symmetry is to be returned, load symmetry info
@@ -230,7 +230,7 @@ class TrainingDataModule(pl.LightningDataModule):
         ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
 
         return LMDBValidationDataset(
-            records=val_records,
+            metadatas=val_metadatas,
             lmdb_path=self.lmdb_path,
             paths=self.paths,
             apo_perturbation_args=self.apo_perturbation_args,

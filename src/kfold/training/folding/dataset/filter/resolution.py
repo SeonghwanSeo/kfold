@@ -1,6 +1,6 @@
 """Implemented from https://github.com/jwohlwend/boltz"""
 
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
@@ -22,8 +22,8 @@ class ResolutionFilter(BaseFilter):
     def __init__(self, config: Config):
         self.resolution: float = config.resolution
 
-    def filter(self, record: Metadata) -> bool:
-        exp_record = record.exp
+    def filter(self, metadata: Metadata) -> bool:
+        exp_record = metadata.exp
         assert exp_record is not None, "ResolutionFilter only works for RCSB records"
         assert exp_record.resolution is not None, "Resolution is empty"
         return exp_record.resolution <= self.resolution

@@ -1,5 +1,5 @@
 # Started from https://github.com/jwohlwend/boltz
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample
@@ -28,13 +28,13 @@ class UniformSampler(BaseSampler):
         self.config = config
         self.chain_level = config.chain_level
 
-    def get_samples(self, records: list[Metadata]) -> tuple[list[Sample], None]:
+    def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], None]:
         samples: list[Sample]
         if self.chain_level:
-            samples = [Sample(m, None) for m in records]
+            samples = [Sample(m, None) for m in metadatas]
         else:
             samples = []
-            for m in records:
+            for m in metadatas:
                 for chain in m.chains:
                     if not chain.valid:
                         continue

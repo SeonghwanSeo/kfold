@@ -44,8 +44,8 @@ if __name__ == "__main__":
         for f in BOLTZ_FEATURE_PATH.glob("*_features.pt")
     ]
     print(val_pdb_ids)
-    data_module._val_ds.records = [
-        r for r in data_module._val_ds.records if r.id in val_pdb_ids
+    data_module._val_ds.metadatas = [
+        r for r in data_module._val_ds.metadatas if r.id in val_pdb_ids
     ]
 
     dataloader = data_module.val_dataloader()

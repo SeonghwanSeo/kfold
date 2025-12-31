@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Literal
 
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
@@ -34,8 +34,8 @@ class ReleaseDateFilter(BaseFilter):
                 "Invalid reference date. Must be deposited, revised, or released"
             )
 
-    def filter(self, record: Metadata) -> bool:
-        exp_record = record.exp
+    def filter(self, metadata: Metadata) -> bool:
+        exp_record = metadata.exp
         assert exp_record is not None, "DateFilter only works for RCSB records"
 
         if self.ref == "deposited":

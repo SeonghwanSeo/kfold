@@ -297,11 +297,11 @@ class AlphaFold3Cropper(BaseCropper):
         interface_ids : list[tuple[int, int]]
             The valid interfaces in the structure.
         """
-        record = struct.metadata
-        assert record is not None, "Structure metadata is required"
+        metadata = struct.metadata
+        assert metadata is not None, "Structure metadata is required"
         all_chains: set[int] = set(struct.chain.asym_id.tolist())
         all_interfaces: list[tuple[int, int]] = [
-            interface.asym_ids for interface in record.interfaces if interface.valid
+            interface.asym_ids for interface in metadata.interfaces if interface.valid
         ]
         all_interfaces = [v for v in all_interfaces if set(v).issubset(all_chains)]
         return sorted(set(all_interfaces))
