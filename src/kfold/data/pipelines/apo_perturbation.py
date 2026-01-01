@@ -10,6 +10,10 @@ import lmdb
 import numpy as np
 import torch
 from rieprody.proteins.protein_perturbation import ProteinPerturbationModule
+from rieprody.proteins.protein_vocab import (
+    RESTYPE_NAME_TO_ATOM14_NAMES as _RIEPRODY_ATOM14,
+)
+from rieprody.proteins.protein_vocab import THREE_TO_ONE as _RIEPRODY_THREE_TO_ONE
 
 import kfold.constants as C
 from kfold.data.tokenized import TokenizedStructure
@@ -21,6 +25,22 @@ from kfold.utils.geometry.rigid_align import (
 )
 
 ResUID = tuple[int, int]  # (asym_id, residue_index)
+
+# Protein atom ordering mappings (kfold ↔ RieProDy)
+_RIEPRODY_STD_RESNAMES = tuple(_RIEPRODY_THREE_TO_ONE.keys())
+RIEPRODY_PROTEIN_RESIDUE_ATOMS: dict[str, tuple[str, ...]] = {
+    res: tuple(a for a in _RIEPRODY_ATOM14[res] if a != "")
+    for res in _RIEPRODY_STD_RESNAMES
+}
+# Permutations for per-residue atom order conversion.
+KFOLD_TO_RIEPRODY_ATOM_ORDER: dict[str, tuple[int, ...]] = {
+    res: tuple(C.atom.residue_atoms[res].index(a) for a in rie_atoms)
+    for res, rie_atoms in RIEPRODY_PROTEIN_RESIDUE_ATOMS.items()
+}
+RIEPRODY_TO_KFOLD_ATOM_ORDER: dict[str, tuple[int, ...]] = {
+    res: tuple(rie_atoms.index(a) for a in C.atom.residue_atoms[res])
+    for res, rie_atoms in RIEPRODY_PROTEIN_RESIDUE_ATOMS.items()
+}
 
 
 @lru_cache(100)
