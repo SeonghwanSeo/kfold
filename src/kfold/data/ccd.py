@@ -515,8 +515,14 @@ class Component:
         model_coords = get_model_coordinates(cif_block, date_cutoff=date_cutoff)
 
         # Set chirality from 3D coordinates
-        if mol.GetNumConformers() > 0:
-            Chem.AssignStereochemistryFrom3D(mol, confId=0, replaceExistingTags=False)
+        if mol.GetNumConformers() > 0 and mol.GetNumHeavyAtoms() > 1:
+            try:
+                # Use the first conformer(ideal) to assign stereochemistry
+                Chem.AssignStereochemistryFrom3D(mol, confId=0, replaceExistingTags=False)
+            except RuntimeError:
+                print(
+                    f"Warning: Failed to assign stereochemistry for CCD component {code}."
+                )
 
         # Remove molecule coordinates
         mol.RemoveAllConformers()
@@ -605,6 +611,10 @@ class CCD(Mapping[str, Component]):
 
     def __len__(self) -> int:
         return len(self.components)
+
+    def copy(self) -> Self:
+        """Create a shallow copy of the CCD instance."""
+        return self.__class__(self.components.copy())
 
     def add_component(self, component: Component) -> None:
         """Add a new component to the CCD."""

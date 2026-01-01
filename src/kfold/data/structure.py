@@ -109,6 +109,33 @@ class Chain:
         """Number of apo conformations."""
         return self.atom.apo_coords.shape[0]
 
+    def find_atom_index(self, residue_index: int, atom_name: str) -> int:
+        """Find atom index given residue index and atom name.
+
+        Parameters
+        ----------
+        residue_index: int
+            1-based residue index.
+        atom_name: str
+            Atom name.
+
+        Returns
+        -------
+        atom_index: int
+            0-based atom index.
+
+        Raises
+        ------
+        KeyError
+            If the atom is not found.
+        """
+        # Get the range of atom indices for the given residue
+        atom_range = self.residue.iter_residue_atoms(residue_index)
+        for atom_index in atom_range:
+            if self.atom.name[atom_index] == atom_name:
+                return atom_index
+        raise KeyError(f"Atom '{atom_name}' not found in residue index {residue_index}.")
+
     def __repr__(self) -> str:
         """FoldingInput summary representation."""
         # Summary statistics
@@ -321,8 +348,8 @@ class Bond:
         Chain asym indices of the connecting atoms in the bond of shape [Nbond, 2].
     residue_index: np.ndarray
         Residue indices of the connecting atoms in the bond of shape [Nbond, 2].
-    atom_index: np.ndarray
-        Atom indices of the connecting atoms in the bond of shape [Nbond, 2].
+    atom_name: np.ndarray
+        Atom names of the connecting atoms in the bond of shape [Nbond, 2].
     bond_type: np.ndarray
         Bond types of shape [Nbond,], indicating the type of each bond.
 
@@ -330,7 +357,7 @@ class Bond:
     """
 
     residue_index: np.ndarray  # [Nbond, 2], int
-    atom_index: np.ndarray  # [Nbond, 2], int
+    atom_name: np.ndarray  # [Nbond, 2], int
     bond_type: np.ndarray  # [Nbond,], int
 
     def __len__(self) -> int:
@@ -342,7 +369,7 @@ class Bond:
             self.residue_index, name="residue_index", dtype=np.integer, shape=(*shape, 2)
         )
         check_array(
-            self.atom_index, name="atom_index", dtype=np.integer, shape=(*shape, 2)
+            self.atom_name, name="atom_name", dtype=np.dtype("<U4"), shape=(*shape, 2)
         )
         check_array(self.bond_type, name="bond_type", dtype=np.integer, shape=shape)
 
@@ -351,7 +378,7 @@ class Bond:
         """Get default dtypes for each field."""
         return {
             "residue_index": np.uint32,
-            "atom_index": np.uint32,
+            "atom_name": np.dtype("<U4"),
             "bond_type": np.uint8,  # 0-5
         }
 
@@ -390,22 +417,42 @@ class Structure:
 
     Attributes
     ----------
-    chain: tuple[Chain, ...]
+    chain: list[Chain]
         Chain information.
-    connect: tuple[CovalentConnection, ...]
+    connect: list[CovalentConnection]
         Covalent connection information.
     metadata: Metadata
         Metadata information.
     """
 
-    chains: tuple[Chain, ...]
-    connections: tuple[CovalentConnection, ...]
+    chains: list[Chain]
+    connections: list[CovalentConnection]
     metadata: Metadata
+
+    @property
+    def entity_ids(self) -> list[int]:
+        """List of entity IDs in the structure."""
+        return [chain.entity_id for chain in self.chains]
+
+    @property
+    def asym_ids(self) -> list[int]:
+        """List of asym IDs in the structure."""
+        return [chain.asym_id for chain in self.chains]
 
     @property
     def num_chains(self) -> int:
         """Number of chains in the structure."""
         return len(self.chains)
+
+    @property
+    def num_polymer_chains(self) -> int:
+        """Number of polymer chains in the structure."""
+        return sum(chain.ctype.is_polymer for chain in self.chains)
+
+    @property
+    def num_nonpolymer_chains(self) -> int:
+        """Number of non-polymer chains in the structure."""
+        return sum(chain.ctype.is_nonpolymer for chain in self.chains)
 
     @property
     def num_residues(self) -> int:
@@ -442,13 +489,41 @@ class Structure:
 
         return (
             "Structure(\n"
-            "  chains: ["
+            + f"  num_chains: {num_chains}\n"
+            + f"  num_interfaces: {len(self.metadata.interfaces)}\n"
+            + f"  num_connections: {num_connections}\n"
+            + "  chains: ["
             + ", ".join(f"{chain.ctype.name}" for chain in self.chains)
             + "]\n"
-            f"  num_chains: {num_chains}\n"
-            f"  num_connections: {num_connections}\n"
-            f")"
+            "  interfaces: ["
+            + ", ".join(
+                f"{iface.asym_ids[0]}-{iface.asym_ids[1]}"
+                for iface in self.metadata.interfaces
+            )
+            + "]\n"
+            + ")"
         )
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the structure."""
+        # Check that asym_ids are unique
+        asym_ids = [chain.asym_id for chain in self.chains]
+        if len(asym_ids) != len(set(asym_ids)):
+            raise ValueError("Duplicate asym_ids found in chains.")
+
+        # Check that connections refer to valid asym_ids
+        valid_asym_ids = set(asym_ids)
+        for conn in self.connections:
+            for asym_id in conn.asym_id:
+                if asym_id not in valid_asym_ids:
+                    raise ValueError(f"Connection refers to invalid asym_id {asym_id}.")
+
+        # Check consistency between structure and metadata
+        assert self.num_chains == self.metadata.num_chains
+        meta_asym_ids = set(self.metadata.asym_ids)
+        struct_asym_ids = set(asym_ids)
+        if meta_asym_ids != struct_asym_ids:
+            raise ValueError("Mismatch between metadata asym_ids and structure asym_ids.")
 
     # === Numpy serialization for model training === #
     def to_npz_dict(self) -> dict[str, np.ndarray]:
@@ -507,8 +582,8 @@ class Structure:
         metadata = unpack_metadata(data["_metadata"])
 
         return cls(
-            chains=tuple(chains),
-            connections=tuple(connections),
+            chains=chains,
+            connections=connections,
             metadata=metadata,
         )
 

@@ -6,7 +6,7 @@ from typing import Self
 import kfold.constants as C
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class JsonSerializable:
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding None values."""
@@ -18,21 +18,19 @@ class JsonSerializable:
         return cls(**data)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ExperimentRecord(JsonSerializable):
     """Metadata record from RCSB PDB."""
 
     pdb_id: str | None = None
     resolution: float | None = None
     method: str | None = None
-    deposited: str | None = None
-    released: str | None = None
-    revised: str | None = None
+    release_date: str | None = None
     pH: float | None = None
     temperature: float | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class PredictionRecord(JsonSerializable):
     """Metadata record from structure prediction."""
 
@@ -41,7 +39,7 @@ class PredictionRecord(JsonSerializable):
     plddt: float | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ChainInfo(JsonSerializable):
     chain_name: str  # User/Author-defined chain name
     chain_type: int  # C.ChainType enum value
@@ -50,7 +48,7 @@ class ChainInfo(JsonSerializable):
     sym_id: int  # starts from 1
     num_residues: int
     cluster_id: str | None = None
-    valid: bool = True
+    is_valid: bool = True
     smiles: str | None = None
     description: str | None = None
 
@@ -59,18 +57,13 @@ class ChainInfo(JsonSerializable):
         return C.ChainType(self.chain_type)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class InterfaceInfo(JsonSerializable):
     asym_ids: tuple[int, int]
-    # covalent bond interface. If True, the chains must be sampled together.
-    is_bonded: bool = False
-    valid: bool = True
-
-    def __post_init__(self):
-        assert len(self.asym_ids) == 2, "Interface must involve exactly two chains."
+    is_valid: bool = True
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(slots=True, kw_only=True)
 class Metadata:
     id: str
     source: str  # e.g., "rcsb"
@@ -108,10 +101,22 @@ class Metadata:
                 raise ValueError(f"Duplicate asym_id found: {chain.asym_id}")
             asym_id_set.add(chain.asym_id)
 
+    def copy_with(self, **kwargs) -> Self:
+        """Create a copy of the Metadata with updated fields."""
+        data = self.to_dict()
+        data.update(kwargs)
+        return self.from_dict(data)
+
     @property
     def asym_ids(self) -> list[int]:
         asym_ids = [chain.asym_id for chain in self.chains]
         return asym_ids
+
+    def get_chain_by_chain_name(self, chain_name: str) -> ChainInfo:
+        for chain in self.chains:
+            if chain.chain_name == chain_name:
+                return chain
+        raise ValueError(f"Chain with name {chain_name} not found.")
 
     def get_chain_by_asym_id(self, asym_id: int) -> ChainInfo:
         for chain in self.chains:

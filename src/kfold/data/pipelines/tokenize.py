@@ -301,28 +301,32 @@ def tokenize_structure(
         chain = input.chains[chain_i]
         asym_id = chain.asym_id
         for bond_i in range(chain.num_bonds):
-            res1, res2 = chain.bond.residue_index[bond_i]
-            atom1, atom2 = chain.bond.atom_index[bond_i]
+            ridx1, ridx2 = chain.bond.residue_index[bond_i]
+
+            atom1, atom2 = chain.bond.atom_name[bond_i].tolist()
             bondtype: C.ConnectionType = C.bond.bond_type_to_connection_type(
                 Chem.BondType.values[int(chain.bond.bond_type[bond_i])]
             )
+            # Find atom index
+            atom_i1 = chain.find_atom_index(ridx1, atom1)
+            atom_i2 = chain.find_atom_index(ridx2, atom2)
 
             # Map chain-local atom indices to global atom indices
-            g_atom1 = chain_atom_st[asym_id] + int(atom1)
-            g_atom2 = chain_atom_st[asym_id] + int(atom2)
+            g_atom_i1 = chain_atom_st[asym_id] + atom_i1
+            g_atom_i2 = chain_atom_st[asym_id] + atom_i2
 
             # Map atom indices to token and atom indices
-            token1, local_atom1 = g_atom_to_token_map[g_atom1]
-            token2, local_atom2 = g_atom_to_token_map[g_atom2]
+            g_tok_i1, local_atom1 = g_atom_to_token_map[g_atom_i1]
+            g_tok_i2, local_atom2 = g_atom_to_token_map[g_atom_i2]
 
             assert (
-                not struct.token.is_standard[token1]
-                and not struct.token.is_standard[token2]
+                not struct.token.is_standard[g_tok_i1]
+                and not struct.token.is_standard[g_tok_i2]
             ), "Intra-chain bonds should only exist between non-standard residues."
 
             # Insert bond info
             struct.bond.asym_id[g_bond_i, :] = asym_id
-            struct.bond.token_index[g_bond_i] = (token1, token2)
+            struct.bond.token_index[g_bond_i] = (g_tok_i1, g_tok_i2)
             struct.bond.atom_index[g_bond_i] = (local_atom1, local_atom2)
             struct.bond.bond_type[g_bond_i] = bondtype.value
 
@@ -331,43 +335,30 @@ def tokenize_structure(
 
     # Then iterate cross-chain bonds
     for conn_i in range(input.num_connections):
-        res1, res2 = input.connections[conn_i].residue_index
+        asym_id1, asym_id2 = input.connections[conn_i].asym_id
+        ridx1, ridx2 = input.connections[conn_i].residue_index
         atom1, atom2 = input.connections[conn_i].atom_names
-        asymid1, asymid2 = input.connections[conn_i].asym_id
         bondtype = C.ConnectionType.INTERMOLECULAR
 
         # Find atom index
-        chain1 = input.get_chain_by_asym_id(asymid1)
-        chain2 = input.get_chain_by_asym_id(asymid2)
+        chain1 = input.get_chain_by_asym_id(asym_id1)
+        chain2 = input.get_chain_by_asym_id(asym_id2)
 
-        for a_i in chain1.residue.iter_residue_atoms(res1):
-            if str(chain1.atom.name[a_i]) == atom1:
-                atom1 = a_i
-                break
-        else:
-            raise ValueError(
-                f"Atom name {atom1} not found in residue {res1} of chain {asymid1}."
-            )
-        for a_i in chain2.residue.iter_residue_atoms(res2):
-            if str(chain2.atom.name[a_i]) == atom2:
-                atom2 = a_i
-                break
-        else:
-            raise ValueError(
-                f"Atom name {atom2} not found in residue {res2} of chain {asymid2}."
-            )
+        # Find atom index
+        aidx1 = chain1.find_atom_index(ridx1, atom1)
+        aidx2 = chain2.find_atom_index(ridx2, atom2)
 
         # Map chain-local atom indices to global atom indices
-        g_atom1 = chain_atom_st[asymid1] + int(atom1)
-        g_atom2 = chain_atom_st[asymid2] + int(atom2)
+        g_aidx1 = chain_atom_st[asym_id1] + int(aidx1)
+        g_aidx2 = chain_atom_st[asym_id2] + int(aidx2)
 
         # Map atom indices to token and atom indices
-        token1, local_atom1 = g_atom_to_token_map[g_atom1]
-        token2, local_atom2 = g_atom_to_token_map[g_atom2]
+        g_tok_i1, local_atom1 = g_atom_to_token_map[g_aidx1]
+        g_tok_i2, local_atom2 = g_atom_to_token_map[g_aidx2]
 
         # Insert bond info
-        struct.bond.asym_id[g_bond_i] = (asymid1, asymid2)
-        struct.bond.token_index[g_bond_i] = (token1, token2)
+        struct.bond.asym_id[g_bond_i] = (asym_id1, asym_id2)
+        struct.bond.token_index[g_bond_i] = (g_tok_i1, g_tok_i2)
         struct.bond.atom_index[g_bond_i] = (local_atom1, local_atom2)
         struct.bond.bond_type[g_bond_i] = bondtype.value
 
