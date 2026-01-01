@@ -9,20 +9,26 @@ from kfold.data.ccd import CCD, Component
 
 
 def tokenize_structure(
-    input: structure.Structure,
+    input: structure.RefStructure,
     ccd: CCD,
     rng: np.random.Generator | None = None,
+    use_only_cached_conformers: bool = False,
 ) -> tokenized.TokenizedStructure:
     """Tokenize structure.
 
     Parameters
     ----------
-    input : Structure
+    input : RefStructure
         The input structure.
     ccd : CCD
         The chemical component dictionary.
     rng : np.random.Generator, optional
         Random number generator for stochastic processes, by default None.
+    use_only_cached_conformers : bool, optional
+        if True, only the cached conformers in the CCD will be used.
+          - EKTDG-cached (up to 10 conformers by default with `ccd-train.pkl`)
+          - Ideal
+          - Model (Experimental)
 
     Returns
     -------
@@ -30,6 +36,10 @@ def tokenize_structure(
         The parsed tokenized structure.
     """
     rng = rng or np.random.default_rng()
+
+    conformer_mode = "auto"
+    if use_only_cached_conformers:
+        conformer_mode = "train"
 
     # Get metadata
     _metadata: schema.Metadata = input.metadata
@@ -243,7 +253,7 @@ def tokenize_structure(
             )  # (num_atoms, 4)
             ref_element: np.ndarray = ref_mol.elements  # (num_atoms,)
             ref_charge: np.ndarray = ref_mol.charges  # (num_atoms,)
-            ref_pos: np.ndarray = ref_mol.get_conformer("auto", rng)  # type: ignore
+            ref_pos: np.ndarray = ref_mol.get_conformer(conformer_mode, rng)  # type: ignore
             assert ref_pos is not None, "Auto mode always provides a conformer."
 
             res_atom_st = int(chain.residue.atom_starts[res_i])
@@ -291,6 +301,13 @@ def tokenize_structure(
     struct.atom.ref_mask[:] = np.isfinite(struct.atom.ref_pos).all(axis=-1)
     struct.atom.resolved_mask[:] = np.isfinite(struct.atom.coords).all(axis=-1)
     struct.atom.apo_mask[:] = np.isfinite(struct.atom.apo_coords).all(axis=-1)
+
+    # Update NaN to zero
+    struct.atom.ref_charge[np.isnan(struct.atom.ref_charge)] = 0.0
+    struct.atom.ref_pos[np.isnan(struct.atom.ref_pos)] = 0.0
+    struct.atom.coords[np.isnan(struct.atom.coords)] = 0.0
+    struct.atom.apo_coords[np.isnan(struct.atom.apo_coords)] = 0.0
+    struct.atom.apo_plddt[np.isnan(struct.atom.apo_plddt)] = 0.0
 
     # ==================================================
     # Fill bond structures

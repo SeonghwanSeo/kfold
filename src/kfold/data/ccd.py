@@ -232,7 +232,15 @@ class Component:
         """
         cast = lambda x: x.astype(np.float32) if x is not None else None  # noqa: E731
 
-        available_types = {"auto", "etkdg", "etkdg-cached", "ideal", "model", "nan"}
+        available_types = {
+            "auto",
+            "train",
+            "etkdg",
+            "etkdg-cached",
+            "ideal",
+            "model",
+            "nan",
+        }
         if conformer_type not in available_types:
             raise ValueError(
                 f"Invalid conformer_type: {conformer_type}. "

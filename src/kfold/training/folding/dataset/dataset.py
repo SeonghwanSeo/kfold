@@ -7,8 +7,12 @@ import numpy as np
 import torch
 from typing_extensions import override
 
-from kfold.data import model_input, schema, tokenized
-from kfold.data.pipelines import apo_perturbation, featurize
+from kfold.data.ccd import CCD
+from kfold.data.model_input import FoldingInput
+from kfold.data.pipelines import apo_perturbation, featurize, tokenize
+from kfold.data.schema import Metadata
+from kfold.data.structure import RefStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper, PreCropper
@@ -33,21 +37,23 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def __init__(
         self,
-        metadatas: list[schema.Metadata],
+        metadatas: list[Metadata],
+        ccd: CCD,
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
         featurization_args: dict,
         safe_load: bool = True,
         return_symmetry: bool = False,
         return_structure: bool = False,
-        ccd_symmetry_dict: dict | None = None,
         seed: int | None = None,
     ) -> None:
         """
         Parameters
         ----------
-        metadatas : list[schema.Metadata]
+        metadatas : list[Metadata]
             List of samples to use in the dataset.
+        ccd: CCD
+            CCD database
         paths : dict[str, Path | None]
             Paths for various resources.
         apo_perturbation_args : dict
@@ -60,29 +66,22 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             Whether to return symmetry information.
         return_structure : bool
             Whether to return the original tokenized structure.
-        ccd_symmetry_dict : dict | None
-            Dictionary mapping CCD IDs to symmetry information.
         seed : int | None
             Random seed for reproducibility.
         """
-        self.metadatas: list[schema.Metadata] = metadatas
+        self.metadatas: list[Metadata] = metadatas
         self.safe_load: bool = safe_load
         self.seed: int | None = seed
+        self.ccd: CCD = ccd
 
         self.return_symmetry: bool = return_symmetry
         self.return_structure: bool = return_structure
 
-        if self.return_symmetry:
-            assert ccd_symmetry_dict is not None, (
-                "ccd_symmetry_dict must be provided when return_symmetry is True."
-            )
-            self.ccd_symmetry_dict: dict = ccd_symmetry_dict
-
         # Initialize featurizer and apo perturbation
         self.apo_perturbation: apo_perturbation.ApoPerturbation = (
             apo_perturbation.ApoPerturbation(
+                ccd=ccd,
                 **apo_perturbation_args,
-                ccd_symmetry_dict=ccd_symmetry_dict,
             )
         )
         self.featurizer: featurize.InputFeaturizer = featurize.InputFeaturizer(
@@ -96,18 +95,29 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     # === TO-DO Implement in subclasses === #
     @abstractmethod
-    def load_tokenized_structure(
-        self, metadata: schema.Metadata
-    ) -> tokenized.TokenizedStructure:
-        """Get the tokenized structure for the given index."""
+    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
+        """Get the structure for the given index."""
+
+    def tokenize(
+        self,
+        struct: RefStructure,
+        rng: np.random.Generator | None = None,
+    ) -> TokenizedStructure:
+        """Tokenize the given structure."""
+        return tokenize.tokenize_structure(
+            struct,
+            ccd=self.ccd,
+            rng=rng,
+            use_only_cached_conformers=True,
+        )
 
     # === Optional to-override in subclasses === #
     def pre_crop_structure(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tokenized.TokenizedStructure:
+    ) -> TokenizedStructure:
         """Pre-crop the folding input structure as needed.
         See Section 2.5.4 of AlphaFold3 SI
 
@@ -119,14 +129,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def crop_structure(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tokenized.TokenizedStructure:
+    ) -> TokenizedStructure:
         """Crop the folding input structure as needed."""
         return struct
 
-    def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
+    def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 32 for LocalAtomAttention."""
         # Pad num_tokens for CUDA efficiency.
         num_tokens = next_multiple(f_input.num_tokens, 16)
@@ -134,7 +144,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         num_atoms = next_multiple(f_input.num_atoms, 32)
         return f_input.pad(max_tokens=num_tokens, max_atoms=num_atoms)
 
-    def __getitem__(self, index: int) -> tuple[model_input.FoldingInput, SymmetryInfo]:
+    def __getitem__(self, index: int) -> tuple[FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
         return self.get_item_safe(index, num_trials=100)
 
@@ -142,7 +152,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         index: int,
         num_trials: int = 100,
-    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
+    ) -> tuple[FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
         if self.seed is not None:
             rng = np.random.default_rng(self.seed + index % (1 << 15))
@@ -151,7 +161,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         trials = []
         for _ in range(num_trials):
-            sample: schema.Metadata = self.metadatas[index]
+            sample: Metadata = self.metadatas[index]
             try:
                 return self.get_item(sample)
             except (KeyboardInterrupt, SystemExit) as e:
@@ -169,9 +179,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def get_item(
         self,
-        metadata: schema.Metadata,
+        metadata: Metadata,
         **kwargs,
-    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
+    ) -> tuple[FoldingInput, SymmetryInfo]:
         """Get the folding input for the given sample."""
         metadata_id: str = metadata.id
 
@@ -181,8 +191,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         else:
             rng = np.random.default_rng()
 
-        # Load tokenized structure
-        struct = self.load_tokenized_structure(metadata)
+        # Load structure
+        ref_struct = self.load_ref_structure(metadata)
+
+        # Tokenization
+        struct = self.tokenize(ref_struct, rng=rng)
 
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
@@ -204,7 +217,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         if self.return_symmetry:
             # WARN: symmetry computation should be done before padding
             symmetry_dict["symmetry"] = symmetry.get_symmetries(
-                f_input, cropped_struct, struct, self.ccd_symmetry_dict, rng=rng
+                f_input, cropped_struct, struct, self.ccd, rng=rng
             )
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
@@ -214,18 +227,18 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def augment_apo_structure(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         rng: np.random.Generator | None = None,
-    ) -> tokenized.TokenizedStructure:
+    ) -> TokenizedStructure:
         """Apply random perturbation/rotation to apo structure"""
         return self.apo_perturbation(struct, rng=rng)
 
     def featurize(
         self,
-        struct: tokenized.TokenizedStructure,
-        metadata: schema.Metadata,
+        struct: TokenizedStructure,
+        metadata: Metadata,
         rng: np.random.Generator | None = None,
-    ) -> model_input.FoldingInput:
+    ) -> FoldingInput:
         """Featurize the given tokenized structure."""
         # Get precomputed embeddings if available
         # sequence embeddings
@@ -251,7 +264,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def find_precomputed_embeddings(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         name: str,
         root_dir: Path | None = None,
     ) -> dict[int, Path] | None:
@@ -259,7 +272,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         Parameters
         ----------
-        struct : tokenized.TokenizedStructure
+        struct : TokenizedStructure
             The tokenized structure.
         name : str
             The name/ID of the structure.
@@ -305,7 +318,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 class TrainingDataset(SafeLoadingDataset):
     def __init__(
         self,
-        metadatas: list[schema.Metadata],
+        metadatas: list[Metadata],
+        ccd: CCD,
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
         featurization_args: dict,
@@ -315,13 +329,14 @@ class TrainingDataset(SafeLoadingDataset):
         sampler_config: BaseSampler.Config | None,
         safe_load: bool = True,
         return_symmetry: bool = False,
-        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         """
         Parameters
         ----------
-        metadatas : list[schema.Metadata]
+        metadatas : list[Metadata]
             List of samples to use in the dataset.
+        ccd: CCD
+            CCD database
         paths : dict[str, Path | None]
             Paths for various resources.
         apo_perturbation_args : dict
@@ -352,13 +367,13 @@ class TrainingDataset(SafeLoadingDataset):
         """
         super().__init__(
             metadatas,
+            ccd,
             paths,
             apo_perturbation_args,
             featurization_args,
             safe_load,
             return_symmetry,
             return_structure=False,
-            ccd_symmetry_dict=ccd_symmetry_dict,
             seed=None,  # Do not fix seed for training dataset
         )
         self.max_tokens: int = max_tokens
@@ -384,10 +399,10 @@ class TrainingDataset(SafeLoadingDataset):
     @override
     def pre_crop_structure(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tokenized.TokenizedStructure:
+    ) -> TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_chains < struct.num_chains:
@@ -403,10 +418,10 @@ class TrainingDataset(SafeLoadingDataset):
     @override
     def crop_structure(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> tokenized.TokenizedStructure:
+    ) -> TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_tokens < struct.num_tokens:
@@ -420,7 +435,7 @@ class TrainingDataset(SafeLoadingDataset):
         return struct
 
     @override
-    def pad_input(self, f_input: model_input.FoldingInput) -> model_input.FoldingInput:
+    def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         max_tokens = self.max_tokens
         max_chains = max_tokens // 4  # min 4 tokens per chain
         max_atoms = max_tokens * 24  # max 24 atoms per token
@@ -432,7 +447,7 @@ class TrainingDataset(SafeLoadingDataset):
         self,
         index: int,
         num_trials: int = 10,
-    ) -> tuple[model_input.FoldingInput, SymmetryInfo]:
+    ) -> tuple[FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure.
         NOTE: This is overridden to use `self.samples` instead of `self.metadatas`.
         """
@@ -440,11 +455,11 @@ class TrainingDataset(SafeLoadingDataset):
         for _ in range(num_trials):
             sample = self.samples[index]
             try:
-                return self.get_item(sample.schema, asym_ids=sample.asym_id)
+                return self.get_item(sample.metadata, asym_ids=sample.asym_id)
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
-                sample_id = sample.schema.id
+                sample_id = sample.metadata.id
                 print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
                 index = np.random.randint(0, len(self))
                 if not self.safe_load:
@@ -458,18 +473,18 @@ class TrainingDataset(SafeLoadingDataset):
 class ValidationDataset(SafeLoadingDataset):
     def __init__(
         self,
-        metadatas: list[schema.Metadata],
+        metadatas: list[Metadata],
+        ccd: CCD,
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
         featurization_args: dict,
         safe_load: bool = True,
         return_symmetry: bool = False,
-        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         """
         Parameters
         ----------
-        metadats : list[schema.Metadata]
+        metadatas : list[Metadata]
             List of samples to use in the dataset.
         """
         # To validate the folding performance in usage scenario, where holo
@@ -482,13 +497,13 @@ class ValidationDataset(SafeLoadingDataset):
 
         super().__init__(
             metadatas,
+            ccd,
             paths,
             apo_perturbation_args,
             featurization_args,
             safe_load,
             return_symmetry,
             return_structure=True,
-            ccd_symmetry_dict=ccd_symmetry_dict,
             seed=42,  # Fix seed for validation dataset
         )
 
@@ -517,7 +532,7 @@ class LMDBDatabase:
             )
         return self._lmdb_env
 
-    def load_from_lmdb(self, metadata: schema.Metadata) -> tokenized.TokenizedStructure:
+    def load_from_lmdb(self, metadata: Metadata) -> TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         name = metadata.id
         key_bytes = name.encode("utf-8")
@@ -528,8 +543,8 @@ class LMDBDatabase:
 
         # Use io.BytesIO to wrap the raw bytes
         with io.BytesIO(value_bytes) as byte_stream:
-            struct = tokenized.TokenizedStructure.load_npz(byte_stream)
-        struct = struct.copy_with(schema=metadata)
+            struct = TokenizedStructure.load_npz(byte_stream)
+        struct = struct.copy_with(metadata=metadata)
         return struct
 
     def __del__(self):
@@ -540,8 +555,9 @@ class LMDBDatabase:
 class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
     def __init__(
         self,
-        metadatas: list[schema.Metadata],
+        metadatas: list[Metadata],
         lmdb_path: Path,
+        ccd: CCD,
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
         featurization_args: dict,
@@ -551,11 +567,11 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
         sampler_config: BaseSampler.Config | None,
         safe_load: bool = True,
         return_symmetry: bool = False,
-        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         TrainingDataset.__init__(
             self,
             metadatas,
+            ccd,
             paths,
             apo_perturbation_args,
             featurization_args,
@@ -565,13 +581,10 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
             sampler_config,
             safe_load,
             return_symmetry,
-            ccd_symmetry_dict,
         )
         self.lmdb_path: Path = lmdb_path
 
-    def load_tokenized_structure(
-        self, metadata: schema.Metadata
-    ) -> tokenized.TokenizedStructure:
+    def load_tokenized_structure(self, metadata: Metadata) -> TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         return self.load_from_lmdb(metadata)
 
@@ -579,29 +592,27 @@ class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
 class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
     def __init__(
         self,
-        metadatas: list[schema.Metadata],
+        metadatas: list[Metadata],
         lmdb_path: Path,
+        ccd: CCD,
         paths: dict[str, Path | None],
         apo_perturbation_args: dict,
         featurization_args: dict,
         safe_load: bool = True,
         return_symmetry: bool = False,
-        ccd_symmetry_dict: dict | None = None,
     ) -> None:
         ValidationDataset.__init__(
             self,
             metadatas,
+            ccd,
             paths,
             apo_perturbation_args,
             featurization_args,
             safe_load,
             return_symmetry,
-            ccd_symmetry_dict,
         )
         self.lmdb_path: Path = lmdb_path
 
-    def load_tokenized_structure(
-        self, metadata: schema.Metadata
-    ) -> tokenized.TokenizedStructure:
+    def load_tokenized_structure(self, metadata: Metadata) -> TokenizedStructure:
         """Load the tokenized structure from LMDB."""
         return self.load_from_lmdb(metadata)

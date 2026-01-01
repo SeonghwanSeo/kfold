@@ -66,7 +66,7 @@ def parse_cif(
     ccd: CCD,
     source: str = "rcsb",
     max_chains: int | None = None,
-) -> structure.Structure:
+) -> structure.RefStructure:
     """Parse a CIF file and return a gemmi.cif.Document object.
     NOTE: This is just a template function. Additional filtering can be
     inserted as needed, e.g., date cutoff, number of chains, etc.
@@ -363,7 +363,7 @@ def prepare_ref_structure(
     raw_struct: gemmi.Structure,
     metadata: schema.Metadata,
     ccd: CCD,
-) -> structure.Structure:
+) -> structure.RefStructure:
     """Prepare reference structure from gemmi CIF block and metadata."""
 
     # NOTE: According to AlphaFold3, remove crystallization aids for
@@ -721,7 +721,7 @@ def prepare_ref_structure(
             )
             metadata.chains.append(chain_meta)
 
-    return structure.Structure(
+    return structure.RefStructure(
         chains=chain_structs,
         connections=connections,
         metadata=metadata,
@@ -792,7 +792,7 @@ def insert_chain_coordinates(
 
 
 def insert_coordinates(
-    ref_struct: structure.Structure,
+    ref_struct: structure.RefStructure,
     raw_struct: gemmi.Structure,
     metadata: schema.Metadata,
 ) -> None:
@@ -844,7 +844,7 @@ def get_chain_ref_atom_coordinates(chain: structure.Chain) -> np.ndarray:
         return ref_coords
 
 
-def validate_chain_geometry(struct: structure.Structure) -> None:
+def validate_chain_geometry(struct: structure.RefStructure) -> None:
     """Check if a polymer chain is valid."""
     metadata: schema.Metadata = struct.metadata
     for chain_i in range(struct.num_chains):
@@ -889,7 +889,7 @@ def validate_chain_geometry(struct: structure.Structure) -> None:
 
 
 def detect_interfaces_and_prune_clashes(
-    struct: structure.Structure,
+    struct: structure.RefStructure,
     remove_clashed: bool = True,
 ) -> None:
     """
@@ -1018,7 +1018,7 @@ def detect_interfaces_and_prune_clashes(
     struct.metadata.interfaces = interfaces
 
 
-def prune_invalid_chains(struct: structure.Structure) -> None:
+def prune_invalid_chains(struct: structure.RefStructure) -> None:
     """Drop invalid chains from the structure."""
     metadata: schema.Metadata = struct.metadata
 
@@ -1062,7 +1062,7 @@ def prune_invalid_chains(struct: structure.Structure) -> None:
 # Substructure sampling
 # ==================================================
 def crop_substructure(
-    struct: structure.Structure,
+    struct: structure.RefStructure,
     max_chains: int = 20,
     seed: int = 42,
 ):

@@ -30,9 +30,9 @@ data:
   safe_load: true
 
   # Data paths
+  ccd_path: <CCD_PATH_PLACEHOLDER>
   lmdb_path: <LMDB_PATH_PLACEHOLDER>
   manifest_path: <MANIFEST_PATH_PLACEHOLDER>
-  symmetry_path: <SYMMETRY_PATH_PLACEHOLDER>
   split_path: ./assets/splits/kfold_v251213/
 
   # Symmetry

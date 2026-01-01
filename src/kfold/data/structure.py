@@ -17,7 +17,7 @@ __all__ = [
     "Residue",
     "Atom",
     "Bond",
-    "Structure",
+    "RefStructure",
 ]
 
 
@@ -412,8 +412,8 @@ class CovalentConnection:
 
 
 @dataclasses.dataclass(kw_only=True)
-class Structure:
-    """Structure
+class RefStructure:
+    """Reference Structure information.
 
     Attributes
     ----------
@@ -488,7 +488,7 @@ class Structure:
         num_connections = self.num_connections
 
         return (
-            "Structure(\n"
+            "RefStructure(\n"
             + f"  num_chains: {num_chains}\n"
             + f"  num_interfaces: {len(self.metadata.interfaces)}\n"
             + f"  num_connections: {num_connections}\n"

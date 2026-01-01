@@ -24,10 +24,10 @@ train:
     precision: bf16-mixed
 
   data:
+    ccd_path: /cache/wykim_lab/kfold_data/ccd-train.pkl
     lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
     manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
     split_path: ./assets/splits/boltz1
-    symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
     num_workers: 4
 
     cropper:

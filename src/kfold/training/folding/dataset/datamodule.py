@@ -8,6 +8,7 @@ import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
+from kfold.data.ccd import CCD
 from kfold.data.model_input import FoldingInput
 from kfold.data.schema import Metadata
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
@@ -22,7 +23,6 @@ from .dataset import (
 from .dl_sampler import DistributedWeightedSampler
 from .filter import BaseFilter
 from .sampler import BaseSampler
-from .utils.symmetry import load_ccd_symmetry_dict
 
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
 
@@ -56,6 +56,7 @@ class DataModuleConfig(BaseConfig):
     num_workers: int = 0
     pin_memory: bool = True
     safe_load: bool = True
+    ccd_path: Path
 
     # === Additional paths required === #
     paths: dict = dataclasses.field(default_factory=dict)
@@ -72,7 +73,6 @@ class TrainingDataModuleConfig(DataModuleConfig):
     # Dataset specific (TODO: move to dataset config)
     manifest_path: str | Path
     split_path: str | Path
-    symmetry_path: str | Path | None
     return_train_symmetry: bool = False
     return_validation_symmetry: bool = True
     max_chains: int  # Used for chain sampling
@@ -100,14 +100,14 @@ class TrainingDataModule(pl.LightningDataModule):
         super().__init__()
         self.config = config
 
+        # Load CCD
+        self.ccd: CCD = CCD.load(config.ccd_path)
+
         self.filters: list[BaseFilter] = [
             Registry.instantiate(config=c) for c in config.filters
         ]
         self.cropper = Registry.instantiate(config=config.cropper)
         self.manifest_path: Path = Path(config.manifest_path)
-        self.ccd_symmetry_path: Path | None = (
-            Path(config.symmetry_path) if config.symmetry_path else None
-        )
         self.split_path: Path = Path(config.split_path)
         self.paths: dict[str, Path | None] = {
             k: Path(v) if v else None for k, v in config.paths.items()
@@ -182,14 +182,9 @@ class TrainingDataModule(pl.LightningDataModule):
         # Ensure max_atoms(=max_tokens*24) is a multiple of 32 for LocalAttention
         assert max_tokens % 4 == 0, "max_tokens must be a multiple of 4."
 
-        assert self.ccd_symmetry_path is not None, (
-            "symmetry_path must be provided if return_train_symmetry or "
-            "return_validation_symmetry is True"
-        )
-        ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
-
         return LMDBTrainingDataset(
             metadatas=train_metadatas,
+            ccd=self.ccd,
             lmdb_path=self.lmdb_path,
             paths=self.paths,
             apo_perturbation_args=self.apo_perturbation_args,
@@ -200,7 +195,6 @@ class TrainingDataModule(pl.LightningDataModule):
             sampler_config=self.config.sampler,
             safe_load=self.config.safe_load,
             return_symmetry=self.config.return_train_symmetry,
-            ccd_symmetry_dict=ccd_symmetry_dict,
         )
 
     def construct_val_dataset(self) -> ValidationDataset:
@@ -222,22 +216,15 @@ class TrainingDataModule(pl.LightningDataModule):
             f"Constructed validation dataset with {len(val_metadatas)} metadatas."
         )
 
-        # If symmetry is to be returned, load symmetry info
-        assert self.ccd_symmetry_path is not None, (
-            "symmetry_path must be provided if return_train_symmetry or "
-            "return_validation_symmetry is True"
-        )
-        ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
-
         return LMDBValidationDataset(
             metadatas=val_metadatas,
+            ccd=self.ccd,
             lmdb_path=self.lmdb_path,
             paths=self.paths,
             apo_perturbation_args=self.apo_perturbation_args,
             featurization_args=self.featurization_args,
             safe_load=self.config.safe_load,
             return_symmetry=self.config.return_validation_symmetry,
-            ccd_symmetry_dict=ccd_symmetry_dict,
         )
 
     def train_dataloader(self):

@@ -16,6 +16,7 @@ from rieprody.proteins.protein_vocab import (
 from rieprody.proteins.protein_vocab import THREE_TO_ONE as _RIEPRODY_THREE_TO_ONE
 
 import kfold.constants as C
+from kfold.data.ccd import CCD, Component
 from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import (
@@ -80,21 +81,24 @@ def get_ambiguous_atoms_in_residue(res_name: C.ResidueName) -> list[list[int]]:
 def get_molecule_symmetries(
     ccd_id: str,
     mol_atom_names: list[str],
-    ccd_symmetry_dict: dict,
+    ref_mol: Component,
 ) -> list[list[int]]:
     """Get molecule's symmetries from ccd"""
-    ccd_syms, ccd_atom_names = ccd_symmetry_dict[ccd_id]
     atom_id_in_ccd: dict[int, int] = {
-        ccd_atom_names.index(name): i for i, name in enumerate(mol_atom_names)
+        ref_mol.atom_names.index(name): i for i, name in enumerate(mol_atom_names)
     }
     valid_atoms: set[int] = set(atom_id_in_ccd.keys())
 
-    all_syms: list[list[int]] = []
+    symmetries = ref_mol.symmetries
+    if symmetries is None or len(symmetries) == 0:
+        symmetries = [[i for i in range(len(mol_atom_names))]]  # identity only
+
+    all_perms: list[list[int]] = []
     # Get symmetries
-    for sym in ccd_syms:
-        # Example sym for 4-atom molecules: [0, 2, 1, 3] (swapping atom 1 and 2)
+    for perm in symmetries:
+        # Example perm for 4-atom molecules: [0, 2, 1, 3] (swapping atom 1 and 2)
         sym_dict: dict[int, int] = {}
-        for i, j in enumerate(sym):
+        for i, j in enumerate(perm):
             if i not in valid_atoms:
                 # atom i is not in the molecule
                 continue
@@ -110,8 +114,8 @@ def get_molecule_symmetries(
         else:
             # Completed without break
             # NOTE: This is bijective mapping within valid atoms (see above)
-            all_syms.append([sym_dict[i] for i in range(len(valid_atoms))])
-    return all_syms
+            all_perms.append([sym_dict[i] for i in range(len(valid_atoms))])
+    return all_perms
 
 
 class ApoPerturbation:
@@ -125,7 +129,7 @@ class ApoPerturbation:
         prob_perturbation: float = 0.5,
         prob_replace_to_holo: float = 0.0,
         mask_nucleic_acids: bool = False,
-        ccd_symmetry_dict: dict | None = None,
+        ccd: CCD | None = None,
         seed: int | None = 42,
         metric_lmdb_path: Path | str | None = None,
         metric_comp: dict | None = None,
@@ -156,8 +160,9 @@ class ApoPerturbation:
             Whether to mask nucleic acid chains during perturbation.
             TODO: (SeonghwanSeo) Remove this argument after DNA/RNA apo coordinates
             is prepared.
-        ccd_symmetry_dict: dict | None
-            Dictionary containing symmetry information for CCD entries.
+        ccd: dict | None
+            CCD object for symmetry correction. Required if
+            `use_symmetry_correction` is True.
         seed : int | None, optional
             Random seed for stochastic operations.
         metric_lmdb_path : Path | str | None, optional
@@ -213,10 +218,11 @@ class ApoPerturbation:
         self.log_stats_interval: int = log_stats_interval
 
         if self.use_symmetry_correction:
-            assert ccd_symmetry_dict is not None, (
-                "CCD symmetry dictionary must be provided for symmetry correction."
-            )
-            self.ccd_symmetry_dict: dict = ccd_symmetry_dict
+            if ccd is None:
+                raise ValueError(
+                    "CCD object must be provided when use_symmetry_correction is True."
+                )
+            self.ccd: CCD = ccd
 
         # Apo perturbation setup
         self.metric_lmdb_path: Path | None = None
@@ -1720,7 +1726,7 @@ class ApoPerturbation:
 
             # Get CCD ID
             ccd_id = str(struct.residue.name[res_i])
-            if ccd_id not in self.ccd_symmetry_dict:
+            if ccd_id not in self.ccd:
                 # No symmetry information for this molecule
                 continue
 
@@ -1756,9 +1762,8 @@ class ApoPerturbation:
                 # Not enough atoms to align
                 continue
 
-            permutations = get_molecule_symmetries(
-                ccd_id, mol_atom_names, self.ccd_symmetry_dict
-            )
+            ref_mol = self.ccd[ccd_id]
+            permutations = get_molecule_symmetries(ccd_id, mol_atom_names, ref_mol)
 
             # NOTE: for molecule, there is only one atom per token (always index=0)
             # i.e., only the first atom is valid among 24 atom.

@@ -1,13 +1,13 @@
-import pickle
 from collections import OrderedDict, defaultdict
+from collections.abc import Sequence
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
 import kfold.constants as C
+from kfold.data.ccd import CCD, Component
 from kfold.data.model_input import FoldingInput
 from kfold.data.tokenized import TokenizedStructure
 
@@ -21,43 +21,11 @@ AtomSwaps = tuple[list[int], list[int]]  # (src_indices, dst_indices)
 ResidueSymmetry = list[AtomSwaps]  # List of atom swaps for a residue or molecule
 
 
-@lru_cache
-def load_ccd_symmetry_dict(path: str | Path) -> dict:
-    """Create a dictionary for the molecular symmetries.
-
-    Parameters
-    ----------
-    path : str
-        The path to the molecular symmetries.
-
-    Returns
-    -------
-    dict
-        The molecular symmetries.
-
-    """
-    with Path(path).open("rb") as f:
-        data: dict = pickle.load(f)  # noqa: S301
-
-    symmetries = {}
-    for key, mol in data.items():
-        try:
-            serialized_sym = bytes.fromhex(mol.GetProp("symmetries"))
-            sym = pickle.loads(serialized_sym)  # noqa: S301
-            atom_names: list[str] = [
-                atom.GetProp("name").strip() for atom in mol.GetAtoms()
-            ]
-            symmetries[key] = (sym, atom_names)
-        except Exception:  # noqa: BLE001, PERF203, S110
-            pass
-    return symmetries
-
-
 def get_symmetries(
     f_input: FoldingInput,
     cropped_struct: TokenizedStructure,
     all_struct: TokenizedStructure,
-    ccd_symmetry_dict: dict,
+    ccd: CCD,
     max_chain_symmetries: int = 100,
     rng: np.random.Generator | None = None,
 ) -> dict[str, Any]:
@@ -71,8 +39,8 @@ def get_symmetries(
         The cropped structure, raw data of model_input.
     all_struct : TokenizedStructure
         The full structure before cropping.
-    ccd_symmetry_dict : dict
-        The compound symmetries dictionary.
+    ccd : CCD
+        The CCD database.
     max_chain_symmetries : int, optional
         The maximum number of chain symmetries to consider, by default 100.
 
@@ -132,7 +100,7 @@ def get_symmetries(
     symmetry_info["residue_symmetries"] = res_syms_global
 
     # === Ligand and non-standard amino-acid symmetries === #
-    mol_syms = get_molecule_symmetries(cropped_struct, ccd_symmetry_dict)
+    mol_syms = get_molecule_symmetries(cropped_struct, ccd)
     # Convert token index to global atom index
     # NOTE: Each token corresponds to one atom for ligands and non-standard amino-acids
     mol_syms_global: list[ResidueSymmetry] = []
@@ -407,7 +375,7 @@ ResUID = tuple[int, int]  # (asym_id, residue_index)
 
 def get_molecule_symmetries(
     cropped_struct: TokenizedStructure,
-    ccd_symmetry_dict: dict,
+    ccd: CCD,
 ) -> list[ResidueSymmetry]:
     # Compute ligand and non-standard amino-acids symmetries
 
@@ -421,7 +389,7 @@ def get_molecule_symmetries(
 
         # Get CCD ID
         ccd_id = str(cropped_struct.residue.name[res_i])
-        if ccd_id not in ccd_symmetry_dict:
+        if ccd_id not in ccd:
             # Skip if there is no symmetry information
             continue
 
@@ -452,18 +420,24 @@ def get_molecule_symmetries(
     mol_atom_swaps: list[ResidueSymmetry] = []
     for mol_uid in residue_mol.keys():
         ccd_id, mol_atom_names = residue_mol[mol_uid]
-        ccd_syms, ccd_atom_names = ccd_symmetry_dict[ccd_id]
+        ref_mol: Component = ccd[ccd_id]
+
         atom_id_in_ccd: dict[int, int] = {
-            ccd_atom_names.index(name): i for i, name in enumerate(mol_atom_names)
+            ref_mol.atom_names.index(name): i for i, name in enumerate(mol_atom_names)
         }
         valid_atoms: set[int] = set(atom_id_in_ccd.keys())
 
-        all_syms: list[list[int]] = []
+        symmetries = ccd[ccd_id].symmetries
+        if symmetries is None:
+            symmetries = [list(range(ref_mol.num_atoms))]
+        symmetries: Sequence[list[int]] = symmetries
+
+        all_perms: list[list[int]] = []
         # Get symmetries
-        for sym in ccd_syms:
-            # Example sym for 4-atom molecules: [0, 2, 1, 3] (swapping atom 1 and 2)
+        for perms in symmetries:
+            # Example perms for 4-atom molecules: [0, 2, 1, 3] (swapping atom 1 and 2)
             sym_dict: dict[int, int] = {}
-            for i, j in enumerate(sym):
+            for i, j in enumerate(perms):
                 if i not in valid_atoms:
                     # atom i is not in the molecule
                     continue
@@ -479,14 +453,14 @@ def get_molecule_symmetries(
             else:
                 # Completed without break
                 # NOTE: This is bijective mapping within valid atoms (see above)
-                all_syms.append([sym_dict[i] for i in range(len(valid_atoms))])
+                all_perms.append([sym_dict[i] for i in range(len(valid_atoms))])
 
         swaps = []
         token_st = mol_token_st[mol_uid]
-        for sym in all_syms:
+        for perm in all_perms:
             src_indices = []
             dst_indices = []
-            for i, j in enumerate(sym):
+            for i, j in enumerate(perm):
                 if i != j:
                     src_indices.append(i + token_st)
                     dst_indices.append(j + token_st)
