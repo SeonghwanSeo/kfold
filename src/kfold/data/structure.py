@@ -207,19 +207,11 @@ class Residue:
     is_standard: np.ndarray (bool)
         Whether the residue is a standard amino acid or nucleic acid of shape [L,].
         NOTE: UNK, DN, N are considered standard residues.
-    bfactor: np.ndarray (float16)
-        B-factor values for each residue of shape [L,].
-    apo_plddt: np.ndarray (float16)
-        predicted LDDT scores for each apo conformation of shape [Napo, L],
-        where Napo is the number of available apo conformations.
-        For experimental structures, this can be filled to 100.
     """
 
     name: np.ndarray  # [L,], str
     num_atoms: np.ndarray  # [L,], int
     is_standard: np.ndarray  # [L,], bool
-    bfactor: np.ndarray  # [L,], int
-    apo_plddt: np.ndarray  # [Napo, L], int
 
     def __len__(self) -> int:
         return len(self.name)
@@ -229,10 +221,6 @@ class Residue:
         check_array(self.name, name="names", dtype=np.str_, shape=shape)
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
         check_array(self.is_standard, name="is_standard", dtype=bool, shape=shape)
-        check_array(self.bfactor, name="bfactor", dtype=np.floating, shape=shape)
-        check_array(
-            self.apo_plddt, name="apo_plddt", dtype=np.floating, shape=(-1, *shape)
-        )
 
     @cached_property
     def atom_starts(self) -> np.ndarray:
@@ -242,6 +230,13 @@ class Residue:
             [np.array([0], dtype=dtype), np.cumsum(self.num_atoms, dtype=dtype)[:-1]]
         )
 
+    def iter_residue_atoms(self, residue_index: int) -> range:
+        """Get the range of atom indices for a given residue index."""
+        # residue_index: 1-based index
+        start = self.atom_starts[residue_index - 1]
+        end = start + self.num_atoms[residue_index - 1]
+        return range(start, end)
+
     @classmethod
     def get_default_dtype(cls) -> dict[str, type | np.dtype]:
         """Get default dtypes for each field."""
@@ -250,8 +245,6 @@ class Residue:
             "num_atoms": np.uint8,  # max 255 atoms per residue
             "is_standard": bool,
             "is_linked": bool,
-            "bfactor": np.float16,
-            "apo_plddt": np.float16,
         }
 
 
@@ -270,12 +263,20 @@ class Atom:
     apo_coords: np.ndarray (float32)
         Apo (unbound) state coordinates of shape [Napo, Natom, 3],
         where Napo is the number of available apo conformations.
+    bfactor: np.ndarray (float16)
+        B-factor values for each residue of shape [L,].
+    apo_plddt: np.ndarray (float16)
+        predicted LDDT scores for each apo conformation of shape [Napo, L],
+        where Napo is the number of available apo conformations.
+        For experimental structures, this can be filled to 100.
     """
 
     name: np.ndarray  # [Natom,], str
     is_resolved: np.ndarray  # [Natom,], bool
     label_coords: np.ndarray  # [Natom, 3], float32
     apo_coords: np.ndarray  # [Napo, Natom, 3], float32
+    bfactor: np.ndarray  # [L,], int
+    apo_plddt: np.ndarray  # [Napo, L], int
 
     def __len__(self) -> int:
         return len(self.name)
@@ -288,7 +289,11 @@ class Atom:
             self.label_coords, name="label_coords", dtype=np.floating, shape=(*shape, 3)
         )
         check_array(
-            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, -1, 3)
+            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(-1, *shape, 3)
+        )
+        check_array(self.bfactor, name="bfactor", dtype=np.floating, shape=shape)
+        check_array(
+            self.apo_plddt, name="apo_plddt", dtype=np.floating, shape=(-1, *shape)
         )
 
     @classmethod
@@ -299,6 +304,8 @@ class Atom:
             "is_resolved": bool,
             "label_coords": np.float32,
             "apo_coords": np.float32,
+            "bfactor": np.float16,
+            "apo_plddt": np.float16,
         }
 
 
@@ -419,6 +426,13 @@ class Structure:
     def num_connections(self) -> int:
         """Number of covalent connections in the structure."""
         return len(self.connections)
+
+    def get_chain_by_asym_id(self, asym_id: int) -> Chain:
+        """Get chain by asym_id."""
+        for chain in self.chains:
+            if chain.asym_id == asym_id:
+                return chain
+        raise KeyError(f"Chain with asym_id {asym_id} not found.")
 
     def __repr__(self) -> str:
         """FoldingInput summary representation."""

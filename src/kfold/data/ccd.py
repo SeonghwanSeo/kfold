@@ -4,7 +4,6 @@ import datetime
 import pathlib
 import pickle
 from collections.abc import Iterable, Mapping, Sequence
-from functools import cached_property
 from typing import Any, Self, TypeVar
 
 import gemmi
@@ -167,12 +166,12 @@ class Component:
         """Get the names of non-leaving atoms in the component."""
         return tuple(filter_items(self.atom_names, ~self.is_leaving_atom))
 
-    @cached_property
+    @property
     def num_leaving_atoms(self) -> int:
         """Get the number of leaving atoms in the component."""
         return int(np.sum(self.is_leaving_atom))
 
-    @cached_property
+    @property
     def num_non_leaving_atoms(self) -> int:
         """Get the number of non-leaving atoms in the component."""
         return int(np.sum(~self.is_leaving_atom))
@@ -201,7 +200,7 @@ class Component:
         self,
         conformer_type: str,
         rng: np.random.Generator | None = None,
-        timeout: float = 30.0,
+        timeout: int = 30,
     ) -> np.ndarray | None:
         """Get the coordinates of the specified conformer type.
 
@@ -211,14 +210,15 @@ class Component:
             The type of conformer to retrieve.
             Options:
               - auto: automatically select the most preferred conformer.
+              - train: auto without 'etkdg' for faster retrieval during training.
               - etkdg: generate a new ETKDG conformer.
               - etkdg-cached: pre-computed ETKDG conformer (if available).
               - ideal: CCD ideal conformer (if available).
               - nan: return NaN coordinates.
         rng : np.random.Generator | None, optional
             A random number generator for conformer generation (default is None).
-        timeout : float | None, optional
-            Timeout for conformer generation in seconds (not used currently).
+        timeout : int, optional
+            Timeout for conformer generation in seconds.
 
         Returns
         -------
@@ -245,7 +245,7 @@ class Component:
 
         rng = rng or np.random.default_rng()
 
-        if conformer_type == "auto":
+        if conformer_type in {"auto", "train"}:
             # Automatically select the most preferred conformer
             # Try to get cached ETKDG conformer first
             coords = self.get_conformer("etkdg-cached", rng)
@@ -253,9 +253,11 @@ class Component:
                 return coords
 
             # Then try to generate a new ETKDG conformer
-            coords = self.get_conformer("etkdg", rng, timeout)
-            if coords is not None:
-                return coords
+            # Skip during training for faster retrieval
+            if conformer_type != "train":
+                coords = self.get_conformer("etkdg", rng, timeout)
+                if coords is not None:
+                    return coords
 
             # Then try to get ideal conformer
             coords = self.get_conformer("ideal", rng)
@@ -274,9 +276,11 @@ class Component:
             return self.get_conformer("nan", rng)
 
         elif conformer_type == "etkdg":
+            rng = rng or np.random.default_rng()
+            seed = int(rng.integers(1, 1 << 16))
             # Return a new ETKDG conformer
             mol = Chem.AddHs(self.mol)
-            mol = rdkit_utils.compute_rdkit_conformer(mol, rng=rng, timeout=timeout)
+            mol = rdkit_utils.compute_rdkit_conformer(mol, seed=seed, timeout=timeout)
             mol = Chem.RemoveHs(mol, sanitize=False)
             if mol.GetNumConformers() == 0:
                 # Failed to generate conformer
@@ -413,8 +417,9 @@ class Component:
         if num_confs > 0 and mol.GetNumHeavyAtoms() > 1:
             # Only compute ETKDG for molecules with more than 1 atom
             rng = rng or np.random.default_rng()
+            seed = int(rng.integers(1, 1 << 16))
             etkdg_mol = rdkit_utils.compute_rdkit_conformer(
-                mol, num_confs, add_hydrogens=True, rng=rng
+                mol, num_confs, add_hydrogens=True, seed=seed
             )
             for conf in etkdg_mol.GetConformers():
                 coords_dict: dict[str, Point3D] = {}
@@ -432,14 +437,14 @@ class Component:
 
         def to_array(
             coords_dict: dict[str, Point3D], atom_names: list[str]
-        ) -> np.ndarray:
+        ) -> np.ndarray | None:
             missing = (np.nan, np.nan, np.nan)
             coords_arr = np.array(
                 [coords_dict.get(n, missing) for n in atom_names],
                 dtype=np.float32,
             )
-            center = np.nanmean(coords_arr, axis=0, keepdims=True)
-            coords_arr -= center  # Center the coordinates
+            if np.isnan(coords_arr).all():
+                return None
             return coords_arr.astype(np.float16)  # Use float16 to save storage
 
         if mol.GetNumHeavyAtoms() > 1:
@@ -448,12 +453,16 @@ class Component:
             if model_coords is not None:
                 model_coords_arr = to_array(model_coords, ref_atom_names)
             if len(etkdg_coords_list) > 0:
-                etkdg_coords_arr = np.stack(
-                    [
-                        to_array(coords_dict, ref_atom_names)
-                        for coords_dict in etkdg_coords_list
-                    ]
-                )
+                etkdg_coords_arr_list = [
+                    to_array(cdict, ref_atom_names) for cdict in etkdg_coords_list
+                ]
+                etkdg_coords_arr_list = [
+                    arr for arr in etkdg_coords_arr_list if arr is not None
+                ]
+                if len(etkdg_coords_arr_list) > 0:
+                    etkdg_coords_arr = np.stack(etkdg_coords_arr_list, axis=0)
+                else:
+                    etkdg_coords_arr = None
 
         # 6. Compute symmetries if requested
         if compute_symmetry:
@@ -504,6 +513,10 @@ class Component:
         # Get ideal and model coordinates
         ideal_coords = get_ideal_coordinates(cif_block)
         model_coords = get_model_coordinates(cif_block, date_cutoff=date_cutoff)
+
+        # Set chirality from 3D coordinates
+        if mol.GetNumConformers() > 0:
+            Chem.AssignStereochemistryFrom3D(mol, confId=0, replaceExistingTags=False)
 
         # Remove molecule coordinates
         mol.RemoveAllConformers()

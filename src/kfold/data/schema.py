@@ -70,7 +70,7 @@ class InterfaceInfo(JsonSerializable):
         assert len(self.asym_ids) == 2, "Interface must involve exactly two chains."
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Metadata:
     id: str
     source: str  # e.g., "rcsb"

@@ -1,5 +1,5 @@
+import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import numpy as np
@@ -39,37 +39,23 @@ def assign_atom_names(mol: Chem.Mol, max_name_length: int = 4) -> None:
         atom.SetProp("name", f"{elem}{count}")
 
 
-def run_etkdg(mol: Chem.Mol, num_confs: int = 1, seed: int = 42) -> Chem.Mol:
+def run_etkdg(
+    mol: Chem.Mol,
+    num_confs: int = 1,
+    seed: int = 42,
+    timeout: int = 30,
+) -> Chem.Mol:
     params = ETKDGv3()
     params.randomSeed = seed
     params.numThreads = 1  # To ensure reproducibility
+    params.timeout = timeout  # Timeout per conformer in seconds
     try:
         if num_confs == 1:
             EmbedMolecule(mol, params=params)
         else:
             EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
-    except (ValueError, RuntimeError):
-        pass
-    return mol
-
-
-def etkdg_with_timeout(
-    mol: Chem.Mol,
-    num_confs: int = 1,
-    seed: int = 42,
-    timeout: float | None = 30.0,
-) -> Chem.Mol:
-    """Generate conformers for the given molecule using ETKDGv3 algorithm with timeout."""
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(run_etkdg, mol, num_confs, seed)
-        try:
-            result_mol = future.result(timeout=timeout)
-            if result_mol is not None:
-                return result_mol
-        except TimeoutError:
-            print(f"RDKit embedding timed out after {timeout}s.")
-        except Exception as e:
-            print(f"An error occurred: {e}")
+    except (ValueError, RuntimeError) as e:
+        raise e
     return mol
 
 
@@ -77,20 +63,26 @@ def compute_rdkit_conformer(
     mol: Chem.Mol,
     num_confs: int = 1,
     add_hydrogens: bool = True,
-    rng: np.random.Generator | None = None,
-    timeout: float | None = 30.0,
+    seed: int = 42,
+    timeout: int = 30,
 ) -> Chem.Mol:
     """Generate conformers for the given molecule using ETKDGv3 algorithm."""
-    rng = rng or np.random.default_rng()
-    seed = int(rng.integers(1, 1 << 16))
-
     if add_hydrogens:
         mol = Chem.AddHs(mol)
     else:
         mol = Chem.Mol(mol)  # Create a copy to avoid modifying the original
 
-    mol = etkdg_with_timeout(mol, num_confs=num_confs, seed=seed, timeout=timeout)
-
+    try:
+        st = time.time()
+        mol = run_etkdg(mol, num_confs, seed, int(timeout))
+    except Exception as e:
+        print(f"ETKDG conformer generation failed with error: {e}")
+    end = time.time()
+    if end - st > 30:
+        print(
+            f"Warning: ETKDG conformer generation took longer than 30 seconds"
+            f" ({end - st:.2f} seconds)"
+        )
     return mol
 
 

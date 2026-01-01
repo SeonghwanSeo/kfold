@@ -116,7 +116,7 @@ PROTEIN_RESIDUES_STR: tuple[str, ...] = (
     "UNK"
 )  # fmt: skip
 PROTEIN_RESIDUES_EXTENDED_STR: tuple[str, ...] = (
-    *PROTEIN_RESIDUES_STR, "ASX", "GLX"
+    *PROTEIN_RESIDUES_STR, "MSE", "ASX", "GLX",
 )  # fmt: skip
 
 # AA mapping for apo-structure prediction / sequence embedding
