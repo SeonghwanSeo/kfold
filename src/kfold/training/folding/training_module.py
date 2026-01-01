@@ -131,6 +131,15 @@ class KFoldTrainingModule(pl.LightningModule):
 
         self.save_hyperparameters(to_dict(self.global_config))
 
+        # Pre-sample recycling steps for training
+        # This ensures all GPUs use the same recycling schedule
+        rng = np.random.default_rng(seed=42)
+        self.recycles_per_step: np.ndarray = rng.integers(
+            0,
+            self.training_config.num_recycles + 1,
+            size=100_000,
+        )
+
     def freeze_submodules(self):
         """Freeze submodules based on the training configuration."""
         # FIXME: (SeonghwanSeo) I did not test this function yet.
@@ -287,7 +296,9 @@ class KFoldTrainingModule(pl.LightningModule):
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
         # Sample recycling steps
-        num_recycles = np.random.randint(0, training_config.num_recycles + 1)
+        # Use shared recycling schedule across all the gpus
+        idx = self.global_step % len(self.recycles_per_step)
+        num_recycles = int(self.recycles_per_step[idx])
 
         # Compute the forward pass
         out: dict[str, torch.Tensor] = self(
