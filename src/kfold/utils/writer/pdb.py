@@ -18,8 +18,6 @@ def _get_periodic_table() -> Chem.PeriodicTable:
 
 def to_pdbstring(
     struct: TokenizedStructure,
-    conformer_id: int = 0,
-    is_predicted: bool = True,
     save_apo: bool = False,
 ) -> str:  # noqa: PLR0915
     """Write a structure into a PDB file.
@@ -28,12 +26,8 @@ def to_pdbstring(
     ----------
     struct : TokenizedStructure
         The input structure
-    conformer_id : int, optional
-        The conformer ID to write (default is 0)
     save_apo : bool, optional
         Whether to save the apo form (default is False)
-    is_predicted : bool, optional
-        Whether the structure is predicted (default is False)
 
     Returns
     -------
@@ -58,15 +52,10 @@ def to_pdbstring(
     # atom_coords: [Ntoken, 24, 3]
     # atom_mask: [Ntoken, 24]
     if save_apo:
-        # NOTE: ignore `is_predicted` flag when saving apo
-        atom_coords = atoms.apo_coords[:, :, conformer_id, :]
-        atom_mask = atoms.apo_mask[:, :, conformer_id]
-    elif is_predicted:
-        atom_coords = atoms.coords[:, :, conformer_id, :]
-        atom_mask = np.ones_like(atoms.resolved_mask)
+        atom_coords = atoms.apo_coords
     else:
-        atom_coords = atoms.coords[:, :, conformer_id, :]
-        atom_mask = atoms.resolved_mask
+        atom_coords = atoms.coords
+    atom_mask = np.isfinite(atom_coords).all(axis=-1)
 
     # Load periodic table for element mapping
     periodic_table = _get_periodic_table()

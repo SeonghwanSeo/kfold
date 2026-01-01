@@ -12,56 +12,46 @@ class KFoldWriter:
         cls,
         struct: TokenizedStructure,
         save_path: str | Path,
-        conformer_id: int = 0,
-        is_predicted: bool = True,
         save_apo: bool = False,
     ):
         format = Path(save_path).suffix.lower()
         if format == ".pdb":
-            cls.write_pdb(struct, save_path, conformer_id, is_predicted, save_apo)
+            cls.write_pdb(struct, save_path, save_apo)
         elif format in [".cif", ".mmcif"]:
-            cls.write_mmcif(struct, save_path, conformer_id, is_predicted, save_apo)
+            cls.write_mmcif(struct, save_path, save_apo)
         else:
             raise ValueError(f"Unsupported file format: {save_path}")
 
     @staticmethod
     def write_mmcifstring(
         struct: TokenizedStructure,
-        conformer_id: int = 0,
-        is_predicted: bool = True,
         save_apo: bool = False,
     ) -> str:
-        return to_mmcifstring(struct, conformer_id, is_predicted, save_apo)
+        return to_mmcifstring(struct, save_apo)
 
     @classmethod
     def write_mmcif(
         cls,
         struct: TokenizedStructure,
         save_path: str | Path,
-        conformer_id: int = 0,
-        is_predicted: bool = True,
         save_apo: bool = False,
     ):
         with open(save_path, "w") as f:
-            f.write(to_mmcifstring(struct, conformer_id, is_predicted, save_apo))
+            f.write(to_mmcifstring(struct, save_apo))
 
     @staticmethod
     def write_pdbstring(
         struct: TokenizedStructure,
-        conformer_id: int = 0,
-        is_predicted: bool = True,
         save_apo: bool = False,
     ) -> str:
-        return to_pdbstring(struct, conformer_id, is_predicted, save_apo)
+        return to_pdbstring(struct, save_apo)
 
     @classmethod
     def write_pdb(
         cls,
         struct: TokenizedStructure,
         save_path: str | Path,
-        conformer_id: int = 0,
-        is_predicted: bool = True,
         save_apo: bool = False,
     ):
         with open(save_path, "w") as f:
-            f.write(to_pdbstring(struct, conformer_id, is_predicted, save_apo))
+            f.write(to_pdbstring(struct, save_apo))

@@ -299,7 +299,6 @@ if __name__ == "__main__":
             )
             struct.to_pdb(
                 SAVE_PATH / f"{name}-ecsi-holo.pdb",
-                is_predicted=False,
             )
 
             struct = struct.replace_atom_coords(
@@ -307,7 +306,6 @@ if __name__ == "__main__":
             )
             struct.to_pdb(
                 SAVE_PATH / f"{name}-ecsi-apo.pdb",
-                is_predicted=False,
             )
 
             # Save interpolated structures
@@ -319,7 +317,6 @@ if __name__ == "__main__":
                 struct.to_pdb(
                     SAVE_PATH / f"{name}-ecsi-t{i:02d}_t{t_val:.3f}.pdb",
                     conformer_id=i,
-                    is_predicted=False,
                 )
 
             print(f"  Saved {num_samples + 2} PDB files to {SAVE_PATH}")
@@ -347,9 +344,6 @@ if __name__ == "__main__":
             trajectory_coords_array = np.stack(
                 trajectory_coords, axis=0
             )  # [Nframes, Natom, 3]
-            trajectory_struct = struct.replace_atom_coords(
-                atom_coords=trajectory_coords_array,
-            )
 
             # Create multi-model PDB file by concatenating PDB strings
             trajectory_path = SAVE_PATH / f"{name}-ecsi-trajectory.pdb"
@@ -361,9 +355,10 @@ if __name__ == "__main__":
                     # Get PDB string for this conformer
                     from kfold.utils.writer.pdb import to_pdbstring
 
-                    pdb_string = to_pdbstring(
-                        trajectory_struct, conformer_id=frame_idx, is_predicted=False
+                    trajectory_struct = struct.replace_atom_coords(
+                        atom_coords=trajectory_coords_array[frame_idx],
                     )
+                    pdb_string = to_pdbstring(trajectory_struct)
 
                     # Remove END record from all models (will add single END at end)
                     pdb_string = pdb_string.rstrip()

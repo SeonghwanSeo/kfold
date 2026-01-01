@@ -470,7 +470,6 @@ class AtomArray(PlainLayout[np.ndarray]):
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
     """
 
-    ref_uid: np.ndarray  # [Ntoken, 24], int
     ref_atom_name_chars: np.ndarray  # [Ntoken, 24, 4], int
     ref_element: np.ndarray  # [Ntoken, 24], int
     ref_charge: np.ndarray  # [Ntoken, 24,], float
@@ -489,7 +488,6 @@ class AtomArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.ref_uid, name="ref_uid", dtype=np.integer, shape=shape)
         check_array(
             self.ref_atom_name_chars,
             name="ref_atom_name_chars",
@@ -514,7 +512,6 @@ class AtomArray(PlainLayout[np.ndarray]):
         num_atoms = C.MAX_NUM_ATOMS_PER_TOKEN
         shape = (num_tokens, num_atoms)
         return cls(
-            ref_uid=full_minus_one(shape),
             ref_atom_name_chars=full_minus_one((*shape, 4)),
             ref_element=full_minus_one(shape),
             ref_charge=full_nan(shape),
@@ -697,38 +694,32 @@ class TokenizedStructure:
     def write(
         self,
         path: Path | str,
-        conformer_id: int = 0,
-        is_predicted: bool = True,
         save_apo: bool = False,
     ) -> None:
         """Write to PDB or MMCIF file based on the file extension."""
         from kfold.utils.writer import KFoldWriter
 
-        KFoldWriter.write(self, path, conformer_id, is_predicted, save_apo)
+        KFoldWriter.write(self, path, save_apo)
 
     def to_pdb(
         self,
         path: Path | str,
-        conformer_id: int = 0,
-        is_predicted: bool = True,
         save_apo: bool = False,
     ) -> None:
         """Write to PDB file."""
         from kfold.utils.writer import KFoldWriter
 
-        KFoldWriter.write_pdb(self, path, conformer_id, is_predicted, save_apo)
+        KFoldWriter.write_pdb(self, path, save_apo)
 
     def to_mmcif(
         self,
         path: Path | str,
-        conformer_id: int = 0,
-        is_predicted: bool = True,
         save_apo: bool = False,
     ) -> None:
         """Write to MMCIF file."""
         from kfold.utils.writer import KFoldWriter
 
-        KFoldWriter.write_mmcif(self, path, conformer_id, is_predicted, save_apo)
+        KFoldWriter.write_mmcif(self, path, save_apo)
 
     # === Numpy serialization for model training === #
     def to_npz_dict(self) -> dict[str, np.ndarray]:
@@ -953,7 +944,7 @@ class TokenizedStructure:
         Parameters
         ----------
         atom_coords: np.ndarray
-            Shape: [Nsample, Natom, 3] or [Nsample, Ntoken, 24, 3]
+            Shape: [Natom, 3] or [Ntoken, 24, 3]
 
         Returns
         -------
@@ -961,21 +952,20 @@ class TokenizedStructure:
             Structure with replaced coordinates
 
         """
-        Nsample = atom_coords.shape[0]
         num_tokens = self.num_tokens
         num_atoms = self.num_atoms
         max_atoms_per_token = 24
 
-        if atom_coords.ndim == 3:
+        if atom_coords.ndim == 2:
             assert num_atoms <= atom_coords.shape[1], (
                 f"Coordinate atom count ({atom_coords.shape[1]}) should be same or "
                 f"larger than total atoms ({num_atoms})"
             )
             # Create new coords array [num_tokens, 24, Nsample, 3]
             new_coords = np.zeros(
-                (num_tokens, max_atoms_per_token, Nsample, 3), dtype=atom_coords.dtype
+                (num_tokens, max_atoms_per_token, 3), dtype=atom_coords.dtype
             )
-            coords_to_assign = atom_coords[:, :num_atoms].transpose(1, 0, 2)
+            coords_to_assign = atom_coords[:num_atoms].transpose(1, 0, 2)
             new_coords[self.atom.pad_mask] = coords_to_assign
         else:
             assert atom_coords.shape[1] <= num_tokens, (
@@ -986,10 +976,8 @@ class TokenizedStructure:
                 f"Coordinate atom per token count ({atom_coords.shape[2]}) should be "
                 f"same to max atoms per token (24)"
             )
-            # [Nsample, Ntoken_with_pad, 24, 3] -> [Ntoken, 24, Nsample, 3]
-            new_coords = np.ascontiguousarray(
-                atom_coords[:, :num_tokens].transpose(1, 2, 0, 3)
-            )
+            # [Ntoken_with_pad, 24, 3] -> [Ntoken, 24, 3]
+            new_coords = atom_coords[:num_tokens].copy()
 
         # Update structure
         atom_struct = self.atom

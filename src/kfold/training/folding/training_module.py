@@ -714,7 +714,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         try:
             save_path = save_dir / f"{name}-gt.cif"
-            struct.write(save_path, 0, is_predicted=False)
+            struct.write(save_path, 0)
         except Exception as e:
             print(f"Failed to save ground-truth CIF for {name}: {e}")
 
@@ -734,7 +734,7 @@ class KFoldTrainingModule(pl.LightningModule):
             new_struct = struct.replace_atom_coords(true_coords_arr)
             for i in range(true_coords_arr.shape[0]):
                 save_path = save_dir / f"{name}-gt-aligned{i}.cif"
-                new_struct.write(save_path, i, is_predicted=False)
+                new_struct.write(save_path, i)
         except Exception as e:
             print(f"Failed to save aligned ground-truth CIF for {name}: {e}")
 
@@ -749,6 +749,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 save_path = (
                     save_dir / f"{name}-{i}-rmsd{rmsd:.2f}-lddt{lddt * 100:.2f}.cif"
                 )
-                new_struct.write(save_path, i, is_predicted=True)
+                new_struct.write(save_path, i)
         except Exception as e:
             print(f"Failed to save predicted CIF for {name}: {e}")

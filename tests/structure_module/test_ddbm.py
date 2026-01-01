@@ -67,7 +67,6 @@ if __name__ == "__main__":
         try:
             struct.to_pdb(
                 SAVE_PATH / f"{name}-original-gt.pdb",
-                is_predicted=False,
             )
             struct.to_pdb(
                 SAVE_PATH / f"{name}-original-apo.pdb",
@@ -87,7 +86,6 @@ if __name__ == "__main__":
         )
         struct.to_pdb(
             SAVE_PATH / f"{name}-feat-gt.pdb",
-            is_predicted=False,
         )
         struct.to_pdb(
             SAVE_PATH / f"{name}-feat-apo.pdb",
@@ -113,7 +111,6 @@ if __name__ == "__main__":
         )
         struct.to_pdb(
             SAVE_PATH / f"{name}-ddbm-x0.pdb",
-            is_predicted=False,
         )
         struct.to_pdb(
             SAVE_PATH / f"{name}-ddbm-xT.pdb",
@@ -140,5 +137,4 @@ if __name__ == "__main__":
             struct.to_pdb(
                 SAVE_PATH / f"{name}-ddbm-t{i}.pdb",
                 conformer_id=i,
-                is_predicted=False,
             )

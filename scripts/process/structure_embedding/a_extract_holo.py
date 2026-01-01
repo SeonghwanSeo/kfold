@@ -119,7 +119,7 @@ def process_batch(metadatas: list[Metadata], save_dir: Path):
                 chain_struct.chain.asym_id[0] = 1
                 chain_struct.token.asym_id[:] = 1
                 try:
-                    chain_struct.write(save_path, is_predicted=False)
+                    chain_struct.write(save_path)
                 except Exception as e:
                     logger.error(f"Error saving {save_path}: {e}")
                     continue

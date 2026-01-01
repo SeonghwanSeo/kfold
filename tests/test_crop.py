@@ -57,9 +57,7 @@ if __name__ == "__main__":
 
             # Save full and cropped structures
             try:
-                struct.to_pdb(SAVE_PATH / f"{key}-full.pdb", is_predicted=False)
-                cropped_struct.to_pdb(
-                    SAVE_PATH / f"{key}-cropped.pdb", is_predicted=False
-                )
+                struct.to_pdb(SAVE_PATH / f"{key}-full.pdb")
+                cropped_struct.to_pdb(SAVE_PATH / f"{key}-cropped.pdb")
             except Exception as e:
                 print(f"Failed to save {key}: {e}")

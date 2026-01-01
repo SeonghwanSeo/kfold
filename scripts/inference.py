@@ -188,17 +188,18 @@ def main():
         # Save apo structure
         apo_save_path = save_dir / "apo.cif"
         try:
-            struct.write(apo_save_path, conformer_id=0, save_apo=True)
+            struct.write(apo_save_path, save_apo=True)
         except Exception as e:
             print(f"Warning: Failed to save apo structure for {name}: {e}")
 
         # Save sampled structures
-        new_struct: tokenized.TokenizedStructure = struct.replace_atom_coords(
+        sample_coords = (
             model_out["sample_coordinates"].cpu().numpy()
-        )
+        )  # [num_samples, Natom, 3]
         for i in range(args.num_samples):
             save_path = save_dir / f"sample-{i}.cif"
-            new_struct.write(save_path, conformer_id=i, is_predicted=True)
+            new_struct = struct.replace_atom_coords(sample_coords[i])
+            new_struct.write(save_path)
 
 
 if __name__ == "__main__":
