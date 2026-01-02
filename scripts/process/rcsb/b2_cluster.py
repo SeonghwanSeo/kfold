@@ -318,7 +318,7 @@ def main():
     gc.collect()
 
     # Save updated metadata with cluster IDs
-    meta_out = out_dir / "metadata-json/"
+    meta_out = out_dir / "metadata/"
     meta_out.mkdir(parents=True, exist_ok=True)
     partial_func = functools.partial(
         save_metadata, mapping=cluster_mapping, out_dir=meta_out

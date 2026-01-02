@@ -38,6 +38,7 @@ AF3_SPLITS = {
         "max_resolution": 9.0,
         "max_chains": 300,
         "max_residues": None,
+        "handle_invalid_chains": "allow",
     },
     "val": {
         "date_start": "2021-10-01",
@@ -45,6 +46,7 @@ AF3_SPLITS = {
         "max_resolution": 4.5,
         "max_chains": 1000,
         "max_residues": 2560,
+        "handle_invalid_chains": "disallow",
     },
 }
 
@@ -114,6 +116,12 @@ def parse_args():
         help="Maximum number of residues to process.",
     )
     parser.add_argument(
+        "--handle_invalid_chains",
+        type=str,
+        choices=["allow", "disallow"],
+        help="Whether to allow structures with invalid chains.",
+    )
+    parser.add_argument(
         "--num_workers",
         type=int,
         default=len(os.sched_getaffinity(0)),
@@ -135,6 +143,8 @@ def parse_args():
             args.max_chains = split_params["max_chains"]
         if args.max_residues is None:
             args.max_residues = split_params["max_residues"]
+        if args.handle_invalid_chains is None:
+            args.handle_invalid_chains = split_params["handle_invalid_chains"]
 
     return args
 
@@ -215,6 +225,7 @@ def parse_cif(
     max_resolution: float | None = None,
     max_chains: int | None = None,
     max_residues: int | None = None,
+    allow_invalid_chains: bool = True,
 ) -> int:
     """Parse a CIF file and return a gemmi.cif.Document object.
     NOTE: This is just a template function. Additional filtering can be
@@ -267,6 +278,11 @@ def parse_cif(
     parse_input.validate_chain_geometry(ref_struct)
     # Get interfaces
     parse_input.detect_interfaces_and_prune_clashes(ref_struct)
+
+    if not allow_invalid_chains:
+        if not all(c_m.is_valid for c_m in ref_struct.metadata.chains):
+            return FILTERED
+
     # Drop invalid chains
     parse_input.prune_invalid_chains(ref_struct)
 
@@ -289,6 +305,7 @@ def worker_fn(
     max_resolution: float | None = None,
     max_chains: int | None = None,
     max_residues: int | None = None,
+    allow_invalid_chains: bool = True,
 ):
     global _CCD_CACHE
     ccd = _CCD_CACHE
@@ -309,6 +326,7 @@ def worker_fn(
             max_resolution,
             max_chains,
             max_residues,
+            allow_invalid_chains,
         )
     except Exception as e:
         print(f"Failed to process ({pdb_id}): {e}")
@@ -332,6 +350,7 @@ def main():
         max_resolution=args.max_resolution,
         max_chains=args.max_chains,
         max_residues=args.max_residues,
+        allow_invalid_chains=args.handle_invalid_chains == "allow",
     )
 
     cif_paths = sorted(cif_dir.rglob("*.cif.gz"))
