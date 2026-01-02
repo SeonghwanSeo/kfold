@@ -260,10 +260,9 @@ def prepare_ref_chain(
     ref_mols: list[Component] = []
     num_residue_atoms: list[int] = []
     for name in ccd_sequences:
-        if chain_type.is_polymer:
-            if chain_type is C.ChainType.PROTEIN and name == "MSE":
-                # Replace selenomethionine with methionine
-                name = "MET"
+        if chain_type.is_protein and name == "MSE":
+            # Replace selenomethionine with methionine
+            name = "MET"
         if name in ccd:
             # Common molecule from CCD
             if name.startswith("LIG"):
@@ -426,7 +425,7 @@ def prepare_ref_structure(
             for v in entity.full_sequence:
                 # In the case of microheterogeneity, take the first monomer
                 v = gemmi.Entity.first_mon(v)  # e.g., ALG/GLY -> ALG
-                if chain_type is C.ChainType.PROTEIN and v == "MSE":
+                if chain_type.is_protein and v == "MSE":
                     # Replace selenomethionine with methionine
                     v = "MET"
                 # Only retain standard residues and PTMs
@@ -875,7 +874,7 @@ def validate_chain_geometry(struct: structure.RefStructure) -> None:
                 chain_meta.is_valid = False
 
         # For protein chains, check CA trace continuity
-        if ctype is C.ChainType.PROTEIN:
+        if ctype.is_protein:
             left = ref_atom_coords[:-1]
             right = ref_atom_coords[1:]
             dists = np.linalg.norm(left - right, axis=-1)

@@ -29,7 +29,7 @@ from tqdm import tqdm
 from kfold.data.ccd import CCD
 from kfold.data.pipelines import parse_input
 from kfold.data.schema import Metadata
-from kfold.data.structure import Structure
+from kfold.data.structure import RefStructure
 
 AF3_SPLITS = {
     "train": {
@@ -73,7 +73,7 @@ def parse_args():
         "--out_dir",
         type=pathlib.Path,
         required=True,
-        help="Output path for extracted sequences.",
+        help="Path to output directory for processed .npz files.",
     )
 
     # Predefined splits for date and resolution cutoffs
@@ -258,7 +258,9 @@ def parse_cif(
         return FILTERED
 
     # Prepare reference structure
-    ref_struct: Structure = parse_input.prepare_ref_structure(raw_struct, metadata, ccd)
+    ref_struct: RefStructure = parse_input.prepare_ref_structure(
+        raw_struct, metadata, ccd
+    )
     # Insert coordinates
     parse_input.insert_coordinates(ref_struct, raw_struct, metadata)
     # Clean valid chains

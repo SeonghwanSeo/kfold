@@ -109,6 +109,22 @@ class Chain:
         """Number of apo conformations."""
         return self.atom.apo_coords.shape[0]
 
+    def get_sequence(self) -> str:
+        """Get the amino acid / nucleotide sequence of the chain."""
+        if self.ctype.is_nonpolymer:
+            raise ValueError("Non-polymer chains do not have a sequence.")
+        unk = "X" if self.ctype.is_protein else "N"
+        return "".join(
+            [
+                C.residue.convert_ccd_name_to_one_letter(v, unk)
+                for v in self.residue.name.tolist()
+            ]
+        )
+
+    def get_ccd_sequence(self) -> list[str]:
+        """Get the amino acid / nucleotide sequence of the chain."""
+        return self.residue.name.tolist()
+
     def find_atom_index(self, residue_index: int, atom_name: str) -> int:
         """Find atom index given residue index and atom name.
 
@@ -423,6 +439,7 @@ class RefStructure:
         Covalent connection information.
     metadata: Metadata
         Metadata information.
+        # NOTE: Metadata might not include cluster info.
     """
 
     chains: list[Chain]

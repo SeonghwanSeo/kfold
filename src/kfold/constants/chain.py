@@ -17,6 +17,22 @@ class ChainType(IntEnum):
     def is_nonpolymer(self) -> bool:
         return self in {ChainType.LIGAND, ChainType.ION}
 
+    @property
+    def is_protein(self) -> bool:
+        return self is ChainType.PROTEIN
+
+    @property
+    def is_nucleic_acid(self) -> bool:
+        return self in {ChainType.DNA, ChainType.RNA}
+
+    @property
+    def is_dna(self) -> bool:
+        return self is ChainType.DNA
+
+    @property
+    def is_rna(self) -> bool:
+        return self is ChainType.RNA
+
     def __str__(self) -> str:
         if self == ChainType.PROTEIN:
             return "Protein"
