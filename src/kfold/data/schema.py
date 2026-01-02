@@ -133,16 +133,18 @@ class Metadata:
         return len(self.chains)
 
     @property
+    def num_interfaces(self) -> int:
+        return len(self.interfaces)
+
+    @property
     def num_residues(self) -> int:
         return sum(chain.num_residues for chain in self.chains)
 
-    @property
-    def num_valid_chains(self) -> int:
-        return sum(1 for chain in self.chains if chain.valid)
+    def check_all_chains_valid(self) -> bool:
+        return all(chain.is_valid for chain in self.chains)
 
-    @property
-    def num_valid_residues(self) -> int:
-        return sum(chain.num_residues for chain in self.chains if chain.valid)
+    def check_all_interfaces_valid(self) -> bool:
+        return all(interface.is_valid for interface in self.interfaces)
 
     def to_dict(self) -> dict:
         return {

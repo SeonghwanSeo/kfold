@@ -13,8 +13,8 @@ from kfold.data.model_input import FoldingInput
 from kfold.data.schema import Metadata
 from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
 
-from .cropper import BaseCropper
 from .dataset import (
+    DatasetConfig,
     LMDBTrainingDataset,
     LMDBValidationDataset,
     TrainingDataset,
@@ -22,7 +22,6 @@ from .dataset import (
 )
 from .dl_sampler import DistributedWeightedSampler
 from .filter import BaseFilter
-from .sampler import BaseSampler
 
 # HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
 
@@ -55,48 +54,20 @@ class DataModuleConfig(BaseConfig):
     val_batch_size: int = 1
     num_workers: int = 0
     pin_memory: bool = True
-    safe_load: bool = True
     ccd_path: Path
-
-    # === Additional paths required === #
-    paths: dict = dataclasses.field(default_factory=dict)
-
-    # === Cropping arguments === #
-    cropper: BaseCropper.Config
-
-    # === Featurization arguments === #
-    apo_perturbation_args: dict = dataclasses.field(default_factory=dict)
-    featurization_args: dict = dataclasses.field(default_factory=dict)
-
-
-class TrainingDataModuleConfig(DataModuleConfig):
-    # Dataset specific (TODO: move to dataset config)
+    train_datasets: list[DatasetConfig] = dataclasses.field(default_factory=list)
+    val_datasets: list[DatasetConfig] = dataclasses.field(default_factory=list)
     manifest_path: str | Path
-    split_path: str | Path
-    return_train_symmetry: bool = False
-    return_validation_symmetry: bool = True
-    max_chains: int  # Used for chain sampling
-    max_tokens: int  # Used for cropping and padding
-    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
-    sampler: BaseSampler.Config = dataclasses.field(
-        default_factory=BaseSampler.Config
-    )  # Default: uniform sampler
 
 
-# FIXME: revise this (hard-coded)
-class LMDBDataModuleConfig(TrainingDataModuleConfig):
-    # Dataset specific (TODO: move to dataset config)
-    lmdb_path: str | Path
-
-
-@DATAMODULE.register(config_cls=LMDBDataModuleConfig)
+@DATAMODULE.register(config_cls=DataModuleConfig)
 class TrainingDataModule(pl.LightningDataModule):
     # HACK: (SeonghwanSeo): currently only supports a single Boltz dataset
     # I'll remove this datamodule and make it better (multiple dataset)
     _train_ds: TrainingDataset
     _val_ds: ValidationDataset
 
-    def __init__(self, config: LMDBDataModuleConfig) -> None:
+    def __init__(self, config: DataModuleConfig) -> None:
         super().__init__()
         self.config = config
 
@@ -207,10 +178,12 @@ class TrainingDataModule(pl.LightningDataModule):
         validation_split = self.split_path / "validation_ids.txt"
         with open(validation_split) as f:
             val_ids = set([line.strip().lower() for line in f if line.strip()])
-        val_metadatas = [r for r in all_metadatas if r.id.lower() in val_ids]
+        val_metadatas: list[Metadata] = [
+            m for m in all_metadatas if m.id.lower() in val_ids
+        ]
 
         # Sort validation metadatas by length (for efficient batching)
-        val_metadatas.sort(key=lambda r: r.num_valid_residues, reverse=False)
+        val_metadatas.sort(key=lambda m: m.num_residues, reverse=False)
 
         self.print_rank_zero(
             f"Constructed validation dataset with {len(val_metadatas)} metadatas."

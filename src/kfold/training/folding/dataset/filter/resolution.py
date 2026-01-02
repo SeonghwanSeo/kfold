@@ -25,5 +25,6 @@ class ResolutionFilter(BaseFilter):
     def filter(self, metadata: Metadata) -> bool:
         exp_record = metadata.exp
         assert exp_record is not None, "ResolutionFilter only works for RCSB records"
-        assert exp_record.resolution is not None, "Resolution is empty"
+        if exp_record.resolution is None:
+            return False
         return exp_record.resolution <= self.resolution

@@ -309,8 +309,8 @@ def prepare_ref_chain(
     is_atom_resolved = np.zeros((num_atoms,), dtype=bool)
     bfactors = np.full((num_atoms,), np.nan, dtype=np.float32)
     # Empty apo coordinates and pLDDT
-    apo_coords = np.empty((0, num_atoms, 3), dtype=np.float32)
-    apo_plddt = np.empty((0, num_atoms), dtype=np.float32)
+    apo_coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
+    apo_plddt = np.full((num_atoms), np.nan, dtype=np.float32)
 
     atom_struct = structure.Atom(
         name=np.array(atom_name_list, dtype=np.dtype("<U4")),

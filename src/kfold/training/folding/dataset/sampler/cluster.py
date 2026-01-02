@@ -11,18 +11,16 @@ from .base import BaseSampler, Sample
 
 
 # === Helpers to compute weights === #
-def get_chain_cluster_id(chain: ChainInfo) -> str:
+def get_chain_cluster_id(chain_m: ChainInfo) -> str:
     """Get the cluster ID of a chain."""
-    return chain.cluster_id
+    assert chain_m.cluster_id is not None
+    return chain_m.cluster_id
 
 
-def get_interface_cluster_id(
-    interface: InterfaceInfo, chain_dict: dict[int, ChainInfo]
-) -> str:
+def get_interface_cluster_id(iface_m: InterfaceInfo) -> str:
     """Get the cluster ID of an interface."""
-    chains = [chain_dict[asym_id] for asym_id in interface.asym_ids]
-    cluster_ids = [get_chain_cluster_id(chain) for chain in chains]
-    return ":".join(sorted(cluster_ids))
+    assert iface_m.cluster_id is not None
+    return iface_m.cluster_id
 
 
 def get_chain_weight(
@@ -118,7 +116,7 @@ def get_interface_weight(
         else:
             n_ligand += 1
 
-    cluster_id = get_interface_cluster_id(interface, chain_dict)
+    cluster_id = get_interface_cluster_id(interface)
     n_cluster = cluster_sizes[cluster_id]
 
     # See Section 2.5.1 Equation 1
@@ -208,14 +206,12 @@ class ClusterSampler(BaseSampler):
         samples: list[Sample] = []
         weights: list[float] = []
 
-        for metadata in metadatas:
+        for m in metadatas:
             chain_dict: dict[int, ChainInfo] = {
-                chain.asym_id: chain for chain in metadata.chains
+                chain.asym_id: chain for chain in m.chains
             }
-            num_clusters_in_complex = self.num_clusters_in_complex.get(metadata.id, {})
-            for chain in metadata.chains:
-                if not chain.valid:
-                    continue
+            num_clusters_in_complex = self.num_clusters_in_complex.get(m.id, {})
+            for chain in m.chains:
                 weight = get_chain_weight(
                     chain,
                     self.chain_cluster_sizes,
@@ -227,12 +223,10 @@ class ClusterSampler(BaseSampler):
                 if not self.allow_redundant:
                     # Adjust weight by number of clusters in the metadata
                     weight /= num_clusters_in_complex.get(get_chain_cluster_id(chain), 1)
-                samples.append(Sample(metadata, chain.asym_id))
+                samples.append(Sample(m, chain.asym_id))
                 weights.append(weight)
 
-            for interface in metadata.interfaces:
-                if not interface.valid:
-                    continue
+            for interface in m.interfaces:
                 weight = get_interface_weight(
                     interface,
                     chain_dict,
@@ -245,29 +239,23 @@ class ClusterSampler(BaseSampler):
                 if not self.allow_redundant:
                     # Adjust weight by number of clusters in the metadata
                     weight /= num_clusters_in_complex.get(
-                        get_interface_cluster_id(interface, chain_dict), 1
+                        get_interface_cluster_id(interface), 1
                     )
-                samples.append(Sample(metadata, interface.asym_ids))
+                samples.append(Sample(m, interface.asym_ids))
                 weights.append(weight)
 
         # Normalize weights
         weights_arr = np.array(weights) / np.sum(weights)
         return samples, weights_arr
 
-    def estimate_cluster_sizes(self, datas: list[Metadata]):
-        # Estimate cluster sizes of chains and interfaces
-
-        for metadata in datas:
-            chain_dict: dict[int, ChainInfo] = {
-                chain.asym_id: chain for chain in metadata.chains
-            }
+    def estimate_cluster_sizes(self, metadatas: list[Metadata]):
+        """Estimate cluster sizes of chains and interfaces"""
+        for m in metadatas:
             chain_clusters_in_metadata: list[str] = [
-                get_chain_cluster_id(chain) for chain in metadata.chains if chain.valid
+                get_chain_cluster_id(chain) for chain in m.chains
             ]
             interface_clusters_in_metadata: list[str] = [
-                get_interface_cluster_id(interface, chain_dict)
-                for interface in metadata.interfaces
-                if interface.valid
+                get_interface_cluster_id(interface) for interface in m.interfaces
             ]
 
             if not self.allow_redundant:
@@ -282,7 +270,7 @@ class ClusterSampler(BaseSampler):
                     if num_clusters[cluster_id] <= 1:
                         del num_clusters[cluster_id]
                 if len(num_clusters) > 0:
-                    self.num_clusters_in_complex[metadata.id] = dict(num_clusters)
+                    self.num_clusters_in_complex[m.id] = dict(num_clusters)
 
                 # Remove redundant clusters in the metadata
                 chain_clusters_in_metadata = list(set(chain_clusters_in_metadata))

@@ -33,6 +33,14 @@ class ChainType(IntEnum):
     def is_rna(self) -> bool:
         return self is ChainType.RNA
 
+    @property
+    def is_ligand(self) -> bool:
+        return self is ChainType.LIGAND
+
+    @property
+    def is_ion(self) -> bool:
+        return self is ChainType.ION
+
     def __str__(self) -> str:
         if self == ChainType.PROTEIN:
             return "Protein"

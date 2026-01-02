@@ -10,6 +10,8 @@ import gemmi
 import numpy as np
 from rdkit import Chem
 
+import kfold.constants as C
+
 from .utils import rdkit_utils
 
 # Helper function
@@ -391,6 +393,24 @@ class Component:
         assert all(name not in ("H", "D", "T") for name in ref_atom_names), (
             "Hydrogen atom names found in the molecule. "
         )
+        # Check the order of standard residue atoms
+        if code in C.residue.PROTEIN_RESIDUES_STR:
+            standard_atom_names = C.atom.residue_atoms[code]
+            expected_atom_names = list(standard_atom_names + ("OXT",))
+            assert ref_atom_names == expected_atom_names, (
+                f"Atom names in molecule {code} do not match the standard order. "
+                f"Expected: {expected_atom_names}, "
+                f"Found: {ref_atom_names}"
+            )
+        elif code in C.residue.DNA_RESIDUES_STR or code in C.residue.RNA_RESIDUES_STR:
+            standard_atom_names = C.atom.residue_atoms[code]
+            expected_atom_names = list(("OP3",) + standard_atom_names)
+            assert ref_atom_names == expected_atom_names, (
+                f"Atom names in molecule {code} do not match the standard order. "
+                f"Expected: {expected_atom_names}, "
+                f"Found: {ref_atom_names}"
+            )
+
         # Get elements
         ref_elements: np.ndarray = np.array(
             [atom.GetAtomicNum() for atom in mol.GetAtoms()], dtype=np.uint8

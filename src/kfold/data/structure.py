@@ -70,19 +70,6 @@ class Chain:
     atom: "Atom"
     bond: "Bond"
     smiles: str | None = None  # optional SMILES string for small molecule
-    apo_type: tuple[str, ...] | None = None  # optional metadata for each apo conformation
-
-    def __post_init__(self):
-        if self.num_apo > 0:
-            if self.apo_type is None:
-                raise ValueError(
-                    "apo_type must be provided when there are apo conformations."
-                )
-            if len(self.apo_type) != self.num_apo:
-                raise ValueError(
-                    f"Length of apo_type ({len(self.apo_type)}) must match "
-                    f"number of apo conformations ({self.num_apo})."
-                )
 
     @property
     def ctype(self) -> C.ChainType:
@@ -103,11 +90,6 @@ class Chain:
     def num_bonds(self) -> int:
         """Number of bonds in the chain."""
         return len(self.bond)
-
-    @property
-    def num_apo(self) -> int:
-        """Number of apo conformations."""
-        return self.atom.apo_coords.shape[0]
 
     def get_sequence(self) -> str:
         """Get the amino acid / nucleotide sequence of the chain."""
@@ -152,6 +134,13 @@ class Chain:
                 return atom_index
         raise KeyError(f"Atom '{atom_name}' not found in residue index {residue_index}.")
 
+    def iter_residue_atoms(self, residue_index: int) -> range:
+        """Get the range of atom indices for a given residue index."""
+        # residue_index: 1-based index
+        start = self.residue.atom_starts[residue_index - 1]
+        end = start + self.residue.num_atoms[residue_index - 1]
+        return range(start, end)
+
     def __repr__(self) -> str:
         """FoldingInput summary representation."""
         # Summary statistics
@@ -165,7 +154,6 @@ class Chain:
             + f"  num_atoms: {self.num_atoms}\n"
             + f"  num_bonds: {self.num_bonds}\n"
             + (f"  smiles: {self.smiles}\n" if self.smiles is not None else "")
-            + (f"  num_apo: {self.num_apo}\n" if self.num_apo > 0 else "")
             + ")"
         )
 
@@ -203,9 +191,6 @@ class Chain:
                 result[key] = value
         if self.smiles is not None:
             result["smiles"] = np.array(self.smiles, dtype=np.dtype("U"))
-        if self.num_apo > 0:
-            assert self.apo_type is not None
-            result["apo_type"] = np.array(self.apo_type, dtype=np.dtype("U"))
         return result
 
     @classmethod
@@ -304,8 +289,7 @@ class Atom:
         This is for model training, so that this field is
         filled to 0 during inference.
     apo_coords: np.ndarray (float32)
-        Apo (unbound) state coordinates of shape [Napo, Natom, 3],
-        where Napo is the number of available apo conformations.
+        Apo (unbound) state coordinates of shape [Natom, 3],
     bfactor: np.ndarray (float16)
         B-factor values for each residue of shape [L,].
     apo_plddt: np.ndarray (float16)
@@ -317,9 +301,9 @@ class Atom:
     name: np.ndarray  # [Natom,], str
     is_resolved: np.ndarray  # [Natom,], bool
     label_coords: np.ndarray  # [Natom, 3], float32
-    apo_coords: np.ndarray  # [Napo, Natom, 3], float32
+    apo_coords: np.ndarray  # [Natom, 3], float32
     bfactor: np.ndarray  # [L,], int
-    apo_plddt: np.ndarray  # [Napo, L], int
+    apo_plddt: np.ndarray  # [L], int
 
     def __len__(self) -> int:
         return len(self.name)
@@ -332,12 +316,10 @@ class Atom:
             self.label_coords, name="label_coords", dtype=np.floating, shape=(*shape, 3)
         )
         check_array(
-            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(-1, *shape, 3)
+            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, 3)
         )
         check_array(self.bfactor, name="bfactor", dtype=np.floating, shape=shape)
-        check_array(
-            self.apo_plddt, name="apo_plddt", dtype=np.floating, shape=(-1, *shape)
-        )
+        check_array(self.apo_plddt, name="apo_plddt", dtype=np.floating, shape=shape)
 
     @classmethod
     def get_default_dtype(cls) -> dict[str, type | np.dtype]:

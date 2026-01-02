@@ -8,6 +8,66 @@ from kfold.data import schema, structure, tokenized
 from kfold.data.ccd import CCD, Component
 
 
+class Tokenizer:
+    def __init__(self, ccd: CCD) -> None:
+        """Tokenizer for structures.
+
+        Parameters
+        ----------
+        ccd : CCD
+            The chemical component dictionary.
+        """
+        self.ccd: CCD = ccd
+
+    def __call__(
+        self,
+        input: structure.RefStructure,
+        rng: np.random.Generator | None = None,
+        use_only_cached_conformers: bool = False,
+    ) -> tokenized.TokenizedStructure:
+        """Tokenize structure.
+
+        Parameters
+        ----------
+        input : RefStructure
+            The input structure.
+        rng : np.random.Generator, optional
+            Random number generator for stochastic processes, by default None.
+        use_only_cached_conformers : bool, optional
+            if True, only the cached conformers in the CCD will be used.
+
+        Returns
+        -------
+        struct: TokenizedStructure
+            The parsed tokenized structure.
+        """
+        return self.tokenize(input, rng, use_only_cached_conformers)
+
+    def tokenize(
+        self,
+        input: structure.RefStructure,
+        rng: np.random.Generator | None = None,
+        use_only_cached_conformers: bool = False,
+    ) -> tokenized.TokenizedStructure:
+        """Tokenize structure.
+
+        Parameters
+        ----------
+        input : RefStructure
+            The input structure.
+        rng : np.random.Generator, optional
+            Random number generator for stochastic processes, by default None.
+        use_only_cached_conformers : bool, optional
+            if True, only the cached conformers in the CCD will be used.
+
+        Returns
+        -------
+        struct: TokenizedStructure
+            The parsed tokenized structure.
+        """
+        return tokenize_structure(input, self.ccd, rng, use_only_cached_conformers)
+
+
 def tokenize_structure(
     input: structure.RefStructure,
     ccd: CCD,
@@ -222,11 +282,8 @@ def tokenize_structure(
         label_coords = chain.atom.label_coords  # (num_atoms, 3)
         struct.atom.coords[token_st:token_end][pad_mask] = label_coords
 
-        # Insert apo coordinates (randomly sample one if multiple are available)
-        if (num_apo := chain.num_apo) > 0:
-            apo_idx = rng.integers(0, num_apo)
-            apo_coords = chain.atom.apo_coords[apo_idx]  # (num_atoms, 3)
-            struct.atom.apo_coords[pad_mask] = apo_coords
+        # Insert apo coordinates
+        struct.atom.apo_coords[pad_mask] = chain.atom.apo_coords
 
         # Insert reference molecules
         for res_i in range(chain.num_residues):

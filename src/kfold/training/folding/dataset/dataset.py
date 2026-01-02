@@ -1,4 +1,55 @@
+"""
+Dataset structures:
+
+(Shared across datasets)
+ccd-train.pkl
+
+(For each dataset)
+rcsb-train/
+    manifest.pkl
+    structure.lmdb
+    lookup.json  # mapping from each chain to seq-id and apo structure(s).
+    seq_embedding/
+        esm2/
+        esmc/
+    struct_embedding/
+        saprot/
+    apo_structures/
+        uniq_prot1-esmfold.pdb.gz (or cif.gz)
+        uniq_prot2-afdb.pdb.gz
+        ...
+afdb-distillation/ ...
+rcsb-validation/ ...
+
+
+* lookup.json format
+```json
+6oim:
+  "1":
+    type: "protein"
+    seq_id: "uniq_protein_000020",
+    apo:
+      - name: "uniq_protein_000020-esmfold"
+        path: "uniq_protein_000020-esmfold.pdb.gz"
+        residue_map: "1:250->1:250"
+        source: "esmfold"
+      - name: "AF-P01116-F1-model_v6"
+        path: "AF-P01116-F1-model_v6.cif.gz"
+        residue_map: "1:235->11:245"
+        source: "afdb"
+      - name: "51d6-A"
+        path: "51d6-A.pdb.gz"
+        residue_map: "5:250->5:250"
+        source: "pdb"
+...
+
+```
+"""
+
+import dataclasses
 import io
+import json
+import pickle
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -7,21 +58,44 @@ import numpy as np
 import torch
 from typing_extensions import override
 
+import kfold.constants as C
 from kfold.data.ccd import CCD
 from kfold.data.model_input import FoldingInput
-from kfold.data.pipelines import apo_perturbation, featurize, tokenize
+from kfold.data.pipelines import apo_initialize, featurize, tokenize
 from kfold.data.schema import Metadata
 from kfold.data.structure import RefStructure
 from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper, PreCropper
+from .filter import BaseFilter
 from .sampler import BaseSampler, Sample
 from .utils import symmetry
 
-"""
-This dataset implementation includes a safe loading mechanism that retries
-"""
+
+@dataclasses.dataclass(kw_only=True)
+class DatasetConfig:
+    dataset_path: str | Path
+    apo_initialize: apo_initialize.ApoInitializerConfig = dataclasses.field(
+        default_factory=apo_initialize.ApoInitializerConfig
+    )
+
+    # === Featurization arguments === #
+    safe_load: bool = True
+    featurization_args: dict = dataclasses.field(default_factory=dict)
+    seed: int | None = None
+
+
+@dataclasses.dataclass(kw_only=True)
+class TrainingDatasetConfig(DatasetConfig):
+    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
+    sampler: BaseSampler.Config | None
+    cropper: BaseCropper.Config | None
+
+
+@dataclasses.dataclass(kw_only=True)
+class ValidationDatasetConfig(DatasetConfig): ...
+
 
 # Type alias
 SymmetryInfo = dict
@@ -37,79 +111,143 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     def __init__(
         self,
-        metadatas: list[Metadata],
+        config: DatasetConfig,
         ccd: CCD,
-        paths: dict[str, Path | None],
-        apo_perturbation_args: dict,
-        featurization_args: dict,
-        safe_load: bool = True,
+        seq_embedding: str | None = None,
+        struct_embedding: str | None = None,
+        seq_embedding_dim: int | None = None,
+        struct_embedding_dim: int | None = None,
         return_symmetry: bool = False,
         return_structure: bool = False,
-        seed: int | None = None,
     ) -> None:
         """
         Parameters
         ----------
-        metadatas : list[Metadata]
-            List of samples to use in the dataset.
+        config : DatasetConfig
+            Dataset configuration.
         ccd: CCD
             CCD database
-        paths : dict[str, Path | None]
-            Paths for various resources.
-        apo_perturbation_args : dict
-            Arguments for apo perturbation.
-        featurization_args : dict
-            Arguments for featurization.
-        safe_load : bool
-            Whether to enable safe loading with retries on failure.
         return_symmetry : bool
             Whether to return symmetry information.
         return_structure : bool
             Whether to return the original tokenized structure.
-        seed : int | None
-            Random seed for reproducibility.
         """
-        self.metadatas: list[Metadata] = metadatas
-        self.safe_load: bool = safe_load
-        self.seed: int | None = seed
-        self.ccd: CCD = ccd
-
+        # === Initialize parameters === #
+        self.config: DatasetConfig = config
+        self.data_root = Path(config.dataset_path)
+        self.safe_load: bool = config.safe_load
+        self.seed: int | None = config.seed
         self.return_symmetry: bool = return_symmetry
         self.return_structure: bool = return_structure
 
-        # Initialize featurizer and apo perturbation
-        self.apo_perturbation: apo_perturbation.ApoPerturbation = (
-            apo_perturbation.ApoPerturbation(
-                ccd=ccd,
-                **apo_perturbation_args,
+        self.seq_embedding: str | None = seq_embedding
+        self.struct_embedding: str | None = struct_embedding
+
+        # === Validate parameters === #
+        assert self.data_root.exists(), f"Dataset path {self.data_root} does not exist."
+        if self.seq_embedding is not None:
+            assert seq_embedding_dim is not None, (
+                "seq_embedding_dim must be provided when seq_embedding is set."
             )
+            self.seq_emb_root = self.data_root / "seq_embedding" / self.seq_embedding
+            self.seq_embedding_dim = seq_embedding_dim
+            assert self.seq_emb_root.exists(), (
+                f"Sequence embedding root {self.seq_emb_root} does not exist."
+            )
+        if self.struct_embedding is not None:
+            assert struct_embedding_dim is not None, (
+                "struct_embedding_dim must be provided when struct_embedding is set."
+            )
+            self.struct_emb_root = (
+                self.data_root / "struct_embedding" / self.struct_embedding
+            )
+            self.struct_embedding_dim = struct_embedding_dim
+            assert self.struct_emb_root.exists(), (
+                f"Structure embedding root {self.struct_emb_root} does not exist."
+            )
+
+        # === Load dataset components === #
+        # CCD (shared across datasets)
+        self.ccd: CCD = ccd
+
+        # Metadata
+        self.metadatas: list[Metadata] = self.load_manifest()
+
+        # Lookup table
+        self.lookup_table: dict = self.load_lookup_table()
+
+        # === Initialize modules === #
+        self.apo_initializer = apo_initialize.ApoInitializer(
+            config.apo_initialize, self.ccd
         )
-        self.featurizer: featurize.InputFeaturizer = featurize.InputFeaturizer(
-            **featurization_args,
+        self.tokenizer = tokenize.Tokenizer(self.ccd)
+        self.featurizer = featurize.InputFeaturizer(
+            **config.featurization_args,
         )
-        # additional paths
-        self.paths: dict[str, Path | None] = paths
+
+        # Additional setup can be done in subclasses
+        self.setup()
 
     def __len__(self) -> int:
         return len(self.metadatas)
 
-    # === TO-DO Implement in subclasses === #
+    # === Setup === #
+    def load_manifest(self) -> list[Metadata]:
+        manifest_path = self.data_root / "manifest.pkl"
+        with open(manifest_path, "rb") as f:
+            metadata_dicts: list[dict] = pickle.load(f)
+        metadatas: list[Metadata] = [Metadata.from_dict(d) for d in metadata_dicts]
+        # Ensure all chains and interfaces are valid
+        for m in metadatas:
+            m.check_all_chains_valid()
+            m.check_all_interfaces_valid()
+        return metadatas
+
+    def load_lookup_table(self) -> dict:
+        lookup_path = self.data_root / "lookup.json"
+        with open(lookup_path) as f:
+            lookup_table = json.load(f)
+        for m in self.metadatas:
+            if m.id not in lookup_table:
+                raise KeyError(f"Metadata ID {m.id} not found in lookup table.")
+        return lookup_table
+
+    def setup(self) -> None:
+        """Additional setup for subclasses."""
+        pass
+
+    # === Core dataset methods === #
     @abstractmethod
     def load_ref_structure(self, metadata: Metadata) -> RefStructure:
         """Get the structure for the given index."""
 
+    def load_apo_structure(
+        self,
+        ref_struct: RefStructure,
+        rng: np.random.Generator | None = None,
+    ) -> None:
+        """Populate the apo structure for the given reference structure."""
+        # Fetch apo info from lookup table
+        name = ref_struct.metadata.id
+        entry_info = self.lookup_table[name]
+
+        apo_lookup_map: dict[int, dict] = {}
+        for c in ref_struct.chains:
+            entity_id = c.entity_id
+            entity_info = entry_info[str(entity_id)]
+            if c.ctype.is_protein:
+                apo_lookup_map[entity_id] = entity_info["apo"]
+
+        # Populate apo structure
+        self.apo_initializer(ref_struct, apo_lookup_map, rng)
+
     def tokenize(
         self,
-        struct: RefStructure,
+        ref_struct: RefStructure,
         rng: np.random.Generator | None = None,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        return tokenize.tokenize_structure(
-            struct,
-            ccd=self.ccd,
-            rng=rng,
-            use_only_cached_conformers=True,
-        )
+        return self.tokenizer(ref_struct, rng, use_only_cached_conformers=True)
 
     # === Optional to-override in subclasses === #
     def pre_crop_structure(
@@ -191,18 +329,18 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         else:
             rng = np.random.default_rng()
 
-        # Load structure
-        ref_struct = self.load_ref_structure(metadata)
+        # Load structure (NOTE: ref_struct.metadata == metadata)
+        ref_struct: RefStructure = self.load_ref_structure(metadata)
+
+        # Populate apo structure (in-place)
+        self.load_apo_structure(ref_struct, rng=rng)
 
         # Tokenization
-        struct = self.tokenize(ref_struct, rng=rng)
+        struct: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
 
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
         struct = self.pre_crop_structure(struct, rng=rng, **kwargs)
-
-        # Apo perturbation
-        struct = self.augment_apo_structure(struct, rng=rng)
 
         # Cropping
         cropped_struct = self.crop_structure(struct, rng=rng, **kwargs)
@@ -225,14 +363,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         return f_input, symmetry_dict
 
-    def augment_apo_structure(
-        self,
-        struct: TokenizedStructure,
-        rng: np.random.Generator | None = None,
-    ) -> TokenizedStructure:
-        """Apply random perturbation/rotation to apo structure"""
-        return self.apo_perturbation(struct, rng=rng)
-
     def featurize(
         self,
         struct: TokenizedStructure,
@@ -240,18 +370,21 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng: np.random.Generator | None = None,
     ) -> FoldingInput:
         """Featurize the given tokenized structure."""
-        # Get precomputed embeddings if available
-        # sequence embeddings
-        seq_emb_root = self.paths.get("seq_embedding_path", None)
-        seq_embedding_paths = self.find_precomputed_embeddings(
-            struct, metadata.id, seq_emb_root
-        )
+        if self.seq_embedding is not None:
+            # sequence embeddings
+            seq_embedding_paths = self.find_precomputed_embeddings(
+                struct, metadata.id, self.seq_emb_root
+            )
+        else:
+            seq_embedding_paths = None
 
-        # structure embeddings
-        struct_emb_root = self.paths.get("struct_embedding_path", None)
-        struct_embedding_paths = self.find_precomputed_embeddings(
-            struct, metadata.id, struct_emb_root
-        )
+        if self.struct_embedding is not None:
+            # structure embeddings
+            struct_embedding_paths = self.find_precomputed_embeddings(
+                struct, metadata.id, self.struct_emb_root
+            )
+        else:
+            struct_embedding_paths = None
 
         # Featurization
         f_input = self.featurizer(
@@ -266,8 +399,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         struct: TokenizedStructure,
         name: str,
-        root_dir: Path | None = None,
-    ) -> dict[int, Path] | None:
+        root_dir: Path,
+    ) -> dict[int, Path]:
         """Find precomputed embeddings for the given structure.
 
         Parameters
@@ -281,82 +414,125 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         Returns
         -------
-        dict[int, Path] | None
+        dict[int, Path]
             A dictionary mapping entity IDs to embedding file paths,
-            or None if no embeddings are found.
         """
-        if root_dir is None:
-            return None
+        assert root_dir is not None, "root_dir must be provided."
+        # Fetch entry info from lookup table
+        entry_info = self.lookup_table[name]
 
-        # Check existence
-        # if name='6oim', possible paths are:
-        # - {root_dir}/6o/6oim/* ...
-        # - {root_dir}/oi/6oim/* ...
-        subdir = root_dir / name[1:3] / name
-        if subdir.exists():
-            assert subdir.is_dir()
-        else:
-            subdir = root_dir / name[0:2] / name
-            if not subdir.exists():
-                return {}
-            assert subdir.is_dir()
-
+        # Get sequence id
         embedding_paths: dict[int, Path] = {}
-        for path in subdir.iterdir():
-            if not path.is_file():
-                continue
-            # Expecting filenames like:
-            #   {pdb_id}_{entity_id}_{chain_type}.pt
-            pdb_id, entity_id, chain_type = path.stem.split("_")
-            assert pdb_id == name, f"Unexpected pdb_id {pdb_id} in embedding file {path}."
-            entity_id_int = int(entity_id)
-            embedding_paths[entity_id_int] = path
-
+        for chain_i in range(struct.num_chains):
+            entity_id = int(struct.chain.entity_id[chain_i])
+            if entity_id in embedding_paths:
+                continue  # already found
+            ctype = C.ChainType(struct.chain.chain_type[chain_i].item())
+            if ctype.is_polymer:
+                # Get embedding for polymer chain
+                entity_info = entry_info[str(entity_id)]
+                seq_id: str = entity_info["seq_id"]
+                emb_path = root_dir / f"{seq_id}.pt"
+                if emb_path.exists():
+                    embedding_paths[entity_id] = emb_path
+                else:
+                    # FIXME: Temporary warning for missing protein embeddings
+                    if ctype.is_protein:
+                        print(
+                            f"Warning: Embedding file {emb_path} not found for "
+                            f"entity_id {entity_id} in structure {name}: "
+                            f"seq_id={seq_id}."
+                        )
         return embedding_paths
 
 
-class TrainingDataset(SafeLoadingDataset):
+class LMDBDataset(SafeLoadingDataset):
+    @property
+    def lmdb_env(self) -> lmdb.Environment:
+        if not hasattr(self, "_lmdb_env"):
+            self.lmdb_path = self.data_root / "structure.lmdb"
+            self._lmdb_env = lmdb.open(
+                str(self.lmdb_path),
+                map_size=1024**4,  # 1 TB
+                readonly=True,
+                lock=False,
+                readahead=False,
+                meminit=False,
+            )
+        return self._lmdb_env
+
+    def __del__(self):
+        if hasattr(self, "_lmdb_env"):
+            self._lmdb_env.close()
+
+    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
+        """Get the structure for the given index."""
+        name = metadata.id
+        key_bytes = name.encode("utf-8")
+        with self.lmdb_env.begin(write=False) as txn:
+            value_bytes = txn.get(key_bytes)
+            if value_bytes is None:
+                raise KeyError(f"Record {name} not found in LMDB.")
+
+        # Use io.BytesIO to wrap the raw bytes
+        with io.BytesIO(value_bytes) as byte_stream:
+            ref_struct = RefStructure.load_npz(byte_stream)
+
+        # NOTE: Validate loaded record matches requested metadata
+        # If there is no problem, only the cluster ID should differ.
+        ref_metadata = ref_struct.metadata
+        assert ref_metadata.id == name, (
+            f"Loaded record ID {ref_metadata.id} does not match requested ID {name}."
+        )
+        assert ref_metadata.num_chains == metadata.num_chains, (
+            f"Loaded record num_chains {ref_metadata.num_chains} does not match "
+            f"requested num_chains {metadata.num_chains}."
+        )
+        assert ref_metadata.num_residues == metadata.num_residues, (
+            f"Loaded record num_residues {ref_metadata.num_residues} does not match "
+            f"requested num_residues {metadata.num_residues}."
+        )
+        assert ref_metadata.num_interfaces == metadata.num_interfaces, (
+            f"Loaded record num_interfaces {ref_metadata.num_interfaces} does not match "
+            f"requested num_interfaces {metadata.num_interfaces}."
+        )
+        return ref_struct
+
+
+class TrainingDataset(LMDBDataset):
+    """Training dataset with AF3-style sampling and cropping."""
+
     def __init__(
         self,
-        metadatas: list[Metadata],
+        config: TrainingDatasetConfig,
         ccd: CCD,
-        paths: dict[str, Path | None],
-        apo_perturbation_args: dict,
-        featurization_args: dict,
-        max_chains: int,
-        max_tokens: int,
-        cropper: BaseCropper,
-        sampler_config: BaseSampler.Config | None,
-        safe_load: bool = True,
-        return_symmetry: bool = False,
+        seq_embedding: str | None = None,
+        struct_embedding: str | None = None,
+        seq_embedding_dim: int | None = None,
+        struct_embedding_dim: int | None = None,
+        max_chains: int = 20,
+        max_tokens: int = 384,
     ) -> None:
         """
         Parameters
         ----------
-        metadatas : list[Metadata]
-            List of samples to use in the dataset.
+        config : TrainingDatasetConfig
+            Dataset configuration.
         ccd: CCD
             CCD database
-        paths : dict[str, Path | None]
-            Paths for various resources.
-        apo_perturbation_args : dict
-            Arguments for apo perturbation.
-        featurization_args : dict
-            Arguments for featurization.
+        seq_embedding : str | None
+            Type of sequence embedding to use (e.g., "esm2", "esmc").
+        struct_embedding : str | None
+            Type of structure embedding to use (e.g., "saprot").
+        seq_embedding_dim : int | None
+            Dimension of sequence embeddings.
+        struct_embedding_dim : int | None
+            Dimension of structure embeddings.
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
             Maximum number of tokens per sample. Must be a multiple of 64 for
             LocalAtomAttention.
-        cropper : BaseCropper
-            Cropper to use for cropping samples.
-        sampler_config : BaseSampler.Config | None
-            Sampler configuration to use for sampling samples.
-            If None, uniform sampling is used.
-        safe_load : bool
-            Whether to enable safe loading with retries on failure.
-        return_symmetry : bool
-            Whether to return symmetry information.
 
         Notes
         -----
@@ -366,29 +542,33 @@ class TrainingDataset(SafeLoadingDataset):
            using the provided `cropper`.
         """
         super().__init__(
-            metadatas,
+            config,
             ccd,
-            paths,
-            apo_perturbation_args,
-            featurization_args,
-            safe_load,
-            return_symmetry,
-            return_structure=False,
-            seed=None,  # Do not fix seed for training dataset
+            seq_embedding,
+            struct_embedding,
+            seq_embedding_dim,
+            struct_embedding_dim,
+            return_symmetry=False,
         )
+        if self.seed is not None:
+            # Warn about fixed seed affecting randomness
+            print(
+                "WARNING: Seed is set for TrainingDataset, which may affect randomness."
+            )
         self.max_tokens: int = max_tokens
         self.max_chains: int = max_chains
 
         self.pre_cropper = PreCropper(PreCropper.Config(max_chains=max_chains))
-        self.cropper: BaseCropper = cropper
+
+        assert config.cropper is not None, "Cropper config must be provided."
+        self.cropper: BaseCropper = Registry.instantiate(config.cropper)
 
         assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
 
         # AF3-style sampling (chain/interface-based)
-        if sampler_config is None:
-            sampler_config = BaseSampler.Config()  # uniform sampler
-        sampler = Registry.instantiate(sampler_config)
-        samples, weights = sampler.get_samples(metadatas)
+        assert config.sampler is not None, "Sampler config must be provided."
+        sampler: BaseSampler = Registry.instantiate(config.sampler)
+        samples, weights = sampler.get_samples(self.metadatas)
         self.samples: list[Sample] = samples
         self.weights: np.ndarray | None = weights
 
@@ -470,149 +650,5 @@ class TrainingDataset(SafeLoadingDataset):
         )
 
 
-class ValidationDataset(SafeLoadingDataset):
-    def __init__(
-        self,
-        metadatas: list[Metadata],
-        ccd: CCD,
-        paths: dict[str, Path | None],
-        apo_perturbation_args: dict,
-        featurization_args: dict,
-        safe_load: bool = True,
-        return_symmetry: bool = False,
-    ) -> None:
-        """
-        Parameters
-        ----------
-        metadatas : list[Metadata]
-            List of samples to use in the dataset.
-        """
-        # To validate the folding performance in usage scenario, where holo
-        # structures are not available, we disable symmetry correction,
-        # holo replacement, and perturbation during apo perturbation.
-        apo_perturbation_args = apo_perturbation_args.copy()
-        apo_perturbation_args["use_symmetry_correction"] = False
-        apo_perturbation_args["prob_replace_to_holo"] = 0.0
-        apo_perturbation_args["use_perturbation"] = False
-
-        super().__init__(
-            metadatas,
-            ccd,
-            paths,
-            apo_perturbation_args,
-            featurization_args,
-            safe_load,
-            return_symmetry,
-            return_structure=True,
-            seed=42,  # Fix seed for validation dataset
-        )
-
-
-class LMDBDatabase:
-    """
-    Provides LMDB-backed access to tokenized structures.
-    The `lmdb_env` property lazily initializes and caches the LMDB environment
-    on first access, ensuring efficient resource usage. The `load_from_lmdb`
-    method retrieves a tokenized structure from the LMDB database using a
-    metadata's ID as the key.
-    """
-
-    lmdb_path: Path
-
-    @property
-    def lmdb_env(self) -> lmdb.Environment:
-        if not hasattr(self, "_lmdb_env"):
-            self._lmdb_env = lmdb.open(
-                str(self.lmdb_path),
-                map_size=1024**4,  # 1 TB
-                readonly=True,
-                lock=False,
-                readahead=False,
-                meminit=False,
-            )
-        return self._lmdb_env
-
-    def load_from_lmdb(self, metadata: Metadata) -> TokenizedStructure:
-        """Load the tokenized structure from LMDB."""
-        name = metadata.id
-        key_bytes = name.encode("utf-8")
-        with self.lmdb_env.begin(write=False) as txn:
-            value_bytes = txn.get(key_bytes)
-            if value_bytes is None:
-                raise KeyError(f"Record {name} not found in LMDB at {self.lmdb_path}.")
-
-        # Use io.BytesIO to wrap the raw bytes
-        with io.BytesIO(value_bytes) as byte_stream:
-            struct = TokenizedStructure.load_npz(byte_stream)
-        struct = struct.copy_with(metadata=metadata)
-        return struct
-
-    def __del__(self):
-        if hasattr(self, "_lmdb_env"):
-            self._lmdb_env.close()
-
-
-class LMDBTrainingDataset(TrainingDataset, LMDBDatabase):
-    def __init__(
-        self,
-        metadatas: list[Metadata],
-        lmdb_path: Path,
-        ccd: CCD,
-        paths: dict[str, Path | None],
-        apo_perturbation_args: dict,
-        featurization_args: dict,
-        max_chains: int,
-        max_tokens: int,
-        cropper: BaseCropper,
-        sampler_config: BaseSampler.Config | None,
-        safe_load: bool = True,
-        return_symmetry: bool = False,
-    ) -> None:
-        TrainingDataset.__init__(
-            self,
-            metadatas,
-            ccd,
-            paths,
-            apo_perturbation_args,
-            featurization_args,
-            max_chains,
-            max_tokens,
-            cropper,
-            sampler_config,
-            safe_load,
-            return_symmetry,
-        )
-        self.lmdb_path: Path = lmdb_path
-
-    def load_tokenized_structure(self, metadata: Metadata) -> TokenizedStructure:
-        """Load the tokenized structure from LMDB."""
-        return self.load_from_lmdb(metadata)
-
-
-class LMDBValidationDataset(ValidationDataset, LMDBDatabase):
-    def __init__(
-        self,
-        metadatas: list[Metadata],
-        lmdb_path: Path,
-        ccd: CCD,
-        paths: dict[str, Path | None],
-        apo_perturbation_args: dict,
-        featurization_args: dict,
-        safe_load: bool = True,
-        return_symmetry: bool = False,
-    ) -> None:
-        ValidationDataset.__init__(
-            self,
-            metadatas,
-            ccd,
-            paths,
-            apo_perturbation_args,
-            featurization_args,
-            safe_load,
-            return_symmetry,
-        )
-        self.lmdb_path: Path = lmdb_path
-
-    def load_tokenized_structure(self, metadata: Metadata) -> TokenizedStructure:
-        """Load the tokenized structure from LMDB."""
-        return self.load_from_lmdb(metadata)
+class ValidationDataset(LMDBDataset):
+    """Validation dataset without sampling and cropping."""

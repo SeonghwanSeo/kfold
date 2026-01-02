@@ -14,11 +14,18 @@ protein_atom37: tuple[str, ...] = (
     "NH2", "OH",  "CZ",  "CZ2", "CZ3", "NZ",  "OXT"
 )  # fmt: skip
 
-nucleic_atom29: tuple[str, ...] = (
+nucleic_acid_atom29: tuple[str, ...] = (
     "C1'", "C2",  "C2'", "C3'", "C4",  "C4'", "C5",  "C5'", "C6",  "C7",
     "C8",  "N1",  "N2",  "N3",  "N4",  "N6",  "N7",  "N9",  "OP3", "O2",
     "O2'", "O3'", "O4",  "O4'", "O5'", "O6",  "OP1", "OP2", "P"
 )  # fmt: skip
+
+protein_atom37_order: dict[str, int] = {
+    name: idx for idx, name in enumerate(protein_atom37)
+}
+nucleic_acid_atom29_order: dict[str, int] = {
+    name: idx for idx, name in enumerate(nucleic_acid_atom29)
+}
 
 
 class AtomName(enum.StrEnum):

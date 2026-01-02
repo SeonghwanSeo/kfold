@@ -25,8 +25,7 @@ class NumChainFilter(BaseFilter):
 
     def filter(self, metadata: Metadata) -> bool:
         num_chains = metadata.num_chains
-        num_valid = sum(1 for chain in metadata.chains if chain.valid)
-        return (self.min_chains <= num_valid) and (num_chains <= self.max_chains)
+        return self.min_chains <= num_chains <= self.max_chains
 
 
 @DATA_FILTER.register()
@@ -41,7 +40,7 @@ class NumResidueFilter(BaseFilter):
         """
 
         min_residues: int = 1
-        max_residues: int = 300
+        max_residues: int = 2048
 
     def __init__(self, config: Config):
         self.min_residues: int = config.min_residues
