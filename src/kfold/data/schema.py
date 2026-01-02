@@ -1,5 +1,8 @@
 """Implemented from https://github.com/jwohlwend/boltz"""
 
+import json
+import pathlib
+import pickle
 from dataclasses import dataclass, field, fields
 from typing import Self
 
@@ -47,10 +50,10 @@ class ChainInfo(JsonSerializable):
     asym_id: int  # starts from 1
     sym_id: int  # starts from 1
     num_residues: int
-    cluster_id: str | None = None
     is_valid: bool = True
     smiles: str | None = None
     description: str | None = None
+    cluster_id: str | None = None
 
     @property
     def ctype(self) -> C.ChainType:
@@ -61,6 +64,7 @@ class ChainInfo(JsonSerializable):
 class InterfaceInfo(JsonSerializable):
     asym_ids: tuple[int, int]
     is_valid: bool = True
+    cluster_id: str | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -168,3 +172,27 @@ class Metadata:
             chains=chains,
             interfaces=interfaces,
         )
+
+    def save_json(self, filepath: str | pathlib.Path) -> None:
+        """Save metadata to a JSON file."""
+        with open(filepath, "w") as f:
+            json.dump(self.to_dict(), f, indent=4)
+
+    @classmethod
+    def load_json(cls, filepath: str | pathlib.Path) -> Self:
+        """Load metadata from a JSON file."""
+        with open(filepath) as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
+    def save_pickle(self, filepath: str | pathlib.Path) -> None:
+        """Save metadata to a pickle file."""
+        with open(filepath, "wb") as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load_pickle(cls, filepath: str | pathlib.Path) -> Self:
+        """Load metadata from a pickle file."""
+        with open(filepath, "rb") as f:
+            data = pickle.load(f)
+        return data

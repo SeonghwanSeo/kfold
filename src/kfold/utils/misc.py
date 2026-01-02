@@ -1,3 +1,4 @@
+import hashlib
 import random
 from collections.abc import Sequence
 
@@ -10,6 +11,17 @@ def set_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
+
+
+def hash_seq(seq: str, preserve_case: bool = True) -> str:
+    """Hash a sequence string to create a unique identifier."""
+    clean_seq = seq if preserve_case else seq.upper()
+    return hashlib.sha256(clean_seq.encode("utf-8")).hexdigest()
+
+
+def hash_polymer_seq(seq: str) -> str:
+    """Hash a polymer sequence string (protein/DNA/RNA) to create a unique identifier."""
+    return hash_seq(seq.strip(), preserve_case=False)
 
 
 def check_array(
