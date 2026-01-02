@@ -478,6 +478,7 @@ class ValidationDataset(SafeLoadingDataset):
         apo_perturbation_args["use_symmetry_correction"] = False
         apo_perturbation_args["prob_replace_to_holo"] = 0.0
         apo_perturbation_args["use_perturbation"] = False
+        apo_perturbation_args["use_na_perturbation"] = True
 
         super().__init__(
             records,

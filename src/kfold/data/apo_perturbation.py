@@ -100,6 +100,7 @@ class ApoPerturbation:
     def __init__(
         self,
         use_perturbation: bool = False,
+        use_na_perturbation: bool = False,
         use_random_rotation: bool = False,
         use_symmetry_correction: bool = False,
         use_entity_random_translation: bool = False,
@@ -122,6 +123,9 @@ class ApoPerturbation:
         ----------
         use_perturbation : bool, optional
             Whether to apply perturbation to apo structures.
+        use_na_perturbation : bool, optional
+            Whether to apply Langevin perturbation to DNA/RNA even when
+            use_perturbation is False.
         use_random_rotation : bool, optional
             Whether to apply random rotation to apo structures.
         use_symmetry_correction : bool, optional
@@ -193,6 +197,7 @@ class ApoPerturbation:
             Log statistics every N chain perturbations. Default: 1000
         """
         self.use_perturbation: bool = use_perturbation
+        self.use_na_perturbation: bool = use_na_perturbation
         self.use_random_rotation: bool = use_random_rotation
         self.use_symmetry_correction: bool = use_symmetry_correction
         self.use_entity_random_translation: bool = use_entity_random_translation
@@ -580,9 +585,8 @@ class ApoPerturbation:
 
                 # Apply apo perturbation (skip if it is replaced to holo coords)
                 chain_type = C.ChainType(struct.chain.chain_type[chain_i])
-                if (
-                    chain_type in (C.ChainType.DNA, C.ChainType.RNA)
-                    and self.use_perturbation
+                if chain_type in (C.ChainType.DNA, C.ChainType.RNA) and (
+                    self.use_perturbation or self.use_na_perturbation
                 ):
                     # For nucleic acids, we define apo_mask from holo-resolved atoms so
                     # the model can use the generated apo prior (LD starts from random).
@@ -857,11 +861,10 @@ class ApoPerturbation:
         perturbed_apo_coords : np.ndarray
             Perturbed apo structure coordinates of shape [Ntoken, 24, 3].
         """
-        if not self.use_perturbation:
-            return apo_coords
-
         # Nucleic acids: always apply Langevin perturbation (when enabled).
         if chain_type in (C.ChainType.DNA, C.ChainType.RNA):
+            if not (self.use_perturbation or self.use_na_perturbation):
+                return apo_coords
             if struct is None or chain_i is None:
                 warnings.warn(
                     "struct and chain_i are required for Langevin perturbation. "
@@ -882,6 +885,9 @@ class ApoPerturbation:
                 record_id=record_id or "<unknown>",
                 entity_id=entity_id,
             )
+
+        if not self.use_perturbation:
+            return apo_coords
 
         # For other chain types, optionally skip perturbation by probability.
         # (Protein policy below still respects prob_perturbation.)

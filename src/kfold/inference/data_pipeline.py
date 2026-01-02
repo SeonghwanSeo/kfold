@@ -31,6 +31,7 @@ class InputDataPipeline:
         self.apo_perturbation: apo_perturbation.ApoPerturbation = (
             apo_perturbation.ApoPerturbation(
                 use_perturbation=False,
+                use_na_perturbation=True,
                 use_random_rotation=True,
                 use_symmetry_correction=False,
             )
