@@ -24,25 +24,44 @@ rcsb-validation/ ...
 
 * lookup.json format
 ```json
-6oim:
-  "1":
-    type: "protein"
-    seq_id: "uniq_protein_000020",
-    apo:
-      - name: "uniq_protein_000020-esmfold"
-        path: "uniq_protein_000020-esmfold.pdb.gz"
-        residue_map: "1:250->1:250"
-        source: "esmfold"
-      - name: "AF-P01116-F1-model_v6"
-        path: "AF-P01116-F1-model_v6.cif.gz"
-        residue_map: "1:235->11:245"
-        source: "afdb"
-      - name: "51d6-A"
-        path: "51d6-A.pdb.gz"
-        residue_map: "5:250->5:250"
-        source: "pdb"
-...
-
+{
+  "6oim": {
+    "1": {
+      "type": "protein",
+      "seq_id": "uniq_protein_000020",
+      "seq_emb_id": {
+        "path": "uniq_protein_000020.pt",
+        "residue_map": "1:250->1:250"
+      },
+      "struct_emb_id": {
+        "path": "AF-P01116-F1-model_v6.pt",
+        "residue_map": "1:235->11:245"
+      },
+      "apo": [
+        {
+          "name": "uniq_protein_000020-esmfold",
+          "path": "uniq_protein_000020-esmfold.pdb.gz",
+          "residue_map": "1:250->1:250",
+          "source": "esmfold"
+        },
+        {
+          "name": "AF-P01116-F1-model_v6",
+          "path": "AF-P01116-F1-model_v6.cif.gz",
+          "residue_map": "1:235->11:245",
+          "source": "afdb"
+        },
+        {
+          "name": "51d6-A",
+          "path": "51d6-A.pdb.gz",
+          "residue_map": "5:250->5:250",
+          "source": "pdb"
+        }
+      ]
+    },
+    "2": {...}
+  },
+  "1a2c": {...}
+}
 ```
 """
 
@@ -67,14 +86,35 @@ from kfold.data.structure import RefStructure
 from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.registry import Registry
 
-from .cropper import BaseCropper, PreCropper
+from .cropper import BaseCropper
 from .filter import BaseFilter
 from .sampler import BaseSampler, Sample
-from .utils import symmetry
+from .utils import pre_crop, symmetry
+
+# === Dataset Classes === #
 
 
 @dataclasses.dataclass(kw_only=True)
 class DatasetConfig:
+    """Base configuration for dataset.
+
+    Attributes
+    ----------
+    name : str
+        Name of the dataset.
+    dataset_path : str | Path
+        Path to the dataset directory.
+    apo_initialize : apo_initialize.ApoInitializerConfig
+        Configuration for apo structure initialization.
+    safe_load : bool
+        Whether to safely retry loading data on failure.
+    featurization_args : dict
+        Additional arguments for featurization.
+    seed : int | None
+        Random seed for data loading.
+    """
+
+    name: str
     dataset_path: str | Path
     apo_initialize: apo_initialize.ApoInitializerConfig = dataclasses.field(
         default_factory=apo_initialize.ApoInitializerConfig
@@ -88,6 +128,21 @@ class DatasetConfig:
 
 @dataclasses.dataclass(kw_only=True)
 class TrainingDatasetConfig(DatasetConfig):
+    """Configuration for training dataset.
+
+    Attributes
+    ----------
+    weight : float
+        Weight of the dataset during training.
+    filters : list[BaseFilter.Config]
+        List of filters to apply to the dataset.
+    sampler : BaseSampler.Config | None
+        Sampler configuration for generating samples.
+    cropper : BaseCropper.Config | None
+        Cropper configuration for cropping structures.
+    """
+
+    weight: float = 1.0
     filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
@@ -134,6 +189,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """
         # === Initialize parameters === #
         self.config: DatasetConfig = config
+        self.name: str = config.name
         self.data_root = Path(config.dataset_path)
         self.safe_load: bool = config.safe_load
         self.seed: int | None = config.seed
@@ -166,6 +222,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 f"Structure embedding root {self.struct_emb_root} does not exist."
             )
 
+        # Update apo initializer config
+        rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
+        if rieprody_lmdb_path.exists():
+            config.apo_initialize.rieprody_module.metric_lmdb_path = rieprody_lmdb_path
+
         # === Load dataset components === #
         # CCD (shared across datasets)
         self.ccd: CCD = ccd
@@ -194,6 +255,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     # === Setup === #
     def load_manifest(self) -> list[Metadata]:
         manifest_path = self.data_root / "manifest.pkl"
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"Manifest file {manifest_path} not found.")
         with open(manifest_path, "rb") as f:
             metadata_dicts: list[dict] = pickle.load(f)
         metadatas: list[Metadata] = [Metadata.from_dict(d) for d in metadata_dicts]
@@ -236,7 +299,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             entity_id = c.entity_id
             entity_info = entry_info[str(entity_id)]
             if c.ctype.is_protein:
-                apo_lookup_map[entity_id] = entity_info["apo"]
+                apo_list = entity_info.get("apo", [])
+                if len(apo_list) > 0:
+                    # TODO: Sample apo structure if multiple are available
+                    apo_lookup_map[entity_id] = apo_list[0]
 
         # Populate apo structure
         self.apo_initializer(ref_struct, apo_lookup_map, rng)
@@ -250,12 +316,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         return self.tokenizer(ref_struct, rng, use_only_cached_conformers=True)
 
     # === Optional to-override in subclasses === #
-    def pre_crop_structure(
+    def extract_substructure(
         self,
-        struct: TokenizedStructure,
+        struct: RefStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> TokenizedStructure:
+    ) -> RefStructure:
         """Pre-crop the folding input structure as needed.
         See Section 2.5.4 of AlphaFold3 SI
 
@@ -332,15 +398,15 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Load structure (NOTE: ref_struct.metadata == metadata)
         ref_struct: RefStructure = self.load_ref_structure(metadata)
 
+        # Sub-complex structure extraction for large complex (>20 chains)
+        # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
+        ref_struct = self.extract_substructure(ref_struct, rng=rng, **kwargs)
+
         # Populate apo structure (in-place)
         self.load_apo_structure(ref_struct, rng=rng)
 
         # Tokenization
         struct: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
-
-        # Sub-complex structure extraction for large complex (>20 chains)
-        # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
-        struct = self.pre_crop_structure(struct, rng=rng, **kwargs)
 
         # Cropping
         cropped_struct = self.crop_structure(struct, rng=rng, **kwargs)
@@ -372,35 +438,30 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Featurize the given tokenized structure."""
         if self.seq_embedding is not None:
             # sequence embeddings
-            seq_embedding_paths = self.find_precomputed_embeddings(
-                struct, metadata.id, self.seq_emb_root
-            )
+            seq_embeddings = self.find_precomputed_embeddings(struct, metadata.id, "seq")
         else:
-            seq_embedding_paths = None
+            seq_embeddings = None
 
         if self.struct_embedding is not None:
             # structure embeddings
-            struct_embedding_paths = self.find_precomputed_embeddings(
-                struct, metadata.id, self.struct_emb_root
+            struct_embeddings = self.find_precomputed_embeddings(
+                struct, metadata.id, "struct"
             )
         else:
-            struct_embedding_paths = None
+            struct_embeddings = None
 
         # Featurization
         f_input = self.featurizer(
             struct,
-            seq_embedding_paths=seq_embedding_paths,
-            struct_embedding_paths=struct_embedding_paths,
+            seq_embeddings=seq_embeddings,
+            struct_embeddings=struct_embeddings,
             rng=rng,
         )
         return f_input
 
     def find_precomputed_embeddings(
-        self,
-        struct: TokenizedStructure,
-        name: str,
-        root_dir: Path,
-    ) -> dict[int, Path]:
+        self, struct: TokenizedStructure, name: str, emb_type: str
+    ) -> dict[int, dict]:
         """Find precomputed embeddings for the given structure.
 
         Parameters
@@ -409,20 +470,25 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             The tokenized structure.
         name : str
             The name/ID of the structure.
-        root_dir : Path
-            The root directory containing precomputed embeddings.
+        emb_type : str
+            The type of embedding ("seq" or "struct").
 
         Returns
         -------
-        dict[int, Path]
+        dict[int, dict]
             A dictionary mapping entity IDs to embedding file paths,
+            e.g., {entity_id: {"path": Path, "residue_map": str}, ...}
         """
-        assert root_dir is not None, "root_dir must be provided."
+        if emb_type == "seq":
+            root_dir = self.seq_emb_root
+        elif emb_type == "struct":
+            root_dir = self.struct_emb_root
+
         # Fetch entry info from lookup table
         entry_info = self.lookup_table[name]
 
         # Get sequence id
-        embedding_paths: dict[int, Path] = {}
+        embedding_paths: dict[int, dict] = {}
         for chain_i in range(struct.num_chains):
             entity_id = int(struct.chain.entity_id[chain_i])
             if entity_id in embedding_paths:
@@ -431,17 +497,24 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             if ctype.is_polymer:
                 # Get embedding for polymer chain
                 entity_info = entry_info[str(entity_id)]
-                seq_id: str = entity_info["seq_id"]
-                emb_path = root_dir / f"{seq_id}.pt"
-                if emb_path.exists():
-                    embedding_paths[entity_id] = emb_path
+                emb_id_info = (
+                    entity_info.get("seq_emb_id")
+                    if emb_type == "seq"
+                    else entity_info.get("struct_emb_id")
+                )
+                if emb_id_info is not None:
+                    emb_path = root_dir / emb_id_info["path"]
+                    residue_map = emb_id_info["residue_map"]
+                    embedding_paths[entity_id] = {
+                        "path": emb_path,
+                        "residue_map": residue_map,
+                    }
                 else:
                     # FIXME: Temporary warning for missing protein embeddings
                     if ctype.is_protein:
                         print(
-                            f"Warning: Embedding file {emb_path} not found for "
-                            f"entity_id {entity_id} in structure {name}: "
-                            f"seq_id={seq_id}."
+                            f"Warning: Missing {emb_type} embedding for entity "
+                            f"{entity_id} in entry {name}."
                         )
         return embedding_paths
 
@@ -558,7 +631,15 @@ class TrainingDataset(LMDBDataset):
         self.max_tokens: int = max_tokens
         self.max_chains: int = max_chains
 
-        self.pre_cropper = PreCropper(PreCropper.Config(max_chains=max_chains))
+        # Initialize filters
+        self.filters: list[BaseFilter] = [
+            Registry.instantiate(config=c) for c in config.filters
+        ]
+
+        def do_filter(m: Metadata) -> bool:
+            return all(filt(m) for filt in self.filters)
+
+        self.metadatas = [m for m in self.metadatas if do_filter(m)]
 
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
@@ -570,26 +651,28 @@ class TrainingDataset(LMDBDataset):
         sampler: BaseSampler = Registry.instantiate(config.sampler)
         samples, weights = sampler.get_samples(self.metadatas)
         self.samples: list[Sample] = samples
-        self.weights: np.ndarray | None = weights
+        self.weights: np.ndarray = weights
+
+        self.setup()
 
     @override
     def __len__(self) -> int:
         return len(self.samples)
 
     @override
-    def pre_crop_structure(
+    def extract_substructure(
         self,
-        struct: TokenizedStructure,
+        struct: RefStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
-    ) -> TokenizedStructure:
+    ) -> RefStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
         if self.max_chains < struct.num_chains:
             # Get sub-complex with limited number of chains
-            struct = self.pre_cropper.crop(
+            struct = pre_crop.extract_substructure(
                 struct,
-                self.max_tokens,
+                max_chains=self.max_chains,
                 bias_asym_id=asym_ids,
                 rng=rng,
             )
@@ -648,6 +731,83 @@ class TrainingDataset(LMDBDataset):
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
+
+
+class MultiTrainingDataset(torch.utils.data.Dataset):
+    """Training dataset with AF3-style sampling and cropping."""
+
+    def __init__(
+        self,
+        configs: list[TrainingDatasetConfig],
+        ccd: CCD,
+        max_chains: int = 20,
+        max_tokens: int = 384,
+        seq_embedding: str | None = None,
+        struct_embedding: str | None = None,
+        seq_embedding_dim: int | None = None,
+        struct_embedding_dim: int | None = None,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        configs : list[TrainingDatasetConfig]
+            List of dataset configurations.
+        ccd: CCD
+            CCD database
+        seq_embedding : str | None
+            Type of sequence embedding to use (e.g., "esm2", "esmc").
+        struct_embedding : str | None
+            Type of structure embedding to use (e.g., "saprot").
+        seq_embedding_dim : int | None
+            Dimension of sequence embeddings.
+        struct_embedding_dim : int | None
+            Dimension of structure embeddings.
+        max_chains : int
+            Maximum number of chains per sample.
+        max_tokens : int
+            Maximum number of tokens per sample. Must be a multiple of 64 for
+            LocalAtomAttention.
+
+        Notes
+        -----
+        This dataset implements AF3-style sampling (chain/interface-based).
+        1. Samples are generated based on chains/interfaces in the structures.
+        2. During data loading, samples are cropped to fit within `max_tokens`
+           using the provided `cropper`.
+        """
+        self.datasets: list[TrainingDataset] = [
+            TrainingDataset(
+                config,
+                ccd,
+                seq_embedding,
+                struct_embedding,
+                seq_embedding_dim,
+                struct_embedding_dim,
+                max_chains,
+                max_tokens,
+            )
+            for config in configs
+        ]
+        self.cumulative_sizes: np.ndarray = np.cumsum([len(ds) for ds in self.datasets])
+        self.weights: np.ndarray = np.concatenate(
+            [
+                config.weight * (ds.weights / ds.weights.sum())
+                for ds, config in zip(self.datasets, configs, strict=True)
+            ]
+        )
+
+    def __len__(self) -> int:
+        return self.cumulative_sizes[-1]
+
+    def __getitem__(self, index: int) -> tuple[FoldingInput, SymmetryInfo]:
+        """Get the folding input for the given index."""
+        # Find the dataset index
+        dataset_idx = np.searchsorted(self.cumulative_sizes, index, side="right")
+        if dataset_idx == 0:
+            sample_idx = index
+        else:
+            sample_idx = index - self.cumulative_sizes[dataset_idx - 1]
+        return self.datasets[dataset_idx][sample_idx]
 
 
 class ValidationDataset(LMDBDataset):

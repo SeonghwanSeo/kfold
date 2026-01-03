@@ -1,4 +1,5 @@
 import dataclasses
+import pathlib
 from functools import lru_cache
 
 import numpy as np
@@ -194,7 +195,7 @@ class ApoInitializer:
                 e.g., "AF-P012345-F1-model_v1"
             - path: Path
                 e.g., "AF-P012345-F1-model_v1.cif"
-            - residue_indices: str
+            - residue_map: str
                 e.g., "11:100->66:155"
             - source: str
                 e.g., "AFDB", "PDB"
@@ -221,7 +222,7 @@ class ApoInitializer:
                 e.g., "AF-P012345-F1-model_v1"
             - path: Path
                 e.g., "AF-P012345-F1-model_v1.cif"
-            - residue_indices: str
+            - residue_map: str
                 e.g., "11:100->66:155"
             - source: str
                 e.g., "AFDB", "PDB"
@@ -379,7 +380,7 @@ class ApoInitializer:
                 e.g., "AF-P012345-F1-model_v1"
             - path: Path
                 e.g., "AF-P012345-F1-model_v1.cif.gz"
-            - residue_indices: str
+            - residue_map: str
                 e.g., "11:100->66:155"
             - source: str
                 e.g., "AF2", "PDB"
@@ -392,21 +393,23 @@ class ApoInitializer:
             Apo structure coordinates of shape [L, 37, 3].
         """
 
-        def parse_residue_range(range_str: str) -> tuple[int, int, int, int]:
-            """Parse residue range string into start and end indices."""
-            struct_range, apo_range = range_str.split("->")
-            st, end = map(int, struct_range.split(":"))
+        def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
+            """Parse residue map string into start and end indices.
+            Example:
+                "1:100->5:104" -> (0, 100, 4, 104)
+            """
+            res_range, apo_range = residue_map.split("->")
+            st, end = map(int, res_range.split(":"))
             apo_st, apo_end = map(int, apo_range.split(":"))
             if (end - st) != (apo_end - apo_st):
-                raise ValueError(f"Residue range length mismatch: {range_str}")
+                raise ValueError(f"Residue range length mismatch: {residue_map}")
             # Convert to 0-based indexing
             # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
             return st - 1, end, apo_st - 1, apo_end
 
-        name = apo_info["name"]
         path = apo_info["path"]
         source = apo_info["source"]
-        residue_indices = apo_info["residue_indices"]
+        residue_map = apo_info["residue_map"]
 
         # Load apo structure
         _, apo_coords = read_protein_structure(path)
@@ -415,12 +418,14 @@ class ApoInitializer:
         if self.use_perturbation and rng.random() < self.prob_perturbation:
             if source.upper() != "PDB":
                 # Only apply perturbation to predicted structures (e.g., AFDB)
+                # Get pre-computed rieprody metrics if available
+                name = apo_info.get("name", pathlib.Path(path).name.split(".")[0])
                 apo_mask = np.isfinite(apo_coords).all(axis=-1)
                 apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=name)
 
-        # Crop apo_coords based on residue_indices
+        # Crop apo_coords based on residue_map
         length = len(ccd_sequence)
-        st, end, apo_st, apo_end = parse_residue_range(residue_indices)
+        st, end, apo_st, apo_end = parse_residue_map(residue_map)
 
         if st == 0 and end == length:
             # Use full apo_coords

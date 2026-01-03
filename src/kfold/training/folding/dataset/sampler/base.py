@@ -32,9 +32,7 @@ class BaseSampler:
 
         pass
 
-    def get_samples(
-        self, metadatas: list[Metadata]
-    ) -> tuple[list[Sample], np.ndarray | None]:
+    def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
         """Get samples and their weights from metadata.
 
         Parameters
@@ -46,9 +44,9 @@ class BaseSampler:
         -------
         samples : list[Sample]
             The sampled items.
-        weights : np.ndarray | None
+        weights : np.ndarray
             The weights for each sampled item.
-            If None, uniform weights are assumed.
         """
         samples: list[Sample] = [Sample(record, None) for record in metadatas]
-        return samples, None
+        weights = np.ones(len(samples), dtype=np.float32)
+        return samples, weights
