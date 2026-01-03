@@ -6,6 +6,7 @@ channel_z: 128
 channel_atom: 128
 channel_atompair: 16
 channel_coords: 3
+use_prior_coords: true
 atoms_per_window_queries: 32
 atoms_per_window_keys: 128
 dim_fourier: 256

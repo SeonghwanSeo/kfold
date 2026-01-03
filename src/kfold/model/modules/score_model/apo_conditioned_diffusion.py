@@ -60,6 +60,7 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
         channel_atompair: int = 16
         channel_coords: int = 3
         use_apo: bool = True
+        use_prior_coords: bool = True
         atoms_per_window_queries: int = 32
         atoms_per_window_keys: int = 128
         dim_fourier: int = 256
@@ -76,13 +77,22 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
         super().__init__(cfg)
 
         diffusion_stack_class = DiffusionModuleWithApo if cfg.use_apo else DiffusionModule
+        # NOTE:
+        # - If use_prior_coords=True, score model expects r_noisy[..., 6]
+        #   (x_t concat x_apo).
+        # - If use_prior_coords=False, score model expects r_noisy[..., 3]
+        #   (x_t only).
+        # We intentionally do not derive this from cfg.channel_coords because older
+        # configs may already set channel_coords=6 (previous behavior). This keeps
+        # backward compat.
+        effective_channel_coords = 6 if cfg.use_prior_coords else 3
 
         self.diffusion_stack = diffusion_stack_class(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
-            channel_coords=cfg.channel_coords,
+            channel_coords=effective_channel_coords,
             atoms_per_window_queries=cfg.atoms_per_window_queries,
             atoms_per_window_keys=cfg.atoms_per_window_keys,
             dim_fourier=cfg.dim_fourier,

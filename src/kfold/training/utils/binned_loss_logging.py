@@ -140,8 +140,6 @@ class TimeBinnedLossLogger(torch.nn.Module):
             if not v.isfinite().all():
                 continue
             label, name = key.split("__", 1)
-            # Structured namespace for time-binned metrics
-            out[f"train_time_bin/{label}/{name}"] = v
             try:
                 interval_idx = self.labels.index(label) + 1
             except ValueError:

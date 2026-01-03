@@ -90,6 +90,7 @@ class KFoldECSI(BaseEDM):
         logit_normal_sampling: bool = False
         sampling_alpha: float = 1.0
         sampling_beta: float = 1.0
+        use_prior_coords: bool = True
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -112,6 +113,7 @@ class KFoldECSI(BaseEDM):
         self.logit_normal_sampling: bool = cfg.logit_normal_sampling
         self.sampling_alpha: float = cfg.sampling_alpha
         self.sampling_beta: float = cfg.sampling_beta
+        self.use_prior_coords: bool = cfg.use_prior_coords
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
@@ -283,6 +285,7 @@ class KFoldECSI(BaseEDM):
         z_trunk: torch.Tensor,
         model_cache=None,
         prior_coords: torch.Tensor | None = None,
+        use_prior_coords: bool | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model with ECSI preconditioning.
 
@@ -322,21 +325,28 @@ class KFoldECSI(BaseEDM):
         # Noise level conditioning
         c_noise = self.c_noise(t_hat)  # [B, N]
 
-        # Concatenate with prior (apo) coordinates
-        assert prior_coords is not None and torch.is_tensor(prior_coords), (
-            "In ECSI, prior_coords should be Tensor"
+        effective_use_prior_coords = (
+            self.use_prior_coords if use_prior_coords is None else use_prior_coords
         )
-        assert prior_coords.shape == r_noisy.shape, (
-            "In ECSI, the shapes of prior_coords and r_noisy should be the same"
-        )
-        if self.normalize_data_end and not self.normalize_coordinate:
-            prior_coords = prior_coords / self.sigma_data_end
-        r_noisy = torch.cat([r_noisy, prior_coords], dim=-1)
-        assert r_noisy.shape[-1] == 6, "In ECSI, the last dimension should be 6"
+        if effective_use_prior_coords:
+            # Concatenate with prior (apo) coordinates
+            assert prior_coords is not None and torch.is_tensor(prior_coords), (
+                "In ECSI, prior_coords should be Tensor when use_prior_coords=True"
+            )
+            assert prior_coords.shape == r_noisy.shape, (
+                "In ECSI, the shapes of prior_coords and r_noisy should be the same"
+            )
+            if self.normalize_data_end and not self.normalize_coordinate:
+                prior_coords = prior_coords / self.sigma_data_end
+            r_noisy = torch.cat([r_noisy, prior_coords], dim=-1)
+            assert r_noisy.shape[-1] == 6, "In ECSI, r_noisy last dim should be 6"
+        else:
+            # Do not condition score_model on prior_coords; keep r_noisy as (.., 3).
+            assert r_noisy.shape[-1] == 3, "In ECSI, r_noisy last dim should be 3"
 
         # Call score model
         r_update = self.score_model(
-            r_noisy=r_noisy,  # [B, N, La, 6]
+            r_noisy=r_noisy,  # [B, N, La, 3] or [B, N, La, 6]
             c_noise=c_noise,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,
