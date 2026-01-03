@@ -1,4 +1,4 @@
-"""concatenate multiple files into one file."""
+"""Concatenate multiple files into one file."""
 
 import argparse
 import json
@@ -71,7 +71,7 @@ def main():
     lmdb_path = args.data_dir / "structure.lmdb"
     env = lmdb.open(
         str(lmdb_path),
-        map_size=25 * 1024 * 1024 * 1024,
+        map_size=20 * 1024 * 1024 * 1024,
         map_async=True,
     )
     with env.begin(write=True) as txn:

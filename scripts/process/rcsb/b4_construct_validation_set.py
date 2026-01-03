@@ -51,7 +51,7 @@ def main():
     lmdb_path = data_dir / "structure.lmdb"
     env = lmdb.open(
         str(lmdb_path),
-        map_size=1 * 1024 * 1024 * 1024,  # 1 GB
+        map_size=100 * 1024 * 1024,  # 100 MB
     )
     with env.begin(write=True) as txn:
         for entry_id in entry_ids:
