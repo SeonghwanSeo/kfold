@@ -16,6 +16,12 @@ from kfold import constants as C
 from kfold.config import to_dict
 from kfold.data.model_input import FoldingInput
 from kfold.model.models.kfold import KFold, KFoldConfig
+from kfold.training.utils.binned_loss_logging import (
+    EntityBinConfig,
+    EntityBinnedLossLogger,
+    TimeBinConfig,
+    TimeBinnedLossLogger,
+)
 from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
@@ -77,6 +83,18 @@ class TrainingConfig:
     num_steps: int = 20
     num_diffusion_samples: int = 1
 
+    # Logging: time-binned train losses (epoch-level)
+    # If enabled, logs
+    # `train_bin/uXX_YY/{loss,mse_loss,bond_loss,smooth_lddt_loss,diffusion_loss}`
+    # where u is normalized diffusion time in [0, 1] with bins of width `time_bin_width`.
+    log_time_binned_losses: bool = False
+    time_bin_width: float = 0.1
+
+    # Logging: entity-count binned train losses (epoch-level)
+    # Entity count is computed as unique(token.asym_id) among valid tokens.
+    # Logs `train/{metric}_entity_interval{1..10}` where interval10 means >=10.
+    log_entity_binned_losses: bool = False
+
 
 @dataclass(kw_only=True)
 class ValidationConfig:
@@ -110,6 +128,34 @@ class KFoldTrainingModule(pl.LightningModule):
         self.validation_config: ValidationConfig = self.config.validation
         self.optimizer_config: OptimizerConfig = self.config.optimizer
         self.loss_config: LossConfig = self.config.loss
+
+        # Time-binned logging state (populated only when enabled)
+        self._timebin_enabled: bool = bool(self.training_config.log_time_binned_losses)
+
+        # These are set inside loss computation to avoid recomputation
+        self._timebin_last_distogram_loss_per_batch: torch.Tensor | None = None
+        self._timebin_last_diffusion_per_sample: dict[str, torch.Tensor] | None = None
+
+        # Entity-count binned logging state
+        self._entitybin_enabled: bool = bool(
+            self.training_config.log_entity_binned_losses
+        )
+
+        # Cache controls: used for both time-bin and entity-bin logging
+        self._binned_cache_enabled: bool = (
+            self._timebin_enabled or self._entitybin_enabled
+        )
+
+        # Binned loss loggers (registered as modules for checkpointing)
+        self.time_binned_logger = TimeBinnedLossLogger(
+            TimeBinConfig(
+                enabled=self._timebin_enabled,
+                width=float(self.training_config.time_bin_width),
+            )
+        )
+        self.entity_binned_logger = EntityBinnedLossLogger(
+            EntityBinConfig(enabled=self._entitybin_enabled, nbins=10)
+        )
 
         # Whether to train structure and confidence modules
         self.train_trunk: bool = self.training_config.train_trunk
@@ -304,6 +350,34 @@ class KFoldTrainingModule(pl.LightningModule):
             print(f"Skipping batch {batch_idx} due to error: {e}")
             return torch.tensor(0.0, device=self.device, requires_grad=True)
 
+        if self._binned_cache_enabled and self.train_structure_module:
+            t_hat = out.get("diffusion", {}).get("t_hat", None)
+            diffusion_per_sample = self._timebin_last_diffusion_per_sample
+            distogram_loss_per_batch = self._timebin_last_distogram_loss_per_batch
+
+            # These caches are populated inside compute_losses/compute_diffusion_loss.
+            # Skip if anything is missing for this batch.
+            if (
+                torch.is_tensor(t_hat)
+                and diffusion_per_sample is not None
+                and distogram_loss_per_batch is not None
+            ):
+                if self._timebin_enabled:
+                    self.time_binned_logger.update(
+                        t_hat=t_hat,
+                        structure_module=self.model.structure_module,
+                        diffusion_per_sample=diffusion_per_sample,
+                        distogram_loss_per_batch=distogram_loss_per_batch,
+                        loss_weights=self.loss_weights,
+                    )
+                if self._entitybin_enabled:
+                    self.entity_binned_logger.update(
+                        f_input=f_input,
+                        diffusion_per_sample=diffusion_per_sample,
+                        distogram_loss_per_batch=distogram_loss_per_batch,
+                        loss_weights=self.loss_weights,
+                    )
+
         for k, v in metrics.items():
             self.log(f"train/{k}", v, prog_bar=(k == "loss"))
 
@@ -354,6 +428,10 @@ class KFoldTrainingModule(pl.LightningModule):
         # Log loss and metrics
         all_metrics = distogram_metrics | diffusion_metrics | confidence_metrics
         all_metrics["loss"] = loss.detach()
+
+        if self._binned_cache_enabled and self.train_structure_module:
+            # Used to compute per-time-bin total loss without recomputing distogram head.
+            self._timebin_last_distogram_loss_per_batch = distogram_loss.detach()
 
         return loss, all_metrics
 
@@ -515,17 +593,17 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Equations 3-4
         L_mse = self.weighted_mse_loss(x_pred, x_true, f_input)  # [B, Nsample]
-        L_mse = L_mse * per_sample_weights  # [B, Nsample]
-        metrics["mse_loss"] = L_mse.detach().mean()
+        L_mse_weighted = L_mse * per_sample_weights  # [B, Nsample]
+        metrics["mse_loss"] = L_mse_weighted.detach().mean()
 
         # Equation 5
         alpha_bond = self.loss_weights["bond"]
         if alpha_bond > 0:
             L_bond = self.bond_loss(x_pred, x_true, f_input)
-            L_bond = L_bond * per_sample_weights  # [B, Nsample]
-            metrics["bond_loss"] = L_bond.detach().mean()
+            L_bond_weighted = L_bond * per_sample_weights  # [B, Nsample]
+            metrics["bond_loss"] = L_bond_weighted.detach().mean()
         else:
-            L_bond = 0.0
+            L_bond_weighted = None
 
         # Algorithm 27
         alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
@@ -533,18 +611,40 @@ class KFoldTrainingModule(pl.LightningModule):
             L_smooth_lddt = self.smooth_lddt_loss(x_pred, x_true, f_input)
             metrics["smooth_lddt_loss"] = L_smooth_lddt.detach().mean()
         else:
-            L_smooth_lddt = 0.0
+            L_smooth_lddt = None
 
         # Equation 6
         # NOTE: per-sample weights are already applied in L_mse and L_bond
         # L_diff = loss_weights(L_mse + α_bond * L_bond) + L_smooth_lddt
-        L_diffusion = (L_mse + alpha_bond * L_bond) + L_smooth_lddt
+        L_diffusion_per_sample = L_mse_weighted
+        if L_bond_weighted is not None:
+            L_diffusion_per_sample = L_diffusion_per_sample + alpha_bond * L_bond_weighted
+        if L_smooth_lddt is not None:
+            L_diffusion_per_sample = L_diffusion_per_sample + L_smooth_lddt
 
         # Mean over diffusion samples
-        L_diffusion = L_diffusion.mean(-1)  # [B, Nsample] -> [B,]
+        L_diffusion = L_diffusion_per_sample.mean(-1)  # [B, Nsample] -> [B,]
         metrics["diffusion_loss"] = L_diffusion.detach().mean()
 
+        if self._binned_cache_enabled and self.train_structure_module:
+            payload: dict[str, torch.Tensor] = {
+                "mse_loss": L_mse_weighted.detach(),
+                "diffusion_loss": L_diffusion_per_sample.detach(),
+            }
+            if L_bond_weighted is not None:
+                payload["bond_loss"] = L_bond_weighted.detach()
+            if L_smooth_lddt is not None:
+                payload["smooth_lddt_loss"] = L_smooth_lddt.detach()
+            self._timebin_last_diffusion_per_sample = payload
+
         return L_diffusion, metrics
+
+    def on_train_epoch_end(self) -> None:  # type: ignore[override]
+        out: dict[str, torch.Tensor] = {}
+        out |= self.time_binned_logger.flush()
+        out |= self.entity_binned_logger.flush()
+        if out:
+            self.log_dict(out)
 
     def compute_confidence_loss(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         raise NotImplementedError("Confidence loss not implemented yet.")

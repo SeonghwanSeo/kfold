@@ -14,7 +14,7 @@ global_hparams:
   batch_size: 1
   diffusion_batch_size: 48
   global_batch_size: 256
-  num_global_steps_per_epoch: 1000
+  num_global_steps_per_epoch: 10
 
 data:
   _registry_: "datamodule"
@@ -171,6 +171,11 @@ training:
   # For confidence module training
   num_steps: 20 # Mini-diffusion rollout
   num_diffusion_samples: 1 # Number of diffusion samples for confidence training
+
+  # Train loss binned logging
+  log_time_binned_losses: false
+  time_bin_width: 0.1
+  log_entity_binned_losses: false
 
 validation:
   # Validation step hyperparameters
