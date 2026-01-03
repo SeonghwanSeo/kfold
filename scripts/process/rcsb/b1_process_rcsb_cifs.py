@@ -338,7 +338,7 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    out_dir: pathlib.Path = args.out_dir
+    out_dir: pathlib.Path = args.out_dir / "npz"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Prepare partial function for multiprocessing

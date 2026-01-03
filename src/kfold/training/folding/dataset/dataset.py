@@ -14,10 +14,13 @@ rcsb-train/
         esmc/
     struct_embedding/
         saprot/
-    apo_structures/
-        uniq_prot1-esmfold.pdb.gz (or cif.gz)
-        uniq_prot2-afdb.pdb.gz
-        ...
+    apo/
+        ESMFold/
+            uniq_prot1-esmfold.pdb
+            ...
+        AFDB/
+            F-P01116-F1-model_v6.cif.gz
+            ...
 afdb-distillation/ ...
 rcsb-validation/ ...
 
@@ -28,12 +31,11 @@ rcsb-validation/ ...
   "6oim": {
     "1": {
       "type": "protein",
-      "seq_id": "uniq_protein_000020",
-      "seq_emb_id": {
+      "seq_emb": {
         "path": "uniq_protein_000020.pt",
         "residue_map": "1:250->1:250"
       },
-      "struct_emb_id": {
+      "struct_emb": {
         "path": "AF-P01116-F1-model_v6.pt",
         "residue_map": "1:235->11:245"
       },
@@ -294,15 +296,23 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         name = ref_struct.metadata.id
         entry_info = self.lookup_table[name]
 
+        apo_dir = self.data_root / "apo"
+
         apo_lookup_map: dict[int, dict] = {}
         for c in ref_struct.chains:
             entity_id = c.entity_id
             entity_info = entry_info[str(entity_id)]
             if c.ctype.is_protein:
                 apo_list = entity_info.get("apo", [])
-                if len(apo_list) > 0:
-                    # TODO: Sample apo structure if multiple are available
-                    apo_lookup_map[entity_id] = apo_list[0]
+                if len(apo_list) == 0:
+                    continue
+                # TODO: Sample apo structure if multiple are available
+                apo_info = apo_list[0]
+                apo_lookup_map[entity_id] = {
+                    "name": apo_info["name"],
+                    "path": apo_dir / apo_info["source"] / apo_info["path"],
+                    "residue_map": apo_info["residue_map"],
+                }
 
         # Populate apo structure
         self.apo_initializer(ref_struct, apo_lookup_map, rng)
@@ -498,9 +508,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 # Get embedding for polymer chain
                 entity_info = entry_info[str(entity_id)]
                 emb_id_info = (
-                    entity_info.get("seq_emb_id")
+                    entity_info.get("seq_emb")
                     if emb_type == "seq"
-                    else entity_info.get("struct_emb_id")
+                    else entity_info.get("struct_emb")
                 )
                 if emb_id_info is not None:
                     emb_path = root_dir / emb_id_info["path"]

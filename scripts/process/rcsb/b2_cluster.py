@@ -44,16 +44,10 @@ def parse_args():
         help="MMseqs2 executable.",
     )
     parser.add_argument(
-        "--npz_dir",
+        "--data_dir",
         type=pathlib.Path,
         required=True,
-        help="Directory containing preprocessed .npz files.",
-    )
-    parser.add_argument(
-        "--out_dir",
-        type=pathlib.Path,
-        required=True,
-        help="Output path for extracted sequences.",
+        help="Working directory containing preprocessed npz/ folder.",
     )
     parser.add_argument(
         "--num_workers",
@@ -165,12 +159,11 @@ def save_metadata(
 
 
 def main():
-    """Main function to extract sequences from npz files."""
+    """Main function to process and cluster sequences."""
     args = parse_args()
-    npz_dir: pathlib.Path = args.npz_dir
-    out_dir: pathlib.Path = args.out_dir
 
     # Prepare partial function for multiprocessing
+    npz_dir: pathlib.Path = args.data_dir / "npz"
     npz_paths = sorted(npz_dir.rglob("*.npz"))
     print(f"Found {len(npz_paths)} preprocessed files to process.")
     with multiprocessing.Pool(args.num_workers) as pool:
@@ -237,45 +230,47 @@ def main():
             hash_set.add(seq_hash)
 
     # Perform clustering using MMseqs2 (if installed)
-    if True:
-        # Save the sequences
-        out_dir.mkdir(parents=True, exist_ok=True)
-        with open(out_dir / "proteins.fasta", "w") as f:
-            for h in sorted(proteins.keys()):
-                f.write(f">{proteins[h]}\n{h}\n")
-        with open(out_dir / "short_proteins.fasta", "w") as f:
-            for h in sorted(short_proteins.keys()):
-                f.write(f">{short_proteins[h]}\n{h}\n")
-        with open(out_dir / "dnas.fasta", "w") as f:
-            for h in sorted(dnas.keys()):
-                f.write(f">{dnas[h]}\n{h}\n")
-        with open(out_dir / "rnas.fasta", "w") as f:
-            for h in sorted(rnas.keys()):
-                f.write(f">{rnas[h]}\n{h}\n")
-        with open(out_dir / "small_molecules.fasta", "w") as f:
-            for h in sorted(mols.keys()):
-                f.write(f">{mols[h]}\n{h}\n")
+    # Save the sequences
+    cluster_dir: pathlib.Path = args.data_dir / "clustered"
+    cluster_dir.mkdir(parents=True, exist_ok=True)
+    with open(cluster_dir / "proteins.fasta", "w") as f:
+        for h in sorted(proteins.keys()):
+            f.write(f">{proteins[h]}\n{h}\n")
+    with open(cluster_dir / "short_proteins.fasta", "w") as f:
+        for h in sorted(short_proteins.keys()):
+            f.write(f">{short_proteins[h]}\n{h}\n")
+    with open(cluster_dir / "dnas.fasta", "w") as f:
+        for h in sorted(dnas.keys()):
+            f.write(f">{dnas[h]}\n{h}\n")
+    with open(cluster_dir / "rnas.fasta", "w") as f:
+        for h in sorted(rnas.keys()):
+            f.write(f">{rnas[h]}\n{h}\n")
+    with open(cluster_dir / "small_molecules.fasta", "w") as f:
+        for h in sorted(mols.keys()):
+            f.write(f">{mols[h]}\n{h}\n")
 
-        print(f"Saved extracted sequences to {out_dir}")
+    print(f"Saved extracted sequences to {cluster_dir}")
+    cmd_str = (
+        f"{args.mmseqs} "
+        f"easy-cluster "
+        f"{cluster_dir / 'proteins.fasta'} "
+        f"{cluster_dir / 'mmseq2_out'} "
+        f"{cluster_dir / 'tmp/'} "
+        "--min-seq-id 0.4 "
+        "--dbtype 1"
+    )
+    print("Running MMseqs2 clustering with command:")
+    print(cmd_str)
 
-    if False:
-        subprocess.run(
-            (
-                f"{args.mmseqs} ",
-                "easy-cluster ",
-                f"{out_dir / 'proteins.fasta'} ",
-                f"{out_dir / 'mmseq2_out'} ",
-                f"{out_dir / 'tmp/'} ",
-                "--min-seq-id 0.4 ",
-                "--dbtype 1",  # Force protein mode
-            ),
-            shell=True,  # noqa: S602
-            check=True,
-        )
+    subprocess.run(
+        cmd_str,
+        shell=True,
+        check=True,
+    )
 
     # Load mmseq2 clustering output
     cluster_out = pd.read_csv(
-        out_dir / "mmseq2_out_cluster.tsv",
+        cluster_dir / "mmseq2_out_cluster.tsv",
         sep="\t",
         header=None,
         names=["cluster_id", "seq_id"],
@@ -305,11 +300,11 @@ def main():
         "mol": mol_clustering,
     }
     print("Total clusters: ")
-    print(f"  Proteins (>=10 aa): {len(protein_clustering)}")
-    print(f"  Short Proteins (<10 aa): {len(short_protein_clustering)}")
-    print(f"  DNAs: {len(dna_clustering)}")
-    print(f"  RNAs: {len(rna_clustering)}")
-    print(f"  Small Molecules: {len(mol_clustering)}")
+    print(f"  Proteins (>=10 aa): {len(set(protein_clustering.values()))}")
+    print(f"  Short Proteins (<10 aa): {len(set(short_protein_clustering.values()))}")
+    print(f"  DNAs: {len(set(dna_clustering.values()))}")
+    print(f"  RNAs: {len(set(rna_clustering.values()))}")
+    print(f"  Small Molecules: {len(set(mol_clustering.values()))}")
 
     # Garbage collection
     del seq_dict
@@ -318,10 +313,10 @@ def main():
     gc.collect()
 
     # Save updated metadata with cluster IDs
-    meta_out = out_dir / "metadata/"
-    meta_out.mkdir(parents=True, exist_ok=True)
+    metadata_dir = args.data_dir / "metadata/"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
     partial_func = functools.partial(
-        save_metadata, mapping=cluster_mapping, out_dir=meta_out
+        save_metadata, mapping=cluster_mapping, out_dir=metadata_dir
     )
     # for npz_path in tqdm(npz_paths, desc="Saving metadata"):
     #     partial_func(npz_path)
