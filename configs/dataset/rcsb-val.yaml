@@ -1,0 +1,12 @@
+# RCSB validation dataset configuration.
+_yaml_: "default.yaml"
+name: rcsb-val
+
+# Data paths
+data_path: <DATA_PATH_PLACEHOLDER>
+seed: 42 # fixed seed for validation
+
+apo_init:
+  use_perturbation: false
+  prob_perturbation: 0.0
+  prob_replace_to_holo: 0.0 # enabled during training
