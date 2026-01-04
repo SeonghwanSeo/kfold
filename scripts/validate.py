@@ -4,8 +4,8 @@ import lightning.pytorch as pl
 import torch
 
 from kfold.config import load_config
-from kfold.training.folding.dataset.datamodule import TrainingDataModule
-from kfold.training.folding.training_module import KFoldTrainingModule
+from kfold.training.dataset.datamodule import TrainingDataModule
+from kfold.training.training_module import KFoldTrainingModule
 
 
 def parse_args() -> argparse.Namespace:

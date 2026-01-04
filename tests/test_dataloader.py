@@ -5,7 +5,7 @@ import torch
 from tqdm import tqdm
 
 from kfold.config import load_config
-from kfold.training.folding.dataset.datamodule import TrainingDataModule
+from kfold.training.dataset.datamodule import TrainingDataModule
 
 TEST_CONFIG_PATH = Path("./configs/train-af3-tiny.yaml")
 

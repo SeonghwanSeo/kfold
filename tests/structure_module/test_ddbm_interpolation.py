@@ -16,7 +16,7 @@ from kfold.config import load_config
 from kfold.data.model_input import FoldingInput
 from kfold.data.tokenized import TokenizedStructure
 from kfold.model.modules.structure_module.kfold_ddbm import KFoldBridgeDiffusion
-from kfold.training.folding.dataset.datamodule import TrainingDataModule
+from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.utils import errors
 from kfold.utils.registry import Registry
 
