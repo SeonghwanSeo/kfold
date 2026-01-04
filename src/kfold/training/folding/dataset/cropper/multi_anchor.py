@@ -263,7 +263,7 @@ class MultiAnchorCropper(BaseCropper):
         tokens = struct.token.token_index  # =np.arange(n_tokens)
         center_idx = struct.token.center_index  # (n_tokens, 3)
 
-        holo_coords = struct.atom.coords[..., 0, :]  # (n_tokens, 24, 3)
+        holo_coords = struct.atom.coords  # (n_tokens, 24, 3)
         center_coords = holo_coords[tokens, center_idx, :]  # (n_tokens, 3)
         resolved_mask = struct.atom.resolved_mask[tokens, center_idx]  # (n_tokens,)
 
@@ -333,7 +333,7 @@ class MultiAnchorCropper(BaseCropper):
         tokens = struct.token.token_index  # =np.arange(n_tokens)
         center_idx = struct.token.center_index  # (n_tokens, 3)
 
-        holo_coords = struct.atom.coords[..., 0, :]  # (n_tokens, 24, 3)
+        holo_coords = struct.atom.coords  # (n_tokens, 24, 3)
         center_coords = holo_coords[tokens, center_idx, :]  # (n_tokens, 3)
         resolved_mask = struct.atom.resolved_mask[tokens, center_idx]  # (n_tokens,)
 
@@ -557,7 +557,9 @@ class MultiAnchorCropper(BaseCropper):
         assert metadata is not None, "Structure metadata is required"
         all_chains: set[int] = set(struct.chain.asym_id.tolist())
         all_interfaces: list[tuple[int, int]] = [
-            interface.asym_ids for interface in metadata.interfaces if interface.valid
+            tuple(interface.asym_ids)
+            for interface in metadata.interfaces
+            if interface.is_valid
         ]
         all_interfaces = [v for v in all_interfaces if set(v).issubset(all_chains)]
         return sorted(set(all_interfaces))

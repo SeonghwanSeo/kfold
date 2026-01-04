@@ -229,7 +229,7 @@ def pick_interface_token(
     tokens_2 = all_tokens[chain_mask_2]
 
     # Compute distances between tokens in the two chains to determine interface
-    holo_coords = struct.atom.coords[..., 0, :]  # (num_tokens, 24, 3)
+    holo_coords = struct.atom.coords  # (num_tokens, 24, 3)
     tokens_1_coords = holo_coords[tokens_1, center_index[tokens_1]]
     tokens_2_coords = holo_coords[tokens_2, center_index[tokens_2]]
 

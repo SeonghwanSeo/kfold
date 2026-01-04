@@ -464,8 +464,6 @@ class AtomArray(PlainLayout[np.ndarray]):
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
     apo_mask: np.ndarray (bool)
         Boolean mask of shape [Ntoken, 24] indicating valid apo atoms.
-    apo_plddt: np.ndarray (float32)
-        Predicted LDDT scores of shape [Ntoken, 24,].
     pad_mask: np.ndarray (bool)
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
     """
@@ -479,7 +477,6 @@ class AtomArray(PlainLayout[np.ndarray]):
     resolved_mask: np.ndarray  # [Ntoken, 24], bool
     apo_coords: np.ndarray  # [Ntoken, 24, 3], float32
     apo_mask: np.ndarray  # [Ntoken, 24], bool
-    apo_plddt: np.ndarray  # [Ntoken, 24], float32
     pad_mask: np.ndarray  # [Ntoken, 24], bool
 
     @cached_property
@@ -518,7 +515,6 @@ class AtomArray(PlainLayout[np.ndarray]):
             ref_pos=full_nan((*shape, 3)),
             coords=full_nan((*shape, 3)),
             apo_coords=full_nan((*shape, 3)),
-            apo_plddt=full_nan(shape),
             ref_mask=full_false(shape),
             resolved_mask=full_false(shape),
             apo_mask=full_false(shape),
@@ -534,7 +530,6 @@ class AtomArray(PlainLayout[np.ndarray]):
                 "ref_pos",
                 "coords",
                 "apo_coords",
-                "apo_plddt",
                 "ref_mask",
                 "resolved_mask",
                 "apo_mask",
@@ -957,22 +952,22 @@ class TokenizedStructure:
         max_atoms_per_token = 24
 
         if atom_coords.ndim == 2:
-            assert num_atoms <= atom_coords.shape[1], (
-                f"Coordinate atom count ({atom_coords.shape[1]}) should be same or "
+            assert num_atoms <= atom_coords.shape[0], (
+                f"Coordinate atom count ({atom_coords.shape[0]}) should be same or "
                 f"larger than total atoms ({num_atoms})"
             )
-            # Create new coords array [num_tokens, 24, Nsample, 3]
+            # Create new coords array [num_tokens, 24, 3]
             new_coords = np.zeros(
                 (num_tokens, max_atoms_per_token, 3), dtype=atom_coords.dtype
             )
-            coords_to_assign = atom_coords[:num_atoms].transpose(1, 0, 2)
+            coords_to_assign = atom_coords[:num_atoms]
             new_coords[self.atom.pad_mask] = coords_to_assign
         else:
-            assert atom_coords.shape[1] <= num_tokens, (
-                f"Coordinate token count ({atom_coords.shape[1]}) should be same or "
+            assert atom_coords.shape[0] <= num_tokens, (
+                f"Coordinate token count ({atom_coords.shape[0]}) should be same or "
                 f"smaller than total tokens ({num_tokens})"
             )
-            assert atom_coords.shape[2] == max_atoms_per_token, (
+            assert atom_coords.shape[1] == max_atoms_per_token, (
                 f"Coordinate atom per token count ({atom_coords.shape[2]}) should be "
                 f"same to max atoms per token (24)"
             )

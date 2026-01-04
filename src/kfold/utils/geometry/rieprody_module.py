@@ -2,6 +2,7 @@
 
 import dataclasses
 import os
+import pickle
 import warnings
 from pathlib import Path
 
@@ -304,14 +305,14 @@ class RieProdyModule:
                     trajectory[:, res_idx, j, :] = trajectory_atom14[:, res_idx, i, :]
 
             # Filter by RMSD threshold
-            num_steps = trajectory.shape[0] - 1
-            true_mask = np.ones(mask.sum(), dtype=bool)
-            for step_idx in range(num_steps, 0, -1):
+            align_mask = mask & np.isfinite(trajectory[0]).all(axis=-1)
+            true_mask = np.ones(align_mask.sum(), dtype=bool)
+            for step_idx in range(Nstep - 1, -1, -1):
                 # Use the last valid perturbation within RMSD threshold
                 perturbed_coords = trajectory[step_idx]  # [L, 37, 3]
                 rmsd = compute_rmsd(
-                    perturbed_coords[mask],
-                    x_init[mask],
+                    perturbed_coords[align_mask],
+                    x_init[align_mask],
                     mask=true_mask,
                     align=True,
                 )
@@ -413,7 +414,6 @@ class RieProdyModule:
 
         L, Natoms = mask.shape
         x = x_init.astype(np.float32, copy=True)  # Safe copy
-        print(x.shape, mask.shape)
         x[~mask] = 0.0
 
         if mask.sum() == 0:
@@ -489,6 +489,99 @@ class RieProdyModule:
             return max_time
 
         return float(rng.uniform(min_time, max_time))
+
+    @property
+    def lmdb_env(self) -> lmdb.Environment | None:
+        """Lazy initialization of LMDB environment."""
+        lmdb_path = self.config.metric_lmdb_path
+        if self._lmdb_env is None and lmdb_path is not None:
+            assert Path(lmdb_path).exists(), f"LMDB path does not exist: {lmdb_path}"
+            self._lmdb_env = lmdb.open(
+                str(lmdb_path),
+                readonly=True,
+                lock=False,
+                readahead=False,
+                meminit=False,
+            )
+
+        return self._lmdb_env
+
+    def __del__(self):
+        """Cleanup LMDB environment on deletion."""
+        if self._lmdb_env is not None:
+            self._lmdb_env.close()
+            self._lmdb_env = None
+
+    def get_perturbation_stats(self) -> dict[str, float]:
+        """Get perturbation statistics as a dictionary with counts and percentages."""
+        total = self._stats_total_perturbations
+        if total == 0:
+            return {
+                "total": 0,
+                "success": 0,
+                "rmsd_filtered": 0,
+                "shape_mismatch": 0,
+                "success_pct": 0.0,
+                "rmsd_filtered_pct": 0.0,
+                "shape_mismatch_pct": 0.0,
+            }
+        return {
+            "total": total,
+            "success": self._stats_success,
+            "rmsd_filtered": self._stats_rmsd_filtered,
+            "shape_mismatch": self._stats_shape_mismatch,
+            "success_pct": 100.0 * self._stats_success / total,
+            "rmsd_filtered_pct": 100.0 * self._stats_rmsd_filtered / total,
+            "shape_mismatch_pct": 100.0 * self._stats_shape_mismatch / total,
+        }
+
+    def reset_perturbation_stats(self) -> None:
+        """Reset all perturbation statistics counters."""
+        self._stats_total_perturbations = 0
+        self._stats_rmsd_filtered = 0
+        self._stats_shape_mismatch = 0
+        self._stats_success = 0
+
+    def _log_perturbation_stats(self) -> None:
+        stats = self.get_perturbation_stats()
+        self.log(
+            f"n={stats['total']}: "
+            f"success={stats['success_pct']:.1f}%, "
+            f"rmsd_filtered={stats['rmsd_filtered_pct']:.1f}%, "
+            f"shape_mismatch={stats['shape_mismatch_pct']:.1f}%"
+        )
+
+    def _load_metric_from_lmdb(self, key: str) -> dict | None:
+        """Load pre-computed metric data from LMDB.
+
+        Parameters
+        ----------
+        key : str
+            Key to look up in LMDB.
+
+        Returns
+        -------
+        dict | None
+            Metric data dictionary or None if not found.
+        """
+        if self.lmdb_env is None:
+            return None
+
+        try:
+            with self.lmdb_env.begin(write=False) as txn:
+                value_bytes = txn.get(key.encode("utf-8"))
+                if value_bytes is None:
+                    return None
+                data = pickle.loads(value_bytes)
+                return data
+        except Exception as e:
+            # Log error but don't raise - return None to skip perturbation
+            raise e
+            warnings.warn(
+                f"Failed to load metric data for {key}: {e}",
+                UserWarning,
+            )
+            return None
 
     def _prepare_rieprody_data(self, metric_data: dict) -> dict:
         """Prepare data dictionary for RieProDy from metric data."""

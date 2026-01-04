@@ -2,7 +2,6 @@
 
 import gc
 import pathlib
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -110,6 +109,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self.validation_config: ValidationConfig = self.config.validation
         self.optimizer_config: OptimizerConfig = self.config.optimizer
         self.loss_config: LossConfig = self.config.loss
+        self.use_ema: bool = self.optimizer_config.use_ema
 
         # Whether to train structure and confidence modules
         self.train_trunk: bool = self.training_config.train_trunk
@@ -312,6 +312,7 @@ class KFoldTrainingModule(pl.LightningModule):
         try:
             loss, metrics = self.compute_losses(batch, out)
         except Exception as e:
+            raise e
             print(f"Skipping batch {batch_idx} due to error: {e}")
             return torch.tensor(0.0, device=self.device, requires_grad=True)
 
@@ -615,10 +616,6 @@ class KFoldTrainingModule(pl.LightningModule):
     # === EMA === #
     # Started from https://github.com/jwohlwend/boltz
     @property
-    def use_ema(self) -> bool:
-        return self.optimizer_config.use_ema
-
-    @property
     def is_ema_initialized(self) -> bool:
         return hasattr(self, "_ema")
 
@@ -671,27 +668,13 @@ class KFoldTrainingModule(pl.LightningModule):
             self.ema = ExponentialMovingAverage(self, decay=ema_decay)
             if self.ema.compatible(checkpoint["ema"]):
                 self.ema.load_state_dict(checkpoint["ema"], device=torch.device("cpu"))
+                self.ema.to(self.device)
             else:
                 print(
                     "Warning: EMA state not loaded due to incompatible model parameters."
                 )
-            self.ema.to(self.device)
-
-    def load_state_dict(
-        self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False
-    ) -> None:
-        if "distogram_loss.boundaries" in state_dict:
-            import warnings
-
-            warnings.warn(
-                "Loading from a checkpoint with distogram boundaries. "
-                "The boundaries are now registered buffers and will be ignored. "
-                "In future versions, this is likely to raise an error.",
-            )
-            state_dict = dict(state_dict)
-            del state_dict["distogram_loss.boundaries"]
-
-        super().load_state_dict(state_dict, strict=strict, assign=assign)
+                self.use_ema = False  # Disable EMA if not compatible
+                del self._ema
 
     # === Helper functions === #
     def save_structure(
@@ -714,27 +697,27 @@ class KFoldTrainingModule(pl.LightningModule):
 
         try:
             save_path = save_dir / f"{name}-gt.cif"
-            struct.write(save_path, 0)
+            struct.write(save_path)
         except Exception as e:
             print(f"Failed to save ground-truth CIF for {name}: {e}")
 
         try:
             save_path = save_dir / f"{name}-apo.cif"
-            struct.write(save_path, 0, save_apo=True)
+            struct.write(save_path, save_apo=True)
         except Exception as e:
             print(f"Failed to save apo CIF for {name}: {e}")
             try:
                 save_path = save_dir / f"{name}-apo.pdb"
-                struct.write(save_path, 0, save_apo=True)
+                struct.write(save_path, save_apo=True)
             except Exception as e:
                 print(f"Failed to save apo PDB for {name}")
 
         try:
             true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
-            new_struct = struct.replace_atom_coords(true_coords_arr)
             for i in range(true_coords_arr.shape[0]):
+                new_struct = struct.replace_atom_coords(true_coords_arr[i])
                 save_path = save_dir / f"{name}-gt-aligned{i}.cif"
-                new_struct.write(save_path, i)
+                new_struct.write(save_path)
         except Exception as e:
             print(f"Failed to save aligned ground-truth CIF for {name}: {e}")
 
@@ -743,12 +726,12 @@ class KFoldTrainingModule(pl.LightningModule):
         pred_coords_arr = pred_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
 
         try:
-            new_struct = struct.replace_atom_coords(pred_coords_arr)
             for i in range(pred_coords_arr.shape[0]):
+                new_struct = struct.replace_atom_coords(pred_coords_arr[i])
                 rmsd, lddt = rmsd_list[i], lddt_list[i]
                 save_path = (
                     save_dir / f"{name}-{i}-rmsd{rmsd:.2f}-lddt{lddt * 100:.2f}.cif"
                 )
-                new_struct.write(save_path, i)
+                new_struct.write(save_path)
         except Exception as e:
             print(f"Failed to save predicted CIF for {name}: {e}")

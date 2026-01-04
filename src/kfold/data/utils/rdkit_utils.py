@@ -78,9 +78,9 @@ def compute_rdkit_conformer(
     except Exception as e:
         print(f"ETKDG conformer generation failed with error: {e}")
     end = time.time()
-    if end - st > 30:
+    if end - st > timeout:
         print(
-            f"Warning: ETKDG conformer generation took longer than 30 seconds"
+            f"Warning: ETKDG conformer generation took longer than {timeout} seconds"
             f" ({end - st:.2f} seconds)"
         )
     return mol

@@ -123,6 +123,7 @@ def process_pdbe_ccd_component_and_save(
             num_confs=num_confs,
             compute_symmetry=compute_symmetry,
             date_cutoff=date_cutoff,
+            timeout=120,
             rng=rng,
         )
     except Exception as e:

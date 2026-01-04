@@ -35,7 +35,7 @@ chain_type_to_polymer_type: dict[C.ChainType, gemmi.PolymerType] = {
 }
 # three-letter codes
 chain_type_to_standard_residues: dict[C.ChainType, set[str]] = {
-    C.ChainType.PROTEIN: set(C.residue.PROTEIN_RESIDUES_EXTENDED_STR),
+    C.ChainType.PROTEIN: set(C.residue.PROTEIN_RESIDUES_STR),
     C.ChainType.RNA: set(C.residue.RNA_RESIDUES_STR),
     C.ChainType.DNA: set(C.residue.DNA_RESIDUES_STR),
     C.ChainType.LIGAND: set(),
@@ -281,7 +281,10 @@ def prepare_ref_chain(
         is_standard = name in standard_residues
         is_res_standards.append(is_standard)
         ref_mols.append(ref_mol)
-        if drop_leaving_atoms:
+        if chain_type.is_polymer and is_standard:
+            # For standard polymer residues, use standard atom counts
+            num_residue_atoms.append(len(C.atom.residue_atoms[name]))
+        elif drop_leaving_atoms:
             num_residue_atoms.append(ref_mol.num_non_leaving_atoms)
         else:
             num_residue_atoms.append(ref_mol.num_atoms)
@@ -297,10 +300,16 @@ def prepare_ref_chain(
     # ==================================================
     atom_name_list: list[str] = []
     for ref_mol in ref_mols:
-        if drop_leaving_atoms:
-            atom_name_list.extend(ref_mol.non_leaving_atom_names)
+        if chain_type.is_polymer and ref_mol.code in C.atom.residue_atoms:
+            # For standard residues, use pre-defined atom names
+            atom_names = C.atom.residue_atoms[ref_mol.code]
+        elif drop_leaving_atoms:
+            # For non-standard residues, drop leaving atoms if specified
+            atom_names = ref_mol.non_leaving_atom_names
         else:
-            atom_name_list.extend(ref_mol.atom_names)
+            # Use all atoms for non-standard residues
+            atom_names = ref_mol.atom_names
+        atom_name_list.extend(atom_names)
     num_atoms = len(atom_name_list)
     assert num_atoms == sum(num_residue_atoms), "Mismatch in total number of atoms."
 

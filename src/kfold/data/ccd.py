@@ -10,8 +10,6 @@ import gemmi
 import numpy as np
 from rdkit import Chem
 
-import kfold.constants as C
-
 from .utils import rdkit_utils
 
 # Helper function
@@ -276,7 +274,8 @@ class Component:
                 return coords
 
             model_coords = self.get_conformer("model", rng)
-            if model_coords is not None and not np.isnan(model_coords).all():
+            if model_coords is not None and np.isfinite(model_coords).any():
+                # NOTE: Use model conformer if any coordinate is finite
                 coords = model_coords
 
             if coords is not None:
@@ -338,6 +337,7 @@ class Component:
         is_ccd_component: bool = False,
         remove_hydrogens: bool = True,
         sanitize: bool = True,
+        timeout: int = 30,
         rng: np.random.Generator | None = None,
     ) -> Self:
         """Create a Component instance from an RDKit molecule and coordinates.
@@ -360,6 +360,8 @@ class Component:
             Whether the component is from CCD (default is False).
         sanitize : bool, optional
             Whether to sanitize the molecule (default is True).
+        timeout : int, optional
+            Timeout for conformer generation in seconds.
         rng : np.random.Generator | None, optional
             A random number generator for conformer generation (default is None).
 
@@ -393,23 +395,6 @@ class Component:
         assert all(name not in ("H", "D", "T") for name in ref_atom_names), (
             "Hydrogen atom names found in the molecule. "
         )
-        # Check the order of standard residue atoms
-        if code in C.residue.PROTEIN_RESIDUES_STR:
-            standard_atom_names = C.atom.residue_atoms[code]
-            expected_atom_names = list(standard_atom_names + ("OXT",))
-            assert ref_atom_names == expected_atom_names, (
-                f"Atom names in molecule {code} do not match the standard order. "
-                f"Expected: {expected_atom_names}, "
-                f"Found: {ref_atom_names}"
-            )
-        elif code in C.residue.DNA_RESIDUES_STR or code in C.residue.RNA_RESIDUES_STR:
-            standard_atom_names = C.atom.residue_atoms[code]
-            expected_atom_names = list(("OP3",) + standard_atom_names)
-            assert ref_atom_names == expected_atom_names, (
-                f"Atom names in molecule {code} do not match the standard order. "
-                f"Expected: {expected_atom_names}, "
-                f"Found: {ref_atom_names}"
-            )
 
         # Get elements
         ref_elements: np.ndarray = np.array(
@@ -427,6 +412,7 @@ class Component:
             [check_leaving_atom(atom) for atom in mol.GetAtoms()],
             dtype=bool,
         )
+
         # Get bonds
         bonds: dict[tuple[str, str], int] = {}
         for bond in mol.GetBonds():
@@ -447,7 +433,7 @@ class Component:
             rng = rng or np.random.default_rng()
             seed = int(rng.integers(1, 1 << 16))
             etkdg_mol = rdkit_utils.compute_rdkit_conformer(
-                mol, num_confs, add_hydrogens=True, seed=seed
+                mol, num_confs, add_hydrogens=True, seed=seed, timeout=timeout
             )
             for conf in etkdg_mol.GetConformers():
                 coords_dict: dict[str, Point3D] = {}
@@ -532,6 +518,7 @@ class Component:
         num_confs: int = 0,
         compute_symmetry: bool = False,
         date_cutoff: datetime.date | None = None,
+        timeout: int = 30,
         rng: np.random.Generator | None = None,
     ) -> Self:
         # Get RDKit molecule with hydrogens
@@ -576,6 +563,7 @@ class Component:
             compute_symmetry=compute_symmetry,
             is_ccd_component=True,
             sanitize=False,
+            timeout=timeout,
             rng=rng,
         )
 
@@ -586,6 +574,7 @@ class Component:
         smiles: str,
         num_confs: int = 0,
         compute_symmetry: bool = False,
+        timeout: int = 30,
         rng: np.random.Generator | None = None,
     ) -> Self:
         """Create a Component instance from an RDKit molecule and coordinates.
@@ -618,6 +607,8 @@ class Component:
             num_confs=num_confs,
             compute_symmetry=compute_symmetry,
             is_ccd_component=False,
+            sanitize=True,
+            timeout=timeout,
             rng=rng,
         )
 

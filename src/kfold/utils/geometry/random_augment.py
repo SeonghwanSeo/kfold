@@ -43,26 +43,33 @@ def get_center(coords: ArrayT, mask: ArrayT) -> ArrayT:
     -------
     np.ndarray | torch.Tensor
         The mean position of the masked coordinates of shape (*, 1, 3).
-
     """
     if not mask.any():
         raise ValueError("Mask has no True values; cannot compute center.")
 
     if isinstance(coords, np.ndarray):
         assert isinstance(mask, np.ndarray)
+        # Expand mask: (..., L) -> (..., L, 1)
+        mask_expanded = mask[..., None]
+
+        # Sanitize coords: replace masked positions with 0.0 to prevent NaN propagation.
+        # (NaN * 0.0 = NaN, so we must remove NaNs before math).
+        safe_coords = np.where(mask_expanded.astype(bool, copy=False), coords, 0.0)
+
         total_mass = mask.sum(-1, keepdims=True, dtype=np.float32).clip(1)  # [..., 1]
         center = (
-            np.sum(coords * mask[..., None], axis=-2, keepdims=True)
-            / total_mass[..., None]
+            np.sum(safe_coords, axis=-2, keepdims=True) / total_mass[..., None]
         )  # [..., 1, 3]
         return center
     else:
         assert isinstance(mask, torch.Tensor)
+        mask_bool = mask.bool().unsqueeze(-1)
+
+        # Sanitize coords
+        safe_coords = coords.masked_fill(~mask_bool, 0.0)
+
         total_mass = mask.sum(-1, keepdim=True).clamp(1)
-        center = (
-            torch.sum(coords * mask[..., None], dim=-2, keepdim=True)
-            / total_mass[..., None]
-        )
+        center = torch.sum(safe_coords, dim=-2, keepdim=True) / total_mass[..., None]
         return center
 
 
@@ -92,11 +99,19 @@ def do_centering(coords: ArrayT, mask: ArrayT, mask_to_zero: bool = True) -> Arr
         # If no positions are masked, return coords as is
         return coords
 
+    # get_center now handles NaNs internally
     center_pos = get_center(coords, mask)  # shape (*, 1, 3)
     centered_coords = coords - center_pos
 
     if mask_to_zero:
-        centered_coords = centered_coords * mask[..., None]
+        if isinstance(centered_coords, np.ndarray):
+            # Use where to cleanly zero out masked regions (handling potential NaNs)
+            mask_expanded = mask[..., None].astype(bool, copy=False)
+            centered_coords = np.where(mask_expanded, centered_coords, 0.0)
+        elif isinstance(centered_coords, torch.Tensor):
+            # Use masked_fill to cleanly zero out masked regions
+            mask_bool = mask.bool().unsqueeze(-1)
+            centered_coords = centered_coords.masked_fill(~mask_bool, 0.0)
 
     return centered_coords  # type: ignore
 
@@ -162,6 +177,8 @@ def _center_random_augmentation_npy(
         R = random_rotations_npy(
             coords.shape[:-2], dtype=np.float32, rng=rng
         )  # [..., 3, 3]
+
+        # Matrix multiplication is safe (NaNs stay local to invalid atoms)
         coords = np.einsum("...md,...ds->...ms", coords, R)
 
         # Line 3,4
@@ -175,7 +192,9 @@ def _center_random_augmentation_npy(
             coords = coords + random_trans
 
     if mask_to_zero:
-        coords = coords * mask[..., None]
+        # Use np.where to ensure NaN values in masked regions become 0.0
+        mask_expanded = mask[..., None].astype(bool)
+        coords = np.where(mask_expanded, coords, 0.0)
 
     return coords
 
@@ -214,7 +233,9 @@ def _center_random_augmentation_torch(
             coords = coords + noise * s_trans
 
     if mask_to_zero:
-        coords = coords * mask[..., None]
+        # Use masked_fill to ensure NaN values in masked regions become 0.0
+        mask_bool = mask.bool().unsqueeze(-1)
+        coords = coords.masked_fill(~mask_bool, 0.0)
 
     return coords
 
@@ -420,7 +441,9 @@ class CenterRandomAugmentation:
 
         # Mask out
         if self.mask_to_zero:
-            coords_list = [x * mask[..., None] for x in coords_list]
+            # Use masked_fill to handle NaNs correctly
+            mask_bool = mask.bool().unsqueeze(-1)
+            coords_list = [x.masked_fill(~mask_bool, 0.0) for x in coords_list]
 
         if len(coords) == 1:
             # Single tensor input, return tensor

@@ -126,7 +126,7 @@ class ApoInitializerConfig:
     use_symmetry_correction : bool
         Whether to correct for symmetry to holo structures.
         NOTE: This is used during training only.
-    rieprody_module : RieProdyModuleConfig
+    rieprody : RieProdyModuleConfig
         Configuration for RieProDy-based apo perturbation.
     prob_perturbation : float
         Probability of applying perturbation to apo structures.
@@ -137,20 +137,17 @@ class ApoInitializerConfig:
         NOTE: This is used during training only.
     prior_type : str
         Type of prior when apo structure is not available.
-    seed : int | None
-        Random seed for stochastic operations.
     """
 
     use_perturbation: bool = False
     use_random_rotation: bool = False
     use_symmetry_correction: bool = False
-    rieprody_module: RieProdyModuleConfig = dataclasses.field(
+    rieprody: RieProdyModuleConfig = dataclasses.field(
         default_factory=RieProdyModuleConfig
     )
     prob_perturbation: float = 1.0
     prob_replace_to_holo: float = 0.0
     prior_type: str = "langevin"  # 'null', 'zero', 'langevin'
-    seed: int | None = 42
 
 
 class ApoInitializer:
@@ -167,10 +164,9 @@ class ApoInitializer:
         self.prob_perturbation: float = config.prob_perturbation
         self.prob_replace_to_holo: float = config.prob_replace_to_holo
         self.prior_type: str = config.prior_type
-        self.seed: int | None = config.seed
         self.ccd: CCD = ccd
 
-        self.rieprody_module: RieProdyModule = RieProdyModule(config.rieprody_module)
+        self.rieprody_module: RieProdyModule = RieProdyModule(config.rieprody)
 
         if self.prob_replace_to_holo > 0.0:
             raise NotImplementedError(
@@ -229,7 +225,7 @@ class ApoInitializer:
         rng : np.random.Generator
             Random number generator for stochastic operations.
         """
-        rng = rng or np.random.default_rng(self.seed)
+        rng = rng or np.random.default_rng()
 
         # Insert apo coordinates
         self.insert_apo_coordinates(struct, lookup, rng)
@@ -338,7 +334,9 @@ class ApoInitializer:
                         assert chain.num_residues == 1, (
                             "Residue with LIG found in chain with multiple residues."
                         )
-                        ref_mol = Component.from_smiles(ccd_name, chain_meta.smiles)
+                        ref_mol = Component.from_smiles(
+                            ccd_name, chain_meta.smiles, num_confs=1
+                        )
                     else:
                         assert ccd_name in self.ccd, (
                             f"Residue name {ccd_name} not found in CCD."
@@ -346,7 +344,8 @@ class ApoInitializer:
                         ref_mol = self.ccd[ccd_name]
 
                     ref_atom_order: dict[str, int] = ref_mol.get_atom_index_map()
-                    ref_pos = ref_mol.get_conformer("auto", rng)  # [Natom, 3]
+                    # FIXME: change conformer mode.
+                    ref_pos = ref_mol.get_conformer("train", rng)  # [Natom, 3]
                     assert ref_pos is not None, "Auto mode always provides a conformer."
 
                     if self.use_random_rotation:
@@ -525,16 +524,13 @@ class ApoInitializer:
         """
         assert coords.ndim == 3, "Apo coordinates must be of shape [L, Natom, 3]."
         # Flatten
+        L, Natom = coords.shape[:2]
         mask = np.isfinite(coords).all(axis=-1)
-        coords = np.where(mask[..., None], coords, 0.0)
-        L = coords.shape[0]
-
         augmented_coords = center_random_augmentation(
-            coords.reshape(-1, 3),
-            mask.reshape(-1),
+            coords.reshape(L * Natom, 3),
+            mask.reshape(L * Natom),
             augmentation=True,
             s_trans=1.0,
-        ).reshape(L, -1, 3)
-
+        ).reshape(L, Natom, 3)
         augmented_coords[~mask] = np.nan
         return augmented_coords

@@ -6,6 +6,7 @@ from rdkit import Chem
 import kfold.constants as C
 from kfold.data import schema, structure, tokenized
 from kfold.data.ccd import CCD, Component
+from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
 
 class Tokenizer:
@@ -265,6 +266,9 @@ def tokenize_structure(
         token_feat = getattr(struct.token, k)
         token_feat[:] = np.repeat(residue_feat, struct.residue.num_tokens, axis=0)
 
+    # Set default token index
+    struct.token.token_index[:] = np.arange(num_tokens, dtype=np.int32)
+
     # ==================================================
     # Fill atom structures
     # ==================================================
@@ -279,11 +283,10 @@ def tokenize_structure(
         assert pad_mask.sum() == chain.num_atoms, "Number of valid atoms does not match"
 
         # Insert ground-truth coordinates
-        label_coords = chain.atom.label_coords  # (num_atoms, 3)
-        struct.atom.coords[token_st:token_end][pad_mask] = label_coords
+        struct.atom.coords[token_st:token_end][pad_mask] = chain.atom.label_coords
 
-        # Insert apo coordinates
-        struct.atom.apo_coords[pad_mask] = chain.atom.apo_coords
+        # Insert apo coordinates (NOTE: apo_coords are already center-random-augmented)
+        struct.atom.apo_coords[token_st:token_end][pad_mask] = chain.atom.apo_coords
 
         # Insert reference molecules
         for res_i in range(chain.num_residues):
@@ -312,6 +315,10 @@ def tokenize_structure(
             ref_charge: np.ndarray = ref_mol.charges  # (num_atoms,)
             ref_pos: np.ndarray = ref_mol.get_conformer(conformer_mode, rng)  # type: ignore
             assert ref_pos is not None, "Auto mode always provides a conformer."
+
+            # Rotate
+            ref_mask = np.isfinite(ref_pos).all(axis=-1)
+            ref_pos = center_random_augmentation(ref_pos, ref_mask, rng=rng)
 
             res_atom_st = int(chain.residue.atom_starts[res_i])
             natoms = int(chain.residue.num_atoms[res_i])
@@ -362,9 +369,14 @@ def tokenize_structure(
     # Update NaN to zero
     struct.atom.ref_charge[np.isnan(struct.atom.ref_charge)] = 0.0
     struct.atom.ref_pos[np.isnan(struct.atom.ref_pos)] = 0.0
-    struct.atom.coords[np.isnan(struct.atom.coords)] = 0.0
     struct.atom.apo_coords[np.isnan(struct.atom.apo_coords)] = 0.0
-    struct.atom.apo_plddt[np.isnan(struct.atom.apo_plddt)] = 0.0
+
+    # Update holo coordinates (centering & NaN to zero)
+    struct.atom.coords[:] = do_centering(
+        struct.atom.coords.reshape(-1, 3),
+        struct.atom.resolved_mask.reshape(-1),
+        mask_to_zero=True,
+    ).reshape(struct.atom.coords.shape)
 
     # ==================================================
     # Fill bond structures

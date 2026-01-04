@@ -7,7 +7,6 @@ import torch
 
 import kfold.constants as C
 from kfold.data import model_input, tokenized
-from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
 from .utils import frame_utils
 
@@ -32,8 +31,6 @@ class InputFeaturizer:
 
     def __init__(
         self,
-        augment_ref_pos: bool = True,
-        synchronize_ref_pos_augmentation: bool = False,
         seq_embedding_dim: int | None = None,
         struct_embedding_dim: int | None = None,
         max_struct_ensembles: int = 1,
@@ -42,12 +39,6 @@ class InputFeaturizer:
 
         Parameters
         ----------
-        augment_ref_pos : bool, optional
-            Whether to apply random augmentation to ref_pos,
-        synchronize_ref_pos_augmentation : bool
-            Whether to synchronize the random augmentation for ref_pos across all atoms,
-            default: False.
-            NOTE: This flag is just for running Boltz1 in this repository. (Boltz1: True)
         seq_embedding_dim : int | None, optional
             Dimension of the sequence embedding.
         struct_embedding_dim : int | None, optional
@@ -55,10 +46,6 @@ class InputFeaturizer:
         max_struct_ensembles : int, optional
             Maximum number of structure ensembles to consider for structure embeddings.
         """
-        # Featurization arguments
-        self.augment_ref_pos: bool = augment_ref_pos
-        self.synchronize_ref_pos_augmentation: bool = synchronize_ref_pos_augmentation
-
         # Precomputed embeddings
         self.seq_embedding_dim: int | None = seq_embedding_dim
         self.struct_embedding_dim: int | None = struct_embedding_dim
@@ -123,12 +110,7 @@ class InputFeaturizer:
         rng: np.random.Generator,
     ) -> model_input.FoldingInput:
         """Convert the tokenized structure to model input features."""
-        return featurize_structure(
-            struct,
-            augment_ref_pos=self.augment_ref_pos,
-            synchronize_ref_pos_augmentation=self.synchronize_ref_pos_augmentation,
-            rng=rng,
-        )
+        return featurize_structure(struct, rng=rng)
 
     def add_precomputed_embedding(
         self,
@@ -195,58 +177,8 @@ class InputFeaturizer:
         return f_input.copy_with(pretrained=new_pretrained)
 
 
-# === Helper functions === #
-def do_augment_ref_pos(
-    ref_pos: np.ndarray,
-    mask: np.ndarray,
-    conformer_sizes: list[int],
-    rng: np.random.Generator,
-    synchronize: bool = False,
-) -> np.ndarray:
-    """Augment reference positions with random translation and rotation.
-
-    Parameters
-    ----------
-    ref_pos : np.ndarray
-        Reference positions of shape [Natom, 3].
-    mask : np.ndarray
-        Mask indicating valid atoms of shape [Natom,].
-    conformer_sizes : list[int]
-        List of number of atoms per each conformer.
-    rng : np.random.Generator
-        Random number generator for augmentation.
-    synchronize : bool
-        Whether to synchronize the random augmentation across all atoms.
-
-    Returns
-    -------
-    augmented_ref_pos : np.ndarray
-        Augmented reference positions of shape [Natom, 3].
-
-    """
-
-    if synchronize:
-        # NOTE: Just for running Boltz. This flag should be False.
-        return center_random_augmentation(ref_pos, mask, rng=rng)
-    else:
-        new_ref_pos = np.zeros_like(ref_pos)
-        start_idx = 0
-        # Apply random augmentation per residue(conformer)
-        for natom in conformer_sizes:
-            end_idx = start_idx + natom
-            new_ref_pos[start_idx:end_idx] = center_random_augmentation(
-                ref_pos[start_idx:end_idx],  # =residue_conf
-                mask[start_idx:end_idx],  # =residue_mask
-                rng=rng,
-            )
-            start_idx = end_idx
-        return new_ref_pos
-
-
 def featurize_structure(
     struct: tokenized.TokenizedStructure,
-    augment_ref_pos: bool = True,
-    synchronize_ref_pos_augmentation: bool = False,
     rng: np.random.Generator | None = None,
 ) -> model_input.FoldingInput:
     """Featurize a tokenized structure into model input features.
@@ -255,10 +187,6 @@ def featurize_structure(
     ----------
     struct : TokenizedStructure
         The tokenized structure to featurize.
-    augment_ref_pos : bool
-        Whether to apply random augmentation to ref_pos,
-    synchronize_ref_pos_augmentation : bool
-        Whether to synchronize the random augmentation for ref_pos across all atoms,
     rng : np.random.Generator
         Random number generator for augmentation.
 
@@ -322,17 +250,8 @@ def featurize_structure(
     atom_dict["token_index"] = atom_to_token
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
-    # Random sample the ground truth holo coords if multiple holo coords are given.
-    # [Natom, Nholo, 3] -> [Natom, 3]
-    label_coords = atom_dict.pop("coords")  # Rename for clarity
-    n_holo = label_coords.shape[-2]
-    assert n_holo == 1, "Currently only single holo coordinate is supported."
-    sampled_idx = rng.integers(low=0, high=n_holo)
-    label_coords = label_coords[:, sampled_idx, :]
-
-    # Centering the ground truth coords
-    label_coords = do_centering(label_coords, atom_dict["resolved_mask"])
-    atom_dict["label_coords"] = label_coords
+    # Rename label_coords
+    atom_dict["label_coords"] = atom_dict.pop("coords")
 
     # === Bond-level features ===
     num_bonds = bond_data.length
@@ -393,12 +312,8 @@ def featurize_structure(
     token_dict["center_coords"] = atom_dict["label_coords"][token_dict["center_index"]]
 
     # Masks indicating whether the center/disto atoms are resolved
-    token_dict["resolved_mask"] = (
-        token_data.resolved_mask & atom_dict["resolved_mask"][token_dict["center_index"]]
-    )
-    token_dict["disto_mask"] = (
-        token_data.resolved_mask & atom_dict["resolved_mask"][token_dict["disto_index"]]
-    )
+    token_dict["resolved_mask"] = atom_dict["resolved_mask"][token_dict["center_index"]]
+    token_dict["disto_mask"] = atom_dict["resolved_mask"][token_dict["disto_index"]]
 
     # === Atom-level features ===
 
@@ -424,33 +339,6 @@ def featurize_structure(
         ref_space_uid.extend([v] * token_dict["num_atoms"][tidx])
         ref_space_natoms[v] += token_dict["num_atoms"][tidx]
     atom_dict["ref_space_uid"] = np.array(ref_space_uid, dtype=np.int64)
-
-    # Random augmentation (stochasticity)
-    # TODO: random sample from multiple ETKDG conformers.
-    if augment_ref_pos:
-        # Compute the number of atoms per each conformer
-        num_atoms_per_conformer = [
-            ref_space_natoms[uid] for uid in sorted(ref_space_natoms.keys())
-        ]
-        atom_dict["ref_pos"] = do_augment_ref_pos(
-            ref_pos=atom_dict["ref_pos"],
-            mask=atom_dict["pad_mask"],  # Same to np.ones(...)
-            conformer_sizes=num_atoms_per_conformer,
-            synchronize=synchronize_ref_pos_augmentation,
-            rng=rng,
-        )
-
-    # [Natom, Napo, 3] -> [Natom, 3], Napo must be 1 (sampled beforehand)
-    apo_coords = atom_dict.pop("apo_coords")  # [Natom, Napo, 3]
-    apo_mask = atom_dict.pop("apo_mask")  # [Natom, Napo]
-    n_apo: int = apo_coords.shape[1]
-    assert n_apo == 1, "Apo coordinates should be sampled beforehand."
-    apo_coords = apo_coords[:, 0, :]
-    apo_mask = apo_mask[:, 0]
-
-    apo_coords = do_centering(apo_coords, apo_mask)
-    atom_dict["apo_coords"] = apo_coords
-    atom_dict["apo_mask"] = apo_mask
 
     # === Bond-level features ===
 
@@ -541,7 +429,7 @@ def load_pretrained_sequence_embedding(
     entity_ids = f_input.chain.entity_id
     cached_embeddings: dict[int, torch.Tensor] = {}
 
-    out = torch.zeros((f_input.num_tokens, embedding_dim), dtype=torch.bfloat16)
+    out = torch.zeros((f_input.num_tokens, embedding_dim), dtype=torch.float32)
 
     # NOTE: the tokens are ordered by chains.
     token_st: int = 0
@@ -556,7 +444,7 @@ def load_pretrained_sequence_embedding(
             print_warning: bool = True  # For debugging purpose
             if print_warning and chain_type.is_protein:
                 warnings.warn(
-                    f"Precomputed Embedding file not found: {entity_id}."
+                    f"Precomputed sequence embedding file not found: {entity_id}."
                     f" Zero tensor is used instead.",
                     UserWarning,
                     stacklevel=2,
@@ -577,19 +465,27 @@ def load_pretrained_sequence_embedding(
         #    -> fill residues 1 to 24 with embeddings from residues 10 to 33
         res_st, res_end, emb_st, emb_end = parse_residue_map(entity_info["residue_map"])
 
+        if not emb_path.exists():
+            if chain_type.is_protein:
+                warnings.warn(
+                    f"Precomputed sequence embedding file not found: {emb_path}."
+                    f" Zero tensor is used instead.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            token_st += num_tokens
+            continue
+
         if entity_id in cached_embeddings:
             # Use cached embedding if already loaded
             embedding_tensor = cached_embeddings[entity_id]
         else:
             # Load embedding from file
-            assert emb_path.exists(), (
-                f"Precomputed structure embedding file not found: {emb_path}"
-            )
             embedding_tensor = torch.load(emb_path, "cpu", weights_only=True)
             # Trim embedding to the specified range
-            embedding_tensor = embedding_tensor[emb_st:emb_end]
-            # Cache the loaded embedding with bf16 to save memory
-            cached_embeddings[entity_id] = embedding_tensor.to(torch.bfloat16)
+            embedding_tensor = embedding_tensor[emb_st:emb_end].to(torch.float32)
+            # Cache the loaded embedding
+            cached_embeddings[entity_id] = embedding_tensor
 
         # Extract embeddings for the tokens in this chain
         chain_token_mask = f_input.token.asym_id == asym_id
@@ -653,9 +549,7 @@ def load_pretrained_structure_embedding(
     entity_ids: list[int] = f_input.chain.entity_id.tolist()
     cached_embeddings: dict[int, torch.Tensor] = {}
 
-    out = torch.zeros(
-        (f_input.num_tokens, max_ensembles, embedding_dim), dtype=torch.bfloat16
-    )
+    out = torch.zeros((f_input.num_tokens, max_ensembles, embedding_dim))
 
     # NOTE: the tokens are ordered by chains.
     token_st: int = 0
@@ -669,7 +563,7 @@ def load_pretrained_structure_embedding(
             print_warning: bool = True  # For debugging purpose
             if print_warning and chain_type.is_protein:
                 warnings.warn(
-                    f"Precomputed Embedding file not found: {entity_id}."
+                    f"No precomputed structure embedding: {entity_id}."
                     f" Zero tensor is used instead.",
                     UserWarning,
                     stacklevel=2,
@@ -681,6 +575,11 @@ def load_pretrained_structure_embedding(
             "Precomputed sequence embedding is only supported for polymer chains."
         )
 
+        if not chain_type.is_protein:
+            # HACK: currently only protein structure embeddings are supported.
+            token_st += num_tokens
+            continue
+
         # Get embedding info for this entity_id
         entity_info = embedding_info[entity_id]
         # Embedding file path
@@ -690,14 +589,20 @@ def load_pretrained_structure_embedding(
         #    -> fill residues 1 to 24 with embeddings from residues 10 to 33
         res_st, res_end, emb_st, emb_end = parse_residue_map(entity_info["residue_map"])
 
+        if not emb_path.exists():
+            warnings.warn(
+                f"Precomputed structure embedding file not found: {emb_path}."
+                f" Zero tensor is used instead.",
+                UserWarning,
+                stacklevel=2,
+            )
+            token_st += num_tokens
+            continue
+
         if entity_id in cached_embeddings:
             # Use cached embedding if already loaded
             embedding_tensor = cached_embeddings[entity_id]
         else:
-            # Load embedding for this entity_id and chain_type (bf16 to save memory)
-            assert emb_path.exists(), (
-                f"Precomputed structure embedding file not found: {emb_path}"
-            )
             embedding_tensor = torch.load(emb_path, "cpu", weights_only=True)
             # [Nstruct, Nres, Nfeat] or [Nres, Nfeat]
             assert embedding_tensor.ndim in (2, 3), (
@@ -721,11 +626,10 @@ def load_pretrained_structure_embedding(
 
             # Trim embedding to the specified range
             embedding_tensor = embedding_tensor[emb_st:emb_end]
+            embedding_tensor = embedding_tensor.to(torch.float32).contiguous()
 
-            # Cache the loaded embedding with bf16 to save memory
-            cached_embeddings[entity_id] = embedding_tensor.to(
-                torch.bfloat16
-            ).contiguous()
+            # Cache the loaded embedding
+            cached_embeddings[entity_id] = embedding_tensor
 
         # Extract embeddings for the tokens in this chain
         asym_id = f_input.chain.asym_id[cidx].item()

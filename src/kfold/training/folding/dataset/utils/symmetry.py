@@ -149,11 +149,11 @@ def get_alt_coordinates(
     """
 
     # Get original coordinates
-    original_coords = cropped_struct.atom.coords[:, :, 0, :]  # [Ntoken, 24, 3]
+    original_coords = cropped_struct.atom.coords  # [Ntoken, 24, 3]
     original_resolved_mask = cropped_struct.atom.resolved_mask  # [Ntoken, 24]
 
     # Get entire coordinates as the source of symmetries
-    all_coords = all_struct.atom.coords[:, :, 0, :]  # [Ntoken, 24, 3]
+    all_coords = all_struct.atom.coords  # [Ntoken, 24, 3]
     all_resolved_mask = all_struct.atom.resolved_mask  # [Ntoken, 24]
 
     # === Get chain symmetries === #

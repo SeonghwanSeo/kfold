@@ -154,16 +154,16 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                     unk = "X"
 
                     if chain.ctype.is_protein:
-                        standard_set = C.residue.PROTEIN_AMINO_ACIDS
+                        standard_set = set(C.residue.PROTEIN_AMINO_ACIDS)
                         unk = "X"
                         sequence = (
                             sequence.replace("B", "D").replace("Z", "E").replace("U", "C")
                         )
                     elif chain.ctype.is_rna:
-                        standard_set = C.residue.RNA_BASES
+                        standard_set = set(C.residue.RNA_BASES)
                         unk = "N"
                     elif chain.ctype.is_dna:
-                        standard_set = C.residue.DNA_BASES
+                        standard_set = set(C.residue.DNA_BASES)
                         unk = "N"
 
                     if standard_set:
@@ -202,7 +202,7 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                         (ctype, seq)
                     ]
                     struct_emb = {
-                        "path": f"{seq_id}.pt",
+                        "path": f"{struct_id}.pt",
                         "residue_map": struct_res_map,
                     }
                     entity_lookup_data["struct_emb"] = struct_emb

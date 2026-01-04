@@ -170,7 +170,11 @@ def extract_substructure(
             and iface.asym_ids[1] in selected_asym_ids
         )
     ]
-    new_metadata = metadata.copy_with(
+    new_metadata = Metadata(
+        id=metadata.id,
+        source=metadata.source,
+        exp=metadata.exp,
+        prediction=metadata.prediction,
         chains=new_chain_metas,
         interfaces=new_interfaces_meta,
     )

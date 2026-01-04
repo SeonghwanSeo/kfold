@@ -364,6 +364,7 @@ class AtomTensor(TensorLayout):
     ref_element: torch.Tensor  # [Natom, 128], float32
     ref_charge: torch.Tensor  # [Natom,], float32
     ref_pos: torch.Tensor  # [Natom, 3], float32
+    ref_mask: torch.Tensor  # [Natom,], bool
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
     label_coords: torch.Tensor  # [Natom, 3], float32
@@ -394,6 +395,7 @@ class AtomTensor(TensorLayout):
         )
         check_tensor(self.ref_charge, name="ref_charge", dtype=torch.float32, shape=shape)
         check_tensor(self.ref_pos, name="ref_pos", dtype=torch.float32, shape=(*shape, 3))
+        check_tensor(self.ref_mask, name="ref_mask", dtype=torch.bool, shape=shape)
         check_tensor(
             self.ref_space_uid, name="ref_space_uid", dtype=torch.long, shape=shape
         )
@@ -430,6 +432,7 @@ class AtomTensor(TensorLayout):
             "ref_element": 0.0,  # max value for element encoding
             "ref_charge": 0.0,
             "ref_pos": 0.0,
+            "ref_mask": False,
             "ref_space_uid": -1,
             "token_index": 0,
             "apo_coords": 0.0,

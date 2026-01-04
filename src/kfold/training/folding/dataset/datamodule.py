@@ -25,27 +25,28 @@ def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, lis
 
 
 class DataModuleConfig(BaseConfig):
-    # === Dataset configs === #
-    train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
-    val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
-
     # === Common config for data modules === #
     train_batch_size: int = 1
     val_batch_size: int = 1
     num_workers: int = 0
     persistent_workers: bool = True
     pin_memory: bool = True
-    ccd_path: Path
+    safe_load: bool = True
 
     # === Training hyperparameters === #
     max_chains: int = 20
     max_tokens: int = 384
 
+    # === CCD path === #
+    ccd_path: Path
+
+    # === Dataset configs === #
+    train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
+    val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
+
     # === Featurization args === #
-    seq_embedding: str | None = None
-    seq_embedding_dim: int | None = None
-    struct_embedding: str | None = None
-    struct_embedding_dim: int | None = None
+    pretrained_embedding: dict = dataclasses.field(default_factory=dict)
+    featurization: dict = dataclasses.field(default_factory=dict)
 
 
 @DATAMODULE.register(config_cls=DataModuleConfig)
@@ -76,12 +77,11 @@ class TrainingDataModule(pl.LightningDataModule):
         multi_ds = MultiTrainingDataset(
             configs=self.config.train_datasets,
             ccd=self.ccd,
+            pretrained_embedding=self.config.pretrained_embedding,
+            featurization_args=self.config.featurization,
             max_chains=self.config.max_chains,
             max_tokens=self.config.max_tokens,
-            seq_embedding=self.config.seq_embedding,
-            seq_embedding_dim=self.config.seq_embedding_dim,
-            struct_embedding=self.config.struct_embedding,
-            struct_embedding_dim=self.config.struct_embedding_dim,
+            safe_load=self.config.safe_load,
         )
         # Print dataset info
         for d in multi_ds.datasets:
@@ -100,10 +100,9 @@ class TrainingDataModule(pl.LightningDataModule):
         ds = ValidationDataset(
             config=self.config.val_datasets[0],
             ccd=self.ccd,
-            seq_embedding=self.config.seq_embedding,
-            seq_embedding_dim=self.config.seq_embedding_dim,
-            struct_embedding=self.config.struct_embedding,
-            struct_embedding_dim=self.config.struct_embedding_dim,
+            pretrained_embedding=self.config.pretrained_embedding,
+            featurization_args=self.config.featurization,
+            safe_load=self.config.safe_load,
         )
         self.print_rank_zero(
             f"Constructed validation dataset '{ds.name}' with {len(ds)} samples."

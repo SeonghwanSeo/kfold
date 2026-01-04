@@ -77,6 +77,7 @@ from pathlib import Path
 import lmdb
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 from typing_extensions import override
 
 import kfold.constants as C
@@ -93,9 +94,8 @@ from .filter import BaseFilter
 from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
 
+
 # === Dataset Classes === #
-
-
 @dataclasses.dataclass(kw_only=True)
 class DatasetConfig:
     """Base configuration for dataset.
@@ -104,28 +104,27 @@ class DatasetConfig:
     ----------
     name : str
         Name of the dataset.
-    dataset_path : str | Path
+    data_path : str | Path
         Path to the dataset directory.
-    apo_initialize : apo_initialize.ApoInitializerConfig
-        Configuration for apo structure initialization.
-    safe_load : bool
-        Whether to safely retry loading data on failure.
-    featurization_args : dict
-        Additional arguments for featurization.
     seed : int | None
         Random seed for data loading.
+    apo_initialize : apo_initialize.ApoInitializerConfig
+        Configuration for apo structure initialization.
     """
 
     name: str
-    dataset_path: str | Path
-    apo_initialize: apo_initialize.ApoInitializerConfig = dataclasses.field(
+    data_path: str | Path
+    seed: int | None = None
+
+    apo_init: apo_initialize.ApoInitializerConfig = dataclasses.field(
         default_factory=apo_initialize.ApoInitializerConfig
     )
 
-    # === Featurization arguments === #
-    safe_load: bool = True
-    featurization_args: dict = dataclasses.field(default_factory=dict)
-    seed: int | None = None
+    @classmethod
+    def from_dict(cls, config) -> "DatasetConfig":
+        default_config = OmegaConf.create(cls)
+        merged_config = OmegaConf.merge(default_config, OmegaConf.create(config))
+        return OmegaConf.to_object(merged_config)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -170,12 +169,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         config: DatasetConfig,
         ccd: CCD,
-        seq_embedding: str | None = None,
-        struct_embedding: str | None = None,
-        seq_embedding_dim: int | None = None,
-        struct_embedding_dim: int | None = None,
+        pretrained_embedding: dict,
+        featurization_args: dict,
         return_symmetry: bool = False,
         return_structure: bool = False,
+        safe_load: bool = True,
     ) -> None:
         """
         Parameters
@@ -184,50 +182,66 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             Dataset configuration.
         ccd: CCD
             CCD database
+        pretrained_embedding : dict
+            Pretrained embedding configuration.
+        featurization_args : dict
+            Additional arguments for featurization.
         return_symmetry : bool
             Whether to return symmetry information.
         return_structure : bool
             Whether to return the original tokenized structure.
+        safe_load : bool
+            Whether to retry loading on failure.
         """
         # === Initialize parameters === #
         self.config: DatasetConfig = config
         self.name: str = config.name
-        self.data_root = Path(config.dataset_path)
-        self.safe_load: bool = config.safe_load
+        self.data_root = Path(config.data_path)
         self.seed: int | None = config.seed
         self.return_symmetry: bool = return_symmetry
         self.return_structure: bool = return_structure
+        self.safe_load: bool = safe_load
 
-        self.seq_embedding: str | None = seq_embedding
-        self.struct_embedding: str | None = struct_embedding
+        pretrained_embedding: dict = pretrained_embedding.copy()
+        featurization_args: dict = featurization_args.copy()
+
+        self.seq_embedding: str | None = pretrained_embedding["seq"]
+        self.seq_embedding_dim: int | None = pretrained_embedding["seq_dim"]
+        self.struct_embedding: str | None = pretrained_embedding["struct"]
+        self.struct_embedding_dim: int | None = pretrained_embedding["struct_dim"]
+        self.max_struct_ensembles: int = pretrained_embedding["max_struct_ensembles"]
 
         # === Validate parameters === #
         assert self.data_root.exists(), f"Dataset path {self.data_root} does not exist."
         if self.seq_embedding is not None:
-            assert seq_embedding_dim is not None, (
-                "seq_embedding_dim must be provided when seq_embedding is set."
-            )
             self.seq_emb_root = self.data_root / "seq_embedding" / self.seq_embedding
-            self.seq_embedding_dim = seq_embedding_dim
             assert self.seq_emb_root.exists(), (
                 f"Sequence embedding root {self.seq_emb_root} does not exist."
             )
-        if self.struct_embedding is not None:
-            assert struct_embedding_dim is not None, (
-                "struct_embedding_dim must be provided when struct_embedding is set."
+            assert self.seq_embedding_dim is not None, (
+                "seq_embedding_dim must be provided when seq_embedding is set."
             )
+
+        if self.struct_embedding is not None:
             self.struct_emb_root = (
                 self.data_root / "struct_embedding" / self.struct_embedding
             )
-            self.struct_embedding_dim = struct_embedding_dim
             assert self.struct_emb_root.exists(), (
                 f"Structure embedding root {self.struct_emb_root} does not exist."
+            )
+            assert self.struct_embedding_dim is not None, (
+                "struct_embedding_dim must be provided when struct_embedding is set."
             )
 
         # Update apo initializer config
         rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
         if rieprody_lmdb_path.exists():
-            config.apo_initialize.rieprody_module.metric_lmdb_path = rieprody_lmdb_path
+            config.apo_init.rieprody.metric_lmdb_path = rieprody_lmdb_path
+        else:
+            print(
+                f"Warning: RieProDy LMDB path {rieprody_lmdb_path} does not exist. "
+                "RieProDy metrics will not be available."
+            )
 
         # === Load dataset components === #
         # CCD (shared across datasets)
@@ -240,12 +254,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.lookup_table: dict = self.load_lookup_table()
 
         # === Initialize modules === #
-        self.apo_initializer = apo_initialize.ApoInitializer(
-            config.apo_initialize, self.ccd
-        )
+        self.apo_initializer = apo_initialize.ApoInitializer(config.apo_init, self.ccd)
         self.tokenizer = tokenize.Tokenizer(self.ccd)
         self.featurizer = featurize.InputFeaturizer(
-            **config.featurization_args,
+            **featurization_args,
+            seq_embedding_dim=self.seq_embedding_dim,
+            struct_embedding_dim=self.struct_embedding_dim,
+            max_struct_ensembles=self.max_struct_ensembles,
         )
 
         # Additional setup can be done in subclasses
@@ -312,6 +327,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                     "name": apo_info["name"],
                     "path": apo_dir / apo_info["source"] / apo_info["path"],
                     "residue_map": apo_info["residue_map"],
+                    "source": apo_info["source"],
                 }
 
         # Populate apo structure
@@ -589,10 +605,9 @@ class TrainingDataset(LMDBDataset):
         self,
         config: TrainingDatasetConfig,
         ccd: CCD,
-        seq_embedding: str | None = None,
-        struct_embedding: str | None = None,
-        seq_embedding_dim: int | None = None,
-        struct_embedding_dim: int | None = None,
+        pretrained_embedding: dict,
+        featurization_args: dict,
+        safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
     ) -> None:
@@ -603,14 +618,10 @@ class TrainingDataset(LMDBDataset):
             Dataset configuration.
         ccd: CCD
             CCD database
-        seq_embedding : str | None
-            Type of sequence embedding to use (e.g., "esm2", "esmc").
-        struct_embedding : str | None
-            Type of structure embedding to use (e.g., "saprot").
-        seq_embedding_dim : int | None
-            Dimension of sequence embeddings.
-        struct_embedding_dim : int | None
-            Dimension of structure embeddings.
+        pretrained_embedding : dict
+            Pretrained embedding configuration.
+        featurization_args : dict
+            Additional arguments for featurization.
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
@@ -627,11 +638,11 @@ class TrainingDataset(LMDBDataset):
         super().__init__(
             config,
             ccd,
-            seq_embedding,
-            struct_embedding,
-            seq_embedding_dim,
-            struct_embedding_dim,
+            pretrained_embedding,
+            featurization_args,
             return_symmetry=False,
+            return_structure=False,
+            safe_load=safe_load,
         )
         if self.seed is not None:
             # Warn about fixed seed affecting randomness
@@ -750,12 +761,11 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         self,
         configs: list[TrainingDatasetConfig],
         ccd: CCD,
+        pretrained_embedding: dict,
+        featurization_args: dict,
+        safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
-        seq_embedding: str | None = None,
-        struct_embedding: str | None = None,
-        seq_embedding_dim: int | None = None,
-        struct_embedding_dim: int | None = None,
     ) -> None:
         """
         Parameters
@@ -764,14 +774,12 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             List of dataset configurations.
         ccd: CCD
             CCD database
-        seq_embedding : str | None
-            Type of sequence embedding to use (e.g., "esm2", "esmc").
-        struct_embedding : str | None
-            Type of structure embedding to use (e.g., "saprot").
-        seq_embedding_dim : int | None
-            Dimension of sequence embeddings.
-        struct_embedding_dim : int | None
-            Dimension of structure embeddings.
+        pretrained_embedding : dict
+            Pretrained embedding configuration.
+        featurization_args : dict
+            Additional arguments for featurization.
+        safe_load : bool
+            Whether to retry loading on failure.
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
@@ -789,10 +797,9 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             TrainingDataset(
                 config,
                 ccd,
-                seq_embedding,
-                struct_embedding,
-                seq_embedding_dim,
-                struct_embedding_dim,
+                pretrained_embedding,
+                featurization_args,
+                safe_load,
                 max_chains,
                 max_tokens,
             )
@@ -822,3 +829,33 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
 
 class ValidationDataset(LMDBDataset):
     """Validation dataset without sampling and cropping."""
+
+    def __init__(
+        self,
+        config: ValidationDatasetConfig,
+        ccd: CCD,
+        pretrained_embedding: dict,
+        featurization_args: dict,
+        safe_load: bool = True,
+    ) -> None:
+        """
+        Parameters
+        ----------
+        config : ValidationDatasetConfig
+            Dataset configuration.
+        ccd: CCD
+            CCD database
+        pretrained_embedding : dict
+            Pretrained embedding configuration.
+        featurization_args : dict
+            Additional arguments for featurization.
+        """
+        super().__init__(
+            config,
+            ccd,
+            pretrained_embedding,
+            featurization_args,
+            return_symmetry=True,
+            return_structure=True,
+            safe_load=safe_load,
+        )
