@@ -3,9 +3,10 @@ model:
   input_embedder:
     channel_seq_encoder: 2560
   trunk:
-    use_ensemble: true
+    use_ensemble: false
     ensemble_module:
       channel_struct_input: null
+      num_blocks: 2
     interformer:
       num_blocks: 16
   score_model:
