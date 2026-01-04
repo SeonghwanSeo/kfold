@@ -89,6 +89,110 @@ def main():
         json.dump(metadata_dicts, f, indent=2)
     print(f"Saved manifest (json) to {manifest_path}")
 
+    n_proteins = 0
+    n_rna = 0
+    n_dna = 0
+    n_ligands = 0
+    n_ions = 0
+
+    n_protein_protein = 0
+    n_rna_rna = 0
+    n_dna_dna = 0
+    n_dna_rna = 0
+
+    n_protein_rna = 0
+    n_protein_dna = 0
+    n_protein_ligand = 0
+    n_protein_ion = 0
+
+    n_rna_ligand = 0
+    n_rna_ion = 0
+
+    n_dna_ligand = 0
+    n_dna_ion = 0
+
+    for metadata in metadatas:
+        ctypes = [chain.ctype for chain in metadata.chains]
+        if any(ctype.is_protein for ctype in ctypes):
+            n_proteins += 1
+        if any(ctype.is_rna for ctype in ctypes):
+            n_rna += 1
+        if any(ctype.is_dna for ctype in ctypes):
+            n_dna += 1
+        if any(ctype.is_ligand for ctype in ctypes):
+            n_ligands += 1
+        if any(ctype.is_ion for ctype in ctypes):
+            n_ions += 1
+
+        if sum(1 for ctype in ctypes if ctype.is_protein) >= 2:
+            n_protein_protein += 1
+        if sum(1 for ctype in ctypes if ctype.is_rna) >= 2:
+            n_rna_rna += 1
+        if sum(1 for ctype in ctypes if ctype.is_dna) >= 2:
+            n_dna_dna += 1
+        if (
+            sum(1 for ctype in ctypes if ctype.is_dna) >= 1
+            and sum(1 for ctype in ctypes if ctype.is_rna) >= 1
+        ):
+            n_dna_rna += 1
+
+        if any(ctype.is_protein for ctype in ctypes) and any(
+            ctype.is_rna for ctype in ctypes
+        ):
+            n_protein_rna += 1
+        if any(ctype.is_protein for ctype in ctypes) and any(
+            ctype.is_dna for ctype in ctypes
+        ):
+            n_protein_dna += 1
+
+        if any(ctype.is_protein for ctype in ctypes) and any(
+            ctype.is_ligand for ctype in ctypes
+        ):
+            n_protein_ligand += 1
+        if any(ctype.is_rna for ctype in ctypes) and any(
+            ctype.is_ligand for ctype in ctypes
+        ):
+            n_rna_ligand += 1
+        if any(ctype.is_dna for ctype in ctypes) and any(
+            ctype.is_ligand for ctype in ctypes
+        ):
+            n_dna_ligand += 1
+
+        if any(ctype.is_protein for ctype in ctypes) and any(
+            ctype.is_ion for ctype in ctypes
+        ):
+            n_protein_ion += 1
+        if any(ctype.is_rna for ctype in ctypes) and any(
+            ctype.is_ion for ctype in ctypes
+        ):
+            n_rna_ion += 1
+        if any(ctype.is_dna for ctype in ctypes) and any(
+            ctype.is_ion for ctype in ctypes
+        ):
+            n_dna_ion += 1
+
+    print("Composition statistics:")
+    print(f"Number of entries with protein: {n_proteins}")
+    print(f"Number of entries with RNA: {n_rna}")
+    print(f"Number of entries with DNA: {n_dna}")
+    print(f"Number of entries with ligands: {n_ligands}")
+    print(f"Number of entries with ions: {n_ions}")
+
+    print(f"Number of entries with protein-protein interactions: {n_protein_protein}")
+    print(f"Number of entries with RNA-RNA interactions: {n_rna_rna}")
+    print(f"Number of entries with DNA-DNA interactions: {n_dna_dna}")
+    print(f"Number of entries with DNA-RNA interactions: {n_dna_rna}")
+
+    print(f"Number of entries with protein-RNA interactions: {n_protein_rna}")
+    print(f"Number of entries with protein-DNA interactions: {n_protein_dna}")
+    print(f"Number of entries with protein-ligand interactions: {n_protein_ligand}")
+    print(f"Number of entries with protein-ion interactions: {n_protein_ion}")
+
+    print(f"Number of entries with RNA-ligand interactions: {n_rna_ligand}")
+    print(f"Number of entries with RNA-ion interactions: {n_rna_ion}")
+    print(f"Number of entries with DNA-ligand interactions: {n_dna_ligand}")
+    print(f"Number of entries with DNA-ion interactions: {n_dna_ion}")
+
 
 if __name__ == "__main__":
     main()

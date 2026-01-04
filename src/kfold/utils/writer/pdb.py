@@ -98,7 +98,7 @@ def to_pdbstring(
         # Atom Information
         num_atoms = tokens.num_atoms[i]
         record_type = (
-            "ATOM" if tokens.chain_type[i] != C.chain.ChainType.LIGAND else "HETATM"
+            "ATOM" if C.ChainType(tokens.chain_type[i].item()).is_polymer else "HETATM"
         )
 
         # Inspect each atom in the residue.

@@ -46,7 +46,7 @@ AF3_SPLITS = {
         "max_resolution": 4.5,
         "max_chains": 1000,
         "max_residues": 2560,
-        "handle_invalid_chains": "disallow",
+        "handle_invalid_chains": "allow",
     },
 }
 

@@ -133,7 +133,9 @@ class ChainTensor(TensorLayout):
     @cached_property
     def is_ligand(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is ligand."""
-        return self.chain_type == C.chain.ChainType.LIGAND.value
+        return (self.chain_type == C.chain.ChainType.LIGAND.value) | (
+            self.chain_type == C.chain.ChainType.ION.value
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -275,7 +277,9 @@ class TokenTensor(TensorLayout):
     @cached_property
     def is_ligand(self) -> torch.Tensor:
         """Boolean tensor of shape [Ntoken,], indicating whether the token is ligand."""
-        return self.chain_type == C.chain.ChainType.LIGAND.value
+        return (self.chain_type == C.chain.ChainType.LIGAND.value) | (
+            self.chain_type == C.chain.ChainType.ION.value
+        )
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""

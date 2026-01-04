@@ -120,7 +120,9 @@ class ChainArray(PlainLayout[np.ndarray]):
     @cached_property
     def is_ligand(self) -> np.ndarray:
         """Boolean tensor indicating whether the chain is ligand."""
-        return self.chain_type == C.chain.ChainType.LIGAND.value
+        return (self.chain_type == C.chain.ChainType.LIGAND.value) | (
+            self.chain_type == C.chain.ChainType.ION.value
+        )
 
     @cached_property
     def residue_start(self) -> np.ndarray:
@@ -245,7 +247,9 @@ class ResidueArray(PlainLayout[np.ndarray]):
     @cached_property
     def is_ligand(self) -> np.ndarray:
         """Boolean tensor of shape [L,], indicating whether the token is ligand."""
-        return self.chain_type == C.chain.ChainType.LIGAND.value
+        return (self.chain_type == C.chain.ChainType.LIGAND.value) | (
+            self.chain_type == C.chain.ChainType.ION.value
+        )
 
     @cached_property
     def token_start(self) -> np.ndarray:
@@ -405,7 +409,9 @@ class TokenArray(PlainLayout[np.ndarray]):
     @cached_property
     def is_ligand(self) -> np.ndarray:
         """Boolean tensor of shape [L,], indicating whether the token is ligand."""
-        return self.chain_type == C.chain.ChainType.LIGAND.value
+        return (self.chain_type == C.chain.ChainType.LIGAND.value) | (
+            self.chain_type == C.chain.ChainType.ION.value
+        )
 
     @classmethod
     def get_empty(cls, num_tokens: int) -> Self:
