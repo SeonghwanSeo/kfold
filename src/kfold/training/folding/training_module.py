@@ -312,7 +312,7 @@ class KFoldTrainingModule(pl.LightningModule):
         try:
             loss, metrics = self.compute_losses(batch, out)
         except Exception as e:
-            raise e
+
             print(f"Skipping batch {batch_idx} due to error: {e}")
             return torch.tensor(0.0, device=self.device, requires_grad=True)
 
