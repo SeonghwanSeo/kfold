@@ -1,6 +1,6 @@
 """Implemented from https://github.com/jwohlwend/boltz"""
 
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter
@@ -25,8 +25,8 @@ class ConfidenceFilter(BaseFilter):
     def __init__(self, config: Config):
         self.plddt_threshold: float = config.plddt_threshold
 
-    def filter(self, record: Metadata) -> bool:
-        pred_record = record.prediction
+    def filter(self, metadata: Metadata) -> bool:
+        pred_record = metadata.prediction
         assert pred_record is not None, (
             "ConfidenceFilter only works for synthetic data records"
         )

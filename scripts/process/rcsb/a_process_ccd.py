@@ -14,7 +14,8 @@ import numpy as np
 from rdkit import Chem, RDLogger, rdBase
 from tqdm import tqdm
 
-from kfold.data.processing.component import CCD, Component
+import kfold.constants as C
+from kfold.data.ccd import CCD, Component
 
 try:
     # pdbeccdutils is required for reading RCSB CCD data
@@ -56,8 +57,12 @@ def parse_arguments():
     parser.add_argument(
         "--num_conformers",
         type=int,
-        default=0,
         help="Number of conformers to generate for each component.",
+    )
+    parser.add_argument(
+        "--num_conformers_standard_residues",
+        type=int,
+        help="Number of conformers for standard residues (if different).",
     )
     parser.add_argument(
         "--train",
@@ -118,6 +123,7 @@ def process_pdbe_ccd_component_and_save(
             num_confs=num_confs,
             compute_symmetry=compute_symmetry,
             date_cutoff=date_cutoff,
+            timeout=120,
             rng=rng,
         )
     except Exception as e:
@@ -134,12 +140,18 @@ def process_pdbe_ccd_component_and_save(
 def _process_wrapper(args_bundle):
     code, mol, ccd_cif_string = args_bundle["dynamic"]
     static = args_bundle["static"]
+
+    if code in C.residue.STANDARD_RESIDUES_STR:
+        nconfs = static["num_confs_standard_residues"] or static["num_confs"]
+    else:
+        nconfs = static["num_confs"]
+
     return process_pdbe_ccd_component_and_save(
         code,
         mol,
         ccd_cif_string=ccd_cif_string,
         save_path=static["save_path_root"] / f"{code}.pkl",
-        num_confs=static["num_confs"],
+        num_confs=nconfs,
         compute_symmetry=static["compute_symmetry"],
         date_cutoff=static["date_cutoff"],
         seed=static["seed"],
@@ -150,6 +162,7 @@ def _process_wrapper(args_bundle):
 def construct_ccd(
     cif_path: pathlib.Path,
     num_confs: int,
+    num_confs_standard_residues: int | None,
     compute_symmetry: bool,
     date_cutoff: datetime.date | None,
     seed: int,
@@ -174,6 +187,7 @@ def construct_ccd(
     static_args = {
         "save_path_root": tmp_dir,
         "num_confs": num_confs,
+        "num_confs_standard_residues": num_confs_standard_residues,
         "compute_symmetry": compute_symmetry,
         "date_cutoff": date_cutoff,
         "seed": seed,
@@ -197,7 +211,7 @@ def construct_ccd(
     if num_workers > 1:
         with multiprocessing.Pool(num_workers) as pool:
             for _ in tqdm(
-                pool.imap_unordered(_process_wrapper, task_generator(), chunksize=10),
+                pool.imap_unordered(_process_wrapper, task_generator(), chunksize=1),
                 total=total_count,
                 desc="Processing components",
             ):
@@ -246,29 +260,51 @@ def main():
 
     if args.train:
         logger.info("Processing CCD data for training.")
-        if args.num_conformers <= 0:
+        if args.num_conformers is None:
             logger.warning(
                 "Number of conformers not specified or non-positive. "
                 "Defaulting to 10 conformers for training data."
             )
             args.num_conformers = 10
+        if args.num_conformers_standard_residues is None:
+            logger.warning(
+                "Number of conformers for standard residues not specified. "
+                "Defaulting to 100 conformers for standard residues."
+            )
+            args.num_conformers_standard_residues = 100
         compute_symmetry = True
     else:
         logger.info("Processing CCD data for evaluation.")
+        if args.num_conformers is None:
+            logger.warning(
+                "Number of conformers not specified or non-positive. "
+                "Defaulting to 0 conformers for evaluation data."
+            )
+            args.num_conformers = 0
+        if args.num_conformers_standard_residues is None:
+            logger.warning(
+                "Number of conformers for standard residues not specified. "
+                "Defaulting to 100 conformers for standard residues."
+            )
+            args.num_conformers_standard_residues = 100
         compute_symmetry = False
 
     if args.num_conformers > 0:
+        nconfs = args.num_conformers
         logger.info(
             f"Generating {args.num_conformers} conformers per component."
             f" (Random seed set to: {args.seed})"
         )
+    if args.num_conformers_standard_residues is not None:
+        nconfs = args.num_conformers_standard_residues
+        logger.info(
+            f"Standard residues will have {nconfs} conformers."
+            f" (Random seed set to: {args.seed})"
+        )
 
-    if args.date_cutoff is None:
-        logger.info("No date cutoff provided. Using today's date (no cutoff).")
-        date_cutoff = None
-    elif args.date_cutoff == "today":
+    if args.date_cutoff == "today":
         logger.info("Using today's date as cutoff.")
-        date_cutoff = None
+        date_cutoff = datetime.date.today()
     else:
         logger.info(f"Using date cutoff: {args.date_cutoff}")
         date_cutoff = datetime.date.fromisoformat(args.date_cutoff)
@@ -276,6 +312,7 @@ def main():
     ccd = construct_ccd(
         cif_path=args.cif_path,
         num_confs=args.num_conformers,
+        num_confs_standard_residues=args.num_conformers_standard_residues,
         compute_symmetry=compute_symmetry,
         date_cutoff=date_cutoff,
         seed=args.seed,

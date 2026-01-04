@@ -1,7 +1,7 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 import numpy as np
 
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
 from . import utils
@@ -81,7 +81,7 @@ class BoltzCropper(BaseCropper):
         all_residue_indices = token_data.residue_index
         # NOTE: (seonghwanseo) Here we use the first holo coordinates.
         all_token_centers = atom_data.coords[
-            token_data.token_index, token_data.center_index, 0, :
+            token_data.token_index, token_data.center_index, :
         ]  # (num_tokens, 3)
 
         # Randomly select a neighborhood size

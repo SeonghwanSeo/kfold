@@ -9,17 +9,17 @@ from kfold.data.layout import TensorLayout
 from kfold.utils.misc import check_tensor
 
 __all__ = [
-    "ChainLayout",
-    "TokenLayout",
-    "AtomLayout",
-    "BondLayout",
+    "ChainTensor",
+    "TokenTensor",
+    "AtomTensor",
+    "BondTensor",
     "FoldingInput",
 ]
 
 
 # === Layout dataclasses (chain-level, token-level, atom-level, bond-level) === #
-@dataclasses.dataclass(frozen=True, slots=True)
-class ChainLayout(TensorLayout):
+@dataclasses.dataclass(frozen=True)
+class ChainTensor(TensorLayout):
     """Chain-level layout information.
 
     Shape: [Nchain, ...] or [B, Nchain, ...]
@@ -136,8 +136,8 @@ class ChainLayout(TensorLayout):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class TokenLayout(TensorLayout):
+@dataclasses.dataclass(frozen=True)
+class TokenTensor(TensorLayout):
     """Token-level layout information.
 
     Attributes
@@ -322,8 +322,8 @@ class TokenLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class AtomLayout(TensorLayout):
+@dataclasses.dataclass(frozen=True)
+class AtomTensor(TensorLayout):
     """Atom-level layout information for molecular structures.
 
     Shape: [Natom, ...] or [B, Natom, ...]
@@ -364,6 +364,7 @@ class AtomLayout(TensorLayout):
     ref_element: torch.Tensor  # [Natom, 128], float32
     ref_charge: torch.Tensor  # [Natom,], float32
     ref_pos: torch.Tensor  # [Natom, 3], float32
+    ref_mask: torch.Tensor  # [Natom,], bool
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
     label_coords: torch.Tensor  # [Natom, 3], float32
@@ -394,6 +395,7 @@ class AtomLayout(TensorLayout):
         )
         check_tensor(self.ref_charge, name="ref_charge", dtype=torch.float32, shape=shape)
         check_tensor(self.ref_pos, name="ref_pos", dtype=torch.float32, shape=(*shape, 3))
+        check_tensor(self.ref_mask, name="ref_mask", dtype=torch.bool, shape=shape)
         check_tensor(
             self.ref_space_uid, name="ref_space_uid", dtype=torch.long, shape=shape
         )
@@ -430,6 +432,7 @@ class AtomLayout(TensorLayout):
             "ref_element": 0.0,  # max value for element encoding
             "ref_charge": 0.0,
             "ref_pos": 0.0,
+            "ref_mask": False,
             "ref_space_uid": -1,
             "token_index": 0,
             "apo_coords": 0.0,
@@ -451,8 +454,8 @@ class AtomLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class BondLayout(TensorLayout):
+@dataclasses.dataclass(frozen=True)
+class BondTensor(TensorLayout):
     """Bond-level layout information for molecular structures.
 
     Shape: [Nbond, ...] or [B, Nbond, ...]
@@ -553,8 +556,8 @@ class BondLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class PretrainedLayout(TensorLayout):
+@dataclasses.dataclass(frozen=True)
+class PretrainedTensor(TensorLayout):
     """Token-level layout including pretrained embedding information.
 
     Attributes
@@ -640,15 +643,15 @@ class PretrainedLayout(TensorLayout):
         return self.from_dict(fields)
 
 
-@dataclasses.dataclass(frozen=True, slots=False)
+@dataclasses.dataclass(frozen=True)
 class FoldingInput:
     """Input of co-folding"""
 
-    chain: ChainLayout
-    token: TokenLayout
-    atom: AtomLayout
-    bond: BondLayout
-    pretrained: PretrainedLayout
+    chain: ChainTensor
+    token: TokenTensor
+    atom: AtomTensor
+    bond: BondTensor
+    pretrained: PretrainedTensor
 
     def __post_init__(self):
         # check all layouts are on the same device
@@ -790,11 +793,11 @@ class FoldingInput:
                     "All bond layouts must have the same length."
                 )
 
-        batched_chain = ChainLayout.from_list([data.chain for data in data_list])
-        batched_token = TokenLayout.from_list([data.token for data in data_list])
-        batched_atom = AtomLayout.from_list([data.atom for data in data_list])
-        batched_bond = BondLayout.from_list([data.bond for data in data_list])
-        batched_pretrained = PretrainedLayout.from_list(
+        batched_chain = ChainTensor.from_list([data.chain for data in data_list])
+        batched_token = TokenTensor.from_list([data.token for data in data_list])
+        batched_atom = AtomTensor.from_list([data.atom for data in data_list])
+        batched_bond = BondTensor.from_list([data.bond for data in data_list])
+        batched_pretrained = PretrainedTensor.from_list(
             [data.pretrained for data in data_list]
         )
 

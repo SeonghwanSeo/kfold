@@ -128,8 +128,8 @@ def compute_validation_metric_singles(
     }
 
     # Compute pairwise distance
-    pdist_true = torch.cdist(true_coords, true_coords)  # [Natom, Natom]
-    pdist_pred = torch.cdist(pred_coords, pred_coords)  # [Natom, Natom]
+    pdist_true = torch.norm(true_coords[:, None, :] - true_coords[None, :, :], dim=-1)
+    pdist_pred = torch.norm(pred_coords[:, None, :] - pred_coords[None, :, :], dim=-1)
     lddt_score = compute_pair_lddt(pdist_pred, pdist_true)  # [Natom, Natom]
 
     # Compute masks

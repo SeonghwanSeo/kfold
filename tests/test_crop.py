@@ -6,8 +6,8 @@ import lmdb
 import numpy as np
 from tqdm import tqdm
 
-from kfold.data.metadata import Metadata
-from kfold.data.structure import TokenizedStructure
+from kfold.data.schema import Metadata
+from kfold.data.tokenized import TokenizedStructure
 from kfold.training.folding.dataset.cropper.multi_anchor import MultiAnchorCropper
 from kfold.training.folding.dataset.datamodule import load_manifest
 
@@ -17,7 +17,7 @@ SAVE_PATH = Path("./tmp/pdb-crop/")
 
 
 if __name__ == "__main__":
-    all_records: list[Metadata] = load_manifest(MANIFEST_PATH)
+    all_metadatas: list[Metadata] = load_manifest(MANIFEST_PATH)
 
     env = lmdb.open(str(LMDB_PATH), readonly=True, lock=False, readahead=False)
 
@@ -33,21 +33,21 @@ if __name__ == "__main__":
     SAVE_PATH.mkdir(parents=True, exist_ok=True)
 
     with env.begin(write=False) as txn:
-        for i, record in enumerate(tqdm(all_records[:100])):
+        for i, metadata in enumerate(tqdm(all_metadatas[:100])):
             # Set random seed for reproducibility
             random.seed(i)
             np.random.seed(i)
 
-            key = record.id
+            key = metadata.id
 
-            if record.num_chains > 52:
+            if metadata.num_chains > 52:
                 continue
 
             byte_data = txn.get(key.encode("utf-8"))
 
             with io.BytesIO(byte_data) as byte_stream:
                 struct = TokenizedStructure.load_npz(byte_stream)
-            struct = struct.copy_with(metadata=record)
+            struct = struct.copy_with(metadata=metadata)
 
             if struct.num_tokens < 768:
                 # Skip small structures for testing
@@ -57,9 +57,7 @@ if __name__ == "__main__":
 
             # Save full and cropped structures
             try:
-                struct.to_pdb(SAVE_PATH / f"{key}-full.pdb", is_predicted=False)
-                cropped_struct.to_pdb(
-                    SAVE_PATH / f"{key}-cropped.pdb", is_predicted=False
-                )
+                struct.to_pdb(SAVE_PATH / f"{key}-full.pdb")
+                cropped_struct.to_pdb(SAVE_PATH / f"{key}-cropped.pdb")
             except Exception as e:
                 print(f"Failed to save {key}: {e}")

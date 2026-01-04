@@ -16,9 +16,9 @@ def compute_collinear_mask(v1: torch.Tensor, v2: torch.Tensor) -> torch.Tensor:
 
 
 def compute_ligand_frames_inplace(
-    token_layout: model_input.TokenLayout,
-    atom_layout: model_input.AtomLayout,
-    chain_layout: model_input.ChainLayout,
+    token_layout: model_input.TokenTensor,
+    atom_layout: model_input.AtomTensor,
+    chain_layout: model_input.ChainTensor,
 ):
     """Update frames for non-polymer chains."""
 

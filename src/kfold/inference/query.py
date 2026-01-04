@@ -57,7 +57,7 @@ import yaml
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data.processing.component import CCD
+from kfold.data.ccd import CCD
 
 # === Dataclasses for input formats === #
 

@@ -3,7 +3,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_SAMPLER, BaseConfig
 
 
@@ -13,7 +13,7 @@ class Sample(NamedTuple):
     Parameters
     ----------
     metadata : Metadata
-        The metadata record of the sampled item.
+        The metadata of the sampled item.
     asym_id : int | tuple[int, int] | None
         The cropping constraint; asym_id(s) of chain / interface to include.
         If None, no constraint is applied.
@@ -32,23 +32,21 @@ class BaseSampler:
 
         pass
 
-    def get_samples(
-        self, records: list[Metadata]
-    ) -> tuple[list[Sample], np.ndarray | None]:
-        """Get samples and their weights from metadata records.
+    def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
+        """Get samples and their weights from metadata.
 
         Parameters
         ----------
-        records : list[Metadata]
-            The metadata records to setup the sampler.
+        metadatas : list[Metadata]
+            The metadata to setup the sampler.
 
         Returns
         -------
         samples : list[Sample]
             The sampled items.
-        weights : np.ndarray | None
+        weights : np.ndarray
             The weights for each sampled item.
-            If None, uniform weights are assumed.
         """
-        samples: list[Sample] = [Sample(record, None) for record in records]
-        return samples, None
+        samples: list[Sample] = [Sample(record, None) for record in metadatas]
+        weights = np.ones(len(samples), dtype=np.float32)
+        return samples, weights

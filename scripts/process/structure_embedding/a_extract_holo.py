@@ -11,8 +11,8 @@ import numpy as np
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.metadata import Metadata
-from kfold.data.structure import TokenizedStructure
+from kfold.data.schema import Metadata
+from kfold.data.tokenized import TokenizedStructure
 from kfold.training.folding.dataset.datamodule import load_manifest
 
 logger = logging.getLogger(__name__)
@@ -73,14 +73,14 @@ def init_worker(lmdb_path: str):
     )
 
 
-def process_batch(records: list[Metadata], save_dir: Path):
-    """Process a batch of records to extract protein structures."""
+def process_batch(metadatas: list[Metadata], save_dir: Path):
+    """Process a batch of metadatas to extract protein structures."""
     global _env
     assert _env is not None, "LMDB environment is not initialized."
 
     with _env.begin(write=False) as txn:
-        for record in records:
-            pdb_id = record.id
+        for metadata in metadatas:
+            pdb_id = metadata.id
             value_bytes = txn.get(pdb_id.encode("utf-8"))
 
             pdb_save_dir = save_dir / pdb_id[1:3] / pdb_id
@@ -119,7 +119,7 @@ def process_batch(records: list[Metadata], save_dir: Path):
                 chain_struct.chain.asym_id[0] = 1
                 chain_struct.token.asym_id[:] = 1
                 try:
-                    chain_struct.write(save_path, is_predicted=False)
+                    chain_struct.write(save_path)
                 except Exception as e:
                     logger.error(f"Error saving {save_path}: {e}")
                     continue
@@ -128,7 +128,7 @@ def process_batch(records: list[Metadata], save_dir: Path):
 def main(args):
     # 1. Load manifest
     manifest: list[Metadata] = load_manifest(args.manifest_path)
-    logger.info(f"Loaded manifest with {len(manifest)} records.")
+    logger.info(f"Loaded manifest with {len(manifest)} metadatas.")
 
     # 2. Chunk keys for batch processing
     # Processing in batches reduces pickling overhead
@@ -156,12 +156,12 @@ def main(args):
     else:
         # Single process mode
         init_worker(lmdb_path_str)
-        for records in tqdm(
+        for metadatas in tqdm(
             manifest_chunk,
             total=len(manifest_chunk),
             desc="Extracting protein structures",
         ):
-            process_batch_partial(records)
+            process_batch_partial(metadatas)
 
 
 if __name__ == "__main__":

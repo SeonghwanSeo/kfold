@@ -13,8 +13,8 @@ from scipy.spatial.distance import cdist
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.metadata import Metadata
-from kfold.data.structure import TokenizedStructure
+from kfold.data.schema import Metadata
+from kfold.data.tokenized import TokenizedStructure
 from kfold.training.folding.dataset.datamodule import load_manifest
 
 logger = logging.getLogger(__name__)
@@ -253,7 +253,7 @@ def process_batch(
 def main(args):
     # 1. Load manifest
     manifest: list[Metadata] = load_manifest(args.manifest_path)
-    logger.info(f"Loaded manifest with {len(manifest)} records.")
+    logger.info(f"Loaded manifest with {len(manifest)} entries.")
 
     # 2. Chunk keys for batch processing
     # Processing in batches reduces pickling overhead

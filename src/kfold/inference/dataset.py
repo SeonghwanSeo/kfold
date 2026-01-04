@@ -4,9 +4,9 @@ from typing import Any
 
 import torch
 
+from kfold.data.ccd import CCD
 from kfold.data.model_input import FoldingInput
-from kfold.data.processing.component import CCD
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 
 from .data_pipeline import InputDataPipeline
 from .query import InputFile
@@ -61,7 +61,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         Parameters
         ----------
         input_files : list[InputFile]
-            List of input files containing metadata records.
+            List of input files containing metadatas.
         ccd : CCD
             Component for handling common chemical components.
         seq_embedding_dim : int | None

@@ -1,5 +1,7 @@
 # Started from https://github.com/jwohlwend/boltz
-from kfold.data.metadata import Metadata
+import numpy as np
+
+from kfold.data.schema import Metadata
 from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample
@@ -28,17 +30,12 @@ class UniformSampler(BaseSampler):
         self.config = config
         self.chain_level = config.chain_level
 
-    def get_samples(self, records: list[Metadata]) -> tuple[list[Sample], None]:
+    def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
         samples: list[Sample]
         if self.chain_level:
-            samples = [Sample(m, None) for m in records]
+            samples = [Sample(m, c.asym_id) for m in metadatas for c in m.chains]
         else:
-            samples = []
-            for m in records:
-                for chain in m.chains:
-                    if not chain.valid:
-                        continue
-                    samples.append(Sample(m, chain.asym_id))
+            samples = [Sample(m, None) for m in metadatas]
 
-        weights = None  # Uniform sampling
+        weights = np.ones(len(samples), dtype=np.float32)
         return samples, weights

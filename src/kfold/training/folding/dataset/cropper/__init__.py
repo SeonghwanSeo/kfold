@@ -4,7 +4,6 @@ import importlib
 from pathlib import Path
 
 from .base import BaseCropper
-from .pre_crop import PreCropper
 
 # Get all Python module names in current directory
 _package_dir = Path(__file__).parent

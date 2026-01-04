@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils import errors
 
 PROCESSED_NPZ_PATH = Path("/cache/wykim_lab/kfold_rcsb_processed_v251120/")
@@ -21,10 +21,6 @@ if __name__ == "__main__":
         # Save full and cropped structures
         try:
             tokenized.to_pdb(SAVE_PDB_PATH / f"{file.stem}-apo.pdb", save_apo=True)
-            tokenized.to_pdb(
-                SAVE_PDB_PATH / f"{file.stem}-holo.pdb",
-                is_predicted=False,
-                save_apo=False,
-            )
+            tokenized.to_pdb(SAVE_PDB_PATH / f"{file.stem}-holo.pdb")
         except errors.PDBWriterMaxChainError as e:
             print(f"Skipping {file.stem} due to max chain error: {e}")

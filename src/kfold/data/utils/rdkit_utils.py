@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict
 from functools import lru_cache
 
@@ -24,37 +25,64 @@ def get_periodic_table() -> Chem.PeriodicTable:
     return Chem.GetPeriodicTable()
 
 
-def assign_atom_names(mol: Chem.Mol):
+def assign_atom_names(mol: Chem.Mol, max_name_length: int = 4) -> None:
     element_counts: dict[str, int] = defaultdict(int)
     for atom in mol.GetAtoms():
         elem = atom.GetSymbol()
         count = element_counts.get(elem, 0) + 1
         element_counts[elem] = count
+        atom_name = f"{elem}{count}"
+        if len(atom_name) > max_name_length:
+            raise ValueError(
+                f"Atom name '{atom_name}' exceeds max length of {max_name_length}"
+            )
         atom.SetProp("name", f"{elem}{count}")
 
 
-def compute_rdkit_conformer(
+def run_etkdg(
     mol: Chem.Mol,
     num_confs: int = 1,
-    rng: np.random.Generator | None = None,
+    seed: int = 42,
+    timeout: int = 30,
 ) -> Chem.Mol:
-    """Generate conformers for the given molecule using ETKDGv3 algorithm."""
-    rng = rng or np.random.default_rng()
-    seed = int(rng.integers(1, 1 << 16))
     params = ETKDGv3()
     params.randomSeed = seed
     params.numThreads = 1  # To ensure reproducibility
-
-    mol = Chem.Mol(mol)  # Create a copy to avoid modifying the original
-
+    params.timeout = timeout  # Timeout per conformer in seconds
     try:
         if num_confs == 1:
             EmbedMolecule(mol, params=params)
         else:
             EmbedMultipleConfs(mol, numConfs=num_confs, params=params)
-    except (ValueError, RuntimeError):
-        # Embedding failed; return the original molecule
-        pass
+    except (ValueError, RuntimeError) as e:
+        raise e
+    return mol
+
+
+def compute_rdkit_conformer(
+    mol: Chem.Mol,
+    num_confs: int = 1,
+    add_hydrogens: bool = True,
+    seed: int = 42,
+    timeout: int = 30,
+) -> Chem.Mol:
+    """Generate conformers for the given molecule using ETKDGv3 algorithm."""
+    if add_hydrogens:
+        mol = Chem.AddHs(mol)
+    else:
+        mol = Chem.Mol(mol)  # Create a copy to avoid modifying the original
+
+    try:
+        st = time.time()
+        mol = run_etkdg(mol, num_confs, seed, int(timeout))
+    except Exception as e:
+        print(f"ETKDG conformer generation failed with error: {e}")
+    end = time.time()
+    if end - st > timeout:
+        print(
+            f"Warning: ETKDG conformer generation took longer than {timeout} seconds"
+            f" ({end - st:.2f} seconds)"
+        )
     return mol
 
 

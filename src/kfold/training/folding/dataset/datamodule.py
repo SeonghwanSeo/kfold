@@ -1,30 +1,21 @@
 import dataclasses
-import json
-import pickle
-from functools import lru_cache
 from pathlib import Path
 
 import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from kfold.data.metadata import Metadata
+from kfold.data.ccd import CCD
 from kfold.data.model_input import FoldingInput
-from kfold.utils.registry import DATAMODULE, BaseConfig, Registry
+from kfold.utils.registry import DATAMODULE, BaseConfig
 
-from .cropper import BaseCropper
 from .dataset import (
-    LMDBTrainingDataset,
-    LMDBValidationDataset,
-    TrainingDataset,
+    MultiTrainingDataset,
+    TrainingDatasetConfig,
     ValidationDataset,
+    ValidationDatasetConfig,
 )
 from .dl_sampler import DistributedWeightedSampler
-from .filter import BaseFilter
-from .sampler import BaseSampler
-from .utils.symmetry import load_ccd_symmetry_dict
-
-# HACK: (SeonghwanSeo): this is hard-coded right now. I'll fix it later.
 
 
 def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
@@ -33,96 +24,44 @@ def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, lis
     return f_input_batched, meta_infos
 
 
-@lru_cache
-def load_manifest(manifest_path: str | Path) -> list[Metadata]:
-    manifest_path = Path(manifest_path)
-    format = manifest_path.suffix.lower()
-    if format == ".json":
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-    elif format == ".pkl":
-        with open(manifest_path, "rb") as f:
-            manifest = pickle.load(f)
-    else:
-        raise ValueError(f"Unsupported manifest format: {format}")
-    all_records: list[Metadata] = [Metadata.from_dict(d) for d in manifest]
-    return all_records
-
-
 class DataModuleConfig(BaseConfig):
     # === Common config for data modules === #
     train_batch_size: int = 1
     val_batch_size: int = 1
     num_workers: int = 0
+    persistent_workers: bool = True
     pin_memory: bool = True
     safe_load: bool = True
 
-    # === Additional paths required === #
-    paths: dict = dataclasses.field(default_factory=dict)
+    # === Training hyperparameters === #
+    max_chains: int = 20
+    max_tokens: int = 384
 
-    # === Cropping arguments === #
-    cropper: BaseCropper.Config
+    # === CCD path === #
+    ccd_path: Path
 
-    # === Featurization arguments === #
-    apo_perturbation_args: dict = dataclasses.field(default_factory=dict)
-    featurization_args: dict = dataclasses.field(default_factory=dict)
+    # === Dataset configs === #
+    train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
+    val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
 
-
-class TrainingDataModuleConfig(DataModuleConfig):
-    # Dataset specific (TODO: move to dataset config)
-    manifest_path: str | Path
-    split_path: str | Path
-    symmetry_path: str | Path | None
-    return_train_symmetry: bool = False
-    return_validation_symmetry: bool = True
-    max_chains: int  # Used for chain sampling
-    max_tokens: int  # Used for cropping and padding
-    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
-    sampler: BaseSampler.Config = dataclasses.field(
-        default_factory=BaseSampler.Config
-    )  # Default: uniform sampler
+    # === Featurization args === #
+    pretrained_embedding: dict = dataclasses.field(default_factory=dict)
+    featurization: dict = dataclasses.field(default_factory=dict)
 
 
-# FIXME: revise this (hard-coded)
-class LMDBDataModuleConfig(TrainingDataModuleConfig):
-    # Dataset specific (TODO: move to dataset config)
-    lmdb_path: str | Path
-
-
-@DATAMODULE.register(config_cls=LMDBDataModuleConfig)
+@DATAMODULE.register(config_cls=DataModuleConfig)
 class TrainingDataModule(pl.LightningDataModule):
     # HACK: (SeonghwanSeo): currently only supports a single Boltz dataset
     # I'll remove this datamodule and make it better (multiple dataset)
-    _train_ds: TrainingDataset
+    _train_ds: MultiTrainingDataset
     _val_ds: ValidationDataset
 
-    def __init__(self, config: LMDBDataModuleConfig) -> None:
+    def __init__(self, config: DataModuleConfig) -> None:
         super().__init__()
         self.config = config
 
-        self.filters: list[BaseFilter] = [
-            Registry.instantiate(config=c) for c in config.filters
-        ]
-        self.cropper = Registry.instantiate(config=config.cropper)
-        self.manifest_path: Path = Path(config.manifest_path)
-        self.ccd_symmetry_path: Path | None = (
-            Path(config.symmetry_path) if config.symmetry_path else None
-        )
-        self.split_path: Path = Path(config.split_path)
-        self.paths: dict[str, Path | None] = {
-            k: Path(v) if v else None for k, v in config.paths.items()
-        }
-        self.apo_perturbation_args = config.apo_perturbation_args
-        self.featurization_args = config.featurization_args
-
-        self.lmdb_path: Path = Path(config.lmdb_path)
-        if not self.lmdb_path.exists():
-            raise FileNotFoundError(f"LMDB path not found: {self.lmdb_path}")
-
-        for path in self.paths.values():
-            if path is not None:
-                assert path.exists(), f"Path not found: {path}"
-                self.print_rank_zero(f"Path found: {path}")
+        # Load CCD
+        self.ccd: CCD = CCD.load(config.ccd_path)
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -133,140 +72,66 @@ class TrainingDataModule(pl.LightningDataModule):
         else:
             raise NotImplementedError("Not implemented yet.")
 
-    def construct_train_dataset(self) -> TrainingDataset:
-        # HACK: (SeonghwanSeo): hard-coded path to rcsb set; single dataset
-        # NOTE: (SeonghwanSeo): validation set is excluded during date-filtering.
-        def do_filter(r: Metadata) -> bool:
-            return all(filt(r) for filt in self.filters)
-
-        def load_split_ids(split_file: Path) -> set[str]:
-            with open(split_file) as f:
-                ids = set([line.strip().lower() for line in f if line.strip()])
-            return ids
-
-        # Load records
-        all_records: list[Metadata] = load_manifest(self.manifest_path)
-        # By default, use all records
-        train_records = all_records
-
-        # If a train split file is provided, use it
-        if (train_split_path := self.split_path / "train_ids.txt").exists():
-            train_ids = load_split_ids(train_split_path)
-            train_records = [r for r in all_records if r.id.lower() in train_ids]
-            self.print_rank_zero(
-                f"Loaded train split file with {len(train_ids)} ids."
-                f" Total {len(train_records)} records selected."
-            )
-        else:
-            self.print_rank_zero("No train split file found. Using all records.")
-
-        # If a validation/test split file is provided, exclude those records
-        for fn in ["validation_ids.txt", "test_ids.txt"]:
-            if (test_split_path := self.split_path / fn).exists():
-                exclude_ids = load_split_ids(test_split_path)
-                train_records = [
-                    r for r in train_records if r.id.lower() not in exclude_ids
-                ]
-
-        # Apply filters
-        train_records = [r for r in train_records if do_filter(r)]
-
-        self.print_rank_zero(
-            f"Constructed training dataset with total {len(train_records)} records "
-            "after filtering."
-        )
-
-        max_chains: int = self.config.max_chains
-        max_tokens: int = self.config.max_tokens
-
-        # Ensure max_atoms(=max_tokens*24) is a multiple of 32 for LocalAttention
-        assert max_tokens % 4 == 0, "max_tokens must be a multiple of 4."
-
-        assert self.ccd_symmetry_path is not None, (
-            "symmetry_path must be provided if return_train_symmetry or "
-            "return_validation_symmetry is True"
-        )
-        ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
-
-        return LMDBTrainingDataset(
-            records=train_records,
-            lmdb_path=self.lmdb_path,
-            paths=self.paths,
-            apo_perturbation_args=self.apo_perturbation_args,
-            featurization_args=self.featurization_args,
-            max_chains=max_chains,
-            max_tokens=max_tokens,
-            cropper=self.cropper,
-            sampler_config=self.config.sampler,
+    def construct_train_dataset(self) -> MultiTrainingDataset:
+        """Construct training dataset."""
+        multi_ds = MultiTrainingDataset(
+            configs=self.config.train_datasets,
+            ccd=self.ccd,
+            pretrained_embedding=self.config.pretrained_embedding,
+            featurization_args=self.config.featurization,
+            max_chains=self.config.max_chains,
+            max_tokens=self.config.max_tokens,
             safe_load=self.config.safe_load,
-            return_symmetry=self.config.return_train_symmetry,
-            ccd_symmetry_dict=ccd_symmetry_dict,
         )
+        # Print dataset info
+        for d in multi_ds.datasets:
+            self.print_rank_zero(
+                f"Constructed training dataset '{d.name}' with {len(d)} samples."
+            )
+        return multi_ds
 
     def construct_val_dataset(self) -> ValidationDataset:
-        # HACK: (SeonghwanSeo): hard-coded path to rcsb set; single dataset
+        # TODO: (SeonghwanSeo): currently only supports a single validation dataset
+        if len(self.config.val_datasets) != 1:
+            raise NotImplementedError(
+                "Currently only single validation dataset is supported."
+            )
 
-        # Load records
-        all_records: list[Metadata] = load_manifest(self.manifest_path)
-
-        # get validation records
-        validation_split = self.split_path / "validation_ids.txt"
-        with open(validation_split) as f:
-            val_ids = set([line.strip().lower() for line in f if line.strip()])
-        val_records = [r for r in all_records if r.id.lower() in val_ids]
-
-        # Sort validation records by length (for efficient batching)
-        val_records.sort(key=lambda r: r.num_valid_residues, reverse=False)
-
-        self.print_rank_zero(
-            f"Constructed validation dataset with {len(val_records)} records."
-        )
-
-        # If symmetry is to be returned, load symmetry info
-        assert self.ccd_symmetry_path is not None, (
-            "symmetry_path must be provided if return_train_symmetry or "
-            "return_validation_symmetry is True"
-        )
-        ccd_symmetry_dict = load_ccd_symmetry_dict(self.ccd_symmetry_path)
-
-        return LMDBValidationDataset(
-            records=val_records,
-            lmdb_path=self.lmdb_path,
-            paths=self.paths,
-            apo_perturbation_args=self.apo_perturbation_args,
-            featurization_args=self.featurization_args,
+        ds = ValidationDataset(
+            config=self.config.val_datasets[0],
+            ccd=self.ccd,
+            pretrained_embedding=self.config.pretrained_embedding,
+            featurization_args=self.config.featurization,
             safe_load=self.config.safe_load,
-            return_symmetry=self.config.return_validation_symmetry,
-            ccd_symmetry_dict=ccd_symmetry_dict,
         )
+        self.print_rank_zero(
+            f"Constructed validation dataset '{ds.name}' with {len(ds)} samples."
+        )
+        return ds
 
     def train_dataloader(self):
         dataset = self._train_ds
 
-        weights = dataset.weights
-        if weights is not None:
-            sampler = DistributedWeightedSampler(
-                weights=weights,  # type: ignore
-                rank=self.trainer.global_rank if self.trainer else 0,
-                world_size=self.trainer.world_size if self.trainer else 1,
-                epoch=self.trainer.current_epoch if self.trainer else 0,
-                replacement=True,
-            )
-            shuffle = False
-        else:
-            sampler = None
-            shuffle = True
-
+        sampler = DistributedWeightedSampler(
+            weights=dataset.weights,
+            rank=self.trainer.global_rank if self.trainer else 0,
+            world_size=self.trainer.world_size if self.trainer else 1,
+            epoch=self.trainer.current_epoch if self.trainer else 0,
+            replacement=True,
+        )
+        persistent_workers = (
+            self.config.persistent_workers and self.config.num_workers > 0
+        )
         return DataLoader(
             dataset,
             batch_size=self.config.train_batch_size,
-            shuffle=shuffle,
+            shuffle=False,
             sampler=sampler,
             drop_last=True,
             collate_fn=collate,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
-            persistent_workers=True if self.config.num_workers > 0 else False,
+            persistent_workers=persistent_workers,
         )
 
     def val_dataloader(self) -> DataLoader:

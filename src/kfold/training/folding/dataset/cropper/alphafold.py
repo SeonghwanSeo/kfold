@@ -8,7 +8,7 @@ Implements three kinds of cropping strategies:
 
 import numpy as np
 
-from kfold.data.structure import TokenizedStructure
+from kfold.data.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
 from . import utils
@@ -253,7 +253,9 @@ class AlphaFold3Cropper(BaseCropper):
     ) -> np.ndarray:
         """Get the closest tokens to the query token."""
         # check inputs
-        resolved_mask = struct.token.resolved_mask
+        tokens = struct.token.token_index  # =np.arange(n_tokens)
+        center_idx = struct.token.center_index  # (n_tokens, 3)
+        resolved_mask = struct.atom.resolved_mask[tokens, center_idx]  # (n_tokens,)
         if not resolved_mask.any():
             raise ValueError("No valid tokens in structure")
 
@@ -268,7 +270,7 @@ class AlphaFold3Cropper(BaseCropper):
         valid_tokens = all_tokens[resolved_mask]
 
         # get the first bioassembly
-        holo_coords = atom_data.coords[..., 0, :]  # [n_tokens, 24, 3]
+        holo_coords = atom_data.coords  # [n_tokens, 24, 3]
         all_token_centers = holo_coords[
             token_data.token_index, token_data.center_index, :
         ]  # (num_tokens, 3)
@@ -297,11 +299,11 @@ class AlphaFold3Cropper(BaseCropper):
         interface_ids : list[tuple[int, int]]
             The valid interfaces in the structure.
         """
-        record = struct.metadata
-        assert record is not None, "Structure metadata is required"
+        metadata = struct.metadata
+        assert metadata is not None, "Structure metadata is required"
         all_chains: set[int] = set(struct.chain.asym_id.tolist())
         all_interfaces: list[tuple[int, int]] = [
-            interface.asym_ids for interface in record.interfaces if interface.valid
+            interface.asym_ids for interface in metadata.interfaces if interface.is_valid
         ]
         all_interfaces = [v for v in all_interfaces if set(v).issubset(all_chains)]
         return sorted(set(all_interfaces))

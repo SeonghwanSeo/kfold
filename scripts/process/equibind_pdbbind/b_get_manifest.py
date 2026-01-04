@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import kfold.constants as C
-from kfold.data.metadata import Metadata
+from kfold.data.schema import Metadata
 from kfold.utils.boltz.process import parse_record
 
 logger = logging.getLogger(__name__)

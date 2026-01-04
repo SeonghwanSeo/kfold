@@ -2,12 +2,6 @@ import enum
 from collections.abc import Sequence
 from functools import lru_cache
 
-# Protein atom ordering mappings (kfold ↔ RieProDy)
-from rieprody.proteins.protein_vocab import (
-    RESTYPE_NAME_TO_ATOM14_NAMES as _RIEPRODY_ATOM14,
-)
-from rieprody.proteins.protein_vocab import THREE_TO_ONE as _RIEPRODY_THREE_TO_ONE
-
 from . import residue
 from .residue import ResidueName
 
@@ -20,11 +14,18 @@ protein_atom37: tuple[str, ...] = (
     "NH2", "OH",  "CZ",  "CZ2", "CZ3", "NZ",  "OXT"
 )  # fmt: skip
 
-nucleic_atom29: tuple[str, ...] = (
+nucleic_acid_atom29: tuple[str, ...] = (
     "C1'", "C2",  "C2'", "C3'", "C4",  "C4'", "C5",  "C5'", "C6",  "C7",
     "C8",  "N1",  "N2",  "N3",  "N4",  "N6",  "N7",  "N9",  "OP3", "O2",
     "O2'", "O3'", "O4",  "O4'", "O5'", "O6",  "OP1", "OP2", "P"
 )  # fmt: skip
+
+protein_atom37_order: dict[str, int] = {
+    name: idx for idx, name in enumerate(protein_atom37)
+}
+nucleic_acid_atom29_order: dict[str, int] = {
+    name: idx for idx, name in enumerate(nucleic_acid_atom29)
+}
 
 
 class AtomName(enum.StrEnum):
@@ -170,22 +171,6 @@ RESIDUE_ATOMS: dict[ResidueName, tuple[AtomName, ...]] = {
     for res, atoms in residue_atoms.items()
 }
 
-# Protein atom ordering mappings (kfold ↔ RieProDy)
-_RIEPRODY_STD_RESNAMES = tuple(_RIEPRODY_THREE_TO_ONE.keys())
-RIEPRODY_PROTEIN_RESIDUE_ATOMS: dict[str, tuple[str, ...]] = {
-    res: tuple(a for a in _RIEPRODY_ATOM14[res] if a != "")
-    for res in _RIEPRODY_STD_RESNAMES
-}
-
-# Permutations for per-residue atom order conversion.
-KFOLD_TO_RIEPRODY_ATOM_ORDER: dict[str, tuple[int, ...]] = {
-    res: tuple(residue_atoms[res].index(a) for a in rie_atoms)
-    for res, rie_atoms in RIEPRODY_PROTEIN_RESIDUE_ATOMS.items()
-}
-RIEPRODY_TO_KFOLD_ATOM_ORDER: dict[str, tuple[int, ...]] = {
-    res: tuple(rie_atoms.index(a) for a in residue_atoms[res])
-    for res, rie_atoms in RIEPRODY_PROTEIN_RESIDUE_ATOMS.items()
-}
 
 # reference atom for each residue
 REF_ATOM: dict[ResidueName, AtomName] = {

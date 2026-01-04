@@ -57,19 +57,22 @@ def _resolve_yaml_inheritance(config: DictConfig, base_path: Path) -> DictConfig
 
     def _resolve_yaml_inheritance(obj: Any, base_path: Path) -> Any:
         """Recursively resolve _yaml_ inheritance in nested structures."""
-        if not isinstance(obj, dict):
+        if isinstance(obj, dict):
+            # Check if current dict has _yaml_ and resolve it first
+            if "_yaml_" in obj:
+                yaml_path = base_path / obj.pop("_yaml_")
+                base_config = load_config(yaml_path, override_registry_defaults=False)
+                obj = OmegaConf.merge(base_config, obj)
+                obj = OmegaConf.to_container(obj, resolve=True)
+
+            # Recursively process all nested dicts
+            resolved = {}
+            for key, value in obj.items():
+                resolved[key] = _resolve_yaml_inheritance(value, base_path)
+        elif isinstance(obj, list):
+            resolved = [_resolve_yaml_inheritance(item, base_path) for item in obj]
+        else:
             return obj
-
-        # Check if current dict has _yaml_ and resolve it first
-        if "_yaml_" in obj:
-            yaml_path = base_path / obj.pop("_yaml_")
-            base_config = load_config(yaml_path, override_registry_defaults=False)
-            obj = OmegaConf.merge(base_config, obj)
-
-        # Recursively process all nested dicts
-        resolved = {}
-        for key, value in obj.items():
-            resolved[key] = _resolve_yaml_inheritance(value, base_path)
 
         return resolved
 
