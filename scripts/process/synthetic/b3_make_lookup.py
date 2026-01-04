@@ -142,11 +142,7 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
             for entity_id, (seq, ctype) in entry_dict.items():
                 if (ctype, seq) not in _GLOBAL_SEQ_TO_ID:
                     stats["seq_fail"] += 1
-                    # print(
-                    #     f"({key.decode(), entity_id}) "
-                    #     + "Sequence not found in seq_to_id mapping:"
-                    #     + seq
-                    # )
+                    entry_lookup[entity_id] = {"type": ctype}
                     continue
 
                 # Match Sequence Embedding
@@ -178,7 +174,7 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
 
             local_lookup[entry_key] = entry_lookup
 
-            if len(entry_lookup) == len(entry_dict):
+            if all("seq_emb" in v for v in entry_lookup.values()):
                 stats["seq_success_complex"] += 1
             else:
                 stats["seq_fail_complex"] += 1

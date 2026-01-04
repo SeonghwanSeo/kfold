@@ -1,0 +1,27 @@
+# RCSB training dataset configuration.
+_yaml_: "default-train.yaml"
+
+name: natural-ab
+weight: 0.02
+
+# Data paths
+data_path: <DATA_PATH_PLACEHOLDER>
+seed: null # should be null for data augmentation
+
+filters: []
+
+sampler:
+  _registry_: "data_sampler"
+  _class_: UniformSampler
+  level: "complex"
+
+cropper:
+  _registry_: "data_cropper"
+  _class_: MultiAnchorCropper
+  max_anchors: 2
+  w_contiguous: 0.25
+  w_spatial: 0.25
+  w_spatial_interface: 0.5
+
+apo_init:
+  use_perturbation: false
