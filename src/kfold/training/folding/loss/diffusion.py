@@ -274,11 +274,15 @@ class SmoothLDDTLoss(torch.nn.Module):
         pair_mask: torch.Tensor,
     ) -> torch.Tensor:
         # Line 1
-        d_pred = torch.cdist(x_pred, x_pred)  # [B, L, L]
+        d_pred = torch.norm(
+            x_pred[..., :, None, :] - x_pred[..., None, :, :], dim=-1
+        )  # [B, L, L]
 
         # Line 2
         with torch.no_grad():
-            d_true = torch.cdist(x_true, x_true)  # [B, L, L]
+            d_true = torch.norm(
+                x_true[..., :, None, :] - x_true[..., None, :, :], dim=-1
+            )  # [B, L, L]
 
         # Line 3
         d_diff = torch.abs(d_true - d_pred)  # [B, L, L]

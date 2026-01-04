@@ -44,10 +44,9 @@ class DistogramLoss(torch.nn.Module):
 
         with torch.autocast("cuda", enabled=False), torch.no_grad():
             boundaries: torch.Tensor = self.boundaries  # [num_bins - 1] # type: ignore
-            pdist_disto = torch.cdist(
-                f_input.token.disto_coords,
-                f_input.token.disto_coords,
-            )  # [B, Lt, Lt]
+            disto_coords = f_input.token.disto_coords
+            diff = disto_coords[..., None, :, :] - disto_coords[..., :, None, :]
+            pdist_disto = diff.norm(dim=-1)  # [B, Lt, Lt]
             target_distogram = (pdist_disto.unsqueeze(-1) > boundaries).sum(dim=-1).long()
 
         # Compute the distogram loss

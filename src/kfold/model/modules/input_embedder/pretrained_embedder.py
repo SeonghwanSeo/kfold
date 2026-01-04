@@ -316,7 +316,8 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
 
         # Pair representation: pairwise distance RBF
         with torch.autocast("cuda", enabled=False):
-            pdist = torch.cdist(apo_coords, apo_coords, p=2)  # [B, L, L]
+            diff = apo_coords[..., :, None, :] - apo_coords[..., None, :, :]
+            pdist = torch.norm(diff, dim=-1)  # [B, L, L]
             pdist_map = self.distmap(pdist)  # [B, L, L, num_bin]
         pdist_map = pdist_map * pair_mask.unsqueeze(-1)  # apply mask
 
