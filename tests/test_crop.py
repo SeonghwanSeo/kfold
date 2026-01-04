@@ -8,8 +8,8 @@ from tqdm import tqdm
 
 from kfold.data.schema import Metadata
 from kfold.data.tokenized import TokenizedStructure
-from kfold.training.folding.dataset.cropper.multi_anchor import MultiAnchorCropper
-from kfold.training.folding.dataset.datamodule import load_manifest
+from kfold.training.dataset.cropper.multi_anchor import MultiAnchorCropper
+from kfold.training.dataset.datamodule import load_manifest
 
 LMDB_PATH = Path("/cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/")
 MANIFEST_PATH = Path("/cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl")

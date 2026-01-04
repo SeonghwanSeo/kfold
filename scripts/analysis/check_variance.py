@@ -7,8 +7,8 @@ import numpy as np
 from tqdm import tqdm
 
 from kfold.config import load_config
-from kfold.training.folding.dataset.datamodule import TrainingDataModule
-from kfold.training.folding.dataset.dataset import TrainingDataset
+from kfold.training.dataset.datamodule import TrainingDataModule
+from kfold.training.dataset.dataset import TrainingDataset
 
 
 def analyze_structure(apo_coords, holo_coords, masks, prefix=""):

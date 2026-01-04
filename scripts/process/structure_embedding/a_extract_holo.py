@@ -13,7 +13,7 @@ from tqdm import tqdm
 import kfold.constants as C
 from kfold.data.schema import Metadata
 from kfold.data.tokenized import TokenizedStructure
-from kfold.training.folding.dataset.datamodule import load_manifest
+from kfold.training.dataset.datamodule import load_manifest
 
 logger = logging.getLogger(__name__)
 
