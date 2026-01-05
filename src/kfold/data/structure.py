@@ -415,9 +415,9 @@ class RefStructure:
 
     Attributes
     ----------
-    chain: list[Chain]
+    chains: list[Chain]
         Chain information.
-    connect: list[CovalentConnection]
+    connections: list[CovalentConnection]
         Covalent connection information.
     metadata: Metadata
         Metadata information.

@@ -1,3 +1,4 @@
+import argparse
 import pathlib
 import random
 
@@ -21,8 +22,6 @@ def set_seed(seed: int):
 
 
 def parse_args():
-    import argparse
-
     parser = argparse.ArgumentParser(description="KFold Inference Script")
     parser.add_argument(
         "--config",
@@ -77,7 +76,7 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-boltz1.pkl",
+        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd.pkl",
         help="Path to the CCD data file.",
     )
     parser.add_argument(
@@ -95,14 +94,12 @@ def parse_args():
     return parser.parse_args()
 
 
+@torch.inference_mode()
 def main():
     # Setup environment
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-    torch.set_float32_matmul_precision("high")
-    torch.set_grad_enabled(False)
-    torch.set_autocast_dtype("cuda", torch.bfloat16)
-    torch.set_autocast_enabled(True)
+    torch.set_float32_matmul_precision("highest")
 
     args = parse_args()
 
@@ -159,12 +156,14 @@ def main():
         # FIXME: pass random generator to model sampling function instead
         set_seed(args.seed)
 
-        model_out, time_logs = model.sample(
-            f_input,
-            num_recycles=args.num_recycles,
-            num_steps=args.num_steps,
-            num_diffusion_samples=args.num_samples,
-        )
+        # Sample structures
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            model_out, time_logs = model.sample(
+                f_input,
+                num_recycles=args.num_recycles,
+                num_steps=args.num_steps,
+                num_diffusion_samples=args.num_samples,
+            )
 
         # remove batch dimension
         model_out = {k: v.squeeze(0) for k, v in model_out.items()}
@@ -190,7 +189,7 @@ def main():
         try:
             struct.write(apo_save_path, save_apo=True)
         except Exception as e:
-            print(f"Warning: Failed to save apo structure for {name}: {e}")
+            tqdm.write(f"Warning: Failed to save apo structure for {name}: {e}")
 
         # Save sampled structures
         sample_coords = (
@@ -198,8 +197,11 @@ def main():
         )  # [num_samples, Natom, 3]
         for i in range(args.num_samples):
             save_path = save_dir / f"sample-{i}.cif"
-            new_struct = struct.replace_atom_coords(sample_coords[i])
-            new_struct.write(save_path)
+            try:
+                new_struct = struct.replace_atom_coords(sample_coords[i])
+                new_struct.write(save_path)
+            except Exception as e:
+                tqdm.write(f"Warning: Failed to save sample {i} for {name}: {e}")
 
 
 if __name__ == "__main__":

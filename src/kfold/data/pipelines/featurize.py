@@ -150,7 +150,7 @@ class InputFeaturizer:
                 embedding_dim=self.seq_embedding_dim,
             )
         else:
-            assert seq_embeddings is None, (
+            assert seq_embeddings is None or len(seq_embeddings) == 0, (
                 "seq_embedding_paths must be None when seq_embedding_dim is not set."
             )
 
@@ -167,7 +167,7 @@ class InputFeaturizer:
                 rng=rng,
             )
         else:
-            assert struct_embeddings is None, (
+            assert struct_embeddings is None or len(struct_embeddings) == 0, (
                 "struct_embedding_paths must be None when "
                 "struct_embedding_dim is not set."
             )

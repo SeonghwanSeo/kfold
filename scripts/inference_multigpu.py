@@ -77,7 +77,7 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-boltz1.pkl",
+        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd.pkl",
         help="Path to the CCD data file.",
     )
     parser.add_argument(
@@ -97,12 +97,7 @@ def parse_args():
 
 def main():
     # Setup environment
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    torch.set_float32_matmul_precision("high")
-    torch.set_grad_enabled(False)
-    torch.set_autocast_dtype("cuda", torch.bfloat16)
-    torch.set_autocast_enabled(True)
+    torch.set_float32_matmul_precision("highest")
 
     args = parse_args()
 
@@ -117,7 +112,8 @@ def main():
         # Get model config if wrapped in a higher-level config
         config = config.model
     model: KFold = KFold.from_checkpoint(config, args.checkpoint)
-    model = model.eval().cuda()
+
+    # Inference configuration
     inference_config = InferenceConfig(
         num_recycles=args.num_recycles,
         num_steps=args.num_steps,
