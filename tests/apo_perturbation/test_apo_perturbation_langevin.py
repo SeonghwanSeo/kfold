@@ -29,9 +29,13 @@ from pathlib import Path
 
 import lmdb
 import numpy as np
-from kfold.data.pipelines.apo_perturbation import ApoPerturbation
 
 import kfold.constants as C
+from kfold.data.pipelines._apo_perturbation import (
+    ApoPerturbation,
+    ApoPerturbationConfig,
+    LangevinConfig,
+)
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
@@ -219,20 +223,18 @@ def _na_eval_once(
 ) -> dict[str, float]:
     """Evaluate NA chains for one (steps,dt,bond_coef,seed)."""
     apo_pert = ApoPerturbation(
-        use_perturbation=True,
-        prob_perturbation=1.0,
-        metric_lmdb_path=None,
-        metric_comp=None,
-        random_walk=None,
-        langevin={
-            "num_steps": int(steps),
-            "dt": float(dt),
-            "res_r": float(res_r),
-            "ent_r": float(ent_r),
-            "sphere_r": float(sphere_r),
-            "bond_coef": float(bond_coef),
-        },
-        seed=int(seed),
+        ApoPerturbationConfig(
+            rieprody=None,
+            langevin=LangevinConfig(
+                min_steps=1,
+                max_steps=int(steps),
+                dt=float(dt),
+                res_r=float(res_r),
+                ent_r=float(ent_r),
+                bond_r=float(bond_coef),
+                sphere_r=float(sphere_r),
+            ),
+        )
     )
 
     chain_slices = _chain_slices(struct)
@@ -333,30 +335,24 @@ def _debug_print_na_bond_samples(
     x0[~mask] = 0.0
 
     apo_pert = ApoPerturbation(
-        use_perturbation=True,
-        prob_perturbation=1.0,
-        metric_lmdb_path=None,
-        metric_comp=None,
-        random_walk=None,
-        langevin={
-            "num_steps": int(steps),
-            "dt": float(dt),
-            "res_r": float(res_r),
-            "ent_r": float(ent_r),
-            "sphere_r": float(sphere_r),
-            "bond_coef": float(bond_coef),
-        },
-        seed=int(seed),
+        ApoPerturbationConfig(
+            rieprody=None,
+            langevin=LangevinConfig(
+                min_steps=1,
+                max_steps=int(steps),
+                dt=float(dt),
+                res_r=float(res_r),
+                ent_r=float(ent_r),
+                bond_r=float(bond_coef),
+                sphere_r=float(sphere_r),
+            ),
+        )
     )
     rng_ld = np.random.default_rng(seed)
     x_after = apo_pert.langevin_dynamics_perturbation(
-        apo_coords=None,
+        coords=x0,
         mask=mask,
         rng=rng_ld,
-        struct=struct,
-        chain_i=chain_i,
-        record_id="<debug_na_bonds>",
-        entity_id=int(struct.chain.entity_id[chain_i]),
     ).astype(np.float32, copy=False)
 
     bond_token = struct.bond.token_index.astype(np.int64, copy=False)
@@ -729,21 +725,17 @@ def main() -> None:
     before = _compute_basic_stats(struct) | _bond_distance_stats(struct)
 
     apo_pert = ApoPerturbation(
-        use_perturbation=bool(args.use_perturbation),
-        prob_perturbation=float(args.prob_perturbation),
-        mask_nucleic_acids=bool(args.mask_nucleic_acids),
-        metric_lmdb_path=None,
-        metric_comp=None,
-        random_walk=None,
-        langevin={
-            "num_steps": int(args.ld_steps),
-            "dt": float(args.ld_dt),
-            "res_r": float(args.ld_res_r),
-            "ent_r": float(args.ld_ent_r),
-            "sphere_r": float(args.ld_sphere_r),
-            "bond_coef": float(args.ld_bond_coef),
-        },
-        seed=int(args.seed),
+        ApoPerturbationConfig(
+            langevin=LangevinConfig(
+                min_steps=int(args.ld_steps),
+                max_steps=int(args.ld_steps),
+                dt=float(args.ld_dt),
+                res_r=float(args.ld_res_r),
+                ent_r=float(args.ld_ent_r),
+                bond_r=float(args.ld_bond_coef),
+                sphere_r=float(args.ld_sphere_r),
+            ),
+        )
     )
 
     out_struct = apo_pert.run(struct, rng=np.random.default_rng(args.seed))
