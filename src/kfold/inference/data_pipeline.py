@@ -89,7 +89,6 @@ class InputDataPipeline:
     def prepare_structure_from_input_file(
         self,
         input_file: query.InputFile,
-        rng: np.random.Generator | None = None,
     ) -> structure.RefStructure:
         """Prepare the reference structure from the input file.
 
@@ -123,9 +122,9 @@ class InputDataPipeline:
             # Parse sequence
             entity_chain: structure.Chain
             if isinstance(seq, query.LigandSequence):
-                entity_chain = self.parse_ligand_sequence(seq, rng=rng)
+                entity_chain = self.parse_ligand_sequence(seq)
             else:
-                entity_chain = self.parse_polymer_sequence(seq, rng=rng)
+                entity_chain = self.parse_polymer_sequence(seq)
 
             # Create copies for multiple chains
             for i in range(num_chains):
@@ -196,15 +195,14 @@ class InputDataPipeline:
             if seq.apo is None:
                 # No apo structure provided
                 continue
-            if seq.apo is not None:
-                # Use provided apo structure
-                apo_path = pathlib.Path(seq.apo)
-                lookup[entity_id] = {
-                    "path": apo_path,
-                    "name": apo_path.name.split(".")[0],  # dummy name
-                    "residue_map": get_identity_residue_map(len(seq)),  # identity map
-                    "source": "query",  # dummy
-                }
+            # Use provided apo structure
+            apo_path = pathlib.Path(seq.apo)
+            lookup[entity_id] = {
+                "path": apo_path,
+                "name": apo_path.name.split(".")[0],  # dummy name
+                "residue_map": get_identity_residue_map(len(seq)),  # identity map
+                "source": "query",  # dummy
+            }
         # Populate apo structure
         self.apo_initializer(ref_struct, lookup=lookup, rng=rng)
 
@@ -250,7 +248,6 @@ class InputDataPipeline:
     def parse_polymer_sequence(
         self,
         seq: query.PolymerSequence,
-        rng: np.random.Generator | None = None,
     ) -> structure.Chain:
         """Parse a polymer chain from the sequence input.
 
@@ -258,8 +255,6 @@ class InputDataPipeline:
         ----------
         seq : PolymerSequence
             The polymer sequence input.
-        rng : np.random.Generator | None, optional
-            Random number generator for any stochastic processes. Default is None.
 
         Returns
         -------
@@ -294,7 +289,6 @@ class InputDataPipeline:
     def parse_ligand_sequence(
         self,
         seq: query.LigandSequence,
-        rng: np.random.Generator | None = None,
         is_covalent: bool = False,
     ) -> structure.Chain:
         """Parse a ligand chain from the sequence input.
@@ -303,8 +297,6 @@ class InputDataPipeline:
         ----------
         seq : LigandSequence
             The ligand sequence input.
-        rng : np.random.Generator | None, optional
-            Random number generator for any stochastic processes. Default is None.
         is_covalent : bool, optional
             Whether the ligand is covalently bound. Default is False.
 
@@ -328,7 +320,7 @@ class InputDataPipeline:
                 chain_type=ctype,
                 ccd_sequences=seq.ccd_ids,
                 ccd=self.ccd,
-                drop_leaving_atoms=(is_covalent),
+                drop_leaving_atoms=is_covalent,
             )
         else:
             assert seq.smiles is not None, "Either CCD code or SMILES must be provided."
