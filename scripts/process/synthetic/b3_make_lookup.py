@@ -168,7 +168,6 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                     "struct_emb": struct_emb,
                     "apo": [apo_info],
                 }
-                entity_lookup_data["seq_emb"] = seq_emb
                 entry_lookup[entity_id] = entity_lookup_data
 
             # Convert entity IDs to strings for JSON compatibility
