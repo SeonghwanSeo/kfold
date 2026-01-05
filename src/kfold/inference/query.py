@@ -155,7 +155,7 @@ class LigandSequence(BaseSequence):
 
 
 @dataclasses.dataclass(kw_only=True)
-class InputFile:
+class Query:
     name: str  # default: input file name
     sequences: list[ProteinSequence | DNASequence | RNASequence | LigandSequence] = (
         dataclasses.field(default_factory=list)
@@ -166,8 +166,8 @@ class InputFile:
 def parse_single_file(
     json_or_yaml_path: str | Path,
     ccd: CCD | None = None,
-) -> InputFile:
-    """Parse input YAML file into InputFile dataclass.
+) -> Query:
+    """Parse input YAML file into Query dataclass.
 
     Parameters
     ----------
@@ -179,8 +179,8 @@ def parse_single_file(
 
     Returns
     -------
-    input_file: InputFile
-        Parsed input data as a InputFile dataclass.
+    query: Query
+        Parsed input data as a Query dataclass.
     """
     if Path(json_or_yaml_path).suffix == ".json":
         with open(json_or_yaml_path) as f:
@@ -201,7 +201,7 @@ def parse_single_file(
     # Parse sequences
     if "sequences" not in input_dict:
         raise ValueError("Input file must contain 'sequences' field.")
-    sanity_check_input_dicts(input_dict["sequences"])
+    validate_input_dicts(input_dict["sequences"])
 
     sequences: list[BaseSequence] = []
     for seq_dict in input_dict["sequences"]:
@@ -222,9 +222,9 @@ def parse_single_file(
                 raise ValueError(f"Unsupported chain type: {chain_type}")
         sequences.append(sequence)
 
-    sanity_check_input_sequences(sequences, ccd=ccd)
+    validate_input_sequences(sequences, ccd=ccd)
 
-    return InputFile(
+    return Query(
         name=name,
         sequences=sequences,  # type: ignore[arg-type]
         yaml=yaml.safe_dump(input_dict),
@@ -235,8 +235,8 @@ def parse_input_files(
     input_path: str | Path,
     ccd: CCD | None = None,
     skip_invalid: bool = True,
-) -> list[InputFile]:
-    """Parse input JSON/YAML file or all files in a directory into a list of InputFile.
+) -> list[Query]:
+    """Parse input JSON/YAML file or all files in a directory into a list of Query.
 
     Parameters
     ----------
@@ -250,8 +250,8 @@ def parse_input_files(
 
     Returns
     -------
-    input_files: list[InputFile]
-        List of parsed input data as InputFile dataclasses.
+    queries: list[Query]
+        List of parsed input data as Query dataclasses.
     """
     input_path = Path(input_path)
     if not input_path.exists():
@@ -266,8 +266,8 @@ def parse_directory(
     input_dir: str | Path,
     ccd: CCD | None = None,
     skip_invalid: bool = True,
-) -> list[InputFile]:
-    """Parse all JSON/YAML files in a directory into a list of InputFile.
+) -> list[Query]:
+    """Parse all JSON/YAML files in a directory into a list of Query.
 
     Parameters
     ----------
@@ -281,28 +281,28 @@ def parse_directory(
 
     Returns
     -------
-    input_files: list[InputFile]
-        List of parsed input data as InputFile dataclasses.
+    queries: list[Query]
+        List of parsed input data as Query dataclasses.
     """
-    input_files: list[InputFile] = []
+    queries: list[Query] = []
     for file_path in Path(input_dir).iterdir():
         if file_path.suffix in {".json", ".yaml", ".yml"}:
             try:
-                input_file = parse_single_file(file_path, ccd=ccd)
+                query = parse_single_file(file_path, ccd=ccd)
             except Exception as e:
                 if skip_invalid:
                     print(f"Skipping invalid input file {file_path}: {e}")
                 else:
                     raise e
             else:
-                input_files.append(input_file)
-    return input_files
+                queries.append(query)
+    return queries
 
 
-def sanity_check_input_dicts(
+def validate_input_dicts(
     input_seqs: list[dict[str, Any]],
 ) -> None:
-    """Perform sanity checks on the input sequence dictionary.
+    """Validate the input sequence dictionary.
 
     Parameters
     ----------
@@ -312,7 +312,7 @@ def sanity_check_input_dicts(
     Raises
     ------
     ValueError
-        If any sanity check fails.
+        If any validation check fails.
     """
     allow_types = {"protein", "dna", "rna", "ligand"}
     asym_ids: set[str] = set()
@@ -371,11 +371,11 @@ def sanity_check_input_dicts(
                 asym_ids.add(asym_id)
 
 
-def sanity_check_input_sequences(
+def validate_input_sequences(
     seq_list: list[BaseSequence],
     ccd: CCD | None = None,
 ) -> None:
-    """Perform sanity checks on the input sequence dataclasses.
+    """Validate the input sequence dataclasses.
 
     Parameters
     ----------
@@ -388,7 +388,7 @@ def sanity_check_input_sequences(
     Raises
     ------
     ValueError
-        If any sanity check fails.
+        If any validation check fails.
     """
     asym_ids: set[str] = set()
     for sequence in seq_list:

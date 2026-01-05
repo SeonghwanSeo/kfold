@@ -9,7 +9,7 @@ from kfold.config import load_config
 from kfold.data.types.ccd import CCD
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.pl_client import InferenceConfig, KFoldInferenceClient
-from kfold.inference.query import InputFile, parse_input_files
+from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
 
 
@@ -129,7 +129,7 @@ def main():
 
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
-    input_queries: list[InputFile] = parse_input_files(
+    input_queries: list[Query] = parse_input_files(
         args.input,
         ccd=ccd,
         skip_invalid=True,
@@ -137,7 +137,7 @@ def main():
 
     # Create data loader
     dataloader = prepare_inference_dataloader(
-        input_files=input_queries,
+        queries=input_queries,
         ccd=ccd,
         seq_embedding_dim=model.channel_seq_encoder,
         struct_embedding_dim=model.channel_struct_encoder,

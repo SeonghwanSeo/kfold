@@ -58,14 +58,14 @@ class InputDataPipeline:
             max_struct_ensembles=max_struct_ensembles,
         )
 
-    def process_input_file(
-        self, input_file: query.InputFile
+    def process_query(
+        self, input: query.Query
     ) -> tuple[RefStructure, TokenizedStructure, FoldingInput]:
-        """Process an InputFile into model-ready inputs.
+        """Process an Query into model-ready inputs.
 
         Parameters
         ----------
-        input_file : InputFile
+        input : Query
             The input file containing sequences and metadata.
 
         Returns
@@ -80,29 +80,29 @@ class InputDataPipeline:
         rng = np.random.default_rng(self.seed)
 
         # Prepare structure from input file
-        ref_struct = self.prepare_structure_from_input_file(input_file)
+        ref_struct = self.prepare_structure_from_query(input)
 
         # Populate apo structure
-        self.populate_apo_structure(ref_struct, input_file, rng=rng)
+        self.populate_apo_structure(ref_struct, input, rng=rng)
 
         # Tokenize structure
         tok_struct = self.tokenizer.tokenize(ref_struct)
 
         # Featurize input
-        seq_emb_paths = self.collect_precomputed_embeddings(input_file, "seq")
-        struct_emb_paths = self.collect_precomputed_embeddings(input_file, "struct")
+        seq_emb_paths = self.collect_precomputed_embeddings(input, "seq")
+        struct_emb_paths = self.collect_precomputed_embeddings(input, "struct")
         f_input = self.featurizer(tok_struct, seq_emb_paths, struct_emb_paths, rng=rng)
         return ref_struct, tok_struct, f_input
 
-    def prepare_structure_from_input_file(
+    def prepare_structure_from_query(
         self,
-        input_file: query.InputFile,
+        input: query.Query,
     ) -> RefStructure:
         """Prepare the reference structure from the input file.
 
         Parameters
         ----------
-        input_file : InputFile
+        input : Query
             The input query file.
 
         Returns
@@ -118,7 +118,7 @@ class InputDataPipeline:
         # This should be conducted here to property assign
         # covalent flags during ligand parsing.
 
-        for entity_id, seq in enumerate(input_file.sequences, start=1):
+        for entity_id, seq in enumerate(input.sequences, start=1):
             # Prepare chain ids
             chain_names: list[str] = seq.ids
             num_chains = len(chain_names)
@@ -164,7 +164,7 @@ class InputDataPipeline:
 
         # Prepare metadata
         metadata = Metadata(
-            id=input_file.name,
+            id=input.name,
             source="query",
             chains=chain_metas,
         )
@@ -179,7 +179,7 @@ class InputDataPipeline:
     def populate_apo_structure(
         self,
         ref_struct: RefStructure,
-        input_file: query.InputFile,
+        input: query.Query,
         rng: np.random.Generator | None = None,
     ) -> None:
         """Populate apo structure in-place.
@@ -188,14 +188,14 @@ class InputDataPipeline:
         ----------
         ref_struct : RefStructure
             The reference structure to populate.
-        input_file : InputFile
+        input : Query
             The input query file.
         rng : np.random.Generator | None, optional
             Random number generator for any stochastic processes. Default is None.
         """
         # Prepare lookup (apo initializer input)
         lookup: dict[int, dict] = {}
-        for entity_id, seq in enumerate(input_file.sequences, start=1):
+        for entity_id, seq in enumerate(input.sequences, start=1):
             if isinstance(seq, query.LigandSequence):
                 # Ligands do not have apo structures
                 continue
@@ -214,13 +214,13 @@ class InputDataPipeline:
         self.apo_initializer(ref_struct, lookup=lookup, rng=rng)
 
     def collect_precomputed_embeddings(
-        self, input_file: query.InputFile, key: str = "seq"
+        self, input: query.Query, key: str = "seq"
     ) -> dict[int, dict]:
         """Collect precomputed embeddings from the input file.
 
         Parameters
         ----------
-        input_file : InputFile
+        input : Query
             The input query file.
 
         Returns
@@ -232,7 +232,7 @@ class InputDataPipeline:
             f"Unsupported embedding key: {key}. Supported keys are 'seq' and 'struct'."
         )
         embedding_paths: dict[int, dict] = {}
-        for entity_id, seq in enumerate(input_file.sequences, start=1):
+        for entity_id, seq in enumerate(input.sequences, start=1):
             if key == "seq" and seq.seq_emb is not None:
                 path = pathlib.Path(seq.seq_emb)
             elif key == "struct" and seq.struct_emb is not None:
