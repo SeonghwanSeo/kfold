@@ -12,7 +12,7 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.inference.dataset import prepare_inference_dataloader
-from kfold.inference.query import InputFile, parse_input_files
+from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
 
 
@@ -121,7 +121,7 @@ def main():
 
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
-    input_queries: list[InputFile] = parse_input_files(
+    input_queries: list[Query] = parse_input_files(
         args.input,
         ccd=ccd,
         skip_invalid=True,
@@ -129,7 +129,7 @@ def main():
 
     # Create data loader
     dataloader = prepare_inference_dataloader(
-        input_files=input_queries,
+        queries=input_queries,
         ccd=ccd,
         seq_embedding_dim=model.channel_seq_encoder,
         struct_embedding_dim=model.channel_struct_encoder,
@@ -144,7 +144,7 @@ def main():
             continue
 
         # Unpack batch
-        query: InputFile = batch[0]
+        query: Query = batch[0]
         ref_struct: RefStructure = batch[1]  # noqa
         struct: TokenizedStructure = batch[2]
         f_input: FoldingInput = batch[3]

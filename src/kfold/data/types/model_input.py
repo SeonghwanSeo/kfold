@@ -9,11 +9,6 @@ from kfold.data.layout import TensorLayout
 from kfold.utils.misc import check_tensor
 
 __all__ = [
-    "ChainTensor",
-    "TokenTensor",
-    "AtomTensor",
-    "BondTensor",
-    "PretrainedTensor",
     "FoldingInput",
 ]
 
@@ -162,46 +157,50 @@ class TokenTensor(TensorLayout):
                 residue_index: [1, 2, 3, 4]
             6-sized ligand:
                 residue_index: [1, 1, 1, 1, 1, 1]
-    disto_index: torch.Tensor (long)
-        Representative atom indices of shape [Ntoken,], Cβ
     center_index: torch.Tensor (long)
         Center indices of shape [Ntoken,], Cα
+    disto_index: torch.Tensor (long)
+        Representative atom indices of shape [Ntoken,], Cβ
     frames_index: torch.Tensor (long)
         Frame indices of shape [Ntoken, 3].
-    disto_coords: torch.Tensor (float32)
-        Representative atom center coordinates of shape [Ntoken, 3].
-    center_coords: torch.Tensor (float32)
-        Center coordinates of shape [Ntoken, 3].
-    disto_mask: torch.Tensor (bool)
-        Mask tensor of shape [Ntoken,], indicating disto atom of tokens to be resolved.
-    resolved_mask: torch.Tensor (bool)
-        Mask tensor of shape [Ntoken,], indicating tokens to be resolved.
     frames_mask: torch.Tensor (bool)
         Boolean tensor of shape [Ntoken,], indicating whether token's frame is resolved.
     pad_mask: torch.Tensor (bool)
         Mask tensor of shape [Ntoken,], indicating valid tokens.
     pocket_contact_type: torch.Tensor (long)
         Pocket contact types of shape [Ntoken,], indicating pocket contact information.
+
+    # For model training
+    center_coords: torch.Tensor (float32)
+        Center coordinates of shape [Ntoken, 3].
+    disto_coords: torch.Tensor (float32)
+        Representative atom center coordinates of shape [Ntoken, 3].
+    center_mask: torch.Tensor (bool)
+        Mask tensor of shape [Ntoken,], indicating center atom of tokens to be resolved.
+    disto_mask: torch.Tensor (bool)
+        Mask tensor of shape [Ntoken,], indicating disto atom of tokens to be resolved.
     """
 
     token_index: torch.Tensor  # [Ntoken,], long
     org_token_index: torch.Tensor  # [Ntoken,], long
+    residue_index: torch.Tensor  # [Ntoken,], long
     res_type: torch.Tensor  # [Ntoken, 32], float32
     chain_type: torch.Tensor  # [Ntoken,], long
     entity_id: torch.Tensor  # [Ntoken,], long
     asym_id: torch.Tensor  # [Ntoken,], long, same to sequence_id
     sym_id: torch.Tensor  # [Ntoken,], long
-    residue_index: torch.Tensor  # [Ntoken,], long
-    disto_index: torch.Tensor  # [Ntoken,], long
     center_index: torch.Tensor  # [Ntoken,], long
+    disto_index: torch.Tensor  # [Ntoken,], long
     frames_index: torch.Tensor  # [Ntoken, 3], long
-    disto_coords: torch.Tensor  # [Ntoken, 3], long
-    center_coords: torch.Tensor  # [Ntoken, 3], long
-    resolved_mask: torch.Tensor  # [Ntoken,], bool
-    disto_mask: torch.Tensor  # [Ntoken,], bool
     frames_mask: torch.Tensor  # [Ntoken,], bool
     pad_mask: torch.Tensor  # [Ntoken,], bool
     pocket_contact_type: torch.Tensor  # [Ntoken,], bool
+
+    # For model training
+    center_coords: torch.Tensor  # [Ntoken, 3], long
+    disto_coords: torch.Tensor  # [Ntoken, 3], long
+    center_mask: torch.Tensor  # [Ntoken,], bool
+    disto_mask: torch.Tensor  # [Ntoken,], bool
 
     @property
     def layout_shape(self) -> tuple[int, ...]:
@@ -238,19 +237,6 @@ class TokenTensor(TensorLayout):
         check_tensor(
             self.frames_index, name="frames_index", dtype=torch.long, shape=(*shape, 3)
         )
-        check_tensor(
-            self.disto_coords, name="disto_coords", dtype=torch.float32, shape=(*shape, 3)
-        )
-        check_tensor(
-            self.center_coords,
-            name="center_coords",
-            dtype=torch.float32,
-            shape=(*shape, 3),
-        )
-        check_tensor(
-            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=shape
-        )
-        check_tensor(self.disto_mask, name="disto_mask", dtype=torch.bool, shape=shape)
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
         check_tensor(self.frames_mask, name="frames_mask", dtype=torch.bool, shape=shape)
         check_tensor(
@@ -259,6 +245,19 @@ class TokenTensor(TensorLayout):
             dtype=torch.long,
             shape=shape,
         )
+
+        # For model training
+        check_tensor(
+            self.center_coords,
+            name="center_coords",
+            dtype=torch.float32,
+            shape=(*shape, 3),
+        )
+        check_tensor(
+            self.disto_coords, name="disto_coords", dtype=torch.float32, shape=(*shape, 3)
+        )
+        check_tensor(self.center_mask, name="center_mask", dtype=torch.bool, shape=shape)
+        check_tensor(self.disto_mask, name="disto_mask", dtype=torch.bool, shape=shape)
 
     @cached_property
     def is_protein(self) -> torch.Tensor:
@@ -306,13 +305,14 @@ class TokenTensor(TensorLayout):
             "disto_index": -1,
             "center_index": -1,
             "frames_index": -1,
-            "disto_coords": 0.0,
-            "center_coords": 0.0,
-            "resolved_mask": False,
-            "disto_mask": False,
             "frames_mask": False,
             "pad_mask": False,
             "pocket_contact_type": 0,
+            # For model training
+            "center_coords": 0.0,
+            "disto_coords": 0.0,
+            "center_mask": False,
+            "disto_mask": False,
         }
 
         fields = {}
@@ -353,16 +353,18 @@ class AtomTensor(TensorLayout):
         Token indices mapping atoms to their parent tokens of shape [Natom,].
     apo_coords: torch.Tensor (float32)
         Apo (unbound) state coordinates of shape [Natom, 3],
-    resolved_mask: torch.Tensor (bool)
-        Boolean mask of shape [Natom,] indicating atoms to be resolved.
     apo_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating atoms with apo coordinates.
     pad_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating valid (non-padded) atoms.
+
+    # For model training
     label_coords: torch.Tensor (float32)
         Holo (bound) state coordinates of shape [Natom, 3],
         This is used as the ground truth for training, and may be set to 0
         for inference.
+    resolved_mask: torch.Tensor (bool)
+        Boolean mask of shape [Natom,] indicating atoms to be resolved.
     """
 
     ref_atom_name_chars: torch.Tensor  # [Natom, 4, 64], float32
@@ -372,11 +374,13 @@ class AtomTensor(TensorLayout):
     ref_mask: torch.Tensor  # [Natom,], bool
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
-    label_coords: torch.Tensor  # [Natom, 3], float32
     apo_coords: torch.Tensor  # [Natom, 3], float32
-    resolved_mask: torch.Tensor  # [Natom,], bool
     apo_mask: torch.Tensor  # [Natom,], bool
     pad_mask: torch.Tensor  # [Natom,], bool
+
+    # For model training
+    label_coords: torch.Tensor  # [Natom, 3], float32
+    resolved_mask: torch.Tensor  # [Natom,], bool
 
     @property
     def layout_shape(self) -> tuple[int, ...]:
@@ -406,19 +410,19 @@ class AtomTensor(TensorLayout):
         )
         check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
         check_tensor(
+            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, 3)
+        )
+        check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=shape)
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
+        check_tensor(
             self.label_coords,
             name="label_coords",
             dtype=torch.float32,
             shape=(*shape, 3),
         )
         check_tensor(
-            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, 3)
-        )
-        check_tensor(
             self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=shape
         )
-        check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -441,10 +445,10 @@ class AtomTensor(TensorLayout):
             "ref_space_uid": -1,
             "token_index": 0,
             "apo_coords": 0.0,
-            "resolved_mask": False,
             "apo_mask": False,
             "pad_mask": False,
             "label_coords": 0.0,
+            "resolved_mask": False,
         }
 
         fields = {}
@@ -475,6 +479,8 @@ class BondTensor(TensorLayout):
         Atom indices of the connecting atoms in the bond of shape [Nbond, 2].
     bond_type: torch.Tensor
         Bond types of shape [Nbond,], indicating the type of each bond.
+    pad_mask: torch.Tensor
+        Boolean mask of shape [Nbond,], indicating valid (non-padded) bonds.
     is_ligand_ligand: torch.Tensor
         Boolean tensor of shape [Nbond,], indicating whether the bond is between
         two ligand atoms.
@@ -487,9 +493,9 @@ class BondTensor(TensorLayout):
     token_index: torch.Tensor  # [Nbond, 2], long
     atom_index: torch.Tensor  # [Nbond, 2], long
     bond_type: torch.Tensor  # [Nbond,], long
+    pad_mask: torch.Tensor  # [Nbond,], bool
     is_ligand_ligand: torch.Tensor  # [Nbond,], bool
     is_polymer_ligand: torch.Tensor  # [Nbond,], bool
-    pad_mask: torch.Tensor  # [Nbond,], bool
 
     @property
     def layout_shape(self) -> tuple[int, ...]:

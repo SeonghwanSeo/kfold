@@ -10,7 +10,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 
 from .data_pipeline import InputDataPipeline
-from .query import InputFile
+from .query import Query
 
 
 def next_multiple(n: int, divisor: int) -> int:
@@ -24,7 +24,7 @@ def collate_fn_single(batch: list[Any]) -> Any:
 
 
 def prepare_inference_dataloader(
-    input_files: list[InputFile],
+    queries: list[Query],
     ccd: CCD,
     seq_embedding_dim: int | None,
     struct_embedding_dim: int | None,
@@ -32,7 +32,7 @@ def prepare_inference_dataloader(
     num_workers: int = 0,
 ) -> torch.utils.data.DataLoader:
     dataset = InferenceDataset(
-        input_files=input_files,
+        queries=queries,
         ccd=ccd,
         seq_embedding_dim=seq_embedding_dim,
         struct_embedding_dim=struct_embedding_dim,
@@ -52,7 +52,7 @@ class InferenceDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        input_files: list[InputFile],
+        queries: list[Query],
         ccd: CCD,
         seq_embedding_dim: int | None,
         struct_embedding_dim: int | None,
@@ -61,8 +61,8 @@ class InferenceDataset(torch.utils.data.Dataset):
         """
         Parameters
         ----------
-        input_files : list[InputFile]
-            List of input files containing metadatas.
+        queries : list[Query]
+            List of queries.
         ccd : CCD
             Component for handling common chemical components.
         seq_embedding_dim : int | None
@@ -72,7 +72,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         seed : int | None
             Random seed for reproducibility.
         """
-        self.input_files: list[InputFile] = input_files
+        self.queries: list[Query] = queries
         self.seed: int = seed
 
         # Data pipeline components
@@ -84,16 +84,16 @@ class InferenceDataset(torch.utils.data.Dataset):
         )
 
     def __len__(self) -> int:
-        return len(self.input_files)
+        return len(self.queries)
 
     def __getitem__(
         self, index: int
-    ) -> tuple[InputFile, RefStructure, TokenizedStructure, FoldingInput] | None:
+    ) -> tuple[Query, RefStructure, TokenizedStructure, FoldingInput] | None:
         """Get the folding input for the given input."""
-        query: InputFile = self.input_files[index]
+        query: Query = self.queries[index]
 
         # Prepare input data
-        ref_struct, tok_struct, f_input = self.data_pipeline.process_input_file(query)
+        ref_struct, tok_struct, f_input = self.data_pipeline.process_query(query)
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)

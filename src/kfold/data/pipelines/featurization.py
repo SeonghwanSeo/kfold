@@ -319,7 +319,7 @@ def featurize_structure(
     token_dict["center_coords"] = atom_dict["label_coords"][token_dict["center_index"]]
 
     # Masks indicating whether the center/disto atoms are resolved
-    token_dict["resolved_mask"] = atom_dict["resolved_mask"][token_dict["center_index"]]
+    token_dict["center_mask"] = atom_dict["resolved_mask"][token_dict["center_index"]]
     token_dict["disto_mask"] = atom_dict["resolved_mask"][token_dict["disto_index"]]
 
     # === Atom-level features ===

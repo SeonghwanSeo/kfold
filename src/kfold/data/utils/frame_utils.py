@@ -65,4 +65,4 @@ def compute_ligand_frames_inplace(
         frames_expanded[:, 1] - frames_expanded[:, 2],
     )
     frames_mask[~mask_collinear] = False
-    frames_mask[~token_layout.resolved_mask] = False
+    frames_mask[~token_layout.center_mask] = False

@@ -11,7 +11,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.model.models.kfold import KFold
 
-from .query import InputFile
+from .query import Query
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -71,7 +71,7 @@ class KFoldInferenceClient(pl.LightningModule):
 
     def predict_step(
         self,
-        batch: tuple[InputFile, RefStructure, TokenizedStructure, FoldingInput],
+        batch: tuple[Query, RefStructure, TokenizedStructure, FoldingInput],
     ) -> None:
         if batch is None:
             # Skip empty batch (occured by processing error)

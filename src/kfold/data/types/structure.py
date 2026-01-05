@@ -14,8 +14,6 @@ from kfold.utils.misc import check_array
 
 __all__ = [
     "RefStructure",
-    "Chain",
-    "CovalentConnection",
 ]
 
 
