@@ -117,7 +117,7 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
         meminit=False,
     )
 
-    local_lookup: dict[str, dict] = {}
+    local_lookup: dict[str, dict[str, Any]] = {}
     stats = {
         "seq_success": 0,
         "seq_fail": 0,
@@ -136,18 +136,18 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                 ref_structure: RefStructure = RefStructure.load_npz(byte_stream)
 
             metadata = ref_structure.metadata
-            entry_key = metadata.id
-            entry_dict = {}
+            entry_name: str = metadata.id
 
             # Process Chains
+            entity_dict: dict[int, tuple[str, str]] = {}
             for chain in ref_structure.chains:
                 entity_id = chain.entity_id
-                if entity_id in entry_dict:
+                if entity_id in entity_dict:
                     continue
 
                 if chain.ctype.is_nonpolymer:
                     seq = ":".join(chain.get_ccd_sequence())
-                    entry_dict[entity_id] = (seq, chain.ctype.name.lower())
+                    entity_dict[entity_id] = (seq, chain.ctype.name.lower())
                 else:
                     sequence = chain.get_sequence()
                     standard_set = set()
@@ -171,14 +171,14 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                             [v if v in standard_set else unk for v in sequence]
                         )
 
-                    entry_dict[entity_id] = (sequence, chain.ctype.name.lower())
+                    entity_dict[entity_id] = (sequence, chain.ctype.name.lower())
 
             # free memory explicitly for the object
             del ref_structure
 
             # Build Lookup Entry
-            entry_lookup: dict[str, dict] = {}
-            for entity_id, (seq, ctype) in entry_dict.items():
+            entry_lookup: dict[int, dict] = {}
+            for entity_id, (seq, ctype) in entity_dict.items():
                 entity_lookup_data: dict[str, Any] = {"type": ctype}
 
                 # Match Sequence Embedding
@@ -219,7 +219,8 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
 
                 entry_lookup[entity_id] = entity_lookup_data
 
-            local_lookup[entry_key] = entry_lookup
+            # Convert entity IDs to strings for JSON compatibility
+            local_lookup[entry_name] = {str(k): v for k, v in entry_lookup.items()}
 
     env.close()
     return local_lookup, stats

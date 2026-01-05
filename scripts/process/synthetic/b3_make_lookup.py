@@ -50,11 +50,11 @@ import pathlib
 import lmdb
 from tqdm import tqdm
 
+from kfold.data.schema import Metadata
 from kfold.data.structure import RefStructure
 
 # --- Global variables for worker processes ---
 _GLOBAL_SEQ_TO_ID: dict = {}
-_GLOBAL_STRUCT_TO_ID: dict = {}
 _GLOBAL_LMDB_PATH: pathlib.Path | None = None
 
 
@@ -81,7 +81,7 @@ def init_worker(seq_to_id: dict, lmdb_path: pathlib.Path):
     Initialize worker process with read-only shared data.
     This avoids pickling large dictionaries for every task.
     """
-    global _GLOBAL_SEQ_TO_ID, _GLOBAL_STRUCT_TO_ID, _GLOBAL_LMDB_PATH
+    global _GLOBAL_SEQ_TO_ID, _GLOBAL_LMDB_PATH
     _GLOBAL_SEQ_TO_ID = seq_to_id
     _GLOBAL_LMDB_PATH = lmdb_path
 
@@ -91,7 +91,7 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
     Process a batch of LMDB keys.
     Returns the local lookup dictionary and statistics.
     """
-    global _GLOBAL_SEQ_TO_ID, _GLOBAL_STRUCT_TO_ID, _GLOBAL_LMDB_PATH
+    global _GLOBAL_SEQ_TO_ID, _GLOBAL_LMDB_PATH
 
     # Open a new read-only transaction for this worker
     # lock=False is safe for read-only and prevents potential locking issues in MP
@@ -122,24 +122,24 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
             with io.BytesIO(value) as byte_stream:
                 ref_structure: RefStructure = RefStructure.load_npz(byte_stream)
 
-            metadata = ref_structure.metadata
-            entry_key = metadata.id
-            entry_dict = {}
+            metadata: Metadata = ref_structure.metadata
+            entry_name: str = metadata.id
 
             # Process Chains
+            entity_dict: dict[int, tuple[str, str]] = {}
             for chain in ref_structure.chains:
                 entity_id = chain.entity_id
-                if entity_id in entry_dict:
+                if entity_id in entity_dict:
                     continue
                 sequence = chain.get_sequence().replace("X", "A")
-                entry_dict[entity_id] = (sequence, chain.ctype.name.lower())
+                entity_dict[entity_id] = (sequence, chain.ctype.name.lower())
 
             # free memory explicitly for the object
             del ref_structure
 
             # Build Lookup Entry
-            entry_lookup: dict[str, dict] = {}
-            for entity_id, (seq, ctype) in entry_dict.items():
+            entry_lookup: dict[int, dict] = {}
+            for entity_id, (seq, ctype) in entity_dict.items():
                 if (ctype, seq) not in _GLOBAL_SEQ_TO_ID:
                     stats["seq_fail"] += 1
                     entry_lookup[entity_id] = {"type": ctype}
@@ -170,9 +170,9 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                 }
                 entity_lookup_data["seq_emb"] = seq_emb
                 entry_lookup[entity_id] = entity_lookup_data
-                stats["seq_success"] += 1
 
-            local_lookup[entry_key] = entry_lookup
+            # Convert entity IDs to strings for JSON compatibility
+            local_lookup[entry_name] = {str(k): v for k, v in entry_lookup.items()}
 
             if all("seq_emb" in v for v in entry_lookup.values()):
                 stats["seq_success_complex"] += 1

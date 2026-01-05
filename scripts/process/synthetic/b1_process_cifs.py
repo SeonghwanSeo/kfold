@@ -1,4 +1,4 @@
-"""Preprocess Synthetic datas
+"""Preprocess synthetic data mmCIF files.
 
 This script processes mmCIF files.
 
@@ -6,6 +6,7 @@ This script processes mmCIF files.
 ```
 python b1_process_cifs.py \
     --cif_dir /path/to/cif/ \           # Path to mmCIF files
+    --ccd_path /path/to/ccd.pkl \       # Path to CCD pickled file
     --out_dir /path/to/output_npz/ \    # Output Directory
     --num_workers 8                     # Number of parallel workers
 ```
@@ -32,7 +33,7 @@ FAILED = 2
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Process RCSB CCD data.")
+    parser = argparse.ArgumentParser(description="Process synthetic mmCIF files.")
     parser.add_argument(
         "--cif_dir",
         type=pathlib.Path,

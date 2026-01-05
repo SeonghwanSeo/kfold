@@ -13,7 +13,7 @@ from kfold.data.structure import RefStructure
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Construct validation set.")
+    parser = argparse.ArgumentParser(description="Construct synthetic data set.")
     parser.add_argument(
         "--data_dir",
         type=pathlib.Path,
@@ -32,7 +32,6 @@ def parse_args():
 
 
 def main():
-    """Main function to extract sequences from npz files."""
     args = parse_args()
     data_dir: pathlib.Path = args.data_dir
 
