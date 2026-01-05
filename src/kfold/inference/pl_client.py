@@ -6,11 +6,12 @@ from dataclasses import dataclass
 import lightning.pytorch as pl
 import torch
 
-from kfold.data.model_input import FoldingInput
-from kfold.data.structure import TokenizedStructure
+from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import RefStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.model.models.kfold import KFold
 
-from .query import InputFile
+from .query import Query
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -70,14 +71,14 @@ class KFoldInferenceClient(pl.LightningModule):
 
     def predict_step(
         self,
-        batch: tuple[InputFile, TokenizedStructure, FoldingInput],
+        batch: tuple[Query, RefStructure, TokenizedStructure, FoldingInput],
     ) -> None:
         if batch is None:
             # Skip empty batch (occured by processing error)
             return
 
         # Unpack batch and validate
-        query, struct, f_input = batch
+        query, ref_struct, struct, f_input = batch
         assert f_input.batch_size == 1, "Inference batch size should be 1"
 
         cfg = self.inference_config
@@ -120,18 +121,17 @@ class KFoldInferenceClient(pl.LightningModule):
 
         try:
             apo_save_path = save_dir / "apo.cif"
-            struct.write(apo_save_path, conformer_id=0, save_apo=True)
+            struct.write(apo_save_path, save_apo=True)
         except Exception as e:
             logger.error(f"Error saving apo structure for {name}: {e}")
 
         # Save predictions
         sample_coords: torch.Tensor = model_out["sample_coordinates"]
         sample_coords_arr = sample_coords.cpu().numpy()
-        new_struct = struct.replace_atom_coords(sample_coords_arr)
-
         try:
             for i in range(num_diffusion_samples):
                 save_path = save_dir / f"sample-{i}.cif"
-                new_struct.write(save_path, i, is_predicted=True)
+                new_struct = struct.replace_atom_coords(sample_coords_arr[i])
+                new_struct.write(save_path)
         except Exception as e:
             logger.error(f"Error saving structure for {name}: {e}")

@@ -15,8 +15,8 @@ ensemble_module:
   num_heads_pwa: 8
   num_heads_tri_attn: 4
   num_blocks: 4
-  struct_dropout: 0.15
-  z_dropout: 0.25
+  dropout_struct: 0.15
+  dropout_z: 0.25
 multi_state_module: {}
 use_ensemble: false
 use_multi_state: false

@@ -1,4 +1,4 @@
-from . import atom, bond, chain, constraint, residue, training  # noqa: F401 # fmt: skip
+from . import atom, bond, ccd, chain, constraint, residue, training  # noqa: F401
 
 NUM_RES_TYPES: int = len(residue.ResidueName)
 NUM_ATOM_NAME_CHARS: int = 64  # AlphaFold3

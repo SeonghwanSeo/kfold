@@ -6,7 +6,7 @@ import math
 import torch
 import torch.nn as nn
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 
 from .embeddings import RelativePositionEncoding

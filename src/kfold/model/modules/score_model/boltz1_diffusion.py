@@ -1,7 +1,7 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.boltz1.diffusion import DiffusionModule
 from kfold.model.layers.boltz1.encoders import RelativePositionEncoder
 from kfold.utils.registry import SCORE_MODEL, BaseConfig

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import SCORE_MODEL
 
 

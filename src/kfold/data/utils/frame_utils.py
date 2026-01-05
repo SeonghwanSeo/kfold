@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from kfold.data import model_input
+from kfold.data.types import model_input
 
 
 def compute_collinear_mask(v1: torch.Tensor, v2: torch.Tensor) -> torch.Tensor:
@@ -16,9 +16,9 @@ def compute_collinear_mask(v1: torch.Tensor, v2: torch.Tensor) -> torch.Tensor:
 
 
 def compute_ligand_frames_inplace(
-    token_layout: model_input.TokenLayout,
-    atom_layout: model_input.AtomLayout,
-    chain_layout: model_input.ChainLayout,
+    token_layout: model_input.TokenTensor,
+    atom_layout: model_input.AtomTensor,
+    chain_layout: model_input.ChainTensor,
 ):
     """Update frames for non-polymer chains."""
 
@@ -65,4 +65,4 @@ def compute_ligand_frames_inplace(
         frames_expanded[:, 1] - frames_expanded[:, 2],
     )
     frames_mask[~mask_collinear] = False
-    frames_mask[~token_layout.resolved_mask] = False
+    frames_mask[~token_layout.center_mask] = False

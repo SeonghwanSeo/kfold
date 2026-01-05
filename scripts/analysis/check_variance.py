@@ -7,8 +7,8 @@ import numpy as np
 from tqdm import tqdm
 
 from kfold.config import load_config
-from kfold.training.folding.dataset.datamodule import TrainingDataModule
-from kfold.training.folding.dataset.dataset import TrainingDataset
+from kfold.training.dataset.datamodule import TrainingDataModule
+from kfold.training.dataset.dataset import TrainingDataset
 
 
 def analyze_structure(apo_coords, holo_coords, masks, prefix=""):
@@ -74,7 +74,7 @@ def main():
             num_total = len(dataset.samples)
             indices = np.random.permutation(num_total)
         else:
-            num_total = len(dataset.records)
+            num_total = len(dataset.metadatas)
             indices = np.random.permutation(num_total)
 
         count = 0
@@ -90,7 +90,7 @@ def main():
                     record = sample.metadata
                     asym_ids = sample.asym_id
                 else:
-                    record = dataset.records[idx]
+                    record = dataset.metadatas[idx]
                     asym_ids = None
 
                 struct = dataset.load_tokenized_structure(record)

@@ -29,10 +29,10 @@ from pathlib import Path
 
 import lmdb
 import numpy as np
+from kfold.data.pipelines.apo_perturbation import ApoPerturbation
 
 import kfold.constants as C
-from kfold.data.apo_perturbation import ApoPerturbation
-from kfold.data.structure import TokenizedStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
 
@@ -779,7 +779,7 @@ def main() -> None:
         out_dir = Path(args.out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{key}_with_apo.pdb"
-        out_struct.to_pdb(str(out_path), conformer_id=0, is_predicted=True, save_apo=True)
+        out_struct.to_pdb(str(out_path), save_apo=True)
         print(f"[debug] wrote {out_path}")
 
 

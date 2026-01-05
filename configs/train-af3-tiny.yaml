@@ -10,14 +10,14 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: debug-tiny-512
+  name: debug-af3-tiny
   out_dir: ./experiments/
   seed: 42
 
   global_hparams:
     max_chains: 20
     max_tokens: 384
-    batch_size: 4
+    batch_size: 8
     diffusion_batch_size: 48
     global_batch_size: 256
     num_global_steps_per_epoch: 1000
@@ -30,20 +30,18 @@ train:
     precision: bf16-mixed
 
   data:
-    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
-    manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
-    symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
-    split_path: ./assets/splits/boltz1
-    num_workers: 8
-
-    cropper:
-      max_anchors: 1 # Same to AF-M/AF3 cropping
-      w_contiguous: 0.2
-      w_spatial: 0.4
-      w_spatial_interface: 0.4
+    ccd_path: /cache/wykim_lab/kfold_data/v260103/ccd-train.pkl
+    train_datasets:
+      - _yaml_: "dataset/rcsb-train.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260103/dataset/rcsb-train/
+        apo_init:
+          use_perturbation: false
+    val_datasets:
+      - _yaml_: "dataset/rcsb-val.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260103/dataset/rcsb-val/
 
   wandb:
     use: false
-    project: "KFold-edm"
-    group: tiny-structure-only # set your group name
+    project: "AF3"
+    group: structure-only # set your group name
     entity: K-Fold # set your entity name

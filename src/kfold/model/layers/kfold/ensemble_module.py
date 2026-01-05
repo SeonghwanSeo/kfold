@@ -2,7 +2,7 @@ from functools import partial
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.transition import Transition
 from kfold.model.layers.primitives import (
     DropoutColumnwise,
