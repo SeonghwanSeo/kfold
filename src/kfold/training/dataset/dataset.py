@@ -236,7 +236,18 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Update apo initializer config
         rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
         if rieprody_lmdb_path.exists():
-            config.apo_init.rieprody.metric_lmdb_path = rieprody_lmdb_path
+            if config.apo_init.use_perturbation is False:
+                # Skip warning if perturbation is disabled
+                pass
+            elif config.apo_init.apo_perturbation is None:
+                print("Warning: RieProDy LMDB path found but apo_perturbation is None.")
+                pass
+            elif config.apo_init.apo_perturbation.rieprody is None:
+                print("Warning: RieProDy LMDB path found but rieprody is disabled.")
+            else:
+                config.apo_init.apo_perturbation.rieprody.metric_lmdb_path = (
+                    rieprody_lmdb_path
+                )
         else:
             print(
                 f"Warning: RieProDy LMDB path {rieprody_lmdb_path} does not exist. "
