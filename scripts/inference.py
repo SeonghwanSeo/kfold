@@ -7,8 +7,10 @@ import torch
 from tqdm import tqdm
 
 from kfold.config import load_config
-from kfold.data import model_input, tokenized
-from kfold.data.ccd import CCD
+from kfold.data.types.ccd import CCD
+from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import RefStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.query import InputFile, parse_input_files
 from kfold.model.models import KFold
@@ -143,11 +145,12 @@ def main():
 
         # Unpack batch
         query: InputFile = batch[0]
-        struct: tokenized.TokenizedStructure = batch[1]
-        f_input: model_input.FoldingInput = batch[2]
+        ref_struct: RefStructure = batch[1]  # noqa
+        struct: TokenizedStructure = batch[2]
+        f_input: FoldingInput = batch[3]
 
         if not f_input.is_batched:
-            f_input = model_input.FoldingInput.from_list([f_input])
+            f_input = FoldingInput.from_list([f_input])
 
         assert f_input.batch_size == 1, "Inference batch size should be 1"
         f_input = f_input.to(device="cuda")

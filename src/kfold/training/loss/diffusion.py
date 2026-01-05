@@ -2,7 +2,7 @@
 import torch
 import torch.nn.functional as F
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.utils.checkpointing import checkpoint_section
 from kfold.utils.geometry.rigid_align import weighted_rigid_align
 

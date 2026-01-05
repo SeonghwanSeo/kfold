@@ -10,7 +10,7 @@ import gemmi
 import numpy as np
 from rdkit import Chem
 
-from .utils import rdkit_utils
+from kfold.data.utils import rdkit_utils
 
 # Helper function
 

@@ -6,7 +6,6 @@ import logging
 import multiprocessing
 import os
 import pathlib
-import pickle
 import sys
 
 import gemmi
@@ -15,7 +14,7 @@ from rdkit import Chem, RDLogger, rdBase
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.ccd import CCD, Component
+from kfold.data.types.ccd import CCD, Component
 
 try:
     # pdbeccdutils is required for reading RCSB CCD data
@@ -37,22 +36,36 @@ def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Process RCSB CCD data.")
     parser.add_argument(
+        "-i",
         "--cif_path",
         type=pathlib.Path,
         required=True,
         help="Path to the components.cif file from RCSB.",
     )
     parser.add_argument(
-        "--tmp_dir",
-        type=pathlib.Path,
-        default=pathlib.Path("./tmp/rcsb_ccd"),
-        help="Temporary directory for processing.",
-    )
-    parser.add_argument(
-        "--output_path",
+        "-o",
+        "--out_path",
         type=pathlib.Path,
         required=True,
         help="Path (.pkl) to save the processed CCD data.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=len(os.sched_getaffinity(0)),
+        help="Number of worker processes for parallel processing.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility.",
+    )
+    # Conformer generation parameters
+    parser.add_argument(
+        "--train",
+        action="store_true",
+        help="Flag to indicate if the data is for training purposes.",
     )
     parser.add_argument(
         "--num_conformers",
@@ -65,27 +78,10 @@ def parse_arguments():
         help="Number of conformers for standard residues (if different).",
     )
     parser.add_argument(
-        "--train",
-        action="store_true",
-        help="Flag to indicate if the data is for training purposes.",
-    )
-    parser.add_argument(
         "--date_cutoff",
         type=str,
         default="2021-09-30",
         help="Date cutoff for processing components (YYYY-MM-DD).",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducibility.",
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=len(os.sched_getaffinity(0)),
-        help="Number of worker processes for parallel processing.",
     )
     return parser.parse_args()
 
@@ -99,18 +95,13 @@ def process_pdbe_ccd_component_and_save(
     code: str,
     mol: Chem.Mol,
     ccd_cif_string: str,
-    save_path: pathlib.Path,
     num_confs: int,
     compute_symmetry: bool,
     date_cutoff: datetime.date,
     seed: int,
     safety_mode: bool = True,
-) -> None:
+) -> dict | None:
     """Convert PDBeCCDComponent to Component."""
-    if save_path.exists():
-        # Already processed
-        return
-
     seed = shift_seed(seed, code)
     rng = np.random.default_rng(seed)
 
@@ -132,12 +123,10 @@ def process_pdbe_ccd_component_and_save(
             return
         else:
             raise e
-    comp_state = comp.to_dict()
-    with open(save_path, "wb") as f:
-        pickle.dump((code, comp_state), f)
+    return comp.to_dict()
 
 
-def _process_wrapper(args_bundle):
+def _process_wrapper(args_bundle) -> tuple[str, dict | None]:
     code, mol, ccd_cif_string = args_bundle["dynamic"]
     static = args_bundle["static"]
 
@@ -146,17 +135,17 @@ def _process_wrapper(args_bundle):
     else:
         nconfs = static["num_confs"]
 
-    return process_pdbe_ccd_component_and_save(
+    comp_state = process_pdbe_ccd_component_and_save(
         code,
         mol,
         ccd_cif_string=ccd_cif_string,
-        save_path=static["save_path_root"] / f"{code}.pkl",
         num_confs=nconfs,
         compute_symmetry=static["compute_symmetry"],
         date_cutoff=static["date_cutoff"],
         seed=static["seed"],
         safety_mode=static["safety_mode"],
     )
+    return (code, comp_state)
 
 
 def construct_ccd(
@@ -167,7 +156,6 @@ def construct_ccd(
     date_cutoff: datetime.date | None,
     seed: int,
     num_workers: int,
-    tmp_dir: pathlib.Path,
     logger: logging.Logger,
 ) -> CCD:
     # Load CCD components
@@ -180,12 +168,8 @@ def construct_ccd(
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
 
-    # Create temporary directory
-    os.makedirs(tmp_dir, exist_ok=True)
-
     # Prepare static arguments for processing
     static_args = {
-        "save_path_root": tmp_dir,
         "num_confs": num_confs,
         "num_confs_standard_residues": num_confs_standard_residues,
         "compute_symmetry": compute_symmetry,
@@ -208,38 +192,21 @@ def construct_ccd(
             yield {"dynamic": (code, mol, cif_string), "static": static_args}
 
     # Process components in parallel
-    if num_workers > 1:
-        with multiprocessing.Pool(num_workers) as pool:
-            for _ in tqdm(
-                pool.imap_unordered(_process_wrapper, task_generator(), chunksize=1),
+    logger.info("Processing components...")
+    with multiprocessing.Pool(num_workers) as pool:
+        results = list(
+            tqdm(
+                pool.imap_unordered(_process_wrapper, task_generator()),
                 total=total_count,
-                desc="Processing components",
-            ):
-                pass
-    else:
-        for args_bundle in tqdm(
-            task_generator(),
-            total=total_count,
-            desc="Processing components",
-        ):
-            _process_wrapper(args_bundle)
+            )
+        )
 
-    logger.info("Aggregating processed components...")
-    components: dict[str, Component] = {}
-
-    for code in tqdm(pdbe_results.keys(), desc="Loading pickles"):
-        save_path = tmp_dir / f"{code}.pkl"
-        if not save_path.exists():
-            continue
-        try:
-            with open(save_path, "rb") as f:
-                loaded_code, comp_state = pickle.load(f)
-                assert loaded_code == code, "Mismatched component code in pickle."
-                components[code] = Component.from_dict(comp_state)
-        except Exception as e:
-            logger.error(f"Failed to load {code}: {e}")
-
-    logger.info(f"Total processed components: {len(components)} out of {total_count}")
+    # Collect processed components
+    components = {}
+    for code, comp_state in results:
+        if comp_state is not None:
+            components[code] = Component.from_dict(comp_state)
+    logger.info(f"Successfully processed {len(components)} components.")
 
     return CCD(components)
 
@@ -317,10 +284,9 @@ def main():
         date_cutoff=date_cutoff,
         seed=args.seed,
         num_workers=args.num_workers,
-        tmp_dir=args.tmp_dir,
         logger=logger,
     )
-    ccd.save(args.output_path)
+    ccd.save(args.out_path)
     logger.info("CCD data processing completed.")
 
 

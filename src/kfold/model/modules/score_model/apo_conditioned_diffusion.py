@@ -1,7 +1,7 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.diffusion import DiffusionModule
 from kfold.model.layers.kfold.diffusion import DiffusionModuleWithApo
 from kfold.utils.registry import SCORE_MODEL, BaseConfig

@@ -30,7 +30,7 @@ import pandas as pd
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.structure import Chain, RefStructure
+from kfold.data.types.structure import Chain, RefStructure
 from kfold.utils.misc import hash_seq
 
 
@@ -38,16 +38,16 @@ def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Process RCSB CCD data.")
     parser.add_argument(
-        "--mmseqs",
-        type=str,
-        default="mmseqs",
-        help="MMseqs2 executable.",
-    )
-    parser.add_argument(
         "--data_dir",
         type=pathlib.Path,
         required=True,
         help="Working directory containing preprocessed npz/ folder.",
+    )
+    parser.add_argument(
+        "--mmseqs",
+        type=str,
+        default="mmseqs",
+        help="MMseqs2 executable.",
     )
     parser.add_argument(
         "--num_workers",

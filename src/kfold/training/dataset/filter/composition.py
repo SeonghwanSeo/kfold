@@ -1,5 +1,5 @@
 import kfold.constants as C
-from kfold.data.schema import Metadata
+from kfold.data.types.metadata import Metadata
 from kfold.utils.registry import DATA_FILTER
 
 from .base import BaseFilter

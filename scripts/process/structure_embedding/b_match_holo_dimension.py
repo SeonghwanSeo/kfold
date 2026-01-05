@@ -11,8 +11,8 @@ import torch
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.schema import Metadata
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.datamodule import load_manifest
 
 logger = logging.getLogger(__name__)

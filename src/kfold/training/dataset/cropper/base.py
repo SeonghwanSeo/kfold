@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER, BaseConfig
 
 

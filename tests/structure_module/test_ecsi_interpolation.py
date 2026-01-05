@@ -14,8 +14,8 @@ import torch
 
 import kfold.model.modules as submodules
 from kfold.config import load_config
-from kfold.data.model_input import FoldingInput
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.utils import errors

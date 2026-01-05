@@ -4,9 +4,10 @@ from typing import Any
 
 import torch
 
-from kfold.data.ccd import CCD
-from kfold.data.model_input import FoldingInput
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.ccd import CCD
+from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import RefStructure
+from kfold.data.types.tokenized import TokenizedStructure
 
 from .data_pipeline import InputDataPipeline
 from .query import InputFile
@@ -87,12 +88,12 @@ class InferenceDataset(torch.utils.data.Dataset):
 
     def __getitem__(
         self, index: int
-    ) -> tuple[InputFile, TokenizedStructure, FoldingInput] | None:
+    ) -> tuple[InputFile, RefStructure, TokenizedStructure, FoldingInput] | None:
         """Get the folding input for the given input."""
         query: InputFile = self.input_files[index]
 
-        # Tokenization and feature extraction
-        struct, f_input = self.data_pipeline.process_input_file(query)
+        # Prepare input data
+        ref_struct, tok_struct, f_input = self.data_pipeline.process_input_file(query)
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
@@ -100,7 +101,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         # Add batch dimension
         f_input = FoldingInput.from_list([f_input])
 
-        return query, struct, f_input
+        return query, ref_struct, tok_struct, f_input
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 32 for LocalAtomAttention."""

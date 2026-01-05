@@ -1,5 +1,3 @@
-"""Implemented from https://github.com/jwohlwend/boltz"""
-
 import json
 import pathlib
 import pickle
@@ -65,6 +63,13 @@ class InterfaceInfo(JsonSerializable):
     asym_ids: tuple[int, int]
     is_valid: bool = True
     cluster_id: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        """Create ExperimentRecord from dictionary."""
+        data = data.copy()
+        data["asym_ids"] = tuple(data["asym_ids"])  # ensure it's a tuple
+        return cls(**data)
 
 
 @dataclass(slots=True, kw_only=True)

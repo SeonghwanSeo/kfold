@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils import errors
 
 PROCESSED_NPZ_PATH = Path("/cache/wykim_lab/kfold_rcsb_processed_v251120/")

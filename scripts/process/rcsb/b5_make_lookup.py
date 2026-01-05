@@ -52,7 +52,7 @@ import lmdb
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.structure import RefStructure
+from kfold.data.types.structure import RefStructure
 
 # --- Global variables for worker processes ---
 _GLOBAL_SEQ_TO_ID: dict = {}

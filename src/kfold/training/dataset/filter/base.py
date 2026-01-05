@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from kfold.data.schema import Metadata
+from kfold.data.types.metadata import Metadata
 from kfold.utils.registry import DATA_FILTER, BaseConfig
 
 

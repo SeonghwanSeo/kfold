@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
 from kfold.model.layers.alphafold3.input_encoder import InputFeatureEmbedder
 from kfold.model.layers.kfold.encoder import InputEmbedderWithApo

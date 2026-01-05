@@ -21,9 +21,9 @@ import pathlib
 import gemmi
 from tqdm import tqdm
 
-from kfold.data.ccd import CCD
-from kfold.data.pipelines import parse_input
-from kfold.data.structure import RefStructure
+from kfold.data.pipelines import cif_factory
+from kfold.data.types.ccd import CCD
+from kfold.data.types.structure import RefStructure
 
 # Error handling
 SUCCESS = 0
@@ -62,6 +62,7 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
+        required=True,
         help="Model name for predicted structures.",
     )
     parser.add_argument(
@@ -93,7 +94,7 @@ def parse_cif(
     cif_path: pathlib.Path,
     ccd: CCD,
     out_path: pathlib.Path,
-    model: str | None = None,
+    model: str,
     clash_distance_cutoff: float = 1.7,
     allow_invalid_chains: bool = False,
 ) -> int:
@@ -110,31 +111,30 @@ def parse_cif(
 
     # Get metadata
     name = cif_path.name.split(".")[0]
-    metadata = parse_input.prepare_metadata(name, block, source="prediction")
-    # Add prediction record
-    assert metadata.prediction is not None
-    metadata.prediction.model = model
+    metadata = cif_factory.prepare_metadata_from_synthetic_data(name, block, model)
 
     # Prepare raw structure
     raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
 
     # Prepare reference structure
-    ref_struct: RefStructure = parse_input.prepare_ref_structure(
+    ref_struct: RefStructure = cif_factory.prepare_ref_structure(
         raw_struct, metadata, ccd
     )
     # Insert coordinates
-    parse_input.insert_coordinates(ref_struct, raw_struct, metadata)
+    cif_factory.insert_coordinates(ref_struct, raw_struct, metadata)
     # Clean valid chains
-    parse_input.validate_chain_geometry(ref_struct)
+    cif_factory.validate_chain_geometry(ref_struct)
     # Get interfaces
-    parse_input.detect_interfaces_and_prune_clashes(ref_struct, clash_distance_cutoff)
+    cif_factory.detect_interfaces_and_prune_clashes(
+        ref_struct, clash_distance_cutoff=clash_distance_cutoff
+    )
 
     if not allow_invalid_chains:
         if not all(c_m.is_valid for c_m in ref_struct.metadata.chains):
             return FILTERED
 
     # Drop invalid chains
-    parse_input.prune_invalid_chains(ref_struct)
+    cif_factory.prune_invalid_chains(ref_struct)
 
     # Final checks
     if ref_struct.num_chains == 0:
@@ -150,7 +150,7 @@ def parse_cif(
 def worker_fn(
     cif_path: pathlib.Path,
     output_dir: pathlib.Path,
-    model: str | None = None,
+    model: str,
     clash_distance_cutoff: float = 1.7,
     allow_invalid_chains: bool = False,
 ):
@@ -166,7 +166,7 @@ def worker_fn(
             cif_path,
             ccd,
             out_path,
-            model=model,
+            model,
             clash_distance_cutoff=clash_distance_cutoff,
             allow_invalid_chains=allow_invalid_chains,
         )

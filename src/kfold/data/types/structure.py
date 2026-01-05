@@ -9,15 +9,13 @@ import msgpack
 import numpy as np
 
 import kfold.constants as C
-from kfold.data.schema import Metadata
+from kfold.data.types.metadata import Metadata
 from kfold.utils.misc import check_array
 
 __all__ = [
-    "Chain",
-    "Residue",
-    "Atom",
-    "Bond",
     "RefStructure",
+    "Chain",
+    "CovalentConnection",
 ]
 
 

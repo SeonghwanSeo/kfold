@@ -12,7 +12,7 @@ from modelcif.model import AbInitioModel, Atom, ModelGroup
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.tokenized import TokenizedStructure
 
 # Set up logging
 logger = logging.getLogger(__name__)

@@ -1,4 +1,6 @@
-"""Pipeline to parse structure and metadata from structure files (PDB/MMCIF)."""
+"""Pipeline to prepare reference structures
+# TODO: add PDB parsing later
+"""
 
 import itertools
 import logging
@@ -10,8 +12,20 @@ import numpy as np
 import scipy.spatial.distance
 
 import kfold.constants as C
-from kfold.data import schema, structure
-from kfold.data.ccd import CCD, Component
+from kfold.data.pipelines import structure_preparation
+from kfold.data.types.ccd import CCD
+from kfold.data.types.metadata import (
+    ChainInfo,
+    ExperimentRecord,
+    InterfaceInfo,
+    Metadata,
+    PredictionRecord,
+)
+from kfold.data.types.structure import (
+    Chain,
+    CovalentConnection,
+    RefStructure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,28 +47,16 @@ chain_type_to_polymer_type: dict[C.ChainType, gemmi.PolymerType] = {
     C.ChainType.RNA: gemmi.PolymerType.Rna,
     C.ChainType.DNA: gemmi.PolymerType.Dna,
 }
-# three-letter codes
-chain_type_to_standard_residues: dict[C.ChainType, set[str]] = {
-    C.ChainType.PROTEIN: set(C.residue.PROTEIN_RESIDUES_STR),
-    C.ChainType.RNA: set(C.residue.RNA_RESIDUES_STR),
-    C.ChainType.DNA: set(C.residue.DNA_RESIDUES_STR),
-    C.ChainType.LIGAND: set(),
-    C.ChainType.ION: set(),
-}
 # one-letter codes
 chain_type_to_standard_restypes: dict[C.ChainType, set[str]] = {
     C.ChainType.PROTEIN: set(C.residue.PROTEIN_AMINO_ACIDS),
     C.ChainType.RNA: set(C.residue.RNA_BASES),
     C.ChainType.DNA: set(C.residue.DNA_BASES),
-    C.ChainType.LIGAND: set(),
-    C.ChainType.ION: set(),
 }
 chain_type_to_unk: dict[C.ChainType, str] = {
     C.ChainType.PROTEIN: "UNK",
     C.ChainType.RNA: "N",
     C.ChainType.DNA: "DN",
-    C.ChainType.LIGAND: "UNK",
-    C.ChainType.ION: "UNK",
 }
 
 
@@ -64,9 +66,8 @@ chain_type_to_unk: dict[C.ChainType, str] = {
 def parse_cif(
     cif_path: str | pathlib.Path,
     ccd: CCD,
-    source: str = "rcsb",
     max_chains: int | None = None,
-) -> structure.RefStructure:
+) -> RefStructure:
     """Parse a CIF file and return a gemmi.cif.Document object.
     NOTE: This is just a template function. Additional filtering can be
     inserted as needed, e.g., date cutoff, number of chains, etc.
@@ -78,7 +79,9 @@ def parse_cif(
     # Get metadata
     # Handle cases like "1abc.cif.gz"
     name = pathlib.Path(cif_path).name.split(".")[0]
-    metadata = prepare_metadata(name, block, source)
+    metadata = prepare_metadata_from_experimental_data(name, block, source="rcsb")
+
+    # --- Gemmi structure processing ---
 
     # Prepare raw structure
     raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
@@ -89,11 +92,15 @@ def parse_cif(
     # Expand first assembly if available
     expand_first_assembly(raw_struct)
 
+    # --- Reference structure preparation ---
+
     # Prepare reference structure
     ref_struct = prepare_ref_structure(raw_struct, metadata, ccd)
 
     # Insert coordinates
     insert_coordinates(ref_struct, raw_struct, metadata)
+
+    # --- Cleaning and interface detection ---
 
     # Clean valid chains
     validate_chain_geometry(ref_struct)
@@ -125,7 +132,7 @@ def get_first_value(block: gemmi.cif.Block, tag: str, cast: type = str) -> Any |
     return None
 
 
-def prepare_experiment_record(block: gemmi.cif.Block) -> schema.ExperimentRecord:
+def prepare_experiment_record(block: gemmi.cif.Block) -> ExperimentRecord:
     """Parse RCSB PDB metadata from CIF block."""
     # PDB ID
     pdb_id = get_first_value(block, "_entry.id")
@@ -153,7 +160,7 @@ def prepare_experiment_record(block: gemmi.cif.Block) -> schema.ExperimentRecord
     # pH (Crystallization condition)
     ph = get_first_value(block, "_exptl_crystal_grow.pH")
 
-    return schema.ExperimentRecord(
+    return ExperimentRecord(
         pdb_id=pdb_id,
         resolution=resolution,
         method=method,
@@ -163,28 +170,42 @@ def prepare_experiment_record(block: gemmi.cif.Block) -> schema.ExperimentRecord
     )
 
 
-def prepare_metadata(
+def prepare_metadata_from_experimental_data(
     name: str,
     block: gemmi.cif.Block,
     source: str = "rcsb",
-) -> schema.Metadata:
+) -> Metadata:
     """Parse metadata from CIF block."""
     # Parse experiment record
     if source == "rcsb":
         exp_record = prepare_experiment_record(block)
-        pred_record = None
         assert exp_record.pdb_id is not None, "PDB ID is missing in metadata."
-    elif source == "prediction":
-        exp_record = None
-        pred_record = schema.PredictionRecord()
     else:
-        raise ValueError(f"Unknown source type: {source}")
+        raise NotImplementedError(
+            f"Metadata parsing for source {source} not implemented."
+        )
 
-    return schema.Metadata(
+    return Metadata(
         id=name,
         source=source,
         exp=exp_record,
-        prediction=pred_record,
+        chains=[],  # Filled later in parsing
+        interfaces=[],  # Filled later in parsing
+    )
+
+
+def prepare_metadata_from_synthetic_data(
+    name: str,
+    block: gemmi.cif.Block,
+    model: str,
+) -> Metadata:
+    """Parse metadata from CIF block."""
+    # Parse experiment record
+    prediction = PredictionRecord(model=model)
+    return Metadata(
+        id=name,
+        source="prediction",
+        prediction=prediction,
         chains=[],  # Filled later in parsing
         interfaces=[],  # Filled later in parsing
     )
@@ -210,175 +231,20 @@ def expand_first_assembly(raw_struct: gemmi.Structure) -> None:
         raw_struct.transform_to_assembly(assembly_name, how=how)
 
 
-# ==================================================
-# Helper functions for Structure parsing
-# ==================================================
 def get_residue_key(residue: gemmi.Residue) -> ResKey:
     asym_id: AsymId = residue.subchain
     seq_id: gemmi.SeqId = residue.seqid
     return (asym_id, seq_id.icode, seq_id.num)
 
 
-def prepare_ref_chain(
-    chain_type: C.ChainType,
-    ccd_sequences: list[str],
-    ccd: CCD,
-    smiles: str | None = None,
-    entity_id: int = 0,
-    asym_id: int = 0,
-    sym_id: int = 0,
-    drop_leaving_atoms: bool = True,
-) -> structure.Chain:
-    """Get an empty reference chain structure.
-
-    Parameters
-    ----------
-    chain_type : C.ChainType
-        The type of the chain (protein, RNA, DNA, ligand, ion).
-    ccd_sequences : list[str]
-        List of residue names in the chain.
-    ccd : CCD
-        The CCD database object.
-    smiles : str | None, optional
-        SMILES string for ligand residues, by default None.
-    entity_id : int
-        The entity ID of the chain.
-    asym_id : int
-        The asymmetric unit ID of the chain.
-    sym_id : int
-        The symmetry ID of the chain.
-    drop_leaving_atoms : bool, optional
-        Whether to drop leaving atoms for polymer residues, by default True.
-    """
-    # ==================================================
-    # Validate inputs
-    # ==================================================
-    if smiles is not None:
-        assert chain_type == C.ChainType.LIGAND
-        assert len(ccd_sequences) == 1
-        assert ccd_sequences[0].startswith("LIG")
-
-    standard_residues: set[str] = chain_type_to_standard_residues[chain_type]
-
-    # ==================================================
-    # Prepare residue information
-    # ==================================================
-    is_res_standards: list[bool] = []
-    ref_mols: list[Component] = []
-    num_residue_atoms: list[int] = []
-    for name in ccd_sequences:
-        if chain_type.is_protein and name == "MSE":
-            # Replace selenomethionine with methionine
-            name = "MET"
-        if name in ccd:
-            # Common molecule from CCD
-            if name.startswith("LIG"):
-                logging.info("Use custom ligand residue from CCD:", name)
-            ref_mol = ccd[name]
-        elif name.startswith("LIG"):
-            # Ligand residue created from SMILES
-            if smiles is None:
-                raise ValueError(f"SMILES must be provided for ligand residue {name}.")
-            ref_mol = Component.from_smiles(name, smiles)
-        else:
-            # Residue not found in CCD
-            # NOTE: For polymers, this should not happen due to prior conversion to UNK.
-            raise ValueError(f"Residue {name} not found in CCD database.")
-
-        is_standard = name in standard_residues
-        is_res_standards.append(is_standard)
-        ref_mols.append(ref_mol)
-        if chain_type.is_polymer and is_standard:
-            # For standard polymer residues, use standard atom counts
-            num_residue_atoms.append(len(C.atom.residue_atoms[name]))
-        elif drop_leaving_atoms:
-            num_residue_atoms.append(ref_mol.num_non_leaving_atoms)
-        else:
-            num_residue_atoms.append(ref_mol.num_atoms)
-
-    residue_struct = structure.Residue(
-        name=np.array(ccd_sequences, dtype=np.dtype("<U6")),
-        num_atoms=np.array(num_residue_atoms, dtype=np.uint8),
-        is_standard=np.array(is_res_standards, dtype=bool),
-    )
-
-    # ==================================================
-    # Prepare atom information
-    # ==================================================
-    atom_name_list: list[str] = []
-    for ref_mol in ref_mols:
-        if chain_type.is_polymer and ref_mol.code in C.atom.residue_atoms:
-            # For standard residues, use pre-defined atom names
-            atom_names = C.atom.residue_atoms[ref_mol.code]
-        elif drop_leaving_atoms:
-            # For non-standard residues, drop leaving atoms if specified
-            atom_names = ref_mol.non_leaving_atom_names
-        else:
-            # Use all atoms for non-standard residues
-            atom_names = ref_mol.atom_names
-        atom_name_list.extend(atom_names)
-    num_atoms = len(atom_name_list)
-    assert num_atoms == sum(num_residue_atoms), "Mismatch in total number of atoms."
-
-    # Empty label coordinates and resolved flags
-    label_coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
-    is_atom_resolved = np.zeros((num_atoms,), dtype=bool)
-    bfactors = np.full((num_atoms,), np.nan, dtype=np.float32)
-    # Empty apo coordinates and pLDDT
-    apo_coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
-    apo_plddt = np.full((num_atoms), np.nan, dtype=np.float32)
-
-    atom_struct = structure.Atom(
-        name=np.array(atom_name_list, dtype=np.dtype("<U4")),
-        label_coords=label_coords,
-        is_resolved=is_atom_resolved,
-        bfactor=bfactors,
-        apo_coords=apo_coords,
-        apo_plddt=apo_plddt,
-    )
-
-    # ==================================================
-    # Prepare intra-residue bond information
-    # Only ligand bonds are collected
-    # ==================================================
-    bond_residue_index_list: list[tuple[int, int]] = []
-    bond_atom_name_list: list[tuple[str, str]] = []
-    bond_type_list: list[int] = []
-    if chain_type is C.ChainType.LIGAND:
-        for residue_index, ref_mol in enumerate(ref_mols, start=1):
-            # Get ref atom names
-            if drop_leaving_atoms:
-                ref_atom_names = ref_mol.non_leaving_atom_names
-            else:
-                ref_atom_names = ref_mol.atom_names
-            for (atom_name1, atom_name2), bond_type in ref_mol.bonds.items():
-                if atom_name1 in ref_atom_names and atom_name2 in ref_atom_names:
-                    bond_residue_index_list.append((residue_index, residue_index))
-                    bond_atom_name_list.append((atom_name1, atom_name2))
-                    bond_type_list.append(bond_type)
-
-    bond_struct = structure.Bond(
-        residue_index=np.array(bond_residue_index_list, dtype=np.uint32).reshape(-1, 2),
-        atom_name=np.array(bond_atom_name_list, dtype=np.dtype("<U4")).reshape(-1, 2),
-        bond_type=np.array(bond_type_list, dtype=np.uint8),
-    )
-
-    return structure.Chain(
-        chain_type=chain_type.value,
-        entity_id=entity_id,
-        asym_id=asym_id,
-        sym_id=sym_id,
-        residue=residue_struct,
-        atom=atom_struct,
-        bond=bond_struct,
-    )
-
-
+# ==================================================
+# Main functions for reference structure preparation
+# ==================================================
 def prepare_ref_structure(
     raw_struct: gemmi.Structure,
-    metadata: schema.Metadata,
+    metadata: Metadata,
     ccd: CCD,
-) -> structure.RefStructure:
+) -> RefStructure:
     """Prepare reference structure from gemmi CIF block and metadata."""
 
     # NOTE: According to AlphaFold3, remove crystallization aids for
@@ -576,7 +442,7 @@ def prepare_ref_structure(
     # ==================================================
     # Construct chain structs
     # ==================================================
-    chain_structs: list[structure.Chain] = []
+    chain_structs: list[Chain] = []
     for entity in valid_entities:
         entity: gemmi.Entity
         entity_id: EntityId = int(entity.name)
@@ -602,7 +468,7 @@ def prepare_ref_structure(
                     "Custom ligand SMILES not supported in CIF parsing."
                 )
 
-        parsed_chain = prepare_ref_chain(
+        parsed_chain = structure_preparation.prepare_ref_chain(
             chain_type=ctype,
             ccd_sequences=ccd_sequences,
             ccd=ccd,
@@ -619,7 +485,7 @@ def prepare_ref_structure(
                 and asym_id in linked_asym_ids
             ):
                 # For covalent inhibitors, create a new chain struct without leaving atoms
-                c = prepare_ref_chain(
+                c = structure_preparation.prepare_ref_chain(
                     chain_type=ctype,
                     entity_id=entity_id,
                     asym_id=asym_id_to_int[asym_id],
@@ -668,7 +534,7 @@ def prepare_ref_structure(
                     linked_residue_to_index[res_key] = residue_index
 
     # Construct connections
-    connections: list[structure.CovalentConnection] = []
+    connections: list[CovalentConnection] = []
     for connect, res1, res2 in linked_bonds:
         # Get asym_ids
         asym_id1: AsymId = res1.subchain
@@ -704,7 +570,7 @@ def prepare_ref_structure(
             continue
 
         connections.append(
-            structure.CovalentConnection(
+            CovalentConnection(
                 asym_id=(asym_id1_int, asym_id2_int),
                 residue_index=(res_idx1, res_idx2),
                 atom_names=(atom1, atom2),
@@ -726,7 +592,7 @@ def prepare_ref_structure(
                 # Skip invalid chains
                 continue
             sym_id: SymId = asym_id_to_sym_id[asym_id]
-            chain_meta = schema.ChainInfo(
+            chain_meta = ChainInfo(
                 chain_name=asym_id,  # store asym_id as chain_name
                 chain_type=entity_id_to_chain_type[entity_id],
                 entity_id=entity_id,
@@ -736,7 +602,7 @@ def prepare_ref_structure(
             )
             metadata.chains.append(chain_meta)
 
-    return structure.RefStructure(
+    return RefStructure(
         chains=chain_structs,
         connections=connections,
         metadata=metadata,
@@ -744,7 +610,7 @@ def prepare_ref_structure(
 
 
 def insert_chain_coordinates(
-    ref_chain: structure.Chain,
+    ref_chain: Chain,
     raw_chain: gemmi.ResidueSpan,
 ) -> None:
     """Insert Coordinates from raw gemmi ResidueSpan into reference chain."""
@@ -807,9 +673,9 @@ def insert_chain_coordinates(
 
 
 def insert_coordinates(
-    ref_struct: structure.RefStructure,
+    ref_struct: RefStructure,
     raw_struct: gemmi.Structure,
-    metadata: schema.Metadata,
+    metadata: Metadata,
 ) -> None:
     """Insert coordinates from raw gemmi Structure into reference structure."""
     # Build mapping from string asym_id to integer asym_id
@@ -822,7 +688,7 @@ def insert_coordinates(
         asym_id_to_int[m.chain_name] = m.asym_id
         asym_id_to_str[m.asym_id] = m.chain_name
 
-    asym_id_to_ref_chain: dict[AsymId, structure.Chain] = {}
+    asym_id_to_ref_chain: dict[AsymId, Chain] = {}
     for ref_chain in ref_struct.chains:
         asym_id_to_ref_chain[asym_id_to_str[ref_chain.asym_id]] = ref_chain
 
@@ -833,7 +699,7 @@ def insert_coordinates(
         if asym_id not in asym_id_to_ref_chain:
             # Skip invalid chains
             continue
-        ref_chain: structure.Chain = asym_id_to_ref_chain[asym_id]
+        ref_chain: Chain = asym_id_to_ref_chain[asym_id]
         # Insert coordinates
         insert_chain_coordinates(ref_chain, raw_chain)
 
@@ -841,7 +707,7 @@ def insert_coordinates(
 # ==================================================
 # Validation and interface detection
 # ==================================================
-def get_chain_ref_atom_coordinates(chain: structure.Chain) -> np.ndarray:
+def get_chain_ref_atom_coordinates(chain: Chain) -> np.ndarray:
     """Get reference atom coordinates for a chain."""
     if chain.ctype.is_nonpolymer:
         # Return all atom coordinates for non-polymer chains
@@ -859,12 +725,12 @@ def get_chain_ref_atom_coordinates(chain: structure.Chain) -> np.ndarray:
         return ref_coords
 
 
-def validate_chain_geometry(struct: structure.RefStructure) -> None:
+def validate_chain_geometry(struct: RefStructure) -> None:
     """Check if a polymer chain is valid."""
-    metadata: schema.Metadata = struct.metadata
+    metadata: Metadata = struct.metadata
     for chain_i in range(struct.num_chains):
-        ref_chain: structure.Chain = struct.chains[chain_i]
-        chain_meta: schema.ChainInfo = metadata.chains[chain_i]
+        ref_chain: Chain = struct.chains[chain_i]
+        chain_meta: ChainInfo = metadata.chains[chain_i]
         ctype: C.ChainType = ref_chain.ctype
 
         # Get reference atom coordinates and resolved flags
@@ -904,9 +770,9 @@ def validate_chain_geometry(struct: structure.RefStructure) -> None:
 
 
 def detect_interfaces_and_prune_clashes(
-    struct: structure.RefStructure,
-    clash_cutoff: float = 1.7,
+    struct: RefStructure,
     remove_clashed: bool = True,
+    clash_distance_cutoff: float = 1.7,
 ) -> None:
     """
     Detect valid interfaces between chains and prune chains with severe clashes.
@@ -918,8 +784,8 @@ def detect_interfaces_and_prune_clashes(
     If 'remove_clashed' is True, chains with >30% clashing atoms (< 1.7 A)
     are marked as invalid in metadata.
     """
-    metadata: schema.Metadata = struct.metadata
-    interfaces: list[schema.InterfaceInfo] = []
+    metadata: Metadata = struct.metadata
+    interfaces: list[InterfaceInfo] = []
     invalid_asym_ids: set[int] = set()
 
     # Collect coordinates
@@ -972,7 +838,7 @@ def detect_interfaces_and_prune_clashes(
 
         if remove_clashed:
             # Check for clash
-            is_clash = dists < clash_cutoff  # [N, M]
+            is_clash = dists < clash_distance_cutoff  # [N, M]
             is_clash_1 = np.any(is_clash, axis=1)
             is_clash_2 = np.any(is_clash, axis=0)
             clash_ratio_1 = np.sum(is_clash_1) / is_clash_1.shape[0]
@@ -1019,7 +885,7 @@ def detect_interfaces_and_prune_clashes(
                 continue
 
         # Valid interface
-        interfaces.append(schema.InterfaceInfo(asym_ids=(asym_id1, asym_id2)))
+        interfaces.append(InterfaceInfo(asym_ids=(asym_id1, asym_id2)))
 
     # Mark invalid chains
     for chain_meta in struct.metadata.chains:
@@ -1034,9 +900,9 @@ def detect_interfaces_and_prune_clashes(
     struct.metadata.interfaces = interfaces
 
 
-def prune_invalid_chains(struct: structure.RefStructure) -> None:
+def prune_invalid_chains(struct: RefStructure) -> None:
     """Drop invalid chains from the structure."""
-    metadata: schema.Metadata = struct.metadata
+    metadata: Metadata = struct.metadata
 
     # Get valid asym_ids
     valid_asym_ids: set[int] = set(m.asym_id for m in metadata.chains if m.is_valid)
@@ -1078,7 +944,7 @@ def prune_invalid_chains(struct: structure.RefStructure) -> None:
 # Substructure sampling
 # ==================================================
 def crop_substructure(
-    struct: structure.RefStructure,
+    struct: RefStructure,
     max_chains: int = 20,
     seed: int = 42,
 ):

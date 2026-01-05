@@ -29,10 +29,10 @@ from pathlib import Path
 
 import lmdb
 import numpy as np
+from kfold.data.pipelines.apo_perturbation import ApoPerturbation
 
 import kfold.constants as C
-from kfold.data.pipelines.apo_perturbation import ApoPerturbation
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
 

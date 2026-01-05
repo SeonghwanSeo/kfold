@@ -4,7 +4,7 @@ from collections import defaultdict
 import numpy as np
 
 import kfold.constants as C
-from kfold.data.schema import ChainInfo, InterfaceInfo, Metadata
+from kfold.data.types.metadata import ChainInfo, InterfaceInfo, Metadata
 from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample

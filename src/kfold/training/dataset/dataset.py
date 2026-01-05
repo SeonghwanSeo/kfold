@@ -81,12 +81,12 @@ from omegaconf import OmegaConf
 from typing_extensions import override
 
 import kfold.constants as C
-from kfold.data.ccd import CCD
-from kfold.data.model_input import FoldingInput
-from kfold.data.pipelines import apo_initialize, featurize, tokenize
-from kfold.data.schema import Metadata
-from kfold.data.structure import RefStructure
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.pipelines import apo_initialization, featurization, tokenization
+from kfold.data.types.ccd import CCD
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import RefStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
@@ -116,8 +116,8 @@ class DatasetConfig:
     data_path: str | Path
     seed: int | None = None
 
-    apo_init: apo_initialize.ApoInitializerConfig = dataclasses.field(
-        default_factory=apo_initialize.ApoInitializerConfig
+    apo_init: apo_initialization.ApoInitializerConfig = dataclasses.field(
+        default_factory=apo_initialization.ApoInitializerConfig
     )
 
     @classmethod
@@ -254,9 +254,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.lookup_table: dict = self.load_lookup_table()
 
         # === Initialize modules === #
-        self.apo_initializer = apo_initialize.ApoInitializer(config.apo_init, self.ccd)
-        self.tokenizer = tokenize.Tokenizer(self.ccd)
-        self.featurizer = featurize.InputFeaturizer(
+        self.apo_initializer = apo_initialization.ApoInitializer(
+            config.apo_init, self.ccd
+        )
+        self.tokenizer = tokenization.Tokenizer(self.ccd)
+        self.featurizer = featurization.InputFeaturizer(
             **featurization_args,
             seq_embedding_dim=self.seq_embedding_dim,
             struct_embedding_dim=self.struct_embedding_dim,
@@ -859,3 +861,7 @@ class ValidationDataset(LMDBDataset):
             return_structure=True,
             safe_load=safe_load,
         )
+
+    def setup(self) -> None:
+        """Additional setup for subclasses."""
+        self.metadatas.sort(key=lambda m: m.num_residues)

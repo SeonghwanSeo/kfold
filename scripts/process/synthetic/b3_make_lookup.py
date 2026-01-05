@@ -50,8 +50,8 @@ import pathlib
 import lmdb
 from tqdm import tqdm
 
-from kfold.data.schema import Metadata
-from kfold.data.structure import RefStructure
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.structure import RefStructure
 
 # --- Global variables for worker processes ---
 _GLOBAL_SEQ_TO_ID: dict = {}

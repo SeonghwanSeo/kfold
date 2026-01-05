@@ -9,7 +9,7 @@ from torch import nn
 from torch.nn import Module
 from torch.nn.functional import one_hot
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 
 from . import initialize as init
 from .transformers import AtomTransformer

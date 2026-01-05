@@ -2,8 +2,8 @@ import numpy as np
 import scipy.spatial
 
 import kfold.constants as C
-from kfold.data.schema import Metadata
-from kfold.data.structure import Chain, RefStructure
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.structure import Chain, RefStructure
 
 
 def get_chain_ref_atom_coordinates(chain: Chain) -> np.ndarray:

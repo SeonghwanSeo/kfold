@@ -9,7 +9,7 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.layout import PlainLayout
-from kfold.data.schema import Metadata
+from kfold.data.types.metadata import Metadata
 from kfold.utils.misc import check_array
 
 __all__ = [
@@ -698,7 +698,7 @@ class TokenizedStructure:
         save_apo: bool = False,
     ) -> None:
         """Write to PDB or MMCIF file based on the file extension."""
-        from kfold.utils.writer import KFoldWriter
+        from kfold.data.utils.writer import KFoldWriter
 
         KFoldWriter.write(self, path, save_apo)
 
@@ -708,7 +708,7 @@ class TokenizedStructure:
         save_apo: bool = False,
     ) -> None:
         """Write to PDB file."""
-        from kfold.utils.writer import KFoldWriter
+        from kfold.data.utils.writer import KFoldWriter
 
         KFoldWriter.write_pdb(self, path, save_apo)
 
@@ -718,7 +718,7 @@ class TokenizedStructure:
         save_apo: bool = False,
     ) -> None:
         """Write to MMCIF file."""
-        from kfold.utils.writer import KFoldWriter
+        from kfold.data.utils.writer import KFoldWriter
 
         KFoldWriter.write_mmcif(self, path, save_apo)
 

@@ -6,6 +6,7 @@ This script processes mmCIF files from the RCSB PDB database.
 ```
 python c_process_rcsb.py \
     --cif_dir /path/to/mmCIF/ \         # Path to RCSB mmCIF files
+    --ccd_path /path/to/ccd.pkl \       # Path to CCD pickled file
     --out_dir /path/to/output_npz/ \    # Output Directory
     --split train \                     # Use predefined AlphaFold3 train split
     --num_workers 8                     # Number of parallel workers
@@ -26,10 +27,10 @@ from datetime import datetime
 import gemmi
 from tqdm import tqdm
 
-from kfold.data.ccd import CCD
-from kfold.data.pipelines import parse_input
-from kfold.data.schema import Metadata
-from kfold.data.structure import RefStructure
+from kfold.data.pipelines import cif_factory
+from kfold.data.types.ccd import CCD
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.structure import RefStructure
 
 AF3_SPLITS = {
     "train": {
@@ -52,8 +53,13 @@ AF3_SPLITS = {
 
 # Error handling
 SUCCESS = 0
-FILTERED = 1
-FAILED = 2
+FAILED = 1
+DATE_FILTERED = 2
+RESOLUTION_FILTERED = 3
+CHAIN_COUNT_FILTERED = 4
+RESIDUE_COUNT_FILTERED = 5
+EMPTY_STRUCTURE_FILTERED = 6
+INVALID_CHAIN_FILTERED = 7
 
 
 def parse_args():
@@ -72,7 +78,7 @@ def parse_args():
         help="Path to CCD pickled file.",
     )
     parser.add_argument(
-        "--out_dir",
+        "--data_dir",
         type=pathlib.Path,
         required=True,
         help="Path to output directory for processed .npz files.",
@@ -168,7 +174,6 @@ def check_resolution_cutoff(
 
     assert metadata.exp is not None
     resolution = metadata.exp.resolution
-    # Policy: Discard if resolution is missing (NMR) or too low (high value)
     if resolution is None:
         return False
     return resolution <= max_resolution
@@ -196,10 +201,7 @@ def check_chain_count_cutoff(
     raw_struct: gemmi.Structure,
     max_chains: int | None,
 ) -> bool:
-    """Returns True if the structure passes the chain count filter.
-    NOTE: here, we simply count the number of author-defined chains
-    instead of subchains.
-    """
+    """Returns True if the structure passes the chain count filter."""
     if max_chains is None:
         return True
     return len(raw_struct[0].subchains()) <= max_chains
@@ -227,10 +229,7 @@ def parse_cif(
     max_residues: int | None = None,
     allow_invalid_chains: bool = True,
 ) -> int:
-    """Parse a CIF file and return a gemmi.cif.Document object.
-    NOTE: This is just a template function. Additional filtering can be
-    inserted as needed, e.g., date cutoff, number of chains, etc.
-    """
+    """Parse a CIF file and return a gemmi.cif.Document object."""
     if out_path.exists():
         return SUCCESS
 
@@ -244,53 +243,57 @@ def parse_cif(
     # Get metadata
     # Handle cases like "1abc.cif.gz"
     pdb_id = cif_path.name.split(".")[0].lower()
-    metadata = parse_input.prepare_metadata(pdb_id, block, "rcsb")
+    metadata = cif_factory.prepare_metadata_from_experimental_data(
+        pdb_id,
+        block,
+        source="rcsb",
+    )
 
     # Filter by date
     if not check_date_cutoff(metadata, (date_start, date_end)):
-        return FILTERED
+        return DATE_FILTERED
 
     # Filter by resolution
     if not check_resolution_cutoff(metadata, max_resolution):
-        return FILTERED
+        return RESOLUTION_FILTERED
 
     # Prepare raw structure
     raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
     # Clean up raw structure
-    parse_input.clean_up_raw_structure(raw_struct)
+    cif_factory.clean_up_raw_structure(raw_struct)
     # Expand the first assembly
-    parse_input.expand_first_assembly(raw_struct)
+    cif_factory.expand_first_assembly(raw_struct)
 
     # Filter by chain count
     if not check_chain_count_cutoff(raw_struct, max_chains):
-        return FILTERED
+        return CHAIN_COUNT_FILTERED
     # Filter by residue count
     if not check_residue_count_cutoff(raw_struct, max_residues):
-        return FILTERED
+        return RESIDUE_COUNT_FILTERED
 
     # Prepare reference structure
-    ref_struct: RefStructure = parse_input.prepare_ref_structure(
+    ref_struct: RefStructure = cif_factory.prepare_ref_structure(
         raw_struct, metadata, ccd
     )
     # Insert coordinates
-    parse_input.insert_coordinates(ref_struct, raw_struct, metadata)
+    cif_factory.insert_coordinates(ref_struct, raw_struct, metadata)
     # Clean valid chains
-    parse_input.validate_chain_geometry(ref_struct)
+    cif_factory.validate_chain_geometry(ref_struct)
     # Get interfaces
-    parse_input.detect_interfaces_and_prune_clashes(ref_struct)
+    cif_factory.detect_interfaces_and_prune_clashes(ref_struct)
 
     if not allow_invalid_chains:
         if not all(c_m.is_valid for c_m in ref_struct.metadata.chains):
-            return FILTERED
+            return INVALID_CHAIN_FILTERED
 
     # Drop invalid chains
-    parse_input.prune_invalid_chains(ref_struct)
+    cif_factory.prune_invalid_chains(ref_struct)
 
     # Final checks
     if ref_struct.num_chains == 0:
-        return FILTERED
+        return EMPTY_STRUCTURE_FILTERED
     elif ref_struct.num_polymer_chains == 0:
-        return FILTERED
+        return EMPTY_STRUCTURE_FILTERED
 
     # Save output if path is given
     ref_struct.save_npz(out_path)
@@ -338,7 +341,7 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    out_dir: pathlib.Path = args.out_dir / "npz"
+    out_dir: pathlib.Path = args.data_dir / "npz"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Prepare partial function for multiprocessing
@@ -368,10 +371,18 @@ def main():
             )
         )
     print("Processing completed.")
-    n_success = results.count(SUCCESS)
-    n_filtered = results.count(FILTERED)
-    n_failed = results.count(FAILED)
-    print(f"Successful: {n_success}, Filtered: {n_filtered}, Failed: {n_failed}")
+
+    # Print stats
+    print("Processing statistics:")
+    print(f"  Total files processed: {len(results)}")
+    print(f"  Successfully processed: {results.count(SUCCESS)}")
+    print(f"  Failed to process: {results.count(FAILED)}")
+    print(f"  Date filtered: {results.count(DATE_FILTERED)}")
+    print(f"  Resolution filtered: {results.count(RESOLUTION_FILTERED)}")
+    print(f"  Chain count filtered: {results.count(CHAIN_COUNT_FILTERED)}")
+    print(f"  Residue count filtered: {results.count(RESIDUE_COUNT_FILTERED)}")
+    print(f"  Empty structure filtered: {results.count(EMPTY_STRUCTURE_FILTERED)}")
+    print(f"  Invalid chain filtered: {results.count(INVALID_CHAIN_FILTERED)}")
 
 
 if __name__ == "__main__":

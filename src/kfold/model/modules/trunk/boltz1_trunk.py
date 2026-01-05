@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.boltz1 import initialize as init
 from kfold.model.layers.boltz1.msa_module import MSAModule
 from kfold.model.layers.boltz1.trunk import PairformerModule

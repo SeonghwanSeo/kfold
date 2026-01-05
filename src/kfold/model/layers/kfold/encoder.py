@@ -1,7 +1,7 @@
 import torch
 
 import kfold.constants as C
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LinearNoBias
 
 from .transformers import AtomAttentionEncoderWithApo

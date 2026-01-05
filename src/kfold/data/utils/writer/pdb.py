@@ -6,7 +6,7 @@ import numpy as np
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils import errors
 
 
