@@ -161,6 +161,7 @@ class ApoInitializerConfig:
     prior_sampler: PolymerPriorConfig = dataclasses.field(
         default_factory=PolymerPriorConfig
     )
+    training: bool = True
 
 
 class ApoInitializer:
@@ -171,6 +172,7 @@ class ApoInitializer:
         config: ApoInitializerConfig,
         ccd: CCD | None = None,
     ):
+        self.config: ApoInitializerConfig = config
         self.use_perturbation: bool = config.use_perturbation
         self.use_random_augmentation: bool = config.use_random_augmentation
         self.use_symmetry_correction: bool = config.use_symmetry_correction
@@ -185,6 +187,7 @@ class ApoInitializer:
                 "ApoInitializer with prob_replace_to_holo > 0.0 is not implemented yet."
             )
 
+        # Apo perturbation module
         if self.use_perturbation:
             assert config.apo_perturbation is not None, (
                 "ApoPerturbationConfig must be provided when use_perturbation is True."
@@ -193,9 +196,16 @@ class ApoInitializer:
                 config.apo_perturbation
             )
 
+        # Polymer prior sampler module
         self.prior_sampler: PolymerPriorSampler = PolymerPriorSampler(
             config.prior_sampler
         )
+
+        # Training mode
+        self.training: bool = config.training
+        # During training, disable ETKDG generation for efficiency,
+        # i.e., only the cached ETKDG and CCD conformers (ideal, mode) are used.
+        self.conformer_mode: str = "train" if self.training else "auto"
 
     def __call__(
         self,
@@ -368,7 +378,7 @@ class ApoInitializer:
                         ref_mol = self.ccd[ccd_name]
 
                     ref_atom_order: dict[str, int] = ref_mol.get_atom_index_map()
-                    ref_pos = ref_mol.get_conformer("auto", rng)  # [Natom, 3]
+                    ref_pos = ref_mol.get_conformer(self.conformer_mode, rng=rng)
                     assert ref_pos is not None, "Auto mode always provides a conformer."
 
                     if self.use_random_augmentation:

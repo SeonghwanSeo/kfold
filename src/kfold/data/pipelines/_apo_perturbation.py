@@ -48,10 +48,10 @@ class ApoPerturbation:
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-        name: str | None = None,
+        key: str | None = None,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates."""
-        return self.run(coords, mask, rng, name)
+        return self.run(coords, mask, rng, key)
 
     def run(
         self,
@@ -65,9 +65,9 @@ class ApoPerturbation:
         Parameters
         ----------
         coords : np.ndarray
-            Apo protein structure coordinates of shape [L, 14, 3].
+            Apo protein structure coordinates of shape [L, 37, 3].
         mask : np.ndarray
-            Mask indicating valid atoms of shape [L, 14].
+            Mask indicating valid atoms of shape [L, 37].
         rng : np.random.Generator
             Random number generator for stochastic operations.
         key : str | None

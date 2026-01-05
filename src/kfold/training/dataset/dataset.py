@@ -241,7 +241,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 pass
             elif config.apo_init.apo_perturbation is None:
                 print("Warning: RieProDy LMDB path found but apo_perturbation is None.")
-                pass
             elif config.apo_init.apo_perturbation.rieprody is None:
                 print("Warning: RieProDy LMDB path found but rieprody is disabled.")
             else:

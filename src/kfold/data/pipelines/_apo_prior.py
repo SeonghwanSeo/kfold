@@ -58,10 +58,9 @@ class PolymerPriorSampler:
 
         Returns
         -------
-
+        x_init : np.ndarray
             Sampled coordinates of shape [L, Natom, 3].
         """
-        L, Natoms = mask.shape
         if self.prior_type == "null":
             return self.sample_null(mask)
         elif self.prior_type == "zero":
@@ -83,6 +82,7 @@ class PolymerPriorSampler:
 
         Returns
         -------
+        x_init : np.ndarray
             Sampled coordinates of shape [L, Natom, 3].
         """
         L, Natoms = mask.shape
@@ -99,6 +99,7 @@ class PolymerPriorSampler:
 
         Returns
         -------
+        x_init : np.ndarray
             Sampled coordinates of shape [L, Natom, 3].
         """
         L, Natoms = mask.shape
@@ -119,6 +120,7 @@ class PolymerPriorSampler:
 
         Returns
         -------
+        x_init : np.ndarray
             Sampled coordinates of shape [L, Natom, 3].
         """
         L, Natoms = mask.shape
@@ -145,7 +147,7 @@ class PolymerPriorSampler:
 
         Returns
         -------
-
+        x_init : np.ndarray
             Sampled coordinates of shape [L, Natom, 3].
         """
         L, Natoms = mask.shape
