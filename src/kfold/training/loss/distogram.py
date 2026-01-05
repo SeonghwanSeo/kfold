@@ -1,6 +1,6 @@
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 
 
 class DistogramLoss(torch.nn.Module):

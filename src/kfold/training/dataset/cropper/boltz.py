@@ -1,7 +1,7 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 import numpy as np
 
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
 from . import utils

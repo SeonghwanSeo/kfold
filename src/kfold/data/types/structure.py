@@ -9,15 +9,13 @@ import msgpack
 import numpy as np
 
 import kfold.constants as C
-from kfold.data.schema import Metadata
+from kfold.data.types.metadata import Metadata
 from kfold.utils.misc import check_array
 
 __all__ = [
-    "Chain",
-    "Residue",
-    "Atom",
-    "Bond",
     "RefStructure",
+    "Chain",
+    "CovalentConnection",
 ]
 
 
@@ -523,6 +521,10 @@ class RefStructure:
         struct_asym_ids = set(asym_ids)
         if meta_asym_ids != struct_asym_ids:
             raise ValueError("Mismatch between metadata asym_ids and structure asym_ids.")
+
+    def to(self, *args, **kwargs) -> Self:
+        """No-op for device/dtype movement for pytorch lightning compatibility."""
+        return self
 
     # === Numpy serialization for model training === #
     def to_npz_dict(self) -> dict[str, np.ndarray]:

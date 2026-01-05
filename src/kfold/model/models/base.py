@@ -7,7 +7,7 @@ from typing import Self
 import torch
 
 import kfold.model.modules as submodules
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
 
 

@@ -2,7 +2,7 @@ from collections.abc import Sequence
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.training.dataset.utils.permutation import get_aligned_true_coords
 from kfold.utils.geometry.rigid_align import rigid_align
 

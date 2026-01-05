@@ -3,7 +3,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from kfold.data.schema import Metadata
+from kfold.data.types.metadata import Metadata
 from kfold.utils.registry import DATA_SAMPLER, BaseConfig
 
 

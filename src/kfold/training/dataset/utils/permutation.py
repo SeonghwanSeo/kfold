@@ -1,6 +1,6 @@
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.misc import pad_dim
 

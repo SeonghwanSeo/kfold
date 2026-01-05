@@ -5,11 +5,11 @@ from functools import lru_cache
 import numpy as np
 
 import kfold.constants as C
-from kfold.data import structure
-from kfold.data.ccd import CCD, Component
+from kfold.data.types.ccd import CCD, Component
+from kfold.data.types.structure import RefStructure
+from kfold.data.utils.io.structure import read_protein_structure
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rieprody_module import RieProdyModule, RieProdyModuleConfig
-from kfold.utils.io.structure import read_protein_structure
 
 NUM_ATOMS_PER_RESIDUE: dict[C.ChainType, int] = {
     C.ChainType.PROTEIN: 37,
@@ -175,7 +175,7 @@ class ApoInitializer:
 
     def __call__(
         self,
-        struct: structure.RefStructure,
+        struct: RefStructure,
         lookup: dict[int, dict],
         rng: np.random.Generator | None = None,
     ) -> None:
@@ -202,7 +202,7 @@ class ApoInitializer:
 
     def populate_apo_structure(
         self,
-        struct: structure.RefStructure,
+        struct: RefStructure,
         lookup: dict[int, dict],
         rng: np.random.Generator | None = None,
     ) -> None:
@@ -238,7 +238,7 @@ class ApoInitializer:
 
     def insert_apo_coordinates(
         self,
-        struct: structure.RefStructure,
+        struct: RefStructure,
         lookup: dict[int, dict],
         rng: np.random.Generator,
     ) -> None:

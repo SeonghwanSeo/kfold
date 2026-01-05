@@ -4,8 +4,10 @@ import numpy as np
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data import schema, structure, tokenized
-from kfold.data.ccd import CCD, Component
+from kfold.data.types.ccd import CCD, Component
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.structure import RefStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
 
@@ -22,10 +24,10 @@ class Tokenizer:
 
     def __call__(
         self,
-        input: structure.RefStructure,
+        input: RefStructure,
         rng: np.random.Generator | None = None,
         use_only_cached_conformers: bool = False,
-    ) -> tokenized.TokenizedStructure:
+    ) -> TokenizedStructure:
         """Tokenize structure.
 
         Parameters
@@ -46,10 +48,10 @@ class Tokenizer:
 
     def tokenize(
         self,
-        input: structure.RefStructure,
+        input: RefStructure,
         rng: np.random.Generator | None = None,
         use_only_cached_conformers: bool = False,
-    ) -> tokenized.TokenizedStructure:
+    ) -> TokenizedStructure:
         """Tokenize structure.
 
         Parameters
@@ -70,11 +72,11 @@ class Tokenizer:
 
 
 def tokenize_structure(
-    input: structure.RefStructure,
+    input: RefStructure,
     ccd: CCD,
     rng: np.random.Generator | None = None,
     use_only_cached_conformers: bool = False,
-) -> tokenized.TokenizedStructure:
+) -> TokenizedStructure:
     """Tokenize structure.
 
     Parameters
@@ -103,7 +105,7 @@ def tokenize_structure(
         conformer_mode = "train"
 
     # Get metadata
-    _metadata: schema.Metadata = input.metadata
+    _metadata: Metadata = input.metadata
     assert len(_metadata.chains) == len(input.chains), (
         "Number of chains in metadata does not match number of chains in structure."
         f" ({len(_metadata.chains)} != {len(input.chains)})"
@@ -125,7 +127,7 @@ def tokenize_structure(
     for chain in input.chains:
         # Count tokens in the chain
         num_tokens_in_chain = 0
-        residues: structure.Residue = chain.residue
+        residues = chain.residue
         for res_i in range(len(residues)):
             residue_index = res_i + 1  # 1-based index
             if residues.is_standard[res_i]:
@@ -151,7 +153,7 @@ def tokenize_structure(
     # ==================================================
     # Create empty tokenized structure
     # ==================================================
-    struct = tokenized.TokenizedStructure.get_empty(
+    struct = TokenizedStructure.get_empty(
         num_chains,
         num_residues,
         num_tokens,
@@ -164,7 +166,7 @@ def tokenize_structure(
     # ==================================================
 
     for chain_i in range(num_chains):
-        chain: structure.Chain = input.chains[chain_i]
+        chain = input.chains[chain_i]
         # Insert chain info
         struct.chain.chain_type[chain_i] = chain.chain_type
         struct.chain.entity_id[chain_i] = chain.entity_id

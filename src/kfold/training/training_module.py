@@ -13,7 +13,7 @@ from torchmetrics import MeanMetric
 
 from kfold import constants as C
 from kfold.config import to_dict
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.models.kfold import KFold, KFoldConfig
 from kfold.utils.registry import MAIN_MODULE
 

@@ -13,6 +13,7 @@ __all__ = [
     "TokenTensor",
     "AtomTensor",
     "BondTensor",
+    "PretrainedTensor",
     "FoldingInput",
 ]
 

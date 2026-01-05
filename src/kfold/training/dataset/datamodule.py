@@ -5,8 +5,8 @@ import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from kfold.data.ccd import CCD
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.ccd import CCD
+from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import DATAMODULE, BaseConfig
 
 from .dataset import (

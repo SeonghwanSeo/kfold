@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from kfold.data import model_input
+from kfold.data.types import model_input
 
 
 def compute_collinear_mask(v1: torch.Tensor, v2: torch.Tensor) -> torch.Tensor:

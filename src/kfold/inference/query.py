@@ -57,7 +57,7 @@ import yaml
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data.ccd import CCD
+from kfold.data.types.ccd import CCD
 
 # === Dataclasses for input formats === #
 
@@ -403,7 +403,7 @@ def sanity_check_input_sequences(
             ctype = sequence.ctype
             match ctype:
                 case C.ChainType.PROTEIN:
-                    allow_tokens = C.residue.PROTEIN_AMINO_ACIDS_EXTENDED
+                    allow_tokens = C.residue.PROTEIN_AMINO_ACIDS
                 case C.ChainType.DNA:
                     allow_tokens = C.residue.DNA_BASES
                 case C.ChainType.RNA:

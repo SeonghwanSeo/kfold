@@ -1,7 +1,7 @@
 # Started from https://github.com/jwohlwend/boltz
 import numpy as np
 
-from kfold.data.schema import Metadata
+from kfold.data.types.metadata import Metadata
 from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample

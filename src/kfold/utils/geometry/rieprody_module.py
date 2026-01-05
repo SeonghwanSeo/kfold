@@ -331,6 +331,7 @@ class RieProdyModule:
         except Exception as e:
             self.log(f"Exception during RieProDy perturbation (name={name}): {e}")
             return x_init  # Fallback to original coords
+
     def sample_prior_from_langevin(
         self,
         mask: np.ndarray,

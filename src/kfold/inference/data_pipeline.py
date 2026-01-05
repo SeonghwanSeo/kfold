@@ -5,11 +5,17 @@ import pathlib
 import numpy as np
 
 import kfold.constants as C
-from kfold.data import schema, structure
-from kfold.data.ccd import CCD
-from kfold.data.model_input import FoldingInput
-from kfold.data.pipelines import apo_initialize, featurize, parse_input, tokenize
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.pipelines import (
+    apo_initialization,
+    featurization,
+    structure_preparation,
+    tokenization,
+)
+from kfold.data.types.ccd import CCD
+from kfold.data.types.metadata import ChainInfo, Metadata
+from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import Chain, RefStructure
+from kfold.data.types.tokenized import TokenizedStructure
 
 from . import query
 
@@ -34,8 +40,8 @@ class InputDataPipeline:
         self.seed: int = seed
 
         # Initialize apo initializer
-        self.apo_initializer = apo_initialize.ApoInitializer(
-            apo_initialize.ApoInitializerConfig(
+        self.apo_initializer = apo_initialization.ApoInitializer(
+            apo_initialization.ApoInitializerConfig(
                 use_perturbation=False,
                 use_random_rotation=True,
             ),
@@ -43,10 +49,10 @@ class InputDataPipeline:
         )
 
         # Initialize tokenizer
-        self.tokenizer = tokenize.Tokenizer(self.ccd)
+        self.tokenizer = tokenization.Tokenizer(self.ccd)
 
         # Initialize featurizer
-        self.featurizer: featurize.InputFeaturizer = featurize.InputFeaturizer(
+        self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer(
             seq_embedding_dim=seq_embedding_dim,
             struct_embedding_dim=struct_embedding_dim,
             max_struct_ensembles=max_struct_ensembles,
@@ -54,7 +60,7 @@ class InputDataPipeline:
 
     def process_input_file(
         self, input_file: query.InputFile
-    ) -> tuple[TokenizedStructure, FoldingInput]:
+    ) -> tuple[RefStructure, TokenizedStructure, FoldingInput]:
         """Process an InputFile into model-ready inputs.
 
         Parameters
@@ -64,7 +70,9 @@ class InputDataPipeline:
 
         Returns
         -------
-        struct : TokenizedStructure
+        ref_struct : RefStructure
+            The reference structure representation.
+        tokenized_struct : TokenizedStructure
             The tokenized structure representation.
         f_input : FoldingInput
             The featurized model input.
@@ -78,18 +86,18 @@ class InputDataPipeline:
         self.populate_apo_structure(ref_struct, input_file, rng=rng)
 
         # Tokenize structure
-        struct = self.tokenizer.tokenize(ref_struct)
+        tok_struct = self.tokenizer.tokenize(ref_struct)
 
         # Featurize input
         seq_emb_paths = self.collect_precomputed_embeddings(input_file, "seq")
         struct_emb_paths = self.collect_precomputed_embeddings(input_file, "struct")
-        f_input = self.featurizer(struct, seq_emb_paths, struct_emb_paths, rng=rng)
-        return struct, f_input
+        f_input = self.featurizer(tok_struct, seq_emb_paths, struct_emb_paths, rng=rng)
+        return ref_struct, tok_struct, f_input
 
     def prepare_structure_from_input_file(
         self,
         input_file: query.InputFile,
-    ) -> structure.RefStructure:
+    ) -> RefStructure:
         """Prepare the reference structure from the input file.
 
         Parameters
@@ -102,8 +110,8 @@ class InputDataPipeline:
         ref_struct : RefStructure
             The reference structure representation.
         """
-        chain_metas: list[schema.ChainInfo] = []
-        chains: list[structure.Chain] = []
+        chain_metas: list[ChainInfo] = []
+        chains: list[Chain] = []
         asym_id_iter = itertools.count(1)
 
         # TODO: add constraints if needed (covalent ligands)
@@ -120,7 +128,7 @@ class InputDataPipeline:
             num_residues = len(seq)
 
             # Parse sequence
-            entity_chain: structure.Chain
+            entity_chain: Chain
             if isinstance(seq, query.LigandSequence):
                 entity_chain = self.parse_ligand_sequence(seq)
             else:
@@ -143,7 +151,7 @@ class InputDataPipeline:
                 chains.append(chain)
 
                 # Add chain metadata
-                chain_meta = schema.ChainInfo(
+                chain_meta = ChainInfo(
                     chain_type=entity_chain.ctype,
                     chain_name=chain_name,
                     entity_id=entity_id,
@@ -155,23 +163,22 @@ class InputDataPipeline:
                 chain_metas.append(chain_meta)
 
         # Prepare metadata
-        metadata = schema.Metadata(
+        metadata = Metadata(
             id=input_file.name,
             source="query",
             chains=chain_metas,
         )
 
         # Return RefStructure
-        ref_struct = structure.RefStructure(
+        return structure_preparation.prepare_structure(
             chains=chains,
-            connections=[],  # TODO: add connections
+            connections=[],  # No connections for now
             metadata=metadata,
         )
-        return ref_struct
 
     def populate_apo_structure(
         self,
-        ref_struct: structure.RefStructure,
+        ref_struct: RefStructure,
         input_file: query.InputFile,
         rng: np.random.Generator | None = None,
     ) -> None:
@@ -248,7 +255,7 @@ class InputDataPipeline:
     def parse_polymer_sequence(
         self,
         seq: query.PolymerSequence,
-    ) -> structure.Chain:
+    ) -> Chain:
         """Parse a polymer chain from the sequence input.
 
         Parameters
@@ -279,7 +286,7 @@ class InputDataPipeline:
             ccd_sequences[res_idx - 1] = ccd_code  # res_idx is 1-based
 
         # Prepare reference chain
-        chain = parse_input.prepare_ref_chain(
+        chain = structure_preparation.prepare_ref_chain(
             chain_type=seq.ctype,
             ccd_sequences=ccd_sequences,
             ccd=self.ccd,
@@ -290,7 +297,7 @@ class InputDataPipeline:
         self,
         seq: query.LigandSequence,
         is_covalent: bool = False,
-    ) -> structure.Chain:
+    ) -> Chain:
         """Parse a ligand chain from the sequence input.
 
         Parameters
@@ -316,7 +323,7 @@ class InputDataPipeline:
                 ctype = C.ChainType.ION
             else:
                 ctype = C.ChainType.LIGAND
-            return parse_input.prepare_ref_chain(
+            return structure_preparation.prepare_ref_chain(
                 chain_type=ctype,
                 ccd_sequences=seq.ccd_ids,
                 ccd=self.ccd,

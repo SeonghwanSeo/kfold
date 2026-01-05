@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.distogram_head.boltz1 import Boltz1DistogramHead
 from kfold.model.modules.input_embedder.boltz1_embedder import Boltz1InputEmbedder
 from kfold.model.modules.trunk.boltz1_trunk import Boltz1PairformerTrunk

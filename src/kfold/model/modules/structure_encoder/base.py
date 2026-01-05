@@ -44,7 +44,8 @@ class BaseStructureEncoder(torch.nn.Module, ABC):
 
         # NOTE (seonghwanseo):
         1. If you want to use more features, you can consider to use
-            `kfold.data.model_input.FoldingInput` or `kfold.data.model_input.ChainInput`,
+            `kfold.data.types.model_input.FoldingInput` or
+            `kfold.data.types.model_input.ChainInput`,
             like `kfold.model.modules.transformer.BaseTransformer`.
 
         2. You don't have to match c_s and c_z with transformer module. We will

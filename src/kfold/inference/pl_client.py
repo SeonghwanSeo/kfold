@@ -6,8 +6,9 @@ from dataclasses import dataclass
 import lightning.pytorch as pl
 import torch
 
-from kfold.data.model_input import FoldingInput
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import RefStructure
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.model.models.kfold import KFold
 
 from .query import InputFile
@@ -70,14 +71,14 @@ class KFoldInferenceClient(pl.LightningModule):
 
     def predict_step(
         self,
-        batch: tuple[InputFile, TokenizedStructure, FoldingInput],
+        batch: tuple[InputFile, RefStructure, TokenizedStructure, FoldingInput],
     ) -> None:
         if batch is None:
             # Skip empty batch (occured by processing error)
             return
 
         # Unpack batch and validate
-        query, struct, f_input = batch
+        query, ref_struct, struct, f_input = batch
         assert f_input.batch_size == 1, "Inference batch size should be 1"
 
         cfg = self.inference_config

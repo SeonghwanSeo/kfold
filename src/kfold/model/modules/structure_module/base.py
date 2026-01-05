@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model import BaseScoreModel
 from kfold.utils.geometry.random_augment import do_centering
 from kfold.utils.misc import repeat_dim

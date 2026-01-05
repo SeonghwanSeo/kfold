@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.boltz1.encoders import RelativePositionEncoder
 from kfold.model.layers.boltz1.trunk import InputEmbedder
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig

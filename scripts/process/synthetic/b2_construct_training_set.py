@@ -8,8 +8,8 @@ import pickle
 import lmdb
 from tqdm import tqdm
 
-from kfold.data.schema import Metadata
-from kfold.data.structure import RefStructure
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.structure import RefStructure
 
 
 def parse_args():

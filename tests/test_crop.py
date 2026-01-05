@@ -6,8 +6,8 @@ import lmdb
 import numpy as np
 from tqdm import tqdm
 
-from kfold.data.schema import Metadata
-from kfold.data.tokenized import TokenizedStructure
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.cropper.multi_anchor import MultiAnchorCropper
 from kfold.training.dataset.datamodule import load_manifest
 

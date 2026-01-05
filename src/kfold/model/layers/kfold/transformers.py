@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import AtomEmbedding
 from kfold.model.layers.alphafold3.transformers import AtomTransformer
 from kfold.model.layers.alphafold3.utils import (

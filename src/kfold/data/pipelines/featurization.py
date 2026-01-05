@@ -6,9 +6,16 @@ import numpy as np
 import torch
 
 import kfold.constants as C
-from kfold.data import model_input, tokenized
-
-from .utils import frame_utils
+from kfold.data.types.model_input import (
+    AtomTensor,
+    BondTensor,
+    ChainTensor,
+    FoldingInput,
+    PretrainedTensor,
+    TokenTensor,
+)
+from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.utils import frame_utils
 
 
 def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
@@ -53,20 +60,20 @@ class InputFeaturizer:
 
     def __call__(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         seq_embeddings: dict[int, dict] | None = None,
         struct_embeddings: dict[int, dict] | None = None,
         rng: np.random.Generator | None = None,
-    ) -> model_input.FoldingInput:
+    ) -> FoldingInput:
         return self.run(struct, seq_embeddings, struct_embeddings, rng)
 
     def run(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         seq_embeddings: dict[int, dict] | None = None,
         struct_embeddings: dict[int, dict] | None = None,
         rng: np.random.Generator | None = None,
-    ) -> model_input.FoldingInput:
+    ) -> FoldingInput:
         """Featurize a tokenized structure into model input features.
 
         Parameters
@@ -106,19 +113,19 @@ class InputFeaturizer:
 
     def to_folding_input(
         self,
-        struct: tokenized.TokenizedStructure,
+        struct: TokenizedStructure,
         rng: np.random.Generator,
-    ) -> model_input.FoldingInput:
+    ) -> FoldingInput:
         """Convert the tokenized structure to model input features."""
         return featurize_structure(struct, rng=rng)
 
     def add_precomputed_embedding(
         self,
-        f_input: model_input.FoldingInput,
+        f_input: FoldingInput,
         seq_embeddings: dict[int, dict] | None,
         struct_embeddings: dict[int, dict] | None,
         rng: np.random.Generator | None,
-    ) -> model_input.FoldingInput:
+    ) -> FoldingInput:
         """Add pre-trained embeddings to the model input from pre-computed files.
 
         Parameters
@@ -178,9 +185,9 @@ class InputFeaturizer:
 
 
 def featurize_structure(
-    struct: tokenized.TokenizedStructure,
+    struct: TokenizedStructure,
     rng: np.random.Generator | None = None,
-) -> model_input.FoldingInput:
+) -> FoldingInput:
     """Featurize a tokenized structure into model input features.
 
     Parameters
@@ -372,30 +379,22 @@ def featurize_structure(
     }
 
     # === Convert to tensors ===
-    chain_layout = model_input.ChainTensor(
-        **{k: torch.from_numpy(v) for k, v in chain_dict.items()}
-    )
+    chain_layout = ChainTensor(**{k: torch.from_numpy(v) for k, v in chain_dict.items()})
 
-    token_layout = model_input.TokenTensor(
-        **{k: torch.from_numpy(v) for k, v in token_dict.items()}
-    )
+    token_layout = TokenTensor(**{k: torch.from_numpy(v) for k, v in token_dict.items()})
 
-    atom_layout = model_input.AtomTensor(
-        **{k: torch.from_numpy(v) for k, v in atom_dict.items()}
-    )
+    atom_layout = AtomTensor(**{k: torch.from_numpy(v) for k, v in atom_dict.items()})
 
-    bond_layout = model_input.BondTensor(
-        **{k: torch.from_numpy(v) for k, v in bond_dict.items()}
-    )
+    bond_layout = BondTensor(**{k: torch.from_numpy(v) for k, v in bond_dict.items()})
 
-    pretrained_layout = model_input.PretrainedTensor(
+    pretrained_layout = PretrainedTensor(
         **{k: torch.from_numpy(v) for k, v in pretrained_dict.items()}
     )
 
     # === Before returning, compute ligand frames inplace === #
     frame_utils.compute_ligand_frames_inplace(token_layout, atom_layout, chain_layout)
 
-    folding_input = model_input.FoldingInput(
+    folding_input = FoldingInput(
         chain=chain_layout,
         token=token_layout,
         atom=atom_layout,
@@ -406,7 +405,7 @@ def featurize_structure(
 
 
 def load_pretrained_sequence_embedding(
-    f_input: model_input.FoldingInput,
+    f_input: FoldingInput,
     embedding_info: dict[int, dict],
     embedding_dim: int,
 ) -> torch.Tensor:
@@ -414,7 +413,7 @@ def load_pretrained_sequence_embedding(
 
     Parameters
     ----------
-    f_input : model_input.FoldingInput
+    f_input : FoldingInput
         The model input containing chain and token layouts.
     embedding_info : dict[int, dict]
         Mapping from entity_id to file path of the pre-computed embedding.
@@ -520,7 +519,7 @@ def load_pretrained_sequence_embedding(
 
 
 def load_pretrained_structure_embedding(
-    f_input: model_input.FoldingInput,
+    f_input: FoldingInput,
     embedding_info: dict[int, dict],
     embedding_dim: int,
     max_ensembles: int = 5,
@@ -530,7 +529,7 @@ def load_pretrained_structure_embedding(
 
     Parameters
     ----------
-    f_input : model_input.FoldingInput
+    f_input : FoldingInput
         The model input containing chain and token layouts.
     embedding_info : dict[int, dict]
         Mapping from entity_id to file path of the pre-computed embedding.
