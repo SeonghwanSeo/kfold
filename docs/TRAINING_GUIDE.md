@@ -33,121 +33,50 @@ pre-commit install
 ## Preparing the Dataset
 The training dataset is prepared based on the pre-processed dataset provided by [Boltz1 Official Github](https://github.com/jwohlwend/boltz/blob/v1.0.0/docs/training.md#download-the-pre-processed-data).
 
-### For K-Fold Contributors (Elice B200 server):
+### For K-Fold Consortium Users (Internal)
 
 #### Option A: Use Pre-built Dataset (Recommended)
 
-A pre-generated LMDB dataset is available on the internal server:
-`/mnt/parallel_storage/wykim_lab/icl_shwan/data/`
+Pre-generated datasets are available on the internal server:
+`/storage/wykim_lab/icl_shwan/dataset/`.
 
 You can use this path as an argument for the training script directly and skip the data generation steps below.
 ```bash
 export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 
+# Navigate to the data directory
 cd $KFOLD_DATA_DIR
-# Copy LMDB dataset, manifests, and ccd symmetry to your working directory
-cp -r --sparse always /mnt/parallel_storage/wykim_lab/icl_shwan/data/structures/kfold_rcsb_processed_v251120.lmdb ./
-cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/ ./
-cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/symmetry.pkl/ ./
 
-# (optional) Pretrained embeddings (e.g., ESM-2 3B embeddings - bf16 converted)
-mkdir pretrained/
-cd ./pretrained
-cp -r /mnt/parallel_storage/wykim_lab/icl_shwan/data/pretrained/esm2_3b_bf16.tar.zst ./
-tar --zstd -xvf esm2_3b_bf16.tar.zst
-cd ../
+# Clone pre-built dataset (v260103)
+cp -r /storage/wykim_lab/icl_shwan/dataset/v260103/ .
 
-# Set permissions for other users in the group to read, write, and execute
-chmod 775 -R .
+# Extract the datasets you need
+cd v260103/dataset
+tar --zstd -xvf rcsb-train.tar.zst
+tar --zstd -xvf rcsb-val.tar.zst
+tar --zstd -xvf NaturalAb.tar.zst
+...
 ```
-
-- NOTE: To copy lmdb file, use `--sparse always` option to avoid copying empty space in the lmdb file.
 
 #### Option B: Create New Dataset
 
 If you need to regenerate the dataset from scratch, follow these steps.
 
 **Source Data Paths:**
-- Boltz1 Data: `/mnt/parallel_storage/wykim_lab/icl_mseok/BOLTZ1/rcsb_processed_targets/`
-- ESMFold apo structures: `/mnt/parallel_storage/wykim_lab/icl_shwan/data/rcsb_apo_esmfold.tar.zstd`
+- RCSB:
+  - mmCIF files: `/mnt/parallel_storage/wykim_lab/icl_shwan/raw_data/rcsb/rcsb.tar`
+  - apo structures: `/mnt/parallel_storage/wykim_lab/icl_shwan/raw_data/rcsb/apo.tar`
 
 ##### Dataset Creation Steps:
-To create the dataset, execute the following commands.
+To create the dataset, execute scripts in `scripts/process/rcsb/` sequentially as follows
 
-1. Copy source data to high-speed cache and extract: (You can skip each step if the files are already in the cache directory.)
-  ```bash
-  export CACHE_DIR=/cache/wykim_lab/
-  export KFOLD_DATA_DIR=$CACHE_DIR/kfold_data/
+TODO write...
 
-  # Copy Boltz1 data
-  cd $CACHE_DIR
-  cp -r /mnt/parallel_storage/wykim_lab/icl_mseok/BOLTZ1/rcsb_processed_targets ./
+##### Custom Dataset Creation Steps:
 
-  # Copy ESMFold apo structures
-  cp /mnt/parallel_storage/wykim_lab/icl_shwan/data/rcsb_apo_esmfold.tar.zstd ./
+To create the manifest files to train with subsets of the dataset, execute scripts in `scripts/process/manifest/` sequentially as follows:
 
-  # Extract ESMFold apo structures
-  tar --zstd -xvf rcsb_apo_esmfold.tar.zstd
-  ```
-
-2. Run the pre-processing script (approx. 5-6 mins with 192 CPUs):
-  ```bash
-  python ./scripts/process/boltz_rcsb/a1_preprocess_rcsb.py \
-    --boltz_structure_dir $CACHE_DIR/rcsb_processed_targets/structures/ \
-    --apo_structure_dir $CACHE_DIR/rcsb_apo_esmfold/ \
-    --output_dir $KFOLD_DATA_DIR/kfold_rcsb_processed_v251120_npz/ \
-    --num_cpus 192
-  ```
-
-3. Combine NPZ files into an LMDB database:
-  ```bash
-  python ./scripts/process/boltz_rcsb/a2_combine_lmdb.py \
-    --npz_dir $KFOLD_DATA_DIR/kfold_rcsb_processed_v251120_npz/ \
-    --lmdb_path $KFOLD_DATA_DIR/kfold_rcsb_processed_v251120.lmdb
-  ```
-
-4. Copy the final LMDB file from cache storage to persistent storage:
-  ```bash
-  cp $KFOLD_DATA_DIR/kfold_rcsb_processed_v251120.lmdb /scratch/<YOUR_DIRECTORY>/
-  ```
-
-##### Manifest Creation Steps:
-
-To create the manifest file, run the following commands.
-
-1. Construct entire manifest file:
-  ```bash
-  python ./scripts/process/boltz_rcsb/b_get_manifest.py \
-    --boltz_manifest_path $CACHE_DIR/rcsb_processed_targets/manifest.json \
-    --output_path $KFOLD_DATA_DIR/manifests/all_manifest.pkl
-  ```
-
-2. Construct AF3 manifest file (less than 300 chains):
-  ```bash
-  python ./scripts/process/boltz_rcsb/b_get_manifest.py \
-    --boltz_manifest_path $CACHE_DIR/rcsb_processed_targets/manifest.json \
-    --output_path $KFOLD_DATA_DIR/manifests/af3_manifest.pkl \
-    --exclude_large_complex
-  ```
-
-3. Construct **complex only** manifest file:
-  ```bash
-  python ./scripts/process/boltz_rcsb/b_get_manifest.py \
-    --boltz_manifest_path $CACHE_DIR/rcsb_processed_targets/manifest.json \
-    --output_path $KFOLD_DATA_DIR/manifests/complex_manifest.pkl \
-    --exclude_large_complex \
-    --exclude_single_chain
-  ```
-
-4. Construct **P-P & P-L complex only** manifest file:
-  ```bash
-  python ./scripts/process/boltz_rcsb/b_get_manifest.py \
-    --boltz_manifest_path $CACHE_DIR/rcsb_processed_targets/manifest.json \
-    --output_path $KFOLD_DATA_DIR/manifests/pp_pl_manifest.pkl \
-    --exclude_large_complex \
-    --exclude_single_chain \
-    --exclude_nucleic_acids
-  ```
+TODO write...
 
 
 ### For Community Users (Public)

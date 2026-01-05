@@ -11,7 +11,7 @@ It serves as a reference for developers and contributors working with the K-Fold
 - [Installation](#installation)
 - [Project Architecture](#project-architecture)
 - [Training Pipeline](#training-pipeline)
-- [Inference Framework](#inference-framework) (TODO)
+- [Inference Framework](#inference-framework)
 - [Implementation Guidelines](#implementation-guidelines)
 
 ## Installation
@@ -35,8 +35,6 @@ It serves as a reference for developers and contributors working with the K-Fold
 
 ## Project Architecture
 
-### Core Components
-
 - **`configs/`**: Configuration files for training and model settings.
   - `model/`: Model architecture configurations.
   - `train/`: Training pipeline configurations.
@@ -45,20 +43,31 @@ It serves as a reference for developers and contributors working with the K-Fold
   - **`constants/`**: Constants used across the codebase
     - `chain.py`: Chain type definitions
     - `residue.py`: Residue type definitions and mappings
+    - `ccd.py`: Common chemical component (CCD) definitions
     - `atom.py`: Atom type definitions and mappings
     - `bond.py`: Bond type definitions and mappings
     - `training.py`: Training-related constants
     - `constraint.py`: TODO: Constraint-related constants
 
   - **`data/`**: Core data structures and representations
-    - `structure.py`: High-level numpy array interfaces (`TokenizedStructure`).
-    - `model_input.py`: High-level (batched) tensor interfaces (`FoldingInput`).
-    - `metadata.py`: Metadata structures for datasets.
-    - `featurize.py`: A module and functions to convert `TokenizedStructure` to `FoldingInput`.
-    - `apo_perturbation.py`: A module and functions for apo structure perturbation and augmentation.
-    - `sequence_tokenizer.py`: Tokenizers for protein, DNA and RNA
+    - **`types/`**: High-level data structures
+      - `structure.py`: High-level biomolecular structure (`RefStructure`)
+      - `tokenized.py`: High-level numpy array representation (`TokenizedStructure`).
+      - `model_input.py`: High-level (batched) tensor representation (`FoldingInput`).
+      - `metadata.py`: Metadata of each biomolecular structure.
+    - **`pipelines/`**: Data processing pipelines
+      - `structure_preparation.py`: Structure preparation pipeline.
+      - `cif_factory.py`: Training data processing pipeline from mmCIF files.
+      - `apo_initialization.py`: Apo structure population and augmentation.
+      - `tokenization.py`: Tokenization pipeline converting `RefStructure` to `TokenizedStructure`.
+      - `featurization.py`: Featurization pipeline converting `TokenizedStructure` to `FoldingInput`.
+    - **`utils/`**: Utility functions for data processing
 
-  - **`inference/`**: TODO: implement API for inference
+  - **`inference/`**:
+      - `query.py`: Inference query representation (`Query`) and related pipelines (from `input_yaml` to `Query`).
+      - `data_pipeline.py`: Inference data processing pipeline (from `Query` to `FoldingInput`).
+      - `dataset.py`: Inference dataset and dataloader implementations.
+      - `pl_client.py`: PyTorch Lightning client for inference with multi-GPU support.
 
   - **`models/`**: Core K-Fold model implementations
     - `models/`: Main K-Fold model classes
@@ -73,21 +82,17 @@ It serves as a reference for developers and contributors working with the K-Fold
 
 - **`scripts/`**: Utility scripts for data processing, training, and evaluation.
   - **`train.py`**: Script to train the K-Fold model.
-  - **`validate.py`**: Script to validate the trained model.
+  - **`validate.py`**: Script to validate the trained model on validation datasets.
+  - **`inference.py`**: Script to perform inference using the trained model.
+  - **`inference_multigpu.py`**: Script for multi-GPU inference.
+
+---
 
 ## Training Pipeline
 
-### Model Training Command
+See [`docs/TRAINING_GUIDE.md`](TRAINING_GUIDE.md) for detailed instructions on preparing datasets and training the K-Fold model.
 
-```bash
-python scripts/train.py --config configs/train-af3.yaml --wandb
-```
-
-### Model Validaiton Command
-
-```bash
-python scripts/validate.py --config configs/train-af3.yaml --checkpoint /path/to/checkpoint.ckpt
-```
+---
 
 ## Inference Framework
 
@@ -97,7 +102,11 @@ python scripts/validate.py --config configs/train-af3.yaml --checkpoint /path/to
 python scripts/inference.py --config <config_path> --checkpoint <checkpoint_path> --input <input_yaml> --out_dir <output_directory>
 ```
 
-### Benchmarking
+### Benchmark
+
+See [`docs/EVALUATION_GUIDE.md`](EVALUATION_GUIDE.md) for detailed instructions on benchmarking the K-Fold model.
+
+---
 
 ## Implementation Guidelines
 

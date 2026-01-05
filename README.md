@@ -43,9 +43,6 @@ python scripts/inference_multigpu.py \
   --checkpoint <CKPT_PATH> \
   --input <INPUT_YAML_PATH_OR_DIR> \
   --out_dir ./inference_results/ \
-  --num_recycles 10 \
-  --num_steps 200 \
-  --num_samples 5 \
   --num_gpus 8
 ```
 
@@ -98,4 +95,4 @@ python ./scripts/train.py --config ./configs/train-af3.yaml --wandb --num_gpus .
 
 ### Evaluation
 
-See [`docs/EVALUATION.md`](./docs/EVALUATION.md) for detailed evaluation instructions.
+See [`docs/EVALUATION_GUIDE.md`](./docs/EVALUATION_GUIDE.md) for detailed evaluation instructions.

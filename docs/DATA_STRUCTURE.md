@@ -2,255 +2,240 @@
 
 **Author:** Seonghwan Seo (Prof. Woo Youn Kim's Lab)
 
-This document describes the data structure used in **K-Fold** and compares it with the **Boltz** implementation.
+This document describes the data structure used in **K-Fold** for protein complex structure prediction.
 
 ## Contents
 
-- [Data Processing Pipeline](#data-processing-pipeline)
+- [Data Flow](#data-flow)
 - [Data Structure](#data-structure)
-    - [Chain](#chain)
-    - [Residue](#residue)
-    - [Token](#token)
-    - [Atom](#atom)
-    - [Bond](#bond)
+- [Tokenized Structure](#tokenized-structure)
 - [Model Input](#model-input)
-    - [Atom features](#atom-features)
-    - [Token features](#token-features)
-    - [Bond features](#bond-features)
-    - [Pretrained embeddings](#pretrained-embeddings)
 
 ---
 
-## Data Processing Pipeline
+## Data Flow
 
-K-Fold utilizes a data processing framework and data structures inspired by the Boltz implementation. However, there are significant differences in representation and organization designed to enhance usability and clarity.
+### Training
 
-### Boltz (Reference)
-* **Preprocessed data (Storage):** `boltz.data.types.Structure` (NumPy void array)
-* **During data-processing** (in `Dataset.__getitem__`):
-    1.  **Tokenization:** `boltz.data.types.Structure` → `boltz.data.types.Tokenized` (NumPy void array)
-    2.  **Cropping:** Crops the tokenized structure to fit the maximum length (`max_tokens`).
-    3.  **Featurization:** `boltz.data.types.Tokenized` → Model input (dictionary of PyTorch tensors).
+#### Preprocessing (mmCIF -> `RefStructure`)
 
-### K-Fold
-* **Preprocessed data**: `kfold.data.structure.TokenizedStructure` (dataclass of NumPy arrays)
-    * **From Boltz data:** `boltz.data.types.Structure` → `kfold.data.structure.TokenizedStructure` (dataclass of NumPy arrays)
-    * **From mmCIF:** **TODO**
-* **During data-processing** (in `Dataset.__getitem__`):
-    1.  **Pre-cropping:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface tokens. (See AlphaFold3 SI Section 2.5.4)
-    2.  **Cropping:** Crops the tokenized structure to fit the maximum length.
-    3.  **Apo perturbation:** Applies random perturbation to apo structure coordinates for data augmentation.
-    4.  **Featurization:** `kfold.data.structure.TokenizedStructure` → Model input (`kfold.data.model_input.FoldingInput`, dataclass of PyTorch tensors).
+The preprocessing stage is performed once before training to convert raw mmCIF files into an array-based format for efficient loading during training.
+This processing is done using the functions defined in [`kfold.data.pipelines.cif_factory`](../src/kfold/data/pipelines/cif_factory.py).
+
+#### On-the-fly Data Processing (`RefStructure` -> `TokenizedStructure` -> `FoldingInput`)
+
+The on-the-fly data processing is performed during training to convert the reference structure into model input features:
+1.  **Data loading:** Loads preprocessed `RefStructure` from disk.
+2.  **Pre-cropping:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface token. (See AlphaFold3 SI Section 2.5.4)
+3.  **Apo Structure Population:** Populates apo structure information into the reference structure. During training, **apo perturbation** is on-the-fly applied in this step.
+4.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
+5.  **Cropping:** If the structure contains more tokens than `max_tokens`, it crops a structure using three cropping strategies. (See AlphaFold3 SI Section 2.7)
+6.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
+
+### Inference
+
+The inference stage starts by parsing a query file (YAML or JSON) that specifies the target sequences and entities (proteins, ligands, nucleic acids). Unlike training which loads ground truth structures from mmCIF, this step extracts sequences from the query and constructs a RefStructure object with zero-initialized (masked) coordinates.
+
+1.  **Structure Preparation:** (`YAML/JSON` → `RefStructure`) Prepares the reference structure from the query sequences.
+2.  **Apo Structure Population:** Populates given apo structure information into the reference structure.
+3.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
+4.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
 
 ---
 
 ## Data Structure
 
-The data structure used in K-Fold (`kfold.data.structure.TokenizedStructure`) is largely inspired by the Boltz implementation (`boltz.data.types.Structure`).
-The main difference lies in the representation format: K-Fold uses Python dataclasses with NumPy arrays, which are easier to interpret and manage than NumPy void arrays.
-
-> **NOTE:** In this section, we only show the common features between Boltz and K-Fold. To see the complete list of features and their shapes in K-Fold, please refer to [`src/kfold/data/structure.py`](./src/kfold/data/structure.py).
+K-Fold provides high-level data structures for reference structures via `kfold.data.types.structure.RefStructure`. This contains chains, covalent connections, and metadata. See [here](../src/kfold/data/types/structure.py) for more details.
 
 ```python
-from kfold.data import structure
+from kfold.data.types.metadata import Metadata
+from kfold.data.types.structure import RefStructure, Chain, CovalentConnection
 
-struct: structure.TokenizedStructure = ...
-chain_struct: structure.Chain = struct.chain
-residue_struct: structure.Residue = struct.residue
-token_struct: structure.Token = struct.token
-atom_struct: structure.Atom = struct.atom
-bond_struct: structure.Bond = struct.bond
+ref_struct: RefStructure = ...
+chains: list[Chain] = ref_struct.chains
+connections: list[CovalentConnection] = ref_struct.covalent_connections
+metadata: Metadata = ref_struct.metadata
+```
 
-asym_id = chain_struct.asym_id  # Shape: (Nchain,)
+## Tokenized Structure
+
+K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`. This contains sub-layouts for chain, residue, token, atom, and bond structures. See [here](../src/kfold/data/types.tokenized.py) for more details.
+
+```python
+from kfold.data.types import tokenized
+
+struct: tokenized.TokenizedStructure = ...
+chain_arr: tokenized.ChainArray = struct.chain
+residue_arr: tokenized.ResidueArray = struct.residue
+token_arr: tokenized.TokenArray = struct.token
+atom_arr: tokenized.AtomArray = struct.atom
+bond_arr: tokenized.BondArray = struct.bond
+
+asym_id = chain_arr.asym_id  # Shape: (Nchain,)
+coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 # ...
 ````
 
-### Chain
+### Chain-level layout
 
-You can access chain-level structures via `kfold.data.structure.Chain`:
+| Field         | Shape       | Description |
+| :---          | :---        | :--- |
+| `chain_type`  | `(Nchain,)` | Chain Type (protein, dna, rna, ligand, ion) |
+| `entity_id`   | `(Nchain,)` | Entity ID (1-indexed) |
+| `sym_id`      | `(Nchain,)` | Sym ID (1-indexed) |
+| `asym_id`     | `(Nchain,)` | Asym ID (1-indexed) |
+| `num_residues`| `(Nchain,)` | Number of residues in each chain |
+| `num_tokens`  | `(Nchain,)` | Number of tokens in each chain |
+| `num_atoms`   | `(Nchain,)` | Number of atoms in each chain |
 
-| Boltz Field | K-Fold Field | Shape | Description |
-| :--- | :--- | :--- | :--- |
-| `name` | - | `(Nchain,)` | **TODO:** Add description |
-| `mol_type` | `chain_type` | `(Nchain,)` | Chain Type (protein, dna, rna, ligand) |
-| `entity_id` | *same* | `(Nchain,)` | Starting from 0 vs 1 |
-| `sym_id` | *same* | `(Nchain,)` | Starting from 0 vs 1 |
-| `asym_id` | *same* | `(Nchain,)` | Starting from 0 vs 1 |
-| `res_num` | `num_residues` | `(Nchain,)` | Number of residues in each chain |
-| `atom_num` | `num_atoms` | `(Nchain,)` | Number of atoms in each chain |
-| - | `num_tokens` | `(Nchain,)` | Number of tokens in each chain |
+### Residue-level layout
 
-### Residue
+| Field           | Shape         | Description |
+| :---            | :---          | :--- |
+| `name`          | `(Nresidue,)` | Residue name (<U6) |
+| `res_type`      | `(Nresidue,)` | Residue type |
+| `residue_index` | `(Nresidue,)` | Residue index (1-indexed) |
+| `chain_type`    | `(Nresidue,)` | Chain Type (protein, dna, rna, ligand, ion) |
+| `entity_id`     | `(Nresidue,)` | Entity ID (1-indexed) |
+| `asym_id`       | `(Nresidue,)` | Asym ID (1-indexed) |
+| `sym_id`        | `(Nresidue,)` | Sym ID (1-indexed) |
+| `num_tokens`    | `(Nresidue,)` | Number of tokens in each residue |
+| `num_atoms`     | `(Nresidue,)` | Number of atoms in each residue |
+| `is_standard`   | `(Nresidue,)` | Whether the residue is standard |
 
-You can access residue-level structures via `kfold.data.structure.Residue`:
+### Token-level layout
 
-| Boltz Field | K-Fold Field | Shape | Description |
-| :--- | :--- | :--- | :--- |
-| `name` | *same* | `(Nresidue,)` | Residue name |
-| `res_type` | *same* $^1$ | `(Nresidue,)` | Residue type |
-| - | `chain_type` | `(Nresidue,)` | Chain Type (protein, dna, rna, ligand) |
-| `atom_num` | `num_atoms` | `(Nresidue,)` | Number of atoms in each residue |
-| `is_standard` | *same* | `(Nresidue,)` | Whether the residue is standard |
-| `is_present` | `resolved_mask` | `(Nresidue,)` | Whether the residue is resolved |
+| Field           | Shape         | Description |
+| :---            | :---          | :--- |
+| `token_index`   | `(Ntoken,)`   | Token index (0-indexed) |
+| `residue_index` | `(Ntoken,)`   | Residue index (1-indexed) |
+| `res_type`      | `(Ntoken,)`   | Residue type |
+| `chain_type`    | `(Ntoken,)`   | Chain Type (protein, dna, rna, ligand, ion) |
+| `entity_id`     | `(Ntoken,)`   | Entity ID (1-indexed) |
+| `asym_id`       | `(Ntoken,)`   | Asym ID (1-indexed) |
+| `sym_id`        | `(Ntoken,)`   | Sym ID (1-indexed) |
+| `disto_index`   | `(Ntoken,)`   | Disto atom index (Cβ) |
+| `center_index`  | `(Ntoken,)`   | Center atom index (Cα) |
+| `num_atoms`     | `(Ntoken,)`   | Number of atoms in each token |
+| `is_standard`   | `(Ntoken,)`   | Whether the residue is standard |
 
-- 1: Boltz uses 31 types + 1 gap + 1 padding. K-Fold (AlphaFold3 style) uses 31 types + 1 gap, excluding the padding token.
+### Atom-level layout
 
-### Token
+| Field                 | Shape             | Description |
+| :---                  | :---              | :--- |
+| `ref_atom_name_chars` | `(Ntoken, 24, 4)` | Atom name |
+| `ref_element`         | `(Ntoken, 24)`    | Atomic number |
+| `ref_charge`          | `(Ntoken, 24)`    | Atom charge |
+| `ref_pos`             | `(Ntoken, 24, 3)` | Reference conformer of each atom |
+| `ref_mask`            | `(Ntoken, 24)`    | Whether the atom is present in the reference conformer |
+| `apo_coords`          | `(Ntoken, 24, 3)` | Apo structure coordinates |
+| `apo_mask`            | `(Ntoken, 24)`    | Apo structure mask |
+| `pad_mask`            | `(Ntoken, 24)`    | Mask for valid atoms or padding |
+| `coords`              | `(Ntoken, 24, 3)` | Target coordinates for training |
+| `resolved_mask`       | `(Ntoken, 24)`    | Whether the atom is resolved |
 
-Since the raw data structure of Boltz does not include a token-level representation, we introduce `kfold.data.structure.Token` to represent token-level features explicitly.
+### Bond-level layout
 
-### Atom
-
-> **NOTE:** While Boltz uses a dense representation for atom features (shape: `(Natom, ...)`), K-Fold uses a token-level sparse representation (shape: `(Ntoken, 24, ...)`) to facilitate easier cropping and management.
-
-You can access atom-level structures via `kfold.data.structure.Atom`:
-
-| Boltz Field | K-Fold Field | Shape (Boltz vs K-Fold) | Description |
-| :--- | :--- | :--- | :--- |
-| `name` | `ref_atom_name_chars` | `(Natom,)` vs `(Ntoken, 24, 4)` | Atom name |
-| `element` | `ref_element` | `(Natom,)` vs `(Ntoken, 24)` | Atomic number |
-| `charge` | `ref_charge` | `(Natom,)` vs `(Ntoken, 24)` | Atom charge |
-| `conformer` | `ref_pos` | `(Natom, 3)` vs `(Ntoken, 24, 3)` | Reference conformer of each atom |
-| `coords` | *same* | `(Natom, 3)` vs `(Ntoken, 24, Nholo, 3)` | Atom coordinates |
-| `is_present` | `resolved_mask` | `(Natom,)` vs `(Ntoken, 24)` | Whether the atom is resolved |
-| `chirality` | - | `(Natom,)` | **TODO:** Add description |
-| - | `apo_coords` | - vs `(Ntoken, 24, Napo, 3)` | Apo structure coordinates |
-| - | `apo_mask` | - vs `(Ntoken, 24, Napo, 3)` | Apo structure mask |
-
-### Bond
-
-While Boltz separates bonds into `Bond` and `Connection`, K-Fold unifies them into a single `kfold.data.structure.Bond` structure for simplicity.
-
-You can access bond-level structures via `kfold.data.structure.Bond`:
-
-| Boltz Field | K-Fold Field | Shape (Boltz vs K-Fold) | Description |
-| :--- | :--- | :--- | :--- |
-| `chain_1`, `chain_2` | `asym_id` | `(Nbond,)` vs `(Nbond, 2)` | Index of connecting chains |
-| `res_1`, `res_2` | - | `(Nbond,)` | **TODO:** Add description |
-| - | `token_index` | - vs `(Nbond, 2)` | Index of connecting tokens |
-| `atom_1`, `atom_2` | `atom_index` | `(Nbond,)` vs `(Nbond, 2)` | Index of connecting atoms |
-| `type` | `bond_type` | - vs `(Nbond,)` | Bond type |
+| Field         | Shape         | Description |
+| :---          | :---          | :--- |
+| `asym_id`     | `(Nbond, 2)`  | Index of connecting chains |
+| `token_index` | `(Nbond, 2)`  | Index of connecting tokens |
+| `atom_index`  | `(Nbond, 2)`  | Index of connecting atoms |
+| `bond_type`   | `(Nbond,)`    | Bond type |
 
 -----
 
 ## Model Input
 
-Since the input features of Boltz are in a pure dictionary format, it is difficult to visualize the overall data structure and shapes. Therefore, K-Fold provides high-level data structures for model input features via `kfold.data.model_input.FoldingInput`. This contains sub-layouts for atom, token, and bond features.
-
-### Atom features
-
-You can get atom features from `kfold.data.model_input.AtomLayout`:
+K-Fold provides high-level data structures for model input features via `kfold.data.types.model_input.FoldingInput`. This contains sub-layouts for atom, token, and bond features. See [here](../src/kfold/data/types/model_input.py) for more details.
 
 ```python
-from kfold.data.model_input import FoldingInput, AtomLayout
-model_input: FoldingInput = ...
-atom_layout: AtomLayout = model_input.atom
+from kfold.data.types import model_input
 
-ref_pos = atom_layout.ref_pos  # Shape: (Natom, 3)
-# ...
+f_input: model_input.FoldingInput = ...
+chain_layout: model_input.ChainTensor = f_input.chain
+token_layout: model_input.TokenTensor = f_input.token
+atom_layout: model_input.AtomTensor = f_input.atom
+bond_layout: model_input.BondTensor = f_input.bond
+
+# Get properties
+all_asym_id = f_input.chain.asym_id  # Shape: (Nchain,)
+res_type = f_input.token.res_type  # Shape: (Ntoken,)
+ref_pos = f_input.atom.ref_pos  # Shape: (Natom, 3)
 ```
 
-| Boltz Field | K-Fold Field | Shape (Boltz vs K-Fold) | Description |
-| :--- | :--- | :--- | :--- |
-| `ref_pos` | *same* $^1$ | `(Natom, 3)` | Reference conformer of each residue |
-| `ref_space_uid` | *same* | `(Natom, 3)` | Index of reference conformer |
-| `ref_atom_name_chars` | *same* | `(Natom, 4, 64)` | Atom name, one-hot encoding |
-| `ref_element` | *same* | `(Natom, 128)` | Atomic number, one-hot encoding |
-| `ref_charge` | *same* | `(Natom,)` | Atom charge (float) |
-| `atom_to_token` | $^2$ | `(Natom, Ntoken)` vs `(Natom,)` | Mapping from atom to token (one-hot vs integer) |
-| `atom_pad_masks` | `pad_mask` | `(Natom,)` | Mask for valid atoms or padding |
-| `atom_resolved_mask` | `resolved_mask` | `(Natom,)` | Mask for resolved atoms |
-| `coords` | `label_coords` | `(Nholo, Natom, 3)` vs `(Natom, 3)` | Target coordinates for training $^3$ |
-| - | `apo_coords` | `(Natom, 3)` | Apo structure coordinates |
-| - | `apo_mask` | `(Natom,)` | Apo structure mask |
+### Chain features
 
-- 1: In K-Fold, we are considering replacing `ref_pos` with `apo_coords`.
-- 2: `atom_to_token` in Boltz can be accessed via `FoldingInput` instead of `AtomLayout`: `model_input.atom_to_token`.
-- 3: `Nholo` represents the number of bioassemblies. This is always 1 in AlphaFold3 (Using the first bioassembly).
+| Field         | Shape       | Description |
+| :---          | :---        | :--- |
+| `chain_type`  | `(Nchain,)` | Chain Type (protein, dna, rna, ligand, ion) |
+| `entity_id`   | `(Nchain,)` | Entity ID (1-indexed) |
+| `sym_id`      | `(Nchain,)` | Sym ID (1-indexed) |
+| `asym_id`     | `(Nchain,)` | Asym ID (1-indexed) |
+| `num_residues`| `(Nchain,)` | Number of residues in each chain |
+| `num_tokens`  | `(Nchain,)` | Number of tokens in each chain |
+| `num_atoms`   | `(Nchain,)` | Number of atoms in each chain |
+| `pad_mask`    | `(Nchain,)` | Mask for valid chains or padding |
 
 ### Token features
 
-You can get token features from `kfold.data.model_input.TokenLayout`:
+You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 
-```python
-from kfold.data.model_input import FoldingInput, TokenLayout
-model_input: FoldingInput = ...
-token_layout: TokenLayout = model_input.token
+| Field             | Shape           | Description |
+| :---              | :---            | :--- |
+| `token_index`     | `(Ntoken,)`     | Token index (0-indexed) |
+| `org_token_index` | `(Ntoken,)`     | Original token index before cropping |
+| `residue_index`   | `(Ntoken,)`     | Residue index (1-indexed) |
+| `res_type`        | `(Ntoken, 32)`  | Residue type (one-hot encoded) |
+| `chain_type`      | `(Ntoken,)`     | Chain Type (protein, dna, rna, ligand, ion) |
+| `entity_id`       | `(Ntoken,)`     | Entity ID (1-indexed) |
+| `asym_id`         | `(Ntoken,)`     | Asym ID (1-indexed) |
+| `sym_id`          | `(Ntoken,)`     | Sym ID (1-indexed) |
+| `center_index`    | `(Ntoken,)`     | Center atom index (Cα) |
+| `disto_index`     | `(Ntoken,)`     | Disto atom index (Cβ) |
+| `frames_index`    | `(Ntoken, 3)`   | Frame defining atom index, e.g., protein: (N, Cα, C) |
+| `frames_mask`     | `(Ntoken,)`     | Whether all frame atoms are resolved |
+| `pad_mask`        | `(Ntoken,)`     | Mask for valid tokens or padding |
+| `center_coords`   | `(Ntoken, 3)`   | Center atom coords (Cα) |
+| `disto_coords`    | `(Ntoken, 3)`   | Disto atom coords (Cβ) |
+| `center_mask`     | `(Ntoken,)`     | Whether center atom is present |
+| `disto_mask`      | `(Ntoken,)`     | Whether disto atom is present |
 
-token_index = token_layout.token_index  # Shape: (Ntoken,)
-# ...
-```
+### Atom features
 
-| Boltz Field | K-Fold Field | Shape (Boltz vs K-Fold) | Description |
-| :--- | :--- | :--- | :--- |
-| `token_index` | *same* | `(Ntoken,)` | Index of tokens (`=torch.arange(len(tokens))`) |
-| `residue_index` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
-| `asym_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
-| `entity_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
-| `sym_id` | *same* | `(Ntoken,)` | Starting from 0 vs 1 |
-| `mol_type` | `chain_type` | `(Ntoken,)` | Chain Type (protein, dna, rna, ligand) |
-| `res_type` | *same* $^1$ | `(Ntoken, 33)` vs `(Ntoken, 32)` | Residue type (one-hot encoded) |
-| `token_pad_mask` | `pad_mask` | `(Ntoken,)` | Mask for valid tokens or padding |
-| `token_resolved_mask` | `resolved_mask` | `(Ntoken,)` | Mask for resolved tokens |
-| `pocket_feature` | `pocket_contact_type` | `(Ntoken,)` | Feature for pocket tokens (**TODO:** implement more) |
-| `cyclic_period` | - | `(Ntoken,)` | Cyclic period (not used in Boltz). |
-
-- 1: Boltz uses 31 types + 1 gap + 1 padding. K-Fold (AlphaFold3 style) uses 31 types + 1 gap, excluding the padding token.
-
-#### Token features for distogram head
-
-| Boltz Field | K-Fold Field | Shape | Description |
-| :--- | :--- | :--- | :--- |
-| `disto_center` | `disto_coords` | `(Ntoken, 3)` | Disto coords |
-| `disto_target` | - | `(Ntoken, Ntoken, Nbin)` | Can be obtained from `disto_center` |
-| `token_disto_mask` | `disto_mask` | `(Ntoken,)` | Mask for valid disto tokens |
-
-#### Token features for confidence head
-
-| Boltz Field | K-Fold Field | Shape (Boltz vs K-Fold) | Description |
-| :--- | :--- | :--- | :--- |
-| `token_to_rep_atom` | `disto_index` | `(Ntoken,)` | Disto atom index (Cβ) |
-| `r_set_to_rep_atom` | `center_index` | `(Ntoken_valid,)` vs `(Ntoken,)` | Center atom index (Cα); ligand atom should be masked |
-| `frames_idx` | `frames_index` | `(Ntoken, 3)` | Frame defining atom index, e.g., protein: (N, Cα, C) |
-| `frame_resolved_mask` | `frames_mask` | `(Ntoken,)` | Whether all frame atoms are resolved |
-
+| Field                 | Shape             | Description |
+| :---                  | :---              | :--- |
+| `ref_atom_name_chars` | `(Natom, 4, 64)`  | One-hot encoded atom name |
+| `ref_element`         | `(Natom, 128)`    | One-hot encoded atomic number |
+| `ref_charge`          | `(Natom,)`        | Atom charge |
+| `ref_pos`             | `(Natom, 3)`      | Reference conformer of each atom |
+| `ref_space_uid`       | `(Natom,)`        | Reference atom unique ID |
+| `token_index`         | `(Natom,)`        | Token index to which the atom belongs |
+| `apo_coords`          | `(Natom, 3)`      | Apo structure coordinates |
+| `apo_mask`            | `(Natom,)`        | Apo structure mask |
+| `pad_mask`            | `(Natom,)`        | Mask for valid atoms or padding |
+| `label_coords`        | `(Natom, 3)`      | Target coordinates for training |
+| `resolved_mask`       | `(Natom,)`        | Whether the atom is resolved |
 
 ### Bond features
 
-You can get bond features from `kfold.data.model_input.BondLayout`:
-
-```python
-from kfold.data.model_input import FoldingInput, TokenLayout
-model_input: FoldingInput = ...
-bond_layout: BondLayout = model_input.bond
-
-token_index = bond_layout.token_index  # Shape: (Ntoken,)
-# ...
-```
-
-| Boltz Field | K-Fold Field | Shape (Boltz vs K-Fold) | Description |
-| :--- | :--- | :--- | :--- |
-| `token_bonds` | `token_index` | `(Ntoken, Ntoken, 1)` vs `(Nbond, 2)` | Index of connecting tokens |
-| - | `asym_id` | `(Nbond, 2)` | Index of connecting chains |
-| - | `atom_index` | `(Nbond, 2)` | Index of connecting atoms |
-| - | `bond_type` | `(Nbond,)` | Bond type |
-| - | `is_polymer_ligand` $^1$ | `(Nbond,)` | Whether the bond is between polymer and ligand |
-| - | `is_ligand_ligand` | `(Nbond,)` | Whether the bond is between ligands |
-| - | `pad_mask` | `(Nbond,)` | Mask for valid bonds |
-
-- 1: Used to compute bond-loss in AlphaFold3, while Boltz does not use this loss.
-
+| Field               | Shape         | Description |
+| :---                | :---          | :--- |
+| `asym_id`           | `(Nbond, 2)`  | Index of connecting chains |
+| `token_index`       | `(Nbond, 2)`  | Index of connecting tokens |
+| `atom_index`        | `(Nbond, 2)`  | Index of connecting atoms |
+| `bond_type`         | `(Nbond,)`    | Bond type |
+| `pad_mask`          | `(Nbond,)`    | Mask for valid bonds |
+| `is_polymer_ligand` | `(Nbond,)`    | Whether the bond is between polymer and ligand |
+| `is_ligand_ligand`  | `(Nbond,)`    | Whether the bond is between ligands |
 
 ### Pretrained embeddings
 
-K-Fold uses residue-level embeddings from pre-trained language models as additional input features. To facilitate this, we provide a separate data structure `kfold.data.model_input.PretrainedLayout`:
+K-Fold uses residue-level embeddings from pre-trained language models as additional input features.
+To facilitate this, we provide a separate data structure `kfold.data.types.model_input.PretrainedTensor`:
 
-```python
-from kfold.data.model_input import PretrainedLayout, FoldingInput
-model_input: FoldingInput = ...
-pretrained: PretrainedLayout = model_input.pretrained
-
-seq_embedding = pretrained.sequence_embedding  # Shape: (Ntoken, D_seq)
-struct_embedding = pretrained.structure_embedding  # Shape: (Ntoken, D_struct)
-# ...
-```
+| Field                 | Shape               | Description |
+| :---                  | :---                | :--- |
+| `sequence_embedding`  | `(Ntoken, Cseq)`    | Residue-level embedding from pre-trained language representation model |
+| `structure_embedding` | `(Ntoken, Cstruct)` | Residue-level embedding from pre-trained structure representation model |
+| `pad_mask`            | `(Ntoken,)`         | Mask for valid residues or padding |
