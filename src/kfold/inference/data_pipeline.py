@@ -43,7 +43,8 @@ class InputDataPipeline:
         self.apo_initializer = apo_initialization.ApoInitializer(
             apo_initialization.ApoInitializerConfig(
                 use_perturbation=False,
-                use_random_rotation=True,
+                use_random_augmentation=True,
+                training=False,
             ),
             self.ccd,
         )

@@ -9,7 +9,15 @@ from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.io.structure import read_protein_structure
 from kfold.utils.geometry.random_augment import center_random_augmentation
-from kfold.utils.geometry.rieprody_module import RieProdyModule, RieProdyModuleConfig
+
+from ._apo_perturbation import (
+    ApoPerturbation,
+    ApoPerturbationConfig,
+)
+from ._apo_prior import (
+    PolymerPriorConfig,
+    PolymerPriorSampler,
+)
 
 NUM_ATOMS_PER_RESIDUE: dict[C.ChainType, int] = {
     C.ChainType.PROTEIN: 37,
@@ -119,35 +127,41 @@ class ApoInitializerConfig:
     Attributes
     ----------
     use_perturbation : bool
-        Whether to apply perturbation to apo structures.
-    use_random_rotation : bool
+        Whether to apply perturbation to protein apo structures.
+    use_random_augmentation : bool
         Whether to apply random rotation/translation augmentation
         to apo structures.
     use_symmetry_correction : bool
         Whether to correct for symmetry to holo structures.
-        NOTE: This is used during training only.
-    rieprody : RieProdyModuleConfig
-        Configuration for RieProDy-based apo perturbation.
+        NOTE: This should be used for training only.
+    translation_scale : float
+        Scale of random translation augmentation (in Angstrom).
     prob_perturbation : float
         Probability of applying perturbation to apo structures.
     prob_replace_to_holo : float
         Probability of replacing apo structure with holo structure.
         The apo perturbation is skipped if replaced. This is motivated
         by the fact that most holo structures is one of the apo states.
-        NOTE: This is used during training only.
-    prior_type : str
-        Type of prior when apo structure is not available.
+        NOTE: This should be used for training only.
+    apo_perturbation : ApoPerturbationConfig | None
+        Configuration for protein apo perturbation.
+    prior_sampler : PolymerPriorConfig
+        Configuration for polymer prior sampler.
     """
 
     use_perturbation: bool = False
-    use_random_rotation: bool = False
+    use_random_augmentation: bool = False
     use_symmetry_correction: bool = False
-    rieprody: RieProdyModuleConfig = dataclasses.field(
-        default_factory=RieProdyModuleConfig
-    )
+    translation_scale: float = 10.0  # Angstrom
     prob_perturbation: float = 1.0
     prob_replace_to_holo: float = 0.0
-    prior_type: str = "langevin"  # 'null', 'zero', 'langevin'
+    apo_perturbation: ApoPerturbationConfig | None = dataclasses.field(
+        default_factory=ApoPerturbationConfig
+    )
+    prior_sampler: PolymerPriorConfig = dataclasses.field(
+        default_factory=PolymerPriorConfig
+    )
+    training: bool = True
 
 
 class ApoInitializer:
@@ -158,20 +172,40 @@ class ApoInitializer:
         config: ApoInitializerConfig,
         ccd: CCD | None = None,
     ):
+        self.config: ApoInitializerConfig = config
         self.use_perturbation: bool = config.use_perturbation
-        self.use_random_rotation: bool = config.use_random_rotation
+        self.use_random_augmentation: bool = config.use_random_augmentation
         self.use_symmetry_correction: bool = config.use_symmetry_correction
+        self.translation_scale: float = config.translation_scale
+
         self.prob_perturbation: float = config.prob_perturbation
         self.prob_replace_to_holo: float = config.prob_replace_to_holo
-        self.prior_type: str = config.prior_type
         self.ccd: CCD = ccd
-
-        self.rieprody_module: RieProdyModule = RieProdyModule(config.rieprody)
 
         if self.prob_replace_to_holo > 0.0:
             raise NotImplementedError(
                 "ApoInitializer with prob_replace_to_holo > 0.0 is not implemented yet."
             )
+
+        # Apo perturbation module
+        if self.use_perturbation:
+            assert config.apo_perturbation is not None, (
+                "ApoPerturbationConfig must be provided when use_perturbation is True."
+            )
+            self.apo_perturbation: ApoPerturbation = ApoPerturbation(
+                config.apo_perturbation
+            )
+
+        # Polymer prior sampler module
+        self.prior_sampler: PolymerPriorSampler = PolymerPriorSampler(
+            config.prior_sampler
+        )
+
+        # Training mode
+        self.training: bool = config.training
+        # During training, disable ETKDG generation for efficiency,
+        # i.e., only the cached ETKDG and CCD conformers (ideal, mode) are used.
+        self.conformer_mode: str = "train" if self.training else "auto"
 
     def __call__(
         self,
@@ -288,9 +322,9 @@ class ApoInitializer:
             if chain.ctype.is_polymer:
                 # Polymer chains: use loaded/sampled apo coordinates
                 apo_coords = apo_coords_dict[entity_id]  # [L, Natom, 3]
-                if self.use_random_rotation:
+                if self.use_random_augmentation:
                     # Apply random rotation augmentation
-                    apo_coords = self.apply_random_rotation(apo_coords, rng)
+                    apo_coords = self.apply_random_augmentation(apo_coords, rng)
 
                 if chain.ctype.is_protein:
                     atom_order = C.atom.protein_atom37_order
@@ -344,13 +378,14 @@ class ApoInitializer:
                         ref_mol = self.ccd[ccd_name]
 
                     ref_atom_order: dict[str, int] = ref_mol.get_atom_index_map()
-                    # FIXME: change conformer mode.
-                    ref_pos = ref_mol.get_conformer("train", rng)  # [Natom, 3]
+                    ref_pos = ref_mol.get_conformer(self.conformer_mode, rng=rng)
                     assert ref_pos is not None, "Auto mode always provides a conformer."
 
-                    if self.use_random_rotation:
+                    if self.use_random_augmentation:
                         # Apply random rotation augmentation
-                        ref_pos = self.apply_random_rotation(ref_pos[None, :, :], rng)[0]
+                        ref_pos = self.apply_random_augmentation(
+                            ref_pos[None, :, :], rng
+                        )[0]
 
                     # Map reference conformer to chain's atom order
                     src_atom_indices: list[int] = []
@@ -407,7 +442,6 @@ class ApoInitializer:
             return st - 1, end, apo_st - 1, apo_end
 
         path = apo_info["path"]
-        source = apo_info["source"]
         residue_map = apo_info["residue_map"]
 
         # Load apo structure
@@ -415,12 +449,9 @@ class ApoInitializer:
 
         # Apply perturbation if enabled
         if self.use_perturbation and rng.random() < self.prob_perturbation:
-            if source.upper() != "PDB":
-                # Only apply perturbation to predicted structures (e.g., AFDB)
-                # Get pre-computed rieprody metrics if available
-                name = apo_info.get("name", pathlib.Path(path).name.split(".")[0])
-                apo_mask = np.isfinite(apo_coords).all(axis=-1)
-                apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=name)
+            name = apo_info.get("name", pathlib.Path(path).name.split(".")[0])
+            apo_mask = np.isfinite(apo_coords).all(axis=-1)
+            apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=name)
 
         # Crop apo_coords based on residue_map
         length = len(ccd_sequence)
@@ -428,7 +459,7 @@ class ApoInitializer:
 
         if st == 0 and end == length:
             # Use full apo_coords
-            return apo_coords[apo_st:apo_end]
+            return apo_coords[apo_st:apo_end].copy()
         else:
             padded_apo_coords = np.full(
                 (length, apo_coords.shape[1], 3), np.nan, dtype=np.float32
@@ -460,18 +491,8 @@ class ApoInitializer:
             where Natom is 37 for protein and 29 for nucleic acid.
         """
         assert ctype.is_polymer, "Only polymer chains are supported."
-        if self.prior_type == "null":
-            num_atoms = NUM_ATOMS_PER_RESIDUE[ctype]
-            apo_coords = np.full(
-                (len(ccd_sequence), num_atoms, 3), np.nan, dtype=np.float32
-            )
-        elif self.prior_type == "zero":
-            apo_coords = get_zero_coordinates(ctype, ccd_sequence)
-        elif self.prior_type == "langevin":
-            mask = get_valid_atom_mask(ctype, ccd_sequence)
-            apo_coords = self.rieprody_module.sample_prior_from_langevin(mask, rng)
-        else:
-            raise ValueError(f"Unsupported prior_type: {self.prior_type}")
+        mask = get_valid_atom_mask(ctype, ccd_sequence)
+        apo_coords = self.prior_sampler.sample(mask, rng)
         return apo_coords
 
     def apply_perturbation(
@@ -499,11 +520,9 @@ class ApoInitializer:
         augmented_coords : np.ndarray
             Augmented structure coordinates of shape [L, Natom, 3].
         """
-        return self.rieprody_module.perturb_protein_apo_structure(
-            apo_coords, mask, rng, key=key
-        )
+        return self.apo_perturbation.run(apo_coords, mask, rng=rng, key=key)
 
-    def apply_random_rotation(
+    def apply_random_augmentation(
         self,
         coords: np.ndarray,
         rng: np.random.Generator,
@@ -530,7 +549,7 @@ class ApoInitializer:
             coords.reshape(L * Natom, 3),
             mask.reshape(L * Natom),
             augmentation=True,
-            s_trans=1.0,
+            s_trans=self.translation_scale,
         ).reshape(L, Natom, 3)
         augmented_coords[~mask] = np.nan
         return augmented_coords

@@ -29,7 +29,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Implement symmetry alignment between apo and holo structures. - [#92](https://github.com/SeonghwanSeo/kfold/pull/92)
 - [x] Implement apo perturbation module. - [#115](https://github.com/SeonghwanSeo/kfold/pull/115)
 - [x] Modularize apo perturbation module (RiePrody) - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
-- [ ] Separate apo perturbation and prior sampling (langevin dynamics).
+- [x] Separate apo perturbation and prior sampling (langevin dynamics). - [#154](https://github.com/SeonghwanSeo/kfold/pull/154)
 - [ ] Implement symmetry alignment between ref conformers and holo structures during training.
 - [ ] Implement contact conditioning features as in Boltz1.
 

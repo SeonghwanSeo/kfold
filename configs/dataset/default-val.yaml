@@ -1,0 +1,18 @@
+# Default dataset configuration for validation.
+_yaml_: "default.yaml"
+
+# Data paths
+data_path: <DATA_PATH_PLACEHOLDER>
+seed: 42 # fixed seed for validation
+
+apo_init:
+  # Only apply random rotation and translation during validation
+  use_random_augmentation: true
+  translation_scale: 10.0 # Angstroms
+
+  # Disable following during validation
+  use_symmetry_correction: false
+  use_perturbation: false
+  prob_perturbation: 0.0
+  prob_replace_to_holo: 0.0
+  apo_perturbation: null

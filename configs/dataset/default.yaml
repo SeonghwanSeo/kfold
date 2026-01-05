@@ -7,52 +7,54 @@ seed: null # should be null for data augmentation
 
 apo_init:
   use_perturbation: false
-  use_random_rotation: true
+  use_random_augmentation: true
   use_symmetry_correction: false # TODO: enable
+  translation_scale: 10.0 # Angstroms
   prob_perturbation: 1.0
   prob_replace_to_holo: 0.0 # enabled during training
-  prior_type: "langevin" # "langevin" or "zero"
-  seed: null # should be null for data augmentation
+  training: true # Disable additional etkdg generation during training and validation
 
-  # apo perturbation
-  rieprody:
-    seed: null
-    rmsd_threshold: 10.0 # Skip perturbation if RMSD exceeds this threshold (Angstroms)
+  prior_sampler:
+    # polymer prior sampler if apo structure is unavailable
+    type: "globular" # 'null', 'zero', 'normal', 'globular'
+    # Langevin dynamics settings for globular prior
+    num_steps: 64
+    dt: 0.25
+    bond_r: 4.0
+    res_r: 4.0
+    ent_r: 10.0
+    sphere_r: 10.0 # This value is also used for normal prior sampling.
 
-    # RieProDy Riemannian perturbation settings
-    metric_lmdb_path: null # This is automatically set in the dataset.
-
-    metric_comp:
-      apo_internal_coord_metric_calculation_device: "cpu"
-      apo_internal_coord_metric_calculation_precision: "float64"
-      apo_internal_coord_metric_save_precision: "float16"
-      apo_internal_coord_metric_information_path: "."
-
-    random_walk:
-      # Riemannian random walk settings
-      apo_internal_coord_random_walk_device: "cpu"
-      apo_internal_coord_random_walk_precision: "float32"
-      consider_side_chain_in_metric: false
-
-      total_time: 15.0 # Maximum total simulation time (sampled uniformly in [total_time_min, total_time) per call)
-      total_time_min: 0.0 # Minimum total simulation time for uniform sampling
-      fixed_bb_angles: []
-      num_steps: 1
-      metric_calculation_period: 100
-      metric: "lagrangian"
-      use_precomputed_metric: true # Use pre-computed metric from LMDB
-      with_christoffel_term: false
-      kabsch_aligned_traj: false
-
+  apo_perturbation:
+    # Apo structure perturbation settings (if use_perturbation is true)
+    prob_rieprody: 1.0 # Probability of using RieProDy perturbation
     langevin:
-      # Langevin-dynamics perturbation settings (Algorithm S3 style).
-      # - Proteins: used as fallback when RieProDy metric is missing
-      # - DNA/RNA: used by default when perturbation is enabled
-      num_steps: 64
+      # Langevin dynamics settings (fallback if RiePrody is not used or fails)
+      min_steps: 1
+      max_steps: 3
       dt: 0.25
       res_r: 4.0
+      bond_r: 4.0
       ent_r: 10.0
       sphere_r: 10.0
-
-    log_stats: false # Whether to log perturbation statistics periodically
-    log_stats_interval: 1000 # Log statistics every N chain perturbations
+    rieprody:
+      # RieProDy Riemannian perturbation settings
+      metric_lmdb_path: null # NOTE: This is automatically set in the dataset.
+      rmsd_threshold: 10.0 # Skip perturbation if RMSD exceeds this threshold (Angstroms)
+      metric_comp:
+        apo_internal_coord_metric_calculation_precision: "float64"
+        apo_internal_coord_metric_save_precision: "float16"
+      random_walk:
+        # Riemannian random walk settings
+        apo_internal_coord_random_walk_precision: "float32"
+        consider_side_chain_in_metric: false
+        num_steps: 1 # Number of random walk steps per perturbation
+        total_time: 15.0 # Maximum total simulation time (sampled uniformly in [total_time_min, total_time) per call)
+        total_time_min: 0.0 # Minimum total simulation time for uniform sampling
+        metric_calculation_period: 100
+        metric: "lagrangian"
+        use_precomputed_metric: true # Use pre-computed metric from LMDB
+        with_christoffel_term: false
+        kabsch_aligned_traj: false
+      log_stats: false # Whether to log perturbation statistics periodically
+      log_stats_interval: 1000 # Log statistics every N chain perturbations

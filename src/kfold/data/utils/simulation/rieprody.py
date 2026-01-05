@@ -1,18 +1,21 @@
-"""Module for apo structure perturbation using RieProDy."""
+"""Module for apo structure perturbation using RieProDy.
+Fallback to Langevin dynamics if RieProDy perturbation is unavailable.
+"""
 
 import dataclasses
 import os
 import pickle
 import warnings
 from pathlib import Path
+from typing import Self
 
 import lmdb
 import numpy as np
 import torch
+from omegaconf import DictConfig, OmegaConf
 
 import kfold.constants as C
-
-from .rigid_align import compute_rmsd
+from kfold.utils.geometry.rigid_align import compute_rmsd, rigid_align
 
 ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
 
@@ -44,26 +47,21 @@ class RandomWalkConfig:
     kabsch_aligned_traj: bool = False
 
 
-@dataclasses.dataclass(kw_only=True)
-class LangevinConfig:
-    # Langevin dynamics parameters
-    num_steps: int = 64
-    dt: float = 0.25
-    res_r: float = 4.0
-    ent_r: float = 10.0
-    sphere_r: float = 10.0
-
-
 @dataclasses.dataclass
-class RieProdyModuleConfig:
+class RieProdyConfig:
     metric_comp: MetricCompConfig = dataclasses.field(default_factory=MetricCompConfig)
     random_walk: RandomWalkConfig = dataclasses.field(default_factory=RandomWalkConfig)
-    langevin: LangevinConfig = dataclasses.field(default_factory=LangevinConfig)
-    seed: int | None = None
     rmsd_threshold: float = 10.0
     metric_lmdb_path: Path | str | None = None
     log_stats: bool = False
     log_stats_interval: int = 1000
+
+    @classmethod
+    def from_config(cls, config: DictConfig | Self) -> Self:
+        """Create RieProdyConfig using omegaconf merge"""
+        base_cfg = OmegaConf.structured(cls)
+        merged_cfg = OmegaConf.merge(base_cfg, config)
+        return OmegaConf.to_object(merged_cfg)
 
 
 # Create a simple config-like object from dict
@@ -76,50 +74,44 @@ class SimpleConfig:
                 setattr(self, key, value)
 
 
-class RieProdyModule:
+class RiePrody:
     """Class to handle apo structure perturbation with RieProDy."""
 
-    def __init__(self, config: RieProdyModuleConfig) -> None:
-        """Initialize ApoPerturbation.
+    def __init__(self, config: RieProdyConfig) -> None:
+        """Initialize RieProDy perturbation module.
 
         Parameters
         ----------
         metric_comp : Configuration for metric computation.
         random_walk : Configuration for random walk.
-        langevin : Configuration for Langevin-dynamics-based perturbation.
-            Used as a fallback for proteins when RieProDy perturbation is unavailable,
-            and as the default perturbation for nucleic acids when perturbation is
-            enabled.
         rmsd_threshold : float, optional
             RMSD threshold in Angstroms. If perturbation causes RMSD > threshold,
             original coordinates are used instead. Default: 15.0
         metric_lmdb_path : Path | str | None, optional
             Path to LMDB file containing pre-computed metric information.
-        seed : int | None, optional
-            Random seed for stochastic operations.
         log_stats : bool, optional
             Whether to log perturbation statistics periodically. Default: False
         log_stats_interval : int, optional
             Log statistics every N chain perturbations. Default: 1000
         """
+        # Import RieProDy modules here to avoid hard dependency at the top-level.
         from rieprody.proteins.protein_perturbation import ProteinPerturbationModule
         from rieprody.proteins.protein_vocab import (
             ONE_TO_THREE,
             RESTYPE_NAME_TO_ATOM14_NAMES,
         )
 
-        self.config = config
-        self.seed: int | None = config.seed
+        # Initialize configuration
+        config = RieProdyConfig.from_config(config)
+        self.config: RieProdyConfig = config
         self.rmsd_threshold: float = config.rmsd_threshold
         self.log_stats: bool = config.log_stats
         self.log_stats_interval: int = config.log_stats_interval
 
-        self.rng = np.random.default_rng(self.seed)
-
         self.metric_comp: MetricCompConfig = config.metric_comp
         self.random_walk: RandomWalkConfig = config.random_walk
-        self.langevin: LangevinConfig = config.langevin
 
+        # Initialize RieProDy ProteinPerturbationModule
         module_config = SimpleConfig(
             {
                 "metric_comp": self.metric_comp,
@@ -141,9 +133,17 @@ class RieProdyModule:
         }
 
         # Lazy initialization of LMDB
+        assert config.metric_lmdb_path is not None, (
+            "metric_lmdb_path must be provided for RieProDyModule."
+        )
+        self.lmdb_path: str = str(config.metric_lmdb_path)
+        assert Path(self.lmdb_path).exists(), (
+            f"LMDB path does not exist: {self.lmdb_path}"
+        )
         self._lmdb_env: lmdb.Environment | None = None
 
-        # Debug / diagnostics (prints only on exceptions)
+        # === Debug / diagnostics (prints only on exceptions) === #
+        self._disable_log: bool = os.environ.get("KFOLD_DISABLE_RIEPRODY_LOG", "0") == "1"
         self._debug_apo_perturbation: bool = (
             os.environ.get("KFOLD_APO_PERTURB_DEBUG", "0") == "1"
         )
@@ -155,90 +155,88 @@ class RieProdyModule:
             self._debug_apo_perturbation_max_errors = 3
         self._debug_apo_perturbation_error_count: int = 0
 
+        # === Perturbation statistics === #
         self._stats_total_perturbations: int = 0
         self._stats_rmsd_filtered: int = 0
         self._stats_shape_mismatch: int = 0
         self._stats_success: int = 0
-        self._stats_langevin_used: int = 0
 
-    @staticmethod
-    def log(*args, **kwargs):
+    def log(self, *args, **kwargs):
         """Utility print function for debugging."""
         # FIXME: remove debug prints later
-        logging_debug = True
+        if not self._disable_log:
+            print("[RieProDy]", *args, **kwargs)
 
-        if logging_debug:
-            print("[RieProDyModule]", *args, **kwargs)
-
-    def perturb_protein_apo_structure(
+    def run(
         self,
-        apo_coords: np.ndarray,
+        coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
         key: str | None = None,
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
         """Apply perturbation to apo structure coordinates.
 
         Parameters
         ----------
-        apo_coords : np.ndarray
-            Apo protein structure coordinates of shape [L, 14, 3].
+        coords : np.ndarray
+            Apo protein structure coordinates of shape [L, 37, 3].
         mask : np.ndarray
-            Mask indicating valid atoms of shape [L, 14].
+            Mask indicating valid atoms of shape [L, 37].
         rng : np.random.Generator
             Random number generator for stochastic operations.
-        name : str | None
-            Name for lmdb lookup / logging.
+        key : str | None
+            Key for lmdb lookup / logging for rieprody perturbation.
 
         Returns
         -------
-        perturbed_apo_coords : np.ndarray
+        perturbed_coords : np.ndarray | None
             Perturbed apo structure coordinates of shape [L, 37, 3].
+            Returns None if perturbation failed.
         """
-        rng = rng or self.rng
+        rng = rng or np.random.default_rng()
 
-        assert apo_coords.ndim == 3 and apo_coords.shape[1] == 37, (
-            f"Expected apo_coords shape [L, 37, 3], got {apo_coords.shape}"
+        assert coords.ndim == 3 and coords.shape[1] == 37, (
+            f"Expected coords shape [L, 37, 3], got {coords.shape}"
         )
         if mask is None:
             # Create mask based on finite coordinates
             # WARN: assumes that missing atoms are represented by NaN/Inf
-            mask: np.ndarray = np.isfinite(apo_coords).all(axis=-1)
+            mask: np.ndarray = np.isfinite(coords).all(axis=-1)
 
         # Try metric-based RieProDy perturbation only when we can look up LMDB.
         if key is None:
             self.log("No LMDB key provided for RieProDy perturbation.")
-            return self.langevin_dynamics_perturbation(apo_coords, mask, rng)
+            return None
 
         metric_data = self._load_metric_from_lmdb(key)
 
         if metric_data is None:
             self.log("Failed to load metric data from LMDB for key:", key)
-            return self.langevin_dynamics_perturbation(apo_coords, mask, rng)
+            return None
 
         # Apply RieProDy perturbation
-        perturbed_coords = self.rieprody_perturbation(
-            x_init=apo_coords,
-            mask=mask,
-            rng=rng,
+        perturbed_coords = self.run_simulation(
+            coords,
+            mask,
             metric_data=metric_data,
-            name=key,
+            rng=rng,
+            key=key,
         )
         return perturbed_coords
 
-    def rieprody_perturbation(
+    def run_simulation(
         self,
-        x_init: np.ndarray,
+        coords: np.ndarray,
         mask: np.ndarray,
         metric_data: dict,
         rng: np.random.Generator,
-        name: str | None,
+        key: str | None = None,
     ) -> np.ndarray:
         """Metric-based perturbation using pre-computed LMDB metric + RieProDy RBM.
 
         Parameters
         ----------
-        x_init : np.ndarray
+        coords : np.ndarray
             Coordinates of shape [L, 37, 3].
         mask : np.ndarray
             Mask indicating valid atoms of shape [L, 37].
@@ -246,8 +244,8 @@ class RieProdyModule:
             Pre-computed metric data from LMDB.
         rng : np.random.Generator
             Random number generator for stochastic operations.
-        name : str | None
-            Name identifier for logging/debugging.
+        key : str | None
+            Key for logging/debugging.
         """
         self._stats_total_perturbations += 1
 
@@ -282,8 +280,8 @@ class RieProdyModule:
                 .numpy()
             )  # [num_steps+1, L, 14, 3]
             if not np.isfinite(trajectory_atom14).all():
-                self.log(f"NaN/Inf detected in RieProDy output! (name={name})")
-                return x_init  # Fallback to original coords
+                self.log(f"NaN/Inf detected in RieProDy output! (key={key})")
+                return coords  # Fallback to original coords
 
             if trajectory_atom14.ndim != 4:
                 warnings.warn(
@@ -291,9 +289,9 @@ class RieProdyModule:
                     "Using original coordinates.",
                     UserWarning,
                 )
-                return x_init
+                return coords
 
-            sequence = metric_data["sequence"]
+            sequence: str = metric_data["sequence"]
             Nstep, L = trajectory_atom14.shape[:2]
             trajectory = np.full((Nstep, L, 37, 3), np.nan, dtype=np.float32)
             for res_idx, aa in enumerate(sequence):
@@ -305,162 +303,40 @@ class RieProdyModule:
                     trajectory[:, res_idx, j, :] = trajectory_atom14[:, res_idx, i, :]
 
             # Filter by RMSD threshold
-            align_mask = mask & np.isfinite(trajectory[0]).all(axis=-1)
-            true_mask = np.ones(align_mask.sum(), dtype=bool)
-            for step_idx in range(Nstep - 1, -1, -1):
+            align_mask: np.ndarray = mask & np.isfinite(trajectory[0]).all(axis=-1)
+            rmsd: float = float("inf")
+            for step_idx in range(Nstep - 1, 0, -1):
                 # Use the last valid perturbation within RMSD threshold
                 perturbed_coords = trajectory[step_idx]  # [L, 37, 3]
+                aligned_coords = rigid_align(
+                    perturbed_coords.reshape(-1, 3),
+                    coords.reshape(-1, 3),
+                    align_mask.reshape(-1),
+                ).reshape(perturbed_coords.shape)
                 rmsd = compute_rmsd(
-                    perturbed_coords[align_mask],
-                    x_init[align_mask],
-                    mask=true_mask,
-                    align=True,
-                )
+                    aligned_coords.reshape(-1, 3),
+                    coords.reshape(-1, 3),
+                    mask=align_mask.reshape(-1),
+                    align=False,
+                ).item()
                 if rmsd < self.rmsd_threshold:
                     self._stats_success += 1
-                    out_coords = perturbed_coords
+                    out_coords = aligned_coords
                     break
             else:
                 self._stats_rmsd_filtered += 1
-                self.log(f"RieProDy perturbation exceeded RMSD threshold (name={name})")
-                out_coords = x_init  # All steps exceeded RMSD threshold
+                self.log(
+                    f"RieProDy perturbation exceeded RMSD threshold "
+                    f"(key={key}, rmsd={rmsd:.3f}A > {self.rmsd_threshold}A)"
+                )
+                out_coords = coords  # All steps exceeded RMSD threshold
 
             # Restore mask
             return out_coords
 
         except Exception as e:
-            self.log(f"Exception during RieProDy perturbation (name={name}): {e}")
-            return x_init  # Fallback to original coords
-
-    def sample_prior_from_langevin(
-        self,
-        mask: np.ndarray,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Sample prior using Langevin dynamics.
-
-        Parameters
-        ----------
-        mask : np.ndarray
-            Mask indicating valid atoms of shape [L, Natom].
-        rng : np.random.Generator
-            Random number generator for stochastic operations.
-
-        Returns
-        -------
-        perturbed_coords : np.ndarray
-            Sampled coordinates of shape [L, Natom, 3].
-        """
-        self._stats_total_perturbations += 1
-        self._stats_langevin_used += 1
-
-        # Hyperparameters (Algorithm S3 defaults)
-        cfg = self.langevin
-        sphere_r = cfg.sphere_r
-
-        # Initialize X0
-        # Start from random atomic positions
-        # Scale by sphere_r so global compactness term has the right magnitude.
-        L, Natoms = mask.shape
-        x_init = rng.normal(loc=0.0, scale=sphere_r, size=(L, Natoms, 3)).astype(
-            np.float32
-        )
-        x_init[~mask] = 0.0
-        return self.langevin_dynamics_perturbation(x_init, mask, rng)
-
-    def langevin_dynamics_perturbation(
-        self,
-        x_init: np.ndarray,
-        mask: np.ndarray | None = None,
-        rng: np.random.Generator | None = None,
-    ) -> np.ndarray:
-        """Langevin-dynamics-based perturbation.
-
-        Parameters
-        ----------
-        x_init : np.ndarray
-            Starting coordinates of shape [L, Natom, 3].
-        mask : np.ndarray
-            Mask indicating valid atoms of shape [L, Natom].
-        rng : np.random.Generator
-            Random number generator for stochastic operations.
-
-        Returns
-        -------
-        perturbed_coords : np.ndarray
-            Sampled coordinates of shape [L, Natom, 3].
-        """
-        rng = rng or self.rng
-
-        self._stats_total_perturbations += 1
-        self._stats_langevin_used += 1
-
-        # === Hyperparameters (Algorithm S3 defaults) ===
-        cfg = self.langevin
-        num_steps = cfg.num_steps
-        dt = cfg.dt
-        res_r = cfg.res_r
-        ent_r = cfg.ent_r
-        sphere_r = cfg.sphere_r
-
-        assert num_steps >= 0 and dt > 0.0, (
-            f"Invalid Langevin dynamics parameters: num_steps={num_steps}, dt={dt}"
-        )
-
-        # === Initialize X0 ===
-        if mask is None:
-            mask: np.ndarray = np.isfinite(x_init).all(axis=-1)
-
-        L, Natoms = mask.shape
-        x = x_init.astype(np.float32, copy=True)  # Safe copy
-        x[~mask] = 0.0
-
-        if mask.sum() == 0:
-            # No valid atoms, return original coords
-            self.log("No valid atoms in mask for Langevin perturbation.")
-            return x_init
-
-        w_all = mask.astype(np.float32)[..., None]  # [L,Natom,1]
-        w_res = w_all.sum(axis=1).clip(min=1)  # [L,1]
-        denom_all = float(w_all.sum())  # Scalar
-
-        # === Langevin dynamics (Algorithm S3) ===
-        res_r2 = res_r * res_r
-        ent_r2 = ent_r * ent_r
-        sphere_r2 = sphere_r * sphere_r
-        noise_scale = float(2.0 * np.sqrt(dt))
-
-        for _ in range(num_steps):
-            # Pull atoms towards chain center
-            mean_chain = (x * w_all).sum(axis=(0, 1)) / denom_all  # [3]
-            d_ent = mean_chain.reshape(1, 1, 3) - x  # [L,Natom,3]
-
-            # Pull atoms towards residue center
-            mean_res = (x * w_all).sum(axis=1) / w_res  # [L,3]
-            d_res = mean_res.reshape(L, 1, 3) - x  # [L,Natom,3]
-
-            # drift
-            drift = (d_ent / ent_r2) + (d_res / res_r2) - (x / sphere_r2)
-
-            eps = rng.normal(loc=0.0, scale=1.0, size=x.shape).astype(np.float32)
-            x = x + dt * drift + noise_scale * eps
-            x[~mask] = 0.0
-            assert x.dtype == np.float32  # For debugging purposes
-
-        if not np.isfinite(x).all():
-            # Safety fallback
-            self.log("NaN/Inf detected in Langevin dynamics output!")
-            return x_init
-
-        # Centering (masked mean to origin)
-        center = (x * w_all).sum(axis=(0, 1)) / denom_all
-        x = x - center.reshape(1, 1, 3)
-
-        # Restore mask
-        x[~mask] = np.nan
-
-        self._stats_success += 1
-        return x
+            self.log(f"Exception during RieProDy perturbation (key={key}): {e}")
+            return coords  # Fallback to original coords
 
     # === Internal methods === #
     def _sample_random_walk_total_time(self, rng: np.random.Generator) -> float:
@@ -492,11 +368,9 @@ class RieProdyModule:
     @property
     def lmdb_env(self) -> lmdb.Environment | None:
         """Lazy initialization of LMDB environment."""
-        lmdb_path = self.config.metric_lmdb_path
-        if self._lmdb_env is None and lmdb_path is not None:
-            assert Path(lmdb_path).exists(), f"LMDB path does not exist: {lmdb_path}"
+        if self._lmdb_env is None:
             self._lmdb_env = lmdb.open(
-                str(lmdb_path),
+                str(self.lmdb_path),
                 readonly=True,
                 lock=False,
                 readahead=False,

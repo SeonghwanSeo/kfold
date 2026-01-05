@@ -1,3 +1,4 @@
+# Default dataset configuration for training
 _yaml_: "default.yaml"
 
 name: ???
@@ -12,3 +13,5 @@ cropper: ???
 
 apo_init:
   use_perturbation: true
+  use_random_augmentation: true
+  translation_scale: 10.0 # Angstroms

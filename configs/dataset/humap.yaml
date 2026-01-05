@@ -25,3 +25,4 @@ cropper:
 
 apo_init:
   use_perturbation: false
+  apo_perturbation: null
