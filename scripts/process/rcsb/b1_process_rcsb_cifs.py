@@ -58,7 +58,7 @@ FAILED = 2
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Process RCSB CCD data.")
+    parser = argparse.ArgumentParser(description="Process RCSB mmCIF files.")
     parser.add_argument(
         "--cif_dir",
         type=pathlib.Path,

@@ -20,20 +20,31 @@ class UniformSampler(BaseSampler):
 
         Parameters
         ----------
-        chain_level : bool
-            If True, sample at chain level; otherwise, sample at complex level.
+        level : str
+            option: 'complex', 'chain', or 'interface'
         """
 
-        chain_level: bool = False
+        level: str = "complex"
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.chain_level = config.chain_level
+        self.level = config.level.lower()
+        assert self.level in [
+            "complex",
+            "chain",
+            "interface",
+        ], f"Unsupported sampling level: {self.level}"
 
     def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
         samples: list[Sample]
-        if self.chain_level:
+        if self.level == "chain":
             samples = [Sample(m, c.asym_id) for m in metadatas for c in m.chains]
+        elif self.level == "interface":
+            samples = [
+                Sample(m, tuple(iface.asym_ids))
+                for m in metadatas
+                for iface in m.interfaces
+            ]
         else:
             samples = [Sample(m, None) for m in metadatas]
 

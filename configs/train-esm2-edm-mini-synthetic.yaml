@@ -17,14 +17,14 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: mini-esm2-rbf-edm
+  name: esm2-rbf-edm
   out_dir: ./experiments/
   seed: 42
 
   global_hparams:
     max_chains: 20
     max_tokens: 384
-    batch_size: 8
+    batch_size: 4
     diffusion_batch_size: 48
     global_batch_size: 128
     num_global_steps_per_epoch: 1000
@@ -40,16 +40,30 @@ train:
     ccd_path: /cache/wykim_lab/kfold_data/v260103/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
+        weight: 1.0
         data_path: /cache/wykim_lab/kfold_data/v260103/dataset/rcsb-train/
+      - _yaml_: "dataset/natural_ab.yaml"
+        name: "NaturalAb"
+        weight: 0.02
+        data_path: /cache/wykim_lab/kfold_data/v260103/dataset/NaturalAb/
+      - _yaml_: "dataset/humap.yaml"
+        name: "HuMAP_data_098"
+        weight: 0.05
+        data_path: /cache/wykim_lab/kfold_data/v260103/dataset/HuMAP_data_098/
+      - _yaml_: "dataset/humap.yaml"
+        name: "HuMAP_data_ood_mid"
+        weight: 0.02
+        data_path: /cache/wykim_lab/kfold_data/v260103/dataset/HuMAP_data_ood_mid/
+      - _yaml_: "dataset/humap.yaml"
+        name: "HuMAP_data_ood_low"
+        weight: 0.02
+        data_path: /cache/wykim_lab/kfold_data/v260103/dataset/HuMAP_data_ood_low/
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260103/dataset/rcsb-val/
     pretrained_embedding:
       seq: esm2-3b
       seq_dim: 2560
-      struct: null
-      struct_dim: null
-      max_struct_ensembles: 1
 
   wandb:
     use: false

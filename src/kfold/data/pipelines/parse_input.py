@@ -164,20 +164,27 @@ def prepare_experiment_record(block: gemmi.cif.Block) -> schema.ExperimentRecord
 
 
 def prepare_metadata(
-    name: str, block: gemmi.cif.Block, source: str = "rcsb"
+    name: str,
+    block: gemmi.cif.Block,
+    source: str = "rcsb",
 ) -> schema.Metadata:
     """Parse metadata from CIF block."""
     # Parse experiment record
     if source == "rcsb":
         exp_record = prepare_experiment_record(block)
+        pred_record = None
         assert exp_record.pdb_id is not None, "PDB ID is missing in metadata."
-    else:
+    elif source == "prediction":
         exp_record = None
+        pred_record = schema.PredictionRecord()
+    else:
+        raise ValueError(f"Unknown source type: {source}")
 
     return schema.Metadata(
         id=name,
         source=source,
         exp=exp_record,
+        prediction=pred_record,
         chains=[],  # Filled later in parsing
         interfaces=[],  # Filled later in parsing
     )
@@ -898,6 +905,7 @@ def validate_chain_geometry(struct: structure.RefStructure) -> None:
 
 def detect_interfaces_and_prune_clashes(
     struct: structure.RefStructure,
+    clash_cutoff: float = 1.7,
     remove_clashed: bool = True,
 ) -> None:
     """
@@ -964,7 +972,7 @@ def detect_interfaces_and_prune_clashes(
 
         if remove_clashed:
             # Check for clash
-            is_clash = dists < 1.7
+            is_clash = dists < clash_cutoff  # [N, M]
             is_clash_1 = np.any(is_clash, axis=1)
             is_clash_2 = np.any(is_clash, axis=0)
             clash_ratio_1 = np.sum(is_clash_1) / is_clash_1.shape[0]
