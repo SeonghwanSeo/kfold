@@ -248,11 +248,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 config.apo_init.apo_perturbation.rieprody.metric_lmdb_path = (
                     rieprody_lmdb_path
                 )
-        else:
-            print(
-                f"Warning: RieProDy LMDB path {rieprody_lmdb_path} does not exist. "
-                "RieProDy metrics will not be available."
-            )
 
         # === Load dataset components === #
         # CCD (shared across datasets)
