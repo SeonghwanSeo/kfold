@@ -522,6 +522,10 @@ class RefStructure:
         if meta_asym_ids != struct_asym_ids:
             raise ValueError("Mismatch between metadata asym_ids and structure asym_ids.")
 
+    def to(self, *args, **kwargs) -> Self:
+        """No-op for device/dtype movement for pytorch lightning compatibility."""
+        return self
+
     # === Numpy serialization for model training === #
     def to_npz_dict(self) -> dict[str, np.ndarray]:
         """Convert to a flat dictionary for NPZ storage.

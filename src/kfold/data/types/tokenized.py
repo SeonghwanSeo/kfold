@@ -781,13 +781,7 @@ class TokenizedStructure:
 
     # === Utility functions === #
     def to(self, *args, **kwargs) -> Self:
-        """
-        No-op for device/dtype movement.
-
-        This method is present for API compatibility, but does nothing because
-        this structure only contains numpy arrays, which do not support device
-        or dtype movement like PyTorch tensors.
-        """
+        """No-op for device/dtype movement for pytorch lightning compatibility."""
         return self
 
     def copy(self, deepcopy: bool = False) -> Self:
