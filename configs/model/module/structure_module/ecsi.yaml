@@ -34,3 +34,5 @@ use_prior_coords: true
 logit_normal_sampling: False
 sampling_alpha: 1.0
 sampling_beta: 1.0
+
+alignment_entity_strategy: "largest"

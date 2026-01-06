@@ -6,8 +6,7 @@ import torch.nn.functional as F
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
-from kfold.utils.geometry.rigid_align import rigid_align
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseEDM
@@ -75,6 +74,9 @@ class KFoldBridgeDiffusion(BaseEDM):
             This is important for SE(3)-equivariant biomolecular modeling.
         synchronize_sigmas : bool, optional
             Whether to synchronize the sigmas across diffusion samples, by default False.
+        alignment_entity_strategy : str, optional
+            Strategy for selecting entity to align: "largest" or "random_non_ligand",
+            by default "largest".
         """
 
         num_steps: int = 200
@@ -82,17 +84,18 @@ class KFoldBridgeDiffusion(BaseEDM):
         sigma_max: float = 160.0
         sigma_data: float = 16.0
         sigma_data_end: float = 16.0
-        cov_xy: float = 128.0  # sigma_data^2 / 2
+        cov_xy: float = 128.0
         rho: int = 7
         P_mean: float = -1.2
         P_std: float = 1.5
         w: float = 1.0
-        churn_step_ratio: float = 0.0  # 0 for full SDE, 1 for full ODE
+        churn_step_ratio: float = 0.0
         noise_scale: float = 1.003
         step_scale: float = 1.5
         coordinate_augmentation: bool = True
         synchronize_sigmas: bool = False
         normalize_data_end: bool = False
+        alignment_entity_strategy: str = "largest"
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the bridge diffusion module."""
@@ -413,21 +416,12 @@ class KFoldBridgeDiffusion(BaseEDM):
         do_random_augment = label_coords is None
         apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
 
-        if label_coords is not None:
-            # Align to label coordinates
-            # NOTE (SeonghwanSeo): Actually, this masking is not rigorous since
-            # the apo coordinates of single ions are always zeros(0,0,0). However,
-            # this does not harm the performance.
-            apo_mask = ~(apo_coords == 0.0).all(-1)
-            label_mask = ~(label_coords == 0.0).all(-1)
-
-            apo_coords = rigid_align(
-                coords=apo_coords,
-                target=label_coords,
-                mask=apo_mask & label_mask,
+        if label_coords is not None and self.alignment_entity_strategy:
+            apo_coords = self.align_apo_to_label_by_entity_selection(
+                apo_coords,
+                label_coords,
+                f_input,
             )
-            # Centering to zero
-            apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
 
         return apo_coords
 

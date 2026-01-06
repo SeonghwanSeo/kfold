@@ -7,8 +7,7 @@ import torch.nn.functional as F
 
 from kfold.data.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
-from kfold.utils.geometry.rigid_align import rigid_align
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseEDM
@@ -23,7 +22,8 @@ class KFoldECSI(BaseEDM):
 
     Key features:
     - Decoupled kernel parameters (\alpha_t, \beta_t, \gamma_t) for flexible bridge paths
-    - Linear interpolation: \alpha_t=1-t, \beta_t=t, \gamma_t=2\gamma_{max}\sqrt{t(1-t)}
+    - Linear interpolation: \alpha_t=1-t, \beta_t=t,
+      \gamma_t^2=\gamma_{max}^2/4 \cdot t(1-t)
     - Stochasticity control via \eta parameter during sampling
     - Preconditioning adapted from DDBM
 
@@ -71,6 +71,9 @@ class KFoldECSI(BaseEDM):
             Whether to normalize the source (apo) input, by default False.
         normalize_coordinate : bool, optional
             Whether to normalize the source and target coordinates, by default False.
+        alignment_entity_strategy : str, optional
+            Strategy for selecting entity to align: "largest" or "random_non_ligand",
+            by default "largest".
         """
 
         num_steps: int = 200
@@ -92,6 +95,7 @@ class KFoldECSI(BaseEDM):
         sampling_alpha: float = 1.0
         sampling_beta: float = 1.0
         use_prior_coords: bool = True
+        alignment_entity_strategy: str = "largest"
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -479,16 +483,12 @@ class KFoldECSI(BaseEDM):
         do_random_augment = label_coords is None
         apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
 
-        if label_coords is not None:
-            apo_mask = ~(apo_coords == 0.0).all(-1)
-            label_mask = ~(label_coords == 0.0).all(-1)
-
-            apo_coords = rigid_align(
-                coords=apo_coords,
-                target=label_coords,
-                mask=apo_mask & label_mask,
+        if label_coords is not None and self.alignment_entity_strategy:
+            apo_coords = self.align_apo_to_label_by_entity_selection(
+                apo_coords,
+                label_coords,
+                f_input,
             )
-            apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
 
         return apo_coords
 
