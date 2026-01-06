@@ -652,9 +652,9 @@ def insert_chain_coordinates(
             if n in name_to_atom:
                 atom: gemmi.Atom = name_to_atom[n]
                 coords: gemmi.Position = atom.pos
-                ref_chain.atom.label_coords[atom_i, 0] = coords.x
-                ref_chain.atom.label_coords[atom_i, 1] = coords.y
-                ref_chain.atom.label_coords[atom_i, 2] = coords.z
+                ref_chain.atom.coords[atom_i, 0] = coords.x
+                ref_chain.atom.coords[atom_i, 1] = coords.y
+                ref_chain.atom.coords[atom_i, 2] = coords.z
                 ref_chain.atom.bfactor[atom_i] = atom.b_iso
                 name_to_atom.pop(n)
             else:
@@ -668,8 +668,6 @@ def insert_chain_coordinates(
             logger.debug(
                 f"Atom {leftover_atom} in residue {res_name} {residue_index} not mapped."
             )
-    # Update resolved flags
-    ref_chain.atom.is_resolved[:] = np.isfinite(ref_chain.atom.label_coords).all(axis=-1)
 
 
 def insert_coordinates(
@@ -711,7 +709,7 @@ def get_chain_ref_atom_coordinates(chain: Chain) -> np.ndarray:
     """Get reference atom coordinates for a chain."""
     if chain.ctype.is_nonpolymer:
         # Return all atom coordinates for non-polymer chains
-        return chain.atom.label_coords
+        return chain.atom.coords
     else:
         match chain.ctype:
             case C.ChainType.PROTEIN:
@@ -721,7 +719,7 @@ def get_chain_ref_atom_coordinates(chain: Chain) -> np.ndarray:
             case C.ChainType.DNA:
                 ref_atom_offset = 10  # C1'
         ref_atom_indices = chain.residue.atom_starts + ref_atom_offset
-        ref_coords = chain.atom.label_coords[ref_atom_indices]
+        ref_coords = chain.atom.coords[ref_atom_indices]
         return ref_coords
 
 
@@ -794,7 +792,7 @@ def detect_interfaces_and_prune_clashes(
 
     for chain in struct.chains:
         """Get reference atom indices for a chain."""
-        all_coords = chain.atom.label_coords
+        all_coords = chain.atom.coords
         ref_coords = get_chain_ref_atom_coordinates(chain)
         # Only keep finite coordinates
         all_coords_dict[chain.asym_id] = all_coords[np.isfinite(all_coords).all(axis=-1)]

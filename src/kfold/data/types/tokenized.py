@@ -457,7 +457,7 @@ class AtomArray(PlainLayout[np.ndarray]):
         (TODO (seonghwan): I think we can replace this to apo_coords)
     ref_mask: np.ndarray (bool)
         Boolean mask of shape [Ntoken, 24] indicating valid reference atoms.
-    coords: np.ndarray (float32)
+    label_coords: np.ndarray (float32)
         Holo (bound) state coordinates of shape [Ntoken, 24, 3],
         This is used as the ground truth for training, and may be set to 0
         for inference.
@@ -476,7 +476,7 @@ class AtomArray(PlainLayout[np.ndarray]):
     ref_charge: np.ndarray  # [Ntoken, 24,], float
     ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
     ref_mask: np.ndarray  # [Ntoken, 24], bool
-    coords: np.ndarray  # [Ntoken, 24, 3], float32
+    label_coords: np.ndarray  # [Ntoken, 24, 3], float32
     resolved_mask: np.ndarray  # [Ntoken, 24], bool
     apo_coords: np.ndarray  # [Ntoken, 24, 3], float32
     apo_mask: np.ndarray  # [Ntoken, 24], bool
@@ -498,13 +498,15 @@ class AtomArray(PlainLayout[np.ndarray]):
         check_array(self.ref_charge, name="ref_charge", dtype=np.floating, shape=shape)
         check_array(self.ref_pos, name="ref_pos", dtype=np.floating, shape=(*shape, 3))
         check_array(self.ref_mask, name="ref_mask", dtype=np.bool_, shape=shape)
-        check_array(self.coords, name="coords", dtype=np.floating, shape=(*shape, 3))
         check_array(
             self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, 3)
         )
-        check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
         check_array(self.apo_mask, name="apo_mask", dtype=np.bool_, shape=shape)
         check_array(self.pad_mask, name="pad_mask", dtype=np.bool_, shape=shape)
+        check_array(
+            self.label_coords, name="label_coords", dtype=np.floating, shape=(*shape, 3)
+        )
+        check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
 
     @classmethod
     def get_empty(cls, num_tokens: int) -> Self:
@@ -516,12 +518,12 @@ class AtomArray(PlainLayout[np.ndarray]):
             ref_element=full_minus_one(shape),
             ref_charge=full_nan(shape),
             ref_pos=full_nan((*shape, 3)),
-            coords=full_nan((*shape, 3)),
             apo_coords=full_nan((*shape, 3)),
             ref_mask=full_false(shape),
-            resolved_mask=full_false(shape),
             apo_mask=full_false(shape),
             pad_mask=full_false(shape),
+            label_coords=full_nan((*shape, 3)),
+            resolved_mask=full_false(shape),
         )
 
     def sanity_check(self) -> None:
@@ -531,12 +533,12 @@ class AtomArray(PlainLayout[np.ndarray]):
             if np.any(array < 0) and field.name not in [
                 "ref_charge",
                 "ref_pos",
-                "coords",
                 "apo_coords",
                 "ref_mask",
-                "resolved_mask",
                 "apo_mask",
                 "pad_mask",
+                "label_coords",
+                "resolved_mask",
             ]:
                 raise ValueError(
                     f"AtomArray field '{field.name}' contains negative values."

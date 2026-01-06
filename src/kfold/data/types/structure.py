@@ -12,9 +12,7 @@ import kfold.constants as C
 from kfold.data.types.metadata import Metadata
 from kfold.utils.misc import check_array
 
-__all__ = [
-    "RefStructure",
-]
+__all__ = ["RefStructure"]
 
 
 # === Helper functions === #
@@ -203,6 +201,9 @@ class Chain:
                 for key, value in data.items()
                 if key.startswith(prefix)
             }
+            # FIXME: for backward compatibility
+            if prefix == "atom." and "label_coords" in struct_data:
+                struct_data["coords"] = struct_data.pop("label_coords")
             reconstructed[prefix[:-1]] = struct_cls(**struct_data)
         if "smiles" in data:
             reconstructed["smiles"] = data["smiles"].item()
@@ -280,7 +281,11 @@ class Atom:
     ----------
     name: np.ndarray (str, <U4)
         atom names of shape [Natom], str
-    label_coords: np.ndarray (float32)
+    element: np.ndarray (int)
+        element types of shape [Natom], int
+    charge: np.ndarray (int)
+        formal charge of each atom of shape [Natom], int
+    coords: np.ndarray (float32)
         Holo (bound) state coordinates of shape [Natom, 3],
         This is for model training, so that this field is
         filled to 0 during inference.
@@ -295,8 +300,9 @@ class Atom:
     """
 
     name: np.ndarray  # [Natom,], str
-    is_resolved: np.ndarray  # [Natom,], bool
-    label_coords: np.ndarray  # [Natom, 3], float32
+    element: np.ndarray  # [Natom,], int
+    charge: np.ndarray  # [Natom,], int
+    coords: np.ndarray  # [Natom, 3], float32
     apo_coords: np.ndarray  # [Natom, 3], float32
     bfactor: np.ndarray  # [L,], int
     apo_plddt: np.ndarray  # [L], int
@@ -307,10 +313,9 @@ class Atom:
     def __post_init__(self):
         shape = self.name.shape
         check_array(self.name, name="name", dtype=np.str_, shape=shape)
-        check_array(self.is_resolved, name="is_resolved", dtype=bool, shape=shape)
-        check_array(
-            self.label_coords, name="label_coords", dtype=np.floating, shape=(*shape, 3)
-        )
+        check_array(self.element, name="element", dtype=np.integer, shape=shape)
+        check_array(self.charge, name="charge", dtype=np.integer, shape=shape)
+        check_array(self.coords, name="coords", dtype=np.floating, shape=(*shape, 3))
         check_array(
             self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, 3)
         )
@@ -322,8 +327,9 @@ class Atom:
         """Get default dtypes for each field."""
         return {
             "name": np.dtype("<U4"),
-            "is_resolved": bool,
-            "label_coords": np.float32,
+            "element": np.uint8,
+            "charge": np.int8,
+            "coords": np.float32,
             "apo_coords": np.float32,
             "bfactor": np.float16,
             "apo_plddt": np.float16,
@@ -499,8 +505,48 @@ class RefStructure:
             + ")"
         )
 
-    def sanity_check(self) -> None:
-        """Perform sanity checks on the structure."""
+    def clone(self) -> Self:
+        """Create a deep copy of the RefStructure."""
+        return copy.deepcopy(self)
+
+    def copy_with_new_coords(self, coords: np.ndarray) -> Self:
+        """Create a deep copy of the RefStructure."""
+        assert coords.shape == (self.num_atoms, 3), (
+            "Invalid coords shape:",
+            coords.shape,
+        )
+        new_chains = []
+        atom_start = 0
+        for chain in self.chains:
+            atom_end = atom_start + chain.num_atoms
+            new_atom = dataclasses.replace(
+                chain.atom,
+                coords=coords[atom_start:atom_end],
+            )
+            new_chain = chain.copy_with(deepcopy=False, atom=new_atom)
+            new_chains.append(new_chain)
+            atom_start = atom_end
+        return dataclasses.replace(self, chains=new_chains)
+
+    # === Writer === #
+    def write(self, out_path: str | pathlib.Path, save_apo: bool = False):
+        """Convert to mmCIF format string."""
+        out_path = pathlib.Path(out_path)
+        if out_path.suffix == ".cif":
+            with open(out_path, "w") as w:
+                w.write(self.to_mmcif(save_apo))
+        else:
+            raise ValueError(f"Unsupported file format: {out_path.suffix}")
+
+    def to_mmcif(self, save_apo: bool = False) -> str:
+        """Convert to mmCIF format string."""
+        import kfold.data.utils.writer.mmcif as mmcif_writer
+
+        return mmcif_writer.to_mmcifstring(self, save_apo)
+
+    # === Helper functions === #
+    def validate(self) -> None:
+        """Validate the consistency of the RefStructure."""
         # Check that asym_ids are unique
         asym_ids = [chain.asym_id for chain in self.chains]
         if len(asym_ids) != len(set(asym_ids)):

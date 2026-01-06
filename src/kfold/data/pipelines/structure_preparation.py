@@ -151,7 +151,10 @@ def prepare_ref_chain(
     # Prepare atom information
     # ==================================================
     atom_name_list: list[str] = []
+    atom_elem_list: list[np.ndarray] = []
+    atom_charge_list: list[np.ndarray] = []
     for ref_mol in ref_mols:
+        atom_to_index = ref_mol.get_atom_index_map()
         if chain_type.is_polymer and ref_mol.code in C.atom.residue_atoms:
             # For standard residues, use pre-defined atom names
             atom_names = C.atom.residue_atoms[ref_mol.code]
@@ -160,14 +163,16 @@ def prepare_ref_chain(
             atom_names = ref_mol.non_leaving_atom_names
         else:
             # Use all atoms for non-standard residues
-            atom_names = ref_mol.atom_names
+            atom_names = ref_mol.names
+        atom_indices = [atom_to_index[atom_name] for atom_name in atom_names]
         atom_name_list.extend(atom_names)
+        atom_elem_list.append(ref_mol.elements[atom_indices])
+        atom_charge_list.append(ref_mol.charges[atom_indices])
     num_atoms = len(atom_name_list)
     assert num_atoms == sum(num_residue_atoms), "Mismatch in total number of atoms."
 
-    # Empty label coordinates and resolved flags
-    label_coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
-    is_atom_resolved = np.zeros((num_atoms,), dtype=bool)
+    # Empty coordinates and bfactors
+    coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
     bfactors = np.full((num_atoms,), np.nan, dtype=np.float32)
     # Empty apo coordinates and pLDDT
     apo_coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
@@ -175,8 +180,9 @@ def prepare_ref_chain(
 
     atom_struct = Atom(
         name=np.array(atom_name_list, dtype=np.dtype("<U4")),
-        label_coords=label_coords,
-        is_resolved=is_atom_resolved,
+        coords=coords,
+        element=np.concatenate(atom_elem_list, dtype=np.uint8),
+        charge=np.concatenate(atom_charge_list, dtype=np.int8),
         bfactor=bfactors,
         apo_coords=apo_coords,
         apo_plddt=apo_plddt,
@@ -195,7 +201,7 @@ def prepare_ref_chain(
             if drop_leaving_atoms:
                 ref_atom_names = ref_mol.non_leaving_atom_names
             else:
-                ref_atom_names = ref_mol.atom_names
+                ref_atom_names = ref_mol.names
             for (atom_name1, atom_name2), bond_type in ref_mol.bonds.items():
                 if atom_name1 in ref_atom_names and atom_name2 in ref_atom_names:
                     bond_residue_index_list.append((residue_index, residue_index))

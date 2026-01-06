@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.types.structure import RefStructure
 
 from .mmcif import to_mmcifstring
 from .pdb import to_pdbstring
@@ -10,7 +10,7 @@ class KFoldWriter:
     @classmethod
     def write(
         cls,
-        struct: TokenizedStructure,
+        struct: RefStructure,
         save_path: str | Path,
         save_apo: bool = False,
     ):
@@ -24,7 +24,7 @@ class KFoldWriter:
 
     @staticmethod
     def write_mmcifstring(
-        struct: TokenizedStructure,
+        struct: RefStructure,
         save_apo: bool = False,
     ) -> str:
         return to_mmcifstring(struct, save_apo)
@@ -32,7 +32,7 @@ class KFoldWriter:
     @classmethod
     def write_mmcif(
         cls,
-        struct: TokenizedStructure,
+        struct: RefStructure,
         save_path: str | Path,
         save_apo: bool = False,
     ):
@@ -41,7 +41,7 @@ class KFoldWriter:
 
     @staticmethod
     def write_pdbstring(
-        struct: TokenizedStructure,
+        struct: RefStructure,
         save_apo: bool = False,
     ) -> str:
         return to_pdbstring(struct, save_apo)
@@ -49,7 +49,7 @@ class KFoldWriter:
     @classmethod
     def write_pdb(
         cls,
-        struct: TokenizedStructure,
+        struct: RefStructure,
         save_path: str | Path,
         save_apo: bool = False,
     ):

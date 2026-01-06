@@ -9,6 +9,7 @@ import torch
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.utils.writer import KFoldWriter
 from kfold.model.models.kfold import KFold
 
 from .query import Query
@@ -52,6 +53,9 @@ class KFoldInferenceClient(pl.LightningModule):
         self.inference_config: InferenceConfig = inference_config
         self.save_dir: pathlib.Path = pathlib.Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
+
+        # mmCIF writer
+        self.writer = KFoldWriter()
 
     # === Main forward method === #
     def forward(
@@ -121,17 +125,19 @@ class KFoldInferenceClient(pl.LightningModule):
 
         try:
             apo_save_path = save_dir / "apo.cif"
-            struct.write(apo_save_path, save_apo=True)
+            self.writer.write_mmcif(ref_struct, apo_save_path, save_apo=True)
         except Exception as e:
             logger.error(f"Error saving apo structure for {name}: {e}")
 
         # Save predictions
         sample_coords: torch.Tensor = model_out["sample_coordinates"]
-        sample_coords_arr = sample_coords.cpu().numpy()
+        # Remove padding atoms to match reference structure
+        num_atoms = ref_struct.num_atoms
+        sample_coords_arr = sample_coords[:, :num_atoms, :].cpu().numpy()
         try:
             for i in range(num_diffusion_samples):
                 save_path = save_dir / f"sample-{i}.cif"
-                new_struct = struct.replace_atom_coords(sample_coords_arr[i])
-                new_struct.write(save_path)
+                new_struct = ref_struct.copy_with_new_coords(sample_coords_arr[i])
+                self.writer.write_mmcif(new_struct, save_path, save_apo=False)
         except Exception as e:
             logger.error(f"Error saving structure for {name}: {e}")

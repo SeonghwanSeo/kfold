@@ -11,6 +11,7 @@ from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.utils.writer import KFoldWriter
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
@@ -78,7 +79,7 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd.pkl",
+        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-v0106.pkl",
         help="Path to the CCD data file.",
     )
     parser.add_argument(
@@ -137,6 +138,9 @@ def main():
         num_workers=args.num_workers,
     )
 
+    # mmCIF writer
+    writer = KFoldWriter()
+
     # Run inference
     for batch in tqdm(dataloader, desc="Inference"):
         if batch is None:
@@ -146,7 +150,7 @@ def main():
         # Unpack batch
         query: Query = batch[0]
         ref_struct: RefStructure = batch[1]  # noqa
-        struct: TokenizedStructure = batch[2]
+        struct: TokenizedStructure = batch[2]  # noqa
         f_input: FoldingInput = batch[3]
 
         if not f_input.is_batched:
@@ -190,19 +194,23 @@ def main():
         # Save apo structure
         apo_save_path = save_dir / "apo.cif"
         try:
-            struct.write(apo_save_path, save_apo=True)
+            writer.write(ref_struct, apo_save_path, save_apo=True)
         except Exception as e:
             tqdm.write(f"Warning: Failed to save apo structure for {name}: {e}")
 
-        # Save sampled structures
-        sample_coords = (
-            model_out["sample_coordinates"].cpu().numpy()
-        )  # [num_samples, Natom, 3]
+        # Save sampled coordinates
+        sample_coords = model_out["sample_coordinates"]  # [num_samples, Natom, 3]
+        # Remove padding atoms to match reference structure
+        assert ref_struct.num_atoms == f_input.atom.pad_mask.sum().item()
+        num_atoms = ref_struct.num_atoms
+        sample_coords_arr = sample_coords[:, :num_atoms, :].cpu().numpy()
+
         for i in range(args.num_samples):
             save_path = save_dir / f"sample-{i}.cif"
+            coords_i = sample_coords_arr[i]
             try:
-                new_struct = struct.replace_atom_coords(sample_coords[i])
-                new_struct.write(save_path)
+                new_struct = ref_struct.copy_with_new_coords(coords_i)
+                writer.write(new_struct, save_path, save_apo=False)
             except Exception as e:
                 tqdm.write(f"Warning: Failed to save sample {i} for {name}: {e}")
 

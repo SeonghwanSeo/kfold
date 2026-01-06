@@ -123,8 +123,8 @@ class Component:
         The unique code (CCD or SMILES) of the component.
     mol : Chem.Mol
         The RDKit molecule object.
-    atom_names : tuple[str, ...]
-        An array of atom names with shape (n_atoms,).
+    names : list[str]
+        A list of atom names with shape (n_atoms,).
     elements : np.ndarray (np.uint8)
         An array of atomic numbers with shape (n_atoms,).
     charges : np.ndarray (np.int8)
@@ -146,7 +146,7 @@ class Component:
 
     code: str
     mol: Chem.Mol
-    atom_names: tuple[str, ...]  # (n_atoms,)
+    names: list[str]
     elements: np.ndarray  # (n_atoms,) with dtype=np.uint8
     charges: np.ndarray  # (n_atoms,) with dtype=np.int8
     is_leaving_atom: np.ndarray  # (n_atoms,) with dtype=bool
@@ -159,12 +159,12 @@ class Component:
     @property
     def num_atoms(self) -> int:
         """Get the number of atoms in the component."""
-        return len(self.atom_names)
+        return len(self.names)
 
     @property
     def non_leaving_atom_names(self) -> tuple[str, ...]:
         """Get the names of non-leaving atoms in the component."""
-        return tuple(filter_items(self.atom_names, ~self.is_leaving_atom))
+        return tuple(filter_items(self.names, ~self.is_leaving_atom))
 
     @property
     def num_leaving_atoms(self) -> int:
@@ -194,7 +194,7 @@ class Component:
         dict[str, int]
             A dictionary mapping atom names to their indices.
         """
-        return {name: idx for idx, name in enumerate(self.atom_names)}
+        return {name: idx for idx, name in enumerate(self.names)}
 
     def get_conformer(
         self,
@@ -320,7 +320,7 @@ class Component:
                 return None
             return cast(self.model_coords)
         elif conformer_type == "nan":
-            n_atoms = len(self.atom_names)
+            n_atoms = len(self.names)
             return np.full((n_atoms, 3), np.nan, dtype=np.float32)
         else:
             raise RuntimeError(f"Unhandled conformer_type: {conformer_type}")
@@ -391,17 +391,17 @@ class Component:
 
         # 3. Get the reference molecule properties
         # Get atom names
-        ref_atom_names = [atom.GetProp("name") for atom in mol.GetAtoms()]
-        assert all(name not in ("H", "D", "T") for name in ref_atom_names), (
+        atom_names = [atom.GetProp("name") for atom in mol.GetAtoms()]
+        assert all(name not in ("H", "D", "T") for name in atom_names), (
             "Hydrogen atom names found in the molecule. "
         )
 
         # Get elements
-        ref_elements: np.ndarray = np.array(
+        elements: np.ndarray = np.array(
             [atom.GetAtomicNum() for atom in mol.GetAtoms()], dtype=np.uint8
         )
         # Get formal charges
-        ref_charges: np.ndarray = np.array(
+        charges: np.ndarray = np.array(
             [atom.GetFormalCharge() for atom in mol.GetAtoms()], dtype=np.int8
         )
         # Get leaving atom mask
@@ -463,12 +463,12 @@ class Component:
 
         if mol.GetNumHeavyAtoms() > 1:
             if ideal_coords is not None:
-                ideal_coords_arr = to_array(ideal_coords, ref_atom_names)
+                ideal_coords_arr = to_array(ideal_coords, atom_names)
             if model_coords is not None:
-                model_coords_arr = to_array(model_coords, ref_atom_names)
+                model_coords_arr = to_array(model_coords, atom_names)
             if len(etkdg_coords_list) > 0:
                 etkdg_coords_arr_list = [
-                    to_array(cdict, ref_atom_names) for cdict in etkdg_coords_list
+                    to_array(cdict, atom_names) for cdict in etkdg_coords_list
                 ]
                 etkdg_coords_arr_list = [
                     arr for arr in etkdg_coords_arr_list if arr is not None
@@ -498,9 +498,9 @@ class Component:
         return cls(
             code=code,
             mol=mol,
-            atom_names=tuple(ref_atom_names),
-            elements=ref_elements,
-            charges=ref_charges,
+            names=atom_names,
+            elements=elements,
+            charges=charges,
             is_leaving_atom=is_leaving_atom,
             bonds=bonds,
             ideal_coords=ideal_coords_arr,
