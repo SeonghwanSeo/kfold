@@ -44,12 +44,13 @@ class KFoldECSI(BaseEDM):
         sigma_max : float, optional
             Maximum time value (near t=T), by default 0.999.
         gamma_max : float, optional
-            Maximum noise scale for \gamma_t, by default 1.0.
-            Controls the peak of \gamma_t = 2 * \gamma_{max} * \sqrt{t(1-t)}.
+            Scale parameter for \gamma_t, by default 1.0.
+            Uses \gamma_t^2 = \gamma_{max}^2/4 * t(1-t).
         sigma_data : float, optional
             Standard deviation of target (holo) distribution, by default 16.0.
         sigma_data_end : float, optional
             Standard deviation of source (apo) distribution, by default 16.0.
+            Uses physical coordinate scale (not normalized to image-like variance).
         cov_xy : float, optional
             Covariance between source and target distributions, by default 128.0.
             Controls the correlation structure in preconditioning.
@@ -73,16 +74,16 @@ class KFoldECSI(BaseEDM):
         """
 
         num_steps: int = 200
-        sigma_min: float = 0.001  # t_min (near 0)
-        sigma_max: float = 0.999  # t_max (near 1)
-        gamma_max: float = 0.25  # Table 8: \gamma_{max} = 0.25 for linear route
-        sigma_data: float = 16.0  # holo structures
-        sigma_data_end: float = 16.0  # apo structures
+        sigma_min: float = 0.001
+        sigma_max: float = 0.999
+        gamma_max: float = 0.25
+        sigma_data: float = 16.0
+        sigma_data_end: float = 16.0
         cov_xy: float = 128.0
         rho: int = 7
         P_mean: float = -1.2
         P_std: float = 1.5
-        eta: float = 1.0  # stochasticity control
+        eta: float = 1.0
         coordinate_augmentation: bool = True
         synchronize_sigmas: bool = False
         normalize_data_end: bool = False
@@ -159,12 +160,13 @@ class KFoldECSI(BaseEDM):
         return torch.ones_like(t)
 
     def gamma(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Noise scale: \gamma_t = 2 \gamma_{max} \sqrt{t(1-t)}"""
-        return self.gamma_max * 2 * torch.sqrt(t * (1 - t) + 1e-8)
+        r"""Noise scale: \gamma_t^2 = \gamma_{max}^2/4 * t(1-t)"""
+        return 0.5 * self.gamma_max * torch.sqrt(t * (1 - t) + 1e-8)
 
     def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Derivative of gamma: \dot{\gamma}_t = \gamma_{max} * (1-2t) / \sqrt{t(1-t)}"""
-        return self.gamma_max * (1 - 2 * t) / (torch.sqrt(t * (1 - t) + 1e-8) + 1e-8)
+        r"""Derivative: \dot{\gamma}_t = \gamma_{max} * (1-2t) / (4\sqrt{t(1-t)})"""
+        denom = torch.sqrt(t * (1 - t) + 1e-8)
+        return self.gamma_max * (1 - 2 * t) / (4 * denom)
 
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(
@@ -222,31 +224,34 @@ class KFoldECSI(BaseEDM):
 
         return c_skip, c_out, c_in
 
-    def c_skip(self, t: torch.Tensor) -> torch.Tensor:
+    def c_skip(self, sigma: torch.Tensor) -> torch.Tensor:
         r"""Skip connection coefficient for ECSI preconditioning.
 
         Note: In ECSI, 'sigma' parameter represents time t \in [0,1].
         """
+        t = sigma
         c_skip, _, _ = self._get_bridge_scalings(t)
         return c_skip
 
-    def c_out(self, t: torch.Tensor) -> torch.Tensor:
+    def c_out(self, sigma: torch.Tensor) -> torch.Tensor:
         r"""Output scaling coefficient for ECSI preconditioning.
 
         Note: In ECSI, 'sigma' parameter represents time t \in [0,1].
         """
+        t = sigma
         _, c_out, _ = self._get_bridge_scalings(t)
         return c_out
 
-    def c_in(self, t: torch.Tensor) -> torch.Tensor:
+    def c_in(self, sigma: torch.Tensor) -> torch.Tensor:
         r"""Input scaling coefficient for ECSI preconditioning.
 
         Note: In ECSI, 'sigma' parameter represents time t \in [0,1].
         """
+        t = sigma
         _, _, c_in = self._get_bridge_scalings(t)
         return c_in
 
-    def c_noise(self, t: torch.Tensor) -> torch.Tensor:
+    def c_noise(self, sigma: torch.Tensor) -> torch.Tensor:
         r"""Noise level conditioning coefficient.
 
         Maps t to a conditioning value for the network.
@@ -254,6 +259,7 @@ class KFoldECSI(BaseEDM):
 
         Note: In ECSI, 'sigma' parameter represents time t \in [0,1].
         """
+        t = sigma
         return 0.25 * torch.log(t + 1e-8)
 
     def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
