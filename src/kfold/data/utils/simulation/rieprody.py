@@ -3,6 +3,7 @@ Fallback to Langevin dynamics if RieProDy perturbation is unavailable.
 """
 
 import dataclasses
+import enum
 import os
 import pickle
 import warnings
@@ -17,7 +18,15 @@ from omegaconf import DictConfig, OmegaConf
 import kfold.constants as C
 from kfold.utils.geometry.rigid_align import compute_rmsd, rigid_align
 
-ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
+
+class RieProdyError(enum.Enum):
+    """Enumeration of RiePrody perturbation errors."""
+
+    NONE = enum.auto()
+    LMDB_LOAD_FAILURE = enum.auto()
+    SHAPE_MISMATCH = enum.auto()
+    SIMULATION_FAILURE = enum.auto()
+    NAN_INF_IN_OUTPUT = enum.auto()
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -47,7 +56,7 @@ class RandomWalkConfig:
     kabsch_aligned_traj: bool = False
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(kw_only=True)
 class RieProdyConfig:
     metric_comp: MetricCompConfig = dataclasses.field(default_factory=MetricCompConfig)
     random_walk: RandomWalkConfig = dataclasses.field(default_factory=RandomWalkConfig)
@@ -55,6 +64,9 @@ class RieProdyConfig:
     metric_lmdb_path: Path | str | None = None
     log_stats: bool = False
     log_stats_interval: int = 1000
+    fallback_on_failure: bool = True
+    fallback_on_rmsd_exceed: bool = True
+    disable_log: bool = False
 
     @classmethod
     def from_config(cls, config: DictConfig | Self) -> Self:
@@ -107,11 +119,13 @@ class RiePrody:
         self.rmsd_threshold: float = config.rmsd_threshold
         self.log_stats: bool = config.log_stats
         self.log_stats_interval: int = config.log_stats_interval
-
-        self.metric_comp: MetricCompConfig = config.metric_comp
-        self.random_walk: RandomWalkConfig = config.random_walk
+        self.fallback_on_failure: bool = config.fallback_on_failure
+        self.fallback_on_rmsd_exceed: bool = config.fallback_on_rmsd_exceed
+        self._disable_log: bool = config.disable_log
 
         # Initialize RieProDy ProteinPerturbationModule
+        self.metric_comp: MetricCompConfig = config.metric_comp
+        self.random_walk: RandomWalkConfig = config.random_walk
         module_config = SimpleConfig(
             {
                 "metric_comp": self.metric_comp,
@@ -127,10 +141,19 @@ class RiePrody:
             }
         )
         self._module = ProteinPerturbationModule(module_config, records=None)
+
+        # Atom vocab from atom37 conversion
+        ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
         self._atom_vocab: dict[str, list[str]] = {
             aa: RESTYPE_NAME_TO_ATOM14_NAMES[ONE_TO_THREE[aa]]
             for aa in ONE_TO_THREE.keys()
         }
+        self._atom37_indices: dict[str, list[int]] = {}
+        for aa in ONE_TO_THREE.keys():
+            atom_names: list[str] = self._atom_vocab[aa]
+            self._atom37_indices[aa] = [
+                ATOM37_ORDER[name] for name in atom_names if name != ""
+            ]
 
         # Lazy initialization of LMDB
         assert config.metric_lmdb_path is not None, (
@@ -143,7 +166,6 @@ class RiePrody:
         self._lmdb_env: lmdb.Environment | None = None
 
         # === Debug / diagnostics (prints only on exceptions) === #
-        self._disable_log: bool = os.environ.get("KFOLD_DISABLE_RIEPRODY_LOG", "0") == "1"
         self._debug_apo_perturbation: bool = (
             os.environ.get("KFOLD_APO_PERTURB_DEBUG", "0") == "1"
         )
@@ -158,15 +180,12 @@ class RiePrody:
         # === Perturbation statistics === #
         self._stats_total_perturbations: int = 0
         self._stats_rmsd_filtered: int = 0
+        self._stats_nan_inf_in_output: int = 0
+        self._stats_exception: int = 0
         self._stats_shape_mismatch: int = 0
         self._stats_success: int = 0
 
-    def log(self, *args, **kwargs):
-        """Utility print function for debugging."""
-        # FIXME: remove debug prints later
-        if not self._disable_log:
-            print("[RieProDy]", *args, **kwargs)
-
+    # === Main perturbation methods === #
     def run(
         self,
         coords: np.ndarray,
@@ -193,152 +212,277 @@ class RiePrody:
             Perturbed apo structure coordinates of shape [L, 37, 3].
             Returns None if perturbation failed.
         """
-        rng = rng or np.random.default_rng()
-
-        assert coords.ndim == 3 and coords.shape[1] == 37, (
-            f"Expected coords shape [L, 37, 3], got {coords.shape}"
-        )
+        # Validate input shapes
+        if coords.ndim != 3 or coords.shape[1:] != (37, 3):
+            raise ValueError(
+                f"Input coords must have shape [L, 37, 3], got {coords.shape}"
+            )
         if mask is None:
             # Create mask based on finite coordinates
             # WARN: assumes that missing atoms are represented by NaN/Inf
             mask: np.ndarray = np.isfinite(coords).all(axis=-1)
+        else:
+            if mask.shape != coords.shape[:2]:
+                raise ValueError(f"Input mask must have shape [L, 37], got {mask.shape}")
 
         # Try metric-based RieProDy perturbation only when we can look up LMDB.
         if key is None:
-            self.log("No LMDB key provided for RieProDy perturbation.")
-            return None
+            raise NotImplementedError("On-the-fly perturbation is not implemented yet.")
+        else:
+            # Sample RieProDy-perturbed coordinates
+            rng = rng or np.random.default_rng()
+            metric_data = self._load_metric_from_lmdb(key)
+            if metric_data is None:
+                self.log(f"LMDB load failure (key={key})")
+                return coords if self.fallback_on_failure else None
+            # Convert data to RieProDy format
+            rieprody_data = self._prepare_rieprody_data(metric_data)
 
-        metric_data = self._load_metric_from_lmdb(key)
+        out = self.run_simulation(rieprody_data, rng)
+        if isinstance(out, RieProdyError):
+            match out:
+                case RieProdyError.LMDB_LOAD_FAILURE:
+                    self.log(f"LMDB load failure (key={key})")
+                case RieProdyError.SHAPE_MISMATCH:
+                    self.log(f"Output shape mismatch (key={key})")
+                    self._stats_shape_mismatch += 1
+                case RieProdyError.NAN_INF_IN_OUTPUT:
+                    self.log(f"NaN/Inf detected! (key={key})")
+                    self._stats_nan_inf_in_output += 1
+                case RieProdyError.SIMULATION_FAILURE:
+                    self.log(f"Simulation failure (key={key})")
+                    self._stats_exception += 1
+                case _:
+                    self.log(f"Unknown error (key={key})")
+            return coords if self.fallback_on_failure else None
+        else:
+            perturbed_coords: np.ndarray = out
 
-        if metric_data is None:
-            self.log("Failed to load metric data from LMDB for key:", key)
-            return None
+        # Align perturbed coords to original coords
+        perturbed_mask: np.ndarray = np.isfinite(perturbed_coords).all(axis=-1)
+        align_mask: np.ndarray = mask & perturbed_mask
+        aligned_coords = rigid_align(
+            perturbed_coords.reshape(-1, 3),
+            coords.reshape(-1, 3),
+            align_mask.reshape(-1),
+        ).reshape(perturbed_coords.shape)
+        aligned_coords[~perturbed_mask] = np.nan  # Mask out invalid atoms
 
-        # Apply RieProDy perturbation
-        perturbed_coords = self.run_simulation(
-            coords,
-            mask,
-            metric_data=metric_data,
-            rng=rng,
-            key=key,
-        )
-        return perturbed_coords
+        # Compute RMSD between aligned perturbed coords and original coords
+        rmsd = compute_rmsd(
+            aligned_coords.reshape(-1, 3),
+            coords.reshape(-1, 3),
+            mask=align_mask.reshape(-1),
+            align=False,
+        ).item()
 
-    def run_simulation(
+        if rmsd > self.rmsd_threshold:
+            self._stats_rmsd_filtered += 1
+            self.log(
+                f"RieProDy perturbation exceeded RMSD threshold "
+                f"(key={key}, rmsd={rmsd:.3f}A > {self.rmsd_threshold}A)"
+            )
+            return coords if self.fallback_on_rmsd_exceed else None
+
+        self._stats_success += 1
+        return aligned_coords
+
+    def sample(
         self,
         coords: np.ndarray,
-        mask: np.ndarray,
-        metric_data: dict,
-        rng: np.random.Generator,
+        mask: np.ndarray | None = None,
+        num_samples: int = 1,
+        rng: np.random.Generator | None = None,
         key: str | None = None,
-    ) -> np.ndarray:
-        """Metric-based perturbation using pre-computed LMDB metric + RieProDy RBM.
+    ) -> list[np.ndarray]:
+        """Apply perturbation to apo structure coordinates and
+        sample multiple perturbed structures.
 
         Parameters
         ----------
         coords : np.ndarray
-            Coordinates of shape [L, 37, 3].
+            Apo protein structure coordinates of shape [L, 37, 3].
         mask : np.ndarray
             Mask indicating valid atoms of shape [L, 37].
-        metric_data : dict
-            Pre-computed metric data from LMDB.
         rng : np.random.Generator
             Random number generator for stochastic operations.
         key : str | None
-            Key for logging/debugging.
+            Key for lmdb lookup / logging for rieprody perturbation.
+
+        Returns
+        -------
+        perturbed_coords_list : list[np.ndarray]
+            List of perturbed apo structure coordinates of shape [L, 37, 3].
+            Returns empty list if no valid perturbations were sampled.
+        """
+        # Validate input shapes
+        if coords.ndim != 3 or coords.shape[1:] != (37, 3):
+            raise ValueError(
+                f"Input coords must have shape [L, 37, 3], got {coords.shape}"
+            )
+        if mask is None:
+            # Create mask based on finite coordinates
+            # WARN: assumes that missing atoms are represented by NaN/Inf
+            mask: np.ndarray = np.isfinite(coords).all(axis=-1)
+        else:
+            if mask.shape != coords.shape[:2]:
+                raise ValueError(f"Input mask must have shape [L, 37], got {mask.shape}")
+
+        # Try metric-based RieProDy perturbation only when we can look up LMDB.
+        if key is None:
+            raise NotImplementedError("On-the-fly perturbation is not implemented yet.")
+        else:
+            # Sample RieProDy-perturbed coordinates
+            metric_data = self._load_metric_from_lmdb(key)
+            if metric_data is None:
+                self.log(f"LMDB load failure (key={key})")
+                return []
+            # Convert data to RieProDy format
+            rieprody_data = self._prepare_rieprody_data(metric_data)
+
+        perturbed_coords_list: list[np.ndarray] = []
+        rng = rng or np.random.default_rng()
+        for _ in range(num_samples):
+            out = self.run_simulation(rieprody_data, rng)
+            if isinstance(out, RieProdyError):
+                # Log error and continue
+                match out:
+                    case RieProdyError.LMDB_LOAD_FAILURE:
+                        self.log(f"LMDB load failure (key={key})")
+                    case RieProdyError.SHAPE_MISMATCH:
+                        self.log(f"Output shape mismatch (key={key})")
+                        self._stats_shape_mismatch += 1
+                    case RieProdyError.NAN_INF_IN_OUTPUT:
+                        self.log(f"NaN/Inf detected! (key={key})")
+                        self._stats_nan_inf_in_output += 1
+                    case RieProdyError.SIMULATION_FAILURE:
+                        self.log(f"Simulation failure (key={key})")
+                        self._stats_exception += 1
+                    case _:
+                        self.log(f"Unknown error (key={key})")
+                continue
+
+            perturbed_coords: np.ndarray = out
+
+            # Align perturbed coords to original coords
+            perturbed_mask: np.ndarray = np.isfinite(perturbed_coords).all(axis=-1)
+            align_mask: np.ndarray = mask & perturbed_mask
+            aligned_coords = rigid_align(
+                perturbed_coords.reshape(-1, 3),
+                coords.reshape(-1, 3),
+                align_mask.reshape(-1),
+            ).reshape(perturbed_coords.shape)
+            aligned_coords[~perturbed_mask] = np.nan  # Mask out invalid atoms
+
+            # Compute RMSD between aligned perturbed coords and original coords
+            rmsd = compute_rmsd(
+                aligned_coords.reshape(-1, 3),
+                coords.reshape(-1, 3),
+                mask=align_mask.reshape(-1),
+                align=False,
+            ).item()
+
+            if rmsd > self.rmsd_threshold:
+                # Log RMSD exceed and continue
+                self.log(
+                    f"RieProDy perturbation exceeded RMSD threshold "
+                    f"(key={key}, rmsd={rmsd:.3f}A > {self.rmsd_threshold}A)"
+                )
+                self._stats_rmsd_filtered += 1
+                continue
+
+            self._stats_success += 1
+            perturbed_coords_list.append(aligned_coords)
+
+        return perturbed_coords_list
+
+    # === Main simulation method === #
+    def run_simulation(
+        self,
+        rieprody_data: dict,
+        rng: np.random.Generator,
+    ) -> np.ndarray | RieProdyError:
+        """Metric-based perturbation.
+
+        Parameters
+        ----------
+        rieprody_data : dict
+            RieProDy-formatted data dictionary.
+        rng : np.random.Generator
+            Random number generator for stochastic operations.
+
+        Returns
+        -------
+        perturbed_coords : np.ndarray | RieProdyError
+            Perturbed coordinates of shape [L, 37, 3] or RieProDyError on failure.
         """
         self._stats_total_perturbations += 1
-
         if (
             self.log_stats
             and self.log_stats_interval > 0
             and self._stats_total_perturbations % self.log_stats_interval == 0
         ):
+            # Log perturbation statistics periodically
             self._log_perturbation_stats()
 
+        # Sample random walk total time
+        total_time = self._sample_random_walk_total_time(rng)
+
         try:
-            # Convert data to RieProDy format
-            rieprody_data = self._prepare_rieprody_data(metric_data)
-            self._module.read_computed_data(rieprody_data)
-
             # NOTE: perturbation via RieProDy's Riemannian Brownian Motion.
-            params = {
-                "total_time": self._sample_random_walk_total_time(rng),
-                "num_steps": self.random_walk.num_steps,
-                "metric": self.random_walk.metric,
-                "with_christoffel_term": self.random_walk.with_christoffel_term,
-                "metric_calculation_period": self.random_walk.metric_calculation_period,
-                "use_precomputed_metric": self.random_walk.use_precomputed_metric,
-                "kabsch_aligned_traj": self.random_walk.kabsch_aligned_traj,
-                "return_as_N3": False,
-                "return_q": False,
-            }
-            trajectory_atom14: np.ndarray = (
-                self._module.solve_riemannian_brownian_motion(**params)
-                .detach()
-                .cpu()
-                .numpy()
+            self._module.read_computed_data(rieprody_data)
+            trajectory_atom14: np.ndarray = self._module.solve_riemannian_brownian_motion(
+                total_time=total_time,
+                num_steps=self.random_walk.num_steps,
+                metric=self.random_walk.metric,
+                with_christoffel_term=self.random_walk.with_christoffel_term,
+                metric_calculation_period=self.random_walk.metric_calculation_period,
+                use_precomputed_metric=self.random_walk.use_precomputed_metric,
+                kabsch_aligned_traj=self.random_walk.kabsch_aligned_traj,
+                return_as_N3=False,
+                return_q=False,
             )  # [num_steps+1, L, 14, 3]
-            if not np.isfinite(trajectory_atom14).all():
-                self.log(f"NaN/Inf detected in RieProDy output! (key={key})")
-                return coords  # Fallback to original coords
-
-            if trajectory_atom14.ndim != 4:
+            if trajectory_atom14.ndim != 4 or trajectory_atom14.shape[2:] != (14, 3):
                 warnings.warn(
-                    f"Unexpected trajectory shape: {trajectory_atom14.shape}. "
-                    "Using original coordinates.",
+                    f"Rieprody output shape mismatch: "
+                    f"expected [num-step, length, 14, 3], "
+                    f"got {trajectory_atom14.shape}",
                     UserWarning,
                 )
-                return coords
+                return RieProdyError.SHAPE_MISMATCH
 
-            sequence: str = metric_data["sequence"]
-            Nstep, L = trajectory_atom14.shape[:2]
-            trajectory = np.full((Nstep, L, 37, 3), np.nan, dtype=np.float32)
-            for res_idx, aa in enumerate(sequence):
-                atom_orders = self._atom_vocab[aa]
-                for i, atom_name in enumerate(atom_orders):
-                    if atom_name == "":
-                        break  # Skip dummy
-                    j = ATOM37_ORDER[atom_name]
-                    trajectory[:, res_idx, j, :] = trajectory_atom14[:, res_idx, i, :]
+            # TODO: Handle multiple steps later
+            perturbed_atom14: np.ndarray = (
+                trajectory_atom14[-1].detach().cpu().numpy()
+            )  # [L, 14, 3]
+            if not np.isfinite(perturbed_atom14).all():
+                return RieProdyError.NAN_INF_IN_OUTPUT
 
-            # Filter by RMSD threshold
-            align_mask: np.ndarray = mask & np.isfinite(trajectory[0]).all(axis=-1)
-            rmsd: float = float("inf")
-            for step_idx in range(Nstep - 1, 0, -1):
-                # Use the last valid perturbation within RMSD threshold
-                perturbed_coords = trajectory[step_idx]  # [L, 37, 3]
-                aligned_coords = rigid_align(
-                    perturbed_coords.reshape(-1, 3),
-                    coords.reshape(-1, 3),
-                    align_mask.reshape(-1),
-                ).reshape(perturbed_coords.shape)
-                rmsd = compute_rmsd(
-                    aligned_coords.reshape(-1, 3),
-                    coords.reshape(-1, 3),
-                    mask=align_mask.reshape(-1),
-                    align=False,
-                ).item()
-                if rmsd < self.rmsd_threshold:
-                    self._stats_success += 1
-                    out_coords = aligned_coords
-                    break
-            else:
-                self._stats_rmsd_filtered += 1
-                self.log(
-                    f"RieProDy perturbation exceeded RMSD threshold "
-                    f"(key={key}, rmsd={rmsd:.3f}A > {self.rmsd_threshold}A)"
-                )
-                out_coords = coords  # All steps exceeded RMSD threshold
-
-            # Restore mask
-            return out_coords
+            # Convert atom14 to atom37
+            # WARN: RieProDy atom14 ordering is different from standard atom14 ordering.
+            sequence: str = rieprody_data["receptor"].sequence
+            L = perturbed_atom14.shape[0]
+            perturbed: np.ndarray = np.full((L, 37, 3), np.nan, dtype=np.float32)
+            for res_i, aa in enumerate(sequence):
+                atom37_idcs = self._atom37_indices[aa]
+                natoms = len(atom37_idcs)
+                perturbed[res_i, atom37_idcs, :] = perturbed_atom14[res_i, :natoms, :]
+            return perturbed
 
         except Exception as e:
-            self.log(f"Exception during RieProDy perturbation (key={key}): {e}")
-            return coords  # Fallback to original coords
+            warnings.warn(
+                f"Exception during RieProDy perturbation: {e}",
+                UserWarning,
+            )
+            return RieProdyError.SIMULATION_FAILURE
 
     # === Internal methods === #
+    def log(self, *args, **kwargs):
+        """Utility print function for debugging."""
+        # FIXME: remove debug prints later
+        if not self._disable_log:
+            print("[RieProDy]", *args, **kwargs)
+
     def _sample_random_walk_total_time(self, rng: np.random.Generator) -> float:
         """Sample random-walk total_time for Riemannian Brownian motion.
 
@@ -366,7 +510,7 @@ class RiePrody:
         return float(rng.uniform(min_time, max_time))
 
     @property
-    def lmdb_env(self) -> lmdb.Environment | None:
+    def lmdb_env(self) -> lmdb.Environment:
         """Lazy initialization of LMDB environment."""
         if self._lmdb_env is None:
             self._lmdb_env = lmdb.open(
@@ -376,7 +520,6 @@ class RiePrody:
                 readahead=False,
                 meminit=False,
             )
-
         return self._lmdb_env
 
     def __del__(self):
@@ -412,6 +555,8 @@ class RiePrody:
         """Reset all perturbation statistics counters."""
         self._stats_total_perturbations = 0
         self._stats_rmsd_filtered = 0
+        self._stats_nan_inf_in_output = 0
+        self._stats_exception = 0
         self._stats_shape_mismatch = 0
         self._stats_success = 0
 
@@ -437,24 +582,19 @@ class RiePrody:
         dict | None
             Metric data dictionary or None if not found.
         """
-        if self.lmdb_env is None:
-            return None
-
-        try:
-            with self.lmdb_env.begin(write=False) as txn:
+        with self.lmdb_env.begin(write=False) as txn:
+            try:
                 value_bytes = txn.get(key.encode("utf-8"))
                 if value_bytes is None:
                     return None
                 data = pickle.loads(value_bytes)
                 return data
-        except Exception as e:
-            # Log error but don't raise - return None to skip perturbation
-            raise e
-            warnings.warn(
-                f"Failed to load metric data for {key}: {e}",
-                UserWarning,
-            )
-            return None
+            except Exception as e:
+                warnings.warn(
+                    f"Failed to load metric data for {key}: {e}",
+                    UserWarning,
+                )
+                return None
 
     def _prepare_rieprody_data(self, metric_data: dict) -> dict:
         """Prepare data dictionary for RieProDy from metric data."""

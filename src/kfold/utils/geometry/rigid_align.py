@@ -49,18 +49,9 @@ def compute_rmsd(
 
     if isinstance(coords, np.ndarray):
         assert isinstance(target, np.ndarray) and isinstance(mask, np.ndarray)
-
-        # Expand mask for broadcasting: (..., N) -> (..., N, 1)
         mask = mask.astype(bool, copy=False)
-        mask_expanded = mask[..., np.newaxis]
-
-        # Sanitize inputs: replace values with 0 where mask is 0.
-        # This prevents NaN propagation because (NaN - x) * 0 = NaN.
-        # We use np.where to ensure masked positions are strictly 0.0.
-        safe_coords = np.where(mask_expanded, coords, 0.0)
-        safe_target = np.where(mask_expanded, target, 0.0)
-
-        diff = safe_coords - safe_target
+        diff = coords - target
+        diff[~mask] = 0.0
         # Weighted sum of squares (masked positions contribute 0)
         mse = np.sum(diff**2, axis=(-2, -1)) / np.clip(
             np.sum(mask, axis=-1), a_min=1, a_max=None

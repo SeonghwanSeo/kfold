@@ -161,7 +161,7 @@ class ApoInitializerConfig:
     prior_sampler: PolymerPriorConfig = dataclasses.field(
         default_factory=PolymerPriorConfig
     )
-    training: bool = True
+    training: bool = False
 
 
 class ApoInitializer:
