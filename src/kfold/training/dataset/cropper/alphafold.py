@@ -270,7 +270,7 @@ class AlphaFold3Cropper(BaseCropper):
         valid_tokens = all_tokens[resolved_mask]
 
         # get the first bioassembly
-        holo_coords = atom_data.coords  # [n_tokens, 24, 3]
+        holo_coords = atom_data.label_coords  # [n_tokens, 24, 3]
         all_token_centers = holo_coords[
             token_data.token_index, token_data.center_index, :
         ]  # (num_tokens, 3)

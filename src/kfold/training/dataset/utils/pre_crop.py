@@ -10,7 +10,7 @@ def get_chain_ref_atom_coordinates(chain: Chain) -> np.ndarray:
     """Get reference atom coordinates for a chain."""
     if chain.ctype.is_nonpolymer:
         # Return all atom coordinates for non-polymer chains
-        return chain.atom.label_coords
+        return chain.atom.coords
     else:
         match chain.ctype:
             case C.ChainType.PROTEIN:
@@ -20,7 +20,7 @@ def get_chain_ref_atom_coordinates(chain: Chain) -> np.ndarray:
             case C.ChainType.DNA:
                 ref_atom_offset = 10  # C1'
         ref_atom_indices = chain.residue.atom_starts + ref_atom_offset
-        ref_coords = chain.atom.label_coords[ref_atom_indices]
+        ref_coords = chain.atom.coords[ref_atom_indices]
         return ref_coords
 
 
