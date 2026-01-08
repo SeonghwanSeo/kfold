@@ -123,8 +123,8 @@ class Component:
         The unique code (CCD or SMILES) of the component.
     mol : Chem.Mol
         The RDKit molecule object.
-    names : list[str]
-        A list of atom names with shape (n_atoms,).
+    names : tuple[str, ...]
+        A tuple of atom names with shape (n_atoms,).
     elements : np.ndarray (np.uint8)
         An array of atomic numbers with shape (n_atoms,).
     charges : np.ndarray (np.int8)
@@ -146,7 +146,7 @@ class Component:
 
     code: str
     mol: Chem.Mol
-    names: list[str]
+    names: tuple[str, ...]  # (n_atoms,)
     elements: np.ndarray  # (n_atoms,) with dtype=np.uint8
     charges: np.ndarray  # (n_atoms,) with dtype=np.int8
     is_leaving_atom: np.ndarray  # (n_atoms,) with dtype=bool
@@ -164,6 +164,8 @@ class Component:
     @property
     def non_leaving_atom_names(self) -> tuple[str, ...]:
         """Get the names of non-leaving atoms in the component."""
+        if not np.any(self.is_leaving_atom):
+            return self.names
         return tuple(filter_items(self.names, ~self.is_leaving_atom))
 
     @property
@@ -498,7 +500,7 @@ class Component:
         return cls(
             code=code,
             mol=mol,
-            names=atom_names,
+            names=tuple(atom_names),
             elements=elements,
             charges=charges,
             is_leaving_atom=is_leaving_atom,

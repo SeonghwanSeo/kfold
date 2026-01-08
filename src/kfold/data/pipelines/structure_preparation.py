@@ -1,6 +1,7 @@
 """Pipeline to prepare reference structures"""
 
 import logging
+from functools import lru_cache
 
 import numpy as np
 
@@ -28,9 +29,9 @@ ResKey = tuple[AsymId, str, int | None]
 # Constants
 # three-letter codes
 chain_type_to_standard_residues: dict[C.ChainType, set[str]] = {
-    C.ChainType.PROTEIN: set(C.residue.PROTEIN_RESIDUES_STR),
-    C.ChainType.RNA: set(C.residue.RNA_RESIDUES_STR),
-    C.ChainType.DNA: set(C.residue.DNA_RESIDUES_STR),
+    C.ChainType.PROTEIN: C.residue.PROTEIN_RESIDUES_STR_SET,
+    C.ChainType.RNA: C.residue.RNA_RESIDUES_STR_SET,
+    C.ChainType.DNA: C.residue.DNA_RESIDUES_STR_SET,
     C.ChainType.LIGAND: set(),
     C.ChainType.ION: set(),
 }
@@ -105,6 +106,24 @@ def prepare_ref_chain(
 
     standard_residues: set[str] = chain_type_to_standard_residues[chain_type]
 
+    @lru_cache  # No cache limit within a single function call
+    def get_ref_atom_names(res_name: str) -> tuple[str, ...]:
+        """Get reference atom names for a residue."""
+        if res_name in ccd:
+            ref_mol = ccd[res_name]
+            if chain_type.is_polymer and res_name in standard_residues:
+                # Return pre-defined residue atoms for standard polymer residues
+                return C.atom.residue_atoms[res_name]
+            elif drop_leaving_atoms:
+                # Drop leaving atoms for non-standard polymer residues, glycans,
+                # and covalent ligands.
+                return ref_mol.non_leaving_atom_names
+            else:
+                # Return all atoms for non-polymer residues.
+                return ref_mol.names
+        else:
+            raise ValueError(f"Residue {res_name} not found in CCD database.")
+
     # ==================================================
     # Prepare residue information
     # ==================================================
@@ -112,9 +131,6 @@ def prepare_ref_chain(
     ref_mols: list[Component] = []
     num_residue_atoms: list[int] = []
     for name in ccd_sequences:
-        if chain_type.is_protein and name == "MSE":
-            # Replace selenomethionine with methionine
-            name = "MET"
         if name in ccd:
             # Common molecule from CCD
             if name.startswith("LIG"):
@@ -133,13 +149,7 @@ def prepare_ref_chain(
         is_standard = name in standard_residues
         is_res_standards.append(is_standard)
         ref_mols.append(ref_mol)
-        if chain_type.is_polymer and is_standard:
-            # For standard polymer residues, use standard atom counts
-            num_residue_atoms.append(len(C.atom.residue_atoms[name]))
-        elif drop_leaving_atoms:
-            num_residue_atoms.append(ref_mol.num_non_leaving_atoms)
-        else:
-            num_residue_atoms.append(ref_mol.num_atoms)
+        num_residue_atoms.append(len(get_ref_atom_names(name)))
 
     residue_struct = Residue(
         name=np.array(ccd_sequences, dtype=np.dtype("<U6")),
@@ -150,39 +160,47 @@ def prepare_ref_chain(
     # ==================================================
     # Prepare atom information
     # ==================================================
-    atom_name_list: list[str] = []
+    atom_name_list: list[np.ndarray] = []
     atom_elem_list: list[np.ndarray] = []
     atom_charge_list: list[np.ndarray] = []
-    for ref_mol in ref_mols:
-        atom_to_index = ref_mol.get_atom_index_map()
-        if chain_type.is_polymer and ref_mol.code in C.atom.residue_atoms:
-            # For standard residues, use pre-defined atom names
-            atom_names = C.atom.residue_atoms[ref_mol.code]
-        elif drop_leaving_atoms:
-            # For non-standard residues, drop leaving atoms if specified
-            atom_names = ref_mol.non_leaving_atom_names
-        else:
-            # Use all atoms for non-standard residues
-            atom_names = ref_mol.names
-        atom_indices = [atom_to_index[atom_name] for atom_name in atom_names]
-        atom_name_list.extend(atom_names)
-        atom_elem_list.append(ref_mol.elements[atom_indices])
-        atom_charge_list.append(ref_mol.charges[atom_indices])
-    num_atoms = len(atom_name_list)
-    assert num_atoms == sum(num_residue_atoms), "Mismatch in total number of atoms."
 
-    # Empty coordinates and bfactors
+    # Cache for reference molecule atom information
+    ref_mol_infos: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+    for i, ref_mol in enumerate(ref_mols):
+        res_name = ref_mol.code
+        assert res_name == ccd_sequences[i]
+
+        if res_name in ref_mol_infos:
+            # Reuse cached atom information
+            atom_names, atom_elem, atom_charge = ref_mol_infos[res_name]
+        else:
+            # Get reference atom names
+            atom_to_index = ref_mol.get_atom_index_map()
+            atom_names = get_ref_atom_names(res_name)
+            atom_indices = [atom_to_index[atom_name] for atom_name in atom_names]
+
+            atom_names = np.array(atom_names, dtype=np.dtype("<U4"))
+            atom_elem = ref_mol.elements[atom_indices]
+            atom_charge = ref_mol.charges[atom_indices]
+            ref_mol_infos[res_name] = (atom_names, atom_elem, atom_charge)
+
+        atom_name_list.append(atom_names)
+        atom_elem_list.append(atom_elem)
+        atom_charge_list.append(atom_charge)
+
+    # Empty coordinates, bfactors, apo coordinates, and apo pLDDT
+    num_atoms = sum(num_residue_atoms)
     coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
     bfactors = np.full((num_atoms,), np.nan, dtype=np.float32)
-    # Empty apo coordinates and pLDDT
     apo_coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
     apo_plddt = np.full((num_atoms), np.nan, dtype=np.float32)
 
     atom_struct = Atom(
-        name=np.array(atom_name_list, dtype=np.dtype("<U4")),
-        coords=coords,
+        name=np.concatenate(atom_name_list, dtype=np.dtype("<U4")),
         element=np.concatenate(atom_elem_list, dtype=np.uint8),
         charge=np.concatenate(atom_charge_list, dtype=np.int8),
+        coords=coords,
         bfactor=bfactors,
         apo_coords=apo_coords,
         apo_plddt=apo_plddt,
@@ -195,13 +213,10 @@ def prepare_ref_chain(
     bond_residue_index_list: list[tuple[int, int]] = []
     bond_atom_name_list: list[tuple[str, str]] = []
     bond_type_list: list[int] = []
-    if chain_type is C.ChainType.LIGAND:
+    if chain_type is C.ChainType.LIGAND:  # Only ligand bonds; there is no ion bonds.
         for residue_index, ref_mol in enumerate(ref_mols, start=1):
             # Get ref atom names
-            if drop_leaving_atoms:
-                ref_atom_names = ref_mol.non_leaving_atom_names
-            else:
-                ref_atom_names = ref_mol.names
+            ref_atom_names = get_ref_atom_names(ref_mol.code)
             for (atom_name1, atom_name2), bond_type in ref_mol.bonds.items():
                 if atom_name1 in ref_atom_names and atom_name2 in ref_atom_names:
                     bond_residue_index_list.append((residue_index, residue_index))

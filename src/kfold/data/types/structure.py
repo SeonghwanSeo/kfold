@@ -85,17 +85,39 @@ class Chain:
         """Number of bonds in the chain."""
         return len(self.bond)
 
-    def get_sequence(self) -> str:
-        """Get the amino acid / nucleotide sequence of the chain."""
+    def get_sequence(self, map_to_standard: bool = False) -> str:
+        """Get the amino acid / nucleotide sequence of the chain.
+
+        Parameters
+        ----------
+        map_to_standard: bool
+            Whether to map ambiguous residues to standard ones.
+
+        Returns
+        -------
+        sequence: str
+            One-letter code sequence.
+        """
         if self.ctype.is_nonpolymer:
             raise ValueError("Non-polymer chains do not have a sequence.")
         unk = "X" if self.ctype.is_protein else "N"
-        return "".join(
-            [
-                C.residue.convert_ccd_name_to_one_letter(v, unk)
-                for v in self.residue.name.tolist()
-            ]
-        )
+
+        tokens: list[str] = [
+            C.residue.convert_ccd_name_to_one_letter(v, unk)
+            for v in self.residue.name.tolist()
+        ]
+
+        if map_to_standard:
+            if self.ctype.is_protein:
+                tokens = [C.residue.PROTEIN_AMINO_ACID_MAPPING.get(t, t) for t in tokens]
+                standard_set = C.residue.PROTEIN_AMINO_ACIDS_SET
+            elif self.ctype.is_rna:
+                standard_set = C.residue.RNA_BASES_SET
+            elif self.ctype.is_dna:
+                standard_set = C.residue.DNA_BASES_SET
+            tokens = [t if t in standard_set else unk for t in tokens]
+
+        return "".join(tokens)
 
     def get_ccd_sequence(self) -> list[str]:
         """Get the amino acid / nucleotide sequence of the chain."""

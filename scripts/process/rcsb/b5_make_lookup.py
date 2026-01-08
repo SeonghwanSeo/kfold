@@ -51,7 +51,6 @@ from typing import Any
 import lmdb
 from tqdm import tqdm
 
-import kfold.constants as C
 from kfold.data.types.structure import RefStructure
 
 # --- Global variables for worker processes ---
@@ -149,28 +148,7 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                     seq = ":".join(chain.get_ccd_sequence())
                     entity_dict[entity_id] = (seq, chain.ctype.name.lower())
                 else:
-                    sequence = chain.get_sequence()
-                    standard_set = set()
-                    unk = "X"
-
-                    if chain.ctype.is_protein:
-                        standard_set = set(C.residue.PROTEIN_AMINO_ACIDS)
-                        unk = "X"
-                        sequence = (
-                            sequence.replace("B", "D").replace("Z", "E").replace("U", "C")
-                        )
-                    elif chain.ctype.is_rna:
-                        standard_set = set(C.residue.RNA_BASES)
-                        unk = "N"
-                    elif chain.ctype.is_dna:
-                        standard_set = set(C.residue.DNA_BASES)
-                        unk = "N"
-
-                    if standard_set:
-                        sequence = "".join(
-                            [v if v in standard_set else unk for v in sequence]
-                        )
-
+                    sequence = chain.get_sequence(map_to_standard=True)
                     entity_dict[entity_id] = (sequence, chain.ctype.name.lower())
 
             # free memory explicitly for the object
@@ -182,6 +160,10 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                 entity_lookup_data: dict[str, Any] = {"type": ctype}
 
                 # Match Sequence Embedding
+                if ctype not in ("protein", "rna", "dna"):
+                    entry_lookup[entity_id] = entity_lookup_data
+                    continue
+
                 if (ctype, seq) in _GLOBAL_SEQ_TO_ID:
                     seq_id, seq_res_map = _GLOBAL_SEQ_TO_ID[(ctype, seq)]
                     stats["seq_success"] += 1
@@ -191,9 +173,8 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
                     }
                     entity_lookup_data["seq_emb"] = seq_emb
                 else:
-                    if ctype in ["protein", "rna", "dna"]:
-                        # Log only on failures to avoid clutter
-                        stats["seq_fail"] += 1
+                    # Log only on failures to avoid clutter
+                    stats["seq_fail"] += 1
 
                 # Match Structure Embedding
                 if (ctype, seq) in _GLOBAL_STRUCT_TO_ID:

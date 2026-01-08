@@ -204,7 +204,25 @@ def check_chain_count_cutoff(
     """Returns True if the structure passes the chain count filter."""
     if max_chains is None:
         return True
-    return len(raw_struct[0].subchains()) <= max_chains
+
+    polymer_asym_ids = []
+    for entity in raw_struct.entities:
+        if entity.entity_type == gemmi.EntityType.Polymer:
+            polymer_asym_ids.extend(entity.subchains)
+
+    # Count the number of polymer chains considering assemblies
+    if raw_struct.assemblies:
+        num_chains = 0
+        assembly: gemmi.Assembly = raw_struct.assemblies[0]
+        for gen in assembly.generators:
+            subchains = [
+                asym_id for asym_id in gen.subchains if asym_id in polymer_asym_ids
+            ]
+            num_chains += len(subchains) * len(gen.operators)
+    else:
+        num_chains = len(polymer_asym_ids)
+
+    return num_chains <= max_chains
 
 
 def check_residue_count_cutoff(
@@ -257,16 +275,18 @@ def parse_cif(
     if not check_resolution_cutoff(metadata, max_resolution):
         return RESOLUTION_FILTERED
 
-    # Prepare raw structure
-    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
-    # Clean up raw structure
-    cif_factory.clean_up_raw_structure(raw_struct)
-    # Expand the first assembly
-    cif_factory.expand_first_assembly(raw_struct)
+    # Prepare gemmi structure
+    raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
+        block, clean_up=True
+    )
 
     # Filter by chain count
     if not check_chain_count_cutoff(raw_struct, max_chains):
         return CHAIN_COUNT_FILTERED
+
+    # Expand the first assembly
+    cif_factory.expand_first_assembly(raw_struct)
+
     # Filter by residue count
     if not check_residue_count_cutoff(raw_struct, max_residues):
         return RESIDUE_COUNT_FILTERED

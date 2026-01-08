@@ -48,11 +48,6 @@ chain_type_to_polymer_type: dict[C.ChainType, gemmi.PolymerType] = {
     C.ChainType.DNA: gemmi.PolymerType.Dna,
 }
 # one-letter codes
-chain_type_to_standard_restypes: dict[C.ChainType, set[str]] = {
-    C.ChainType.PROTEIN: set(C.residue.PROTEIN_AMINO_ACIDS),
-    C.ChainType.RNA: set(C.residue.RNA_BASES),
-    C.ChainType.DNA: set(C.residue.DNA_BASES),
-}
 chain_type_to_unk: dict[C.ChainType, str] = {
     C.ChainType.PROTEIN: "UNK",
     C.ChainType.RNA: "N",
@@ -83,11 +78,8 @@ def parse_cif(
 
     # --- Gemmi structure processing ---
 
-    # Prepare raw structure
-    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
-
-    # Clean up raw structure
-    clean_up_raw_structure(raw_struct)
+    # Prepare gemmi structure
+    raw_struct: gemmi.Structure = prepare_gemmi_structure(block, clean_up=True)
 
     # Expand first assembly if available
     expand_first_assembly(raw_struct)
@@ -214,13 +206,81 @@ def prepare_metadata_from_synthetic_data(
 # ==================================================
 # Helper functions for gemmi structure validation
 # ==================================================
-def clean_up_raw_structure(raw_struct: gemmi.Structure) -> None:
+def prepare_gemmi_structure(
+    block: gemmi.cif.Block,
+    clean_up: bool = True,
+) -> gemmi.Structure:
+    """Prepare gemmi Structure object from CIF block."""
+    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
+    if clean_up:
+        clean_up_gemmi_structure(
+            raw_struct, map_mse_to_met=True, canonicalize_arginines=True
+        )
+    return raw_struct
+
+
+def clean_up_gemmi_structure(
+    raw_struct: gemmi.Structure,
+    map_mse_to_met: bool = True,
+    canonicalize_arginines: bool = True,
+) -> None:
     """Clean up gemmi Structure object in-place."""
     raw_struct.merge_chain_parts()
     raw_struct.remove_waters()
     raw_struct.remove_hydrogens()
     raw_struct.remove_alternative_conformations()
     raw_struct.remove_empty_chains()
+
+    protein_entity_ids: set[EntityId] = set()
+    protein_asym_ids: set[AsymId] = set()
+    for entity in raw_struct.entities:
+        # In the case of microheterogeneity, take the first monomer
+        entity.full_sequence = [
+            gemmi.Entity.first_mon(res) for res in entity.full_sequence
+        ]
+        if (
+            entity.entity_type == gemmi.EntityType.Polymer
+            and entity.polymer_type == gemmi.PolymerType.PeptideL
+        ):
+            # Collect protein asym_ids
+            protein_entity_ids.add(int(entity.name))
+            protein_asym_ids.update(entity.subchains)
+
+            if map_mse_to_met:
+                # Map MSE to MET
+                if entity.name in protein_entity_ids:
+                    entity.full_sequence = [
+                        "MET" if res == "MSE" else res for res in entity.full_sequence
+                    ]
+
+    # NOTE: Only clean up the first model
+    model = raw_struct[0]
+    for res_span in model.subchains():
+        asym_id: AsymId = res_span.subchain_id()
+        if asym_id in protein_asym_ids:
+            for residue in res_span:
+                if map_mse_to_met and residue.name == "MSE":
+                    # Map MSE to MET
+                    residue.name = "MET"
+                    for atom in residue:
+                        if atom.name == "SE":
+                            atom.name = "SD"
+                            atom.element = gemmi.Element("S")
+                if canonicalize_arginines and residue.name == "ARG":
+                    # Ensure arginine NH1/NH2 naming is canonical
+                    try:
+                        cd: gemmi.Atom = residue["CD"][0]
+                        nh1: gemmi.Atom = residue["NH1"][0]
+                        nh2: gemmi.Atom = residue["NH2"][0]
+                    except Exception:
+                        continue
+                    # Calculate distances
+                    dist_cd_nh1 = cd.pos.dist(nh1.pos)
+                    dist_cd_nh2 = cd.pos.dist(nh2.pos)
+                    # Swap if NH2 is closer to CD
+                    if dist_cd_nh2 < dist_cd_nh1:
+                        # Swap names
+                        nh1.name, nh2.name = "NH2", "NH1"
 
 
 def expand_first_assembly(raw_struct: gemmi.Structure) -> None:
@@ -249,10 +309,11 @@ def prepare_ref_structure(
 
     # NOTE: According to AlphaFold3, remove crystallization aids for
     # X-ray structures
-    excluded_ligands: set[str] = set(C.ccd.LIGAND_EXCLUSIONS)
+    excluded_ligands: set[str] = C.ccd.LIGAND_EXCLUSIONS
     if metadata.exp is not None and metadata.exp.method is not None:
         if "XRAY" in metadata.exp.method.replace("-", "").upper():
-            excluded_ligands.update(C.ccd.CRYSTALLIZATION_AIDS)
+            # Add crystallization aids to exclusion list
+            excluded_ligands = excluded_ligands | C.ccd.CRYSTALLIZATION_AIDS
 
     # ==================================================
     # Prepare chain index mappings
@@ -299,21 +360,13 @@ def prepare_ref_structure(
                 # Skip unsupported polymer types
                 continue
             chain_type: C.ChainType = polymer_type_to_chain_type[entity.polymer_type]
-            restypes: set[str] = chain_type_to_standard_restypes[chain_type]
             unk: str = chain_type_to_unk[chain_type]
 
-            # Get CCD sequences
-            ccd_sequences: list[str] = []
-            for v in entity.full_sequence:
-                # In the case of microheterogeneity, take the first monomer
-                v = gemmi.Entity.first_mon(v)  # e.g., ALG/GLY -> ALG
-                if chain_type.is_protein and v == "MSE":
-                    # Replace selenomethionine with methionine
-                    v = "MET"
-                # Only retain standard residues and PTMs
-                if C.residue.convert_ccd_name_to_one_letter(v, "?") not in restypes:
-                    v = unk  # Map non-standard residues to UNK/N/DN
-                ccd_sequences.append(v)
+            # Get CCD sequences with unknown mapping
+            ccd_sequences: list[str] = [
+                v if (v in C.ccd.CCD_NAME_TO_ONE_LETTER and v in ccd) else unk
+                for v in entity.full_sequence
+            ]
 
             lengths = len(ccd_sequences)
             if lengths < 4:
@@ -639,14 +692,7 @@ def insert_chain_coordinates(
 
         # Get atoms.
         name_to_atom: dict[str, gemmi.Atom] = {a.name.upper(): a for a in res}
-
-        # Map MSE to MET, put the selenium atom in the sulphur column
         res_name = ccd_sequence[residue_index - 1]
-        if res_name == "MET" and "SE" in name_to_atom:
-            # WARN: in parse_ref_chain(), MSE is already converted to MET.
-            # Therefore, I place this statements outside of the res_name check.
-            name_to_atom["SD"] = name_to_atom["SE"]
-
         for atom_i in ref_chain.residue.iter_residue_atoms(residue_index):
             n: str = atom_names[atom_i]
             if n in name_to_atom:
@@ -713,13 +759,13 @@ def get_chain_ref_atom_coordinates(chain: Chain) -> np.ndarray:
     else:
         match chain.ctype:
             case C.ChainType.PROTEIN:
-                ref_atom_offset = 1  # CA
+                ref_atom_name = "CA"
             case C.ChainType.RNA:
-                ref_atom_offset = 11  # C1'
+                ref_atom_name = "C1'"
             case C.ChainType.DNA:
-                ref_atom_offset = 10  # C1'
-        ref_atom_indices = chain.residue.atom_starts + ref_atom_offset
-        ref_coords = chain.atom.coords[ref_atom_indices]
+                ref_atom_name = "C1'"
+        ref_idx = chain.atom.name == ref_atom_name
+        ref_coords = chain.atom.coords[ref_idx]
         return ref_coords
 
 
