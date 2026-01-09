@@ -143,8 +143,6 @@ if __name__ == "__main__":
                     chain_id = f"{pdb_id}_{entity_id}_{ctype_str}"
                     records.append((chain_id, seq))
 
-        fasta_path = save_dir / f"unique_{ctype_str}.fasta"
-
     # Extract unique sequences
     unique_sequences: dict[str, set[str]] = {
         "protein": set(),
