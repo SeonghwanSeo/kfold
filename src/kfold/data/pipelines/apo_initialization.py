@@ -1,6 +1,5 @@
 import dataclasses
 import itertools
-import pathlib
 from collections import defaultdict
 from functools import lru_cache
 
@@ -460,15 +459,15 @@ class ApoInitializer:
 
         path = apo_info["path"]
         residue_map = apo_info["residue_map"]
+        lmdb_key = apo_info["rieprody_key"]
 
         # Load apo structure
         _, apo_coords = read_protein_structure(path)
 
         # Apply perturbation if enabled
         if self.use_perturbation and rng.random() < self.prob_perturbation:
-            name = apo_info.get("name", pathlib.Path(path).name.split(".")[0])
             apo_mask = np.isfinite(apo_coords).all(axis=-1)
-            apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=name)
+            apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=lmdb_key)
 
         # Crop apo_coords based on residue_map
         length = len(ccd_sequence)

@@ -9,8 +9,10 @@ from kfold.data.pipelines._apo_perturbation import (
 from kfold.data.utils.io.structure import read_protein_structure, write_protein_structure
 from kfold.data.utils.simulation.rieprody import RieProdyConfig
 
+ROOT_DIR = Path("/cache/wykim_lab/icl_shwan/v260107/")
+
 if __name__ == "__main__":
-    data_dir = Path("/cache/wykim_lab/kfold_data/v260103/dataset/rcsb-train/")
+    data_dir = ROOT_DIR / "dataset" / "rcsb-val"
     save_dir = Path("./tmp")
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -21,7 +23,7 @@ if __name__ == "__main__":
     rieprody_config = RieProdyConfig(
         metric_lmdb_path=metric_path,
         rmsd_threshold=100.0,  # disable rmsd filtering for testing
-        fallback_on_error=True,
+        fallback_on_failure=True,
         fallback_on_rmsd_exceed=True,
         disable_log=False,
     )
@@ -49,7 +51,10 @@ if __name__ == "__main__":
 
     for pdb_file in files[:10]:  # test on one file
         print(f"Processing {pdb_file}")
+        source = pdb_file.parent.name
         name = pdb_file.name.split(".")[0]
+        lmdb_key = f"{source}:{name}"
+
         seq, apo_coords = read_protein_structure(pdb_file)
 
         # Save original structure
@@ -58,7 +63,7 @@ if __name__ == "__main__":
 
         # # Rieprody perturbation
         module.prob_rieprody = 1.0  # always use rieprody for testing
-        perturb_coords = module.run(apo_coords, key=name)
+        perturb_coords = module.run(apo_coords, key=lmdb_key)
         output_file = save_dir / f"{name}_rieprody.pdb"
         write_protein_structure(seq, perturb_coords, output_file)
 

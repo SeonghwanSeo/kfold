@@ -21,7 +21,6 @@ if __name__ == "__main__":
             name="rcsb-val",
             data_path=DATASET_DIR,
             apo_init=ApoInitializerConfig(
-                use_perturbation=False,
                 use_random_augmentation=True,
                 use_ot_permutation=True,
             ),
