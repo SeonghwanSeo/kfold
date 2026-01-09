@@ -11,7 +11,7 @@ apo_init:
   translation_scale: 10.0 # Angstroms
 
   # Disable following during validation
-  use_symmetry_correction: false
+  use_ot_permutation: false
   use_perturbation: false
   prob_perturbation: 0.0
   prob_replace_to_holo: 0.0

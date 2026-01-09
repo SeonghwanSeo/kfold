@@ -8,7 +8,7 @@ seed: null # should be null for data augmentation
 apo_init:
   use_perturbation: false
   use_random_augmentation: true
-  use_symmetry_correction: false # TODO: enable
+  use_ot_permutation: false
   translation_scale: 10.0 # Angstroms
   prob_perturbation: 1.0
   prob_replace_to_holo: 0.0 # enabled during training
