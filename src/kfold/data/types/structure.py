@@ -453,6 +453,11 @@ class RefStructure:
     metadata: Metadata
 
     @property
+    def id(self) -> str:
+        """Structure ID."""
+        return self.metadata.id
+
+    @property
     def entity_ids(self) -> list[int]:
         """List of entity IDs in the structure."""
         return [chain.entity_id for chain in self.chains]
@@ -654,15 +659,14 @@ class RefStructure:
             metadata=metadata,
         )
 
-    def dump_npz(self, path: pathlib.Path | str) -> None:
+    def dump_npz(self, path: pathlib.Path | str | io.BytesIO) -> None:
         """Save to compressed NPZ file."""
-        path = pathlib.Path(path)
         np.savez_compressed(
             path,
             **self.to_npz_dict(),
         )
 
-    def save_npz(self, path: pathlib.Path | str) -> None:
+    def save_npz(self, path: pathlib.Path | str | io.BytesIO) -> None:
         """Save to compressed NPZ file."""
         self.dump_npz(path)
 

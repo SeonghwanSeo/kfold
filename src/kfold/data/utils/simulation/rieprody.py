@@ -5,8 +5,8 @@ Fallback to Langevin dynamics if RieProDy perturbation is unavailable.
 import dataclasses
 import enum
 import os
-import pickle
 import warnings
+from io import BytesIO
 from pathlib import Path
 from typing import Self
 
@@ -275,6 +275,7 @@ class RiePrody:
             mask=align_mask.reshape(-1),
             align=False,
         ).item()
+        print("rmsd:", rmsd)
 
         if rmsd > self.rmsd_threshold:
             self._stats_rmsd_filtered += 1
@@ -587,7 +588,10 @@ class RiePrody:
                 value_bytes = txn.get(key.encode("utf-8"))
                 if value_bytes is None:
                     return None
-                data = pickle.loads(value_bytes)
+                # npz deserialization
+                with BytesIO(value_bytes) as byte_io:
+                    with np.load(byte_io, allow_pickle=True) as npz_file:
+                        data = {k: npz_file[k] for k in npz_file.files}
                 return data
             except Exception as e:
                 warnings.warn(
@@ -618,7 +622,7 @@ class RiePrody:
         receptor_data = _RieProDyReceptorData()
 
         # Set sequence from metric_data (pre-computed)
-        receptor_data.sequence = metric_data["sequence"]
+        receptor_data.sequence = metric_data["sequence"].item()
         num_res = len(receptor_data.sequence)
 
         # Use metric data fields (already in correct format from LMDB)
@@ -713,8 +717,12 @@ class RiePrody:
         elif "angles_mask" in metric_data:
             receptor_data.apo_angles_mask = to_torch(metric_data["angles_mask"])
         if "chi2rot_atom_mask" in metric_data:
-            receptor_data.chi2rot_atom_mask = to_torch(metric_data["chi2rot_atom_mask"])
+            receptor_data.chi2rot_atom_mask = to_torch(
+                metric_data["chi2rot_atom_mask"]
+            ).float()
         if "chi2ref_atom_mask" in metric_data:
-            receptor_data.chi2ref_atom_mask = to_torch(metric_data["chi2ref_atom_mask"])
+            receptor_data.chi2ref_atom_mask = to_torch(
+                metric_data["chi2ref_atom_mask"]
+            ).float()
 
         return {"receptor": receptor_data}

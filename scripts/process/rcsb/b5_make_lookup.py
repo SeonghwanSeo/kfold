@@ -5,8 +5,9 @@
   "6oim": {
     "1": {
       "type": "protein",
+      "seq_id": "rcsb_protein_000020",
       "seq_emb": {
-        "path": "uniq_protein_000020.pt",
+        "path": "rcsb_protein_000020.pt",
         "residue_map": "1:250->1:250"
       },
       "struct_emb": {
@@ -15,8 +16,8 @@
       },
       "apo": [
         {
-          "name": "uniq_protein_000020-esmfold",
-          "path": "uniq_protein_000020-esmfold.pdb.gz",
+          "name": "rcsb_protein_000020",
+          "path": "rcsb_protein_000020.pdb.gz",
           "residue_map": "1:250->1:250",
           "source": "esmfold"
         },
@@ -46,17 +47,30 @@ import io
 import json
 import multiprocessing
 import pathlib
+import shutil
+from functools import partial
 from typing import Any
 
 import lmdb
+import pandas as pd
 from tqdm import tqdm
 
+import kfold.constants as C
 from kfold.data.types.structure import RefStructure
 
+# --- Thresholds for AFDB mapping ---
+# Minimum RCSB sequence length to consider (use ESMFold only)
+AFDB_LENGTH_THRESHOLD = 16
+# Minimum overlap ratio on RCSB side
+AFDB_RCSB_OVERLAP_THRESHOLD = 0.8
+# Minimum overlap ratio on Uniprot side
+AFDB_UNIPROT_OVERLAP_THRESHOLD = 0.5
+
 # --- Global variables for worker processes ---
-_GLOBAL_SEQ_TO_ID: dict = {}
-_GLOBAL_STRUCT_TO_ID: dict = {}
-_GLOBAL_LMDB_PATH: pathlib.Path | None = None
+_GLOBAL_SEQ_ID: dict = {}
+_GLOBAL_AFDB_ID: dict = {}
+
+_GLOBAL_LMDB_ENV: lmdb.Environment = None
 
 
 def parse_args():
@@ -68,16 +82,6 @@ def parse_args():
         help="Path to the preprocessed data directory.",
     )
     parser.add_argument(
-        "--seq_id_path",
-        type=pathlib.Path,
-        help="Path to the file containing sequence IDs.",
-    )
-    parser.add_argument(
-        "--struct_id_path",
-        type=pathlib.Path,
-        help="Path to the file containing structure IDs.",
-    )
-    parser.add_argument(
         "--num_workers",
         type=int,
         default=multiprocessing.cpu_count(),
@@ -87,48 +91,56 @@ def parse_args():
     return args
 
 
-def init_worker(seq_to_id: dict, struct_to_id: dict, lmdb_path: pathlib.Path):
+def init_worker(seq_id_map: dict, afdb_id_map: dict, lmdb_path: pathlib.Path):
     """
     Initialize worker process with read-only shared data.
     This avoids pickling large dictionaries for every task.
     """
-    global _GLOBAL_SEQ_TO_ID, _GLOBAL_STRUCT_TO_ID, _GLOBAL_LMDB_PATH
-    _GLOBAL_SEQ_TO_ID = seq_to_id
-    _GLOBAL_STRUCT_TO_ID = struct_to_id
-    _GLOBAL_LMDB_PATH = lmdb_path
-
-
-def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
-    """
-    Process a batch of LMDB keys.
-    Returns the local lookup dictionary and statistics.
-    """
-    global _GLOBAL_SEQ_TO_ID, _GLOBAL_STRUCT_TO_ID, _GLOBAL_LMDB_PATH
-
+    global _GLOBAL_SEQ_ID, _GLOBAL_AFDB_ID, _GLOBAL_LMDB_ENV
     # Open a new read-only transaction for this worker
     # lock=False is safe for read-only and prevents potential locking issues in MP
-    env = lmdb.open(
-        str(_GLOBAL_LMDB_PATH),
-        map_size=1 * 1024 * 1024 * 1024,  # 1 GB
+    _GLOBAL_LMDB_ENV = lmdb.open(
+        str(lmdb_path),
         readonly=True,
         lock=False,
         readahead=False,
         meminit=False,
     )
+    _GLOBAL_SEQ_ID = seq_id_map
+    _GLOBAL_AFDB_ID = afdb_id_map
 
-    local_lookup: dict[str, dict[str, Any]] = {}
-    stats = {
-        "seq_success": 0,
-        "seq_fail": 0,
-        "struct_success": 0,
-        "struct_fail": 0,
+
+def process_batch(keys: list[bytes], apo_dir: pathlib.Path):
+    """
+    Process a batch of LMDB keys.
+    Returns the local lookup dictionary and statistics.
+    """
+
+    # Create reference apo directory paths
+    ref_apo_dir = apo_dir / "ref_apo"
+    ref_apo_dir.mkdir(parents=True, exist_ok=True)
+
+    global _GLOBAL_LMDB_ENV, _GLOBAL_SEQ_ID, _GLOBAL_AFDB_ID
+
+    env = _GLOBAL_LMDB_ENV
+
+    lookup: dict[str, dict[str, Any]] = {}
+    stats: dict[str, int] = {
+        "total_entries": 0,
+        "nonprotein_chains": 0,
+        "protein_chains": 0,
+        "with_esmfold": 0,
+        "without_esmfold": 0,
+        "with_afdb": 0,
+        "without_afdb": 0,
     }
-
     with env.begin() as txn:
         for key in keys:
             value = txn.get(key)
             if value is None:
                 continue
+
+            stats["total_entries"] += 1
 
             # Deserialize
             with io.BytesIO(value) as byte_stream:
@@ -138,112 +150,198 @@ def process_batch(keys: list[bytes]) -> tuple[dict, dict]:
             entry_name: str = metadata.id
 
             # Process Chains
-            entity_dict: dict[int, tuple[str, str]] = {}
+            entity_dict: dict[int, tuple[C.ChainType, str]] = {}
             for chain in ref_structure.chains:
                 entity_id = chain.entity_id
                 if entity_id in entity_dict:
                     continue
-
                 if chain.ctype.is_nonpolymer:
                     seq = ":".join(chain.get_ccd_sequence())
-                    entity_dict[entity_id] = (seq, chain.ctype.name.lower())
                 else:
-                    sequence = chain.get_sequence(map_to_standard=True)
-                    entity_dict[entity_id] = (sequence, chain.ctype.name.lower())
+                    seq = chain.get_sequence(map_to_standard=True)
+                entity_dict[entity_id] = (chain.ctype, seq)
 
             # free memory explicitly for the object
             del ref_structure
 
             # Build Lookup Entry
-            entry_lookup: dict[int, dict] = {}
-            for entity_id, (seq, ctype) in entity_dict.items():
-                entity_lookup_data: dict[str, Any] = {"type": ctype}
+            entry_info: dict[int, dict] = {}
+            for entity_id, (ctype, _) in entity_dict.items():
+                entity_lookup_data: dict[str, Any] = {"type": ctype.name.lower()}
 
                 # Match Sequence Embedding
-                if ctype not in ("protein", "rna", "dna"):
-                    entry_lookup[entity_id] = entity_lookup_data
+                if ctype.is_nonpolymer:
+                    entry_info[entity_id] = entity_lookup_data
                     continue
 
-                if (ctype, seq) in _GLOBAL_SEQ_TO_ID:
-                    seq_id, seq_res_map = _GLOBAL_SEQ_TO_ID[(ctype, seq)]
-                    stats["seq_success"] += 1
-                    seq_emb = {
-                        "path": f"{seq_id}.pt",
+                # Get Sequence ID
+                if (entry_name, entity_id) not in _GLOBAL_SEQ_ID:
+                    raise ValueError(
+                        f"Sequence ID not found for {entry_name} entity {entity_id}"
+                    )
+
+                seq_info = _GLOBAL_SEQ_ID[(entry_name, entity_id)]
+                assert ctype == seq_info["ctype"], (
+                    f"Chain type mismatch for {entry_name} entity {entity_id}: "
+                    f"{ctype} vs {seq_info['ctype']}"
+                )
+
+                # Sequence Embedding
+                seq_id = seq_info["seq_id"]
+                seq_res_map = seq_info["res_map"]
+                seq_emb = {
+                    "path": f"{seq_id}.pt",
+                    "residue_map": seq_res_map,
+                }
+
+                if ctype.is_protein:
+                    stats["protein_chains"] += 1
+                    # ESMFold Apo Structure
+                    apo_infos = []
+                    esm_apo = {
+                        "name": seq_id,
+                        "path": f"{seq_id}.pdb.gz",
                         "residue_map": seq_res_map,
+                        "source": "esmfold",
                     }
-                    entity_lookup_data["seq_emb"] = seq_emb
-                else:
-                    # Log only on failures to avoid clutter
-                    stats["seq_fail"] += 1
+                    esmfold_struct = apo_dir / "esmfold" / esm_apo["path"]
+                    if esmfold_struct.exists():
+                        stats["with_esmfold"] += 1
+                        apo_infos.append(esm_apo)
+                    else:
+                        stats["without_esmfold"] += 1
 
-                # Match Structure Embedding
-                if (ctype, seq) in _GLOBAL_STRUCT_TO_ID:
-                    stats["struct_success"] += 1
-                    struct_id, struct_source, struct_res_map = _GLOBAL_STRUCT_TO_ID[
-                        (ctype, seq)
-                    ]
-                    struct_emb = {
-                        "path": f"{struct_id}.pt",
-                        "residue_map": struct_res_map,
-                    }
-                    entity_lookup_data["struct_emb"] = struct_emb
-                    apo_info = {
-                        "name": struct_id,
-                        "path": f"{struct_id}.pdb.gz",
-                        "residue_map": struct_res_map,
-                        "source": struct_source,
-                    }
-                    entity_lookup_data["apo"] = [apo_info]
-                else:
-                    if ctype == "protein":
-                        stats["struct_fail"] += 1
+                    # Try to Match AFDB Structure
+                    if (entry_name, entity_id) in _GLOBAL_AFDB_ID:
+                        afdb_info = _GLOBAL_AFDB_ID[(entry_name, entity_id)]
+                        uniprot_id = afdb_info["uniprot_id"]
+                        uniprot_res_map = afdb_info["res_map"]
 
-                entry_lookup[entity_id] = entity_lookup_data
+                        afdb_id = f"AF-{uniprot_id}-F1-model_v6"
+                        afdb_apo = {
+                            "name": afdb_id,
+                            "path": f"{afdb_id}.pdb.gz",
+                            "residue_map": uniprot_res_map,
+                            "source": "afdb",
+                        }
+
+                        afdb_struct = apo_dir / "afdb" / afdb_apo["path"]
+                        if afdb_struct.exists():
+                            stats["with_afdb"] += 1
+                            apo_infos.append(afdb_apo)
+                        else:
+                            stats["without_afdb"] += 1
+                    else:
+                        stats["without_afdb"] += 1
+
+                    # Determine `ref_apo` source, which is the primary structure
+                    # for structure embedding.
+                    if len(apo_infos) == 0:
+                        struct_emb = None
+                    else:
+                        if len(apo_infos) > 1:
+                            # Prefer AFDB structure if available
+                            ref_apo = apo_infos[1]
+                        else:
+                            ref_apo = apo_infos[0]
+                        # Copy ref apo structure to ref_apo directory
+                        ref_apo_src = apo_dir / ref_apo["source"] / ref_apo["path"]
+                        ref_apo_dst = ref_apo_dir / ref_apo["path"]
+                        if not ref_apo_dst.exists():
+                            shutil.copyfile(ref_apo_src, ref_apo_dst)
+
+                        struct_emb = {
+                            "path": f"{ref_apo['name']}.pt",
+                            "residue_map": ref_apo["residue_map"],
+                        }
+                else:
+                    # Non-protein chains do not have structure embeddings
+                    stats["nonprotein_chains"] += 1
+                    apo_infos = []
+                    struct_emb = None
+
+                entity_lookup_data = {
+                    "seq_id": seq_id,
+                    "seq_emb": seq_emb,
+                    "struct_emb": struct_emb,
+                    "apo": apo_infos,
+                }
+                entry_info[entity_id] = entity_lookup_data
 
             # Convert entity IDs to strings for JSON compatibility
-            local_lookup[entry_name] = {str(k): v for k, v in entry_lookup.items()}
+            lookup[entry_name] = {str(k): v for k, v in entry_info.items()}
 
-    env.close()
-    return local_lookup, stats
-
-
-def load_sequence_ids(path: pathlib.Path) -> dict:
-    seq_to_id = {}
-    with open(path) as f:
-        assert path.suffix == ".fasta"
-        lines = f.readlines()
-        assert len(lines) % 2 == 0, "Fasta file should have even number of lines."
-        for i in range(0, len(lines), 2):
-            header = lines[i].strip()
-            sequence = lines[i + 1].strip()
-            # Parse header
-            key = header[1:]
-            if "_protein_" in key:
-                ctype = "protein"
-            elif "_rna_" in key:
-                ctype = "rna"
-            elif "_dna_" in key:
-                ctype = "dna"
-            else:
-                continue  # Skip unknown types
-
-            res_map = f"1:{len(sequence)}->1:{len(sequence)}"
-            seq_to_id[(ctype, sequence)] = (key, res_map)
-    return seq_to_id
+    return lookup, stats
 
 
-def load_structure_ids(path: pathlib.Path) -> dict:
-    struct_to_id = {}
-    with open(path) as f:
-        assert path.suffix == ".csv"
-        lines = f.readlines()
-        for line in lines[1:]:
-            parts = line.strip().split(",")
-            seq, length, source, key, apo_res, res = parts
-            res, apo_res = res.replace("-", ":"), apo_res.replace("-", ":")
-            res_map = f"{res}->{apo_res}"
-            struct_to_id[("protein", seq)] = (key, source, res_map)
-    return struct_to_id
+def load_sequence_map(path: pathlib.Path) -> dict[str, dict]:
+    seq_id_map: dict = {}
+    assert path.suffix == ".csv"
+    df = pd.read_csv(path)
+    for row in df.itertuples():
+        pdb_id = row.pdb_id
+        entity_id = row.entity_id
+        ctype = row.type
+        seqlen = row.length
+        seq_id = row.seq_id
+
+        # Construct residue mapping
+        # Since apo structures are predicted from full sequences,
+        # we assume full-length mapping here.
+        seq_res = f"1:{seqlen}"
+        apo_res = f"1:{seqlen}"
+        res_map = f"{seq_res}->{apo_res}"
+
+        seq_id_map[(pdb_id, entity_id)] = {
+            "ctype": C.ChainType[ctype.upper()],
+            "seq_id": seq_id,
+            "res_map": res_map,
+        }
+    return seq_id_map
+
+
+def load_afdb_map(path: pathlib.Path) -> dict[str, dict]:
+    assert path.suffix == ".csv"
+    afdb_id_map: dict = {}
+    df = pd.read_csv(path)
+    for row in df.itertuples():
+        pdb_id = row.pdb_id
+        entity_id = row.entity_id
+        seq_len = row.seq_len
+        seq_st = row.seq_st
+        seq_end = row.seq_end
+
+        # uniprot id
+        uniprot_id = row.uniprot_id
+        uniprot_len = row.uniprot_len
+        uniprot_st = row.uniprot_st
+        uniprot_end = row.uniprot_end
+
+        if seq_len < AFDB_LENGTH_THRESHOLD:
+            # Too short to consider
+            continue
+
+        if not (seq_end - seq_st) == (uniprot_end - uniprot_st):
+            # There are some typos in the pdb to uniprot mapping file.
+            print(f"Length mismatch in AFDB mapping: {row}")
+            continue
+
+        res_map = f"{seq_st}:{seq_end}->{uniprot_st}:{uniprot_end}"
+
+        # Compute overlap ratio
+        seq_overlap = (seq_end - seq_st + 1) / seq_len
+        uniprot_overlap = (uniprot_end - uniprot_st + 1) / uniprot_len
+
+        if (
+            seq_overlap >= AFDB_RCSB_OVERLAP_THRESHOLD
+            and uniprot_overlap >= AFDB_UNIPROT_OVERLAP_THRESHOLD
+        ):
+            afdb_id_map[(pdb_id, entity_id)] = {
+                "uniprot_id": uniprot_id,
+                "source": "afdb",
+                "res_map": res_map,
+            }
+    return afdb_id_map
 
 
 def main():
@@ -253,8 +351,13 @@ def main():
     lmdb_path = data_dir / "structure.lmdb"
 
     print("Loading ID mappings...")
-    seq_to_id = load_sequence_ids(args.seq_id_path)
-    struct_to_id = load_structure_ids(args.struct_id_path)
+    seq_map_path = data_dir / "sequences" / "sequence_id.csv"
+    seq_map = load_sequence_map(seq_map_path)
+
+    afdb_map_path = data_dir / "sequences" / "afdb_mapping.csv"
+    afdb_map = {}
+    if afdb_map_path is not None and afdb_map_path.exists():
+        afdb_map = load_afdb_map(afdb_map_path)
 
     print("Retrieving keys from LMDB...")
     env = lmdb.open(str(lmdb_path), readonly=True, readahead=False, lock=False)
@@ -273,24 +376,18 @@ def main():
 
     print(f"Starting processing with {args.num_workers} workers...")
 
-    final_lookup = {}
-    global_stats = {
-        "seq_success": 0,
-        "seq_fail": 0,
-        "struct_success": 0,
-        "struct_fail": 0,
-    }
+    func = partial(process_batch, apo_dir=data_dir / "apo")
 
     # Initialize pool with shared read-only data
     with multiprocessing.Pool(
         processes=args.num_workers,
         initializer=init_worker,
-        initargs=(seq_to_id, struct_to_id, lmdb_path),
+        initargs=(seq_map, afdb_map, lmdb_path),
     ) as pool:
         # Use imap_unordered for better responsiveness in tqdm
         results = list(
             tqdm(
-                pool.imap_unordered(process_batch, key_chunks),
+                pool.imap_unordered(func, key_chunks),
                 total=len(key_chunks),
                 desc="Processing batches",
             )
@@ -298,19 +395,20 @@ def main():
 
     # Aggregating results
     print("Aggregating results...")
-    for local_lookup, local_stats in results:
+    final_lookup = {}
+    final_stats = {
+        "total_entries": 0,
+        "nonprotein_chains": 0,
+        "protein_chains": 0,
+        "with_esmfold": 0,
+        "without_esmfold": 0,
+        "with_afdb": 0,
+        "without_afdb": 0,
+    }
+    for local_lookup, stats in results:
         final_lookup.update(local_lookup)
-        for k, v in local_stats.items():
-            global_stats[k] += v
-
-    print(
-        f"Sequence embedding: {global_stats['seq_success']} found, "
-        f"{global_stats['seq_fail']} not found."
-    )
-    print(
-        f"Structure embedding: {global_stats['struct_success']} found, "
-        f"{global_stats['struct_fail']} not found."
-    )
+        for k in final_stats:
+            final_stats[k] += stats[k]
 
     # Save lookup
     lookup_path = data_dir / "lookup.json"
@@ -318,10 +416,11 @@ def main():
     with open(lookup_path, "w") as f:
         json.dump(final_lookup, f, indent=2)
 
+    # Print statistics
+    print("Processing complete. Statistics:")
+    for k, v in final_stats.items():
+        print(f"  {k}: {v}")
+
 
 if __name__ == "__main__":
-    try:
-        multiprocessing.set_start_method("fork", force=True)  # Faster on Linux/MacOS
-    except RuntimeError:
-        pass  # Context already set
     main()
