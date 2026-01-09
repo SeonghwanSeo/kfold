@@ -286,6 +286,7 @@ def main():
         num_workers=args.num_workers,
         logger=logger,
     )
+    pathlib.Path(args.out_path).parent.mkdir(parents=True, exist_ok=True)
     ccd.save(args.out_path)
     logger.info("CCD data processing completed.")
 

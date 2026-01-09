@@ -112,6 +112,8 @@ PROTEIN_RESIDUES_STR: tuple[str, ...] = (
     "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL",
     "UNK"
 )  # fmt: skip
+PROTEIN_AMINO_ACIDS_SET: set[str] = set(PROTEIN_AMINO_ACIDS)
+PROTEIN_RESIDUES_STR_SET: set[str] = set(PROTEIN_RESIDUES_STR)
 
 # AA mapping for apo-structure prediction / sequence embedding
 PROTEIN_AMINO_ACID_MAPPING: dict[str, str] = {
@@ -124,15 +126,20 @@ PROTEIN_AMINO_ACID_MAPPING: dict[str, str] = {
 
 DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
 DNA_RESIDUES_STR: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
+DNA_BASES_SET: set[str] = set(DNA_BASES)
+DNA_RESIDUES_STR_SET: set[str] = set(DNA_RESIDUES_STR)
 
 RNA_BASES: tuple[str, ...] = ("A", "G", "C", "U", "N")
 RNA_RESIDUES_STR: tuple[str, ...] = ("A", "G", "C", "U", "N")
+RNA_BASES_SET: set[str] = set(RNA_BASES)
+RNA_RESIDUES_STR_SET: set[str] = set(RNA_RESIDUES_STR)
 
 STANDARD_RESIDUES_STR: tuple[str, ...] = (
     *PROTEIN_RESIDUES_STR,
     *RNA_RESIDUES_STR,
     *DNA_RESIDUES_STR,
 )
+STANDARD_RESIDUES_STR_SET: set[str] = set(STANDARD_RESIDUES_STR)
 
 PROTEIN_RESIDUES: tuple[ResidueName, ...] = tuple(
     ResidueName[name] for name in PROTEIN_RESIDUES_STR

@@ -6,7 +6,7 @@ ccd-train.pkl
 
 (For each dataset)
 rcsb-train/
-    manifest.pkl
+    manifest.json
     structure.lmdb
     lookup.json  # mapping from each chain to seq-id and apo structure(s).
     seq_embedding/
@@ -70,7 +70,6 @@ rcsb-validation/ ...
 import dataclasses
 import io
 import json
-import pickle
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -205,6 +204,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         pretrained_embedding: dict = pretrained_embedding.copy()
         featurization_args: dict = featurization_args.copy()
 
+        for k in ["seq", "seq_dim", "struct", "struct_dim", "max_struct_ensembles"]:
+            if k not in pretrained_embedding:
+                print(
+                    f"Warning: Pretrained embedding key '{k}' not found. Setting to None."
+                )
+                pretrained_embedding[k] = None
+
         self.seq_embedding: str | None = pretrained_embedding["seq"]
         self.seq_embedding_dim: int | None = pretrained_embedding["seq_dim"]
         self.struct_embedding: str | None = pretrained_embedding["struct"]
@@ -278,12 +284,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
     # === Setup === #
     def load_manifest(self) -> list[Metadata]:
-        manifest_path = self.data_root / "manifest.pkl"
+        manifest_path = self.data_root / "manifest.json"
         if not manifest_path.exists():
             raise FileNotFoundError(f"Manifest file {manifest_path} not found.")
-        with open(manifest_path, "rb") as f:
-            metadata_dicts: list[dict] = pickle.load(f)
+        with open(manifest_path) as f:
+            metadata_dicts: list[dict] = json.load(f)
         metadatas: list[Metadata] = [Metadata.from_dict(d) for d in metadata_dicts]
+        del metadata_dicts
         # Ensure all chains and interfaces are valid
         for m in metadatas:
             m.check_all_chains_valid()
@@ -314,27 +321,56 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng: np.random.Generator | None = None,
     ) -> None:
         """Populate the apo structure for the given reference structure."""
+        rng = rng or np.random.default_rng()
+
         # Fetch apo info from lookup table
         name = ref_struct.metadata.id
         entry_info = self.lookup_table[name]
 
         apo_dir = self.data_root / "apo"
-
         apo_lookup_map: dict[int, dict] = {}
         for c in ref_struct.chains:
             entity_id = c.entity_id
             entity_info = entry_info[str(entity_id)]
             if c.ctype.is_protein:
-                apo_list = entity_info.get("apo", [])
+                apo_list: list = entity_info.get("apo", [])
+
+                # Select apo structure (randomly if multiple)
                 if len(apo_list) == 0:
+                    print(
+                        "Warning: No apo structure found for entity "
+                        f"{entity_id} in entry {name}."
+                    )
                     continue
-                # TODO: Sample apo structure if multiple are available
-                apo_info = apo_list[0]
+                elif len(apo_list) == 1:
+                    apo_info = apo_list[0]
+                else:
+                    apo_info = rng.choice(apo_list)
+
+                source = apo_info["source"]
+                name = apo_info["name"]
+                path = apo_info["path"]
+                residue_map = apo_info["residue_map"]
+
+                # Check apo structure file existence
+                apo_path = apo_dir / source / path
+                if not apo_path.exists():
+                    print(
+                        "Warning: Apo structure file not found for entity "
+                        f"{entity_id} in entry {name}."
+                    )
+                    continue
+
+                # Get lmdb key
+                lmdb_key = f"{source}:{name}"
+
+                # Add to apo lookup map
                 apo_lookup_map[entity_id] = {
-                    "name": apo_info["name"],
-                    "path": apo_dir / apo_info["source"] / apo_info["path"],
-                    "residue_map": apo_info["residue_map"],
-                    "source": apo_info["source"],
+                    "source": source,
+                    "name": name,
+                    "path": apo_path,
+                    "residue_map": residue_map,
+                    "rieprody_key": lmdb_key,
                 }
 
         # Populate apo structure

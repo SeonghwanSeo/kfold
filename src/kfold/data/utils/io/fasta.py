@@ -1,10 +1,5 @@
 from pathlib import Path
 
-import gemmi
-import numpy as np
-
-Point3D = tuple[float, float, float]
-
 
 def load_fasta(path: str | Path) -> dict[str, str]:
     """Load sequences from a fasta file (supports multi-line sequences).
@@ -53,87 +48,28 @@ def load_fasta(path: str | Path) -> dict[str, str]:
     return sequences
 
 
-def load_apo_chain(
+def save_fasta(
+    sequences: list[tuple[str, str]],
     path: str | Path,
-) -> tuple[dict[int, str], dict[int, dict[str, Point3D]]]:
-    """Load a apo polymer chain from a PDB file using gemmi.
+    width: int | None = None,
+) -> None:
+    """Save sequences to a fasta file.
 
     Parameters
     ----------
-    path : Path
-        Path to the predicted structure file (e.g., AFDB, ESMFold, ...)
-
-    Returns
-    -------
-    sequences : dict[int, str]
-        key: residue index (1-based)
-        value: residue name (three-letter code)
-    atom_coordinates: dict[int, dict[str, tuple[float, float, float]]]
-        key: residue index (1-based)
-        value:
-            - dict of atom name to coordinates (x, y, z) as np.ndarray
-
+    sequences : list[tuple[str, str]]
+        List of tuples containing sequence ID and sequence string.
+    path : str | Path
+        Path to save the fasta file.
+    width : int | None, optional
+        Maximum line length for sequences.
+        If None, sequences are written in a single line.
     """
-
-    filetype = Path(path).suffix.lower()
-    assert filetype in {".pdb", ".cif"}, f"Unsupported file type: {filetype}"
-
-    structure: gemmi.Structure
-    if filetype == ".cif":
-        structure = gemmi.read_structure(str(path))
-    else:
-        structure = gemmi.read_pdb(str(path))
-    raw_chain = structure[0].subchains()[0]
-
-    sequences: dict[int, str] = {}
-    atom_coordinates: dict[int, dict[str, tuple[float, float, float]]] = {}
-    for res in raw_chain:
-        res: gemmi.Residue
-        res_name = res.name
-        res_idx = int(res.seqid.num)
-        atom_name_to_coords = {
-            atom.name: (atom.pos.x, atom.pos.y, atom.pos.z) for atom in res
-        }
-        sequences[res_idx] = res_name
-        atom_coordinates[res_idx] = atom_name_to_coords
-
-    return sequences, atom_coordinates
-
-
-def read_pdb(path: str | Path) -> np.ndarray:
-    """Load a apo polymer chain from a PDB file using gemmi.
-
-    Parameters
-    ----------
-    path : Path
-        Path to the predicted structure file (e.g., AFDB, ESMFold, ...)
-
-    Returns
-    -------
-    coords : np.ndarray
-        Array of shape (N, 3) containing the coordinates of all atoms in the chain.
-    """
-
-    filetype = Path(path).suffix.lower()
-    assert filetype in {".pdb", ".cif"}, f"Unsupported file type: {filetype}"
-
-    structure: gemmi.Structure
-    if filetype == ".cif":
-        structure = gemmi.read_structure(str(path))
-    else:
-        structure = gemmi.read_pdb(str(path))
-    raw_chain = structure[0].subchains()[0]
-
-    sequences: dict[int, str] = {}
-    atom_coordinates: dict[int, dict[str, tuple[float, float, float]]] = {}
-    for res in raw_chain:
-        res: gemmi.Residue
-        res_name = res.name
-        res_idx = int(res.seqid.num)
-        atom_name_to_coords = {
-            atom.name: (atom.pos.x, atom.pos.y, atom.pos.z) for atom in res
-        }
-        sequences[res_idx] = res_name
-        atom_coordinates[res_idx] = atom_name_to_coords
-
-    return sequences, atom_coordinates
+    with open(path, "w") as f:
+        for seq_id, seq in sequences:
+            f.write(f">{seq_id}\n")
+            if width is None:
+                f.write(f"{seq}\n")
+            else:
+                for i in range(0, len(seq), width):
+                    f.write(f"{seq[i : i + width]}\n")

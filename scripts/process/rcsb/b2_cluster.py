@@ -76,17 +76,7 @@ def get_entity_key(name: str, entity_id: int) -> str:
 def get_sequence(chain: Chain) -> str:
     """Retrieve the sequence for a given chain."""
     if chain.ctype.is_polymer:
-        sequence: str = chain.get_sequence().upper()
-        if chain.ctype.is_protein:
-            # Map ambiguous/non-standard amino acids to standard ones
-            sequence = (
-                sequence.replace("B", "D")
-                .replace("Z", "E")
-                .replace("U", "C")
-                .replace("J", "X")
-                .replace("O", "X")
-            )
-        return sequence
+        return chain.get_sequence(map_to_standard=True)
     else:
         ccd_sequence: list[str] = chain.get_ccd_sequence()
         return ":".join(ccd_sequence)

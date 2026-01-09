@@ -8,11 +8,11 @@ seed: null # should be null for data augmentation
 apo_init:
   use_perturbation: false
   use_random_augmentation: true
-  use_symmetry_correction: false # TODO: enable
+  use_ot_permutation: false
   translation_scale: 10.0 # Angstroms
   prob_perturbation: 1.0
   prob_replace_to_holo: 0.0 # enabled during training
-  training: true # Disable additional etkdg generation during training and validation
+  training: true # If True, skip etkdg generation if there is no cached etkdg conformer. (use ideal/model conformer)
 
   prior_sampler:
     # polymer prior sampler if apo structure is unavailable
@@ -40,7 +40,9 @@ apo_init:
     rieprody:
       # RieProDy Riemannian perturbation settings
       metric_lmdb_path: null # NOTE: This is automatically set in the dataset.
-      rmsd_threshold: 10.0 # Skip perturbation if RMSD exceeds this threshold (Angstroms)
+      rmsd_threshold: 10.0 # RMSD threshold for fallback
+      fallback_on_failure: false # Fallback to return the original structure if RieProDy perturbation fails
+      fallback_on_rmsd_exceed: true # Fallback to return the original structure if RMSD exceeds threshold
       metric_comp:
         apo_internal_coord_metric_calculation_precision: "float64"
         apo_internal_coord_metric_save_precision: "float16"
