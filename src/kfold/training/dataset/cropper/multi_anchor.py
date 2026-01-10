@@ -263,7 +263,7 @@ class MultiAnchorCropper(BaseCropper):
         tokens = struct.token.token_index  # =np.arange(n_tokens)
         center_idx = struct.token.center_index  # (n_tokens, 3)
 
-        holo_coords = struct.atom.coords  # (n_tokens, 24, 3)
+        holo_coords = struct.atom.label_coords  # (n_tokens, 24, 3)
         center_coords = holo_coords[tokens, center_idx, :]  # (n_tokens, 3)
         resolved_mask = struct.atom.resolved_mask[tokens, center_idx]  # (n_tokens,)
 
@@ -333,7 +333,7 @@ class MultiAnchorCropper(BaseCropper):
         tokens = struct.token.token_index  # =np.arange(n_tokens)
         center_idx = struct.token.center_index  # (n_tokens, 3)
 
-        holo_coords = struct.atom.coords  # (n_tokens, 24, 3)
+        holo_coords = struct.atom.label_coords  # (n_tokens, 24, 3)
         center_coords = holo_coords[tokens, center_idx, :]  # (n_tokens, 3)
         resolved_mask = struct.atom.resolved_mask[tokens, center_idx]  # (n_tokens,)
 
@@ -447,7 +447,9 @@ class MultiAnchorCropper(BaseCropper):
         tokens = struct.token.token_index  # =np.arange(num_tokens)
         center_idx = struct.token.center_index  # (num_tokens, 3)
         if center_coords is None:
-            center_coords = struct.atom.coords[tokens, center_idx]  # (num_tokens, 3)
+            center_coords = struct.atom.label_coords[
+                tokens, center_idx
+            ]  # (num_tokens, 3)
         if mask is None:
             mask = struct.atom.resolved_mask[tokens, center_idx]  # (num_tokens,)
 

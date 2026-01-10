@@ -76,7 +76,6 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
         super().__init__(cfg, kernel_config)
 
         diffusion_stack_class = DiffusionModuleWithApo if cfg.use_apo else DiffusionModule
-
         self.diffusion_stack = diffusion_stack_class(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,

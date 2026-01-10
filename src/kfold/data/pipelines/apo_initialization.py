@@ -1,5 +1,6 @@
 import dataclasses
-import pathlib
+import itertools
+from collections import defaultdict
 from functools import lru_cache
 
 import numpy as np
@@ -9,15 +10,10 @@ from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.io.structure import read_protein_structure
 from kfold.utils.geometry.random_augment import center_random_augmentation
+from kfold.utils.geometry.rigid_align import compute_rmsd, weighted_rigid_align
 
-from ._apo_perturbation import (
-    ApoPerturbation,
-    ApoPerturbationConfig,
-)
-from ._apo_prior import (
-    PolymerPriorConfig,
-    PolymerPriorSampler,
-)
+from ._apo_perturbation import ApoPerturbation, ApoPerturbationConfig
+from ._apo_prior import PolymerPriorConfig, PolymerPriorSampler
 
 NUM_ATOMS_PER_RESIDUE: dict[C.ChainType, int] = {
     C.ChainType.PROTEIN: 37,
@@ -28,17 +24,19 @@ NUM_ATOMS_PER_RESIDUE: dict[C.ChainType, int] = {
 
 # === Helper functions === #
 @lru_cache(32)
-def get_ambiguous_atoms_in_residue(res_name: C.ResidueName) -> list[list[int]]:
+def get_ambiguous_atoms_in_residue(
+    res_name: str | C.ResidueName,
+) -> list[list[int]] | None:
     """Get the indices of ambiguous atoms for a given residue type."""
+    if isinstance(res_name, str):
+        res_name: C.ResidueName = C.ResidueName[res_name]
     if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS:
         # If there is no ambiguous atoms, return empty list
-        return []
+        return None
     residue_atoms = C.atom.RESIDUE_ATOMS[res_name]
-
     src_atoms, dst_atoms = C.atom.RESIDUE_AMBIGUOUS_ATOMS_EXTENDED[res_name]
     src_indices = [residue_atoms.index(atom) for atom in src_atoms]
     dst_indices = [residue_atoms.index(atom) for atom in dst_atoms]
-
     assert set(src_indices).isdisjoint(set(dst_indices)), (
         "Overlapping ambiguous atom indices."
     )
@@ -53,31 +51,43 @@ def get_ambiguous_atoms_in_residue(res_name: C.ResidueName) -> list[list[int]]:
 def get_molecule_symmetries(
     ccd_id: str,
     mol_atom_names: list[str],
-    ref_mol: Component,
-) -> list[list[int]]:
+    ccd: CCD,
+) -> list[list[int]] | None:
     """Get molecule's symmetries from ccd."""
-    atom_id_in_ccd: dict[int, int] = {
-        ref_mol.atom_names.index(name): i for i, name in enumerate(mol_atom_names)
-    }
-    valid_atoms: set[int] = set(atom_id_in_ccd.keys())
+    if ccd_id not in ccd:
+        return None
 
+    ref_mol: Component = ccd[ccd_id]
     symmetries = ref_mol.symmetries
-    if symmetries is None or len(symmetries) == 0:
-        symmetries = [[i for i in range(len(mol_atom_names))]]  # identity only
+    if symmetries is None or len(symmetries) <= 1:
+        # No symmetries
+        return None
 
-    all_perms: list[list[int]] = []
-    # Get symmetries
+    if len(mol_atom_names) == ref_mol.num_atoms:
+        # All atoms are present, no need to filter
+        return list(symmetries)
+
+    # Some atoms are missing (drop_leaving_atoms=True; e.g., covalent ligands)
+    valid_atoms: set[str] = set(mol_atom_names)
+
+    name_to_index = ref_mol.get_atom_index_map()
+    mol_to_ref_i_map: dict[int, int] = {
+        name_to_index[name]: i for i, name in enumerate(mol_atom_names)
+    }
+
+    all_perms: list[list[int]] = []  # identity
     for perm in symmetries:
         # Example perm for 4-atom molecules: [0, 2, 1, 3] (swapping atom 1 and 2)
         sym_dict: dict[int, int] = {}
         for i, j in enumerate(perm):
-            if i not in valid_atoms:
+            a_i, a_j = ref_mol.names[i], ref_mol.names[j]
+            if a_i not in valid_atoms:
                 # atom i is not in the molecule
                 continue
-            if j in valid_atoms:
+            if a_j in valid_atoms:
                 # both atoms are in the molecule
-                i_true = atom_id_in_ccd[i]
-                j_true = atom_id_in_ccd[j]
+                i_true = mol_to_ref_i_map[i]
+                j_true = mol_to_ref_i_map[j]
                 sym_dict[i_true] = j_true
             else:
                 # atom j is not in the molecule
@@ -86,7 +96,13 @@ def get_molecule_symmetries(
         else:
             # Completed without break
             # NOTE: This is bijective mapping within valid atoms (see above)
-            all_perms.append([sym_dict[i] for i in range(len(valid_atoms))])
+            perm = [sym_dict[i] for i in range(len(valid_atoms))]
+            all_perms.append(perm)
+
+    if len(all_perms) <= 1:
+        # No symmetries found
+        return None
+
     return all_perms
 
 
@@ -131,9 +147,8 @@ class ApoInitializerConfig:
     use_random_augmentation : bool
         Whether to apply random rotation/translation augmentation
         to apo structures.
-    use_symmetry_correction : bool
-        Whether to correct for symmetry to holo structures.
-        NOTE: This should be used for training only.
+    use_ot_permutation : bool
+        Whether to apply optimal transport-based permutation
     translation_scale : float
         Scale of random translation augmentation (in Angstrom).
     prob_perturbation : float
@@ -147,11 +162,18 @@ class ApoInitializerConfig:
         Configuration for protein apo perturbation.
     prior_sampler : PolymerPriorConfig
         Configuration for polymer prior sampler.
+    training : bool
+        Whether in training mode.
+        NOTE: Recommended to set True for both training and validation datasets
+        to disable ETKDG generation for efficiency.
+    fill_missing_atom: bool
+        Whether to fill missing atoms to neighboring atoms in apo structures
+        for better interpolation.
     """
 
     use_perturbation: bool = False
-    use_random_augmentation: bool = False
-    use_symmetry_correction: bool = False
+    use_random_augmentation: bool = True
+    use_ot_permutation: bool = False
     translation_scale: float = 10.0  # Angstrom
     prob_perturbation: float = 1.0
     prob_replace_to_holo: float = 0.0
@@ -161,7 +183,8 @@ class ApoInitializerConfig:
     prior_sampler: PolymerPriorConfig = dataclasses.field(
         default_factory=PolymerPriorConfig
     )
-    training: bool = True
+    training: bool = False
+    fill_missing_atom: bool = False
 
 
 class ApoInitializer:
@@ -175,8 +198,9 @@ class ApoInitializer:
         self.config: ApoInitializerConfig = config
         self.use_perturbation: bool = config.use_perturbation
         self.use_random_augmentation: bool = config.use_random_augmentation
-        self.use_symmetry_correction: bool = config.use_symmetry_correction
+        self.use_ot_permutation: bool = config.use_ot_permutation
         self.translation_scale: float = config.translation_scale
+        self.fill_missing_atom: bool = config.fill_missing_atom
 
         self.prob_perturbation: float = config.prob_perturbation
         self.prob_replace_to_holo: float = config.prob_replace_to_holo
@@ -265,10 +289,12 @@ class ApoInitializer:
         self.insert_apo_coordinates(struct, lookup, rng)
 
         # If symmetry correction is enabled, align apo to holo
-        if self.use_symmetry_correction:
-            raise NotImplementedError(
-                "ApoInitializer with symmetry correction is not implemented yet."
-            )
+        if self.use_ot_permutation:
+            self.match_optimal_transport_permutation(struct, rng)
+
+        # Fill missing atoms for better interpolation
+        if self.config.fill_missing_atom:
+            self.fill_missing_atoms_to_neighbors(struct)
 
     def insert_apo_coordinates(
         self,
@@ -277,126 +303,125 @@ class ApoInitializer:
         rng: np.random.Generator,
     ) -> None:
         """Insert apo structure coordinates for each chain in the structure."""
-        # Collect/sample apo coordinates for each polymer entity
+        # === 1. Insert apo coordinates for polymer chains === #
+        # cache apo coordinates per entity to avoid redundant loading/sampling
         apo_coords_dict: dict[int, np.ndarray] = {}
         for i in range(struct.num_chains):
             chain = struct.chains[i]
-            chain_meta = struct.metadata.chains[i]
-            entity_id = chain.entity_id
-
             if not chain.ctype.is_polymer:
                 continue  # non-polymer chains handled later
 
-            if entity_id in apo_coords_dict:
-                continue  # already processed
-
-            ctype = chain.ctype
-            ccd_sequence = chain.get_ccd_sequence()
-            L = len(ccd_sequence)
-            Natom = NUM_ATOMS_PER_RESIDUE[ctype]
-
-            if entity_id in lookup:
-                # Load apo structure from file
-                assert ctype.is_protein, "Only protein chains have apo structures."
-                apo_coords = self.get_protein_apo_structure(
-                    ccd_sequence, lookup[entity_id], rng
-                )
+            # Determine number of atoms and atom order
+            if chain.ctype.is_protein:
+                Natom = 37
+                atom_order = C.atom.protein_atom37_order
             else:
-                # No apo structure available, sample from prior
-                apo_coords = self.sample_apo_structure_from_prior(
-                    ccd_sequence, ctype, rng
-                )
+                Natom = 29
+                atom_order = C.atom.nucleic_acid_atom29_order
 
-            assert apo_coords.shape == (L, Natom, 3), (
+            entity_id = chain.entity_id
+            if entity_id not in apo_coords_dict:
+                ctype = chain.ctype
+                ccd_sequence = chain.get_ccd_sequence()
+
+                if entity_id in lookup:
+                    # Load apo structure from file
+                    assert ctype.is_protein, "Only protein chains have apo structures."
+                    apo_coords = self.get_protein_apo_structure(
+                        ccd_sequence, lookup[entity_id], rng
+                    )
+                else:
+                    # No apo structure available, sample from prior
+                    apo_coords = self.sample_apo_structure_from_prior(
+                        ccd_sequence, ctype, rng
+                    )
+                # Store apo coordinates
+                apo_coords_dict[entity_id] = apo_coords
+            else:
+                # Reuse cached apo coordinates
+                apo_coords = apo_coords_dict[entity_id]
+
+            # Sanity check
+            assert apo_coords.shape == (chain.num_residues, Natom, 3), (
                 f"Apo coordinates shape mismatch for entity {entity_id}: "
-                f"expected ({L}, {Natom}, 3), got {apo_coords.shape}"
+                f"expected ({chain.num_residues}, {Natom}, 3), got {apo_coords.shape}"
             )
-            apo_coords_dict[entity_id] = apo_coords
 
-        # Feed apo_coords_dict to structure
+            if self.use_random_augmentation:
+                # Apply random rotation/translation augmentation
+                apo_coords = self.apply_random_augmentation(apo_coords, rng)
+
+            # Insert apo coordinates into chain according to atom order
+            # [L, Natom, 3] -> [Nallatoms, 3]
+            src_res_indices: list[int] = []
+            src_atom_indices: list[int] = []
+            dst_atom_indices: list[int] = []
+            atom_names: list[str] = chain.atom.name.tolist()  # pre-converted to list
+            for res_i in range(chain.num_residues):
+                residue_index = res_i + 1  # 1-based residue index
+                for atom_i in chain.residue.iter_residue_atoms(residue_index):
+                    an = atom_names[atom_i]
+                    if an in atom_order:
+                        src_res_indices.append(res_i)
+                        src_atom_indices.append(atom_order[an])
+                        dst_atom_indices.append(atom_i)
+
+            chain.atom.apo_coords[dst_atom_indices] = apo_coords[
+                src_res_indices, src_atom_indices
+            ]
+
+        # === 2. Insert apo coordinates for non-polymer chains === #
+        # Use CCD reference conformers or ETKDG-generated.
         for chain_i in range(struct.num_chains):
             chain = struct.chains[chain_i]
-            chain_meta = struct.metadata.chains[chain_i]
-            entity_id = chain.entity_id
-
             if chain.ctype.is_polymer:
-                # Polymer chains: use loaded/sampled apo coordinates
-                apo_coords = apo_coords_dict[entity_id]  # [L, Natom, 3]
-                if self.use_random_augmentation:
-                    # Apply random rotation augmentation
-                    apo_coords = self.apply_random_augmentation(apo_coords, rng)
+                continue  # polymer chains handled above
+            chain_meta = struct.metadata.chains[chain_i]
 
-                if chain.ctype.is_protein:
-                    atom_order = C.atom.protein_atom37_order
+            apo_coords = np.full_like(chain.atom.coords, np.nan)
+            for res_i in range(chain.num_residues):
+                residue_index = res_i + 1  # 1-based index
+                ccd_name = str(chain.residue.name[res_i])
+
+                # Load reference molecule from CCD
+                if ccd_name.startswith("LIG"):
+                    # This residue is from a smiles string, load smiles from metadata
+                    assert chain_meta.smiles is not None, (
+                        "Smiles string not found in metadata for LIG residue."
+                    )
+                    assert chain.num_residues == 1, (
+                        "Residue with LIG found in chain with multiple residues."
+                    )
+                    ref_mol = Component.from_smiles(
+                        ccd_name, chain_meta.smiles, num_confs=1
+                    )
                 else:
-                    atom_order = C.atom.nucleic_acid_atom29_order
+                    assert ccd_name in self.ccd, (
+                        f"Residue name {ccd_name} not found in CCD."
+                    )
+                    ref_mol = self.ccd[ccd_name]
 
-                # Map apo coordinates to chain's atom order
-                src_res_indices: list[int] = []
+                ref_atom_order: dict[str, int] = ref_mol.get_atom_index_map()
+                ref_pos = ref_mol.get_conformer(self.conformer_mode, rng=rng)
+                assert ref_pos is not None, "Auto mode always provides a conformer."
+
+                # Map reference conformer to chain's atom order
                 src_atom_indices: list[int] = []
                 dst_atom_indices: list[int] = []
-                atom_names: list[str] = chain.atom.name.tolist()  # pre-converted to list
-                for res_i in range(chain.num_residues):
-                    residue_index = res_i + 1  # 1-based residue index
-                    for atom_i in chain.residue.iter_residue_atoms(residue_index):
-                        an = atom_names[atom_i]
-                        if an in atom_order:
-                            src_res_indices.append(res_i)
-                            src_atom_indices.append(atom_order[an])
-                            dst_atom_indices.append(atom_i)
+                for atom_i in chain.residue.iter_residue_atoms(residue_index):
+                    an = chain.atom.name[atom_i]
+                    if an in ref_atom_order:
+                        ref_at_idx = ref_atom_order[an]
+                        src_atom_indices.append(ref_at_idx)
+                        dst_atom_indices.append(atom_i)
+                apo_coords[dst_atom_indices] = ref_pos[src_atom_indices]
 
-                # Feed apo coordinates
-                # [L, Natom, 3] -> [Nallatoms, 3]
-                chain.atom.apo_coords[dst_atom_indices] = apo_coords[
-                    src_res_indices, src_atom_indices
-                ]
-            else:
-                # Non-polymer chains: use CCD reference conformers or ETKDG-generated.
-                assert chain_meta is not None, (
-                    f"Chain metadata not found for entity_id {entity_id}."
-                )
-                for res_i in range(chain.num_residues):
-                    residue_index = res_i + 1  # 1-based index
-                    ccd_name = str(chain.residue.name[res_i])
+            if self.use_random_augmentation:
+                # Apply random rotation augmentation
+                apo_coords = self.apply_random_augmentation(apo_coords[None, ...], rng)[0]
 
-                    # Load reference molecule from CCD
-                    if ccd_name.startswith("LIG"):
-                        # This residue is from a smiles string, load smiles from metadata
-                        assert chain_meta.smiles is not None, (
-                            "Smiles string not found in metadata for LIG residue."
-                        )
-                        assert chain.num_residues == 1, (
-                            "Residue with LIG found in chain with multiple residues."
-                        )
-                        ref_mol = Component.from_smiles(
-                            ccd_name, chain_meta.smiles, num_confs=1
-                        )
-                    else:
-                        assert ccd_name in self.ccd, (
-                            f"Residue name {ccd_name} not found in CCD."
-                        )
-                        ref_mol = self.ccd[ccd_name]
-
-                    ref_atom_order: dict[str, int] = ref_mol.get_atom_index_map()
-                    ref_pos = ref_mol.get_conformer(self.conformer_mode, rng=rng)
-                    assert ref_pos is not None, "Auto mode always provides a conformer."
-
-                    if self.use_random_augmentation:
-                        # Apply random rotation augmentation
-                        ref_pos = self.apply_random_augmentation(
-                            ref_pos[None, :, :], rng
-                        )[0]
-
-                    # Map reference conformer to chain's atom order
-                    src_atom_indices: list[int] = []
-                    dst_atom_indices: list[int] = []
-                    for atom_i in chain.residue.iter_residue_atoms(residue_index):
-                        an = chain.atom.name[atom_i]
-                        if an in ref_atom_order:
-                            ref_at_idx = ref_atom_order[an]
-                            src_atom_indices.append(ref_at_idx)
-                            dst_atom_indices.append(atom_i)
-                    chain.atom.apo_coords[dst_atom_indices] = ref_pos[src_atom_indices]
+            # Feed apo coordinates
+            chain.atom.apo_coords[:, :] = apo_coords
 
     def get_protein_apo_structure(
         self,
@@ -443,15 +468,15 @@ class ApoInitializer:
 
         path = apo_info["path"]
         residue_map = apo_info["residue_map"]
+        lmdb_key = apo_info["rieprody_key"]
 
         # Load apo structure
         _, apo_coords = read_protein_structure(path)
 
         # Apply perturbation if enabled
         if self.use_perturbation and rng.random() < self.prob_perturbation:
-            name = apo_info.get("name", pathlib.Path(path).name.split(".")[0])
             apo_mask = np.isfinite(apo_coords).all(axis=-1)
-            apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=name)
+            apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=lmdb_key)
 
         # Crop apo_coords based on residue_map
         length = len(ccd_sequence)
@@ -550,6 +575,336 @@ class ApoInitializer:
             mask.reshape(L * Natom),
             augmentation=True,
             s_trans=self.translation_scale,
+            rng=rng,
         ).reshape(L, Natom, 3)
         augmented_coords[~mask] = np.nan
         return augmented_coords
+
+    def match_optimal_transport_permutation(
+        self,
+        struct: RefStructure,
+        rng: np.random.Generator,
+    ):
+        """Align apo to holo to minimize transport cost (RMSD).
+
+        This method solves the discrete optimal transport problem over the
+        structure's symmetry group (chain permutations and residue flips).
+        It ensures that the flow matching target (holo) is aligned to the
+        source (apo) with the minimal displacement, constructing the
+        optimal straight-line trajectory.
+
+        Parameters
+        ----------
+        struct : RefStructure
+            Reference structure. Apo coords will be permuted in-place.
+        rng : np.random.Generator
+            Random number generator for stochastic sampling.
+        """
+        # Validate that there is at least one resolved holo atoms
+        for chain in struct.chains:
+            if np.isfinite(chain.atom.coords).all(-1).any():
+                break
+        else:
+            raise ValueError("No resolved holo atoms found for ot permutation.")
+
+        # Skip permutation if there is no resolved apo atoms
+        for chain in struct.chains:
+            if np.isfinite(chain.atom.apo_coords).all(-1).any():
+                break
+        else:
+            # No resolved apo atoms found; return without permutation
+            return
+
+        # First, chain permutation
+        # RNG state is used for sampling permutations when too many exist
+        self.find_best_chain_permutation(struct, max_permutations=100, rng=rng)
+
+        # Second, residue-level permutation (e.g., flipping)
+        self.find_best_residue_permutation(struct)
+
+    def find_best_chain_permutation(
+        self,
+        struct: RefStructure,
+        max_permutations: int,
+        rng: np.random.Generator,
+    ) -> None:
+        # === 1. Prepare coordinates === #
+        entity_ids: list[int] = sorted(set(chain.entity_id for chain in struct.chains))
+        entity_order: list[int] = [chain.entity_id for chain in struct.chains]
+        entity_apo_dict: dict[int, list[np.ndarray]] = defaultdict(list)
+        for chain in struct.chains:
+            entity_apo_dict[chain.entity_id].append(chain.atom.apo_coords.copy())
+
+        # === 2. Anchor Selection for Alignment === #
+        entity_anchors: dict[int, np.ndarray] = {}
+        entity_anchor_weights: dict[int, np.ndarray] = {}
+        entity_anchor_coords: dict[int, list[np.ndarray]] = {}
+
+        for chain in struct.chains:
+            eid = chain.entity_id
+            if eid in entity_anchors:
+                continue
+
+            # Atom selection logic
+            if chain.ctype.is_protein:
+                idx = np.where(chain.atom.name == "CA")[0]
+            elif chain.ctype.is_nucleic_acid:
+                idx = np.where(chain.atom.name == "C1'")[0]
+            else:
+                idx = np.arange(chain.num_atoms)
+            if len(idx) == 0:
+                idx = np.arange(chain.num_atoms)
+
+            # Subsampling to max 20 anchors
+            stride = max(1, len(idx) // 20)
+            idx = idx[::stride]
+            entity_anchors[eid] = idx
+            entity_anchor_weights[eid] = np.full(len(idx), 1.0 / len(idx))
+            entity_anchor_coords[eid] = [coords[idx] for coords in entity_apo_dict[eid]]
+
+        align_weights = np.concatenate(
+            [entity_anchor_weights[chain.entity_id] for chain in struct.chains], axis=0
+        )
+        del entity_anchor_weights
+
+        # === 3. Prepare label centers and masks === #
+        label_centers = np.concatenate(
+            [
+                chain.atom.coords[entity_anchors[chain.entity_id]]
+                for chain in struct.chains
+            ],
+            axis=0,
+        )
+        label_mask = np.isfinite(label_centers).all(axis=-1)
+
+        # === 4. Generate candidate permutations === #
+        rng.shuffle(entity_ids)
+        entity_to_perms = {}
+        for eid in entity_ids:
+            num_chains = len(entity_apo_dict[eid])
+            # Limit per-entity permutations to avoid memory explosion
+            perms = list(
+                itertools.islice(
+                    itertools.permutations(range(num_chains)), max_permutations * 5
+                )
+            )
+            entity_to_perms[eid] = perms
+
+        final_permutations: list[dict[int, list[int]]] = [
+            {eid: perm for eid, perm in zip(entity_ids, perms, strict=True)}
+            for perms in itertools.islice(
+                itertools.product(*(entity_to_perms[eid] for eid in entity_ids)),
+                max_permutations * 10,
+            )
+        ]
+        if len(final_permutations) > max_permutations:
+            rng.shuffle(final_permutations)
+            final_permutations = final_permutations[:max_permutations]
+
+        # === 5. Evaluate permutations === #
+        best_permutation = None
+        min_weighted_mse = float("inf")
+        for perm in final_permutations:
+            # Use a simpler way to track which index to take for each entity
+            counts = defaultdict(int)
+            anchors_list: list[np.ndarray] = []
+            for eid in entity_order:
+                orig_idx = counts[eid]
+                swap_idx = perm[eid][orig_idx]
+                counts[eid] += 1
+                anchors_list.append(entity_anchor_coords[eid][swap_idx])
+            del counts
+            apo_centers = np.concatenate(anchors_list, axis=0)
+            apo_mask = np.isfinite(apo_centers).all(axis=-1)
+            align_mask = label_mask & apo_mask
+
+            coords = apo_centers[align_mask]
+            target = label_centers[align_mask]
+            weights = align_weights[align_mask]
+            aligned = weighted_rigid_align(coords, target, weights, mask=None)
+            d_sq = np.sum((aligned - target) ** 2, axis=-1)
+            weighted_mse = np.sum(d_sq * weights)
+
+            if weighted_mse < min_weighted_mse:
+                min_weighted_mse = weighted_mse
+                best_permutation = perm
+
+        # === 6. Apply permutations === #
+        counts = defaultdict(int)
+        if best_permutation is not None:
+            # Reorder apo coordinates according to best permutation
+            for chain in struct.chains:
+                eid = chain.entity_id
+                orig_idx = counts[eid]  # index in the entity
+                perm_idx = best_permutation[eid][orig_idx]
+                if orig_idx != perm_idx:
+                    # Apply permutation
+                    chain.atom.apo_coords[:] = entity_apo_dict[eid][perm_idx]
+                counts[eid] += 1
+        del counts
+
+    def find_best_residue_permutation(self, struct: RefStructure) -> None:
+        """Find the best residue permutation for symmetry correction.
+        Use intra-residue structure comparison to find the best permutation.
+
+        Parameters
+        ----------
+        struct : RefStructure
+            Reference structure containing holo coordinates.
+        """
+        for chain in struct.chains:
+            ctype = chain.ctype
+
+            if ctype.is_ion:
+                # Skip ions (single atom)
+                continue
+
+            for res_i in range(chain.num_residues):
+                res_name: str = chain.residue.name[res_i].item()
+                num_atoms: int = chain.residue.num_atoms[res_i]
+                atom_st: int = chain.residue.atom_starts[res_i]
+                atom_end: int = atom_st + num_atoms
+
+                if num_atoms < 5:
+                    # Not enough atoms to consider permutation
+                    continue
+
+                if ctype.is_polymer and chain.residue.is_standard[res_i]:
+                    # Get ambiguous atom permutations for this standard residue
+                    perms = get_ambiguous_atoms_in_residue(res_name)
+                    if perms is None:
+                        # No ambiguous atoms for this residue
+                        continue
+
+                elif res_name in self.ccd:
+                    # Get molecule symmetries from CCD
+                    atom_names: list[str] = chain.atom.name[atom_st:atom_end].tolist()
+                    perms = get_molecule_symmetries(res_name, atom_names, self.ccd)
+                    if perms is None:
+                        # No symmetries for this molecule
+                        continue
+
+                else:
+                    # No symmetry information available
+                    continue
+
+                # Find the best permutation
+                best_perm = None
+                min_rmsd = float("inf")
+
+                res_holo_coords = chain.atom.coords[atom_st:atom_end]  # [num_atoms, 3]
+                res_apo_coords = chain.atom.apo_coords[atom_st:atom_end]  # [num_atoms, 3]
+                res_holo_mask = np.isfinite(res_holo_coords).all(-1)  # [num_atoms,]
+                res_apo_mask = np.isfinite(res_apo_coords).all(-1)  # [num_atoms,]
+
+                for perm in perms:
+                    permuted_apo_mask = res_apo_mask[perm]
+                    align_mask = res_holo_mask & permuted_apo_mask
+                    if np.sum(align_mask) < 5:
+                        continue  # Not enough resolved atoms to align
+
+                    permuted_apo_coords = res_apo_coords[perm, :]
+                    rmsd = compute_rmsd(
+                        permuted_apo_coords, res_holo_coords, align_mask, align=True
+                    )
+                    if rmsd < min_rmsd:
+                        min_rmsd = rmsd
+                        best_perm = perm
+
+                if best_perm is not None:
+                    # Apply best permutation
+                    res_apo_coords[:, :] = res_apo_coords[best_perm, :]
+                else:
+                    pass
+
+    def fill_missing_atoms_to_neighbors(self, struct: RefStructure) -> None:
+        """Fill missing atoms to neighboring atoms in apo structures
+        for better interpolation.
+
+        Strategy:
+        - Intra-residue: Fill missing atoms with the residue center.
+        - Inter-residue: Fill unresolved residues with the center of the
+          nearest resolved residue (by sequence index).
+
+        Parameters
+        ----------
+        struct : RefStructure
+            Reference structure containing apo coordinates.
+        """
+        for chain in struct.chains:
+            apo_coords = chain.atom.apo_coords
+
+            # Mask of valid atoms: [N_atoms]
+            atom_mask: np.ndarray = np.isfinite(apo_coords).all(axis=-1)
+
+            # Check if any atoms are missing
+            if atom_mask.all():
+                continue
+
+            # Check if all atoms are missing
+            if not atom_mask.any():
+                continue  # Cannot fill anything
+
+            num_residues = chain.num_residues
+            residue_centers = np.full((num_residues, 3), np.nan, dtype=np.float32)
+            is_residue_resolved = np.zeros(num_residues, dtype=bool)
+
+            # --- Step 1: Compute Centers & Fill Intra-residue gaps ---
+            # Note: Keeping loop due to ragged atom_starts/ends
+            for res_i in range(num_residues):
+                atom_st = chain.residue.atom_starts[res_i]
+                atom_end = atom_st + chain.residue.num_atoms[res_i].item()
+
+                # Slice views (modifications affect apo_coords)
+                res_coords_view = apo_coords[atom_st:atom_end]
+                res_mask_view = atom_mask[atom_st:atom_end]
+
+                if res_mask_view.any():
+                    is_residue_resolved[res_i] = True
+                    # Compute center using only valid atoms
+                    center = np.mean(res_coords_view[res_mask_view], axis=0)
+                    residue_centers[res_i] = center
+
+                    # Fill missing atoms within this resolved residue
+                    if not res_mask_view.all():
+                        res_coords_view[~res_mask_view] = center
+
+            # --- Step 2: Fill Unresolved Residues (Vectorized) ---
+            resolved_indices = np.where(is_residue_resolved)[0]
+
+            # Safety check: If no residues are resolved, we cannot fill anything.
+            if len(resolved_indices) == 0:
+                # Optional: logging warning here
+                continue
+
+            missing_res_indices = np.where(~is_residue_resolved)[0]
+
+            if len(missing_res_indices) > 0:
+                # Find nearest resolved index for every missing index
+                # np.searchsorted finds insertion points to keep order
+                idx_insertion = np.searchsorted(resolved_indices, missing_res_indices)
+
+                # Clamp indices to valid range for neighbor checking
+                idx_left = np.clip(idx_insertion - 1, 0, len(resolved_indices) - 1)
+                idx_right = np.clip(idx_insertion, 0, len(resolved_indices) - 1)
+
+                # Calculate distances to left and right neighbors
+                dist_left = np.abs(missing_res_indices - resolved_indices[idx_left])
+                dist_right = np.abs(missing_res_indices - resolved_indices[idx_right])
+
+                # Choose the closer neighbor
+                # use_right is a boolean mask
+                use_right = dist_right < dist_left
+                closest_indices_map = np.where(use_right, idx_right, idx_left)
+
+                # Get the actual residue indices
+                closest_res_indices = resolved_indices[closest_indices_map]
+
+                # Gather centers for all missing residues at once
+                fill_centers = residue_centers[closest_res_indices]
+
+                # Apply filling
+                for i, res_i in enumerate(missing_res_indices):
+                    atom_st = chain.residue.atom_starts[res_i]
+                    atom_end = atom_st + chain.residue.num_atoms[res_i].item()
+                    apo_coords[atom_st:atom_end] = fill_centers[i]

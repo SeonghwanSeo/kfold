@@ -66,10 +66,9 @@ class BoltzCropper(BaseCropper):
         atom_data = struct.atom  # features: [L, 24, ...]
 
         # Get resolved mask with valid center atoms
-        token_center_mask = atom_data.resolved_mask[
+        resolved_mask = atom_data.resolved_mask[
             token_data.token_index, token_data.center_index
         ]  # (num_tokens,)
-        resolved_mask = token_data.resolved_mask & token_center_mask
 
         if not resolved_mask.any():
             raise ValueError("No valid tokens in struct")
@@ -80,7 +79,7 @@ class BoltzCropper(BaseCropper):
         all_asym_ids = token_data.asym_id
         all_residue_indices = token_data.residue_index
         # NOTE: (seonghwanseo) Here we use the first holo coordinates.
-        all_token_centers = atom_data.coords[
+        all_token_centers = atom_data.label_coords[
             token_data.token_index, token_data.center_index, :
         ]  # (num_tokens, 3)
 

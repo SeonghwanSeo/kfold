@@ -149,11 +149,11 @@ def get_alt_coordinates(
     """
 
     # Get original coordinates
-    original_coords = cropped_struct.atom.coords  # [Ntoken, 24, 3]
+    original_coords = cropped_struct.atom.label_coords  # [Ntoken, 24, 3]
     original_resolved_mask = cropped_struct.atom.resolved_mask  # [Ntoken, 24]
 
     # Get entire coordinates as the source of symmetries
-    all_coords = all_struct.atom.coords  # [Ntoken, 24, 3]
+    all_coords = all_struct.atom.label_coords  # [Ntoken, 24, 3]
     all_resolved_mask = all_struct.atom.resolved_mask  # [Ntoken, 24]
 
     # === Get chain symmetries === #
@@ -423,7 +423,7 @@ def get_molecule_symmetries(
         ref_mol: Component = ccd[ccd_id]
 
         atom_id_in_ccd: dict[int, int] = {
-            ref_mol.atom_names.index(name): i for i, name in enumerate(mol_atom_names)
+            ref_mol.names.index(name): i for i, name in enumerate(mol_atom_names)
         }
         valid_atoms: set[int] = set(atom_id_in_ccd.keys())
 

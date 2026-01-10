@@ -285,12 +285,21 @@ def tokenize_structure(
         assert pad_mask.sum() == chain.num_atoms, "Number of valid atoms does not match"
 
         # Insert ground-truth coordinates
-        struct.atom.coords[token_st:token_end][pad_mask] = chain.atom.label_coords
+        struct.atom.label_coords[token_st:token_end][pad_mask] = chain.atom.coords
 
         # Insert apo coordinates (NOTE: apo_coords are already center-random-augmented)
         struct.atom.apo_coords[token_st:token_end][pad_mask] = chain.atom.apo_coords
 
-        # Insert reference molecules
+        # Insert reference atom info except reference conformers
+        struct.atom.ref_atom_name_chars[token_st:token_end][pad_mask] = np.array(
+            [C.atom.encode_atom_name(name) for name in chain.atom.name.tolist()]
+        )  # (num_atoms, 4)
+        struct.atom.ref_element[token_st:token_end][pad_mask] = chain.atom.element
+        struct.atom.ref_charge[token_st:token_end][pad_mask] = chain.atom.charge.astype(
+            np.float32
+        )
+
+        # Insert reference molecular conformers
         for res_i in range(chain.num_residues):
             residue_index = res_i + 1  # 1-based index
             ccd_name = str(chain.residue.name[res_i])
@@ -304,48 +313,39 @@ def tokenize_structure(
                 assert chain.num_residues == 1, (
                     "Residue with LIG prefix found in chain with multiple residues."
                 )
-                ref_mol: Component = Component.from_smiles(ccd_name, smiles)
+                ref_mol: Component = Component.from_smiles(ccd_name, smiles, num_confs=1)
             else:
                 assert ccd_name in ccd, f"Residue name {ccd_name} not found in CCD."
                 ref_mol: Component = ccd[ccd_name]
 
-            ref_atom_order: dict[str, int] = ref_mol.get_atom_index_map()
-            ref_atom_name_chars: np.ndarray = np.array(
-                [C.atom.encode_atom_name(name) for name in ref_mol.atom_names]
-            )  # (num_atoms, 4)
-            ref_element: np.ndarray = ref_mol.elements  # (num_atoms,)
-            ref_charge: np.ndarray = ref_mol.charges  # (num_atoms,)
+            # Get reference conformer positions with random augmentation
             ref_pos: np.ndarray = ref_mol.get_conformer(conformer_mode, rng)  # type: ignore
             assert ref_pos is not None, "Auto mode always provides a conformer."
-
-            # Rotate
             ref_mask = np.isfinite(ref_pos).all(axis=-1)
-            ref_pos = center_random_augmentation(ref_pos, ref_mask, rng=rng)
+            if ref_mask.any():
+                ref_pos = center_random_augmentation(ref_pos, ref_mask, rng=rng)
 
-            res_atom_st = int(chain.residue.atom_starts[res_i])
-            natoms = int(chain.residue.num_atoms[res_i])
-
-            # get indices of atoms in the reference molecule
+            # Insert coordinates based on atom names
             atom_indices = []
-            for atom_i in range(res_atom_st, res_atom_st + natoms):
+            ref_atom_order: dict[str, int] = ref_mol.get_atom_index_map()
+            for atom_i in chain.residue.iter_residue_atoms(residue_index):
                 atom_name = str(chain.atom.name[atom_i])
                 assert atom_name in ref_atom_order, (
                     f"Atom name {atom_name} not found in reference molecule {ccd_name}."
                 )
                 ref_atom_i = ref_atom_order[atom_name]
                 atom_indices.append(ref_atom_i)
-
+            # Ensure the atom_indices are ascending order
+            assert atom_indices == sorted(atom_indices), (
+                "Atom indices are not in ascending order."
+            )
+            natoms = int(chain.residue.num_atoms[res_i])
             if chain.residue.is_standard[res_i]:
                 # Standard residue
                 assert np.all(struct.atom.pad_mask[g_tok_i, :natoms]), (
                     "Atom pad mask mismatch for standard residue."
                     f" (g_tok_i={g_tok_i}, natoms={natoms})"
                 )
-                struct.atom.ref_atom_name_chars[g_tok_i, :natoms, :] = (
-                    ref_atom_name_chars[atom_indices]
-                )
-                struct.atom.ref_element[g_tok_i, :natoms] = ref_element[atom_indices]
-                struct.atom.ref_charge[g_tok_i, :natoms] = ref_charge[atom_indices]
                 struct.atom.ref_pos[g_tok_i, :natoms, :] = ref_pos[atom_indices, :]
                 g_tok_i += 1
             else:
@@ -355,30 +355,29 @@ def tokenize_structure(
                 )
                 st = g_tok_i
                 end = g_tok_i + natoms
-                struct.atom.ref_atom_name_chars[st:end, 0, :] = ref_atom_name_chars[
-                    atom_indices
-                ]
-                struct.atom.ref_element[st:end, 0] = ref_element[atom_indices]
-                struct.atom.ref_charge[st:end, 0] = ref_charge[atom_indices]
                 struct.atom.ref_pos[st:end, 0, :] = ref_pos[atom_indices, :]
                 g_tok_i += natoms
 
     # Update atom masks at once
     struct.atom.ref_mask[:] = np.isfinite(struct.atom.ref_pos).all(axis=-1)
-    struct.atom.resolved_mask[:] = np.isfinite(struct.atom.coords).all(axis=-1)
+    struct.atom.resolved_mask[:] = np.isfinite(struct.atom.label_coords).all(axis=-1)
     struct.atom.apo_mask[:] = np.isfinite(struct.atom.apo_coords).all(axis=-1)
 
     # Update NaN to zero
     struct.atom.ref_charge[np.isnan(struct.atom.ref_charge)] = 0.0
-    struct.atom.ref_pos[np.isnan(struct.atom.ref_pos)] = 0.0
-    struct.atom.apo_coords[np.isnan(struct.atom.apo_coords)] = 0.0
 
+    # Update apo coordinates (NaN to zero)
+    struct.atom.apo_coords[:] = do_centering(
+        struct.atom.apo_coords.reshape(-1, 3),
+        struct.atom.apo_mask.reshape(-1),
+        mask_to_zero=True,
+    ).reshape(struct.atom.apo_coords.shape)
     # Update holo coordinates (centering & NaN to zero)
-    struct.atom.coords[:] = do_centering(
-        struct.atom.coords.reshape(-1, 3),
+    struct.atom.label_coords[:] = do_centering(
+        struct.atom.label_coords.reshape(-1, 3),
         struct.atom.resolved_mask.reshape(-1),
         mask_to_zero=True,
-    ).reshape(struct.atom.coords.shape)
+    ).reshape(struct.atom.label_coords.shape)
 
     # ==================================================
     # Fill bond structures

@@ -47,7 +47,7 @@ def main():
         pickle.dump(metadata_dicts, f)
     print(f"Saved manifest (pickle) to {manifest_path}")
 
-    # Save to json file (human-readable; not used in pipeline)
+    # Save to json file (human-readable)
     manifest_path: pathlib.Path = data_dir / "manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(metadata_dicts, f, indent=2)
@@ -66,12 +66,12 @@ def main():
         npz_path = npz_path_dict.get(entry_id)
         assert npz_path is not None, f"NPZ file not found for {entry_id}"
 
-    # Create lmdb environment (expected size of rcsb training set: ~20GB)
+    # Create lmdb environment (expected size of rcsb training set: <25GB)
     print("Creating LMDB database...")
     lmdb_path = args.data_dir / "structure.lmdb"
     env = lmdb.open(
         str(lmdb_path),
-        map_size=20 * 1024 * 1024 * 1024,
+        map_size=25 * 1024 * 1024 * 1024,
         map_async=True,
     )
     with env.begin(write=True) as txn:

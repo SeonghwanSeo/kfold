@@ -1,247 +1,358 @@
 """MMCIF writer utilities."""
 
-import io
 import logging
-from collections.abc import Callable, Generator
-from functools import lru_cache
+from collections import defaultdict
 
-import ihm
+import gemmi
 import numpy as np
-from modelcif import Assembly, AsymUnit, Entity, System, dumper
-from modelcif.model import AbInitioModel, Atom, ModelGroup
-from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.types.structure import RefStructure
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
 
-# === Helpers === #
-@lru_cache(maxsize=1)
-def _get_periodic_table() -> Chem.PeriodicTable:
-    return Chem.GetPeriodicTable()
-
-
-@lru_cache(maxsize=4)
-def _get_alphabet(chain_type: C.ChainType) -> ihm.Alphabet:
-    match chain_type:
-        case C.ChainType.PROTEIN:
-            return ihm.LPeptideAlphabet()
-        case C.ChainType.DNA:
-            return ihm.DNAAlphabet()
-        case C.ChainType.RNA:
-            return ihm.RNAAlphabet()
-        case _:
-            raise ValueError(f"Unsupported chain type for alphabet: {chain_type}")
-
-
-@lru_cache(maxsize=3)
-def _get_polymer_chemcomp_factory(
-    chain_type: C.ChainType,
-) -> Callable[[str], ihm.ChemComp]:
-    match chain_type:
-        case C.ChainType.PROTEIN:
-            return lambda x: ihm.LPeptideChemComp(id=x, code=x, code_canonical="X")  # noqa: E731
-        case C.ChainType.DNA:
-            return lambda x: ihm.DNAChemComp(id=x, code=x, code_canonical="N")  # noqa: E731
-        case C.ChainType.RNA:
-            return lambda x: ihm.RNAChemComp(id=x, code=x, code_canonical="N")  # noqa: E731
-        case _:
-            raise ValueError(f"Unsupported chain type for chemcomp: {chain_type}")
-
-
-@lru_cache(maxsize=2)
-def _get_nonpolymer_chemcomp_factory(ligand_type: str) -> Callable[[str], ihm.ChemComp]:
-    if ligand_type not in {"saccharide", "nonpolymer"}:
-        raise ValueError(f"Unsupported ligand type for chemcomp: {ligand_type}")
-    if ligand_type == "saccharide":
-        return lambda x: ihm.SaccharideChemComp(id=x)  # noqa: E731
-    else:
-        return lambda x: ihm.NonPolymerChemComp(id=x)  # noqa: E731
-
-
-def _get_chain_tag(index: int) -> str:
-    """Generate chain tag from index (0 -> A, 1 -> B, ..., 25 -> Z, 26 -> AA, ...)."""
-    chars: list[str] = []
-    while True:
-        index, rem = divmod(index, 26)
-        chars.append(chr(rem + ord("A")))
-        if index == 0:
-            break
-        index -= 1  # Adjust for 0-based index
-    return "".join(reversed(chars))
-
-
 # === Core implementation === #
 def to_mmcifstring(
-    struct: TokenizedStructure,
+    struct: RefStructure,
     save_apo: bool = False,
-) -> str:  # noqa: PLR0915
+) -> str:
     """Write a structure into an MMCIF file.
 
     Parameters
     ----------
-    struct : TokenizedStructure
-        The input structure
+    struct : RefStructure
+        The input structure containing chain metadata and coordinates.
     save_apo : bool, optional
-        Whether to save the apo form (default is False)
+        Whether to save the apo form (default is False).
 
     Returns
-    -------
+    ----
     str
-        the output MMCIF file
+        The output MMCIF file content.
     """
-    chains = struct.chain  # [Nchain, ...]
-    residues = struct.residue  # [Nresidue, ...]
-    tokens = struct.token  # [Ntoken, ...]
-    atoms = struct.atom  # [Ntoken, 24, ...]
+    metadata = struct.metadata
 
-    # Get chain tags
-    chain_tags: list[str] = []
-    entity_descriptions: dict[int, str | None] = {}
-    if struct.metadata is not None:
-        # Use metadata if available
-        if struct.metadata.num_chains == len(chains):
-            for chain_info in struct.metadata.chains:
-                chain_tags.append(chain_info.chain_name)
-                entity_descriptions[int(chain_info.entity_id)] = chain_info.description
+    structure = gemmi.Structure()
+
+    # === Create entity lists === #
+    entity_ctypes: dict[int, C.ChainType] = {}
+    entity_sequences: dict[int, list[str]] = {}
+    entity_asym_ids: dict[int, list[str]] = defaultdict(list)
+    for chain_i in range(len(struct.chains)):
+        chain_meta = metadata.chains[chain_i]
+        ref_chain = struct.chains[chain_i]
+        entity_id = ref_chain.entity_id
+        if entity_id not in entity_sequences:
+            # First time seeing this entity, store its type and sequence
+            entity_ctypes[entity_id] = ref_chain.ctype
+            entity_sequences[entity_id] = ref_chain.get_ccd_sequence()
+        # Append asym_id (chain name) to the entity's list
+        entity_asym_ids[entity_id].append(chain_meta.chain_name)
+
+    entity_list: list[gemmi.Entity] = []
+    for entity_id in sorted(entity_sequences.keys()):
+        entity = gemmi.Entity(str(entity_id))
+        ctype = entity_ctypes[entity_id]
+        if ctype.is_polymer:
+            entity.entity_type = gemmi.EntityType.Polymer
+            match ctype:
+                case C.ChainType.PROTEIN:
+                    entity.polymer_type = gemmi.PolymerType.PeptideL
+                case C.ChainType.RNA:
+                    entity.polymer_type = gemmi.PolymerType.Rna
+                case C.ChainType.DNA:
+                    entity.polymer_type = gemmi.PolymerType.Dna
+                case _:
+                    raise ValueError(f"Unsupported polymer chain type: {ctype}")
         else:
-            logger.warning(
-                "Metadata chain count does not match structure chain count. "
-                "Falling back to default chain tags."
-            )
-    if len(chain_tags) == 0:
-        # Fallback to default chain tags (A, B, C, ...)
-        for i in range(len(chains)):
-            chain_tags.append(_get_chain_tag(i))
+            # FIXME: add glycan support later
+            entity.entity_type = gemmi.EntityType.NonPolymer
+        entity.full_sequence = entity_sequences[entity_id]
+        entity.subchains = entity_asym_ids[entity_id]
+        entity_list.append(entity)
 
-    # Load periodic table for element mapping
-    periodic_table = _get_periodic_table()
+    entities: gemmi.EntityList = gemmi.EntityList(entity_list)
+    del entity_list  # free memory
+    structure.entities = entities
 
-    # --- 1. Identify Entities (Unique Sequences) ---
-    entity_map: dict[int, ihm.Entity] = {}
-    ligand_count: int = 0
+    # === Build Model === #
+    model = gemmi.Model("1")
+    for chain_i in range(len(struct.chains)):
+        ref_chain = struct.chains[chain_i]
+        chain_meta = metadata.chains[chain_i]
+        ctype = ref_chain.ctype
 
-    for chain_i in range(len(chains)):
-        # Chain info
-        entity_id = int(chains.entity_id[chain_i])
+        # Retrieve layout data
+        res_layout = ref_chain.residue
+        atom_layout = ref_chain.atom
 
-        if entity_id in entity_map:
-            continue  # already processed
+        atom_names: list[str] = atom_layout.name.tolist()
+        atom_elements: list[int] = atom_layout.element.tolist()
+        atom_charges: list[int] = atom_layout.charge.tolist()
 
-        # Extract sequence
-        res_st = int(chains.residue_start[chain_i])
-        res_end = res_st + int(chains.num_residues[chain_i])
-        sequence: list[str] = []
-        for res_name in residues.name[res_st:res_end]:
-            sequence.append(res_name)
-
-        # Create ChemComp and Alphabet based on chain_type
-        chain_type = C.ChainType(chains.chain_type[chain_i])
-        if chain_type in {C.ChainType.PROTEIN, C.ChainType.DNA, C.ChainType.RNA}:
-            # Handling polymer chains
-            alphabet = _get_alphabet(chain_type)
-            chem_comp = _get_polymer_chemcomp_factory(chain_type)
-            seq_objs = [alphabet[v] if v in alphabet else chem_comp(v) for v in sequence]
+        if save_apo:
+            atom_coords = atom_layout.apo_coords
         else:
-            # Handling ligand / non-polymer chains
-            if len(sequence) == 1 and sequence[0] == "LIG":
-                # Ligand / Non-polymer
-                ligand_count += 1
-                lig_id = f"LIG{ligand_count}"
-                seq_objs = [ihm.NonPolymerChemComp(id=lig_id)]
-            else:
-                # Polysaccharide or other polymer
-                chem_comp = lambda x: ihm.SaccharideChemComp(id=x)  # noqa: E731
-                seq_objs = [chem_comp(v) for v in sequence]
+            atom_coords = atom_layout.coords
 
-        # Create Entity
-        if (description := entity_descriptions.get(entity_id, None)) is None:
-            description = f"{str(chain_type)} {entity_id}"
-        entity = Entity(seq_objs, description=description)
-        entity_map[entity_id] = entity
+        chain_id = chain_meta.chain_name  # e.g., "A", "B", etc.
+        entity_id = chain_meta.entity_id
 
-    # --- 2. Create AsymUnits (Chains) ---
-    asym_unit_map: dict[int, ihm.AsymUnit] = {}
+        # Determine if it is a polymer (ATOM) or non-polymer/ligand (HETATM)
+        is_polymer = chain_meta.ctype.is_polymer
+        het_flag = "A" if is_polymer else "H"
 
-    for chain_i in range(len(chains)):
-        # Get entity_id for this chain
-        asym_id = int(chains.asym_id[chain_i])
-        entity_id = int(chains.entity_id[chain_i])
-        chain_tag = chain_tags[chain_i]
-        asym = AsymUnit(
-            entity=entity_map[entity_id],
-            details=f"Model subunit {chain_tag}",
-            id=chain_tag,
+        # Create gemmi chain
+        # Note: In Gemmi, chain.name usually maps to auth_asym_id
+        chain = gemmi.Chain(chain_id)
+
+        # Iterate over residues
+        for res_i in range(ref_chain.num_residues):
+            residue_index = res_i + 1  # 1-based indexing
+
+            # Iterate over atoms
+            atoms: list[gemmi.Atom] = []
+            for atom_i in ref_chain.iter_residue_atoms(residue_index):
+                # Check for valid coordinates (skip NaNs or Infs)
+                xyz = atom_coords[atom_i]
+                if not np.isfinite(xyz).all():
+                    continue
+                x, y, z = xyz.tolist()
+
+                atom = gemmi.Atom()
+                atom.name = atom_names[atom_i]
+                atom.element = gemmi.Element(atom_elements[atom_i])
+                atom.charge = atom_charges[atom_i]
+                atom.pos = gemmi.Position(round(x, 3), round(y, 3), round(z, 3))
+
+                # Set calculation flag (since this is likely a predicted structure)
+                atom.calc_flag = gemmi.CalcFlag.Calculated
+
+                atoms.append(atom)
+
+            # Only add residue if it has atoms
+            if len(atoms) > 0:
+                residue = gemmi.Residue()
+                if ctype.is_polymer:
+                    residue.label_seq = residue_index  # 1-based indexing
+                residue.name = str(res_layout.name[res_i])
+                residue.seqid.num = residue_index
+                residue.het_flag = het_flag  # 'A' for polymer, 'H' for non-polymer
+                residue.entity_id = str(entity_id)  # Link to _entity category
+                residue.subchain = chain_id  # Maps to _atom_site.label_asym_id
+                for atom in atoms:
+                    residue.add_atom(atom)
+                chain.add_residue(residue)
+
+        model.add_chain(chain)
+
+    structure.add_model(model)
+
+    structure.setup_entities()
+
+    # Create the document
+    doc: gemmi.cif.Document = structure.make_mmcif_document()
+    # Add custom categories for OST compatibility
+    block = doc[0]
+    _add_pdbx_nonpoly_scheme(block, structure)
+    _add_pdbx_poly_seq_scheme(block, structure)
+    _update_entity_poly(block, structure)
+    _update_entity_poly_seq(block, structure)
+    _update_chem_comp(block)
+
+    return doc.as_string()
+
+
+def _add_pdbx_poly_seq_scheme(block: gemmi.cif.Block, structure: gemmi.Structure):
+    """
+    Manually add the _pdbx_poly_seq_scheme category to the CIF block.
+    This is required for OST compatibility and proper polymer parsing.
+    """
+    # Columns required for _pdbx_poly_seq_scheme
+    columns = [
+        "asym_id",  # label_asym_id (residue.subchain)
+        "entity_id",  # entity_id
+        "mon_id",  # residue name
+        "seq_id",  # residue sequence number
+        "pdb_strand_id",  # auth_asym_id (chain.name)
+        "pdb_seq_num",  # auth_seq_id
+        "pdb_ins_code",  # PDB insertion code
+    ]
+    loop = block.init_loop("_pdbx_poly_seq_scheme.", columns)
+    # Iterate strictly over the first model (assuming single model structure for AF3)
+    model = structure[0]
+    for chain in model:
+        for res in chain:
+            # Check if residue is part of a polymer ('A' het_flag)
+            if res.het_flag == "A":
+                # Map values
+                asym_id = res.subchain if res.subchain else chain.name
+                entity_id = res.entity_id
+                mon_id = res.name
+                seq_num = str(res.seqid.num)
+                strand_id = chain.name  # auth_asym_id
+                ins_code = "." if res.seqid.icode == " " else res.seqid.icode
+                loop.add_row(
+                    [
+                        asym_id,  # asym_id
+                        entity_id,  # entity_id
+                        mon_id,  # mon_id
+                        seq_num,  # seq_id
+                        strand_id,  # pdb_strand_id
+                        seq_num,  # pdb_seq_num
+                        ins_code,  # pdb_ins_code
+                    ]
+                )
+
+
+def _add_pdbx_nonpoly_scheme(block: gemmi.cif.Block, structure: gemmi.Structure):
+    """
+    Manually add the _pdbx_nonpoly_scheme category to the CIF block.
+    This is required for OST compatibility and proper ligand parsing.
+    """
+    # Columns required for _pdbx_nonpoly_scheme
+    columns = [
+        "asym_id",  # label_asym_id (residue.subchain)
+        "entity_id",  # entity_id
+        "mon_id",  # residue name
+        "ndb_seq_num",  # label_seq_id
+        "pdb_seq_num",  # auth_seq_id
+        "auth_seq_num",  # auth_seq_id
+        "pdb_mon_id",  # auth_comp_id
+        "auth_mon_id",  # auth_comp_id
+        "pdb_strand_id",  # auth_asym_id (chain.name)
+        "pdb_ins_code",  # PDB insertion code
+    ]
+
+    loop = block.init_loop("_pdbx_nonpoly_scheme.", columns)
+
+    # Iterate strictly over the first model (assuming single model structure for AF3)
+    model = structure[0]
+
+    for chain in model:
+        for res in chain:
+            # Check if residue is explicitly marked as non-polymer ('H')
+            # or if the entity it belongs to is non-polymer
+            if res.het_flag == "H":
+                # Map values
+                asym_id = res.subchain if res.subchain else chain.name
+                entity_id = res.entity_id
+                mon_id = res.name
+                seq_num = str(res.seqid.num)
+                strand_id = chain.name  # auth_asym_id
+                ins_code = "." if res.seqid.icode == " " else res.seqid.icode
+
+                loop.add_row(
+                    [
+                        asym_id,  # asym_id
+                        entity_id,  # entity_id
+                        mon_id,  # mon_id
+                        seq_num,  # ndb_seq_num
+                        seq_num,  # pdb_seq_num
+                        seq_num,  # auth_seq_num
+                        mon_id,  # pdb_mon_id
+                        mon_id,  # auth_mon_id
+                        strand_id,  # pdb_strand_id
+                        ins_code,  # pdb_ins_code
+                    ]
+                )
+
+
+def _update_entity_poly(block: gemmi.cif.Block, structure: gemmi.Structure):
+    """Update the _entity_poly_seq category in the CIF block to reflect sequences."""
+    table: gemmi.cif.Table = block.find_mmcif_category("_entity_poly.")
+
+    rows = []
+    for row in table:
+        rows.append(
+            [
+                row["entity_id"],
+                row["type"],
+                row["pdbx_strand_id"],
+                row["pdbx_seq_one_letter_code"],
+                row["pdbx_seq_one_letter_code"],
+            ],
         )
-        asym_unit_map[asym_id] = asym
+    loop: gemmi.cif.Loop = block.init_mmcif_loop(
+        "_entity_poly.",
+        [
+            "entity_id",
+            "type",
+            "pdbx_strand_id",
+            "pdbx_seq_one_letter_code",
+            "pdbx_seq_one_letter_code_can",
+        ],
+    )
+    for row in rows:
+        loop.add_row(row)
 
-    modeled_assembly = Assembly(asym_unit_map.values(), name="Modeled assembly")
 
-    # --- 3. Create atom models ---
-    # Select coordinates and mask based on the mode
-    # atom_coords: [Ntoken, 24, 3]
-    # atom_mask: [Ntoken, 24]
-    if save_apo:
-        atom_coords = atoms.apo_coords
-    else:
-        atom_coords = atoms.coords
-    atom_mask = np.isfinite(atom_coords).all(axis=-1)
+def _update_entity_poly_seq(block: gemmi.cif.Block, structure: gemmi.Structure):
+    """Update the _entity_poly_seq category in the CIF block to reflect sequences."""
+    table: gemmi.cif.Table = block.find_mmcif_category("_entity_poly_seq.")
 
-    class _KfoldModel(AbInitioModel):
-        def get_atoms(self) -> Generator[Atom, None, None]:
-            for t_i in range(len(tokens)):
-                asym_unit = asym_unit_map[tokens.asym_id[t_i]]
-                residue_index = tokens.residue_index[t_i]
-                is_hetatm = tokens.is_ligand[t_i]
+    rows = []
+    for row in table:
+        rows.append([row["entity_id"], row["num"], row["mon_id"], "n"])
+    loop: gemmi.cif.Loop = block.init_mmcif_loop(
+        "_entity_poly_seq.",
+        [
+            "entity_id",
+            "num",
+            "mon_id",
+            "hetero",
+        ],
+    )
+    for row in rows:
+        loop.add_row(row)
 
-                for a_i in range(tokens.num_atoms[t_i]):
-                    if not atom_mask[t_i, a_i]:
-                        continue
 
-                    # Atom Name
-                    atom_name = C.atom.decode_atom_name(
-                        atoms.ref_atom_name_chars[t_i, a_i]
-                    )
+def _update_chem_comp(block: gemmi.cif.Block):
+    """Add or modify the _chem_comp category in the CIF block to include residue types."""
+    table: gemmi.cif.Table = block.find_mmcif_category("_chem_comp.")
 
-                    # Element
-                    element = periodic_table.GetElementSymbol(
-                        int(atoms.ref_element[t_i, a_i])
-                    ).upper()
+    rows = []
+    for row in table:
+        res_id = row["id"]
+        res: gemmi.ResidueInfo = gemmi.find_tabulated_residue(res_id)
+        if res is not None:
+            is_standard = res.is_standard()
+            if res.kind == gemmi.ResidueKind.AA:
+                res_type = "'L-peptide linking'"
+            elif res.kind == gemmi.ResidueKind.RNA:
+                res_type = "'RNA linking'"
+            elif res.kind == gemmi.ResidueKind.DNA:
+                res_type = "'DNA linking'"
+            else:
+                res_type = "non-polymer"
+            res_weight = f"{res.weight:.3f}"
+        else:
+            is_standard = False
+            res_type = "."
+            res_weight = "."
 
-                    # Coords
-                    pos_x, pos_y, pos_z = atom_coords[t_i, a_i, :]
-
-                    # B-factor (Fixed to 1.0 (no plddt factor))
-                    biso = 1.00
-
-                    yield Atom(
-                        asym_unit=asym_unit,
-                        type_symbol=element,
-                        seq_id=residue_index,
-                        atom_id=atom_name,
-                        x=f"{pos_x:.5f}",
-                        y=f"{pos_y:.5f}",
-                        z=f"{pos_z:.5f}",
-                        het=is_hetatm,
-                        biso=biso,
-                        occupancy=1.00,
-                    )
-
-    # --- 4. Write Output ---
-    # Initialize System
-    system = System()
-
-    model = _KfoldModel(assembly=modeled_assembly, name="Model")
-    model_group = ModelGroup([model], name="All models")
-
-    system.model_groups.append(model_group)
-
-    # Disable line wrapping for cleaner output
-    ihm.dumper.set_line_wrap(False)
-
-    fh = io.StringIO()
-    dumper.write(fh, [system])
-    return fh.getvalue()
+        rows.append(
+            [
+                res_id,
+                res_type,
+                ".",
+                ".",
+                res_weight,
+                "y" if not is_standard else "n",
+            ]
+        )
+    loop: gemmi.cif.Loop = block.init_mmcif_loop(
+        "_chem_comp.",
+        [
+            "id",
+            "type",
+            "name",
+            "formula",
+            "formula_weight",
+            "mon_nstd_flag",
+        ],
+    )
+    for row in rows:
+        loop.add_row(row)

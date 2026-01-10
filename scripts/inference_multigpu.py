@@ -77,7 +77,7 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd.pkl",
+        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-v0106.pkl",
         help="Path to the CCD data file.",
     )
     parser.add_argument(

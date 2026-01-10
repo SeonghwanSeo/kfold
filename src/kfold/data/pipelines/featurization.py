@@ -257,9 +257,6 @@ def featurize_structure(
     atom_dict["token_index"] = atom_to_token
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
-    # Rename label_coords
-    atom_dict["label_coords"] = atom_dict.pop("coords")
-
     # === Bond-level features ===
     num_bonds = bond_data.length
     bond_dict: dict[str, np.ndarray] = {

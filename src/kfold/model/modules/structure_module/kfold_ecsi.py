@@ -7,15 +7,14 @@ import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
-from kfold.utils.geometry.rigid_align import rigid_align
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseEDM
+from .base import BaseECSI
 
 
 @STRUCTURE_MODULE.register()
-class KFoldECSI(BaseEDM):
+class KFoldECSI(BaseECSI):
     r"""Endpoint-Conditioned Stochastic Interpolant module for structure prediction.
 
     Implements the ECSI framework from "Exploring the Design Space of Diffusion Bridge
@@ -23,7 +22,8 @@ class KFoldECSI(BaseEDM):
 
     Key features:
     - Decoupled kernel parameters (\alpha_t, \beta_t, \gamma_t) for flexible bridge paths
-    - Linear interpolation: \alpha_t=1-t, \beta_t=t, \gamma_t=2\gamma_{max}\sqrt{t(1-t)}
+    - Linear interpolation: \alpha_t=1-t, \beta_t=t,
+      \gamma_t^2=\gamma_{max}^2/4 \cdot t(1-t)
     - Stochasticity control via \eta parameter during sampling
     - Preconditioning adapted from DDBM
 
@@ -44,12 +44,13 @@ class KFoldECSI(BaseEDM):
         sigma_max : float, optional
             Maximum time value (near t=T), by default 0.999.
         gamma_max : float, optional
-            Maximum noise scale for \gamma_t, by default 1.0.
-            Controls the peak of \gamma_t = 2 * \gamma_{max} * \sqrt{t(1-t)}.
+            Scale parameter for \gamma_t, by default 1.0.
+            Uses \gamma_t^2 = \gamma_{max}^2/4 * t(1-t).
         sigma_data : float, optional
             Standard deviation of target (holo) distribution, by default 16.0.
         sigma_data_end : float, optional
             Standard deviation of source (apo) distribution, by default 16.0.
+            Uses physical coordinate scale (not normalized to image-like variance).
         cov_xy : float, optional
             Covariance between source and target distributions, by default 128.0.
             Controls the correlation structure in preconditioning.
@@ -70,19 +71,22 @@ class KFoldECSI(BaseEDM):
             Whether to normalize the source (apo) input, by default False.
         normalize_coordinate : bool, optional
             Whether to normalize the source and target coordinates, by default False.
+        alignment_entity_strategy : str, optional
+            Strategy for selecting entity to align: "largest" or "random_non_ligand",
+            by default "largest".
         """
 
         num_steps: int = 200
-        sigma_min: float = 0.001  # t_min (near 0)
-        sigma_max: float = 0.999  # t_max (near 1)
-        gamma_max: float = 0.25  # Table 8: \gamma_{max} = 0.25 for linear route
-        sigma_data: float = 16.0  # holo structures
-        sigma_data_end: float = 16.0  # apo structures
+        sigma_min: float = 0.001
+        sigma_max: float = 0.999
+        gamma_max: float = 0.25
+        sigma_data: float = 16.0
+        sigma_data_end: float = 16.0
         cov_xy: float = 128.0
         rho: int = 7
         P_mean: float = -1.2
         P_std: float = 1.5
-        eta: float = 1.0  # stochasticity control
+        eta: float = 1.0
         coordinate_augmentation: bool = True
         synchronize_sigmas: bool = False
         normalize_data_end: bool = False
@@ -90,6 +94,8 @@ class KFoldECSI(BaseEDM):
         logit_normal_sampling: bool = False
         sampling_alpha: float = 1.0
         sampling_beta: float = 1.0
+        use_prior_coords: bool = True
+        alignment_entity_strategy: str = "largest"
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -112,6 +118,7 @@ class KFoldECSI(BaseEDM):
         self.logit_normal_sampling: bool = cfg.logit_normal_sampling
         self.sampling_alpha: float = cfg.sampling_alpha
         self.sampling_beta: float = cfg.sampling_beta
+        self.use_prior_coords: bool = cfg.use_prior_coords
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
@@ -157,12 +164,13 @@ class KFoldECSI(BaseEDM):
         return torch.ones_like(t)
 
     def gamma(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Noise scale: \gamma_t = 2 \gamma_{max} \sqrt{t(1-t)}"""
-        return self.gamma_max * 2 * torch.sqrt(t * (1 - t) + 1e-8)
+        r"""Noise scale: \gamma_t^2 = \gamma_{max}^2/4 * t(1-t)"""
+        return 0.5 * self.gamma_max * torch.sqrt(t * (1 - t) + 1e-8)
 
     def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Derivative of gamma: \dot{\gamma}_t = \gamma_{max} * (1-2t) / \sqrt{t(1-t)}"""
-        return self.gamma_max * (1 - 2 * t) / (torch.sqrt(t * (1 - t) + 1e-8) + 1e-8)
+        r"""Derivative: \dot{\gamma}_t = \gamma_{max} * (1-2t) / (4\sqrt{t(1-t)})"""
+        denom = torch.sqrt(t * (1 - t) + 1e-8)
+        return self.gamma_max * (1 - 2 * t) / (4 * denom)
 
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(
@@ -220,31 +228,34 @@ class KFoldECSI(BaseEDM):
 
         return c_skip, c_out, c_in
 
-    def c_skip(self, t: torch.Tensor) -> torch.Tensor:
+    def c_skip(self, sigma: torch.Tensor) -> torch.Tensor:
         r"""Skip connection coefficient for ECSI preconditioning.
 
         Note: In ECSI, 'sigma' parameter represents time t \in [0,1].
         """
+        t = sigma
         c_skip, _, _ = self._get_bridge_scalings(t)
         return c_skip
 
-    def c_out(self, t: torch.Tensor) -> torch.Tensor:
+    def c_out(self, sigma: torch.Tensor) -> torch.Tensor:
         r"""Output scaling coefficient for ECSI preconditioning.
 
         Note: In ECSI, 'sigma' parameter represents time t \in [0,1].
         """
+        t = sigma
         _, c_out, _ = self._get_bridge_scalings(t)
         return c_out
 
-    def c_in(self, t: torch.Tensor) -> torch.Tensor:
+    def c_in(self, sigma: torch.Tensor) -> torch.Tensor:
         r"""Input scaling coefficient for ECSI preconditioning.
 
         Note: In ECSI, 'sigma' parameter represents time t \in [0,1].
         """
+        t = sigma
         _, _, c_in = self._get_bridge_scalings(t)
         return c_in
 
-    def c_noise(self, t: torch.Tensor) -> torch.Tensor:
+    def c_noise(self, sigma: torch.Tensor) -> torch.Tensor:
         r"""Noise level conditioning coefficient.
 
         Maps t to a conditioning value for the network.
@@ -252,6 +263,7 @@ class KFoldECSI(BaseEDM):
 
         Note: In ECSI, 'sigma' parameter represents time t \in [0,1].
         """
+        t = sigma
         return 0.25 * torch.log(t + 1e-8)
 
     def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
@@ -283,6 +295,7 @@ class KFoldECSI(BaseEDM):
         z_trunk: torch.Tensor,
         model_cache=None,
         prior_coords: torch.Tensor | None = None,
+        use_prior_coords: bool | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model with ECSI preconditioning.
 
@@ -322,21 +335,28 @@ class KFoldECSI(BaseEDM):
         # Noise level conditioning
         c_noise = self.c_noise(t_hat)  # [B, N]
 
-        # Concatenate with prior (apo) coordinates
-        assert prior_coords is not None and torch.is_tensor(prior_coords), (
-            "In ECSI, prior_coords should be Tensor"
+        effective_use_prior_coords = (
+            self.use_prior_coords if use_prior_coords is None else use_prior_coords
         )
-        assert prior_coords.shape == r_noisy.shape, (
-            "In ECSI, the shapes of prior_coords and r_noisy should be the same"
-        )
-        if self.normalize_data_end and not self.normalize_coordinate:
-            prior_coords = prior_coords / self.sigma_data_end
-        r_noisy = torch.cat([r_noisy, prior_coords], dim=-1)
-        assert r_noisy.shape[-1] == 6, "In ECSI, the last dimension should be 6"
+        if effective_use_prior_coords:
+            # Concatenate with prior (apo) coordinates
+            assert prior_coords is not None and torch.is_tensor(prior_coords), (
+                "In ECSI, prior_coords should be Tensor when use_prior_coords=True"
+            )
+            assert prior_coords.shape == r_noisy.shape, (
+                "In ECSI, the shapes of prior_coords and r_noisy should be the same"
+            )
+            if self.normalize_data_end and not self.normalize_coordinate:
+                prior_coords = prior_coords / self.sigma_data_end
+            r_noisy = torch.cat([r_noisy, prior_coords], dim=-1)
+            assert r_noisy.shape[-1] == 6, "In ECSI, r_noisy last dim should be 6"
+        else:
+            # Do not condition score_model on prior_coords; keep r_noisy as (.., 3).
+            assert r_noisy.shape[-1] == 3, "In ECSI, r_noisy last dim should be 3"
 
         # Call score model
         r_update = self.score_model(
-            r_noisy=r_noisy,  # [B, N, La, 6]
+            r_noisy=r_noisy,  # [B, N, La, 3] or [B, N, La, 6]
             c_noise=c_noise,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,
@@ -463,16 +483,12 @@ class KFoldECSI(BaseEDM):
         do_random_augment = label_coords is None
         apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
 
-        if label_coords is not None:
-            apo_mask = ~(apo_coords == 0.0).all(-1)
-            label_mask = ~(label_coords == 0.0).all(-1)
-
-            apo_coords = rigid_align(
-                coords=apo_coords,
-                target=label_coords,
-                mask=apo_mask & label_mask,
+        if label_coords is not None and self.alignment_entity_strategy:
+            apo_coords = self.align_apo_to_label_by_entity_selection(
+                apo_coords,
+                label_coords,
+                f_input,
             )
-            apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
 
         return apo_coords
 
