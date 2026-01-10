@@ -1,0 +1,42 @@
+_registry_: "structure_module"
+_class_: "KFoldECSI_EDM"
+
+# Sampling configuration
+num_steps: 200
+sigma_min: 0.001  # t_min
+sigma_max: 0.999  # t_max (near 1)
+
+# EDM uses gamma_t = t directly, so gamma_max is not used
+gamma_max: 0.25  # Not used in EDM (gamma_t = t)
+
+# Data distribution parameters
+sigma_data: 16.0  # holo structures (σ_0)
+sigma_data_end: 16.0  # For noise scaling (not apo anymore)
+cov_xy: 0.0  # No covariance in EDM (independent Gaussian prior)
+
+# Karras schedule
+rho: 7
+
+# Training noise level sampling
+P_mean: -1.2
+P_std: 1.5
+
+# Stochasticity control
+# eta=0: deterministic ODE, eta=1: full SDE
+eta: 1.0
+
+# Other settings
+coordinate_augmentation: True
+synchronize_sigmas: False
+normalize_data_end: False
+normalize_coordinate: False
+
+# EDM does NOT condition on prior coordinates (Gaussian noise has no structure)
+use_prior_coords: false
+
+logit_normal_sampling: False
+sampling_alpha: 1.0
+sampling_beta: 1.0
+
+# Not used in EDM but kept for compatibility
+alignment_entity_strategy: "largest"

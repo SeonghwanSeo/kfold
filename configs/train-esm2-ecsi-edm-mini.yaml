@@ -1,8 +1,8 @@
 model:
-  _yaml_: "model/kfold-ecsi-pairmixer.yaml"
+  _yaml_: "model/kfold-ecsi-edm.yaml"
   input_embedder:
     channel_seq_encoder: 2560
-    use_apo: true
+    use_apo: false # EDM does not use apo input
   trunk:
     num_blocks: 16
   score_model:
@@ -13,14 +13,15 @@ model:
 train:
   _yaml_: "train/structure_only.yaml"
 
-  name: mini-esm2-rbf-ddbm
+  name: esm2-ecsi-edm-mini
   out_dir: ./experiments/
+
   seed: 42
 
   global_hparams:
     max_chains: 20
     max_tokens: 384
-    batch_size: 8
+    batch_size: 4
     diffusion_batch_size: 48
     global_batch_size: 128
     num_global_steps_per_epoch: 1000
@@ -37,6 +38,9 @@ train:
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-train/
+        apo_init:
+          # EDM does not use apo perturbation - prior is Gaussian noise
+          use_perturbation: false
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-val/
@@ -49,6 +53,6 @@ train:
 
   wandb:
     use: false
-    project: "DDBM"
-    group: ddbm # set your group name
+    project: "KFold-esm"
+    group: esm # set your group name
     entity: K-Fold # set your entity name

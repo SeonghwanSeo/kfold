@@ -275,7 +275,6 @@ class RiePrody:
             mask=align_mask.reshape(-1),
             align=False,
         ).item()
-        print("rmsd:", rmsd)
 
         if rmsd > self.rmsd_threshold:
             self._stats_rmsd_filtered += 1

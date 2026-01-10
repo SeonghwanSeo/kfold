@@ -44,7 +44,10 @@ class InputDataPipeline:
             apo_initialization.ApoInitializerConfig(
                 use_perturbation=False,
                 use_random_augmentation=True,
+                use_ot_permutation=False,
                 training=False,
+                # TODO: configure this parameter.
+                translation_scale=10.0,
             ),
             self.ccd,
         )

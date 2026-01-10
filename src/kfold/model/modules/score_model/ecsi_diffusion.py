@@ -3,14 +3,13 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.diffusion import DiffusionModule
-from kfold.model.layers.kfold.diffusion import DiffusionModuleWithApo
 from kfold.utils.registry import SCORE_MODEL, BaseConfig
 
 from .base import BaseScoreModel
 
 
 @SCORE_MODEL.register()
-class ApoConditionedDiffusionModule(BaseScoreModel):
+class ECSIDiffusionModule(BaseScoreModel):
     """Diffusion score model with apo structure conditioning."""
 
     class Config(BaseConfig):
@@ -26,8 +25,6 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
             The atom single representation dimension.
         channel_atompair : int
             The atom pair representation dimension.
-        channel_coords : int
-            The coordinate dimension (default: 3).
         use_apo : bool
             Whether to use apo structure conditioning, by default True.
         atoms_per_window_queries : int, optional
@@ -58,8 +55,7 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
         channel_z: int = 128
         channel_atom: int = 128
         channel_atompair: int = 16
-        channel_coords: int = 3
-        use_apo: bool = True
+        use_prior_coords: bool = True
         atoms_per_window_queries: int = 32
         atoms_per_window_keys: int = 128
         dim_fourier: int = 256
@@ -75,13 +71,20 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
     def __init__(self, cfg: Config, kernel_config):
         super().__init__(cfg, kernel_config)
 
-        diffusion_stack_class = DiffusionModuleWithApo if cfg.use_apo else DiffusionModule
+        diffusion_stack_class = DiffusionModule
+        # NOTE:
+        # - If use_prior_coords=True, score model expects r_noisy[..., 6]
+        #   (x_t concat x_apo).
+        # - If use_prior_coords=False, score model expects r_noisy[..., 3]
+        #   (x_t only).
+        effective_channel_coords = 6 if cfg.use_prior_coords else 3
+
         self.diffusion_stack = diffusion_stack_class(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
-            channel_coords=cfg.channel_coords,
+            channel_coords=effective_channel_coords,
             atoms_per_window_queries=cfg.atoms_per_window_queries,
             atoms_per_window_keys=cfg.atoms_per_window_keys,
             dim_fourier=cfg.dim_fourier,
