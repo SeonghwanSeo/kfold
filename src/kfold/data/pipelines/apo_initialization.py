@@ -323,7 +323,6 @@ class ApoInitializer:
             if entity_id not in apo_coords_dict:
                 ctype = chain.ctype
                 ccd_sequence = chain.get_ccd_sequence()
-                Natom = NUM_ATOMS_PER_RESIDUE[ctype]
 
                 if entity_id in lookup:
                     # Load apo structure from file
