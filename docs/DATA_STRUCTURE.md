@@ -25,8 +25,8 @@ This processing is done using the functions defined in [`kfold.data.pipelines.ci
 #### On-the-fly Data Processing (`RefStructure` -> `TokenizedStructure` -> `FoldingInput`)
 
 The on-the-fly data processing is performed during training to convert the reference structure into model input features:
-1.  **Data loading:** Loads preprocessed `RefStructure` from disk.
-2.  **Pre-cropping:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface token. (See AlphaFold3 SI Section 2.5.4)
+1.  **Data Loading:** Loads preprocessed `RefStructure` from disk.
+2.  **Pre-Cropping:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface token. (See AlphaFold3 SI Section 2.5.4)
 3.  **Apo Structure Population:** Populates apo structure information into the reference structure. During training, **apo perturbation** is on-the-fly applied in this step.
 4.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
 5.  **Cropping:** If the structure contains more tokens than `max_tokens`, it crops a structure using three cropping strategies. (See AlphaFold3 SI Section 2.7)

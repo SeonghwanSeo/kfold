@@ -12,14 +12,20 @@ If the features listed below are completed, I will include the corresponding PR 
     - [x] Add CCD database according to AlphaFold3 description - [#113](https://github.com/SeonghwanSeo/kfold/pull/113)
     - [x] Preserving original residue information before modification (PTM), instead of UNK. - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
     - [x] Handling ambiguous residues (e.g., GLX, ASX) - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
-- [ ] **Apo structure mapping**:
+- [x] **Apo structure mapping**:
     - [x] Protein (ESMFold/AFDB) - [#23](https://github.com/SeonghwanSeo/kfold/pull/23)
-    - [ ] DNA (from Langevin dynamics)
-    - [ ] RNA (from Langevin dynamics)
+    - [x] DNA (from Langevin dynamics)
+    - [x] RNA (from Langevin dynamics)
     - [x] Ligand (ETKDG; single conformer) - [#23](https://github.com/SeonghwanSeo/kfold/pull/23), [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
 - [ ] **Multiple apo structures** if possible (in particular, ligand)
-    - [ ] Protein: Consider AlphaFold2 / OpenFold predicted structures and Holo structures as well.
+    - [x] Protein: Consider AlphaFold2 / OpenFold predicted structures and Holo structures as well. - [#158](https://github.com/SeonghwanSeo/kfold/pull/158)
     - [x] Ligand: AlphaFold uses different conformers for each seed. - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
+- [ ] **Change time split**:
+    - [ ] Change the time split date to more recent one.
+- [ ] **On-the-fly apo prior sampling on Riemannian manifold**:
+    - [ ] Short Protein (<16 residues)
+    - [ ] DNA
+    - [ ] RNA
 
 ### Data featurization
 
