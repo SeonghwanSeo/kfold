@@ -47,7 +47,7 @@ def main():
         pickle.dump(metadata_dicts, f)
     print(f"Saved manifest (pickle) to {manifest_path}")
 
-    # Save to json file (human-readable; not used in pipeline)
+    # Save to json file (human-readable)
     manifest_path: pathlib.Path = data_dir / "manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(metadata_dicts, f, indent=2)

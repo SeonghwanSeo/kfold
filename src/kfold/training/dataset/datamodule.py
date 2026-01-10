@@ -86,7 +86,9 @@ class TrainingDataModule(pl.LightningDataModule):
         # Print dataset info
         for d in multi_ds.datasets:
             self.print_rank_zero(
-                f"Constructed training dataset '{d.name}' with {len(d)} samples."
+                f"Constructed training dataset '{d.name}':\n"
+                f"  Num complexes: {len(d.metadatas)}\n"
+                f"  Num samples: {len(d)}"
             )
         return multi_ds
 
@@ -105,7 +107,9 @@ class TrainingDataModule(pl.LightningDataModule):
             safe_load=self.config.safe_load,
         )
         self.print_rank_zero(
-            f"Constructed validation dataset '{ds.name}' with {len(ds)} samples."
+            f"Constructed validation dataset '{ds.name}':\n"
+            f"  Num complexes: {len(ds.metadatas)}\n"
+            f"  Num samples: {len(ds)}"
         )
         return ds
 
