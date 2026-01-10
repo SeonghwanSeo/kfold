@@ -10,11 +10,11 @@ from kfold.model.modules.score_model.base import BaseScoreModel
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseEDM
+from .base import BaseECSI
 
 
 @STRUCTURE_MODULE.register()
-class KFoldECSI(BaseEDM):
+class KFoldECSI(BaseECSI):
     r"""Endpoint-Conditioned Stochastic Interpolant module for structure prediction.
 
     Implements the ECSI framework from "Exploring the Design Space of Diffusion Bridge

@@ -21,13 +21,13 @@ from kfold.training.utils.binned_loss_logging import (
     TimeBinConfig,
     TimeBinnedLossLogger,
 )
+from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
 from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
 from . import metrics as validation_metrics
 from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
-from .utils import gradient_norm, parameter_norm
 
 
 @dataclass(kw_only=True)

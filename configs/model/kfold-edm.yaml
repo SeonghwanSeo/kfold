@@ -9,14 +9,14 @@ kernel:
 # compilation settings
 compile_trunk: false
 compile_score_model: false
-compile_mode: 'default'
+compile_mode: "default"
 
 # Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/pretrained.yaml"
   channel_seq_encoder: null # Should be overriden
   channel_struct_encoder: null # Should be overriden
-  use_apo: true
+  use_apo: true # Use apo input as default
 
 trunk:
   _yaml_: "module/trunk/kfold.yaml"

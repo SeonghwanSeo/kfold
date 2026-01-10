@@ -4,7 +4,7 @@
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
