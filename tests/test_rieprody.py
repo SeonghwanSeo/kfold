@@ -7,7 +7,7 @@ from kfold.data.types.ccd import CCD
 from kfold.data.utils.writer.writer import KFoldWriter
 from kfold.training.dataset.dataset import ValidationDataset, ValidationDatasetConfig
 
-ROOT_DIR = pathlib.Path("/cache/wykim_lab/icl_shwan/v260107/")
+ROOT_DIR = pathlib.Path("/cache/wykim_lab/kfold_data/v260109/")
 
 if __name__ == "__main__":
     writer = KFoldWriter()

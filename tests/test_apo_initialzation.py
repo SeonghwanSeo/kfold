@@ -9,7 +9,7 @@ from kfold.data.types.ccd import CCD
 from kfold.training.dataset.dataset import ValidationDataset, ValidationDatasetConfig
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
-ROOT_DIR = pathlib.Path("/cache/wykim_lab/icl_shwan/v260107/")
+ROOT_DIR = pathlib.Path("/cache/wykim_lab/kfold_data/v260109/")
 
 if __name__ == "__main__":
     CCD_PATH = ROOT_DIR / "ccd-train.pkl"
