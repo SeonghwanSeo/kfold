@@ -43,7 +43,7 @@ apo_init:
       # RieProDy Riemannian perturbation settings
       metric_lmdb_path: null # NOTE: This is automatically set in the dataset.
       rmsd_threshold: 10.0 # RMSD threshold for fallback
-      fallback_on_failure: false # Fallback to return the original structure if RieProDy perturbation fails
+      fallback_on_failure: true # Fallback to return the original structure if RieProDy perturbation fails
       fallback_on_rmsd_exceed: true # Fallback to return the original structure if RMSD exceeds threshold
       metric_comp:
         apo_internal_coord_metric_calculation_precision: "float64"
