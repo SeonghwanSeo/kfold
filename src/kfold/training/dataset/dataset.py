@@ -109,7 +109,7 @@ class DatasetConfig:
         Optional path to the custom manifest file.
     seed : int | None
         Random seed for data loading.
-    apo_init : apo_initialize.ApoInitializerConfig
+    apo_init : ApoInitializerConfig
         Configuration for apo structure initialization.
     """
 

@@ -14,7 +14,7 @@ def parse_args():
         "--input",
         type=pathlib.Path,
         required=True,
-        help="Path to the original manifest.",
+        help="Path to the original JSON manifest.",
     )
     parser.add_argument(
         "-o",
@@ -28,6 +28,12 @@ def parse_args():
         type=str,
         required=True,
         choices=["complex-only", "non-nucleic", "pp-pl-only"],
+        help=(
+            "Filter to apply to the input manifest: "
+            "'complex-only' keeps only multi-chain complexes; "
+            "'non-nucleic' excludes complexes containing nucleic acid chains; "
+            "'pp-pl-only' keeps only protein-protein and protein-ligand complexes "
+        ),
     )
 
     args = parser.parse_args()
@@ -53,7 +59,7 @@ def main():
 
             def filter_func(m: Metadata) -> bool:
                 # Exclude if any chain is nucleic acid
-                return any(chain.ctype.is_nucleic_acid for chain in m.chains)
+                return not any(chain.ctype.is_nucleic_acid for chain in m.chains)
 
         case "pp-pl-only":
             print("Including only protein-protein and protein-ligand complex structures.")
@@ -62,6 +68,10 @@ def main():
             def filter_func(m: Metadata) -> bool:
                 if any(chain.ctype.is_nucleic_acid for chain in m.chains):
                     # Exclude nucleic acid chains
+                    return False
+                if all(chain.ctype.is_nonpolymer for chain in m.chains):
+                    # Need at least one polymer chain
+                    # NOTE: this is not required since they have been already excluded.
                     return False
                 if len([chain for chain in m.chains if not chain.ctype.is_ion]) < 2:
                     # Need at least two non-ion chains for PP or PL complex
@@ -83,11 +93,12 @@ def main():
     metadatas = list(filter(filter_func, metadatas))
 
     # Report filtering results
-    print(f"Filtered {total_count - len(metadatas)} nucleic-acid complexes ")
+    filtered_count = total_count - len(metadatas)
+    print(f"Filtered {filtered_count} entries.")
     print(f"Final count: {len(metadatas)}.")
 
     # Save the subset manifest
-    print(f"Saving the subset manifest to {args.output}...")
+    print(f"Saving the subset manifest to '{args.output}'...")
     with open(args.output, "w") as f:
         json.dump([r.to_dict() for r in metadatas], f, indent=2)
     print("Done.")
