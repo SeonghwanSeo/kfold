@@ -14,6 +14,7 @@ apo_init:
   prob_perturbation: 1.0
   prob_replace_to_holo: 0.0 # enabled during training
   training: true # If True, skip etkdg generation if there is no cached etkdg conformer. (use ideal/model conformer)
+  fill_missing_atom: false # Whether to fill missing atoms in apo structure using neighbors
 
   prior_sampler:
     # polymer prior sampler if apo structure is unavailable

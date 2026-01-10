@@ -7,7 +7,7 @@ from kfold.data.types.ccd import CCD
 from kfold.data.utils.writer.writer import KFoldWriter
 from kfold.training.dataset.dataset import ValidationDataset, ValidationDatasetConfig
 
-ROOT_DIR = pathlib.Path("/cache/wykim_lab/icl_shwan/v260107/")
+ROOT_DIR = pathlib.Path("/cache/wykim_lab/kfold_data/v260109/")
 
 if __name__ == "__main__":
     writer = KFoldWriter()
@@ -33,8 +33,8 @@ if __name__ == "__main__":
         safe_load=False,
     )
 
-    rng = np.random.default_rng(42)
-    for i in range(301, 302):
+    for i in range(300, 310):
+        rng = np.random.default_rng(42 + i)
         metadata = dataset.metadatas[i]
         print(metadata.id)
         struct = dataset.load_ref_structure(metadata)
