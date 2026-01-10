@@ -1,6 +1,7 @@
 import torch
+import torch.nn.functional as F
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
 from kfold.model.layers.alphafold3.input_encoder import InputFeatureEmbedder
 from kfold.model.layers.kfold.encoder import InputEmbedderWithApo
@@ -34,6 +35,7 @@ class RBF(torch.nn.Module):
 
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         """Forward pass of RBF encoding.
+
         Parameters
         ----------
         dist : torch.Tensor
@@ -46,6 +48,50 @@ class RBF(torch.nn.Module):
         d_mu: torch.Tensor = self.d_mu
         rbf = torch.exp(-((dist.unsqueeze(-1) - d_mu) ** 2) / (2 * self.d_sigma**2))
         return rbf
+
+
+class Distogram(torch.nn.Module):
+    """One-hot contact map encoding for distances.
+
+    Parameters
+    ----------
+    d_min : float
+        The minimum distance for RBF encoding.
+    d_max : float
+        The maximum distance for RBF encoding.
+    num_bins : int
+        The number of bins for RBF encoding.
+    """
+
+    def __init__(
+        self, d_min: float = 2.0, d_max: float = 22.0, num_bins: int = 64
+    ) -> None:
+        super().__init__()
+        bin_size = (d_max - d_min) / num_bins
+        first_bin = d_min + bin_size  # =2.3125
+        last_bin = d_max - bin_size  # =21.6875
+
+        boundaries = torch.linspace(first_bin, last_bin, num_bins - 1)  # [num_bins - 1]
+        self.register_buffer("boundaries", boundaries, persistent=False)
+        self.num_bins: int = num_bins
+
+    def forward(self, dist: torch.Tensor) -> torch.Tensor:
+        """Forward pass of distogram encoding.
+
+        Parameters
+        ----------
+        dist : torch.Tensor
+            Tensor of shape (...,) containing distances.
+        Returns
+        -------
+        distogram : torch.Tensor
+            Tensor of shape (..., num_bins) containing one-hot distance map
+        """
+        boundaries: torch.Tensor = self.boundaries  # type: ignore
+        distogram = (dist.unsqueeze(-1) > boundaries).sum(dim=-1).long()
+
+        # One-hot encoding
+        return F.one_hot(distogram, num_classes=self.num_bins).float()
 
 
 @INPUT_EMBEDDER.register()
@@ -67,13 +113,13 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             The atom pairwise embedding size.
         channel_seq_encoder : int | None
             The pre-trained sequence encoder output channel size.
-        atoms_per_window_queries: int,
+        atoms_per_window_queries: int
             The number of atoms per window for queries.
-        atoms_per_window_keys: int,
+        atoms_per_window_keys: int
             The number of atoms per window for keys.
-        atom_encoder_blocks: int,
+        atom_encoder_blocks: int
             The atom encoder blocks.
-        atom_encoder_heads: int,
+        atom_encoder_heads: int
             The atom encoder heads.
         max_relative_token : int
             The maximum relative residue distance for relative position encoding.
@@ -81,12 +127,14 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             The maximum relative chain distance for relative position encoding.
         use_apo : bool
             Whether to embed apo structure.
-        min_dist : float
-            The minimum distance for RBF encoding.
-        max_dist : float
-            The maximum distance for RBF encoding.
-        num_rbf : int
-            The number of radial basis functions (RBFs) for encoding.
+        apo_distmap_type : str
+            options: 'rbf', 'distogram'
+        apo_min_dist : float
+            The minimum distance for apo distance map encoding.
+        apo_max_dist : float
+            The maximum distance for apo distance map encoding.
+        apo_num_bins : int
+            The number of bins for apo distance map encoding.
         """
 
         channel_s: int = 384
@@ -101,10 +149,11 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         atom_encoder_heads: int = 4
         max_relative_token: int = 32
         max_relative_chain: int = 2
-        use_apo: bool = False
-        num_rbf: int = 64
-        min_dist: float = 2.0
-        max_dist: float = 22.0
+        use_apo: bool = True
+        apo_distmap_type: str = "rbf"
+        apo_num_bins: int = 64
+        apo_min_dist: float = 2.0
+        apo_max_dist: float = 22.0
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
@@ -113,6 +162,11 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
         self.channel_atom: int = cfg.channel_atom
         self.channel_atompair: int = cfg.channel_atompair
         self.use_apo: bool = cfg.use_apo
+
+        assert cfg.apo_distmap_type in ["rbf", "distogram"], (
+            f"Invalid distmap_type: {cfg.apo_distmap_type}. "
+            "Choose from 'rbf' or 'distogram'."
+        )
 
         if self.use_apo:
             self.encoder = InputEmbedderWithApo(
@@ -159,11 +213,17 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
 
         # Token-level apo embedding
         if cfg.use_apo:
-            # rbf
-            self.rbf = RBF(d_min=cfg.min_dist, d_max=cfg.max_dist, num_bins=cfg.num_rbf)
+            if cfg.apo_distmap_type == "rbf":
+                # rbf
+                self.distmap = RBF(cfg.apo_min_dist, cfg.apo_max_dist, cfg.apo_num_bins)
+            else:
+                # distogram
+                self.distmap = Distogram(
+                    cfg.apo_min_dist, cfg.apo_max_dist, cfg.apo_num_bins
+                )
 
             # Pair representation
-            self.linear_apo_pdist = LinearNoBias(cfg.num_rbf, cfg.channel_z)
+            self.linear_apo_pdist = LinearNoBias(cfg.apo_num_bins, cfg.channel_z)
 
     def forward(
         self,
@@ -256,13 +316,12 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
 
         # Pair representation: pairwise distance RBF
         with torch.autocast("cuda", enabled=False):
-            # NOTE: use d_inv instead of d_sq_inv(used for ref_pos in AF3) since
-            # d_inv has better numerical stability for large distances.
-            pdist = torch.cdist(apo_coords, apo_coords, p=2)  # [B, L, L]
-            pdist_rbf = self.rbf(pdist)  # [B, L, L, num_rbf]
-        pdist_rbf = pdist_rbf * pair_mask.unsqueeze(-1)  # apply mask
+            diff = apo_coords[..., :, None, :] - apo_coords[..., None, :, :]
+            pdist = torch.norm(diff, dim=-1)  # [B, L, L]
+            pdist_map = self.distmap(pdist)  # [B, L, L, num_bin]
+        pdist_map = pdist_map * pair_mask.unsqueeze(-1)  # apply mask
 
-        z_apo = self.linear_apo_pdist(pdist_rbf)  # [B, L, L, c_z]
+        z_apo = self.linear_apo_pdist(pdist_map)  # [B, L, L, c_z]
 
         return z_apo
 

@@ -1,7 +1,7 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.diffusion import DiffusionModule
 from kfold.utils.registry import SCORE_MODEL, BaseConfig
 
@@ -70,8 +70,8 @@ class AF3DiffusionModule(BaseScoreModel):
         conditioning_transition_layers: int = 2
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config) -> None:
-        super().__init__(cfg)
+    def __init__(self, cfg: Config, kernel_config):
+        super().__init__(cfg, kernel_config)
 
         self.diffusion_stack = DiffusionModule(
             channel_s=cfg.channel_s,
@@ -91,6 +91,15 @@ class AF3DiffusionModule(BaseScoreModel):
             conditioning_transition_layers=cfg.conditioning_transition_layers,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
+
+    def do_compile(self, mode: str = "default"):
+        """Compile the trunk module."""
+        self.diffusion_stack = torch.compile(
+            self.diffusion_stack,
+            mode="default",  # reduce-overhead mode has issues on DDP.
+            dynamic=False,
+            fullgraph=False,
+        )  # type: ignore
 
     def forward(
         self,
@@ -122,13 +131,26 @@ class AF3DiffusionModule(BaseScoreModel):
             The trunk single representation, shape [B, Lt, c_s].
         z_trunk : torch.Tensor
             The trunk pair representation, shape [B, Lt, c_z].
+        model_cache : dict | None, optional
+            The model cache for storing intermediate results to speed up
+            computation, by default None.
 
         Returns
         -------
         r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """
-        return self.diffusion_stack(
+        if self.training:
+            assert model_cache is None, "model_cache is only used during evaluation."
+
+        # Revert to uncompiled version for validation
+        diffusion_stack: DiffusionModule
+        if self.is_compiled and not self.training:
+            diffusion_stack = self.diffusion_stack._orig_mod  # noqa: SLF001
+        else:
+            diffusion_stack = self.diffusion_stack
+
+        return diffusion_stack(
             r_noisy,
             c_noise,
             f_input,
@@ -136,4 +158,5 @@ class AF3DiffusionModule(BaseScoreModel):
             s_trunk,
             z_trunk,
             model_cache,
+            use_cuequiv_kernels=self.kernel_config.cuequivariance,
         )

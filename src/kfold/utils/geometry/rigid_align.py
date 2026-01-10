@@ -22,11 +22,11 @@ def compute_rmsd(
 def compute_rmsd(
     coords: np.ndarray | torch.Tensor,
     target: np.ndarray | torch.Tensor,
-    mask: np.ndarray | torch.Tensor,
+    mask: np.ndarray | torch.Tensor | None,
     align: bool = False,
 ) -> np.ndarray | torch.Tensor:
     """
-    Computes the root mean square deviation (RMSD) between two sets of coordinates,
+    computes the root mean square deviation (rmsd) between two sets of coordinates.
 
     Parameters
     ----------
@@ -34,29 +34,50 @@ def compute_rmsd(
         Array of shape (..., N, 3) representing the coordinates to be aligned.
     target : np.ndarray | torch.Tensor
         Array of shape (..., N, 3) representing the target coordinates.
-    mask : np.ndarray | torch.Tensor
+    mask : np.ndarray | torch.Tensor (optional)
         Array of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
     align : bool, optional
         If True, perform rigid alignment before computing RMSD (default: False).
 
     Returns
     -------
-    aligned_coords : np.ndarray | torch.Tensor
-        Array or tensor of shape (..., N, 3) containing the aligned coordinates.
+    rmsd : np.ndarray | torch.Tensor
+        RMSD values.
     """
+    if mask is None:
+        if isinstance(coords, np.ndarray):
+            mask = np.ones(coords.shape[:-1], dtype=bool)
+        elif isinstance(coords, torch.Tensor):
+            mask = torch.ones(coords.shape[:-1], dtype=torch.bool, device=coords.device)
+
     if align:
         coords = rigid_align(coords, target, mask)
+
     if isinstance(coords, np.ndarray):
         assert isinstance(target, np.ndarray) and isinstance(mask, np.ndarray)
-        diff = (coords - target) * mask[..., np.newaxis]
+        mask = mask.astype(bool, copy=False)
+        diff = coords - target
+        diff[~mask] = 0.0
+        # Weighted sum of squares (masked positions contribute 0)
         mse = np.sum(diff**2, axis=(-2, -1)) / np.clip(
             np.sum(mask, axis=-1), a_min=1, a_max=None
         )
         rmsd = np.sqrt(mse)
         return rmsd
+
     elif isinstance(coords, torch.Tensor):
         assert isinstance(target, torch.Tensor) and isinstance(mask, torch.Tensor)
-        diff = (coords - target) * mask[..., None]
+
+        # Expand mask for broadcasting
+        mask_expanded = mask[..., None]
+        mask_bool = mask_expanded.bool()
+
+        # Sanitize inputs: replace values with 0 where mask is False (0).
+        # We use masked_fill for efficiency and safety against NaNs in masked regions.
+        safe_coords = coords.masked_fill(~mask_bool, 0.0)
+        safe_target = target.masked_fill(~mask_bool, 0.0)
+
+        diff = safe_coords - safe_target
         mse = torch.sum(diff**2, dim=(-2, -1)) / (torch.sum(mask, dim=-1).clamp(min=1))
         rmsd = torch.sqrt(mse)
         return rmsd
@@ -71,7 +92,7 @@ def compute_rmsd(
 def rigid_align(
     coords: np.ndarray,
     target: np.ndarray,
-    mask: np.ndarray,
+    mask: np.ndarray | None,
     anchor_index: np.ndarray | None = None,
 ) -> np.ndarray: ...
 
@@ -80,7 +101,7 @@ def rigid_align(
 def rigid_align(
     coords: torch.Tensor,
     target: torch.Tensor,
-    mask: torch.Tensor,
+    mask: torch.Tensor | None,
     anchor_index: torch.Tensor | None = None,
 ) -> torch.Tensor: ...
 
@@ -88,7 +109,7 @@ def rigid_align(
 def rigid_align(
     coords: np.ndarray | torch.Tensor,
     target: np.ndarray | torch.Tensor,
-    mask: np.ndarray | torch.Tensor,
+    mask: np.ndarray | torch.Tensor | None,
     anchor_index: np.ndarray | torch.Tensor | None = None,
 ) -> np.ndarray | torch.Tensor:
     """
@@ -126,7 +147,7 @@ def weighted_rigid_align(
     coords: np.ndarray,
     target: np.ndarray,
     weights: np.ndarray | None,
-    mask: np.ndarray,
+    mask: np.ndarray | None,
     anchor_index: np.ndarray | None = None,
 ) -> np.ndarray: ...
 
@@ -136,7 +157,7 @@ def weighted_rigid_align(
     coords: torch.Tensor,
     target: torch.Tensor,
     weights: torch.Tensor | None,
-    mask: torch.Tensor,
+    mask: torch.Tensor | None,
     anchor_index: torch.Tensor | None = None,
 ) -> torch.Tensor: ...
 
@@ -145,7 +166,7 @@ def weighted_rigid_align(
     coords: np.ndarray | torch.Tensor,
     target: np.ndarray | torch.Tensor,
     weights: np.ndarray | torch.Tensor | None,
-    mask: np.ndarray | torch.Tensor,
+    mask: np.ndarray | torch.Tensor | None,
     anchor_index: np.ndarray | torch.Tensor | None = None,
 ) -> np.ndarray | torch.Tensor:
     """
@@ -161,11 +182,11 @@ def weighted_rigid_align(
         Array of shape (..., N, 3) representing the coordinates to be aligned.
     target : np.ndarray | torch.Tensor
         Array of shape (..., N, 3) representing the target coordinates.
-    weights : np.ndarray | torch.Tensor | None
+    weights : np.ndarray | torch.Tensor (optional)
         Array of shape (..., N) containing weights for each point.
-    mask : np.ndarray | torch.Tensor
+    mask : np.ndarray | torch.Tensor (optional)
         Array of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
-    anchor_index : np.ndarray | torch.Tensor | None, optional
+    anchor_index : np.ndarray | torch.Tensor (optional)
         Array of shape (N,) containing indices of anchors to be used for alignment.
 
     Returns
@@ -194,7 +215,7 @@ def weighted_rigid_align_numpy(
     coords: np.ndarray,
     target: np.ndarray,
     weights: np.ndarray | None,
-    mask: np.ndarray,
+    mask: np.ndarray | None,
     anchor_index: np.ndarray | None = None,
 ) -> np.ndarray:
     """
@@ -212,7 +233,7 @@ def weighted_rigid_align_numpy(
         Array of shape (..., N, 3) representing the target coordinates.
     weights : np.ndarray | None (optional)
         Array of shape (..., N) containing weights for each point.
-    mask : np.ndarray
+    mask : np.ndarray | None (optional)
         Array of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
     anchor_index : np.ndarray | None, optional
         Array of shape (N,) containing indices of anchors to be used for alignment.
@@ -228,8 +249,20 @@ def weighted_rigid_align_numpy(
       unique.
     - If SVD fails, the identity rotation is used and a warning is issued.
     """
+    if mask is None:
+        mask = np.ones(coords.shape[:-1], dtype=bool)
+
     if not np.any(mask):
         return coords
+
+    # Expand mask to match coordinate dimensions for sanitization
+    mask_expanded = mask[..., np.newaxis].astype(bool)
+
+    # Sanitize inputs: If there are NaNs in masked regions, they will propagate
+    # during centroid calculation even if weights are zero (NaN * 0 = NaN).
+    # We force masked regions to 0.0.
+    coords = np.where(mask_expanded, coords, 0.0)
+    target = np.where(mask_expanded, target, 0.0)
 
     if weights is None:
         weights = mask.astype(coords.dtype)
@@ -246,7 +279,6 @@ def weighted_rigid_align_numpy(
         RT, T = get_rigid_transform_numpy(coords, target, weights)
 
     # Apply transformation: coords @ RT + T
-    # Matrix multiplication: (..., N, 3) @ (..., 3, 3) -> (..., N, 3)
     aligned_coords = np.matmul(coords, RT) + T[..., np.newaxis, :]
 
     return aligned_coords
@@ -281,8 +313,6 @@ def get_rigid_transform_numpy(
     """
     dtype = coords.dtype
 
-    # Ensure computation is at least float32 for SVD stability
-    # (Matches the logic of torch.autocast to float32 in the original code)
     if not np.any(weights):
         # Return identity transform
         shape_prefix = coords.shape[:-2]
@@ -307,6 +337,8 @@ def get_rigid_transform_numpy(
     w_expanded = weights[..., np.newaxis]
 
     # Weighted centroids
+    # Note: Inputs (coords, target) are already sanitized (0 in masked regions),
+    # so summation here is safe even if original data had NaNs in masked regions.
     coords_center = np.sum(coords * w_expanded, axis=-2) / w_sum[..., np.newaxis]
     target_center = np.sum(target * w_expanded, axis=-2) / w_sum[..., np.newaxis]
 
@@ -314,34 +346,27 @@ def get_rigid_transform_numpy(
     coords_centered = coords - coords_center[..., np.newaxis, :]
     target_centered = target - target_center[..., np.newaxis, :]
 
-    # Covariance matrix H
-    # Equivalent to torch.einsum("...ni, ...nj -> ...ij")
+    # Re-apply mask implicitly by multiplying weights (masked regions become 0 again)
+    # This is redundant if sanitized, but ensures correctness if weights vary.
     H = np.einsum("...ni, ...nj -> ...ij", coords_centered * w_expanded, target_centered)
 
     try:
         # SVD: H = U S Vh
-        # numpy.linalg.svd returns u, s, vh (where vh is V^H)
         U, _, Vh = np.linalg.svd(H)
 
         # Fixed reflection removal (Kabsch algorithm)
-        # Check determinant of U @ Vh
         d = np.linalg.det(np.matmul(U, Vh))
 
-        # Create correction matrix F
         F = np.eye(3, dtype=dtype)
         if H.ndim > 2:
-            # Tile F for batch dimensions: (..., 3, 3)
             batch_shape = H.shape[:-2]
             F = np.tile(F, (*batch_shape, 1, 1))
 
-        # Apply sign to the last element of the diagonal
         if F.ndim == 2:
             F[2, 2] = np.sign(d)
         else:
             F[..., 2, 2] = np.sign(d)
 
-        # Transposed rotation matrix RT = U @ F @ Vh
-        # This matches the PyTorch implementation logic
         RT = np.matmul(U, np.matmul(F, Vh))
 
     except np.linalg.LinAlgError as e:
@@ -356,10 +381,9 @@ def get_rigid_transform_numpy(
             RT = np.tile(RT, (*shape_prefix, 1, 1))
 
     # Compute translation: t = target_center - coords_center @ RT
-    # Needs explicit dimension handling for matmul
     term2 = np.matmul(coords_center[..., np.newaxis, :], RT)
     t = target_center[..., np.newaxis, :] - term2
-    t = t.squeeze(-2)  # Remove the singleton dimension
+    t = t.squeeze(-2)
 
     return RT, t
 
@@ -369,45 +393,27 @@ def weighted_rigid_align_torch(
     coords: torch.Tensor,
     target: torch.Tensor,
     weights: torch.Tensor | None,
-    mask: torch.Tensor,
+    mask: torch.Tensor | None,
     anchor_index: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
-    Performs weighted rigid alignment of a set of coordinates to a target set using SVD.
-
-    This function computes the optimal rigid transformation (rotation and translation)
-    that aligns `coords` to `target`, minimizing the weighted mean squared error,
-    with optional masking and numerical stability.
-
-    Parameters
-    ----------
-    coords : torch.Tensor
-        Tensor of shape (..., N, 3) representing the coordinates to be aligned.
-    target : torch.Tensor
-        Tensor of shape (..., N, 3) representing the target coordinates.
-    weights : torch.Tensor | None, optional
-        Tensor of shape (..., N) containing weights for each point.
-    mask : torch.Tensor
-        Tensor of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
-    anchor_index : torch.Tensor | None, optional
-        Tensor of shape (N,) containing indices of anchors to be used for alignment.
-
-    Returns
-    -------
-    aligned_coords : torch.Tensor
-        Tensor of shape (..., N, 3) containing the aligned coordinates.
-
-    Notes
-    -----
-    - If the number of points N < 4, a warning is issued since the rotation may not be
-      unique.
-    - If SVD fails, the identity rotation is used and a warning is issued.
+    Torch implementation of weighted rigid alignment.
     """
+    if mask is None:
+        mask = torch.ones(coords.shape[:-1], dtype=torch.bool, device=coords.device)
+
     original_dtype = coords.dtype
 
     if not mask.any():
-        # If there are no valid atoms, return identical coords
         return coords
+
+    # Create boolean mask for filling
+    mask_bool = mask.bool().unsqueeze(-1)
+
+    # Sanitize inputs: masked_fill handles NaNs correctly by replacing them with 0.0
+    # where the mask is False (masked out). This is crucial before any math.
+    coords = coords.masked_fill(~mask_bool, 0.0)
+    target = target.masked_fill(~mask_bool, 0.0)
 
     if weights is None:
         weights = mask.to(dtype=coords.dtype)
@@ -475,6 +481,8 @@ def get_rigid_transform_torch(
         )
 
     w_sum = weights.sum(dim=-1) + eps
+
+    # Inputs are already sanitized (0.0 in masked regions), so these sums are safe.
     coords_center = (coords * weights[..., None]).sum(dim=-2) / w_sum[..., None]
     target_center = (target * weights[..., None]).sum(dim=-2) / w_sum[..., None]
 

@@ -6,10 +6,10 @@ import torch
 from lightning import pytorch as pl
 
 from kfold.config import load_config
-from kfold.data.processing.component import CCD
+from kfold.data.types.ccd import CCD
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.pl_client import InferenceConfig, KFoldInferenceClient
-from kfold.inference.query import InputFile, parse_input_files
+from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
 
 
@@ -77,7 +77,7 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-boltz1.pkl",
+        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-v0106.pkl",
         help="Path to the CCD data file.",
     )
     parser.add_argument(
@@ -97,12 +97,7 @@ def parse_args():
 
 def main():
     # Setup environment
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    torch.set_float32_matmul_precision("high")
-    torch.set_grad_enabled(False)
-    torch.set_autocast_dtype("cuda", torch.bfloat16)
-    torch.set_autocast_enabled(True)
+    torch.set_float32_matmul_precision("highest")
 
     args = parse_args()
 
@@ -117,7 +112,8 @@ def main():
         # Get model config if wrapped in a higher-level config
         config = config.model
     model: KFold = KFold.from_checkpoint(config, args.checkpoint)
-    model = model.eval().cuda()
+
+    # Inference configuration
     inference_config = InferenceConfig(
         num_recycles=args.num_recycles,
         num_steps=args.num_steps,
@@ -133,7 +129,7 @@ def main():
 
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
-    input_queries: list[InputFile] = parse_input_files(
+    input_queries: list[Query] = parse_input_files(
         args.input,
         ccd=ccd,
         skip_invalid=True,
@@ -141,7 +137,7 @@ def main():
 
     # Create data loader
     dataloader = prepare_inference_dataloader(
-        input_files=input_queries,
+        queries=input_queries,
         ccd=ccd,
         seq_embedding_dim=model.channel_seq_encoder,
         struct_embedding_dim=model.channel_struct_encoder,

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import TRUNK, BaseConfig
 
 # TODO (seonghwanseo): we can define some common parameters across different transformer
@@ -15,18 +15,19 @@ class BaseTrunk(torch.nn.Module, ABC):
         channel_s: int = 384
         channel_z: int = 128
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         super().__init__()
         self.cfg = cfg
+        self.kernel_config = kernel_config
         self.is_compiled: bool = False
 
-    def compile(self, compile: bool = True):
+    def compile(self, compile: bool = True, mode: str = "default"):
         """Compile the trunk module."""
         if compile:
-            self.do_compile()
+            self.do_compile(mode)
             self.is_compiled = True
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the

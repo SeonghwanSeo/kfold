@@ -5,10 +5,10 @@ import torch
 
 import kfold.model.modules as submodules
 from kfold.config import load_config
-from kfold.data.model_input import FoldingInput
-from kfold.data.structure import TokenizedStructure
+from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.tokenized import TokenizedStructure
 from kfold.model.modules.structure_module.kfold_ddbm import KFoldBridgeDiffusion
-from kfold.training.folding.dataset.datamodule import TrainingDataModule
+from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.utils import errors
 from kfold.utils.registry import Registry
 
@@ -67,7 +67,6 @@ if __name__ == "__main__":
         try:
             struct.to_pdb(
                 SAVE_PATH / f"{name}-original-gt.pdb",
-                is_predicted=False,
             )
             struct.to_pdb(
                 SAVE_PATH / f"{name}-original-apo.pdb",
@@ -87,7 +86,6 @@ if __name__ == "__main__":
         )
         struct.to_pdb(
             SAVE_PATH / f"{name}-feat-gt.pdb",
-            is_predicted=False,
         )
         struct.to_pdb(
             SAVE_PATH / f"{name}-feat-apo.pdb",
@@ -113,7 +111,6 @@ if __name__ == "__main__":
         )
         struct.to_pdb(
             SAVE_PATH / f"{name}-ddbm-x0.pdb",
-            is_predicted=False,
         )
         struct.to_pdb(
             SAVE_PATH / f"{name}-ddbm-xT.pdb",
@@ -140,5 +137,4 @@ if __name__ == "__main__":
             struct.to_pdb(
                 SAVE_PATH / f"{name}-ddbm-t{i}.pdb",
                 conformer_id=i,
-                is_predicted=False,
             )

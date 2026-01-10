@@ -2,16 +2,26 @@
 _registry_: "main_module"
 _class_: Boltz1
 
+# Basic settings
 load_weight: false
 freeze_weight: false
 
+# compilation settings
+compile_trunk: false
+compile_score_model: false
+compile_mode: 'default'
+
+# kernel settings
+kernel:
+  cuequivariance: true
+
+# Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/boltz1.yaml"
 
 trunk:
   _yaml_: "module/trunk/boltz1.yaml"
   use_msa: true
-  use_cuequiv_kernels: false
 
 structure_module:
   _yaml_: "module/structure_module/boltz1.yaml"

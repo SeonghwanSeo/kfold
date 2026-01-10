@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 import torch
 
 import kfold.constants as C
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model import BaseScoreModel
 from kfold.utils.geometry.random_augment import do_centering
 from kfold.utils.geometry.rigid_align import weighted_rigid_align

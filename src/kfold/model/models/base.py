@@ -7,13 +7,22 @@ from typing import Self
 import torch
 
 import kfold.model.modules as submodules
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
+
+
+@dataclasses.dataclass(kw_only=True)
+class KernelConfig:
+    cuequivariance: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
 class BaseFoldingModelConfig:
     _class_: str = "BaseFoldingModel"
+    compile_trunk: bool = False
+    compile_score_model: bool = False
+    compile_mode: str = "default"
+    kernel: KernelConfig
     input_embedder: BaseConfig
     trunk: BaseConfig
     score_model: BaseConfig
@@ -27,16 +36,19 @@ class BaseFoldingModel(torch.nn.Module):
     def __init__(self, config: BaseFoldingModelConfig):
         super().__init__()
         self.config: BaseFoldingModelConfig = config
+        kernel_config = config.kernel
 
         # Initialize sub-modules here using the config
         self.input_embedder: submodules.input_embedder.BaseInputEmbedder = (
             Registry.instantiate(config.input_embedder)
         )
 
-        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(config.trunk)
+        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(
+            config.trunk, kernel_config=kernel_config
+        )
 
         self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
-            config.score_model
+            config.score_model, kernel_config=kernel_config
         )
 
         # NOTE: structure module is not a torch.nn.Module
@@ -56,12 +68,8 @@ class BaseFoldingModel(torch.nn.Module):
 
         # Compile submodules
         # NOTE: (SeonghwanSeo) This is very slow... Right now, just disable them.
-        if getattr(config, "compile_trunk", False):
-            self.trunk.compile(getattr(config, "compile_trunk", False))
-        if getattr(config, "compile_score_model", False):
-            self.score_model.compile(getattr(config, "compile_score_model", False))
-        # if getattr(config, "compile_confidence_head", False):
-        #     self.confidence_head.compile()
+        self.trunk.compile(config.compile_trunk, config.compile_mode)
+        self.score_model.compile(config.compile_score_model, config.compile_mode)
 
     def forward(
         self,

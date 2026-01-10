@@ -2,7 +2,7 @@
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.pairmixer.pairmixer import PairmixerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
@@ -32,8 +32,6 @@ class PairmixerTrunk(BaseTrunk):
             Whether to use template, by default False
         use_msa: bool, optional
             Whether to use MSA, by default False
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuequivariance kernels, by default False
         blocks_per_ckpt : int, optional
             The number of blocks per checkpoint, by default None
         """
@@ -44,15 +42,13 @@ class PairmixerTrunk(BaseTrunk):
         dropout: float = 0.25
         use_msa: bool = False
         use_template: bool = False
-        use_cuequiv_kernels: bool = False
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairmixer module."""
-        super().__init__(cfg)
+        super().__init__(cfg, kernel_config)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
 
         if self.use_template:
             raise NotImplementedError(
@@ -76,14 +72,17 @@ class PairmixerTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
         self.pairmixer_module = torch.compile(
-            self.pairmixer_module, dynamic=False, fullgraph=False
+            self.pairmixer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
 
     def forward(
@@ -123,12 +122,24 @@ class PairmixerTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
+        # Revert to uncompiled version for validation
+        pairmixer_module: PairmixerStack
+        if self.is_compiled and not self.training:
+            pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
+        else:
+            pairmixer_module = self.pairmixer_module
+
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+
+                if self.is_compiled and enable_grad and i > 0:
+                    # Clone the tensors for compilation.
+                    s_hat = s_hat.clone()
+                    z_hat = z_hat.clone()
 
                 # Line 8
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
@@ -145,18 +156,11 @@ class PairmixerTrunk(BaseTrunk):
                 s = s_init + self.linear_s(self.layernorm_s(s_hat))
 
                 # Line 12
-                # Revert to uncompiled version for validation
-                pairmixer_module: PairmixerStack
-                if self.is_compiled and not self.training:
-                    pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
-                else:
-                    pairmixer_module = self.pairmixer_module
-
                 s, z = pairmixer_module(
                     s,
                     z,
                     mask=f_input.token.pad_mask,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                    use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
                 # Line 13
@@ -177,7 +181,6 @@ class PairmixerformerTrunk(BaseTrunk):
         dropout: float = 0.25
         use_msa: bool = False
         use_template: bool = False
-        use_cuequiv_kernels: bool = False
         blocks_per_ckpt: int | None = None
         num_heads_attn: int = 16
         num_heads_tri_attn: int = 4
@@ -185,9 +188,9 @@ class PairmixerformerTrunk(BaseTrunk):
         pairmixer_blocks: int = 42
         chunk_threshold: int = 384
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairmixerformer module."""
-        super().__init__(cfg)
+        super().__init__(cfg, kernel_config)
 
         if cfg.num_blocks < cfg.pairmixer_blocks:
             raise ValueError(
@@ -197,7 +200,6 @@ class PairmixerformerTrunk(BaseTrunk):
 
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
         self.chunk_threshold: int = cfg.chunk_threshold
 
         if self.use_template:
@@ -227,12 +229,18 @@ class PairmixerformerTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         self.pairmixer_module = torch.compile(
-            self.pairmixer_module, dynamic=False, fullgraph=False
+            self.pairmixer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
         self.pairformer_module = torch.compile(
-            self.pairformer_module, dynamic=False, fullgraph=False
+            self.pairformer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
 
     def forward(
@@ -242,6 +250,7 @@ class PairmixerformerTrunk(BaseTrunk):
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
+        use_cuequiv_kernels: bool = False,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass."""
@@ -253,6 +262,14 @@ class PairmixerformerTrunk(BaseTrunk):
         else:
             chunk_size_tri_attn = None
 
+        # Revert to uncompiled version for validation
+        if self.is_compiled and not self.training:
+            pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
+            pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
+        else:
+            pairmixer_module = self.pairmixer_module
+            pairformer_module = self.pairformer_module
+
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
@@ -262,6 +279,11 @@ class PairmixerformerTrunk(BaseTrunk):
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+
+                if self.is_compiled and enable_grad and i > 0:
+                    # Clone the tensors for compilation.
+                    s_hat = s_hat.clone()
+                    z_hat = z_hat.clone()
 
                 # Line 8
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
@@ -278,19 +300,11 @@ class PairmixerformerTrunk(BaseTrunk):
                 s = s_init + self.linear_s(self.layernorm_s(s_hat))
 
                 # Line 12
-                # Revert to uncompiled version for validation
-                if self.is_compiled and not self.training:
-                    pairmixer_module = self.pairmixer_module._orig_mod  # noqa: SLF001
-                    pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
-                else:
-                    pairmixer_module = self.pairmixer_module
-                    pairformer_module = self.pairformer_module
-
                 s, z = pairmixer_module(
                     s,
                     z,
                     mask=f_input.token.pad_mask,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                    use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
                 s, z = pairformer_module(
@@ -298,8 +312,7 @@ class PairmixerformerTrunk(BaseTrunk):
                     z,
                     mask=f_input.token.pad_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
-                    use_cuequiv_attn=self.use_cuequiv_kernels,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                    use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
                 # Line 13

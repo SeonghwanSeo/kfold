@@ -1,7 +1,7 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.boltz1.diffusion import DiffusionModule
 from kfold.model.layers.boltz1.encoders import RelativePositionEncoder
 from kfold.utils.registry import SCORE_MODEL, BaseConfig
@@ -66,8 +66,8 @@ class Boltz1DiffusionModule(BaseScoreModel):
         conditioning_transition_layers: int = 2
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config) -> None:
-        super().__init__(cfg)
+    def __init__(self, cfg: Config, kernel_config: dict):
+        super().__init__(cfg, kernel_config)
 
         self.diffusion_stack = DiffusionModule(
             token_s=cfg.channel_s,

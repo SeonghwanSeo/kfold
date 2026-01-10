@@ -2,9 +2,11 @@ from functools import partial
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.transition import Transition
 from kfold.model.layers.primitives import (
+    DropoutColumnwise,
+    DropoutRowwise,
     LayerNorm,
     LinearNoBias,
     TriangleAttentionEndingNode,
@@ -12,7 +14,6 @@ from kfold.model.layers.primitives import (
     TriangleMultiplicationIncoming,
     TriangleMultiplicationOutgoing,
 )
-from kfold.model.layers.primitives.dropout import get_dropout_mask
 from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
 
@@ -316,8 +317,8 @@ class EnsembleModule(torch.nn.Module):
         num_heads_pwa: int = 8,
         num_heads_tri_attn: int = 4,
         num_blocks: int = 4,
-        struct_dropout: float = 0.15,
-        z_dropout: float = 0.25,
+        dropout_struct: float = 0.15,
+        dropout_z: float = 0.25,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         """Initialize the Ensemble module.
@@ -340,10 +341,10 @@ class EnsembleModule(torch.nn.Module):
             The number of heads for the triangle attention.
         num_blocks : int
             The number of Ensemble blocks.
-        struct_dropout : float
-            The Ensemble dropout.
-        z_dropout : float
-            The pairwise dropout.
+        dropout_struct : float
+            The dropout rate for the ensemble stack.
+        dropout_z : float
+            The dropout rate for the pairwise stack.
         blocks_per_ckpt : int | None
             The number of blocks per checkpoint, default None.
         """
@@ -364,8 +365,8 @@ class EnsembleModule(torch.nn.Module):
                     channel_hidden_opm=channel_hidden_opm,
                     num_heads_pwa=num_heads_pwa,
                     num_heads_tri_attn=num_heads_tri_attn,
-                    struct_dropout=struct_dropout,
-                    z_dropout=z_dropout,
+                    dropout_struct=dropout_struct,
+                    dropout_z=dropout_z,
                     is_last_block=(i == num_blocks - 1),
                 )
             )
@@ -375,10 +376,8 @@ class EnsembleModule(torch.nn.Module):
         f_input: FoldingInput,
         z: torch.Tensor,
         s_inputs: torch.Tensor,
-        chunk_size_opm: int | None = None,
         chunk_size_tri_attn: int | None = None,
-        use_cuequiv_mul: bool = True,
-        use_cuequiv_attn: bool = True,
+        use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Perform the forward pass.
 
@@ -390,6 +389,8 @@ class EnsembleModule(torch.nn.Module):
             The pairwise embeddings
         s_inputs : Tensor
             The input single embeddings
+        chunk_size_tri_attn : int | None, optional
+            The chunk size for triangle attention, by default None.
 
         Returns
         -------
@@ -397,13 +398,6 @@ class EnsembleModule(torch.nn.Module):
             The output pairwise embeddings.
 
         """
-        # Set chunk sizes
-        if self.training:
-            assert chunk_size_opm is None, "During training, chunk_size_opm must be None."
-            assert chunk_size_tri_attn is None, (
-                "During training, chunk_size_tri_attn must be None."
-            )
-
         # Compute input projections
         e: torch.Tensor = f_input.pretrained.structure_embedding  # [B, L, E, c_struct]
         # FIXME: add a better way to handle missing structure embeddings
@@ -421,9 +415,7 @@ class EnsembleModule(torch.nn.Module):
                 b,
                 token_mask=token_mask,
                 struct_mask=struct_mask,
-                use_cuequiv_mul=use_cuequiv_mul,
-                use_cuequiv_attn=use_cuequiv_attn,
-                chunk_size_opm=chunk_size_opm,
+                use_cuequiv_kernels=use_cuequiv_kernels,
                 chunk_size_tri_attn=chunk_size_tri_attn,
             )
             for b in self.blocks
@@ -453,8 +445,8 @@ class EnsembleBlock(torch.nn.Module):
         channel_hidden_opm: int = 32,
         num_heads_pwa: int = 8,
         num_heads_tri_attn: int = 4,
-        struct_dropout: float = 0.15,
-        z_dropout: float = 0.25,
+        dropout_struct: float = 0.15,
+        dropout_z: float = 0.25,
         is_last_block: bool = False,
     ) -> None:
         """Initialize the Ensemble block.
@@ -471,18 +463,15 @@ class EnsembleBlock(torch.nn.Module):
             The number of heads for the ensemble attention, by default 8.
         num_heads_tri_attn : int, optional
             The number of heads for the triangle attention, by default 4.
-        struct_dropout : float, optional
+        dropout_struct : float, optional
             The dropout rate for the ensemble stack, by default 0.15.
-        z_dropout : float, optional
+        dropout_z : float, optional
             The dropout rate for the pairwise stack, by default 0.25.
         is_last_block : bool, optional
             Whether this is the last block, by default False.
 
         """
         super().__init__()
-        self.e_dropout: float = struct_dropout
-        self.z_dropout: float = z_dropout
-
         self.outer_product_mean = OuterProductMean(
             c_in=channel_struct,
             c_hidden=channel_hidden_opm,
@@ -499,6 +488,11 @@ class EnsembleBlock(torch.nn.Module):
         )
 
         self.transition_z = Transition(channel_z, expansion_factor=4)
+
+        self.dropout_rowwise_e = DropoutRowwise(dropout_struct)
+        self.dropout_columnwise_e = DropoutColumnwise(dropout_struct)
+        self.dropout_rowwise_z = DropoutRowwise(dropout_z)
+        self.dropout_columnwise_z = DropoutColumnwise(dropout_z)
 
         self.is_last_block: bool = is_last_block
         if not self.is_last_block:
@@ -517,9 +511,7 @@ class EnsembleBlock(torch.nn.Module):
         z: torch.Tensor,
         token_mask: torch.Tensor,
         struct_mask: torch.Tensor,
-        use_cuequiv_mul: bool = True,
-        use_cuequiv_attn: bool = True,
-        chunk_size_opm: int | None = None,
+        use_cuequiv_kernels: bool = False,
         chunk_size_tri_attn: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -534,6 +526,10 @@ class EnsembleBlock(torch.nn.Module):
             The token mask
         struct_mask : torch.Tensor
             The structure ensemble mask
+        use_cuequiv_kernels : bool, optional
+            Whether to use cuEQUIV kernels, by default False
+        chunk_size_tri_attn : int | None, optional
+            The chunk size for triangle attention, by default None.
 
         Returns
         -------
@@ -544,39 +540,48 @@ class EnsembleBlock(torch.nn.Module):
 
         """
         # Communication
-        z = z + self.outer_product_mean(e, struct_mask, chunk_size=chunk_size_opm)
+        # NOTE: The number of ensemble members are <10, so chunking is not needed here.
+        z = z + self.outer_product_mean(e, struct_mask)
 
         # Pairwise stack
-        dropout = get_dropout_mask(z, self.z_dropout, self.training)
-        z = z + dropout * self.tri_mul_out(
-            z, mask=token_mask, use_kernels=use_cuequiv_mul
+        z = z + self.dropout_rowwise_z(
+            self.tri_mul_out(
+                z,
+                token_mask,
+                use_kernels=use_cuequiv_kernels,
+            )
         )
-
-        dropout = get_dropout_mask(z, self.z_dropout, self.training)
-        z = z + dropout * self.tri_mul_in(z, mask=token_mask, use_kernels=use_cuequiv_mul)
-
-        dropout = get_dropout_mask(z, self.z_dropout, self.training)
-        z = z + dropout * self.tri_att_start(
-            z,
-            mask=token_mask,
-            chunk_size=chunk_size_tri_attn,
-            use_kernels=use_cuequiv_attn,
+        z = z + self.dropout_rowwise_z(
+            self.tri_mul_in(
+                z,
+                token_mask,
+                use_kernels=use_cuequiv_kernels,
+            )
         )
-
-        dropout = get_dropout_mask(z, self.z_dropout, self.training, columnwise=True)
-        z = z + dropout * self.tri_att_end(
-            z,
-            mask=token_mask,
-            chunk_size=chunk_size_tri_attn,
-            use_kernels=use_cuequiv_attn,
+        z = z + self.dropout_rowwise_z(
+            self.tri_att_start(
+                z,
+                token_mask,
+                chunk_size=chunk_size_tri_attn,
+                use_kernels=use_cuequiv_kernels,
+            )
+        )
+        z = z + self.dropout_columnwise_z(
+            self.tri_att_end(
+                z,
+                token_mask,
+                chunk_size=chunk_size_tri_attn,
+                use_kernels=use_cuequiv_kernels,
+            )
         )
 
         z = z + self.transition_z(z)
 
         if not self.is_last_block:
             # Ensemble stack
-            ensb_dropout = get_dropout_mask(e, self.e_dropout, self.training)
-            e = e + ensb_dropout * self.pair_weighted_averaging(e, z, token_mask)
+            e = e + self.dropout_rowwise_e(
+                self.pair_weighted_averaging(e, z, token_mask),
+            )
             e = e + self.transition_e(e)
 
         return e, z

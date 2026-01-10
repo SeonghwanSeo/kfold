@@ -118,7 +118,7 @@ This section describes the additional implementations which are not part of the 
 
 1. **Modified AtomAttentionEncoder**: We modified the input feature embedding architecture (`AtomAttentionEncoder`) to incorporate features derived from the **apo** structure:
   - Local structure: Similar to the **ref_pos** embedding in AF3, pairwise offset vectors between atoms in the **apo** structure are computed and embedded to provide local context.
-  - Global structure: Pairwise distance maps (token-level) are computed and embedded with RBF to provide spatial context.
+  - Global structure: Pairwise distance maps (token-level) are computed and embedded with RBF/Distogram to provide spatial context.
   - TODO: Currently, only the `InputFeatureEmbedder` uses this modified module. In future, we may want to explore using this module in score model as well.
 
 ### Trunk

@@ -1,6 +1,7 @@
 import torch
 
 from kfold.model.layers.primitives import LinearNoBias
+from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.registry import DISTOGRAM_HEAD
 
 from .base import BaseDistogramHead
@@ -18,14 +19,14 @@ class DistogramHead(BaseDistogramHead):
         Parameters
         ----------
         z : torch.Tensor
-            Tensor of shape (B, N, N, c_z) containing pair feature
+            Tensor of shape (*, N, N, c_z) containing pair feature
 
         Returns
         -------
         logits: torch.Tensor
-            Tensor of shape (B, N, N, num_bins) containing distogram logits.
+            Tensor of shape (*, N, N, num_bins) containing distogram logits.
         """
         logits = self.linear(z)
         # symmetrize logits
-        logits = logits + logits.permute(0, 2, 1, 3)
+        logits = logits + permute_final_dims(logits, (1, 0, 2))
         return logits

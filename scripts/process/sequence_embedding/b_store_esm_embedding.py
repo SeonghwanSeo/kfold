@@ -1,5 +1,6 @@
 import argparse
 import logging
+from collections.abc import Generator
 from pathlib import Path
 
 import torch
@@ -7,133 +8,129 @@ from tqdm import tqdm
 
 from kfold.model.modules.sequence_encoder.esmc import ESMC, ESMCConfig
 
+# Error handling for ESM package
 try:
     import esm  # noqa: F401
 except ImportError as e:
-    raise ImportError(
-        "ESM package is required to run this script. "
-        "Please install it via 'pip install esm'."
-    ) from e
-
+    raise ImportError("ESM package is required. Install it via 'pip install esm'.") from e
 
 logger = logging.getLogger(__name__)
 
 
-# TODO: remove default path before publish
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Get ESM-C embedding for protein sequences in the dataset."
-    )
+    parser = argparse.ArgumentParser(description="Extract ESM-C embeddings.")
     parser.add_argument(
-        "-i",
-        "--input",
-        type=Path,
-        help="Path to the fasta file containing protein sequences.",
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/rcsb_protein_sequences.fasta",
+        "-i", "--input", type=Path, required=True, help="Path to the input fasta file."
     )
     parser.add_argument(
         "--model",
         type=str,
         choices=["esmc_300m", "esmc_600m"],
         default="esmc_600m",
-        help="ESM model to use for embedding.",
+        help="ESM model variant.",
     )
     parser.add_argument(
         "-o",
         "--output_dir",
         type=Path,
         required=True,
-        help="Path of directory to save the embeddings.",
+        help="Directory to save .pt files.",
     )
     parser.add_argument(
-        "--budget_size",
-        type=int,
-        default=2048 * 64,
-        help="Budget size for ESM model.",
+        "--budget_size", type=int, default=2048 * 64, help="Token budget per batch."
+    )
+    parser.add_argument(
+        "--overwrite", action="store_true", help="Overwrite existing embeddings."
     )
     return parser.parse_args()
 
 
+def fasta_reader(fasta_path: Path) -> Generator[tuple[str, str], None, None]:
+    """Memory-efficient fasta reader."""
+    with open(fasta_path) as f:
+        header, seq = None, []
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                if header:
+                    yield header, "".join(seq)
+                header, seq = line[1:], []
+            else:
+                seq.append(line)
+        if header:
+            yield header, "".join(seq)
+
+
+def get_batches(
+    all_keys: list[str], sequences: dict[str, str], budget_limit: int
+) -> Generator[tuple[list[str], list[str]], None, None]:
+    """Yields batches of sequences based on token budget."""
+    batch_seqs, batch_keys = [], []
+    current_budget = 0
+
+    for key in all_keys:
+        seq = sequences[key]
+        # +2 for BOS/EOS tokens
+        seq_len = len(seq) + 2
+
+        if (current_budget + seq_len) > budget_limit and batch_seqs:
+            yield batch_seqs, batch_keys
+            batch_seqs, batch_keys, current_budget = [], [], 0
+
+        batch_seqs.append(seq)
+        batch_keys.append(key)
+        current_budget += seq_len
+
+    if batch_seqs:
+        yield batch_seqs, batch_keys
+
+
+@torch.inference_mode()
 def main(args):
-    # No gradient computation
-    torch.set_grad_enabled(False)
-
-    # Initialize ESM model
-    config = ESMCConfig.from_model_name(args.model)
-    model = ESMC(config).eval().cuda()
-    logger.info(f"Using model: {args.model}")
-
-    # Create output directory
+    # Output setup
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Read fasta file
-    sequences: dict[tuple[str, int], str] = {}
-    with open(args.input) as f:
-        lines = f.readlines()
-        assert len(lines) % 2 == 0, "Fasta file should have even number of lines."
-        for i in range(0, len(lines), 2):
-            header = lines[i].strip()
-            seq_id = header[1:]  # Remove '>' character
-            seq = lines[i + 1].strip()
-            # Key format: {pdb_id}_{entity_id}_protein
-            pdb_id, entity_id, suffix = seq_id.split("_")
-            assert suffix == "protein", f"Unexpected suffix in header: {suffix}"
-            sequences[(pdb_id, int(entity_id))] = seq
+    # Load model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    config = ESMCConfig.from_model_name(args.model)
+    model = ESMC(config).eval().to(device)
+    logger.info(f"Initialized {args.model} on {device}")
 
-    # Process each sequence and store embeddings
-    all_keys = sorted(sequences.keys(), key=lambda x: (len(sequences[x]), x))
-    logger.info(f"Total sequences to process: {len(all_keys)}")
-    logger.info(f"Max sequence length: {max(len(seq) for seq in sequences.values())}")
+    # Read and sort sequences by length to minimize padding
+    logger.info(f"Loading sequences from {args.input}...")
+    sequences = {header: seq for header, seq in fasta_reader(args.input)}
 
-    # Process in batches
-    budget = 0
-    batch_sequences: list[str] = []
-    batch_keys: list[tuple[str, int]] = []
-    for i in tqdm(range(len(all_keys)), desc="Processing sequences"):
-        key = all_keys[i]
-        seq = sequences[key]
-        seq_len = len(seq) + 2  # +2 for special tokens
+    # Sorting by length is a common trick to improve batch efficiency
+    sorted_keys = sorted(sequences.keys(), key=lambda k: len(sequences[k]))
 
-        # Check if adding this sequence exceeds budget
-        if (budget + seq_len) > args.budget_size:
-            embeddings = model.encode(batch_sequences)
-            for idx, key_i in enumerate(batch_keys):
-                emb = embeddings[idx].cpu()
-                pdb_id, entity_id = key_i
-                save_path = (
-                    args.output_dir
-                    / pdb_id[:2]
-                    / pdb_id
-                    / f"{pdb_id}_{entity_id}_protein.pt"
-                )
-                save_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(emb, save_path)
-            del embeddings
+    # Filter existing files if not overwriting
+    if not args.overwrite:
+        sorted_keys = [
+            k for k in sorted_keys if not (args.output_dir / f"{k}.pt").exists()
+        ]
+        logger.info(f"Skipping existing files. Remaining: {len(sorted_keys)}")
 
-            # Reset batch
-            budget = 0
-            batch_sequences = []
-            batch_keys = []
+    # Process batches
+    pbar = tqdm(total=len(sorted_keys), desc="Encoding sequences")
+    for batch_seqs, batch_keys in get_batches(sorted_keys, sequences, args.budget_size):
+        # Forward pass
+        embeddings = model.encode(batch_seqs)  # Assuming this returns a list of tensors
 
-        # Add current sequence to batch
-        batch_sequences.append(seq)
-        batch_keys.append(key)
-        budget += seq_len
+        # Save results
+        for key, emb in zip(batch_keys, embeddings, strict=True):
+            save_path = args.output_dir / f"{key}.pt"
+            # Using non_blocking if moving to CPU for minor speedup
+            torch.save(emb.to("cpu", non_blocking=True), save_path)
 
-    # Process any remaining sequences in the last batch
-    if len(batch_sequences) > 0:
-        embeddings = model.encode(batch_sequences)
-        for idx, key_i in enumerate(batch_keys):
-            emb = embeddings[idx].cpu()
-            pdb_id, entity_id = key_i
-            save_path = (
-                args.output_dir / pdb_id[:2] / pdb_id / f"{pdb_id}_{entity_id}_protein.pt"
-            )
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(emb, save_path)
+        pbar.update(len(batch_keys))
+    pbar.close()
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     args = parse_args()
-    logging.basicConfig(level=logging.INFO)
     main(args)

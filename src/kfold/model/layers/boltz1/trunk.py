@@ -2,7 +2,7 @@ import torch
 import torch.utils.checkpoint
 from torch import Tensor, nn
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 
 from .attention import AttentionPairBias
 from .dropout import get_dropout_mask

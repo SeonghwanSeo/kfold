@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.boltz1 import initialize as init
 from kfold.model.layers.boltz1.msa_module import MSAModule
 from kfold.model.layers.boltz1.trunk import PairformerModule
@@ -48,14 +48,13 @@ class Boltz1PairformerTrunk(BaseTrunk):
         pairwise_num_heads: int = 4
         use_msa: bool = False
         use_template: bool = False
-        use_cuequiv_kernels: bool = False
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairformer module."""
-        super().__init__(cfg)
+        super().__init__(cfg, kernel_config)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_kernels: bool = cfg.use_cuequiv_kernels
+        self.use_kernels: bool = self.kernel_config.cuequivariance
 
         if self.use_template:
             raise NotImplementedError(
@@ -95,14 +94,17 @@ class Boltz1PairformerTrunk(BaseTrunk):
         init.gating_init_(self.s_recycle.weight)
         init.gating_init_(self.z_recycle.weight)
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
         self.pairformer_module = torch.compile(
-            self.pairformer_module, dynamic=False, fullgraph=False
+            self.pairformer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
 
     def forward(

@@ -6,7 +6,7 @@ import math
 import torch
 import torch.nn as nn
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 
 from .embeddings import RelativePositionEncoding
@@ -194,6 +194,7 @@ class DiffusionModule(nn.Module):
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         model_cache: dict | None = None,
+        use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Forward pass of the AF3 diffusion module.
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
@@ -270,6 +271,7 @@ class DiffusionModule(nn.Module):
             s=s,  # [B, N, Lt, c_s]
             z=z,  # [B, 1, Lt, Lt, c_z], broadcasted to [B, N, Lt, Lt, c_z]
             attn_mask=token_mask,  # [B, 1, Lt], broadcasted to [B, N, Lt]
+            use_cuequiv_kernels=use_cuequiv_kernels,
         )
 
         # Line 6

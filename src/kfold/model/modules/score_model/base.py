@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import SCORE_MODEL
 
 
@@ -12,20 +12,25 @@ class BaseScoreModel(torch.nn.Module, ABC):
     See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3
     """
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, kernel_config):
         super().__init__()
         self.cfg = cfg
+        self.kernel_config = kernel_config
         self.is_compiled: bool = False
 
-    def compile(self, compile: bool = True):
+    def compile(self, compile: bool = True, mode: str = "default"):
         """Compile the score model module."""
         if compile:
-            self.do_compile()
+            self.do_compile(mode)
             self.is_compiled = True
 
-    def do_compile(self):
-        """Compile the score model module."""
-        self.forward = torch.compile(self.forward, dynamic=False, fullgraph=False)  # type: ignore
+    def do_compile(self, mode: str = "default"):
+        """Compile the trunk module."""
+        # NOTE: you should compile the submodules inside the trunk
+        # since the computation graph is changed depending on the
+        # number of recycling steps. Thus, compile the sub module
+        # instead of the whole trunk module.
+        raise NotImplementedError("do_compile method is not implemented yet.")
 
     @abstractmethod
     def forward(

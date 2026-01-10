@@ -3,9 +3,12 @@ model:
   input_embedder:
     channel_seq_encoder: 2560
   trunk:
+    use_ensemble: false
+    ensemble_module:
+      channel_struct_input: null
+      num_blocks: 2
     interformer:
       num_blocks: 16
-    use_cuequiv_kernels: true
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -21,7 +24,7 @@ train:
   global_hparams:
     max_chains: 20
     max_tokens: 384
-    batch_size: 4
+    batch_size: 8
     diffusion_batch_size: 48
     global_batch_size: 128
     num_global_steps_per_epoch: 1000
@@ -34,21 +37,22 @@ train:
     precision: bf16-mixed
 
   data:
-    lmdb_path: /cache/wykim_lab/kfold_data/kfold_rcsb_processed_v251120.lmdb/
-    manifest_path: /cache/wykim_lab/kfold_data/manifests/af3_manifest.pkl
-    symmetry_path: /cache/wykim_lab/kfold_data/symmetry.pkl
-    split_path: ./assets/splits/kfold_v251213/
-    num_workers: 8
-
-    paths:
-      seq_embedding_path: /cache/wykim_lab/kfold_data/pretrained/esm2_3b_bf16/
-
-    featurization_args:
-      seq_embedding_dim: 2560
+    ccd_path: /cache/wykim_lab/kfold_data/v260109/ccd-train.pkl
+    train_datasets:
+      - _yaml_: "dataset/rcsb-train.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-train/
+    val_datasets:
+      - _yaml_: "dataset/rcsb-val.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-val/
+    pretrained_embedding:
+      seq: esm2-3b
+      seq_dim: 2560
+      struct: null
+      struct_dim: null
+      max_struct_ensembles: 1
 
   wandb:
     use: false
     project: "KFold-Combined"
-    group: "251224"
-    entity: K-Fold
-    tags: ["mini", "edm", "esm2", "rbf"]
+    group: esm # set your group name
+    entity: K-Fold # set your entity name

@@ -1,0 +1,72 @@
+model:
+  _yaml_: "model/kfold-edm.yaml"
+  input_embedder:
+    channel_seq_encoder: 2560
+  trunk:
+    use_ensemble: false
+    ensemble_module:
+      channel_struct_input: null
+      num_blocks: 2
+    interformer:
+      num_blocks: 16
+  score_model:
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 8
+    atom_decoder_blocks: 1
+
+train:
+  _yaml_: "train/structure_only.yaml"
+
+  name: esm2-rbf-edm
+  out_dir: ./experiments/
+  seed: 42
+
+  global_hparams:
+    max_chains: 20
+    max_tokens: 384
+    batch_size: 4
+    diffusion_batch_size: 48
+    global_batch_size: 128
+    num_global_steps_per_epoch: 1000
+
+  # pytorch lightning trainer hparams
+  trainer:
+    strategy: "auto"
+    devices: "auto"
+    num_nodes: 1
+    precision: bf16-mixed
+
+  data:
+    ccd_path: /cache/wykim_lab/kfold_data/v260109/ccd-train.pkl
+    train_datasets:
+      - _yaml_: "dataset/rcsb-train.yaml"
+        weight: 1.0
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-train/
+      - _yaml_: "dataset/natural_ab.yaml"
+        name: "NaturalAb"
+        weight: 0.02
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/NaturalAb/
+      - _yaml_: "dataset/humap.yaml"
+        name: "HuMAP_data_098"
+        weight: 0.05
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/HuMAP_data_098/
+      - _yaml_: "dataset/humap.yaml"
+        name: "HuMAP_data_ood_mid"
+        weight: 0.02
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/HuMAP_data_ood_mid/
+      - _yaml_: "dataset/humap.yaml"
+        name: "HuMAP_data_ood_low"
+        weight: 0.02
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/HuMAP_data_ood_low/
+    val_datasets:
+      - _yaml_: "dataset/rcsb-val.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-val/
+    pretrained_embedding:
+      seq: esm2-3b
+      seq_dim: 2560
+
+  wandb:
+    use: false
+    project: "KFold-Combined"
+    group: esm # set your group name
+    entity: K-Fold # set your entity name

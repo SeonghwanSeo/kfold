@@ -8,15 +8,15 @@ import torch.nn as nn
 from einops import rearrange
 from einops.layers.torch import Rearrange
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import (
     AdaLN,
     LayerNorm,
     Linear,
     LinearNoBias,
     SwiGLU,
-    attention,
 )
+from kfold.model.layers.primitives.attention import attention, attention_pair_bias
 from kfold.utils.checkpointing import checkpoint_blocks
 
 from .embeddings import AtomEmbedding
@@ -119,7 +119,7 @@ class AttentionPairBias(nn.Module):
         z: torch.Tensor,
         attn_mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex | None = None,
-        inplace: bool = False,
+        use_kernels: bool = False,
     ) -> torch.Tensor:
         """Forward pass.
         See Section 3.7 Algorithm 24 of AlphaFold3 paper.
@@ -138,6 +138,8 @@ class AttentionPairBias(nn.Module):
             NOTE: We only mask key positions as in the official implementation.
         local_attn_index : LocalAttentionIndex | None
             The local attention indexer, by default None
+        use_kernels : bool, optional
+            Whether to use custom kernel for attention, by default False
 
         Returns
         -------
@@ -145,6 +147,11 @@ class AttentionPairBias(nn.Module):
             The output sequence tensor. (B, N, c_a)
 
         """
+        if use_kernels:
+            assert local_attn_index is None, (
+                "local_attn_index must be None when use_kernels is True"
+            )
+
         # === Input linearection === #
         if self.use_single_cond:
             # Line 1-2
@@ -169,26 +176,47 @@ class AttentionPairBias(nn.Module):
         k = self.linear_k(a_k)  # [..., H, Lk, Dh]
         v = self.linear_v(a_k)  # [..., H, Lk, Dh]
 
-        # Line 8
-        attn_bias = self.linear_z(z)  # [..., H, Lq, Lk]
-        attn_bias = attn_bias - self.inf * (1 - attn_mask.float())[..., None, None, :]
+        if use_kernels:
+            # Attention Pair Bias with cuequivariance kernels
+            a = attention_pair_bias(
+                s=a,
+                q=q,
+                k=k,
+                v=v,
+                z=z,
+                mask=attn_mask.bool(),
+                w_proj_z=self.linear_z[1].weight,
+                w_proj_g=self.linear_g.weight,
+                w_proj_o=self.linear_out.weight,
+                w_ln_z=self.linear_z[0].weight,
+                b_ln_z=self.linear_z[0].bias,
+                b_proj_z=self.linear_z[1].bias,
+                b_proj_g=self.linear_g.bias,
+                b_proj_o=self.linear_out.bias,
+                num_heads=self.num_heads,
+                inf=self.inf,
+                use_kernels=True,
+            )
+        else:
+            # Line 8
+            attn_bias = self.linear_z(z)  # [..., H, Lq, Lk]
+            attn_bias = attn_bias - self.inf * (1 - attn_mask.float())[..., None, None, :]
 
-        # Line 9
-        g = self.sigmoid(self.linear_g(a))
+            # Line 9
+            g = self.sigmoid(self.linear_g(a))
 
-        # === Attention === #
-        # Line 10-11
-        Av = attention(
-            q,
-            k,
-            v,
-            bias=attn_bias,
-            scale=math.sqrt(self.head_dim),
-            inplace=inplace,
-        )
-        Av = rearrange(Av, "... h l d -> ... l (h d)")
-        Av = Av.reshape(a.shape)
-        a = self.linear_out(g * Av)
+            # === Attention === #
+            # Line 10-11
+            Av = attention(
+                q,
+                k,
+                v,
+                bias=attn_bias,
+                scale=1.0 / math.sqrt(self.head_dim),
+            )
+            Av = rearrange(Av, "... h l d -> ... l (h d)")
+            Av = Av.reshape(a.shape)
+            a = self.linear_out(g * Av)
 
         # === Output projection === #
         # Line 12-14
@@ -250,6 +278,7 @@ class DiffusionTransformer(nn.Module):
         z: torch.Tensor,
         attn_mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex | None = None,
+        use_cuequiv_kernels: bool = False,
     ):
         """See Section 3.7 Algorithm 23 Diffusion Transformer
 
@@ -264,6 +293,10 @@ class DiffusionTransformer(nn.Module):
         attn_mask : torch.Tensor
             The pairwise mask tensor (..., Lk)
             NOTE: We only mask key positions as in the official implementation.
+        local_attn_index : LocalAttentionIndex | None
+            The local attention indexer, by default None
+        use_cuequiv_kernels : bool, optional
+            Whether to use custom kernel for attention, by default False
         """
         # Line 1, 4
         blocks = [
@@ -271,6 +304,7 @@ class DiffusionTransformer(nn.Module):
                 b,
                 attn_mask=attn_mask,
                 local_attn_index=local_attn_index,
+                use_cuequiv_kernels=use_cuequiv_kernels,
             )
             for b in self.blocks
         ]
@@ -335,6 +369,7 @@ class DiffusionTransformerBlock(nn.Module):
         z: torch.Tensor,
         attn_mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex | None = None,
+        use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """See Section 3.7 Algorithm 23 Diffusion Transformer
 
@@ -348,6 +383,8 @@ class DiffusionTransformerBlock(nn.Module):
             The input pair representation tensor (..., Lq, Lk, c_z)
         attn_mask : torch.Tensor
             The pairwise mask tensor (..., Lq, Lk)
+        use_cuequiv_kernels : bool, optional
+            Whether to use custom kernel for attention, by default False
 
         Returns
         -------
@@ -374,6 +411,7 @@ class DiffusionTransformerBlock(nn.Module):
             z=z,
             attn_mask=attn_mask,
             local_attn_index=local_attn_index,
+            use_kernels=use_cuequiv_kernels,
         )
         # Line 3
         a = a + self.transition(a, s)
@@ -500,8 +538,7 @@ class AtomTransformer(nn.Module):
         )
 
         # NOTE: mask the key positions only (masking query is not required)
-        mask = mask.float()  # [B, La, 1]
-        attn_mask = local_attn_index.to_key(mask[..., None]).squeeze(-1)  # [B, W, Lk]
+        attn_mask = local_attn_index.to_key(mask[..., None]).squeeze(-1)  # [..., W, Lk]
 
         # main transformer
         q = self.diffusion_transformer(
@@ -510,6 +547,7 @@ class AtomTransformer(nn.Module):
             z=p,  # [B, W, Lq, Lk, c_atompair]
             attn_mask=attn_mask,  # [B, W, Lk]
             local_attn_index=local_attn_index,
+            use_cuequiv_kernels=False,  # skip cueq kernel for local attention
         )
 
         return q
@@ -572,7 +610,7 @@ class AtomAttentionEncoder(nn.Module):
         self.embed_atompair_ref_dist = LinearNoBias(1, channel_atompair, init="default")
         self.embed_atompair_mask = LinearNoBias(1, channel_atompair, init="default")
 
-        self.use_structure = use_structure
+        self.use_structure: bool = use_structure
         if use_structure:
             assert channel_z is not None, (
                 "channel_z must be provided if use_structure is True"

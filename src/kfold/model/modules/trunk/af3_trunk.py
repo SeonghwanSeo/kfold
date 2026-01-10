@@ -1,6 +1,6 @@
 import torch
 
-from kfold.data.model_input import FoldingInput
+from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
@@ -36,8 +36,6 @@ class AF3PairformerTrunk(BaseTrunk):
             Whether to use template, by default False
         use_msa: bool, optional
             Whether to use MSA, by default False
-        use_cuequiv_kernels : bool, optional
-            Whether to use cuequivariance kernels, by default False
         tri_attn_chunk_threshold : int, optional
             The threshold for chunking in triangle attention, by default 384
         """
@@ -50,16 +48,14 @@ class AF3PairformerTrunk(BaseTrunk):
         dropout: float = 0.25
         use_msa: bool = False
         use_template: bool = False
-        use_cuequiv_kernels: bool = False
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairformer module."""
-        super().__init__(cfg)
+        super().__init__(cfg, kernel_config)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.use_cuequiv_kernels: bool = cfg.use_cuequiv_kernels
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
         if self.use_template:
@@ -86,14 +82,17 @@ class AF3PairformerTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-    def do_compile(self):
+    def do_compile(self, mode: str = "default"):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
         self.pairformer_module = torch.compile(
-            self.pairformer_module, dynamic=False, fullgraph=False
+            self.pairformer_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
         )  # type: ignore
 
     def forward(
@@ -136,6 +135,13 @@ class AF3PairformerTrunk(BaseTrunk):
         else:
             chunk_size_tri_attn = None
 
+        # Revert to uncompiled version for validation
+        pairformer_module: PairformerStack
+        if self.is_compiled and not self.training:
+            pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
+        else:
+            pairformer_module = self.pairformer_module
+
         # Line 6, z_hat, s_hat = 0, 0
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
@@ -146,6 +152,11 @@ class AF3PairformerTrunk(BaseTrunk):
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+
+                if self.is_compiled and enable_grad and i > 0:
+                    # Clone the tensors for compilation.
+                    s_hat = s_hat.clone()
+                    z_hat = z_hat.clone()
 
                 # Line 8
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
@@ -162,20 +173,12 @@ class AF3PairformerTrunk(BaseTrunk):
                 s = s_init + self.linear_s(self.layernorm_s(s_hat))
 
                 # Line 12
-                # Revert to uncompiled version for validation
-                pairformer_module: PairformerStack
-                if self.is_compiled and not self.training:
-                    pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
-                else:
-                    pairformer_module = self.pairformer_module
-
                 s, z = pairformer_module(
                     s,
                     z,
                     mask=f_input.token.pad_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
-                    use_cuequiv_attn=self.use_cuequiv_kernels,
-                    use_cuequiv_mul=self.use_cuequiv_kernels,
+                    use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
                 # Line 13

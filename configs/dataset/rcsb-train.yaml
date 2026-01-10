@@ -1,0 +1,35 @@
+# RCSB training dataset configuration.
+_yaml_: "default-train.yaml"
+
+name: rcsb-train
+weight: 1.0
+
+# Data paths
+data_path: <DATA_PATH_PLACEHOLDER>
+seed: null # should be null for data augmentation
+
+filters:
+  - _registry_: "data_filter"
+    _class_: NumChainFilter
+    max_chains: 300
+  - _registry_: "data_filter"
+    _class_: ReleaseDateFilter
+    date: "2021-09-30"
+  - _registry_: "data_filter"
+    _class_: ResolutionFilter
+    resolution: 9.0
+
+sampler:
+  _registry_: "data_sampler"
+  _class_: ClusterSampler
+  beta_chain: 0.5
+  beta_interface: 1.0
+  allow_redundant: False
+
+cropper:
+  _registry_: "data_cropper"
+  _class_: MultiAnchorCropper
+  max_anchors: 2
+  w_contiguous: 0.25
+  w_spatial: 0.25
+  w_spatial_interface: 0.5

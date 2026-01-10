@@ -7,6 +7,7 @@ interformer:
   num_heads_tri_attn: 4
   num_blocks: 48
   dropout: 0.25
+  skip_tri_attn: false
 ensemble_module:
   channel_struct_input: 0 # to be filled in by the ensemble config
   channel_struct: 128
@@ -14,11 +15,9 @@ ensemble_module:
   num_heads_pwa: 8
   num_heads_tri_attn: 4
   num_blocks: 4
-  struct_dropout: 0.15
-  z_dropout: 0.25
+  dropout_struct: 0.15
+  dropout_z: 0.25
 multi_state_module: {}
-use_ensemble: False
-use_multi_state: False
-use_cuequiv_kernels: True
+use_ensemble: false
+use_multi_state: false
 blocks_per_ckpt: 1
-

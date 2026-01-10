@@ -1,0 +1,18 @@
+# Default dataset configuration for training
+_yaml_: "default.yaml"
+
+name: ???
+weight: 1.0 # sample weight for this dataset
+
+# Data paths
+seed: null # should be null for data augmentation
+
+filters: []
+sampler: ???
+cropper: ???
+
+apo_init:
+  use_perturbation: true
+  use_random_augmentation: true
+  use_ot_permutation: true
+  translation_scale: 10.0 # Angstroms

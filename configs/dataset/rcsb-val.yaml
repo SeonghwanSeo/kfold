@@ -1,0 +1,6 @@
+# RCSB validation dataset configuration.
+_yaml_: "default-val.yaml"
+name: rcsb-val
+
+# Data paths
+data_path: <DATA_PATH_PLACEHOLDER>
