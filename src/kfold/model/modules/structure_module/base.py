@@ -18,8 +18,6 @@ class BaseStructureModule(ABC):
     def __init__(self, cfg: BaseConfig, score_model: BaseScoreModel):
         self.cfg = cfg
         self.score_model = score_model
-        # alignment_entity_strategy: None (default) or "largest" or "random_non_ligand"
-        self.alignment_entity_strategy = getattr(cfg, "alignment_entity_strategy", None)
 
     # === Model Call === #
     @abstractmethod
@@ -377,6 +375,11 @@ class BaseEDM(BaseStructureModule):
 @STRUCTURE_MODULE.register()
 class BaseECSI(BaseEDM):
     """High-level ECSI framework for structure generation."""
+
+    def __init__(self, cfg: BaseConfig, score_model: BaseScoreModel):
+        super().__init__(cfg, score_model)
+        # alignment_entity_strategy: None (default) or "largest" or "random_non_ligand"
+        self.alignment_entity_strategy = getattr(cfg, "alignment_entity_strategy", None)
 
     def _select_largest_entity(
         self,
