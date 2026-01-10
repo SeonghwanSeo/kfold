@@ -3,6 +3,7 @@ name: ???
 
 # Data paths
 data_path: <DATA_PATH_PLACEHOLDER>
+manifest_path: null # optionally provide a custom manifest path
 seed: null # should be null for data augmentation
 
 apo_init:

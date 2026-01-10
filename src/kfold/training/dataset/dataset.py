@@ -15,10 +15,10 @@ rcsb-train/
     struct_embedding/
         saprot/
     apo/
-        ESMFold/
+        esmfold/
             uniq_prot1-esmfold.pdb
             ...
-        AFDB/
+        afdb/
             F-P01116-F1-model_v6.cif.gz
             ...
 afdb-distillation/ ...
@@ -105,16 +105,18 @@ class DatasetConfig:
         Name of the dataset.
     data_path : str | Path
         Path to the dataset directory.
+    manifest_path : str | Path | None
+        Optional path to the custom manifest file.
     seed : int | None
         Random seed for data loading.
-    apo_initialize : apo_initialize.ApoInitializerConfig
+    apo_init : ApoInitializerConfig
         Configuration for apo structure initialization.
     """
 
     name: str
     data_path: str | Path
+    manifest_path: str | Path | None = None
     seed: int | None = None
-
     apo_init: apo_initialization.ApoInitializerConfig = dataclasses.field(
         default_factory=apo_initialization.ApoInitializerConfig
     )
@@ -195,7 +197,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # === Initialize parameters === #
         self.config: DatasetConfig = config
         self.name: str = config.name
-        self.data_root = Path(config.data_path)
+        self.data_root: Path = Path(config.data_path)
         self.seed: int | None = config.seed
         self.return_symmetry: bool = return_symmetry
         self.return_structure: bool = return_structure
@@ -259,7 +261,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.ccd: CCD = ccd
 
         # Metadata
-        self.metadatas: list[Metadata] = self.load_manifest()
+        self.metadatas: list[Metadata] = self.load_manifest(
+            custom_manifest=config.manifest_path  # optional custom manifest path
+        )
 
         # Lookup table
         self.lookup_table: dict = self.load_lookup_table()
@@ -283,8 +287,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         return len(self.metadatas)
 
     # === Setup === #
-    def load_manifest(self) -> list[Metadata]:
-        manifest_path = self.data_root / "manifest.json"
+    def load_manifest(self, custom_manifest: str | Path | None = None) -> list[Metadata]:
+        if custom_manifest is not None:
+            manifest_path = Path(custom_manifest)
+        else:
+            manifest_path = self.data_root / "manifest.json"
         if not manifest_path.exists():
             raise FileNotFoundError(f"Manifest file {manifest_path} not found.")
         with open(manifest_path) as f:

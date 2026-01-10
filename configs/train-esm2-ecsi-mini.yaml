@@ -37,12 +37,16 @@ train:
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-train/
+        manifest_path: /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/v260110/all/rcsb-train.json
         apo_init:
+          translation_scale: 1.0
           fill_missing_atom: true
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-val/
+        manifest_path: /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/v260110/all/rcsb-val.json
         apo_init:
+          translation_scale: 1.0
           fill_missing_atom: true
     pretrained_embedding:
       seq: esm2-3b
