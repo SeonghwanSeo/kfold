@@ -2,6 +2,8 @@
 # Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
 # Adapted from ECSI training code and kfold_ddbm.py
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -96,6 +98,8 @@ class KFoldECSI(BaseECSI):
         sampling_beta: float = 1.0
         use_prior_coords: bool = True
         alignment_entity_strategy: str = "largest"
+        prior_spread_radius: float = 10.0
+        s_trans: float = 1.0
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -119,11 +123,13 @@ class KFoldECSI(BaseECSI):
         self.sampling_alpha: float = cfg.sampling_alpha
         self.sampling_beta: float = cfg.sampling_beta
         self.use_prior_coords: bool = cfg.use_prior_coords
+        self.prior_spread_radius: float = cfg.prior_spread_radius
+        self.s_trans: float = cfg.s_trans
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
             augmentation=self.coordinate_augmentation,
-            s_trans=1.0,
+            s_trans=self.s_trans,
         )
 
     @property
@@ -458,6 +464,88 @@ class KFoldECSI(BaseECSI):
         times = F.pad(times, (0, 1), value=0.0)
         return times
 
+    def _apply_fibonacci_spread(
+        self,
+        apo_coords: torch.Tensor,
+        f_input: FoldingInput,
+    ) -> torch.Tensor:
+        """Apply Fibonacci sphere spreading to apo coordinates.
+
+        Spreads asymmetric units uniformly on a sphere for inputs with >2 units.
+        """
+        # apo_coords: [B, N_diff, L_atom, 3]
+        B, N_diff, L_atom, _ = apo_coords.shape
+        device = apo_coords.device
+
+        token_asym_id = f_input.token.asym_id
+        atom_token_index = f_input.atom.token_index
+
+        if token_asym_id.dim() == 1:
+            token_asym_id = token_asym_id.unsqueeze(0).expand(B, -1)
+        if atom_token_index.dim() == 1:
+            atom_token_index = atom_token_index.unsqueeze(0).expand(B, -1)
+
+        # Map asym_id to atoms [B, L_atom]
+        atom_asym_id = torch.gather(token_asym_id, 1, atom_token_index.clamp(min=0))
+        atom_pad_mask = f_input.atom.pad_mask
+        if atom_pad_mask.dim() == 1:
+            atom_pad_mask = atom_pad_mask.unsqueeze(0).expand(B, -1)
+
+        new_apo_coords = apo_coords.clone()
+
+        for b in range(B):
+            # Get valid unique asym_ids
+            mask = atom_pad_mask[b]
+            b_asym_ids = atom_asym_id[b][mask]
+            # Valid asym_ids > 0
+            unique_asym_ids = torch.unique(b_asym_ids)
+            unique_asym_ids = unique_asym_ids[unique_asym_ids > 0]
+
+            num_units = len(unique_asym_ids)
+
+            if num_units > 2:
+                # Generate Fibonacci points on unit sphere
+                indices = torch.arange(num_units, dtype=torch.float32, device=device)
+                phi = math.pi * (3.0 - math.sqrt(5.0))  # golden angle
+                y = 1 - (indices / float(num_units - 1)) * 2
+                radius = torch.sqrt((1 - y * y).clamp(min=0))
+                theta = phi * indices
+
+                x = torch.cos(theta) * radius
+                z = torch.sin(theta) * radius
+
+                # [num_units, 3]
+                sphere_points = torch.stack([x, y, z], dim=1)
+
+                # Scale by radius
+                sphere_points = sphere_points * self.prior_spread_radius
+
+                # Random rotation for the sphere
+                rot_mat = torch.linalg.qr(torch.randn(3, 3, device=device))[0]
+                sphere_points = sphere_points @ rot_mat.T
+
+                for i, uid in enumerate(unique_asym_ids):
+                    # Find atoms for this unit
+                    unit_mask = (atom_asym_id[b] == uid) & mask
+                    if not unit_mask.any():
+                        continue
+
+                    target_center = sphere_points[i]  # [3]
+
+                    # Move unit center to target_center for each diffusion sample
+                    # coords: [N_diff, L_atom, 3] view
+                    b_coords = new_apo_coords[b]
+
+                    # Get current COM of the unit (per sample)
+                    # unit_vals: [N_diff, N_unit_atoms, 3]
+                    unit_vals = b_coords[:, unit_mask, :]
+                    com = unit_vals.mean(dim=1, keepdim=True)  # [N_diff, 1, 3]
+
+                    # Translate
+                    new_apo_coords[b, :, unit_mask, :] = (unit_vals - com) + target_center
+
+        return new_apo_coords
+
     def sample_prior(
         self,
         f_input: FoldingInput,
@@ -482,6 +570,10 @@ class KFoldECSI(BaseECSI):
         """
         do_random_augment = label_coords is None
         apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
+
+        # Apply Fibonacci sphere spreading for multi-chain complexes
+        if self.prior_spread_radius > 0:
+            apo_coords = self._apply_fibonacci_spread(apo_coords, f_input)
 
         if label_coords is not None and self.alignment_entity_strategy:
             apo_coords = self.align_apo_to_label_by_entity_selection(

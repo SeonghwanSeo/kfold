@@ -40,3 +40,5 @@ sampling_beta: 1.0
 
 # Not used in EDM but kept for compatibility
 alignment_entity_strategy: "largest"
+prior_spread_radius: 10.0
+s_trans: 0.0
