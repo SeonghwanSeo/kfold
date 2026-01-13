@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseECSI
@@ -576,13 +576,13 @@ class KFoldECSI(BaseECSI):
             apo_coords = self._apply_fibonacci_spread(apo_coords, f_input)
 
         if label_coords is not None:
-            apo_mask = ~(apo_coords == 0.0).all(-1)
+            # apo_mask = ~(apo_coords == 0.0).all(-1)
             apo_coords = self.align_apo_to_label(
                 apo_coords,
                 label_coords,
                 f_input,
             )
-            apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
+            # apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
 
         return apo_coords
 
