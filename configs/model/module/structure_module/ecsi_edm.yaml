@@ -3,8 +3,8 @@ _class_: "KFoldECSI_EDM"
 
 # Sampling configuration
 num_steps: 200
-sigma_min: 0.001  # t_min
-sigma_max: 0.999  # t_max (near 1)
+sigma_min: 0.0004  # t_min
+sigma_max: 160  # t_max (near 1)
 
 # EDM uses gamma_t = t directly, so gamma_max is not used
 gamma_max: 0.25  # Not used in EDM (gamma_t = t)
