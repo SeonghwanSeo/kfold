@@ -35,6 +35,10 @@ class ChainType(IntEnum):
 
     @property
     def is_ligand(self) -> bool:
+        return self in {ChainType.LIGAND, ChainType.ION}
+
+    @property
+    def is_small_molecule(self) -> bool:
         return self is ChainType.LIGAND
 
     @property
