@@ -18,6 +18,8 @@ structure_module:
 
 score_model:
   _yaml_: "module/score_model/apo_conditioned.yaml"
+  channel_coords: 3  # No prior concatenation (ECSI uses 6)
+  use_prior_coords: false
   use_apo: false
 
 distogram_head:

@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseECSI
@@ -73,9 +73,9 @@ class KFoldECSI(BaseECSI):
             Whether to normalize the source (apo) input, by default False.
         normalize_coordinate : bool, optional
             Whether to normalize the source and target coordinates, by default False.
-        alignment_entity_strategy : str, optional
-            Strategy for selecting entity to align: "largest" or "random_non_ligand",
-            by default "largest".
+        alignment_entity_strategy : str | None, optional
+            Strategy for selecting entity to align: None (all entities), "largest",
+            or "random_non_ligand", by default "largest".
         """
 
         num_steps: int = 200
@@ -575,12 +575,14 @@ class KFoldECSI(BaseECSI):
         if self.prior_spread_radius > 0:
             apo_coords = self._apply_fibonacci_spread(apo_coords, f_input)
 
-        if label_coords is not None and self.alignment_entity_strategy:
+        if label_coords is not None:
+            apo_mask = ~(apo_coords == 0.0).all(-1)
             apo_coords = self.align_apo_to_label_by_entity_selection(
                 apo_coords,
                 label_coords,
                 f_input,
             )
+            apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
 
         return apo_coords
 

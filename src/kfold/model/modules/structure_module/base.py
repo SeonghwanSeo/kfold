@@ -229,9 +229,14 @@ class BaseStructureModule(ABC):
         atom_chain_type: torch.Tensor,
         apo_mask_ref: torch.Tensor,
         num_samples: int = 1,
-    ) -> torch.Tensor:
-        """Select entity IDs for alignment based on configured strategy."""
-        if self.alignment_entity_strategy == "random_non_ligand":
+    ) -> torch.Tensor | None:
+        """Select entity IDs for alignment based on configured strategy.
+
+        Returns None if alignment_entity_strategy is None, indicating to use all atoms.
+        """
+        if not self.alignment_entity_strategy:
+            return None
+        elif self.alignment_entity_strategy == "random_non_ligand":
             return self._select_random_non_ligand_entity(
                 atom_entity_id, atom_chain_type, apo_mask_ref, num_samples=num_samples
             )
@@ -253,7 +258,8 @@ class BaseStructureModule(ABC):
         """Align apo coords to label coords using selected entity selection strategy.
 
         Strategies:
-        - "largest": align using the largest apo entity (default)
+        - None: align using all valid atoms (default)
+        - "largest": align using the largest apo entity
         - "random_non_ligand": align using a random non-ligand entity
                                (falls back to random selection if only ligands exist)
         """
@@ -296,20 +302,16 @@ class BaseStructureModule(ABC):
             atom_entity_id, atom_chain_type, apo_mask_ref, num_samples=N
         )
 
-        # entity_mask creation handles both (B,) and (B, N) cases
-        if selected_entity_id.ndim == 1:
-            # (B,) -> (B, N)
-            selected_entity_id = selected_entity_id.unsqueeze(1).expand(B, N)
+        if selected_entity_id is None:
+            entity_mask_exp = apo_mask_ref.unsqueeze(1)
+        else:
+            if selected_entity_id.ndim == 1:
+                selected_entity_id = selected_entity_id.unsqueeze(1).expand(B, N)
 
-        # selected_entity_id: (B, N)
-        # atom_entity_id: (B, L) -> (B, 1, L)
-        # apo_mask_ref: (B, L) -> (B, 1, L)
-        entity_mask = (
-            atom_entity_id.unsqueeze(1) == selected_entity_id.unsqueeze(2)
-        ) & apo_mask_ref.unsqueeze(1)
-        entity_mask_exp = entity_mask  # (B, N, L)
-
-        apo_coords = do_centering(apo_coords, entity_mask_exp, mask_to_zero=False)
+            entity_mask = (
+                atom_entity_id.unsqueeze(1) == selected_entity_id.unsqueeze(2)
+            ) & apo_mask_ref.unsqueeze(1)
+            entity_mask_exp = entity_mask
 
         align_mask = entity_mask_exp & apo_mask & label_mask
         align_weights = align_mask.to(dtype=apo_coords.dtype)

@@ -15,7 +15,7 @@ sigma_data_end: 16.0  # apo structures (\sigma_T)
 cov_xy: 128.0  # \sigma_data * \sigma_data_end / 2
 
 # Karras schedule
-rho: 7
+rho: 0.7
 
 # Training noise level sampling (not used - uniform sampling used instead)
 P_mean: -1.2

@@ -155,7 +155,10 @@ class KFoldECSI_EDM(KFoldECSI):
         N = num_diffusion_samples
         La = f_input.num_atoms
         # Initial sample must be scaled by sigma_max to match the noise level at t=T
-        return torch.randn((B, N, La, 3), device=f_input.device) * self.sigma_max
+        return torch.randn((B, N, La, 3), device=f_input.device)
+
+    def c_noise(self, sigma: torch.Tensor) -> torch.Tensor:
+        return (sigma / self.sigma_data).clamp(1e-20).log() * 0.25
 
     # === For sampling === #
     def sample_structure(
