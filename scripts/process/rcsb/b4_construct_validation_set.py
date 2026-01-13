@@ -119,7 +119,7 @@ def main():
             n_rna += 1
         if any(ctype.is_dna for ctype in ctypes):
             n_dna += 1
-        if any(ctype.is_ligand for ctype in ctypes):
+        if any(ctype.is_small_molecule for ctype in ctypes):
             n_ligands += 1
         if any(ctype.is_ion for ctype in ctypes):
             n_ions += 1
@@ -146,15 +146,15 @@ def main():
             n_protein_dna += 1
 
         if any(ctype.is_protein for ctype in ctypes) and any(
-            ctype.is_ligand for ctype in ctypes
+            ctype.is_small_molecule for ctype in ctypes
         ):
             n_protein_ligand += 1
         if any(ctype.is_rna for ctype in ctypes) and any(
-            ctype.is_ligand for ctype in ctypes
+            ctype.is_small_molecule for ctype in ctypes
         ):
             n_rna_ligand += 1
         if any(ctype.is_dna for ctype in ctypes) and any(
-            ctype.is_ligand for ctype in ctypes
+            ctype.is_small_molecule for ctype in ctypes
         ):
             n_dna_ligand += 1
 

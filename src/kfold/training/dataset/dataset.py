@@ -255,6 +255,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 config.apo_init.apo_perturbation.rieprody.metric_lmdb_path = (
                     rieprody_lmdb_path
                 )
+        else:
+            assert (
+                config.apo_init.use_perturbation is False
+                or config.apo_init.apo_perturbation is None
+                or config.apo_init.apo_perturbation.rieprody is None
+            ), "RieProDy LMDB path not found but rieprody perturbation is enabled."
 
         # === Load dataset components === #
         # CCD (shared across datasets)
@@ -345,8 +351,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 # Select apo structure (randomly if multiple)
                 if len(apo_list) == 0:
                     print(
-                        "Warning: No apo structure found for entity "
-                        f"{entity_id} in entry {name}."
+                        "Warning: No available apo structure found "
+                        f"for entity {entity_id} in entry {name}."
                     )
                     continue
                 elif len(apo_list) == 1:
@@ -362,10 +368,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 # Check apo structure file existence
                 apo_path = apo_dir / source / path
                 if not apo_path.exists():
-                    print(
-                        "Warning: Apo structure file not found for entity "
-                        f"{entity_id} in entry {name}."
-                    )
+                    print(f"Warning: Apo structure file not found: {apo_path}.")
                     continue
 
                 # Get lmdb key

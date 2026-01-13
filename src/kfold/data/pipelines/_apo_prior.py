@@ -16,7 +16,7 @@ from kfold.data.utils.simulation.langevin_dynamics import run_langevin_dynamics
 class PolymerPriorConfig:
     """Configuration for PolymerPriorSampler."""
 
-    type: str = "globular"  # Type of prior: "null", "zero", "normal", "globular".
+    type: str | None = "globular"  # Type of prior: "null", "zero", "normal", "globular".
     # Langevin dynamics parameters.
     num_steps: int = 64
     dt: float = 0.25
@@ -38,7 +38,7 @@ class PolymerPriorSampler:
         self.bond_r: float = config.bond_r
         self.sphere_r: float = config.sphere_r
 
-        assert self.prior_type in ["null", "zero", "normal", "globular"], (
+        assert self.prior_type in [None, "null", "zero", "normal", "globular"], (
             f"Unknown prior type: {self.prior_type}"
         )
 
@@ -61,7 +61,7 @@ class PolymerPriorSampler:
         x_init : np.ndarray
             Sampled coordinates of shape [L, Natom, 3].
         """
-        if self.prior_type == "null":
+        if self.prior_type in ("null", None):
             return self.sample_null(mask)
         elif self.prior_type == "zero":
             return self.sample_zero(mask)
