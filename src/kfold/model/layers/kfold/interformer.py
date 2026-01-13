@@ -74,6 +74,7 @@ class InterformerStack(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
+        intra_mask: torch.Tensor,
         chunk_size_tri_attn: int | None = None,
         use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -87,6 +88,8 @@ class InterformerStack(nn.Module):
             The pairwise embeddings
         mask : torch.Tensor
             The token mask
+        intra_mask : torch.Tensor
+            The intra-chain mask
         chunk_size_tri_attn : int | None, optional
             The chunk size for triangle attention, by default None
         use_cuequiv_kernels : bool, optional
@@ -111,6 +114,7 @@ class InterformerStack(nn.Module):
             partial(
                 b,
                 single_mask=mask,
+                intra_mask=intra_mask,
                 pair_mask=pair_mask,
                 chunk_size_tri_attn=chunk_size_tri_attn,
                 use_cuequiv_kernels=use_cuequiv_kernels,
@@ -218,7 +222,8 @@ class InterformerBlock(nn.Module):
         self.skip_tri_attn: bool = skip_tri_attn
         self.dropout: float = dropout
 
-        self.pairwise_proj = PairwiseProdDiff(channel_s, channel_z)
+        self.pairwise_proj_intra = PairwiseProdDiff(channel_s, channel_z)
+        self.pairwise_proj_inter = PairwiseProdDiff(channel_s, channel_z)
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
@@ -251,13 +256,16 @@ class InterformerBlock(nn.Module):
         z: torch.Tensor,
         single_mask: torch.Tensor,
         pair_mask: torch.Tensor,
+        intra_mask: torch.Tensor,
         chunk_size_tri_attn: int | None = None,
         use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass."""
 
         # Information flow from single (s) to pairwise (z)
-        z = z + self.pairwise_proj(s)
+        # Separate projections for intra- and inter-chain residue pairs
+        z = z + self.pairwise_proj_intra(s) * intra_mask[..., None]
+        z = z + self.pairwise_proj_inter(s) * (~intra_mask)[..., None]
 
         # Triangle multiplicative update
         z = z + self.dropout_rowwise(

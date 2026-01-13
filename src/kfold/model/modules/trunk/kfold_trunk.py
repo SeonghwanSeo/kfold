@@ -242,6 +242,10 @@ class KFoldTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
+        intra_mask = (
+            f_input.token.asym_id[..., :, None] == f_input.token.asym_id[..., None, :]
+        )  # [..., L, L]
+
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
 
@@ -273,6 +277,7 @@ class KFoldTrunk(BaseTrunk):
                     s,
                     z,
                     mask=f_input.token.pad_mask,
+                    intra_mask=intra_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
                     use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
