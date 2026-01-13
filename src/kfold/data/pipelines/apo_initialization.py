@@ -691,7 +691,7 @@ class ApoInitializer:
             entity_apo_dict[chain.entity_id].append(chain.atom.apo_coords.copy())
             entity_ctypes[chain.entity_id] = chain.ctype
 
-        for eid in entity_ids:
+        for eid in list(entity_ids):
             apo_coords_list = entity_apo_dict[eid]
 
             # Check if all chains are homologous (same length)

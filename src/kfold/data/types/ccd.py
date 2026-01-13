@@ -184,9 +184,9 @@ class Component:
         return pickle.dumps(self.to_dict())
 
     @classmethod
-    def from_bytes(cls, date_bytes: bytes) -> Self:
+    def from_bytes(cls, data_bytes: bytes) -> Self:
         """Create a Component instance from bytes."""
-        return cls.from_dict(pickle.loads(date_bytes))
+        return cls.from_dict(pickle.loads(data_bytes))
 
     def to_dict(self) -> dict:
         """Convert the Component instance to a dictionary without deepcopy"""
