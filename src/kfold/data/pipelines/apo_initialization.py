@@ -10,7 +10,7 @@ from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.io.structure import read_protein_structure
 from kfold.utils.geometry.random_augment import center_random_augmentation
-from kfold.utils.geometry.rigid_align import compute_rmsd, weighted_rigid_align
+from kfold.utils.geometry.rigid_align import weighted_rigid_align
 
 from ._apo_perturbation import ApoPerturbation, ApoPerturbationConfig
 from ._apo_prior import PolymerPriorConfig, PolymerPriorSampler
@@ -25,11 +25,10 @@ NUM_ATOMS_PER_RESIDUE: dict[C.ChainType, int] = {
 # === Helper functions === #
 @lru_cache(32)
 def get_ambiguous_atoms_in_residue(
-    res_name: str | C.ResidueName,
+    res_name: str,
 ) -> list[list[int]] | None:
     """Get the indices of ambiguous atoms for a given residue type."""
-    if isinstance(res_name, str):
-        res_name: C.ResidueName = C.ResidueName[res_name]
+    res_name: C.ResidueName = C.ResidueName[res_name]
     if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS:
         # If there is no ambiguous atoms, return empty list
         return None
@@ -51,13 +50,9 @@ def get_ambiguous_atoms_in_residue(
 def get_molecule_symmetries(
     ccd_id: str,
     mol_atom_names: list[str],
-    ccd: CCD,
+    ref_mol: Component,
 ) -> list[list[int]] | None:
     """Get molecule's symmetries from ccd."""
-    if ccd_id not in ccd:
-        return None
-
-    ref_mol: Component = ccd[ccd_id]
     symmetries = ref_mol.symmetries
     if symmetries is None or len(symmetries) <= 1:
         # No symmetries
@@ -134,6 +129,49 @@ def get_zero_coordinates(ctype: C.ChainType, ccd_sequence: list[str]) -> np.ndar
     mask = get_valid_atom_mask(ctype, ccd_sequence)
     coords[mask] = 0.0
     return coords
+
+
+def compute_minimal_rmsd_no_svd(
+    coords: np.ndarray, target: np.ndarray, mask: np.ndarray
+) -> float:
+    """Compute minimal RMSD between two sets of coordinates without SVD.
+    NOTE(SeonghwanSeo): This function replaces the SVD-based RMSD computation
+    for avoiding memory leakage issues in pytorch DataLoader workers.
+    """
+    # 1. Masking & Centering
+    p = coords[mask]
+    q = target[mask]
+    n = p.shape[0]
+
+    p_center = p.mean(axis=0)
+    q_center = q.mean(axis=0)
+    p_centered = p - p_center
+    q_centered = q - q_center
+
+    # E0 = sum(|p|^2) + sum(|q|^2)
+    e0 = np.sum(p_centered**2) + np.sum(q_centered**2)
+
+    # Covariance Matrix H (3x3)
+    # H = P.T @ Q
+    h = p_centered.T @ q_centered
+
+    # Compute singular values via eigen decomposition of H^T H
+    s_sq_matrix = h.T @ h
+    eigenvalues = np.linalg.eigvalsh(s_sq_matrix)
+
+    # Singular values are the square roots of eigenvalues
+    eigenvalues = np.clip(eigenvalues, 0, None)
+    singular_values = np.sqrt(eigenvalues)
+    if np.linalg.det(h) < 0:
+        singular_values[0] = -singular_values[0]
+
+    trace_max = np.sum(singular_values)
+    rmsd_sq = (e0 - 2 * trace_max) / n
+
+    # Numerical stability
+    if rmsd_sq < 0:
+        return 0.0
+    return np.sqrt(rmsd_sq)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -327,9 +365,20 @@ class ApoInitializer:
                 if entity_id in lookup:
                     # Load apo structure from file
                     assert ctype.is_protein, "Only protein chains have apo structures."
-                    apo_coords = self.get_protein_apo_structure(
-                        ccd_sequence, lookup[entity_id], rng
-                    )
+                    try:
+                        apo_coords = self.get_protein_apo_structure(
+                            ccd_sequence, lookup[entity_id], rng
+                        )
+                    except Exception as e:
+                        # NOTE: There are some errors in rcsb-to-uniprot mapping file.
+                        # For robustness, we fall back to prior sampling if loading fails.
+                        print(
+                            "Failed to load apo structure for entity "
+                            f"{entity_id}: {e}. Sampling from prior instead."
+                        )
+                        apo_coords = self.sample_apo_structure_from_prior(
+                            ccd_sequence, ctype, rng
+                        )
                 else:
                     # No apo structure available, sample from prior
                     apo_coords = self.sample_apo_structure_from_prior(
@@ -617,10 +666,16 @@ class ApoInitializer:
 
         # First, chain permutation
         # RNG state is used for sampling permutations when too many exist
-        self.find_best_chain_permutation(struct, max_permutations=100, rng=rng)
+        try:
+            self.find_best_chain_permutation(struct, max_permutations=100, rng=rng)
+        except Exception as e:
+            print(f"Failed to find best chain permutation: {e}. Skipping permutation.")
 
         # Second, residue-level permutation (e.g., flipping)
-        self.find_best_residue_permutation(struct)
+        try:
+            self.find_best_residue_permutation(struct)
+        except Exception as e:
+            print(f"Failed to find best residue permutation: {e}. Skipping permutation.")
 
     def find_best_chain_permutation(
         self,
@@ -630,17 +685,46 @@ class ApoInitializer:
     ) -> None:
         # === 1. Prepare coordinates === #
         entity_ids: list[int] = sorted(set(chain.entity_id for chain in struct.chains))
-        entity_order: list[int] = [chain.entity_id for chain in struct.chains]
         entity_apo_dict: dict[int, list[np.ndarray]] = defaultdict(list)
+        entity_ctypes: dict[int, C.ChainType] = {}
         for chain in struct.chains:
             entity_apo_dict[chain.entity_id].append(chain.atom.apo_coords.copy())
+            entity_ctypes[chain.entity_id] = chain.ctype
+
+        for eid in entity_ids:
+            apo_coords_list = entity_apo_dict[eid]
+
+            # Check if all chains are homologous (same length)
+            lengths = [coords.shape[0] for coords in apo_coords_list]
+            is_homologous: bool = all(v == lengths[0] for v in lengths)
+            if not is_homologous:
+                assert entity_ctypes[eid].is_small_molecule, (
+                    "Non-homologous chains are only supported for covalent ligands."
+                )
+                entity_ids.remove(eid)
+
+            # Check the chain apo coordinates are provided
+            elif any(np.isnan(coords).all() for coords in apo_coords_list):
+                # If any chain has no apo coordinates, remove from permutation
+                entity_ids.remove(eid)
+
+        perm_chains = [chain for chain in struct.chains if chain.entity_id in entity_ids]
+        entity_order = [chain.entity_id for chain in perm_chains]
+
+        if len(perm_chains) == 0:
+            # No chains to permute
+            return
+
+        # If the total number of resolved apo atoms is less than 5, skip permutation
+        if sum(chain.atom.is_apo_resolved.sum() for chain in perm_chains) < 5:
+            return
 
         # === 2. Anchor Selection for Alignment === #
         entity_anchors: dict[int, np.ndarray] = {}
         entity_anchor_weights: dict[int, np.ndarray] = {}
         entity_anchor_coords: dict[int, list[np.ndarray]] = {}
 
-        for chain in struct.chains:
+        for chain in perm_chains:
             eid = chain.entity_id
             if eid in entity_anchors:
                 continue
@@ -652,6 +736,7 @@ class ApoInitializer:
                 idx = np.where(chain.atom.name == "C1'")[0]
             else:
                 idx = np.arange(chain.num_atoms)
+
             if len(idx) == 0:
                 idx = np.arange(chain.num_atoms)
 
@@ -659,20 +744,19 @@ class ApoInitializer:
             stride = max(1, len(idx) // 20)
             idx = idx[::stride]
             entity_anchors[eid] = idx
-            entity_anchor_weights[eid] = np.full(len(idx), 1.0 / len(idx))
+            entity_anchor_weights[eid] = np.full(
+                len(idx), chain.num_atoms / len(idx), dtype=np.float32
+            )
             entity_anchor_coords[eid] = [coords[idx] for coords in entity_apo_dict[eid]]
 
         align_weights = np.concatenate(
-            [entity_anchor_weights[chain.entity_id] for chain in struct.chains], axis=0
+            [entity_anchor_weights[chain.entity_id] for chain in perm_chains], axis=0
         )
         del entity_anchor_weights
 
         # === 3. Prepare label centers and masks === #
         label_centers = np.concatenate(
-            [
-                chain.atom.coords[entity_anchors[chain.entity_id]]
-                for chain in struct.chains
-            ],
+            [chain.atom.coords[entity_anchors[chain.entity_id]] for chain in perm_chains],
             axis=0,
         )
         label_mask = np.isfinite(label_centers).all(axis=-1)
@@ -733,8 +817,10 @@ class ApoInitializer:
         counts = defaultdict(int)
         if best_permutation is not None:
             # Reorder apo coordinates according to best permutation
-            for chain in struct.chains:
+            for chain in perm_chains:
                 eid = chain.entity_id
+                if eid not in entity_ids:
+                    continue
                 orig_idx = counts[eid]  # index in the entity
                 perm_idx = best_permutation[eid][orig_idx]
                 if orig_idx != perm_idx:
@@ -752,6 +838,7 @@ class ApoInitializer:
         struct : RefStructure
             Reference structure containing holo coordinates.
         """
+        component_cache: dict[str, Component] = {}
         for chain in struct.chains:
             ctype = chain.ctype
 
@@ -772,20 +859,21 @@ class ApoInitializer:
                 if ctype.is_polymer and chain.residue.is_standard[res_i]:
                     # Get ambiguous atom permutations for this standard residue
                     perms = get_ambiguous_atoms_in_residue(res_name)
-                    if perms is None:
-                        # No ambiguous atoms for this residue
-                        continue
-
                 elif res_name in self.ccd:
-                    # Get molecule symmetries from CCD
+                    if res_name not in component_cache:
+                        # Load reference molecule from CCD
+                        ref_mol = self.ccd[res_name]
+                        # Cache the component
+                        component_cache[res_name] = ref_mol
+                    else:
+                        ref_mol = component_cache[res_name]
                     atom_names: list[str] = chain.atom.name[atom_st:atom_end].tolist()
-                    perms = get_molecule_symmetries(res_name, atom_names, self.ccd)
-                    if perms is None:
-                        # No symmetries for this molecule
-                        continue
-
+                    perms = get_molecule_symmetries(res_name, atom_names, ref_mol)
                 else:
-                    # No symmetry information available
+                    perms = None
+
+                if perms is None:
+                    # No ambiguous atoms for this residue
                     continue
 
                 # Find the best permutation
@@ -796,16 +884,17 @@ class ApoInitializer:
                 res_apo_coords = chain.atom.apo_coords[atom_st:atom_end]  # [num_atoms, 3]
                 res_holo_mask = np.isfinite(res_holo_coords).all(-1)  # [num_atoms,]
                 res_apo_mask = np.isfinite(res_apo_coords).all(-1)  # [num_atoms,]
+                if res_holo_mask.sum() < 5:
+                    continue  # Not enough resolved atoms to align
 
                 for perm in perms:
                     permuted_apo_mask = res_apo_mask[perm]
                     align_mask = res_holo_mask & permuted_apo_mask
                     if np.sum(align_mask) < 5:
                         continue  # Not enough resolved atoms to align
-
                     permuted_apo_coords = res_apo_coords[perm, :]
-                    rmsd = compute_rmsd(
-                        permuted_apo_coords, res_holo_coords, align_mask, align=True
+                    rmsd = compute_minimal_rmsd_no_svd(
+                        permuted_apo_coords, res_holo_coords, align_mask
                     )
                     if rmsd < min_rmsd:
                         min_rmsd = rmsd
@@ -832,10 +921,10 @@ class ApoInitializer:
             Reference structure containing apo coordinates.
         """
         for chain in struct.chains:
-            apo_coords = chain.atom.apo_coords
+            apo_coords: np.ndarray = chain.atom.apo_coords
 
             # Mask of valid atoms: [N_atoms]
-            atom_mask: np.ndarray = np.isfinite(apo_coords).all(axis=-1)
+            atom_mask: np.ndarray = chain.atom.is_apo_resolved
 
             # Check if any atoms are missing
             if atom_mask.all():

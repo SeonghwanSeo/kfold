@@ -1,5 +1,7 @@
 """Tokenization pipeline for structures."""
 
+from functools import lru_cache
+
 import numpy as np
 from rdkit import Chem
 
@@ -98,6 +100,17 @@ def tokenize_structure(
     struct: TokenizedStructure
         The parsed tokenized structure.
     """
+
+    @lru_cache(maxsize=128)
+    def get_ccd_component(ccd_name: str) -> Component:
+        """Get CCD component with caching.
+
+        NOTE (SeonghwanSeo): CCD.__getitem__ deserialize the Component,
+        which is time-consuming. Therefore, we cache the Component objects here.
+        The cache is removed when the function is terminated.
+        """
+        return ccd[ccd_name]
+
     rng = rng or np.random.default_rng()
 
     conformer_mode = "auto"
@@ -316,7 +329,7 @@ def tokenize_structure(
                 ref_mol: Component = Component.from_smiles(ccd_name, smiles, num_confs=1)
             else:
                 assert ccd_name in ccd, f"Residue name {ccd_name} not found in CCD."
-                ref_mol: Component = ccd[ccd_name]
+                ref_mol: Component = get_ccd_component(ccd_name)
 
             # Get reference conformer positions with random augmentation
             ref_pos: np.ndarray = ref_mol.get_conformer(conformer_mode, rng)  # type: ignore

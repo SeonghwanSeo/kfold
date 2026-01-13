@@ -357,6 +357,28 @@ class Atom:
             "apo_plddt": np.float16,
         }
 
+    @property
+    def is_resolved(self) -> np.ndarray:
+        """Get mask of resolved atoms in holo structure.
+
+        Returns
+        -------
+        holo_mask: np.ndarray (bool)
+            Shape [Natom,], bool
+        """
+        return np.isfinite(self.coords).all(axis=-1)
+
+    @property
+    def is_apo_resolved(self) -> np.ndarray:
+        """Get mask of resolved atoms in apo structure.
+
+        Returns
+        -------
+        apo_mask: np.ndarray (bool)
+            Shape [Natom,], bool
+        """
+        return np.isfinite(self.apo_coords).all(axis=-1)
+
 
 @dataclasses.dataclass(frozen=True)
 class Bond:

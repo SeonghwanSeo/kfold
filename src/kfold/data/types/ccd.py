@@ -115,7 +115,8 @@ def get_model_coordinates(
 @dataclasses.dataclass(frozen=True, slots=True)
 class Component:
     """Base class for data processing components.
-    NOTE: Skip field validation to reduce overhead.
+    NOTE:
+    - Skip field validation to reduce overhead.
 
     Attributes
     ----------
@@ -177,6 +178,15 @@ class Component:
     def num_non_leaving_atoms(self) -> int:
         """Get the number of non-leaving atoms in the component."""
         return int(np.sum(~self.is_leaving_atom))
+
+    def to_bytes(self) -> bytes:
+        """Convert the Component instance to bytes."""
+        return pickle.dumps(self.to_dict())
+
+    @classmethod
+    def from_bytes(cls, date_bytes: bytes) -> Self:
+        """Create a Component instance from bytes."""
+        return cls.from_dict(pickle.loads(date_bytes))
 
     def to_dict(self) -> dict:
         """Convert the Component instance to a dictionary without deepcopy"""
@@ -616,30 +626,55 @@ class Component:
 
 
 class CCD(Mapping[str, Component]):
-    """Common Component Dictionary (CCD) for data processing components."""
+    """Common Component Dictionary (CCD) for data processing components.
 
-    def __init__(self, components: dict[str, Component]) -> None:
-        self.components: dict[str, Component] = components
+    NOTE: (SeonghwanSeo) This class only contains the serialized bytes of each
+    component instead of objects to avoid memory leakage when used in multiprocessing
+    (e.g., DataLoader in PyTorch). Each component is deserialized on-the-fly when
+    accessed. This may introduce some overhead due to repeated deserialization.
+    Therefore, it is recommended to use caching mechanisms (e.g., `functools.lru_cache`).
+
+    example:
+
+    ```python
+    def process(..., ccd: CCD):
+        @lru_cache(maxsize=128)
+        def get_ccd_component(ccd_name: str) -> Component:
+            return ccd[ccd_name]
+
+        comp = get_ccd_component("ALA") # deserialized
+        comp = get_ccd_component("ALA") # cached
+        ...
+    ```
+
+    """
+
+    def __init__(self, component_bytes: dict[str, bytes]) -> None:
+        self.component_bytes: dict[str, bytes] = component_bytes
 
     def __keys__(self):
-        return self.components.keys()
-
-    def __getitem__(self, key: str) -> Component:
-        return self.components[key]
-
-    def __iter__(self):
-        return iter(self.components)
+        return self.component_bytes.keys()
 
     def __len__(self) -> int:
-        return len(self.components)
+        return len(self.component_bytes)
+
+    def __iter__(self):
+        return iter(self.component_bytes)
+
+    def __getitem__(self, key: str) -> Component:
+        return self.get_component(key)
+
+    def get_component(self, code: str) -> Component:
+        """Get a component by its code."""
+        return Component.from_bytes(self.component_bytes[code])
 
     def copy(self) -> Self:
         """Create a shallow copy of the CCD instance."""
-        return self.__class__(self.components.copy())
+        return self.__class__(self.component_bytes.copy())
 
     def add_component(self, component: Component) -> None:
         """Add a new component to the CCD."""
-        self.components[component.code] = component
+        self.component_bytes[component.code] = component.to_bytes()
 
     def save(self, save_path: str | pathlib.Path) -> None:
         """Save the CCD instance to a file.
@@ -649,9 +684,8 @@ class CCD(Mapping[str, Component]):
         save_path : str | pathlib.Path
             The path to save the CCD file.
         """
-        dicts = {code: comp.to_dict() for code, comp in self.components.items()}
         with open(save_path, "wb") as f:
-            pickle.dump(dicts, f)
+            pickle.dump(self.component_bytes, f)
 
     @classmethod
     def load(cls, load_path: str | pathlib.Path) -> Self:
@@ -669,7 +703,8 @@ class CCD(Mapping[str, Component]):
         """
         with open(load_path, "rb") as f:
             dicts = pickle.load(f)
-        components = {
-            code: Component.from_dict(comp_dict) for code, comp_dict in dicts.items()
-        }
+        if isinstance(next(iter(dicts.values())), bytes):
+            return cls(dicts)
+        # Convert from dict to bytes for backward compatibility
+        components = {code: pickle.dumps(comp_dict) for code, comp_dict in dicts.items()}
         return cls(components)

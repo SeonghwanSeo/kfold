@@ -160,8 +160,8 @@ class TrainingDataModule(pl.LightningDataModule):
             shuffle=False,
             collate_fn=collate,
             num_workers=self.config.num_workers,
-            pin_memory=self.config.pin_memory,
-            persistent_workers=True if self.config.num_workers > 0 else False,
+            pin_memory=False,
+            persistent_workers=False,
         )
 
     def print_rank_zero(self, msg: str, prefix: str = "[DataModule] ") -> None:
