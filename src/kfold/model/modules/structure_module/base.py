@@ -115,219 +115,6 @@ class BaseStructureModule(ABC):
         coords = do_centering(coords, mask, mask_to_zero=True)
         return coords
 
-    def _select_largest_entity(
-        self,
-        atom_entity_id: torch.Tensor,
-        apo_mask_ref: torch.Tensor,
-        num_samples: int = 1,
-    ) -> torch.Tensor:
-        """Select the largest entity (by atom count) for each batch element."""
-        B, L = atom_entity_id.shape
-        valid_mask = apo_mask_ref & (atom_entity_id >= 0)
-        if not valid_mask.any():
-            selected_entity_id = atom_entity_id.new_full((B,), -1)
-            if num_samples > 1:
-                selected_entity_id = selected_entity_id.unsqueeze(1).expand(
-                    B, num_samples
-                )
-            return selected_entity_id
-
-        entity_indices = atom_entity_id.clamp(min=0)
-        max_entity_id = int(entity_indices.max().item()) + 1
-        entity_counts = torch.zeros(
-            B, max_entity_id, device=atom_entity_id.device, dtype=torch.long
-        )
-        entity_counts.scatter_add_(1, entity_indices, valid_mask.long())
-        selected_entity_id = entity_counts.argmax(dim=-1)
-
-        has_valid = valid_mask.any(dim=1)
-        selected_entity_id = torch.where(
-            has_valid,
-            selected_entity_id,
-            torch.full_like(selected_entity_id, -1),
-        )
-
-        if num_samples > 1:
-            selected_entity_id = selected_entity_id.unsqueeze(1).expand(B, num_samples)
-
-        return selected_entity_id
-
-    def _select_random_non_ligand_entity(
-        self,
-        atom_entity_id: torch.Tensor,
-        atom_chain_type: torch.Tensor,
-        apo_mask_ref: torch.Tensor,
-        num_samples: int = 1,
-    ) -> torch.Tensor:
-        """Select a random non-ligand entity, falling back to random if only ligands."""
-        B, L = atom_entity_id.shape
-        valid_mask = apo_mask_ref & (atom_entity_id >= 0)
-        if not valid_mask.any():
-            selected_entity_id = atom_entity_id.new_full((B,), -1)
-            if num_samples > 1:
-                selected_entity_id = selected_entity_id.unsqueeze(1).expand(
-                    B, num_samples
-                )
-            return selected_entity_id
-
-        max_entity_id = int(atom_entity_id.max().item()) + 1
-        entity_indices = atom_entity_id.clamp(min=0)
-        entity_counts = torch.zeros(
-            B, max_entity_id, device=atom_entity_id.device, dtype=torch.long
-        )
-        entity_counts.scatter_add_(1, entity_indices, valid_mask.long())
-        entity_exists = entity_counts > 0
-
-        is_non_ligand_atom = (atom_chain_type != C.ChainType.LIGAND) & valid_mask
-        non_ligand_counts = torch.zeros(
-            B, max_entity_id, device=atom_entity_id.device, dtype=torch.long
-        )
-        non_ligand_counts.scatter_add_(1, entity_indices, is_non_ligand_atom.long())
-        non_ligand_entities = non_ligand_counts > 0
-
-        non_ligand_mask = entity_exists & non_ligand_entities
-
-        has_non_ligand = non_ligand_mask.any(dim=1)
-        candidate_mask = torch.where(
-            has_non_ligand.unsqueeze(1),
-            non_ligand_mask,
-            entity_exists,
-        )
-
-        if num_samples > 1:
-            # Independent random selection for each sample
-            candidate_mask = candidate_mask.unsqueeze(1)  # (B, 1, max_entity_id)
-            random_weights = torch.rand(
-                B, num_samples, max_entity_id, device=atom_entity_id.device
-            )
-            random_weights = random_weights * candidate_mask.float()
-            selected_entity_id = random_weights.argmax(dim=-1)  # (B, N)
-
-            has_valid = valid_mask.any(dim=1).unsqueeze(1).expand(B, num_samples)
-            selected_entity_id = torch.where(
-                has_valid,
-                selected_entity_id,
-                torch.full_like(selected_entity_id, -1),
-            )
-        else:
-            random_weights = torch.rand(B, max_entity_id, device=atom_entity_id.device)
-            random_weights = random_weights * candidate_mask.float()
-            selected_entity_id = random_weights.argmax(dim=-1)  # (B,)
-
-            has_valid = valid_mask.any(dim=1)
-            selected_entity_id = torch.where(
-                has_valid,
-                selected_entity_id,
-                torch.full_like(selected_entity_id, -1),
-            )
-
-        return selected_entity_id
-
-    def _select_entity_for_alignment(
-        self,
-        atom_entity_id: torch.Tensor,
-        atom_chain_type: torch.Tensor,
-        apo_mask_ref: torch.Tensor,
-        num_samples: int = 1,
-    ) -> torch.Tensor | None:
-        """Select entity IDs for alignment based on configured strategy.
-
-        Returns None if alignment_entity_strategy is None, indicating to use all atoms.
-        """
-        if not self.alignment_entity_strategy:
-            return None
-        elif self.alignment_entity_strategy == "random_non_ligand":
-            return self._select_random_non_ligand_entity(
-                atom_entity_id, atom_chain_type, apo_mask_ref, num_samples=num_samples
-            )
-        elif self.alignment_entity_strategy == "largest":
-            return self._select_largest_entity(
-                atom_entity_id, apo_mask_ref, num_samples=num_samples
-            )
-        else:
-            raise ValueError(
-                f"Unknown alignment_entity_strategy: {self.alignment_entity_strategy}"
-            )
-
-    def align_apo_to_label_by_entity_selection(
-        self,
-        apo_coords: torch.Tensor,
-        label_coords: torch.Tensor,
-        f_input: FoldingInput,
-    ) -> torch.Tensor:
-        """Align apo coords to label coords using selected entity selection strategy.
-
-        Strategies:
-        - None: align using all valid atoms (default)
-        - "largest": align using the largest apo entity
-        - "random_non_ligand": align using a random non-ligand entity
-                               (falls back to random selection if only ligands exist)
-        """
-        apo_mask = ~(apo_coords == 0.0).all(-1)
-        label_mask = ~(label_coords == 0.0).all(-1)
-
-        added_batch = False
-        if apo_coords.dim() == 3:
-            apo_coords = apo_coords.unsqueeze(0)
-            label_coords = label_coords.unsqueeze(0)
-            apo_mask = apo_mask.unsqueeze(0)
-            label_mask = label_mask.unsqueeze(0)
-            added_batch = True
-
-        B, N, L = apo_coords.shape[:3]
-        apo_mask_ref = apo_mask.any(dim=1)
-
-        # NOTE: Use asym_id instead of entity_id for alignment
-        # This aligns based on asymmetric units (chains) instead of entity types.
-        token_entity_id = f_input.token.asym_id
-        token_chain_type = f_input.token.chain_type
-        atom_token_index = f_input.atom.token_index
-        if token_entity_id.dim() == 1:
-            token_entity_id = token_entity_id.unsqueeze(0)
-        if token_chain_type.dim() == 1:
-            token_chain_type = token_chain_type.unsqueeze(0)
-        if atom_token_index.dim() == 1:
-            atom_token_index = atom_token_index.unsqueeze(0)
-        if token_entity_id.shape[0] == 1 and B > 1:
-            token_entity_id = token_entity_id.expand(B, -1)
-        if token_chain_type.shape[0] == 1 and B > 1:
-            token_chain_type = token_chain_type.expand(B, -1)
-        if atom_token_index.shape[0] == 1 and B > 1:
-            atom_token_index = atom_token_index.expand(B, -1)
-
-        atom_entity_id = token_entity_id.gather(-1, atom_token_index.clamp(min=0))
-        atom_chain_type = token_chain_type.gather(-1, atom_token_index.clamp(min=0))
-
-        selected_entity_id = self._select_entity_for_alignment(
-            atom_entity_id, atom_chain_type, apo_mask_ref, num_samples=N
-        )
-
-        if selected_entity_id is None:
-            entity_mask_exp = apo_mask_ref.unsqueeze(1)
-        else:
-            if selected_entity_id.ndim == 1:
-                selected_entity_id = selected_entity_id.unsqueeze(1).expand(B, N)
-
-            entity_mask = (
-                atom_entity_id.unsqueeze(1) == selected_entity_id.unsqueeze(2)
-            ) & apo_mask_ref.unsqueeze(1)
-            entity_mask_exp = entity_mask
-
-        align_mask = entity_mask_exp & apo_mask & label_mask
-        align_weights = align_mask.to(dtype=apo_coords.dtype)
-        apo_coords = weighted_rigid_align(
-            coords=apo_coords,
-            target=label_coords,
-            weights=align_weights,
-            mask=align_mask,
-        )
-        apo_coords = apo_coords * apo_mask[..., None]
-
-        if added_batch:
-            apo_coords = apo_coords.squeeze(0)
-
-        return apo_coords
-
     def sample_label(
         self, f_input: FoldingInput, num_diffusion_samples: int = 1
     ) -> torch.Tensor:
@@ -593,17 +380,25 @@ class BaseECSI(BaseEDM):
         super().__init__(cfg, score_model)
         # alignment_entity_strategy: None (default) or "largest" or "random_non_ligand"
         self.alignment_entity_strategy = getattr(cfg, "alignment_entity_strategy", None)
+        # alignment_level: "chain" (default) or "entity"
+        self.alignment_level = getattr(cfg, "alignment_level", "chain")
 
     def _select_largest_entity(
         self,
         atom_entity_id: torch.Tensor,
         apo_mask_ref: torch.Tensor,
+        num_samples: int = 1,
     ) -> torch.Tensor:
         """Select the largest entity (by atom count) for each batch element."""
         B, L = atom_entity_id.shape
         valid_mask = apo_mask_ref & (atom_entity_id >= 0)
         if not valid_mask.any():
-            return atom_entity_id.new_full((B,), -1)
+            selected_entity_id = atom_entity_id.new_full((B,), -1)
+            if num_samples > 1:
+                selected_entity_id = selected_entity_id.unsqueeze(1).expand(
+                    B, num_samples
+                )
+            return selected_entity_id
 
         entity_indices = atom_entity_id.clamp(min=0)
         max_entity_id = int(entity_indices.max().item()) + 1
@@ -619,6 +414,10 @@ class BaseECSI(BaseEDM):
             selected_entity_id,
             torch.full_like(selected_entity_id, -1),
         )
+
+        if num_samples > 1:
+            selected_entity_id = selected_entity_id.unsqueeze(1).expand(B, num_samples)
+
         return selected_entity_id
 
     def _select_random_non_ligand_entity(
@@ -626,12 +425,18 @@ class BaseECSI(BaseEDM):
         atom_entity_id: torch.Tensor,
         atom_chain_type: torch.Tensor,
         apo_mask_ref: torch.Tensor,
+        num_samples: int = 1,
     ) -> torch.Tensor:
         """Select a random non-ligand entity, falling back to random if only ligands."""
         B, L = atom_entity_id.shape
         valid_mask = apo_mask_ref & (atom_entity_id >= 0)
         if not valid_mask.any():
-            return atom_entity_id.new_full((B,), -1)
+            selected_entity_id = atom_entity_id.new_full((B,), -1)
+            if num_samples > 1:
+                selected_entity_id = selected_entity_id.unsqueeze(1).expand(
+                    B, num_samples
+                )
+            return selected_entity_id
 
         max_entity_id = int(atom_entity_id.max().item()) + 1
         entity_indices = atom_entity_id.clamp(min=0)
@@ -657,16 +462,33 @@ class BaseECSI(BaseEDM):
             entity_exists,
         )
 
-        random_weights = torch.rand(B, max_entity_id, device=atom_entity_id.device)
-        random_weights = random_weights * candidate_mask.float()
-        selected_entity_id = random_weights.argmax(dim=-1)
+        if num_samples > 1:
+            # Independent random selection for each sample
+            candidate_mask = candidate_mask.unsqueeze(1)  # (B, 1, max_entity_id)
+            random_weights = torch.rand(
+                B, num_samples, max_entity_id, device=atom_entity_id.device
+            )
+            random_weights = random_weights * candidate_mask.float()
+            selected_entity_id = random_weights.argmax(dim=-1)  # (B, N)
 
-        has_valid = valid_mask.any(dim=1)
-        selected_entity_id = torch.where(
-            has_valid,
-            selected_entity_id,
-            torch.full_like(selected_entity_id, -1),
-        )
+            has_valid = valid_mask.any(dim=1).unsqueeze(1).expand(B, num_samples)
+            selected_entity_id = torch.where(
+                has_valid,
+                selected_entity_id,
+                torch.full_like(selected_entity_id, -1),
+            )
+        else:
+            random_weights = torch.rand(B, max_entity_id, device=atom_entity_id.device)
+            random_weights = random_weights * candidate_mask.float()
+            selected_entity_id = random_weights.argmax(dim=-1)  # (B,)
+
+            has_valid = valid_mask.any(dim=1)
+            selected_entity_id = torch.where(
+                has_valid,
+                selected_entity_id,
+                torch.full_like(selected_entity_id, -1),
+            )
+
         return selected_entity_id
 
     def _select_entity_for_alignment(
@@ -674,20 +496,25 @@ class BaseECSI(BaseEDM):
         atom_entity_id: torch.Tensor,
         atom_chain_type: torch.Tensor,
         apo_mask_ref: torch.Tensor,
-    ) -> torch.Tensor:
+        num_samples: int = 1,
+    ) -> torch.Tensor | None:
         """Select entity IDs for alignment based on configured strategy."""
-        if self.alignment_entity_strategy == "random_non_ligand":
+        if not self.alignment_entity_strategy:
+            return None
+        elif self.alignment_entity_strategy == "random_non_ligand":
             return self._select_random_non_ligand_entity(
-                atom_entity_id, atom_chain_type, apo_mask_ref
+                atom_entity_id, atom_chain_type, apo_mask_ref, num_samples=num_samples
             )
         elif self.alignment_entity_strategy == "largest":
-            return self._select_largest_entity(atom_entity_id, apo_mask_ref)
+            return self._select_largest_entity(
+                atom_entity_id, apo_mask_ref, num_samples=num_samples
+            )
         else:
             raise ValueError(
                 f"Unknown alignment_entity_strategy: {self.alignment_entity_strategy}"
             )
 
-    def align_apo_to_label_by_entity_selection(
+    def align_apo_to_label(
         self,
         apo_coords: torch.Tensor,
         label_coords: torch.Tensor,
@@ -714,7 +541,13 @@ class BaseECSI(BaseEDM):
         B, N, L = apo_coords.shape[:3]
         apo_mask_ref = apo_mask.any(dim=1)
 
-        token_entity_id = f_input.token.entity_id
+        if self.alignment_level == "entity":
+            token_entity_id = f_input.token.entity_id
+        elif self.alignment_level == "chain":
+            token_entity_id = f_input.token.asym_id
+        else:
+            raise ValueError(f"Unknown alignment_level: {self.alignment_level}")
+
         token_chain_type = f_input.token.chain_type
         atom_token_index = f_input.atom.token_index
         if token_entity_id.dim() == 1:
@@ -734,12 +567,19 @@ class BaseECSI(BaseEDM):
         atom_chain_type = token_chain_type.gather(-1, atom_token_index.clamp(min=0))
 
         selected_entity_id = self._select_entity_for_alignment(
-            atom_entity_id, atom_chain_type, apo_mask_ref
+            atom_entity_id, atom_chain_type, apo_mask_ref, num_samples=N
         )
 
-        entity_mask = (atom_entity_id == selected_entity_id[:, None]) & apo_mask_ref
-        entity_mask_exp = entity_mask[:, None, :].expand(B, N, L)
-        apo_coords = do_centering(apo_coords, entity_mask_exp, mask_to_zero=False)
+        if selected_entity_id is None:
+            entity_mask_exp = apo_mask_ref.unsqueeze(1)
+        else:
+            if selected_entity_id.ndim == 1:
+                selected_entity_id = selected_entity_id.unsqueeze(1).expand(B, N)
+
+            entity_mask = (
+                atom_entity_id.unsqueeze(1) == selected_entity_id.unsqueeze(2)
+            ) & apo_mask_ref.unsqueeze(1)
+            entity_mask_exp = entity_mask
 
         align_mask = entity_mask_exp & apo_mask & label_mask
         align_weights = align_mask.to(dtype=apo_coords.dtype)

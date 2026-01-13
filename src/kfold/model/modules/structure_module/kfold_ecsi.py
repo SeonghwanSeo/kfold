@@ -577,7 +577,7 @@ class KFoldECSI(BaseECSI):
 
         if label_coords is not None:
             apo_mask = ~(apo_coords == 0.0).all(-1)
-            apo_coords = self.align_apo_to_label_by_entity_selection(
+            apo_coords = self.align_apo_to_label(
                 apo_coords,
                 label_coords,
                 f_input,
