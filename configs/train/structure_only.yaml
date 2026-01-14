@@ -137,6 +137,7 @@ loss:
       upweight_dna: 5.0
       upweight_rna: 5.0
       upweight_ligand: 10.0
+      align_true_to_pred: true
       scale: false
 
     # Bond Loss

@@ -101,6 +101,18 @@ def get_molecule_symmetries(
     return all_perms
 
 
+def sample_uniform_sphere_surface(
+    radius: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Sample a point uniformly from the surface of a sphere."""
+    z = rng.uniform(-1.0, 1.0)
+    theta = rng.uniform(0.0, 2.0 * np.pi)
+    r_xy = np.sqrt(max(0.0, 1.0 - z * z))
+    point = np.array([r_xy * np.cos(theta), r_xy * np.sin(theta), z], dtype=np.float32)
+    return point * np.float32(radius)
+
+
 def get_valid_atom_mask(ctype: C.ChainType, ccd_sequence: list[str]) -> np.ndarray:
     """Generate empty coordinates for a given chain type and sequence."""
     assert ctype.is_polymer, "Only polymer chains are supported."
@@ -185,6 +197,10 @@ class ApoInitializerConfig:
     use_random_augmentation : bool
         Whether to apply random rotation/translation augmentation
         to apo structures.
+    chain_com_sampling_radius : float | None
+        If set, place each chain's center of mass on a sphere surface with
+        this radius (uniformly sampled). When enabled, translation_scale is
+        forced to 0.0 so only rotations apply.
     use_ot_permutation : bool
         Whether to apply optimal transport-based permutation
     translation_scale : float
@@ -211,6 +227,7 @@ class ApoInitializerConfig:
 
     use_perturbation: bool = False
     use_random_augmentation: bool = True
+    chain_com_sampling_radius: float | None = None
     use_ot_permutation: bool = False
     translation_scale: float = 10.0  # Angstrom
     prob_perturbation: float = 1.0
@@ -237,12 +254,17 @@ class ApoInitializer:
         self.use_perturbation: bool = config.use_perturbation
         self.use_random_augmentation: bool = config.use_random_augmentation
         self.use_ot_permutation: bool = config.use_ot_permutation
+        self.chain_com_sampling_radius: float | None = config.chain_com_sampling_radius
         self.translation_scale: float = config.translation_scale
         self.fill_missing_atom: bool = config.fill_missing_atom
 
         self.prob_perturbation: float = config.prob_perturbation
         self.prob_replace_to_holo: float = config.prob_replace_to_holo
         self.ccd: CCD = ccd
+
+        if self.chain_com_sampling_radius is not None:
+            self.translation_scale = 0.0
+            self.config.translation_scale = 0.0
 
         if self.prob_replace_to_holo > 0.0:
             raise NotImplementedError(
@@ -400,6 +422,9 @@ class ApoInitializer:
                 # Apply random rotation/translation augmentation
                 apo_coords = self.apply_random_augmentation(apo_coords, rng)
 
+            if self.chain_com_sampling_radius is not None:
+                apo_coords = self.apply_chain_com_surface_sampling(apo_coords, rng)
+
             # Insert apo coordinates into chain according to atom order
             # [L, Natom, 3] -> [Nallatoms, 3]
             src_res_indices: list[int] = []
@@ -468,6 +493,9 @@ class ApoInitializer:
             if self.use_random_augmentation:
                 # Apply random rotation augmentation
                 apo_coords = self.apply_random_augmentation(apo_coords[None, ...], rng)[0]
+
+            if self.chain_com_sampling_radius is not None:
+                apo_coords = self.apply_chain_com_surface_sampling(apo_coords, rng)
 
             # Feed apo coordinates
             chain.atom.apo_coords[:, :] = apo_coords
@@ -595,6 +623,27 @@ class ApoInitializer:
             Augmented structure coordinates of shape [L, Natom, 3].
         """
         return self.apo_perturbation.run(apo_coords, mask, rng=rng, key=key)
+
+    def apply_chain_com_surface_sampling(
+        self,
+        coords: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Translate coordinates so the chain COM lies on the sphere surface."""
+        if self.chain_com_sampling_radius is None:
+            return coords
+
+        mask = np.isfinite(coords).all(axis=-1)
+        if not mask.any():
+            return coords
+
+        coords_dtype = coords.dtype
+        current_com = coords[mask].mean(axis=0).astype(coords_dtype, copy=False)
+        target_com = sample_uniform_sphere_surface(
+            self.chain_com_sampling_radius, rng
+        ).astype(coords_dtype, copy=False)
+        shift = target_com - current_com
+        return coords + shift
 
     def apply_random_augmentation(
         self,

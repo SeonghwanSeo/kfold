@@ -65,7 +65,6 @@ class KFoldECSI_EDM(KFoldECSI):
         sampling_beta: float = 1.0
         use_prior_coords: bool = False  # EDM does not condition on prior
         alignment_entity_strategy: str = "largest"
-        prior_spread_radius: float = 0.0
         s_trans: float = 0.0
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):

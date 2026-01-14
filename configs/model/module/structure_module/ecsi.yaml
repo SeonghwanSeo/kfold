@@ -37,7 +37,6 @@ sampling_beta: 1.0
 
 alignment_entity_strategy: null
 alignment_level: "chain"
-prior_spread_radius: 10.0
 s_trans: 0.0
 
 # ECSI-specific inference settings
