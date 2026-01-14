@@ -19,7 +19,9 @@ input_embedder:
   use_apo: false
 
 trunk:
-  _yaml_: "module/trunk/af3.yaml"
+  _yaml_: "module/trunk/kfold.yaml"
+  use_ensemble: False
+  use_multi_state: False
 
 structure_module:
   _yaml_: "module/structure_module/ecsi.yaml"

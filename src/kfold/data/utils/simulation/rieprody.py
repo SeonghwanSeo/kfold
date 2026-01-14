@@ -47,6 +47,8 @@ class RandomWalkConfig:
     consider_side_chain_in_metric: bool = False
     total_time: float = 15.0
     total_time_min: float = 0.0
+    total_time_sampling_power: float = 1.0
+    total_time_uniform_ratio: float = 0.0
     fixed_bb_angles: tuple[str, ...] = ()
     num_steps: int = 1
     metric_calculation_period: int = 100
@@ -490,10 +492,14 @@ class RiePrody:
         - `random_walk.total_time` is treated as the maximum value (max_time).
         - Optionally, `random_walk.total_time_min` can be provided as the minimum value.
         - If max_time == min_time, the value is treated as fixed.
-        - Otherwise, we sample uniformly from [min_time, max_time).
+        - Otherwise, we sample from [min_time, max_time) using a mixture of
+          Uniform and Power-law sampling.
         """
         max_time = self.random_walk.total_time
         min_time = self.random_walk.total_time_min
+        sampling_power = self.random_walk.total_time_sampling_power
+        uniform_ratio = self.random_walk.total_time_uniform_ratio
+
         if max_time < min_time:
             warnings.warn(
                 (
@@ -507,7 +513,15 @@ class RiePrody:
         if max_time == min_time:
             return max_time
 
-        return float(rng.uniform(min_time, max_time))
+        # Mixture sampling:
+        # - with prob `uniform_ratio`: sample uniformly (flat distribution)
+        # - with prob `1 - uniform_ratio`: sample with power law (biased distribution)
+        if rng.random() < uniform_ratio:
+            u = rng.uniform(0.0, 1.0)
+        else:
+            u = rng.power(sampling_power)
+
+        return float(min_time + (max_time - min_time) * u)
 
     @property
     def lmdb_env(self) -> lmdb.Environment:

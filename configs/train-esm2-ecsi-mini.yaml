@@ -4,7 +4,12 @@ model:
     channel_seq_encoder: 2560
     use_apo: true
   trunk:
-    num_blocks: 16
+    use_ensemble: false
+    ensemble_module:
+      channel_struct_input: null
+      num_blocks: 2
+    interformer:
+      num_blocks: 16
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
