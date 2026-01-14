@@ -39,3 +39,6 @@ alignment_entity_strategy: null
 alignment_level: "chain"
 prior_spread_radius: 10.0
 s_trans: 0.0
+
+# ECSI-specific inference settings
+inference_align_x0_hat_to_x_apo: true

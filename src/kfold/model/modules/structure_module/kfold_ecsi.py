@@ -99,7 +99,9 @@ class KFoldECSI(BaseECSI):
         use_prior_coords: bool = True
         alignment_entity_strategy: str = "largest"
         prior_spread_radius: float = 10.0
+        alignment_level: str = "chain"
         s_trans: float = 1.0
+        inference_align_x0_hat_to_x_apo: bool = True
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -125,6 +127,8 @@ class KFoldECSI(BaseECSI):
         self.use_prior_coords: bool = cfg.use_prior_coords
         self.prior_spread_radius: float = cfg.prior_spread_radius
         self.s_trans: float = cfg.s_trans
+        self.alignment_level: str = cfg.alignment_level
+        self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
@@ -784,6 +788,15 @@ class KFoldECSI(BaseECSI):
                     model_cache=model_cache,
                     prior_coords=x_apo[:, st:end],
                 )
+
+                # align x0_hat to x_apo
+                if self.inference_align_x0_hat_to_x_apo:
+                    # Kabsch-align x0_hat into the x_apo frame.
+                    x0_hat[:, st:end] = self.align_apo_to_label(
+                        apo_coords=x0_hat[:, st:end],
+                        label_coords=x_apo[:, st:end],
+                        f_input=f_input,
+                    )
 
             # Expand t for coefficient computation
             t_exp = t_curr_tensor[:, :, None, None]  # (B, N, 1, 1)
