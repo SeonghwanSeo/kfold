@@ -133,6 +133,18 @@ class Chain:
         """Number of bonds in the chain."""
         return len(self.bond)
 
+    @property
+    def num_tokens(self) -> int:
+        """Number of tokens in the structure."""
+        num_tokens: int = 0
+        for res_i in range(self.num_residues):
+            if self.residue.is_standard[res_i]:
+                num_tokens += 1
+            else:
+                num_tokens += self.residue.num_atoms[res_i].item()
+        return num_tokens
+
+    # === Methods === #
     def get_sequence(self, map_to_standard: bool = False) -> str:
         """Get the amino acid / nucleotide sequence of the chain.
 
@@ -561,6 +573,11 @@ class RefStructure:
     def num_atoms(self) -> int:
         """Number of atoms in the structure."""
         return sum(chain.num_atoms for chain in self.chains)
+
+    @cached_property
+    def num_tokens(self) -> int:
+        """Number of tokens in the structure."""
+        return sum(chain.num_tokens for chain in self.chains)
 
     @property
     def num_bonds(self) -> int:

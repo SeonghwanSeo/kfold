@@ -19,12 +19,6 @@ def parse_args():
         required=True,
         help="Path to the preprocessed data directory.",
     )
-    parser.add_argument(
-        "--key_path",
-        type=pathlib.Path,
-        default="assets/splits/kfold_v251213/validation_ids.txt",
-        help="Path to the file containing entry IDs to include.",
-    )
     args = parser.parse_args()
 
     return args
@@ -37,7 +31,9 @@ def main():
 
     # Get entry IDs to include
     print("Loading entry IDs...")
-    with open(args.key_path) as f:
+    key_path: pathlib.Path = data_dir / "validation_pdb_ids.txt"
+    print(key_path.absolute())
+    with open(key_path) as f:
         entry_ids: list[str] = sorted(set(line.strip().lower() for line in f.readlines()))
     print(f"Total entry IDs to include: {len(entry_ids)}")
 
@@ -51,7 +47,7 @@ def main():
     lmdb_path = data_dir / "structure.lmdb"
     env = lmdb.open(
         str(lmdb_path),
-        map_size=100 * 1024 * 1024,  # 100 MB
+        map_size=1024 * 1024 * 1024,  # 1 GB
     )
     with env.begin(write=True) as txn:
         for entry_id in entry_ids:
@@ -93,7 +89,6 @@ def main():
     n_rna = 0
     n_dna = 0
     n_ligands = 0
-    n_ions = 0
 
     n_protein_protein = 0
     n_rna_rna = 0
@@ -103,13 +98,10 @@ def main():
     n_protein_rna = 0
     n_protein_dna = 0
     n_protein_ligand = 0
-    n_protein_ion = 0
 
     n_rna_ligand = 0
-    n_rna_ion = 0
 
     n_dna_ligand = 0
-    n_dna_ion = 0
 
     for metadata in metadatas:
         ctypes = [chain.ctype for chain in metadata.chains]
@@ -119,10 +111,8 @@ def main():
             n_rna += 1
         if any(ctype.is_dna for ctype in ctypes):
             n_dna += 1
-        if any(ctype.is_small_molecule for ctype in ctypes):
+        if any(ctype.is_ligand for ctype in ctypes):
             n_ligands += 1
-        if any(ctype.is_ion for ctype in ctypes):
-            n_ions += 1
 
         if sum(1 for ctype in ctypes if ctype.is_protein) >= 2:
             n_protein_protein += 1
@@ -146,37 +136,23 @@ def main():
             n_protein_dna += 1
 
         if any(ctype.is_protein for ctype in ctypes) and any(
-            ctype.is_small_molecule for ctype in ctypes
+            ctype.is_ligand for ctype in ctypes
         ):
             n_protein_ligand += 1
         if any(ctype.is_rna for ctype in ctypes) and any(
-            ctype.is_small_molecule for ctype in ctypes
+            ctype.is_ligand for ctype in ctypes
         ):
             n_rna_ligand += 1
         if any(ctype.is_dna for ctype in ctypes) and any(
-            ctype.is_small_molecule for ctype in ctypes
+            ctype.is_ligand for ctype in ctypes
         ):
             n_dna_ligand += 1
-
-        if any(ctype.is_protein for ctype in ctypes) and any(
-            ctype.is_ion for ctype in ctypes
-        ):
-            n_protein_ion += 1
-        if any(ctype.is_rna for ctype in ctypes) and any(
-            ctype.is_ion for ctype in ctypes
-        ):
-            n_rna_ion += 1
-        if any(ctype.is_dna for ctype in ctypes) and any(
-            ctype.is_ion for ctype in ctypes
-        ):
-            n_dna_ion += 1
 
     print("Composition statistics:")
     print(f"Number of entries with protein: {n_proteins}")
     print(f"Number of entries with RNA: {n_rna}")
     print(f"Number of entries with DNA: {n_dna}")
     print(f"Number of entries with ligands: {n_ligands}")
-    print(f"Number of entries with ions: {n_ions}")
 
     print(f"Number of entries with protein-protein interactions: {n_protein_protein}")
     print(f"Number of entries with RNA-RNA interactions: {n_rna_rna}")
@@ -186,12 +162,9 @@ def main():
     print(f"Number of entries with protein-RNA interactions: {n_protein_rna}")
     print(f"Number of entries with protein-DNA interactions: {n_protein_dna}")
     print(f"Number of entries with protein-ligand interactions: {n_protein_ligand}")
-    print(f"Number of entries with protein-ion interactions: {n_protein_ion}")
 
     print(f"Number of entries with RNA-ligand interactions: {n_rna_ligand}")
-    print(f"Number of entries with RNA-ion interactions: {n_rna_ion}")
     print(f"Number of entries with DNA-ligand interactions: {n_dna_ligand}")
-    print(f"Number of entries with DNA-ion interactions: {n_dna_ion}")
 
 
 if __name__ == "__main__":

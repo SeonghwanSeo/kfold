@@ -122,19 +122,24 @@ def parse_cif(
     )
     # Insert coordinates
     cif_factory.insert_coordinates(ref_struct, raw_struct, metadata)
-    # Clean valid chains
-    cif_factory.validate_chain_geometry(ref_struct)
-    # Get interfaces
-    cif_factory.detect_interfaces_and_prune_clashes(
-        ref_struct, clash_distance_cutoff=clash_distance_cutoff
+
+    # Identify invalid chains
+    invalid_chains: set[int] = set()
+
+    # Validate chain geometry
+    cif_factory.validate_chain_geometry(ref_struct, invalid_chains)
+
+    # Get interfaces and detect clashes
+    cif_factory.detect_interfaces_and_detect_clashes(
+        ref_struct, invalid_chains, clash_distance_cutoff
     )
 
     if not allow_invalid_chains:
-        if not all(c_m.is_valid for c_m in ref_struct.metadata.chains):
+        if len(invalid_chains) > 0:
             return FILTERED
 
     # Drop invalid chains
-    cif_factory.prune_invalid_chains(ref_struct)
+    cif_factory.prune_invalid_chains(ref_struct, invalid_chains)
 
     # Final checks
     if ref_struct.num_chains == 0:
