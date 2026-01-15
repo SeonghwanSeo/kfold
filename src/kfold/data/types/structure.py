@@ -65,10 +65,60 @@ class Chain:
     bond: "Bond"
     smiles: str | None = None  # optional SMILES string for small molecule
 
-    @property
+    # === Properties === #
+    @cached_property
     def ctype(self) -> C.ChainType:
         """Chain type as enum."""
         return C.ChainType(self.chain_type)
+
+    @property
+    def is_protein(self) -> bool:
+        """Whether the chain is a protein."""
+        return self.ctype.is_protein
+
+    @property
+    def is_dna(self) -> bool:
+        """Whether the chain is a dna."""
+        return self.ctype.is_dna
+
+    @property
+    def is_rna(self) -> bool:
+        """Whether the chain is a rna."""
+        return self.ctype.is_rna
+
+    @property
+    def is_ligand(self) -> bool:
+        """Whether the chain is a ligand."""
+        return self.ctype.is_ligand
+
+    @property
+    def is_polymer(self) -> bool:
+        """Whether the chain is a polymer."""
+        return self.ctype.is_polymer
+
+    @property
+    def is_nonpolymer(self) -> bool:
+        """Whether the chain is a non-polymer."""
+        return self.ctype.is_nonpolymer
+
+    @property
+    def is_nucleic_acid(self) -> bool:
+        """Whether the chain is a nucleic acid."""
+        return self.ctype.is_nucleic_acid
+
+    @property
+    def is_ion(self) -> bool:
+        """Whether the chain is an ion."""
+        if self.num_atoms > 1 or self.num_residues > 1:
+            return False
+        if self.is_polymer:
+            return False
+        return self.residue.name[0].item() in C.ccd.IONS
+
+    @property
+    def is_small_molecule(self) -> bool:
+        """Whether the chain is a small molecule (non-polymer & non-ion)."""
+        return self.is_nonpolymer and not self.is_ion
 
     @property
     def num_residues(self) -> int:

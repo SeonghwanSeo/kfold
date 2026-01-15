@@ -390,6 +390,7 @@ def prepare_ref_structure(
             gemmi.EntityType.Branched,
         }:
             # Ligand, ion, or branched ligands
+            chain_type = C.ChainType.LIGAND
             ref_asym_id: AsymId = entity.subchains[0]
             raw_chain: gemmi.ResidueSpan = raw_struct[0].get_subchain(ref_asym_id)
             ccd_sequences: list[str] = [res.name for res in raw_chain]
@@ -414,13 +415,6 @@ def prepare_ref_structure(
             if not is_valid_entity:
                 # Skip invalid entity
                 continue
-
-            # Check if the entity is an ion or not.
-            if ccd_sequences[0] in C.ccd.IONS:
-                assert len(ccd_sequences) == 1, "Ion entity has multiple residues."
-                chain_type = C.ChainType.ION
-            else:
-                chain_type = C.ChainType.LIGAND
         else:
             # Skip other entity types
             continue

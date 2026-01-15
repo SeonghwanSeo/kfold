@@ -33,7 +33,6 @@ chain_type_to_standard_residues: dict[C.ChainType, set[str]] = {
     C.ChainType.RNA: C.residue.RNA_RESIDUES_STR_SET,
     C.ChainType.DNA: C.residue.DNA_RESIDUES_STR_SET,
     C.ChainType.LIGAND: set(),
-    C.ChainType.ION: set(),
 }
 
 
