@@ -1,5 +1,30 @@
 import enum
 
+# For mmCIF parsing
+# See mmcif.wwpdb.org/dictionaries/mmcif_pdbx_v50.dic/Items/_exptl.method.html
+CRYSTALLIZATION_METHODS = {
+    "ELECTRON CRYSTALLOGRAPHY",
+    "FIBER DIFFRACTION",
+    "NEUTRON DIFFRACTION",
+    "POWDER DIFFRACTION",
+    "X-RAY DIFFRACTION",
+}
+NMR_METHODS = {
+    "SOLUTION NMR",
+    "SOLID-STATE NMR",
+}
+EM_METHODS = {
+    "ELECTRON MICROSCOPY",
+}
+OTHER_METHODS = {
+    "FLUORESCENCE TRANSFER",
+    "INFRARED SPECTROSCOPY",
+    "SOLUTION SCATTERING",
+}
+ALL_EXPERIMENT_METHODS = (
+    CRYSTALLIZATION_METHODS | NMR_METHODS | EM_METHODS | OTHER_METHODS
+)
+
 
 # For model training
 # TODO: add modified and resolved

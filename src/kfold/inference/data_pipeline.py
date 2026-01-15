@@ -156,8 +156,8 @@ class InputDataPipeline:
 
                 # Add chain metadata
                 chain_meta = ChainInfo(
-                    chain_type=entity_chain.ctype,
-                    chain_name=chain_name,
+                    type=entity_chain.ctype,
+                    name=chain_name,
                     entity_id=entity_id,
                     asym_id=asym_id,
                     sym_id=sym_id,

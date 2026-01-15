@@ -103,6 +103,9 @@ def prepare_ref_chain(
         assert len(ccd_sequences) == 1
         assert ccd_sequences[0].startswith("LIG")
 
+    # Normalize residue names to uppercase
+    ccd_sequences = [v.upper() for v in ccd_sequences]
+
     standard_residues: set[str] = chain_type_to_standard_residues[chain_type]
 
     @lru_cache  # No cache limit within a single function call

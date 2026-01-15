@@ -49,7 +49,7 @@ def to_mmcifstring(
             entity_ctypes[entity_id] = ref_chain.ctype
             entity_sequences[entity_id] = ref_chain.get_ccd_sequence()
         # Append asym_id (chain name) to the entity's list
-        entity_asym_ids[entity_id].append(chain_meta.chain_name)
+        entity_asym_ids[entity_id].append(chain_meta.name)
 
     entity_list: list[gemmi.Entity] = []
     for entity_id in sorted(entity_sequences.keys()):

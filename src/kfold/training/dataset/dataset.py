@@ -304,10 +304,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             metadata_dicts: list[dict] = json.load(f)
         metadatas: list[Metadata] = [Metadata.from_dict(d) for d in metadata_dicts]
         del metadata_dicts
-        # Ensure all chains and interfaces are valid
-        for m in metadatas:
-            m.check_all_chains_valid()
-            m.check_all_interfaces_valid()
         return metadatas
 
     def load_lookup_table(self) -> dict:

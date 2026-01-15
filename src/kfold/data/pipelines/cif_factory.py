@@ -5,6 +5,7 @@
 import itertools
 import logging
 import pathlib
+from datetime import datetime
 from typing import Any
 
 import gemmi
@@ -74,15 +75,14 @@ def parse_cif(
     # Get metadata
     # Handle cases like "1abc.cif.gz"
     name = pathlib.Path(cif_path).name.split(".")[0]
-    metadata = prepare_metadata_from_experimental_data(name, block, source="rcsb")
+    metadata = prepare_metadata_from_rcsb(name, block)
 
     # --- Gemmi structure processing ---
 
     # Prepare gemmi structure
-    raw_struct: gemmi.Structure = prepare_gemmi_structure(block, clean_up=True)
-
-    # Expand first assembly if available
-    expand_first_assembly(raw_struct)
+    raw_struct: gemmi.Structure = prepare_gemmi_structure(
+        block, clean_up=True, expand_assembly=True
+    )
 
     # --- Reference structure preparation ---
 
@@ -93,15 +93,16 @@ def parse_cif(
     insert_coordinates(ref_struct, raw_struct, metadata)
 
     # --- Cleaning and interface detection ---
+    invalid_chains: set[int] = set()
 
-    # Clean valid chains
-    validate_chain_geometry(ref_struct)
+    # Validate chain geometry
+    validate_chain_geometry(ref_struct, invalid_chains)
 
-    # Get interfaces
-    detect_interfaces_and_prune_clashes(ref_struct)
+    # Get interfaces and detect clashes
+    detect_interfaces_and_detect_clashes(ref_struct, invalid_chains)
 
     # Drop invalid chains
-    prune_invalid_chains(ref_struct)
+    prune_invalid_chains(ref_struct, invalid_chains)
 
     if max_chains is not None:
         # Limit number of chains for testing
@@ -128,15 +129,22 @@ def prepare_experiment_record(block: gemmi.cif.Block) -> ExperimentRecord:
     """Parse RCSB PDB metadata from CIF block."""
     # PDB ID
     pdb_id = get_first_value(block, "_entry.id")
+    assert pdb_id is not None, "PDB ID is missing in metadata."
 
     # Release Date
     rev_dates = block.find_values("_pdbx_audit_revision_history.revision_date")
     release_date = min(rev_dates) if rev_dates else None
+    assert release_date is not None, "Release date is missing in metadata."
 
     # Method (e.g., X-RAY DIFFRACTION)
     method = get_first_value(block, "_exptl.method")
+    assert method is not None, "Experimental method is missing in metadata."
+    method = method.replace("'", "").replace('"', "").upper()  # clean quotes
+    if method not in C.training.ALL_EXPERIMENT_METHODS:
+        method = "OTHER"
 
     # Resolution (Handle X-ray vs EM vs NMR)
+    # NMR: no resolution (None)
     # X-ray standard
     resolution = get_first_value(block, "_refine.ls_d_res_high", float)
     if not resolution:
@@ -147,39 +155,30 @@ def prepare_experiment_record(block: gemmi.cif.Block) -> ExperimentRecord:
         resolution = get_first_value(block, "_reflns.d_resolution_high", float)
 
     # Temperature (Kelvin)
-    temp = get_first_value(block, "_diffrn.ambient_temp")
+    temp = get_first_value(block, "_diffrn.ambient_temp", float)
 
     # pH (Crystallization condition)
-    ph = get_first_value(block, "_exptl_crystal_grow.pH")
+    ph = get_first_value(block, "_exptl_crystal_grow.pH", float)
 
     return ExperimentRecord(
         pdb_id=pdb_id,
-        resolution=resolution,
-        method=method,
         release_date=release_date,
+        method=method,
+        resolution=resolution,
         pH=ph,
         temperature=temp,
     )
 
 
-def prepare_metadata_from_experimental_data(
+def prepare_metadata_from_rcsb(
     name: str,
     block: gemmi.cif.Block,
-    source: str = "rcsb",
 ) -> Metadata:
     """Parse metadata from CIF block."""
-    # Parse experiment record
-    if source == "rcsb":
-        exp_record = prepare_experiment_record(block)
-        assert exp_record.pdb_id is not None, "PDB ID is missing in metadata."
-    else:
-        raise NotImplementedError(
-            f"Metadata parsing for source {source} not implemented."
-        )
-
+    exp_record = prepare_experiment_record(block)
     return Metadata(
         id=name,
-        source=source,
+        source="rcsb",
         exp=exp_record,
         chains=[],  # Filled later in parsing
         interfaces=[],  # Filled later in parsing
@@ -203,12 +202,50 @@ def prepare_metadata_from_synthetic_data(
     )
 
 
+# =================================================
+# Helper functions for metadata filtering
+# ==================================================
+def check_resolution_cutoff(
+    metadata: Metadata,
+    max_resolution: float,
+    skip_nmr: bool = True,
+) -> bool:
+    """Returns True if the entry passes the resolution filter."""
+    assert metadata.exp is not None
+    if skip_nmr and metadata.exp.is_nmr_structure:
+        # NMR does not have resolution, always pass
+        return True
+    resolution = metadata.exp.resolution
+    return resolution is not None and resolution <= max_resolution
+
+
+def check_date_cutoff(
+    metadata: Metadata,
+    date_start: datetime = datetime.min,
+    date_end: datetime = datetime.max,
+) -> bool:
+    """Returns True if the entry passes the date filter."""
+    assert metadata.exp is not None
+    release_date: datetime = datetime.fromisoformat(metadata.exp.release_date)
+    return date_start <= release_date <= date_end
+
+
+def check_method(
+    metadata: Metadata,
+    exclude_methods: set[str] = set(),
+) -> bool:
+    """Returns True if the entry passes the experimental method filter."""
+    assert metadata.exp is not None
+    return metadata.exp.method not in exclude_methods
+
+
 # ==================================================
 # Helper functions for gemmi structure validation
 # ==================================================
 def prepare_gemmi_structure(
     block: gemmi.cif.Block,
     clean_up: bool = True,
+    expand_assembly: bool = True,
 ) -> gemmi.Structure:
     """Prepare gemmi Structure object from CIF block."""
     raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
@@ -216,6 +253,8 @@ def prepare_gemmi_structure(
         clean_up_gemmi_structure(
             raw_struct, map_mse_to_met=True, canonicalize_arginines=True
         )
+    if expand_assembly:
+        expand_first_assembly(raw_struct)
     return raw_struct
 
 
@@ -224,7 +263,10 @@ def clean_up_gemmi_structure(
     map_mse_to_met: bool = True,
     canonicalize_arginines: bool = True,
 ) -> None:
-    """Clean up gemmi Structure object in-place."""
+    """Clean up gemmi Structure object in-place.
+
+    See AlphaFold3 Section 2.1 Parsing.
+    """
     raw_struct.merge_chain_parts()
     raw_struct.remove_waters()
     raw_struct.remove_hydrogens()
@@ -284,7 +326,10 @@ def clean_up_gemmi_structure(
 
 
 def expand_first_assembly(raw_struct: gemmi.Structure) -> None:
-    """Expand the first assembly in the gemmi Structure object in-place."""
+    """Expand the first assembly in the gemmi Structure object in-place.
+
+    See AlphaFold3 Section 2.1 Parsing.
+    """
     if len(raw_struct.assemblies) > 0:
         how = gemmi.HowToNameCopiedChain.AddNumber
         assembly_name = raw_struct.assemblies[0].name
@@ -307,12 +352,11 @@ def prepare_ref_structure(
 ) -> RefStructure:
     """Prepare reference structure from gemmi CIF block and metadata."""
 
-    # NOTE: According to AlphaFold3, remove crystallization aids for
-    # X-ray structures
+    # Determine ligand CCDs to exclude
     excluded_ligands: set[str] = C.ccd.LIGAND_EXCLUSIONS
-    if metadata.exp is not None and metadata.exp.method is not None:
-        if "XRAY" in metadata.exp.method.replace("-", "").upper():
-            # Add crystallization aids to exclusion list
+    if metadata.exp is not None:
+        # Exclude crystallization aids for crystal structures
+        if metadata.exp.is_crystal_structure:
             excluded_ligands = excluded_ligands | C.ccd.CRYSTALLIZATION_AIDS
 
     # ==================================================
@@ -639,13 +683,14 @@ def prepare_ref_structure(
                 # Skip invalid chains
                 continue
             sym_id: SymId = asym_id_to_sym_id[asym_id]
+            ctype: C.ChainType = entity_id_to_chain_type[entity_id]
             chain_meta = ChainInfo(
-                chain_name=asym_id,  # store asym_id as chain_name
-                chain_type=entity_id_to_chain_type[entity_id],
-                entity_id=entity_id,
-                asym_id=asym_id_to_int[asym_id],
-                sym_id=sym_id,
-                num_residues=length,
+                name=str(asym_id),  # store asym_id as chain_name
+                type=int(ctype.value),  # store as integer
+                entity_id=int(entity_id),
+                asym_id=int(asym_id_to_int[asym_id]),
+                sym_id=int(sym_id),
+                num_residues=int(length),
             )
             metadata.chains.append(chain_meta)
 
@@ -720,11 +765,11 @@ def insert_coordinates(
     asym_id_to_int: dict[AsymId, int] = {}
     asym_id_to_str: dict[int, AsymId] = {}
     for m in metadata.chains:
-        assert m.chain_name not in asym_id_to_int, (
-            f"Duplicate asym_id {m.chain_name} found in metadata."
+        assert m.name not in asym_id_to_int, (
+            f"Duplicate asym_id {m.name} found in metadata."
         )
-        asym_id_to_int[m.chain_name] = m.asym_id
-        asym_id_to_str[m.asym_id] = m.chain_name
+        asym_id_to_int[m.name] = m.asym_id
+        asym_id_to_str[m.asym_id] = m.name
 
     asym_id_to_ref_chain: dict[AsymId, Chain] = {}
     for ref_chain in ref_struct.chains:
@@ -763,12 +808,13 @@ def get_chain_ref_atom_coordinates(chain: Chain) -> np.ndarray:
         return ref_coords
 
 
-def validate_chain_geometry(struct: RefStructure) -> None:
+def validate_chain_geometry(
+    struct: RefStructure,
+    invalid_chains: set[int],
+):
     """Check if a polymer chain is valid."""
-    metadata: Metadata = struct.metadata
     for chain_i in range(struct.num_chains):
         ref_chain: Chain = struct.chains[chain_i]
-        chain_meta: ChainInfo = metadata.chains[chain_i]
         ctype: C.ChainType = ref_chain.ctype
 
         # Get reference atom coordinates and resolved flags
@@ -780,18 +826,18 @@ def validate_chain_geometry(struct: RefStructure) -> None:
             # For polymer chains, skip too short chains
             if n_resolved < 4:
                 logger.debug(
-                    f"{metadata.id}: Chain {ref_chain.asym_id} marked invalid "
+                    f"{struct.id}: Chain {ref_chain.asym_id} marked invalid "
                     f"due to insufficient resolved residues ({n_resolved})."
                 )
-                chain_meta.is_valid = False
+                invalid_chains.add(ref_chain.asym_id)
         else:
             # For non-polymer chains, only check if any atom is resolved
             if n_resolved == 0:
                 logger.debug(
-                    f"{metadata.id}: Chain {ref_chain.asym_id} marked invalid "
+                    f"{struct.id}: Chain {ref_chain.asym_id} marked invalid "
                     f"due to no resolved atoms."
                 )
-                chain_meta.is_valid = False
+                invalid_chains.add(ref_chain.asym_id)
 
         # For protein chains, check CA trace continuity
         if ctype.is_protein:
@@ -800,31 +846,31 @@ def validate_chain_geometry(struct: RefStructure) -> None:
             dists = np.linalg.norm(left - right, axis=-1)
             if np.any(dists > 10.0):
                 logger.debug(
-                    f"{metadata.id}: Chain {ref_chain.asym_id} marked invalid "
+                    f"{struct.id}: Chain {ref_chain.asym_id} marked invalid "
                     f"due to CA trace discontinuity."
                 )
-                chain_meta.is_valid = False
+                invalid_chains.add(ref_chain.asym_id)
                 continue
 
 
-def detect_interfaces_and_prune_clashes(
+def detect_interfaces_and_detect_clashes(
     struct: RefStructure,
-    remove_clashed: bool = True,
+    invalid_chains: set[int],
     clash_distance_cutoff: float = 1.7,
-) -> None:
+):
     """
     Detect valid interfaces between chains and prune chains with severe clashes.
 
     This function performs a hierarchical distance check:
     1. Coarse check using reference atoms (< 15.0 A)
     2. Fine check using all atoms (< 5.0 A)
-
-    If 'remove_clashed' is True, chains with >30% clashing atoms (< 1.7 A)
-    are marked as invalid in metadata.
     """
+
+    def is_valid(chain: Chain) -> bool:
+        return chain.asym_id not in invalid_chains
+
     metadata: Metadata = struct.metadata
     interfaces: list[InterfaceInfo] = []
-    invalid_asym_ids: set[int] = set()
 
     # Collect coordinates
     ref_coords_dict: dict[int, np.ndarray] = {}
@@ -842,15 +888,10 @@ def detect_interfaces_and_prune_clashes(
         # Only consider valid chains
         chain1 = struct.chains[i1]
         chain2 = struct.chains[i2]
-        chain_meta_1 = metadata.chains[i1]
-        chain_meta_2 = metadata.chains[i2]
         asym_id1 = chain1.asym_id
         asym_id2 = chain2.asym_id
 
-        if not chain_meta_1.is_valid or not chain_meta_2.is_valid:
-            # Skip invalid chains
-            continue
-        if asym_id1 in invalid_asym_ids or asym_id2 in invalid_asym_ids:
+        if not is_valid(chain1) or not is_valid(chain2):
             # Skip invalid chains
             continue
 
@@ -874,106 +915,93 @@ def detect_interfaces_and_prune_clashes(
             # No contact detected
             continue
 
-        if remove_clashed:
-            # Check for clash
-            is_clash = dists < clash_distance_cutoff  # [N, M]
-            is_clash_1 = np.any(is_clash, axis=1)
-            is_clash_2 = np.any(is_clash, axis=0)
-            clash_ratio_1 = np.sum(is_clash_1) / is_clash_1.shape[0]
-            clash_ratio_2 = np.sum(is_clash_2) / is_clash_2.shape[0]
-            is_clash_chain_1 = clash_ratio_1 > 0.3
-            is_clash_chain_2 = clash_ratio_2 > 0.3
+        # Check for clash
+        is_clash = dists < clash_distance_cutoff  # [N, M]
+        is_clash_1 = np.any(is_clash, axis=1)
+        is_clash_2 = np.any(is_clash, axis=0)
+        clash_ratio_1 = np.sum(is_clash_1) / is_clash_1.shape[0]
+        clash_ratio_2 = np.sum(is_clash_2) / is_clash_2.shape[0]
+        is_clash_chain_1 = clash_ratio_1 > 0.3
+        is_clash_chain_2 = clash_ratio_2 > 0.3
 
-            if is_clash_chain_1 and is_clash_chain_2:
-                # Both chains are severely clashed, remove one:
-                #   - Remove the one with higher clash ratio
-                #   - If equal, remove the larger one
-                #   - If still equal, remove the one with larger asym_id
-                if clash_ratio_1 > clash_ratio_2:
-                    remove_asym_id = asym_id1
-                elif clash_ratio_1 < clash_ratio_2:
+        if is_clash_chain_1 and is_clash_chain_2:
+            # Both chains are severely clashed, remove one:
+            #   - Remove the one with higher clash ratio
+            #   - If equal, remove the larger one
+            #   - If still equal, remove the one with larger asym_id
+            if clash_ratio_1 > clash_ratio_2:
+                remove_asym_id = asym_id1
+            elif clash_ratio_1 < clash_ratio_2:
+                remove_asym_id = asym_id2
+            else:
+                if chain1.num_atoms > chain2.num_atoms:
                     remove_asym_id = asym_id2
+                elif chain1.num_atoms < chain2.num_atoms:
+                    remove_asym_id = asym_id1
                 else:
-                    if chain1.num_atoms > chain2.num_atoms:
-                        remove_asym_id = asym_id2
-                    elif chain1.num_atoms < chain2.num_atoms:
-                        remove_asym_id = asym_id1
-                    else:
-                        remove_asym_id = max(asym_id1, asym_id2)
-                logger.debug(
-                    f"{metadata.id}: Chains {asym_id1} and {asym_id2} "
-                    f"marked invalid due to severe clash "
-                    f"({clash_ratio_1:.2%} vs {clash_ratio_2:.2%})."
-                )
-                invalid_asym_ids.add(remove_asym_id)
-                continue
-            elif is_clash_chain_1:
-                logger.debug(
-                    f"{metadata.id}: Chain {asym_id1} marked invalid due to clash "
-                    f"({clash_ratio_1:.2%} atoms clashed with chain {asym_id2})."
-                )
-                invalid_asym_ids.add(asym_id1)
-                continue
-            elif is_clash_chain_2:
-                logger.debug(
-                    f"{metadata.id}: Chain {asym_id2} marked invalid due to clash "
-                    f"({clash_ratio_2:.2%} atoms clashed with chain {asym_id1})."
-                )
-                invalid_asym_ids.add(asym_id2)
-                continue
+                    remove_asym_id = max(asym_id1, asym_id2)
+            logger.debug(
+                f"{metadata.id}: Chains {asym_id1} and {asym_id2} "
+                f"marked invalid due to severe clash "
+                f"({clash_ratio_1:.2%} vs {clash_ratio_2:.2%})."
+            )
+            invalid_chains.add(remove_asym_id)
+            continue
+        elif is_clash_chain_1:
+            logger.debug(
+                f"{metadata.id}: Chain {asym_id1} marked invalid due to clash "
+                f"({clash_ratio_1:.2%} atoms clashed with chain {asym_id2})."
+            )
+            invalid_chains.add(asym_id1)
+            continue
+        elif is_clash_chain_2:
+            logger.debug(
+                f"{metadata.id}: Chain {asym_id2} marked invalid due to clash "
+                f"({clash_ratio_2:.2%} atoms clashed with chain {asym_id1})."
+            )
+            invalid_chains.add(asym_id2)
+            continue
 
         # Valid interface
         interfaces.append(InterfaceInfo(asym_ids=(asym_id1, asym_id2)))
 
-    # Mark invalid chains
-    for chain_meta in struct.metadata.chains:
-        if chain_meta.asym_id in invalid_asym_ids:
-            chain_meta.is_valid = False
-
-    # Mark interfaces involving invalid chains as invalid
+    # Remove invalid interfaces
+    valid_interfaces: list[InterfaceInfo] = []
     for iface in interfaces:
-        if iface.asym_ids[0] in invalid_asym_ids or iface.asym_ids[1] in invalid_asym_ids:
-            iface.is_valid = False
+        asym_id1, asym_id2 = iface.asym_ids
+        if asym_id1 not in invalid_chains and asym_id2 not in invalid_chains:
+            valid_interfaces.append(iface)
+    struct.metadata.interfaces = valid_interfaces
 
-    struct.metadata.interfaces = interfaces
 
-
-def prune_invalid_chains(struct: RefStructure) -> None:
+def prune_invalid_chains(struct: RefStructure, invalid_chains: set[int]):
     """Drop invalid chains from the structure."""
     metadata: Metadata = struct.metadata
-
-    # Get valid asym_ids
-    valid_asym_ids: set[int] = set(m.asym_id for m in metadata.chains if m.is_valid)
-
-    # Remove standard-alone branched ligands
-    for con in struct.connections:
-        asym_id1, asym_id2 = con.asym_id
-        if asym_id1 in valid_asym_ids and asym_id2 in valid_asym_ids:
-            continue
-        # Check if either chain is branched
-        chain_meta1 = metadata.get_chain_by_asym_id(asym_id1)
-        chain_meta2 = metadata.get_chain_by_asym_id(asym_id2)
-        if chain_meta1.chain_type is C.ChainType.LIGAND:
-            valid_asym_ids.discard(asym_id1)
-        if chain_meta2.chain_type is C.ChainType.LIGAND:
-            valid_asym_ids.discard(asym_id2)
-
-    metadata.chains = [m for m in metadata.chains if m.asym_id in valid_asym_ids]
+    # Remove orphaned branched/covalent ligand chains
+    for conn in struct.connections:
+        asym_id1, asym_id2 = conn.asym_id
+        if asym_id1 in invalid_chains or asym_id2 in invalid_chains:
+            cm1 = metadata.get_chain_by_asym_id(asym_id1)
+            cm2 = metadata.get_chain_by_asym_id(asym_id2)
+            if cm1.ctype is C.ChainType.LIGAND:
+                invalid_chains.add(asym_id1)
+            if cm2.ctype is C.ChainType.LIGAND:
+                invalid_chains.add(asym_id2)
 
     # Prune chains, connections, and interfaces
-    struct.chains = [c for c in struct.chains if c.asym_id in valid_asym_ids]
+    metadata.chains = [m for m in metadata.chains if m.asym_id not in invalid_chains]
+    struct.chains = [c for c in struct.chains if c.asym_id not in invalid_chains]
     struct.connections = [
-        con
-        for con in struct.connections
-        if con.asym_id[0] in valid_asym_ids and con.asym_id[1] in valid_asym_ids
+        conn
+        for conn in struct.connections
+        if conn.asym_id[0] not in invalid_chains and conn.asym_id[1] not in invalid_chains
     ]
     metadata.interfaces = [
         iface
         for iface in struct.metadata.interfaces
         if (
-            iface.is_valid
-            and iface.asym_ids[0] in valid_asym_ids
-            and iface.asym_ids[1] in valid_asym_ids
+            iface.asym_ids[0] not in invalid_chains
+            and iface.asym_ids[1] not in invalid_chains
         )
     ]
 
@@ -989,11 +1017,6 @@ def crop_substructure(
     """Sample a substructure with at most max_chains chains."""
     if struct.num_chains <= max_chains:
         return struct
-
-    # This sampling procedure should be conducted after pruning
-    assert all(m.is_valid for m in struct.metadata.chains) and (
-        all(iface.is_valid for iface in struct.metadata.interfaces)
-    ), "Structure must be pruned before sampling."
 
     # Collect reference coordinates
     ref_coords_dict: dict[int, np.ndarray] = {}
@@ -1071,8 +1094,7 @@ def crop_substructure(
         iface
         for iface in struct.metadata.interfaces
         if (
-            iface.is_valid
-            and iface.asym_ids[0] in selected_asym_ids
+            iface.asym_ids[0] in selected_asym_ids
             and iface.asym_ids[1] in selected_asym_ids
         )
     ]

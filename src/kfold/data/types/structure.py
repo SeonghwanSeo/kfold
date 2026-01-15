@@ -20,14 +20,12 @@ def pack_metadata(metadata: Metadata) -> np.ndarray:
     """Pack Metadata into a numpy bytes array."""
     metadata_dict = metadata.to_dict()
     metadata_serialized = msgpack.packb(metadata_dict)
-    return np.array(metadata_serialized, dtype=np.bytes_)
+    return np.frombuffer(metadata_serialized, dtype=np.uint8)
 
 
 def unpack_metadata(data: np.ndarray) -> Metadata:
     """Unpack Metadata from a numpy bytes array."""
-    if isinstance(data, np.ndarray) and data.ndim == 0:
-        data = data.item()
-    metadata_dict = msgpack.unpackb(data)
+    metadata_dict = msgpack.unpackb(data.tobytes())
     return Metadata.from_dict(metadata_dict)
 
 
