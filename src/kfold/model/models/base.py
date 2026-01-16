@@ -222,6 +222,7 @@ class BaseFoldingModel(torch.nn.Module):
         num_recycles: int = 10,
         num_steps: int = 200,
         num_diffusion_samples: int = 5,
+        return_traj: bool = False,
     ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         """Forward pass of KFold model for model training.
 
@@ -235,6 +236,8 @@ class BaseFoldingModel(torch.nn.Module):
             Number of diffusion steps for training.
         num_diffusion_samples : int
             Number of diffusion samples for training.
+        return_traj : bool, optional
+            Whether to return sampling trajectories.
         """
         dict_out: dict[str, torch.Tensor] = {}
         time_logs: dict[str, float] = {}
@@ -285,6 +288,7 @@ class BaseFoldingModel(torch.nn.Module):
                 z_trunk,
                 num_steps,
                 num_diffusion_samples,
+                return_traj=return_traj,
             )
         )
         et = time.time()

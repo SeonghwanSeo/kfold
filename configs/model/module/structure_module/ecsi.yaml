@@ -7,7 +7,11 @@ sigma_min: 0.001  # t_min
 sigma_max: 0.999  # t_max (near 1)
 
 # Linear route parameters (Table 8)
-gamma_max: 0.25  # \gamma_t = 2 * \gamma_\max * \sqrt{t(1-t)}
+gamma_max: 16  # \gamma_t = 2 * \gamma_\max * \sqrt{t(1-t)}
+route_type: "linear"
+# DDBM-VP route parameters (Appendix C.2)
+ddbm_vp_beta_min: 0.1
+ddbm_vp_beta_d: 2.0
 
 # Data distribution parameters
 sigma_data: 16.0  # holo structures (\sigma_0)

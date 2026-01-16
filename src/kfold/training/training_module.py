@@ -102,6 +102,8 @@ class ValidationConfig:
     num_recycles: int = 3
     num_steps: int = 20
     num_diffusion_samples: int = 5
+    return_traj: bool = False
+    traj_format: str = "cif"
     symmetry_correction: bool = True
     save_structure_path: str | None = None
 
@@ -322,11 +324,13 @@ class KFoldTrainingModule(pl.LightningModule):
                 sample_structures=self.train_confidence_head,
             )
         elif mode == "validation":
+            return_traj = bool(getattr(self.validation_config, "return_traj", False))
             dict_out, _ = self.model.sample(
                 f_input,
                 num_recycles=num_recycles,
                 num_steps=num_steps,
                 num_diffusion_samples=num_diffusion_samples,
+                return_traj=return_traj,
             )
             return {"sample": dict_out}
         else:
@@ -468,7 +472,9 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_diffusion_samples=num_diffusion_samples,
                 mode="validation",
             )
-            sample_coords = out["sample"]["sample_coordinates"]
+            sample_out = out["sample"]
+            sample_coords = sample_out["sample_coordinates"]
+            traj = sample_out.get("traj")
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -511,6 +517,8 @@ class KFoldTrainingModule(pl.LightningModule):
                 save_dir,
                 rmsd_list,
                 lddt_list,
+                traj=traj,
+                traj_format=getattr(val_config, "traj_format", "cif"),
             )
 
     def on_validation_epoch_end(self):
@@ -785,36 +793,45 @@ class KFoldTrainingModule(pl.LightningModule):
         save_dir: pathlib.Path,
         rmsd_list: list[float],
         lddt_list: list[float],
+        traj: torch.Tensor | None = None,
+        traj_format: str = "cif",
     ):
-        from kfold.data.tokenized import TokenizedStructure
+        from kfold.data.types.structure import RefStructure
 
         full_dict = full_struct_list[0]
         name: str = full_dict["id"]
-        struct: TokenizedStructure = full_dict["structure"]
+        ref_struct: RefStructure | None = full_dict.get("ref_structure")
+        if ref_struct is None:
+            print(f"Failed to save structures for {name}: missing ref_structure.")
+            return
 
         save_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             save_path = save_dir / f"{name}-gt.cif"
-            struct.write(save_path)
+            ref_struct.write(save_path)
         except Exception as e:
             print(f"Failed to save ground-truth CIF for {name}: {e}")
 
         try:
             save_path = save_dir / f"{name}-apo.cif"
-            struct.write(save_path, save_apo=True)
+            ref_struct.write(save_path, save_apo=True)
         except Exception as e:
             print(f"Failed to save apo CIF for {name}: {e}")
             try:
                 save_path = save_dir / f"{name}-apo.pdb"
-                struct.write(save_path, save_apo=True)
+                ref_struct.write(save_path, save_apo=True)
             except Exception as e:
-                print(f"Failed to save apo PDB for {name}")
+                print(f"Failed to save apo PDB for {name}: {e}")
 
+        num_atoms = ref_struct.num_atoms
+        true_coords_arr: np.ndarray | None = None
         try:
             true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
             for i in range(true_coords_arr.shape[0]):
-                new_struct = struct.replace_atom_coords(true_coords_arr[i])
+                new_struct = ref_struct.copy_with_new_coords(
+                    true_coords_arr[i][:num_atoms]
+                )
                 save_path = save_dir / f"{name}-gt-aligned{i}.cif"
                 new_struct.write(save_path)
         except Exception as e:
@@ -822,11 +839,12 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # [B, Nsample, Natom, 3] -> [Nsample, Natom, 3]
         assert f_input.batch_size == 1, "Saving structure only supports batch size of 1."
-        pred_coords_arr = pred_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
+        pred_coords_arr = pred_coords[0].detach().cpu().float().numpy()
+        pred_coords_arr = pred_coords_arr[:, :num_atoms, :]  # [Nsample, Natom, 3]
 
         try:
             for i in range(pred_coords_arr.shape[0]):
-                new_struct = struct.replace_atom_coords(pred_coords_arr[i])
+                new_struct = ref_struct.copy_with_new_coords(pred_coords_arr[i])
                 rmsd, lddt = rmsd_list[i], lddt_list[i]
                 save_path = (
                     save_dir / f"{name}-{i}-rmsd{rmsd:.2f}-lddt{lddt * 100:.2f}.cif"
@@ -834,3 +852,75 @@ class KFoldTrainingModule(pl.LightningModule):
                 new_struct.write(save_path)
         except Exception as e:
             print(f"Failed to save predicted CIF for {name}: {e}")
+
+        traj_arr: np.ndarray | None = None
+        try:
+            pred_payload: dict[str, np.ndarray] = {
+                "pred_coords": pred_coords_arr,
+                "rmsd": np.asarray(rmsd_list, dtype=np.float32),
+                "lddt": np.asarray(lddt_list, dtype=np.float32),
+            }
+            if true_coords_arr is not None:
+                pred_payload["true_coords"] = true_coords_arr[:, :num_atoms, :]
+            if traj is not None:
+                traj_arr = traj.detach().cpu().numpy()
+                if traj_arr.ndim == 5:
+                    if traj_arr.shape[1] == 1:
+                        traj_arr = traj_arr[:, 0]
+                    elif traj_arr.shape[0] == 1:
+                        traj_arr = traj_arr[0]
+                if traj_arr.ndim == 4 and (traj_arr.shape[0] == pred_coords_arr.shape[0]):
+                    traj_arr = np.transpose(traj_arr, (1, 0, 2, 3))
+                if traj_arr is not None:
+                    if traj_arr.ndim != 4:
+                        raise ValueError(
+                            f"Unexpected traj shape for {name}: {traj_arr.shape}"
+                        )
+                    traj_arr = traj_arr[:, :, :num_atoms, :]
+                    pred_payload["traj"] = traj_arr
+            np.savez_compressed(save_dir / f"{name}-predictions.npz", **pred_payload)
+        except Exception as e:
+            print(f"Failed to save prediction NPZ for {name}: {e}")
+            traj_arr = None
+
+        if traj_arr is None:
+            return
+
+        traj_format = traj_format.lower()
+        if traj_format not in {"cif", "pdb"}:
+            print(f"Unsupported traj_format '{traj_format}' for {name}.")
+            return
+
+        traj_dir = save_dir / f"{name}-traj"
+        try:
+            import gemmi
+
+            traj_dir.mkdir(parents=True, exist_ok=True)
+            num_frames, num_samples = traj_arr.shape[:2]
+            for sample_i in range(num_samples):
+                # Create a structure to hold the trajectory (multiple models)
+                traj_structure = gemmi.Structure()
+                traj_structure.name = f"{name}_sample_{sample_i}"
+
+                for frame_i in range(num_frames):
+                    coords = traj_arr[frame_i, sample_i]
+                    frame_struct = ref_struct.copy_with_new_coords(coords)
+
+                    # Convert to gemmi model via mmCIF string
+                    # This preserves all the metadata handling logic in
+                    # RefStructure.to_mmcif
+                    cif_str = frame_struct.to_mmcif()
+                    cif_doc = gemmi.cif.read_string(cif_str)
+                    frame_gemmi = gemmi.make_structure_from_block(cif_doc.sole_block())
+
+                    model = frame_gemmi[0]
+                    model.name = str(frame_i + 1)
+                    traj_structure.add_model(model, pos=-1)
+
+                save_path = traj_dir / f"sample-{sample_i}.{traj_format}"
+                if traj_format == "pdb":
+                    traj_structure.write_pdb(str(save_path))
+                elif traj_format == "cif":
+                    traj_structure.make_mmcif_document().write_file(str(save_path))
+        except Exception as e:
+            print(f"Failed to save trajectory files for {name}: {e}")

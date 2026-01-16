@@ -2,6 +2,8 @@
 # Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
 # Adapted from ECSI training code and kfold_ddbm.py
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -22,8 +24,9 @@ class KFoldECSI(BaseECSI):
 
     Key features:
     - Decoupled kernel parameters (\alpha_t, \beta_t, \gamma_t) for flexible bridge paths
-    - Linear interpolation: \alpha_t=1-t, \beta_t=t,
+    - Linear route: \alpha_t=1-t, \beta_t=t,
       \gamma_t^2=\gamma_{max}^2/4 \cdot t(1-t)
+    - DDBM-VP route (Appendix C.2): configurable via route_type="ddbm_vp"
     - Stochasticity control via \eta parameter during sampling
     - Preconditioning adapted from DDBM
 
@@ -46,6 +49,13 @@ class KFoldECSI(BaseECSI):
         gamma_max : float, optional
             Scale parameter for \gamma_t, by default 1.0.
             Uses \gamma_t^2 = \gamma_{max}^2/4 * t(1-t).
+        route_type : str, optional
+            Route selection for (\alpha_t, \beta_t, \gamma_t). Options: "linear"
+            (default) or "ddbm_vp".
+        ddbm_vp_beta_min : float, optional
+            DDBM-VP beta_min parameter for \sigma_t and a_t schedules.
+        ddbm_vp_beta_d : float, optional
+            DDBM-VP beta_d parameter for \sigma_t and a_t schedules.
         sigma_data : float, optional
             Standard deviation of target (holo) distribution, by default 16.0.
         sigma_data_end : float, optional
@@ -80,6 +90,9 @@ class KFoldECSI(BaseECSI):
         sigma_min: float = 0.001
         sigma_max: float = 0.999
         gamma_max: float = 0.25
+        route_type: str = "linear"
+        ddbm_vp_beta_min: float = 0.1
+        ddbm_vp_beta_d: float = 16.0
         sigma_data: float = 16.0
         sigma_data_end: float = 16.0
         cov_xy: float = 128.0
@@ -95,7 +108,7 @@ class KFoldECSI(BaseECSI):
         sampling_alpha: float = 1.0
         sampling_beta: float = 1.0
         use_prior_coords: bool = True
-        alignment_entity_strategy: str = "largest"
+        alignment_entity_strategy: str | None = None
         alignment_level: str = "chain"
         s_trans: float = 1.0
         inference_align_x0_hat_to_x_apo: bool = True
@@ -106,6 +119,9 @@ class KFoldECSI(BaseECSI):
         self.sigma_min: float = cfg.sigma_min
         self.sigma_max: float = cfg.sigma_max
         self.gamma_max: float = cfg.gamma_max
+        self.route_type: str = cfg.route_type
+        self.ddbm_vp_beta_min: float = cfg.ddbm_vp_beta_min
+        self.ddbm_vp_beta_d: float = cfg.ddbm_vp_beta_d
         self.sigma_data: float = cfg.sigma_data
         self.sigma_data_end: float = cfg.sigma_data_end
         self.cov_xy: float = cfg.cov_xy
@@ -125,6 +141,8 @@ class KFoldECSI(BaseECSI):
         self.s_trans: float = cfg.s_trans
         self.alignment_level: str = cfg.alignment_level
         self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
+
+        self._configure_route_functions(cfg)
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
@@ -152,31 +170,173 @@ class KFoldECSI(BaseECSI):
         """Apply random augmentation to coordinates."""
         return self.random_augmentation(coords, mask=mask)
 
-    # === Linear Route Functions (Stochastic Interpolants) === #
+    def _configure_route_functions(self, cfg: Config) -> None:
+        route = (cfg.route_type or "linear").lower().replace("-", "_")
+        self.route_type = route
+        if route == "linear":
+            self._alpha_fn = self._alpha_linear
+            self._alpha_deriv_fn = self._alpha_deriv_linear
+            self._beta_fn = self._beta_linear
+            self._beta_deriv_fn = self._beta_deriv_linear
+            self._gamma_fn = self._gamma_linear
+            self._gamma_deriv_fn = self._gamma_deriv_linear
+            return
+        if route == "ddbm_vp":
+            self._alpha_fn = self._alpha_ddbm_vp
+            self._alpha_deriv_fn = self._alpha_deriv_ddbm_vp
+            self._beta_fn = self._beta_ddbm_vp
+            self._beta_deriv_fn = self._beta_deriv_ddbm_vp
+            self._gamma_fn = self._gamma_ddbm_vp
+            self._gamma_deriv_fn = self._gamma_deriv_ddbm_vp
+            return
+        raise ValueError(
+            "Unsupported route_type; expected 'linear' or 'ddbm_vp', "
+            f"got {cfg.route_type!r}."
+        )
+
+    @property
+    def ddbm_vp_a1(self) -> float:
+        exponent = 0.5 * self.ddbm_vp_beta_d + self.ddbm_vp_beta_min
+        return math.exp(exponent) ** -0.5
+
+    @property
+    def ddbm_vp_sigma1_sq(self) -> float:
+        exponent = 0.5 * self.ddbm_vp_beta_d + self.ddbm_vp_beta_min
+        return math.exp(exponent) - 1.0
+
+    def _ddbm_vp_constants(self, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        a1 = t.new_tensor(self.ddbm_vp_a1)
+        sigma1_sq = t.new_tensor(self.ddbm_vp_sigma1_sq)
+        return a1, sigma1_sq
+
+    def _ddbm_vp_base(
+        self, t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        beta_d = t.new_tensor(self.ddbm_vp_beta_d)
+        beta_min = t.new_tensor(self.ddbm_vp_beta_min)
+        log_snr = 0.5 * beta_d * t**2 + beta_min * t
+        exp_term = torch.exp(log_snr)
+        sigma_sq = exp_term - 1.0
+        sigma_sq_prime = exp_term * (beta_d * t + beta_min)
+        a_t = torch.rsqrt(exp_term)
+        a_t_prime = -0.5 * (beta_d * t + beta_min) * a_t
+        return a_t, a_t_prime, sigma_sq, sigma_sq_prime
+
+    # === Route Functions (Stochastic Interpolants) === #
     def alpha(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Weight for target (x_0/holo); route selected by config."""
+        return self._alpha_fn(t)
+
+    def alpha_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Derivative of alpha; route selected by config."""
+        return self._alpha_deriv_fn(t)
+
+    def beta(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Weight for source (x_T/apo); route selected by config."""
+        return self._beta_fn(t)
+
+    def beta_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Derivative of beta; route selected by config."""
+        return self._beta_deriv_fn(t)
+
+    def gamma(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Noise scale; route selected by config."""
+        return self._gamma_fn(t)
+
+    def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Derivative of gamma; route selected by config."""
+        return self._gamma_deriv_fn(t)
+
+    # === Linear Route Functions === #
+    def _alpha_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Weight for target (x_0/holo): \alpha_t = 1 - t"""
         return 1 - t
 
-    def alpha_deriv(self, t: torch.Tensor) -> torch.Tensor:
+    def _alpha_deriv_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Derivative of alpha: \dot{\alpha}_t = -1"""
         return -torch.ones_like(t)
 
-    def beta(self, t: torch.Tensor) -> torch.Tensor:
+    def _beta_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Weight for source (x_T/apo): \beta_t = t"""
         return t
 
-    def beta_deriv(self, t: torch.Tensor) -> torch.Tensor:
+    def _beta_deriv_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Derivative of beta: \dot{\beta}_t = 1"""
         return torch.ones_like(t)
 
-    def gamma(self, t: torch.Tensor) -> torch.Tensor:
+    def _gamma_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Noise scale: \gamma_t^2 = \gamma_{max}^2/4 * t(1-t)"""
         return 0.5 * self.gamma_max * torch.sqrt(t * (1 - t) + 1e-8)
 
-    def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
+    def _gamma_deriv_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Derivative: \dot{\gamma}_t = \gamma_{max} * (1-2t) / (4\sqrt{t(1-t)})"""
         denom = torch.sqrt(t * (1 - t) + 1e-8)
         return self.gamma_max * (1 - 2 * t) / (4 * denom)
+
+    # === DDBM-VP Route Functions (Appendix C.2) === #
+    def _alpha_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, _, sigma_sq, _ = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        a1_sq = a1 * a1
+        a_t_sq = a_t * a_t
+        denom = sigma1_sq * a_t_sq + 1e-8
+        ratio = sigma_sq * a1_sq / denom
+        return a_t * (1 - ratio)
+
+    def _alpha_deriv_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        a1_sq = a1 * a1
+        a_t_sq = a_t * a_t
+        a_t_sq_prime = 2 * a_t * a_t_prime
+        inv_a_t_sq = 1 / (a_t_sq + 1e-8)
+        k = a1_sq / (sigma1_sq + 1e-8)
+        ratio = k * sigma_sq * inv_a_t_sq
+        ratio_prime = k * (
+            sigma_sq_prime * inv_a_t_sq
+            - sigma_sq * a_t_sq_prime * inv_a_t_sq * inv_a_t_sq
+        )
+        return a_t_prime * (1 - ratio) - a_t * ratio_prime
+
+    def _beta_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, _, sigma_sq, _ = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        denom = sigma1_sq * a_t + 1e-8
+        return sigma_sq * a1 / denom
+
+    def _beta_deriv_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        inv_a_t = 1 / (a_t + 1e-8)
+        k = a1 / (sigma1_sq + 1e-8)
+        return k * (sigma_sq_prime * inv_a_t - sigma_sq * a_t_prime * inv_a_t * inv_a_t)
+
+    def _gamma_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, _, sigma_sq, _ = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        a1_sq = a1 * a1
+        a_t_sq = a_t * a_t
+        ratio = sigma_sq * a1_sq / (sigma1_sq * a_t_sq + 1e-8)
+        gamma_sq = sigma_sq * (1 - ratio)
+        return torch.sqrt(torch.clamp(gamma_sq, min=0.0) + 1e-8)
+
+    def _gamma_deriv_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        a1_sq = a1 * a1
+        a_t_sq = a_t * a_t
+        a_t_sq_prime = 2 * a_t * a_t_prime
+        inv_a_t_sq = 1 / (a_t_sq + 1e-8)
+        k = a1_sq / (sigma1_sq + 1e-8)
+        ratio = k * sigma_sq * inv_a_t_sq
+        ratio_prime = k * (
+            sigma_sq_prime * inv_a_t_sq
+            - sigma_sq * a_t_sq_prime * inv_a_t_sq * inv_a_t_sq
+        )
+        gamma_sq = sigma_sq * (1 - ratio)
+        gamma_sq_prime = sigma_sq_prime * (1 - ratio) - sigma_sq * ratio_prime
+        gamma = torch.sqrt(torch.clamp(gamma_sq, min=0.0) + 1e-8)
+        return 0.5 * gamma_sq_prime / (gamma + 1e-8)
 
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(

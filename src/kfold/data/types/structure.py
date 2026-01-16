@@ -579,13 +579,21 @@ class RefStructure:
 
     # === Writer === #
     def write(self, out_path: str | pathlib.Path, save_apo: bool = False):
-        """Convert to mmCIF format string."""
+        """Write the structure to a CIF or PDB file."""
         out_path = pathlib.Path(out_path)
-        if out_path.suffix == ".cif":
+        suffix = out_path.suffix.lower()
+        if suffix in {".cif", ".mmcif"}:
             with open(out_path, "w") as w:
                 w.write(self.to_mmcif(save_apo))
-        else:
-            raise ValueError(f"Unsupported file format: {out_path.suffix}")
+            return
+        if suffix == ".pdb":
+            import gemmi
+
+            doc = gemmi.cif.read_string(self.to_mmcif(save_apo))
+            structure = gemmi.make_structure_from_block(doc.sole_block())
+            structure.write_pdb(str(out_path))
+            return
+        raise ValueError(f"Unsupported file format: {out_path.suffix}")
 
     def to_mmcif(self, save_apo: bool = False) -> str:
         """Convert to mmCIF format string."""

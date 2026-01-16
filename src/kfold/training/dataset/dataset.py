@@ -497,6 +497,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         symmetry_dict["id"] = metadata_id
         if self.return_structure:
             symmetry_dict["structure"] = struct
+            symmetry_dict["ref_structure"] = ref_struct
         if self.return_symmetry:
             # WARN: symmetry computation should be done before padding
             symmetry_dict["symmetry"] = symmetry.get_symmetries(

@@ -36,6 +36,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num_recycles", type=int, default=3, help="Number of cycling for validation"
     )
+    parser.add_argument(
+        "--return_traj",
+        action="store_true",
+        help="Return and save diffusion trajectories during validation.",
+    )
+    parser.add_argument(
+        "--traj_format",
+        type=str,
+        default="pdb",
+        choices=["cif", "pdb"],
+        help="Trajectory output format when --return_traj is set.",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     return parser.parse_args()
 
@@ -59,6 +71,8 @@ def validate(args) -> None:
         cfg.train.validation.save_structure_path = args.save_dir
     cfg.train.validation.num_steps = args.num_steps
     cfg.train.validation.num_recycles = args.num_recycles
+    cfg.train.validation.return_traj = args.return_traj
+    cfg.train.validation.traj_format = args.traj_format
 
     if args.debug:
         cfg.train.data.safe_load = False
