@@ -50,6 +50,7 @@ class InterformerStack(nn.Module):
         num_heads_tri_attn: int = 4,
         num_blocks: int = 48,
         dropout: float = 0.25,
+        split_intra_inter_channels: bool = False,
         skip_tri_attn: bool = False,
         blocks_per_ckpt: int | None = None,
     ) -> None:
@@ -64,8 +65,9 @@ class InterformerStack(nn.Module):
                     channel_z,
                     num_heads_attn,
                     num_heads_tri_attn,
-                    skip_tri_attn,
                     dropout,
+                    split_intra_inter_channels,
+                    skip_tri_attn,
                 )
             )
 
@@ -194,8 +196,9 @@ class InterformerBlock(nn.Module):
         channel_z: int = 128,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
-        skip_tri_attn: bool = False,
         dropout: float = 0.25,
+        split_intra_inter_channels: bool = False,
+        skip_tri_attn: bool = False,
     ) -> None:
         """Initialize the Interformer module.
 
@@ -209,10 +212,13 @@ class InterformerBlock(nn.Module):
             The number of attention heads, by default 16
         num_heads_tri_attn : int, optional
             The number of triangle attention heads, by default 4
-        skip_tri_attn : bool, optional
-            Whether to skip triangle attention, by default False
         dropout : float, optional
             The dropout rate, by default 0.25
+        split_intra_inter_channels : bool, optional
+            Whether to use separate projections for intra- and inter-chain
+            residue pairs, by default False
+        skip_tri_attn : bool, optional
+            Whether to skip triangle attention, by default False
         """
         super().__init__()
         self.channel_s: int = channel_s
@@ -222,8 +228,12 @@ class InterformerBlock(nn.Module):
         self.skip_tri_attn: bool = skip_tri_attn
         self.dropout: float = dropout
 
-        self.pairwise_proj_intra = PairwiseProdDiff(channel_s, channel_z)
-        self.pairwise_proj_inter = PairwiseProdDiff(channel_s, channel_z)
+        self.split_intra_inter_channels: bool = split_intra_inter_channels
+        if split_intra_inter_channels:
+            self.pairwise_proj_intra = PairwiseProdDiff(channel_s, channel_z)
+            self.pairwise_proj_inter = PairwiseProdDiff(channel_s, channel_z)
+        else:
+            self.pairwise_proj = PairwiseProdDiff(channel_s, channel_z)
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
@@ -264,8 +274,11 @@ class InterformerBlock(nn.Module):
 
         # Information flow from single (s) to pairwise (z)
         # Separate projections for intra- and inter-chain residue pairs
-        z = z + self.pairwise_proj_intra(s) * intra_mask[..., None]
-        z = z + self.pairwise_proj_inter(s) * (~intra_mask)[..., None]
+        if self.split_intra_inter_channels:
+            z = z + self.pairwise_proj_intra(s) * intra_mask[..., None]
+            z = z + self.pairwise_proj_inter(s) * (~intra_mask)[..., None]
+        else:
+            z = z + self.pairwise_proj(s)
 
         # Triangle multiplicative update
         z = z + self.dropout_rowwise(

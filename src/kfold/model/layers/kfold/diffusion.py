@@ -142,6 +142,7 @@ class DiffusionModuleWithApo(nn.Module):
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         model_cache: dict | None = None,
+        use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Forward pass of diffusion score model.
 
@@ -210,6 +211,7 @@ class DiffusionModuleWithApo(nn.Module):
             s=s,  # [B, N, Lt, c_s]
             z=z,  # [B, 1, Lt, Lt, c_z], broadcasted to [B, N, Lt, Lt, c_z]
             attn_mask=token_mask,  # [B, 1, Lt], broadcasted to [B, N, Lt]
+            use_cuequiv_kernels=use_cuequiv_kernels,
         )
         a = self.layernorm_a(a)
 

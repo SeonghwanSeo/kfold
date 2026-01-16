@@ -58,6 +58,7 @@ class InterformerConfig:
     num_heads_tri_attn: int = 4
     num_blocks: int = 48
     dropout: float = 0.25
+    split_intra_inter_channels: bool = True
     skip_tri_attn: bool = False
 
 
@@ -159,6 +160,7 @@ class KFoldTrunk(BaseTrunk):
             num_blocks=cfg.interformer.num_blocks,
             dropout=cfg.interformer.dropout,
             skip_tri_attn=cfg.interformer.skip_tri_attn,
+            split_intra_inter_channels=cfg.interformer.split_intra_inter_channels,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
