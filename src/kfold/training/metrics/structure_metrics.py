@@ -91,10 +91,9 @@ def compute_rmsd(
     mask : torch.Tensor | None
         Optional mask for valid atoms, shape (*, Natom)
     align : bool
-        Whether to rigidly align b to a before RMSD computation
+        Whether to rigidly align a to b before RMSD computation
     """
     if align:
-        # Align a to b
         a = rigid_align(a, b, mask)
     diff = (a - b).pow(2).sum(-1)  # (*, Natom)
     if mask is not None:
@@ -207,7 +206,7 @@ def compute_validation_metric_singles(
     # Compute pairwise distance
     pdist_true = torch.norm(true_coords[:, None, :] - true_coords[None, :, :], dim=-1)
     pdist_pred = torch.norm(pred_coords[:, None, :] - pred_coords[None, :, :], dim=-1)
-    lddt_score = compute_pair_lddt(pdist_pred, pdist_true)  # [natom, natom]
+    lddt_score = compute_pair_lddt(pdist_pred, pdist_true)  # [Natom, Natom]
 
     # Compute masks
     # Use 30Å cutoff for DNA/RNA, 15Å cutoff for protein/ligand
@@ -296,7 +295,7 @@ def compute_validation_metrics(
     ----------
     f_input : FoldingInput
         Input features
-    true_coords_aligned : torch.Tensor
+    true_coords : torch.Tensor
         Ground truth atom coordinates after symmetry correction and alignment.
         Shape of [B, Nsample, Natom, 3]
     pred_coords : torch.Tensor

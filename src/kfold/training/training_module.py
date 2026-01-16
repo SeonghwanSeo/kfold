@@ -460,10 +460,6 @@ class KFoldTrainingModule(pl.LightningModule):
         batch: tuple[FoldingInput, list[dict]],
         batch_idx: int,
     ):
-        # Create directory to save validation outputs
-        # TODO: sample molecules and compute validation metrics
-        val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
-
         val_config = self.validation_config
         num_diffusion_samples = val_config.num_diffusion_samples
 
@@ -508,12 +504,15 @@ class KFoldTrainingModule(pl.LightningModule):
                 atom_mask=atom_mask,
                 align=False,  # Already aligned
             )
+
+        # Update validation metrics
+        val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
         for k in val_metrics.keys():
             v, w = metrics[k]
             val_metrics[k].update(v, w)
 
-        # Create directory to save validation outputs
-        if val_config.save_predictions is not None:
+        # Save validation predictions if needed
+        if val_config.save_predictions:
             if self.trainer.log_dir is None:
                 print(
                     "Warning: trainer.log_dir is None, "
@@ -528,6 +527,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 / f"epoch-{epoch}_step-{global_step}"
                 / name
             )
+            # Create directory to save validation outputs
             save_dir.mkdir(parents=True, exist_ok=True)
 
             ref_struct: RefStructure = struct_info["structure"]

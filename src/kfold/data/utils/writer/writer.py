@@ -24,7 +24,7 @@ class KFoldWriter:
             else:
                 cls.write_mmcif(struct, filename, save_apo)
         except Exception as e:
-            print(f"Error writing file {filename}: {e}")
+            print(f"Failed to write structure to {filename}: {e}")
 
     @staticmethod
     def write_mmcif(

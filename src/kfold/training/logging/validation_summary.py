@@ -77,16 +77,20 @@ def summarize_prediction(
         if entity_id in entity_info:
             entity_info[entity_id]["asym_ids"].append(c.asym_id)
             continue
-        ctype = c.ctype.name.lower()
-        sequence = (
-            c.get_sequence() if c.ctype.is_polymer else ":".join(c.get_ccd_sequence())
-        )
-        entity_info[entity_id] = {
-            "entity_id": c.entity_id,
-            "type": c.ctype.name.lower(),
-            "sequence": sequence,
-            "asym_ids": [c.asym_id],
-        }
+        if c.ctype.is_polymer:
+            entity_info[entity_id] = {
+                "entity_id": c.entity_id,
+                "type": c.ctype.name.lower(),
+                "sequence": c.get_sequence(),
+                "asym_ids": [c.asym_id],
+            }
+        else:
+            entity_info[entity_id] = {
+                "entity_id": c.entity_id,
+                "type": c.ctype.name.lower(),
+                "ccd": "-".join(c.get_ccd_sequence()),
+                "asym_ids": [c.asym_id],
+            }
 
     # Extract metadata (chains and interfaces)
     metadata: Metadata = ref_struct.metadata
@@ -206,7 +210,7 @@ def summarize_prediction(
         interface_mask = chain1_mask[:, None] & chain2_mask[None, :]
 
         if "dna" in ctypes or "rna" in ctypes:
-            # Use 30Å cutoff for DNA/RNA intra-chains
+            # Use 30Å cutoff for DNA/RNA involved interfaces
             cutoff_mask = cutoff_mask_30
         else:
             # Default to 15Å cutoff
