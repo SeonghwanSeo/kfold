@@ -50,7 +50,7 @@ class InterformerStack(nn.Module):
         num_heads_tri_attn: int = 4,
         num_blocks: int = 48,
         dropout: float = 0.25,
-        split_intra_inter_channels: bool = False,
+        use_separate_projections: bool = False,
         skip_tri_attn: bool = False,
         blocks_per_ckpt: int | None = None,
     ) -> None:
@@ -66,7 +66,7 @@ class InterformerStack(nn.Module):
                     num_heads_attn,
                     num_heads_tri_attn,
                     dropout,
-                    split_intra_inter_channels,
+                    use_separate_projections,
                     skip_tri_attn,
                 )
             )
@@ -197,7 +197,7 @@ class InterformerBlock(nn.Module):
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         dropout: float = 0.25,
-        split_intra_inter_channels: bool = False,
+        use_separate_projections: bool = False,
         skip_tri_attn: bool = False,
     ) -> None:
         """Initialize the Interformer module.
@@ -214,7 +214,7 @@ class InterformerBlock(nn.Module):
             The number of triangle attention heads, by default 4
         dropout : float, optional
             The dropout rate, by default 0.25
-        split_intra_inter_channels : bool, optional
+        use_separate_projections : bool, optional
             Whether to use separate projections for intra- and inter-chain
             residue pairs, by default False
         skip_tri_attn : bool, optional
@@ -228,8 +228,8 @@ class InterformerBlock(nn.Module):
         self.skip_tri_attn: bool = skip_tri_attn
         self.dropout: float = dropout
 
-        self.split_intra_inter_channels: bool = split_intra_inter_channels
-        if split_intra_inter_channels:
+        self.use_separate_projections: bool = use_separate_projections
+        if self.use_separate_projections:
             self.pairwise_proj_intra = PairwiseProdDiff(channel_s, channel_z)
             self.pairwise_proj_inter = PairwiseProdDiff(channel_s, channel_z)
         else:
@@ -274,7 +274,7 @@ class InterformerBlock(nn.Module):
 
         # Information flow from single (s) to pairwise (z)
         # Separate projections for intra- and inter-chain residue pairs
-        if self.split_intra_inter_channels:
+        if self.use_separate_projections:
             z = z + self.pairwise_proj_intra(s) * intra_mask[..., None]
             z = z + self.pairwise_proj_inter(s) * (~intra_mask)[..., None]
         else:

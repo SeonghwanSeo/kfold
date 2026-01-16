@@ -9,7 +9,7 @@ model:
       num_blocks: 2
     interformer:
       num_blocks: 16
-      split_intra_inter_channels: true # performance was improved; experimental
+      use_separate_projections: true # performance was improved; experimental
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
