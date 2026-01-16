@@ -9,6 +9,7 @@ model:
       num_blocks: 2
     interformer:
       num_blocks: 16
+      split_intra_inter_channels: true # performance was improved; experimental
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -41,9 +42,18 @@ train:
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-train/
+        apo_init:
+          prior_sampler:
+            type: null
+          apo_perturbation:
+            rieprody:
+              rmsd_threshold: 15.0
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-val/
+        apo_init:
+          prior_sampler:
+            type: null
     pretrained_embedding:
       seq: esm2-3b
       seq_dim: 2560

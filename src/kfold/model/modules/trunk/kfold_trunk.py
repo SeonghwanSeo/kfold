@@ -58,6 +58,7 @@ class InterformerConfig:
     num_heads_tri_attn: int = 4
     num_blocks: int = 48
     dropout: float = 0.25
+    split_intra_inter_channels: bool = False
     skip_tri_attn: bool = False
 
 
@@ -159,6 +160,7 @@ class KFoldTrunk(BaseTrunk):
             num_blocks=cfg.interformer.num_blocks,
             dropout=cfg.interformer.dropout,
             skip_tri_attn=cfg.interformer.skip_tri_attn,
+            split_intra_inter_channels=cfg.interformer.split_intra_inter_channels,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
@@ -242,6 +244,10 @@ class KFoldTrunk(BaseTrunk):
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
+        intra_mask = (
+            f_input.token.asym_id[..., :, None] == f_input.token.asym_id[..., None, :]
+        )  # [..., L, L]
+
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
 
@@ -273,6 +279,7 @@ class KFoldTrunk(BaseTrunk):
                     s,
                     z,
                     mask=f_input.token.pad_mask,
+                    intra_mask=intra_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
                     use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
