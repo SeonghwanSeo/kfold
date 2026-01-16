@@ -58,7 +58,7 @@ class InterformerConfig:
     num_heads_tri_attn: int = 4
     num_blocks: int = 48
     dropout: float = 0.25
-    split_intra_inter_channels: bool = True
+    split_intra_inter_channels: bool = False
     skip_tri_attn: bool = False
 
 
