@@ -5,7 +5,6 @@ import pathlib
 from functools import cached_property
 from typing import Self
 
-import msgpack
 import numpy as np
 
 import kfold.constants as C
@@ -18,6 +17,8 @@ __all__ = ["RefStructure"]
 # === Helper functions === #
 def pack_metadata(metadata: Metadata) -> np.ndarray:
     """Pack Metadata into a numpy bytes array."""
+    import msgpack
+
     metadata_dict = metadata.to_dict()
     metadata_serialized = msgpack.packb(metadata_dict)
     return np.array(metadata_serialized, dtype=np.bytes_)
@@ -25,6 +26,8 @@ def pack_metadata(metadata: Metadata) -> np.ndarray:
 
 def unpack_metadata(data: np.ndarray) -> Metadata:
     """Unpack Metadata from a numpy bytes array."""
+    import msgpack
+
     if isinstance(data, np.ndarray) and data.ndim == 0:
         data = data.item()
     metadata_dict = msgpack.unpackb(data)

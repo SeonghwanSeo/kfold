@@ -34,7 +34,6 @@ dependencies = [
   "rdkit",
   "einops",
   "gemmi==0.6.5",
-  "modelcif==1.2", # to write cif file
 
   # cuequivariance
   "cuequivariance_torch>=0.6.0",
@@ -46,8 +45,9 @@ dependencies = [
 dev = ["pre-commit"]
 train = [
   'lightning', # for training loop
-  'lmdb', # for training dataset storage
   'wandb', # for experiment tracking
+  'lmdb', # for training dataset storage
+  'msgpack', # for data serialization
 ]
 preprocess = [
   'pdbeccdutils', # for ccd data handling
