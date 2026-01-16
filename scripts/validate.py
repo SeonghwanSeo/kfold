@@ -55,8 +55,6 @@ def validate(args) -> None:
         cfg.train.trainer.devices = args.num_gpus
     else:
         cfg.train.trainer.devices = "auto"
-    if args.save_dir is not None:
-        cfg.train.validation.save_structure_path = args.save_dir
     cfg.train.validation.num_steps = args.num_steps
     cfg.train.validation.num_recycles = args.num_recycles
 
@@ -68,12 +66,13 @@ def validate(args) -> None:
     data_module = TrainingDataModule(cfg.train.data)
 
     trainer = pl.Trainer(
+        default_root_dir=args.save_dir,
+        logger=False,
         devices=cfg.train.trainer.devices,
         accelerator=cfg.train.trainer.accelerator,
         precision=cfg.train.trainer.precision,
         deterministic=True,
         limit_val_batches=5 if args.debug else None,
-        logger=False,
         enable_checkpointing=False,
     )
 

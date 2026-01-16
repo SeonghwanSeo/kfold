@@ -1,6 +1,7 @@
 """Define training modules for k-fold"""
 
 import gc
+import json
 import pathlib
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,8 @@ from torchmetrics import MeanMetric
 from kfold import constants as C
 from kfold.config import to_dict
 from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import RefStructure
+from kfold.data.utils.writer import KFoldWriter
 from kfold.model.models.kfold import KFold, KFoldConfig
 from kfold.training.utils.binned_loss_logging import (
     EntityBinConfig,
@@ -26,6 +29,7 @@ from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
 from . import metrics as validation_metrics
+from .logging.validation_summary import summarize_prediction
 from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
 
@@ -103,7 +107,8 @@ class ValidationConfig:
     num_steps: int = 20
     num_diffusion_samples: int = 5
     symmetry_correction: bool = True
-    save_structure_path: str | None = None
+    # Validation output logging
+    save_predictions: bool = True
 
 
 @dataclass(kw_only=True)
@@ -175,6 +180,10 @@ class KFoldTrainingModule(pl.LightningModule):
         self.setup_losses()
         self.setup_metrics()
 
+        # Create writer
+        self.writer: KFoldWriter = KFoldWriter()
+
+        # Save hyperparameters
         self.save_hyperparameters(to_dict(self.global_config))
 
         # Pre-sample recycling steps for training
@@ -451,6 +460,7 @@ class KFoldTrainingModule(pl.LightningModule):
         batch: tuple[FoldingInput, list[dict]],
         batch_idx: int,
     ):
+        # Create directory to save validation outputs
         # TODO: sample molecules and compute validation metrics
         val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
 
@@ -478,39 +488,55 @@ class KFoldTrainingModule(pl.LightningModule):
             else:
                 raise e
 
+        struct_info = full_struct_list[0]
+        name: str = struct_info["id"]
+
+        # Compute validation metrics
         with torch.autocast("cuda", torch.float32):
-            # symmetry correction
-            # TODO: get_true_coordinates function to use symmetry correction
+            # Permute predicted and true coordinates to align
             true_coords, atom_mask = validation_metrics.permute_label_coordinates(
                 f_input=f_input,
                 pred_coords=sample_coords,
                 full_struct_list=full_struct_list,
                 symmetry_correction=val_config.symmetry_correction,
             )
+            # Compute metrics
             metrics = validation_metrics.compute_validation_metrics(
                 f_input=f_input,
                 true_coords=true_coords,
                 pred_coords=sample_coords,
                 atom_mask=atom_mask,
+                align=False,  # Already aligned
             )
         for k in val_metrics.keys():
             v, w = metrics[k]
             val_metrics[k].update(v, w)
 
-        if val_config.save_structure_path is not None:
-            save_dir = pathlib.Path(
-                val_config.save_structure_path, f"it-{self.global_step}"
+        # Create directory to save validation outputs
+        if val_config.save_predictions is not None:
+            if self.trainer.log_dir is None:
+                print(
+                    "Warning: trainer.log_dir is None, "
+                    "skipping saving validation predictions."
+                )
+                return
+            epoch: int = self.current_epoch
+            global_step: int = self.global_step
+            save_dir: pathlib.Path = (
+                pathlib.Path(self.trainer.log_dir)
+                / "validation"
+                / f"epoch-{epoch}_step-{global_step}"
+                / name
             )
-            rmsd_list = metrics["avg_rmsd"][0].tolist()
-            lddt_list = metrics["avg_lddt"][0].tolist()
-            self.save_structure(
-                f_input,
-                sample_coords,
-                true_coords,
-                full_struct_list,
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            ref_struct: RefStructure = struct_info["structure"]
+            self.save_structure_and_metrics(
+                ref_struct,
+                sample_coords[0],  # [Nsample, Natom, 3]
+                true_coords[0],  # [Nsample, Natom, 3]
+                atom_mask[0],
                 save_dir,
-                rmsd_list,
-                lddt_list,
             )
 
     def on_validation_epoch_end(self):
@@ -776,61 +802,55 @@ class KFoldTrainingModule(pl.LightningModule):
                 del self._ema
 
     # === Helper functions === #
-    def save_structure(
+    def save_structure_and_metrics(
         self,
-        f_input: FoldingInput,
+        ref_struct: RefStructure,
         pred_coords: torch.Tensor,
         true_coords: torch.Tensor,
-        full_struct_list: list[dict],
+        atom_mask: torch.Tensor,
         save_dir: pathlib.Path,
-        rmsd_list: list[float],
-        lddt_list: list[float],
     ):
-        from kfold.data.tokenized import TokenizedStructure
+        """Save predicted and ground-truth structures as mmCIF files."""
+        name: str = ref_struct.id
+        num_atoms: int = ref_struct.num_atoms
+        num_samples: int = pred_coords.shape[0]
 
-        full_dict = full_struct_list[0]
-        name: str = full_dict["id"]
-        struct: TokenizedStructure = full_dict["structure"]
+        # Remove padding atoms
+        true_coords: torch.Tensor = true_coords[:, :num_atoms, :].detach()
+        pred_coords: torch.Tensor = pred_coords[:, :num_atoms, :].detach()
+        atom_mask: torch.Tensor = atom_mask[:, :num_atoms]
 
+        # Save ground-truth, apo, and predicted structures
         save_dir.mkdir(parents=True, exist_ok=True)
+        self.writer.write(ref_struct, save_dir / f"{name}-gt.cif")
+        self.writer.write(ref_struct, save_dir / f"{name}-apo.cif", save_apo=True)
 
-        try:
-            save_path = save_dir / f"{name}-gt.cif"
-            struct.write(save_path)
-        except Exception as e:
-            print(f"Failed to save ground-truth CIF for {name}: {e}")
+        # Compute structure metrics
+        for i in range(num_samples):
+            true_coords_i = true_coords[i]
+            pred_coords_i = pred_coords[i]
+            atom_mask_i = atom_mask[i]
 
-        try:
-            save_path = save_dir / f"{name}-apo.cif"
-            struct.write(save_path, save_apo=True)
-        except Exception as e:
-            print(f"Failed to save apo CIF for {name}: {e}")
-            try:
-                save_path = save_dir / f"{name}-apo.pdb"
-                struct.write(save_path, save_apo=True)
-            except Exception as e:
-                print(f"Failed to save apo PDB for {name}")
-
-        try:
-            true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
-            for i in range(true_coords_arr.shape[0]):
-                new_struct = struct.replace_atom_coords(true_coords_arr[i])
-                save_path = save_dir / f"{name}-gt-aligned{i}.cif"
-                new_struct.write(save_path)
-        except Exception as e:
-            print(f"Failed to save aligned ground-truth CIF for {name}: {e}")
-
-        # [B, Nsample, Natom, 3] -> [Nsample, Natom, 3]
-        assert f_input.batch_size == 1, "Saving structure only supports batch size of 1."
-        pred_coords_arr = pred_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
-
-        try:
-            for i in range(pred_coords_arr.shape[0]):
-                new_struct = struct.replace_atom_coords(pred_coords_arr[i])
-                rmsd, lddt = rmsd_list[i], lddt_list[i]
-                save_path = (
-                    save_dir / f"{name}-{i}-rmsd{rmsd:.2f}-lddt{lddt * 100:.2f}.cif"
+            with torch.autocast("cuda", torch.float32):
+                # Permute predicted and true coordinates to align
+                metrics: dict = summarize_prediction(
+                    ref_struct=ref_struct,
+                    true_coords=true_coords_i,
+                    pred_coords=pred_coords_i,
+                    atom_mask=atom_mask_i,
+                    align=False,
                 )
-                new_struct.write(save_path)
-        except Exception as e:
-            print(f"Failed to save predicted CIF for {name}: {e}")
+            # Save metrics
+            with open(save_dir / f"{name}-sample-{i}_metrics.json", "w") as f:
+                json.dump(metrics, f, indent=2)
+
+            rmsd = metrics["metrics"]["rmsd"]
+            lddt = metrics["metrics"]["lddt"] * 100  # scale to [0, 100]
+
+            aligned_gt_path = save_dir / f"{name}-sample-{i}-gt.cif"
+            new_struct = ref_struct.copy_with_new_coords(true_coords_i.cpu().numpy())
+            self.writer.write(new_struct, aligned_gt_path)
+
+            pred_path = save_dir / f"{name}-sample-{i}-rmsd{rmsd:.2f}-lddt{lddt:.2f}.cif"
+            new_struct = ref_struct.copy_with_new_coords(pred_coords_i.cpu().numpy())
+            self.writer.write(new_struct, pred_path)
