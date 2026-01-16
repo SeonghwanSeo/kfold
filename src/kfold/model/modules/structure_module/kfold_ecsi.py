@@ -112,6 +112,7 @@ class KFoldECSI(BaseECSI):
         alignment_level: str = "chain"
         s_trans: float = 1.0
         inference_align_x0_hat_to_x_apo: bool = True
+        chain_wise_perturbation: bool = True
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -141,6 +142,7 @@ class KFoldECSI(BaseECSI):
         self.s_trans: float = cfg.s_trans
         self.alignment_level: str = cfg.alignment_level
         self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
+        self.chain_wise_perturbation: bool = cfg.chain_wise_perturbation
 
         self._configure_route_functions(cfg)
 
@@ -169,6 +171,92 @@ class KFoldECSI(BaseECSI):
     ) -> torch.Tensor:
         """Apply random augmentation to coordinates."""
         return self.random_augmentation(coords, mask=mask)
+
+    def apply_chain_random_augmentation(
+        self,
+        coords: torch.Tensor,
+        mask: torch.Tensor,
+        f_input: FoldingInput,
+    ) -> torch.Tensor:
+        """Apply chain-wise random augmentation to coordinates."""
+        if not self.coordinate_augmentation:
+            return coords
+
+        added_sample_dim = False
+        if coords.dim() == 3:
+            coords = coords.unsqueeze(1)
+            added_sample_dim = True
+
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(1)
+        if mask.shape[1] == 1 and coords.shape[1] > 1:
+            mask = mask.expand(-1, coords.shape[1], -1)
+
+        if coords.dim() != 4 or mask.dim() != 3:
+            raise ValueError(
+                "Expected coords shape (B, N, L, 3) and mask shape (B, N, L), "
+                f"got coords {coords.shape} and mask {mask.shape}."
+            )
+
+        token_asym_id = f_input.token.asym_id
+        atom_token_index = f_input.atom.token_index
+
+        if token_asym_id.dim() == 1:
+            token_asym_id = token_asym_id.unsqueeze(0)
+        if atom_token_index.dim() == 1:
+            atom_token_index = atom_token_index.unsqueeze(0)
+
+        if token_asym_id.shape[0] == 1 and coords.shape[0] > 1:
+            token_asym_id = token_asym_id.expand(coords.shape[0], -1)
+        if atom_token_index.shape[0] == 1 and coords.shape[0] > 1:
+            atom_token_index = atom_token_index.expand(coords.shape[0], -1)
+
+        atom_chain_id = token_asym_id.gather(-1, atom_token_index.clamp(min=0))
+
+        mask_bool = mask.bool()
+        valid_mask = mask_bool.any(dim=1) & (atom_chain_id >= 0)
+        if not valid_mask.any():
+            return coords.squeeze(1) if added_sample_dim else coords
+
+        max_chain_id = atom_chain_id.masked_select(valid_mask).max()
+        chain_id_stride = max_chain_id + 1
+        batch_idx = torch.arange(coords.shape[0], device=coords.device).unsqueeze(-1)
+        global_chain_id = atom_chain_id + batch_idx * chain_id_stride
+
+        _, chain_index = torch.unique(global_chain_id[valid_mask], return_inverse=True)
+        num_chains = int(chain_index.max().item() + 1)
+        chain_index_full = torch.full_like(atom_chain_id, -1)
+        chain_index_full[valid_mask] = chain_index
+
+        chain_mask = F.one_hot(
+            chain_index_full.clamp(min=0), num_classes=num_chains
+        ).bool()
+        chain_mask = chain_mask & valid_mask[..., None]
+        chain_mask = chain_mask.permute(0, 2, 1)
+        chain_mask = chain_mask.unsqueeze(1) & mask_bool.unsqueeze(2)
+
+        chain_coords = coords.unsqueeze(2).masked_fill(~chain_mask[..., None], 0.0)
+        chain_counts = chain_mask.sum(dim=-1, keepdim=True).clamp(min=1)
+        chain_centers = chain_coords.sum(dim=-2) / chain_counts.to(coords.dtype)
+        chain_centers = chain_centers.unsqueeze(-2)
+        batch_size, num_samples, num_chains, num_atoms = chain_mask.shape
+        flat_coords = chain_coords.reshape(
+            batch_size * num_samples * num_chains, num_atoms, 3
+        )
+        flat_mask = chain_mask.reshape(batch_size * num_samples * num_chains, num_atoms)
+        flat_coords = self.random_augmentation(flat_coords, mask=flat_mask)
+        chain_coords = flat_coords.reshape(
+            batch_size, num_samples, num_chains, num_atoms, 3
+        )
+        chain_coords = chain_coords + chain_centers * chain_mask[..., None].to(
+            chain_coords.dtype
+        )
+        coords = chain_coords.sum(dim=2)
+
+        if added_sample_dim:
+            coords = coords.squeeze(1)
+
+        return coords
 
     def _configure_route_functions(self, cfg: Config) -> None:
         route = (cfg.route_type or "linear").lower().replace("-", "_")
@@ -648,6 +736,12 @@ class KFoldECSI(BaseECSI):
         """
         do_random_augment = label_coords is None
         apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
+
+        if self.chain_wise_perturbation:
+            apo_mask = f_input.atom.apo_mask
+            apo_coords = self.apply_chain_random_augmentation(
+                apo_coords, apo_mask, f_input
+            )
 
         if label_coords is not None:
             # apo_mask = ~(apo_coords == 0.0).all(-1)
