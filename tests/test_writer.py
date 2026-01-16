@@ -23,7 +23,7 @@ if __name__ == "__main__":
             apo_init=ApoInitializerConfig(
                 use_perturbation=False,
                 use_random_augmentation=True,
-                use_ot_permutation=True,
+                use_ot_permutation=False,
             ),
             seed=42,
         ),
@@ -33,12 +33,17 @@ if __name__ == "__main__":
         safe_load=False,
     )
 
+    save_dir = pathlib.Path("./tmp")
+    save_dir.mkdir(parents=True, exist_ok=True)
+
     for i in range(300, 310):
         rng = np.random.default_rng(42 + i)
         metadata = dataset.metadatas[i]
-        print(metadata.id)
+        struct_id = metadata.id
         struct = dataset.load_ref_structure(metadata)
         dataset.load_apo_structure(struct, rng=rng)
-        print("write")
-        writer.write_mmcif(struct, f"./tmp/{metadata.id}-apo.cif", save_apo=True)
-        writer.write_mmcif(struct, f"./tmp/{metadata.id}.cif", save_apo=False)
+        print(f"Writing {struct_id}...")
+        writer.write(struct, save_dir / f"{struct_id}-apo.cif", save_apo=True)
+        writer.write(struct, save_dir / f"{struct_id}-apo.pdb", save_apo=True)
+        writer.write(struct, save_dir / f"{struct_id}.pdb")
+        writer.write(struct, save_dir / f"{struct_id}.cif")

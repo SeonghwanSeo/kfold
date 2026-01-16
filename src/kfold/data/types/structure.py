@@ -561,8 +561,7 @@ class RefStructure:
     def copy_with_new_coords(self, coords: np.ndarray) -> Self:
         """Create a deep copy of the RefStructure."""
         assert coords.shape == (self.num_atoms, 3), (
-            "Invalid coords shape:",
-            coords.shape,
+            f"Invalid coords shape: {coords.shape}, expected ({self.num_atoms}, 3)"
         )
         new_chains = []
         atom_start = 0
@@ -578,20 +577,12 @@ class RefStructure:
         return dataclasses.replace(self, chains=new_chains)
 
     # === Writer === #
-    def write(self, out_path: str | pathlib.Path, save_apo: bool = False):
-        """Convert to mmCIF format string."""
-        out_path = pathlib.Path(out_path)
-        if out_path.suffix == ".cif":
-            with open(out_path, "w") as w:
-                w.write(self.to_mmcif(save_apo))
-        else:
-            raise ValueError(f"Unsupported file format: {out_path.suffix}")
+    def write(self, filename: str | pathlib.Path, save_apo: bool = False):
+        """Write the structure to a file."""
+        from kfold.data.utils.writer import KFoldWriter
 
-    def to_mmcif(self, save_apo: bool = False) -> str:
-        """Convert to mmCIF format string."""
-        import kfold.data.utils.writer.mmcif as mmcif_writer
-
-        return mmcif_writer.to_mmcifstring(self, save_apo)
+        writer = KFoldWriter()
+        writer.write(self, filename, save_apo=save_apo)
 
     # === Helper functions === #
     def validate(self) -> None:
