@@ -493,20 +493,20 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Featurization
         f_input = self.featurize(cropped_struct, metadata, rng=rng)
 
-        symmetry_dict = {}
-        symmetry_dict["id"] = metadata_id
+        struct_info = {}
+        struct_info["id"] = metadata_id
         if self.return_structure:
-            symmetry_dict["structure"] = struct
+            struct_info["structure"] = ref_struct
         if self.return_symmetry:
             # WARN: symmetry computation should be done before padding
-            symmetry_dict["symmetry"] = symmetry.get_symmetries(
+            struct_info["symmetry"] = symmetry.get_symmetries(
                 f_input, cropped_struct, struct, self.ccd, rng=rng
             )
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
 
-        return f_input, symmetry_dict
+        return f_input, struct_info
 
     def featurize(
         self,
