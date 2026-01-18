@@ -513,6 +513,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 f_input,
                 sample_coords,
                 true_coords,
+                atom_mask,
                 full_struct_list,
                 save_dir,
                 rmsd_list,
@@ -789,6 +790,7 @@ class KFoldTrainingModule(pl.LightningModule):
         f_input: FoldingInput,
         pred_coords: torch.Tensor,
         true_coords: torch.Tensor,
+        atom_mask: torch.Tensor | None,
         full_struct_list: list[dict],
         save_dir: pathlib.Path,
         rmsd_list: list[float],
@@ -828,9 +830,16 @@ class KFoldTrainingModule(pl.LightningModule):
         true_coords_arr: np.ndarray | None = None
         try:
             true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
+            mask_arr: np.ndarray | None = None
+            if atom_mask is not None:
+                # [B, Nsample, Natom] -> [Nsample, Natom]
+                mask_arr = atom_mask[0].detach().cpu().numpy().astype(bool, copy=False)
             for i in range(true_coords_arr.shape[0]):
+                coords_i = true_coords_arr[i][:num_atoms].copy()
+                if mask_arr is not None:
+                    coords_i[~mask_arr[i][:num_atoms]] = np.nan
                 new_struct = ref_struct.copy_with_new_coords(
-                    true_coords_arr[i][:num_atoms]
+                    coords_i
                 )
                 save_path = save_dir / f"{name}-gt-aligned{i}.cif"
                 new_struct.write(save_path)
