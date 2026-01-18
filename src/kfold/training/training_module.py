@@ -919,6 +919,33 @@ class KFoldTrainingModule(pl.LightningModule):
 
                 save_path = traj_dir / f"sample-{sample_i}.{traj_format}"
                 if traj_format == "pdb":
+                    # PDB supports only 1-character chain IDs. If chain names are
+                    # multi-character (e.g. 'A1'), viewers like PyMOL may mis-parse
+                    # and merge chains. Remap chain names to A, B, C... just for PDB.
+                    # PDB legacy format has a 1-character chain ID field.
+                    # Here we remap (possibly multi-character) chain names into a fixed pool:
+                    # A-Z + a-z + 0-9 => 62 unique chain IDs max for PDB trajectory output.
+                    chain_pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+                    chain_map: dict[str, str] = {}
+                    used: set[str] = set()
+                    # Build deterministic mapping across all models.
+                    chain_names = sorted(
+                        {str(chain.name) for model in traj_structure for chain in model}
+                    )
+                    if len(chain_names) > len(chain_pool):
+                        raise ValueError(
+                            "Too many chains for PDB trajectory output: "
+                            f"{len(chain_names)} > {len(chain_pool)}. "
+                            "PDB chain IDs are 1-character; this code supports up to 62 chains "
+                            "(A-Z, a-z, 0-9). Use traj_format='cif' to keep multi-character chain IDs."
+                        )
+                    for idx, old_name in enumerate(chain_names):
+                        new_name = chain_pool[idx]
+                        chain_map[old_name] = new_name
+                        used.add(new_name)
+                    for model in traj_structure:
+                        for chain in model:
+                            chain.name = chain_map.get(str(chain.name), str(chain.name)[:1])
                     traj_structure.write_pdb(str(save_path))
                 elif traj_format == "cif":
                     traj_structure.make_mmcif_document().write_file(str(save_path))
