@@ -66,7 +66,7 @@ def get_symmetries(
     num_atoms = f_input.num_atoms
     pad_mask = cropped_struct.atom.pad_mask
     dense_alt_coords = np.zeros((num_chain_symmetries, num_atoms, 3), dtype=np.float32)
-    dense_alt_mask = np.zeros((num_chain_symmetries, num_atoms), dtype=np.bool)
+    dense_alt_mask = np.zeros((num_chain_symmetries, num_atoms), dtype=np.bool_)
     assert pad_mask.sum() == num_atoms, "Number of atoms mismatch after featurization"
 
     for i in range(num_chain_symmetries):
