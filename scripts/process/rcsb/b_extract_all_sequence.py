@@ -12,6 +12,7 @@ from tqdm import tqdm
 import kfold.constants as C
 from kfold.data.pipelines import cif_factory
 from kfold.data.types.metadata import Metadata
+from kfold.data.utils.io.fasta import write_fasta
 
 # Error handling
 SUCCESS = 0
@@ -73,27 +74,35 @@ AF3_SPLITS = {
     ),
 }
 
-# NOTE(SeonghwanSeo): I download the mmCIF files on 2026-01-09.
-BOLTZ2_SPLITS = {
+# NOTE(SeonghwanSeo): mmCIF files were downloaded on 2024-01-09.
+# The training/validation cutoff is set to 2023-12-31, aligning with
+# the Boltz2 cutoff (2024-01-01). Since no PDB releases occurred on
+# 2024-01-01, using 2023-12-31 as the inclusive end date is functionally
+# equivalent and ensures a clean separation between val and test sets.
+KFOLD_SPLITS = {
     "train": DataFilter(
         date_start=datetime.min,
-        date_end=datetime.fromisoformat("2023-06-01 23:59:59"),
+        date_end=datetime.fromisoformat("2022-12-31 23:59:59"),
         max_resolution=9.0,
         max_chains=300,
     ),
     "val": DataFilter(
-        date_start=datetime.fromisoformat("2023-06-02 00:00:00"),
-        date_end=datetime.fromisoformat("2024-01-01 23:59:59"),
+        date_start=datetime.fromisoformat("2023-01-01 00:00:00"),
+        date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
         max_resolution=4.5,
         min_chains=1,
-        max_chains=20,
+        max_chains=1000,
+        max_residues=2560,
     ),
     "test": DataFilter(
-        date_start=datetime.fromisoformat("2024-01-02 00:00:00"),
-        date_end=datetime.fromisoformat("2024-12-31 23:59:59"),
+        date_start=datetime.fromisoformat("2024-01-01 00:00:00"),
+        date_end=datetime.fromisoformat("2026-01-09 23:59:59"),
         max_resolution=4.5,
         min_chains=2,
         max_chains=1000,
+        min_residues=64,
+        max_residues=5120,
+        filter_nmr=True,
     ),
 }
 
@@ -183,12 +192,15 @@ def parse_cif(
     else:
         doc: gemmi.cif.Document = gemmi.cif.read_file(str(cif_path))
     block: gemmi.cif.Block = doc[0]
+    del doc
 
-    # Get metadata
+    # Get metadata without chain information
     # Handle cases like "1abc.cif.gz"
     pdb_id = cif_path.name.split(".")[0].lower()
     metadata: Metadata = cif_factory.prepare_metadata_from_rcsb(pdb_id, block)
     assert metadata.exp is not None, "Experimental metadata should not be None."
+    if metadata.exp.release_date == "2024-01-01":
+        print(f"Found release date 2024-01-01 for {pdb_id}.")
 
     # Filter by date
     if not cif_factory.check_date_cutoff(
@@ -209,6 +221,7 @@ def parse_cif(
         ):
             return RESOLUTION_FILTERED, []
 
+    # Prepare gemmi Structure
     raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
         block, clean_up=True, expand_assembly=True
     )
@@ -277,7 +290,7 @@ def parse_cif(
         if len(ccd_sequence) == 0:
             continue
         ctype = "ligand"
-        seq = ":".join(ccd_sequence)
+        seq = "-".join(ccd_sequence)
         nonpolymer_sequences.append((pdb_id, entity_id, ctype, seq))
 
     return SUCCESS, polymer_sequences + nonpolymer_sequences
@@ -289,7 +302,6 @@ def worker_fn(cif_path: pathlib.Path, data_filter: DataFilter):
     except Exception as e:
         pdb_id = cif_path.name.split(".")[0].lower()
         print(f"Failed to process ({pdb_id}): {e}")
-        # raise e
         return FAILED
 
 
@@ -300,7 +312,7 @@ def main():
 
     # Apply split defaults if specified
     print(f"Applying {args.split} split parameters...")
-    data_filter = AF3_SPLITS[args.split]
+    data_filter = KFOLD_SPLITS[args.split]
     print(data_filter)
 
     # Prepare partial function for multiprocessing
@@ -351,12 +363,38 @@ def main():
     # save to fasta
     seq_dir = args.data_dir / "sequences"
     seq_dir.mkdir(parents=True, exist_ok=True)
-    output_fasta_path = seq_dir / "all_sequence.fasta"
-    output_fasta_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_fasta_path, "w") as fasta_file:
-        for pdb_id, entity_id, chain_type, sequence in sorted(all_sequences):
-            fasta_file.write(f">{pdb_id}|{entity_id}|{chain_type}\n")
-            fasta_file.write(f"{sequence}\n")
+
+    output_fasta_path = seq_dir / "all_sequences.fasta"
+    all_rcsb_sequences: list[tuple[str, str]] = [
+        (f"{pdb_id}|{entity_id}|{chain_type}", sequence)
+        for pdb_id, entity_id, chain_type, sequence in sorted(all_sequences)
+    ]
+    write_fasta(all_rcsb_sequences, output_fasta_path)
+
+    # save unique sequences only
+    uniq_protein_fasta_path = seq_dir / "unique_protein_sequences.fasta"
+    uniq_proteins = set(seq for _, _, ctype, seq in all_sequences if ctype == "protein")
+    uniq_proteins: list[tuple[str, str]] = [
+        (f"uniq_protein_{i + 1}", seq)
+        for i, seq in enumerate(sorted(uniq_proteins, key=lambda x: (len(x), x)))
+    ]
+    write_fasta(uniq_proteins, uniq_protein_fasta_path)
+
+    uniq_dna_fasta_path = seq_dir / "unique_dna_sequences.fasta"
+    uniq_dnas = set(seq for _, _, ctype, seq in all_sequences if ctype == "dna")
+    uniq_dnas: list[tuple[str, str]] = [
+        (f"uniq_dna_{i + 1}", seq)
+        for i, seq in enumerate(sorted(uniq_dnas, key=lambda x: (len(x), x)))
+    ]
+    write_fasta(uniq_dnas, uniq_dna_fasta_path)
+
+    uniq_rna_fasta_path = seq_dir / "unique_rna_sequences.fasta"
+    uniq_rnas = set(seq for _, _, ctype, seq in all_sequences if ctype == "rna")
+    uniq_rnas: list[tuple[str, str]] = [
+        (f"uniq_rna_{i + 1}", seq)
+        for i, seq in enumerate(sorted(uniq_rnas, key=lambda x: (len(x), x)))
+    ]
+    write_fasta(uniq_rnas, uniq_rna_fasta_path)
 
 
 if __name__ == "__main__":

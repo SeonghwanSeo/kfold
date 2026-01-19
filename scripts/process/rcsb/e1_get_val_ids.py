@@ -1,4 +1,32 @@
-"""concatenate multiple files into one file."""
+"""Construct validation set by filtering and clustering RCSB PDB entries.
+
+Intermediate results:
+--- Cluster-based sampling ---
+# Multimer:
+Stage 3: Final sampling interfaces for each interface type
+  Protein-Protein: 1862 -> 500
+  Protein-DNA: 541 -> 200
+  Protein-RNA: 232 -> 200
+  Protein-Ligand: 2512 -> 500
+  DNA-DNA: 345 -> 100
+  DNA-RNA: 45 -> 45
+  DNA-Ligand: 92 -> 50
+  RNA-RNA: 52 -> 50
+  RNA-Ligand: 20 -> 20
+  Ligand-Ligand: 381 -> 50
+
+# Monomer:
+Stage 3: Final sampling polymers for each chain type
+  Protein: 559 -> 0
+  DNA: 33 -> 33
+  RNA: 30 -> 30
+
+--- Final sampling ---
+Multimer entries: 1259
+Monomer entries: 63
+Total entries: 1312
+Final entries: 1280
+"""
 
 import argparse
 import hashlib
@@ -45,20 +73,21 @@ VERBOSE = 0
 INIT_MAX_TOKENS = 2560
 FINAL_MAX_TOKENS = 2048
 NUM_INTERFACE_SAMPLES: dict[tuple[C.ChainType, C.ChainType], int] = {
-    norm_key(C.ChainType.PROTEIN, C.ChainType.PROTEIN): 600,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.DNA): 100,
-    # norm_key(C.ChainType.PROTEIN, C.ChainType.RNA): 300,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.LIGAND): 600,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.PROTEIN): 500,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.DNA): 200,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.RNA): 200,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.LIGAND): 500,
     norm_key(C.ChainType.DNA, C.ChainType.DNA): 100,
-    # norm_key(C.ChainType.DNA, C.ChainType.RNA): 100,
+    # norm_key(C.ChainType.DNA, C.ChainType.RNA): 50,
     norm_key(C.ChainType.DNA, C.ChainType.LIGAND): 50,
-    # norm_key(C.ChainType.RNA, C.ChainType.RNA): 100,
-    # norm_key(C.ChainType.RNA, C.ChainType.LIGAND): 200,
-    norm_key(C.ChainType.LIGAND, C.ChainType.LIGAND): 200,
+    norm_key(C.ChainType.RNA, C.ChainType.RNA): 50,
+    # norm_key(C.ChainType.RNA, C.ChainType.LIGAND): 50,
+    norm_key(C.ChainType.LIGAND, C.ChainType.LIGAND): 50,
 }
 NUM_MONOMER_SAMPLES: dict[C.ChainType, int] = {
-    C.ChainType.PROTEIN: 40,
+    C.ChainType.PROTEIN: 0,  # No protein monomers
 }
+FINAL_VALIDATION_SET_SIZE = 1280
 
 
 class Seq(NamedTuple):
@@ -151,7 +180,7 @@ def get_ligand_homologs(
 
     target_ccd_to_ids: dict[str, set[str]] = defaultdict(set)
     for seq in targets:
-        for code in seq.sequence.split(":"):
+        for code in seq.sequence.split("-"):
             target_ccd_to_ids[code].add(seq.id)
     print(f"Target ligand CCDs loaded: {len(target_ccd_to_ids)}")
 
@@ -179,7 +208,7 @@ def get_ligand_homologs(
     # Load query ligand CCDs
     query_ccd_to_ids: dict[str, set[str]] = defaultdict(set)
     for seq in queries:
-        for code in seq.sequence.split(":"):
+        for code in seq.sequence.split("-"):
             query_ccd_to_ids[code].add(seq.id)
     print(f"Query ligand CCDs loaded: {len(query_ccd_to_ids)}")
 
@@ -373,8 +402,8 @@ def filter_multier_interfaces(
     filtered_interfaces: list[tuple[Seq, Seq]] = []
     for seq1, seq2 in tqdm(all_interfaces, desc="Homology Filtering"):
         # Multi-residue ligands should have been filtered out.
-        assert seq1.sequence.count(":") == 0
-        assert seq2.sequence.count(":") == 0
+        assert seq1.sequence.count("-") == 0
+        assert seq2.sequence.count("-") == 0
         seq1_homologs = seq_homologs_map[seq1.id]
         seq2_homologs = seq_homologs_map[seq2.id]
         if len(seq1_homologs) == 0 or len(seq2_homologs) == 0:
@@ -463,12 +492,15 @@ def filter_multier_interfaces(
     del sampled_interfaces  # free up memory
 
     sampled_interfaces: list[tuple[Seq, Seq]] = []
-    for ctypes, interfaces in interfaces_per_type.items():
+    for ctypes in sorted(interfaces_per_type):
         key = f"{ctypes[0]}-{ctypes[1]}"
+        interfaces = interfaces_per_type[ctypes]
         rng = get_rng(key)
         n_interfaces = len(interfaces)
-        n_samples = NUM_INTERFACE_SAMPLES.get(ctypes, n_interfaces)
-        if n_interfaces <= n_samples:
+        n_samples = min(NUM_INTERFACE_SAMPLES.get(ctypes, n_interfaces), n_interfaces)
+        if n_samples == 0:
+            pass
+        elif n_interfaces == n_samples:
             sampled_interfaces.extend(interfaces)
         else:
             sampled_indices = rng.choice(len(interfaces), size=n_samples, replace=False)
@@ -546,13 +578,6 @@ def filter_monomers(
         n_cluster = len(polymers)
         if ctype.is_protein:
             sampled_polymers.append(polymers[rng.integers(n_cluster)])
-        elif ctype.is_rna and len(polymers) > 5:
-            # Sample one for over-represented RNA clusters
-            print(
-                f"Sampling one RNA from over-represented cluster: "
-                f"{cluster_id} (size: {len(polymers)})"
-            )
-            sampled_polymers.append(polymers[rng.integers(n_cluster)])
         else:
             # For DNA/RNA, always take all
             sampled_polymers.extend(polymers)
@@ -568,11 +593,14 @@ def filter_monomers(
     del sampled_polymers  # free up memory
 
     sampled_polymers: list[Seq] = []
-    for ctype, polymers in polymers_per_ctype.items():
+    for ctype in sorted(polymers_per_ctype):
+        polymers = polymers_per_ctype[ctype]
         rng = get_rng(ctype.name)
         n_polymers = len(polymers)
         n_samples = min(NUM_MONOMER_SAMPLES.get(ctype, n_polymers), n_polymers)
-        if n_polymers <= n_samples:
+        if n_samples == 0:
+            pass
+        elif n_polymers == n_samples:
             sampled_polymers.extend(polymers)
         else:
             sampled_indices = rng.choice(len(polymers), size=n_samples, replace=False)
@@ -592,40 +620,35 @@ def read_npz_file(npz_file: pathlib.Path) -> dict:
     assert struct.num_chains > 0
     pdb_id = struct.id
 
-    # Skip large entries
-    if struct.num_tokens > INIT_MAX_TOKENS:
-        return {
-            "pdb_id": pdb_id,
-            "num_tokens": struct.num_tokens,
-            "monomers": [],
-            "interfaces": [],
-        }
-
     # Get entity sequences
     entity_sequences: dict[int, Seq] = {}
     for chain in struct.chains:
         entity_id = chain.entity_id
-        if entity_id in entity_sequences:
-            continue
-        if chain.is_polymer:
-            # SCOP mapping to standard residues
-            sequence = chain.get_sequence(map_to_standard=True)
-        else:
-            # Handle multi-residue ligands
-            # NOTE: Multi-residue ligands will be filtered out
-            sequence = ":".join(chain.get_ccd_sequence())
-        seq = Seq(pdb_id, entity_id, sequence, chain.ctype)
-        entity_sequences[entity_id] = seq
+        if entity_id not in entity_sequences:
+            if chain.is_polymer:
+                # SCOP mapping to standard residues
+                sequence = chain.get_sequence(map_to_standard=True)
+            else:
+                # Handle multi-residue ligands (this will be filtered out later)
+                sequence = "-".join(chain.get_ccd_sequence())
+            seq = Seq(pdb_id, entity_id, sequence, chain.ctype)
+            entity_sequences[entity_id] = seq
 
     # Extract monomers and interfaces
     all_interfaces: list[tuple[Seq, Seq]] = []
     all_monomers: list[Seq] = []
 
+    # Interfaces
     m: Metadata = struct.metadata
+    visited_iface_entities: set[tuple[int, int]] = set()
     for interface in m.interfaces:
         asym_id_1, asym_id_2 = interface.asym_ids
         c1: Chain = struct.get_chain_by_asym_id(asym_id_1)
         c2: Chain = struct.get_chain_by_asym_id(asym_id_2)
+        eid1, eid2 = c1.entity_id, c2.entity_id
+        if norm_key(eid1, eid2) in visited_iface_entities:
+            # Skip duplicate interfaces
+            continue
         if (c1.is_nonpolymer and c1.num_residues > 1) or (
             c2.is_nonpolymer and c2.num_residues > 1
         ):
@@ -634,9 +657,10 @@ def read_npz_file(npz_file: pathlib.Path) -> dict:
         all_interfaces.append(
             (entity_sequences[c1.entity_id], entity_sequences[c2.entity_id])
         )
+        visited_iface_entities.add(norm_key(eid1, eid2))
 
+    # Monomers
     if struct.num_polymer_chains == 1:
-        # Monomer
         chain: Chain = next(c for c in struct.chains if c.is_polymer)
         assert chain.is_polymer, "Monomer chain must be polymer."
         all_monomers.append(entity_sequences[chain.entity_id])
@@ -695,12 +719,28 @@ def main():
     data_dir: pathlib.Path = args.data_dir
     train_dir: pathlib.Path = args.train_data_dir
 
-    # Multimer (1) Generate a list of all interface chain pairs
-    # and Monomer (1) Generate a list of all monomer targets
+    # ======================================================================
+    # Load training sequences
+    # ======================================================================
+    train_seqs: list[Seq] = []
+    train_seq_fasta: pathlib.Path = train_dir / "sequences" / "all_sequences.fasta"
+    for header, sequence in read_fasta(train_seq_fasta):
+        pdb_id, entity_id, ctype_str = header.split("|")
+        entity_id = int(entity_id)
+        ctype = C.ChainType[ctype_str.upper()]
+        if ctype.is_protein:
+            # Map ambiguous amino acids to standard ones
+            sequence = "".join(
+                C.residue.PROTEIN_AMINO_ACID_MAPPING.get(aa, aa) for aa in sequence
+            )
+        train_seqs.append(Seq(pdb_id, entity_id, sequence, ctype))
+
+    # ======================================================================
+    # Load validation candidates from NPZ files
+    # ======================================================================
     npz_files: list[pathlib.Path] = list((data_dir / "npz").rglob("*.npz"))
     print(f"Total NPZ files found: {len(npz_files)}")
 
-    # Load all NPZ files and extract sequences
     with multiprocessing.Pool(args.num_workers) as pool:
         results = list(
             tqdm(
@@ -717,8 +757,7 @@ def main():
     for res in results:
         if res["num_tokens"] > INIT_MAX_TOKENS:
             continue
-        pdb_id = res["pdb_id"]
-        entry_size[pdb_id] = res["num_tokens"]
+        entry_size[res["pdb_id"]] = res["num_tokens"]
         all_interfaces.extend(res["interfaces"])
         all_monomers.extend(res["monomers"])
 
@@ -730,7 +769,7 @@ def main():
     print(f"Total interfaces collected: {len(all_interfaces)}")
     print(f"Total monomers collected: {len(all_monomers)}")
 
-    # Categorize composition statistics
+    # Print composition:
     print("Interface type statistics:")
     n_iface_types = defaultdict(int)
     for seq1, seq2 in all_interfaces:
@@ -740,8 +779,6 @@ def main():
         key = f"{ctypes[0]}-{ctypes[1]}"
         print(f"  {key}: {n_iface_types[ctypes]}")
     print()
-
-    # Categorize composition statistics
     print("Monomer type statistics:")
     n_monomer_types = defaultdict(int)
     for seq in all_monomers:
@@ -750,31 +787,9 @@ def main():
         print(f"  {ctype}: {n_monomer_types[ctype]}")
     print()
 
-    # Load training sequences
-    train_seqs: list[Seq] = []
-    train_seq_fasta: pathlib.Path = train_dir / "all_sequence.fasta"
-    for header, sequence in read_fasta(train_seq_fasta):
-        parts = header.split("|")
-        pdb_id = parts[0]
-        entity_id = int(parts[1])
-        ctype_str = parts[2]
-        ctype = C.ChainType[ctype_str.upper()]
-        if ctype.is_protein:
-            # Map ambiguous amino acids / unstandard residues to standard ones
-            # SCOP mapping already done during fasta writing
-            sequence = "".join(
-                C.residue.PROTEIN_AMINO_ACID_MAPPING.get(aa, aa) for aa in sequence
-            )
-        train_seqs.append(
-            Seq(
-                pdb_id=pdb_id,
-                entity_id=entity_id,
-                sequence=sequence,
-                ctype=ctype,
-            )
-        )
-
+    # ======================================================================
     # Multimer filtering
+    # ======================================================================
     ccd = CCD.load(args.ccd_path)
     samples_interfaces: list[tuple[Seq, Seq]] = filter_multier_interfaces(
         all_interfaces=all_interfaces,
@@ -795,7 +810,9 @@ def main():
     multimer_ids = {v for v in multimer_ids if entry_size[v] <= FINAL_MAX_TOKENS}
     print(f"Multimer PDB entries after token limit filtering: {len(multimer_ids)}")
 
+    # ======================================================================
     # Monomer filtering
+    # ======================================================================
     sampled_monomers: list[Seq] = filter_monomers(
         all_polymers=all_monomers,
         train_sequences=train_seqs,
@@ -809,19 +826,28 @@ def main():
 
     # Filter with max token limit
     monomer_ids = {v for v in monomer_ids if entry_size[v] <= FINAL_MAX_TOKENS}
-    print(f"Multimer PDB entries after token limit filtering: {len(monomer_ids)}")
+    print(f"Monomer PDB entries after token limit filtering: {len(monomer_ids)}")
 
-    # Combine multimer and monomer PDB IDs
-    val_ids: set[str] = multimer_ids | monomer_ids
-
+    # ======================================================================
+    # Final validation set sampling
+    # ======================================================================
     print("\n" + "=" * 50)
+    sampled_ids = multimer_ids | monomer_ids
+    if len(sampled_ids) > FINAL_VALIDATION_SET_SIZE:
+        val_ids: list[str] = sorted(sampled_ids)
+        sampled_indices = get_rng("final").choice(
+            len(val_ids), size=FINAL_VALIDATION_SET_SIZE, replace=False
+        )
+        val_ids = [val_ids[i] for i in sorted(sampled_indices)]
+
     print("Validation Set Final Summary")
     print(f"Multimer entries: {len(multimer_ids)}")
     print(f"Monomer entries: {len(monomer_ids)}")
-    print(f"Total entries: {len(val_ids)}")
+    print(f"Total entries: {len(sampled_ids)}")
+    print(f"Final entries: {len(val_ids)}")
 
     # Save validation set PDB IDs
-    val_ids_file: pathlib.Path = data_dir / "validation_pdb_ids.txt"
+    val_ids_file: pathlib.Path = data_dir / "validation_ids.txt"
     with val_ids_file.open("w") as f:
         for pdb_id in sorted(val_ids):
             f.write(f"{pdb_id}\n")
@@ -839,14 +865,7 @@ def main():
         pdb_id = struct.id
         asym_id_to_type: dict[int, str] = {}
         for chain in struct.chains:
-            # Count chains per chain type
-            # For ligand, count separately small molecules and ions
-            if chain.is_polymer:
-                ctype_str = str(chain.ctype)
-            elif chain.is_small_molecule:
-                ctype_str = "small_molecule"
-            elif chain.is_ion:
-                ctype_str = "ion"
+            ctype_str = str(chain.ctype)
             chains_per_ctype[ctype_str] += 1
             asym_id_to_type[chain.asym_id] = ctype_str
 

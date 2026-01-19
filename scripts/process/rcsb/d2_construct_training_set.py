@@ -3,9 +3,9 @@
 import argparse
 import json
 import pathlib
-import pickle
 
 import lmdb
+import msgpack
 from tqdm import tqdm
 
 from kfold.data.types.metadata import Metadata
@@ -38,20 +38,25 @@ def main():
     metadatas.sort(key=lambda x: x.id)
     print(f"Total entries found: {len(metadatas)}")
 
+    # Earliest and Latest release dates
+    release_dates: list[str] = [m.exp.release_date for m in metadatas]  # type: ignore
+    print(f"Earliest release date: {min(release_dates)}")
+    print(f"Latest release date: {max(release_dates)}")
+
     # Save metadatas to a single manifest file.
     metadata_dicts: list[dict] = [m.to_dict() for m in metadatas]
-
-    # Save to pickle file (efficient)
-    manifest_path: pathlib.Path = data_dir / "manifest.pkl"
-    with open(manifest_path, "wb") as f:
-        pickle.dump(metadata_dicts, f)
-    print(f"Saved manifest (pickle) to {manifest_path}")
 
     # Save to json file (human-readable)
     manifest_path: pathlib.Path = data_dir / "manifest.json"
     with open(manifest_path, "w") as f:
         json.dump(metadata_dicts, f, indent=2)
     print(f"Saved manifest (json) to {manifest_path}")
+
+    # Save to msgpack file (efficient and fast)
+    manifest_path: pathlib.Path = data_dir / "manifest.msgpack"
+    with open(manifest_path, "wb") as f:
+        msgpack.pack(metadata_dicts, f)
+    print(f"Saved manifest (pickle) to {manifest_path}")
 
     # Get npz files
     npz_dir: pathlib.Path = args.data_dir / "npz"

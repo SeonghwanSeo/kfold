@@ -54,8 +54,8 @@ class DataFilter:
     max_resolution: float | None = None
     min_chains: int = 1
     max_chains: int = 100_000  # A large number
-    min_residues: int = 1
-    max_residues: int = 1_000_000_000  # A large number
+    min_tokens: int = 1
+    max_tokens: int = 1_000_000_000  # A large number
     filter_nmr: bool = False
     handle_invalid_chains: str = "allow"  # "allow" or "disallow"
 
@@ -73,8 +73,8 @@ class DataFilter:
             f"  max_resolution={self.max_resolution},\n"
             f"  min_chains={self.min_chains},\n"
             f"  max_chains={self.max_chains},\n"
-            f"  min_residues={self.min_residues},\n"
-            f"  max_residues={self.max_residues},\n"
+            f"  min_tokens={self.min_tokens},\n"
+            f"  max_tokens={self.max_tokens},\n"
             f"  filter_nmr={self.filter_nmr},\n"
             f"  handle_invalid_chains='{self.handle_invalid_chains}'\n"
             f")"
@@ -86,96 +86,52 @@ AF3_SPLITS = {
         date_start=datetime.min,
         date_end=datetime.fromisoformat("2021-09-30 23:59:59"),
         max_resolution=9.0,
-        min_residues=1,
         max_chains=300,
-        handle_invalid_chains="allow",
     ),
     "val": DataFilter(
         date_start=datetime.fromisoformat("2021-10-01 00:00:00"),
         date_end=datetime.fromisoformat("2023-01-12 23:59:59"),
         max_resolution=4.5,
         max_chains=1000,
-        min_residues=1,
-        max_residues=2560,
-        handle_invalid_chains="allow",
+        max_tokens=2560,
     ),
     "test": DataFilter(
         date_start=datetime.fromisoformat("2022-05-02 00:00:00"),
         date_end=datetime.fromisoformat("2023-01-12 23:59:59"),
         max_resolution=4.5,
         max_chains=1000,
-        min_residues=1,
-        max_residues=5120,
-        handle_invalid_chains="allow",
+        max_tokens=5120,
     ),
 }
 
-# NOTE(SeonghwanSeo): I download the mmCIF files on 2026-01-09.
-BOLTZ2_SPLITS = {
-    "train": DataFilter(
-        date_start=datetime.min,
-        date_end=datetime.fromisoformat("2023-06-01 23:59:59"),
-        max_resolution=9.0,
-        max_chains=300,
-        min_residues=1,
-        filter_nmr=False,
-        handle_invalid_chains="allow",
-    ),
-    "val": DataFilter(
-        date_start=datetime.fromisoformat("2023-06-02 00:00:00"),
-        date_end=datetime.fromisoformat("2024-01-01 23:59:59"),
-        max_resolution=4.5,
-        min_chains=1,
-        max_chains=20,
-        min_residues=16,
-        max_residues=1024,
-        filter_nmr=False,
-        handle_invalid_chains="allow",
-    ),
-    "test": DataFilter(
-        date_start=datetime.fromisoformat("2024-01-02 00:00:00"),
-        date_end=datetime.fromisoformat("2024-12-31 23:59:59"),
-        max_resolution=4.5,
-        min_chains=2,
-        max_chains=1000,
-        min_residues=16,
-        max_residues=5120,
-        filter_nmr=True,
-        handle_invalid_chains="disallow",
-    ),
-}
-
+# NOTE(SeonghwanSeo): mmCIF files were downloaded on 2024-01-09.
+# The training/validation cutoff is set to 2023-12-31, aligning with
+# the Boltz2 cutoff (2024-01-01). Since no PDB releases occurred on
+# 2024-01-01, using 2023-12-31 as the inclusive end date is functionally
+# equivalent and ensures a clean separation between val and test sets.
 KFOLD_SPLITS = {
     "train": DataFilter(
         date_start=datetime.min,
-        date_end=datetime.fromisoformat("2023-06-01 23:59:59"),
+        date_end=datetime.fromisoformat("2022-12-31 23:59:59"),
         max_resolution=9.0,
         max_chains=300,
-        min_residues=1,
-        filter_nmr=False,
-        handle_invalid_chains="allow",
     ),
+    # NOTE: 2023-12-31 same to the boltz2 validation end date (2024-01-01),
+    # There is no entry released on 2024-01-01 within this cutoff range.
     "val": DataFilter(
-        date_start=datetime.fromisoformat("2023-06-02 00:00:00"),
-        # NOTE: This is same to the boltz2 validation end date.
-        # There is no entry released on 2024-01-01 within this cutoff range.
+        date_start=datetime.fromisoformat("2023-01-01 00:00:00"),
         date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
         max_resolution=4.5,
-        min_chains=1,
         max_chains=1000,
-        min_residues=16,
-        max_residues=2048,
-        filter_nmr=False,
-        handle_invalid_chains="allow",
+        max_tokens=2560,
     ),
     "test": DataFilter(
         date_start=datetime.fromisoformat("2024-01-01 00:00:00"),
         date_end=datetime.fromisoformat("2026-01-09 23:59:59"),
         max_resolution=4.5,
-        min_chains=2,
+        min_chains=1,
         max_chains=1000,
-        min_residues=16,
-        max_residues=5120,
+        max_tokens=5120,
         filter_nmr=True,
         handle_invalid_chains="disallow",
     ),
@@ -210,10 +166,9 @@ def parse_args():
         type=str,
         required=True,
         choices=["train", "val", "test"],
-        help="If given, cutoffs are set according to "
-        "the specified split (train/val/test) used in AlphaFold3.\n"
-        "- train: up to 2021-09-30, max resolution 9.0A, max chains 300\n"
-        "- val: 2021-10-01 to 2023-01-12, max resolution 4.5A, max chains 1000, "
+        help="Predefined data split to use:\n"
+        "- train: up to 2022-12-31, max resolution 9.0A, max chains 300\n"
+        "- val: 2023-01-01 to 2023-12-31, max resolution 4.5A, max chains 1000, "
         "max residues 2560\n",
     )
     parser.add_argument(
@@ -276,7 +231,7 @@ def parse_cif(
         doc: gemmi.cif.Document = gemmi.cif.read_file(str(cif_path))
     block: gemmi.cif.Block = doc[0]
 
-    # Get metadata
+    # Get metadata without chain information
     # Handle cases like "1abc.cif.gz"
     pdb_id = cif_path.name.split(".")[0].lower()
     metadata: Metadata = cif_factory.prepare_metadata_from_rcsb(pdb_id, block)
@@ -300,10 +255,6 @@ def parse_cif(
         ):
             return RESOLUTION_FILTERED
 
-    raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
-        block, clean_up=True, expand_assembly=True
-    )
-
     # Prepare gemmi structure
     raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
         block, clean_up=True, expand_assembly=True
@@ -315,13 +266,13 @@ def parse_cif(
     ):
         return CHAIN_COUNT_FILTERED
 
-    # Filter by residue count
+    # Filter by token count (naive filter with residue count)
     if not check_residue_count_cutoff(
-        raw_struct, data_filter.min_residues, data_filter.max_residues
+        raw_struct, data_filter.min_tokens, data_filter.max_tokens
     ):
         return RESIDUE_COUNT_FILTERED
 
-    # Prepare reference structure
+    # Prepare reference structure with chain metadata
     ref_struct: RefStructure = cif_factory.prepare_ref_structure(
         raw_struct, metadata, ccd
     )
@@ -334,7 +285,7 @@ def parse_cif(
     # Validate chain geometry
     cif_factory.validate_chain_geometry(ref_struct, invalid_chains)
 
-    # Get interfaces and detect clashes
+    # Get interfaces and those metadata; Detect clashes
     cif_factory.detect_interfaces_and_detect_clashes(ref_struct, invalid_chains)
 
     if data_filter.handle_invalid_chains != "allow":
@@ -347,14 +298,15 @@ def parse_cif(
     # Final checks
     if ref_struct.num_chains == 0:
         return EMPTY_STRUCTURE_FILTERED
-    elif ref_struct.num_polymer_chains == 0:
+    if ref_struct.num_polymer_chains == 0:
         return EMPTY_STRUCTURE_FILTERED
     if not (data_filter.min_chains <= ref_struct.num_chains <= data_filter.max_chains):
         return CHAIN_COUNT_FILTERED
-    if not (
-        data_filter.min_residues <= ref_struct.num_residues <= data_filter.max_residues
-    ):
+    if not (data_filter.min_tokens <= ref_struct.num_tokens <= data_filter.max_tokens):
         return RESIDUE_COUNT_FILTERED
+
+    # Validate final structure
+    ref_struct.validate()
 
     # Save output if path is given
     ref_struct.save_npz(out_path)
@@ -379,7 +331,7 @@ def worker_fn(
         return parse_cif(cif_path, ccd, out_path, data_filter)
     except Exception as e:
         print(f"Failed to process ({pdb_id}): {e}")
-        # raise e
+        raise e
         return FAILED
 
 
@@ -392,7 +344,7 @@ def main():
 
     # Apply split defaults if specified
     print(f"Applying KFold {args.split} split parameters...")
-    data_filter = BOLTZ2_SPLITS[args.split]
+    data_filter = KFOLD_SPLITS[args.split]
     print(data_filter)
 
     # Prepare partial function for multiprocessing
