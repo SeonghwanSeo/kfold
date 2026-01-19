@@ -19,13 +19,6 @@ from kfold.data.types.structure import (
 
 logger = logging.getLogger(__name__)
 
-# Type aliases for better readability
-EntityId = int
-AsymId = str
-SymId = int
-AuthId = str
-ResKey = tuple[AsymId, str, int | None]
-
 # Constants
 # three-letter codes
 chain_type_to_standard_residues: dict[C.ChainType, set[str]] = {
@@ -266,4 +259,5 @@ def prepare_chain_metadata(chain: Chain, name: str) -> ChainInfo:
         num_residues=chain.num_residues,
         num_atoms=chain.num_atoms,
         num_tokens=chain.num_tokens,
+        smiles=chain.smiles,
     )

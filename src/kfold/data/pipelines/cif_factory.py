@@ -30,11 +30,12 @@ from kfold.data.types.structure import (
 logger = logging.getLogger(__name__)
 
 # Type aliases for better readability
-EntityId = int
-AsymId = str
-SymId = int
-AuthId = str
-ResKey = tuple[AsymId, str, int | None]
+LabelId = str  # Label chain ID (asym_id) from mmCIF and gemmi (A1 B1 A2 ...)
+AuthId = str  # Author chain ID
+EntityId = int  # Entity ID from mmCIF (1, 2, 3 ...)
+AsymId = int  # Integer asym_id mapping (1, 2, 3 ...)
+SymId = int  # Symmetry chain ID from mmCIF (1, 2, 3 ...)
+ResKey = tuple[LabelId, str, int | None]
 
 # Constants
 polymer_type_to_chain_type: dict[gemmi.PolymerType, C.ChainType] = {
@@ -71,7 +72,7 @@ def parse_cif(
     doc: gemmi.cif.Document = gemmi.cif.read_file(str(cif_path))
     block: gemmi.cif.Block = doc[0]
 
-    # Get metadata
+    # Get metadata (without chain infos)
     # Handle cases like "1abc.cif.gz"
     name = pathlib.Path(cif_path).name.split(".")[0]
     metadata = prepare_metadata_from_rcsb(name, block)
@@ -85,7 +86,7 @@ def parse_cif(
 
     # --- Reference structure preparation ---
 
-    # Prepare reference structure
+    # Prepare reference structure and add chain metadata
     ref_struct = prepare_ref_structure(raw_struct, metadata, ccd)
 
     # Insert coordinates
@@ -97,7 +98,7 @@ def parse_cif(
     # Validate chain geometry
     validate_chain_geometry(ref_struct, invalid_chains)
 
-    # Get interfaces and detect clashes
+    # Get interfaces and those metadata, detect clashes
     detect_interfaces_and_detect_clashes(ref_struct, invalid_chains)
 
     # Drop invalid chains
@@ -251,13 +252,26 @@ def prepare_gemmi_structure(
 ) -> gemmi.Structure:
     """Prepare gemmi Structure object from CIF block."""
     raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
+    if expand_assembly:
+        expand_first_assembly(raw_struct)
     if clean_up:
         clean_up_gemmi_structure(
             raw_struct, map_mse_to_met=True, canonicalize_arginines=True
         )
-    if expand_assembly:
-        expand_first_assembly(raw_struct)
     return raw_struct
+
+
+def expand_first_assembly(raw_struct: gemmi.Structure) -> None:
+    """Expand the first assembly in the gemmi Structure object in-place.
+
+    See AlphaFold3 Section 2.1 Parsing.
+    """
+    if len(raw_struct.assemblies) > 0:
+        how = gemmi.HowToNameCopiedChain.AddNumber
+        try:
+            raw_struct.transform_to_assembly(raw_struct.assemblies[0].name, how=how)
+        except Exception as e:
+            logger.warning(f"Failed to expand assembly: {e}")
 
 
 def clean_up_gemmi_structure(
@@ -270,13 +284,13 @@ def clean_up_gemmi_structure(
     See AlphaFold3 Section 2.1 Parsing.
     """
     raw_struct.merge_chain_parts()
-    raw_struct.remove_waters()
-    raw_struct.remove_hydrogens()
     raw_struct.remove_alternative_conformations()
+    raw_struct.remove_hydrogens()
+    raw_struct.remove_waters()
     raw_struct.remove_empty_chains()
 
     protein_entity_ids: set[EntityId] = set()
-    protein_asym_ids: set[AsymId] = set()
+    protein_chains: set[LabelId] = set()
     for entity in raw_struct.entities:
         # In the case of microheterogeneity, take the first monomer
         entity.full_sequence = [
@@ -288,7 +302,7 @@ def clean_up_gemmi_structure(
         ):
             # Collect protein asym_ids
             protein_entity_ids.add(int(entity.name))
-            protein_asym_ids.update(entity.subchains)
+            protein_chains.update(entity.subchains)
 
             if map_mse_to_met:
                 # Map MSE to MET
@@ -297,11 +311,10 @@ def clean_up_gemmi_structure(
                         "MET" if res == "MSE" else res for res in entity.full_sequence
                     ]
 
-    # NOTE: Only clean up the first model
-    model = raw_struct[0]
+    model: gemmi.Model = raw_struct[0]
     for res_span in model.subchains():
-        asym_id: AsymId = res_span.subchain_id()
-        if asym_id in protein_asym_ids:
+        label_id: LabelId = res_span.subchain_id()
+        if label_id in protein_chains:
             for residue in res_span:
                 if map_mse_to_met and residue.name == "MSE":
                     # Map MSE to MET
@@ -327,21 +340,10 @@ def clean_up_gemmi_structure(
                         nh1.name, nh2.name = "NH2", "NH1"
 
 
-def expand_first_assembly(raw_struct: gemmi.Structure) -> None:
-    """Expand the first assembly in the gemmi Structure object in-place.
-
-    See AlphaFold3 Section 2.1 Parsing.
-    """
-    if len(raw_struct.assemblies) > 0:
-        how = gemmi.HowToNameCopiedChain.AddNumber
-        assembly_name = raw_struct.assemblies[0].name
-        raw_struct.transform_to_assembly(assembly_name, how=how)
-
-
 def get_residue_key(residue: gemmi.Residue) -> ResKey:
-    asym_id: AsymId = residue.subchain
+    label_id: LabelId = residue.subchain
     seq_id: gemmi.SeqId = residue.seqid
-    return (asym_id, seq_id.icode, seq_id.num)
+    return (label_id, seq_id.icode, seq_id.num)
 
 
 # ==================================================
@@ -364,35 +366,34 @@ def prepare_ref_structure(
     # ==================================================
     # Prepare chain index mappings
     # ==================================================
-    asym_id_to_entity_id: dict[AsymId, EntityId] = {}
-    asym_id_to_sym_id: dict[AsymId, SymId] = {}
+    label_id_to_entity_id: dict[LabelId, EntityId] = {}
+    label_id_to_sym_id: dict[LabelId, SymId] = {}
+
+    # Determine asym_id mappings (label_id: str, asym_id: int)
+    label_id_to_asym_id: dict[LabelId, AsymId] = {}
+    asym_id_counter = itertools.count(start=1)
     for entity in raw_struct.entities:
         entity: gemmi.Entity
         assert entity.name.isdecimal(), "Entity name is not an integer."
         entity_id: EntityId = int(entity.name)
         assert entity_id > 0, "Entity ID should be positive integer."
-        for sym_id, asym_id in enumerate(entity.subchains, start=1):
-            assert asym_id not in asym_id_to_entity_id, (
-                f"Duplicate asym_id {asym_id} found in entities."
+        for sym_id, label_id in enumerate(entity.subchains, start=1):
+            assert label_id not in label_id_to_entity_id, (
+                f"Duplicate asym_id {label_id} found in entities."
             )
-            asym_id_to_entity_id[asym_id] = int(entity_id)
-            asym_id_to_sym_id[asym_id] = sym_id
-
-    # Determine asym_id string to integer mapping
-    asym_id_to_int: dict[AsymId, int] = {}
-    asym_id_to_str: dict[int, AsymId] = {}
-    for i, asym_id in enumerate(sorted(asym_id_to_entity_id.keys()), start=1):
-        asym_id_to_int[asym_id] = i
-        asym_id_to_str[i] = asym_id
+            asym_id: AsymId = next(asym_id_counter)
+            label_id_to_entity_id[label_id] = int(entity_id)
+            label_id_to_sym_id[label_id] = sym_id
+            label_id_to_asym_id[label_id] = asym_id
+    del asym_id_counter  # free memory
 
     # ==================================================
     # Identify valid entities and chains
     # ==================================================
     valid_entities: list[gemmi.Entity] = []
-    valid_entity_ids: set[EntityId] = set()
-    valid_asym_ids: set[AsymId] = set()
+    valid_label_ids: set[LabelId] = set()
     entity_id_to_entity: dict[EntityId, gemmi.Entity] = {}
-    entity_id_to_chain_type: dict[EntityId, C.ChainType] = {}
+    entity_id_to_ctype: dict[EntityId, C.ChainType] = {}
     entity_id_to_seq: dict[EntityId, list[str]] = {}
     for entity in raw_struct.entities:
         entity: gemmi.Entity
@@ -439,8 +440,8 @@ def prepare_ref_structure(
         }:
             # Ligand, ion, or branched ligands
             chain_type = C.ChainType.LIGAND
-            ref_asym_id: AsymId = entity.subchains[0]
-            raw_chain: gemmi.ResidueSpan = raw_struct[0].get_subchain(ref_asym_id)
+            ref_label_id: LabelId = entity.subchains[0]
+            raw_chain: gemmi.ResidueSpan = raw_struct[0].get_subchain(ref_label_id)
             ccd_sequences: list[str] = [res.name for res in raw_chain]
 
             # Check if all ligand residues are in CCD
@@ -469,34 +470,33 @@ def prepare_ref_structure(
 
         # Store entity
         valid_entities.append(entity)
-        valid_entity_ids.add(entity_id)
         entity_id_to_entity[entity_id] = entity
-        entity_id_to_chain_type[entity_id] = chain_type
+        entity_id_to_ctype[entity_id] = chain_type
         entity_id_to_seq[entity_id] = ccd_sequences
 
-        # Mark all asym_ids as valid initially
-        for asym_id in entity.subchains:
-            valid_asym_ids.add(asym_id)
+        # Mark all label_ids as valid initially
+        for label_id in entity.subchains:
+            valid_label_ids.add(label_id)
 
     # ==================================================
     # Identify covalent bonded subchains
     # ==================================================
-    # NOTE: gemmi Connection uses auth_chain_id instead of asym_id (subchain ID).
-    # * single auth_chain_id can map to multiple asym_ids
+    # NOTE: gemmi Connection uses auth_asym_id instead of label_asym_id
+    # * single auth_asym_id can map to multiple label_asym_id (e.g., covalent inhibitor)
     residue_map: dict[tuple[AuthId, str, int | None], gemmi.Residue] = {}
     for chain in raw_struct[0]:
         chain: gemmi.Chain  # This can include multiple subchains
         auth_id: AuthId = chain.name
         for residue in chain:
             residue: gemmi.Residue
-            if residue.subchain in valid_asym_ids:
+            if residue.subchain in valid_label_ids:
                 seq_id: gemmi.SeqId = residue.seqid
                 residue_map[(auth_id, seq_id.icode, seq_id.num)] = residue
 
     # Find covalent bonded entities
     # This is used to identify covalent inhibitors:
     #   NonPolymer entities with covalent bonds to other entities
-    linked_asym_ids: set[AsymId] = set()
+    linked_label_ids: set[LabelId] = set()
     linked_bonds: list[tuple[gemmi.Connection, gemmi.Residue, gemmi.Residue]] = []
     for connect in raw_struct.connections:
         connect: gemmi.Connection
@@ -509,30 +509,18 @@ def prepare_ref_structure(
         res1: gemmi.Residue | None = residue_map.get(k1)
         res2: gemmi.Residue | None = residue_map.get(k2)
 
-        # Only consider bonds where both residues are in valid chains
-        if res1 is not None and res2 is not None:
-            linked_asym_ids.update({res1.subchain, res2.subchain})
-            linked_bonds.append((connect, res1, res2))
+        if res1 is None or res2 is None:
+            # Remove orphaned glycans and covalent inhibitors
+            for res in [r for r in (res1, res2) if r is not None]:
+                if res.entity_type != gemmi.EntityType.Polymer:
+                    valid_label_ids.discard(res.subchain)
             continue
 
-        # Remove standard-alone covalent ligand/glycan chains
-        for res in (res1, res2):
-            if res is not None:
-                asym_id: AsymId = res.subchain
-                entity_id: EntityId = asym_id_to_entity_id[asym_id]
-                ctype: C.ChainType = entity_id_to_chain_type[entity_id]
-                if ctype.is_nonpolymer:
-                    valid_asym_ids.discard(asym_id)  # use discard to avoid KeyError
+        # Only consider bonds where both residues are in valid chains
+        linked_label_ids.update({res1.subchain, res2.subchain})
+        linked_bonds.append((connect, res1, res2))
 
     del residue_map  # free memory
-
-    # Remove branched chains that are not linked
-    for entity in valid_entities:
-        entity_id: EntityId = int(entity.name)
-        if entity.entity_type == gemmi.EntityType.Branched:
-            for asym_id in entity.subchains:
-                if asym_id not in linked_asym_ids:
-                    valid_asym_ids.discard(asym_id)
 
     # ==================================================
     # Construct chain structs
@@ -541,16 +529,10 @@ def prepare_ref_structure(
     for entity in valid_entities:
         entity: gemmi.Entity
         entity_id: EntityId = int(entity.name)
-        ctype: C.ChainType = entity_id_to_chain_type[entity_id]
+        ctype: C.ChainType = entity_id_to_ctype[entity_id]
         ccd_sequences: list[str] = entity_id_to_seq[entity_id]
 
-        # determine whether to drop leaving atoms
-        drop_leaving_atoms = True
-        if entity.entity_type == gemmi.EntityType.NonPolymer and len(ccd_sequences) == 1:
-            # For single-residue non-polymers (ligands/ions), do not drop by default
-            # If covalent inhibitor, drop later for specific subchains
-            drop_leaving_atoms = False
-
+        # For ligand, identify smiles if available
         smiles: str | None = None
         if ctype is C.ChainType.LIGAND:
             if ccd_sequences[0].startswith("LIG"):
@@ -563,28 +545,30 @@ def prepare_ref_structure(
                     "Custom ligand SMILES not supported in CIF parsing."
                 )
 
+        # Keep all atoms for non-polymer by default
+        # For covalent ligands and glycans, we will drop leaving atoms later
         parsed_chain = structure_preparation.prepare_ref_chain(
             chain_type=ctype,
             ccd_sequences=ccd_sequences,
             ccd=ccd,
             smiles=smiles,
-            drop_leaving_atoms=drop_leaving_atoms,
+            drop_leaving_atoms=ctype.is_polymer,
         )
-        for asym_id in entity.subchains:
-            if asym_id not in valid_asym_ids:
+        for label_id in entity.subchains:
+            if label_id not in valid_label_ids:
                 # Skip invalid chains
                 continue
 
-            if (
-                entity.entity_type == gemmi.EntityType.NonPolymer
-                and asym_id in linked_asym_ids
-            ):
+            # Glycans and covalent ligands: drop leaving atoms
+            is_covalent_ligand = ctype.is_nonpolymer and label_id in linked_label_ids
+
+            if is_covalent_ligand:
                 # For covalent inhibitors, create a new chain struct without leaving atoms
                 c = structure_preparation.prepare_ref_chain(
                     chain_type=ctype,
                     entity_id=entity_id,
-                    asym_id=asym_id_to_int[asym_id],
-                    sym_id=asym_id_to_sym_id[asym_id],
+                    asym_id=label_id_to_asym_id[label_id],
+                    sym_id=label_id_to_sym_id[label_id],
                     ccd_sequences=ccd_sequences,
                     ccd=ccd,
                     drop_leaving_atoms=True,
@@ -594,10 +578,11 @@ def prepare_ref_structure(
                 c = parsed_chain.copy_with(
                     deepcopy=(sym_id > 1),  # deepcopy to avoid shared arrays
                     entity_id=entity_id,
-                    asym_id=asym_id_to_int[asym_id],
-                    sym_id=asym_id_to_sym_id[asym_id],
+                    asym_id=label_id_to_asym_id[label_id],
+                    sym_id=label_id_to_sym_id[label_id],
                 )
             chain_structs.append(c)
+    asym_id_to_chain: dict[int, Chain] = {c.asym_id: c for c in chain_structs}
 
     # ==================================================
     # Construct connection structs
@@ -611,12 +596,12 @@ def prepare_ref_structure(
     linked_residue_to_index: dict[ResKey, int] = {}
     for subchain in raw_struct[0].subchains():
         subchain: gemmi.ResidueSpan
-        asym_id: AsymId = subchain.subchain_id()
-        if asym_id not in valid_asym_ids:
+        label_id: LabelId = subchain.subchain_id()
+        if label_id not in valid_label_ids:
             # Skip invalid chains
             continue
-        entity_id: EntityId = asym_id_to_entity_id[asym_id]
-        ctype: C.ChainType = entity_id_to_chain_type[entity_id]
+        entity_id: EntityId = label_id_to_entity_id[label_id]
+        ctype: C.ChainType = entity_id_to_ctype[entity_id]
         for residue_index, residue in enumerate(subchain, start=1):
             residue: gemmi.Residue
             res_key = get_residue_key(residue)
@@ -631,42 +616,53 @@ def prepare_ref_structure(
     # Construct connections
     connections: list[CovalentConnection] = []
     for connect, res1, res2 in linked_bonds:
-        # Get asym_ids
-        asym_id1: AsymId = res1.subchain
-        asym_id2: AsymId = res2.subchain
-        asym_id1_int: int = asym_id_to_int[asym_id1]
-        asym_id2_int: int = asym_id_to_int[asym_id2]
-
-        if asym_id1 not in valid_asym_ids or asym_id2 not in valid_asym_ids:
+        # Get label_ids
+        label_id1: LabelId = res1.subchain
+        label_id2: LabelId = res2.subchain
+        if label_id1 not in valid_label_ids or label_id2 not in valid_label_ids:
             # Skip connections involving invalid chains
             continue
+        asym_id1: AsymId = label_id_to_asym_id[label_id1]
+        asym_id2: AsymId = label_id_to_asym_id[label_id2]
+        c1 = asym_id_to_chain[asym_id1]
+        c2 = asym_id_to_chain[asym_id2]
 
-        # Get residue index
+        if c1.ctype.is_polymer and c2.ctype.is_polymer:
+            # Skip polymer-polymer connections
+            continue
+
+        # Get residue index (1-based)
         res_idx1: int = linked_residue_to_index[get_residue_key(res1)]
         res_idx2: int = linked_residue_to_index[get_residue_key(res2)]
+        res_i1, res_i2 = res_idx1 - 1, res_idx2 - 1  # 0-based indices
 
         # Get atom names
         atom1: str = connect.partner1.atom_name
         atom2: str = connect.partner2.atom_name
 
         # Check atom existence
-        is_atom1_found = False
-        is_atom2_found = False
-        for c in chain_structs:
-            if c.asym_id == asym_id1_int:
-                atom_idcs = c.residue.iter_residue_atoms(res_idx1)
-                if atom1 in c.atom.name[atom_idcs].tolist():
-                    is_atom1_found = True
-            if c.asym_id == asym_id2_int:
-                atom_idcs = c.residue.iter_residue_atoms(res_idx2)
-                if atom2 in c.atom.name[atom_idcs].tolist():
-                    is_atom2_found = True
+        atom_st = c1.residue.atom_starts[res_i1]
+        atom_en = atom_st + c1.residue.num_atoms[res_i1]
+        valid_atoms1 = c1.atom.name[atom_st:atom_en]
+        is_atom1_found = atom1 in valid_atoms1
+
+        atom_st = c2.residue.atom_starts[res_i2]
+        atom_en = atom_st + c2.residue.num_atoms[res_i2]
+        valid_atoms2 = c2.atom.name[atom_st:atom_en]
+        is_atom2_found = atom2 in valid_atoms2
+
         if not (is_atom1_found and is_atom2_found):
+            logger.warning(
+                f"Skipping connection: atoms not found "
+                f"{label_id1}:{res_idx1}:{atom1} - {label_id2}:{res_idx2}:{atom2}.\n"
+                f"Valid atoms in {label_id1}:{res_idx1}: {valid_atoms1.tolist()}\n"
+                f"Valid atoms in {label_id2}:{res_idx2}: {valid_atoms2.tolist()}"
+            )
             continue
 
         connections.append(
             CovalentConnection(
-                asym_id=(asym_id1_int, asym_id2_int),
+                asym_id=(asym_id1, asym_id2),
                 residue_index=(res_idx1, res_idx2),
                 atom_names=(atom1, atom2),
             )
@@ -675,9 +671,12 @@ def prepare_ref_structure(
     # ==================================================
     # Add chain metadata
     # ==================================================
+    asym_id_to_label_id: dict[AsymId, LabelId] = {
+        v: k for k, v in label_id_to_asym_id.items()
+    }
     for c in chain_structs:
         chain_info = structure_preparation.prepare_chain_metadata(
-            c, name=asym_id_to_str[c.asym_id]
+            c, name=asym_id_to_label_id[c.asym_id]
         )
         metadata.chains.append(chain_info)
 
@@ -749,27 +748,27 @@ def insert_coordinates(
 ) -> None:
     """Insert coordinates from raw gemmi Structure into reference structure."""
     # Build mapping from string asym_id to integer asym_id
-    asym_id_to_int: dict[AsymId, int] = {}
-    asym_id_to_str: dict[int, AsymId] = {}
+    label_id_to_asym_id: dict[LabelId, int] = {}
+    asym_id_to_label_id: dict[int, LabelId] = {}
     for m in metadata.chains:
-        assert m.name not in asym_id_to_int, (
+        assert m.name not in label_id_to_asym_id, (
             f"Duplicate asym_id {m.name} found in metadata."
         )
-        asym_id_to_int[m.name] = m.asym_id
-        asym_id_to_str[m.asym_id] = m.name
+        label_id_to_asym_id[m.name] = m.asym_id
+        asym_id_to_label_id[m.asym_id] = m.name
 
-    asym_id_to_ref_chain: dict[AsymId, Chain] = {}
+    label_id_to_ref_chain: dict[LabelId, Chain] = {}
     for ref_chain in ref_struct.chains:
-        asym_id_to_ref_chain[asym_id_to_str[ref_chain.asym_id]] = ref_chain
+        label_id_to_ref_chain[asym_id_to_label_id[ref_chain.asym_id]] = ref_chain
 
     # Iterate over raw chains to insert coordinates
     for raw_chain in raw_struct[0].subchains():
         raw_chain: gemmi.ResidueSpan
-        asym_id: AsymId = raw_chain.subchain_id()
-        if asym_id not in asym_id_to_ref_chain:
+        label_id: LabelId = raw_chain.subchain_id()
+        if label_id not in label_id_to_ref_chain:
             # Skip invalid chains
             continue
-        ref_chain: Chain = asym_id_to_ref_chain[asym_id]
+        ref_chain: Chain = label_id_to_ref_chain[label_id]
         # Insert coordinates
         insert_chain_coordinates(ref_chain, raw_chain)
 
