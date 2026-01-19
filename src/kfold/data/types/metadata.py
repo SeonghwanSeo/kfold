@@ -1,3 +1,4 @@
+import copy
 import json
 import pathlib
 from dataclasses import dataclass, field, fields
@@ -132,11 +133,9 @@ class Metadata:
                 raise ValueError(f"Duplicate asym_id found: {chain.asym_id}")
             asym_id_set.add(chain.asym_id)
 
-    def copy_with(self, **kwargs) -> Self:
-        """Create a copy of the Metadata with updated fields."""
-        data = self.to_dict()
-        data.update(kwargs)
-        return self.from_dict(data)
+    def copy(self) -> Self:
+        """Deep copy the Metadata object."""
+        return copy.deepcopy(self)
 
     @property
     def asym_ids(self) -> list[int]:

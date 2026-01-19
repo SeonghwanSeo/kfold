@@ -14,11 +14,41 @@ logger = logging.getLogger(__name__)
 
 
 # === Core implementation === #
-def to_mmcifstring(
+def make_mmcif_block(
+    struct: gemmi.Structure,
+    ost_compatible: bool = True,
+) -> gemmi.cif.Block:
+    """Create a Gemmi MMCIF Block from a Gemmi Structure
+
+    Parameters
+    ----------
+    struct : gemmi.Structure
+        The input Gemmi Structure.
+    ost_compatible : bool, optional
+        Whether to add OST-compatible categories (default is True).
+
+    Returns
+    ----
+    gemmi.cif.Block
+        The constructed MMCIF Block.
+    """
+    block: gemmi.cif.Block = struct.make_mmcif_block()
+    if ost_compatible:
+        # Add custom categories for OST compatibility
+        _add_pdbx_nonpoly_scheme(block, struct)
+        _add_pdbx_poly_seq_scheme(block, struct)
+        _update_entity_poly(block, struct)
+        _update_entity_poly_seq(block, struct)
+        _update_chem_comp(block)
+    return block
+
+
+def create_gemmi_structure(
     struct: RefStructure,
     save_apo: bool = False,
-) -> str:
-    """Write a structure into an MMCIF file.
+    pdb_compatible: bool = False,
+) -> gemmi.Structure:
+    """Convert a RefStructure to a Gemmi Structure
 
     Parameters
     ----------
@@ -26,15 +56,38 @@ def to_mmcifstring(
         The input structure containing chain metadata and coordinates.
     save_apo : bool, optional
         Whether to save the apo form (default is False).
+    pdb_compatible : bool, optional
+        Whether to ensure PDB compatibility (default is False).
 
     Returns
     ----
-    str
-        The output MMCIF file content.
+    gemmi.Structure
+        The constructed Gemmi Structure object.
     """
     metadata = struct.metadata
 
-    structure = gemmi.Structure()
+    gemmi_struct = gemmi.Structure()
+
+    # === Make chain name unique if PDB compatible === #
+    if pdb_compatible:
+        # Re-assign chain names to be unique single characters
+        if len(metadata.chains) > 62:
+            logger.warning(
+                f"Number of chains ({len(metadata.chains)}) exceeds "
+                "PDB format limit (62). Chain names will be truncated "
+                "to unique single characters, which may cause confusion."
+            )
+
+        def alphabet_generator():
+            yield from (chr(i) for i in range(ord("A"), ord("Z") + 1))
+            yield from (chr(i) for i in range(ord("a"), ord("z") + 1))
+            yield from (str(i) for i in range(0, 10))
+
+        gen = alphabet_generator()
+
+        metadata = metadata.copy()
+        for chain in metadata.chains:
+            chain.chain_name = next(gen)
 
     # === Create entity lists === #
     entity_ctypes: dict[int, C.ChainType] = {}
@@ -75,7 +128,7 @@ def to_mmcifstring(
 
     entities: gemmi.EntityList = gemmi.EntityList(entity_list)
     del entity_list  # free memory
-    structure.entities = entities
+    gemmi_struct.entities = entities
 
     # === Build Model === #
     model = gemmi.Model("1")
@@ -148,21 +201,9 @@ def to_mmcifstring(
 
         model.add_chain(chain)
 
-    structure.add_model(model)
-
-    structure.setup_entities()
-
-    # Create the document
-    doc: gemmi.cif.Document = structure.make_mmcif_document()
-    # Add custom categories for OST compatibility
-    block = doc[0]
-    _add_pdbx_nonpoly_scheme(block, structure)
-    _add_pdbx_poly_seq_scheme(block, structure)
-    _update_entity_poly(block, structure)
-    _update_entity_poly_seq(block, structure)
-    _update_chem_comp(block)
-
-    return doc.as_string()
+    gemmi_struct.add_model(model)
+    gemmi_struct.setup_entities()
+    return gemmi_struct
 
 
 def _add_pdbx_poly_seq_scheme(block: gemmi.cif.Block, structure: gemmi.Structure):
