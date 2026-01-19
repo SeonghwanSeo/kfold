@@ -113,6 +113,9 @@ class KFoldECSI(BaseECSI):
         s_trans: float = 1.0
         inference_align_x0_hat_to_x_apo: bool = True
         chain_wise_perturbation: bool = True
+        inference_independent_diffusion_apo_sampling: bool = False
+        inference_apo_translation_scale: float = 0.0
+        inference_apo_chain_com_sampling_radius: float | None = None
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -143,6 +146,13 @@ class KFoldECSI(BaseECSI):
         self.alignment_level: str = cfg.alignment_level
         self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
         self.chain_wise_perturbation: bool = cfg.chain_wise_perturbation
+        self.inference_independent_diffusion_apo_sampling: bool = (
+            cfg.inference_independent_diffusion_apo_sampling
+        )
+        self.inference_apo_translation_scale: float = cfg.inference_apo_translation_scale
+        self.inference_apo_chain_com_sampling_radius: float | None = (
+            cfg.inference_apo_chain_com_sampling_radius
+        )
 
         self._configure_route_functions(cfg)
 
@@ -256,6 +266,152 @@ class KFoldECSI(BaseECSI):
         if added_sample_dim:
             coords = coords.squeeze(1)
 
+        return coords
+
+    def _sample_uniform_sphere_surface_torch(
+        self,
+        radius: float,
+        shape: tuple[int, ...],
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Sample points uniformly from a sphere surface (torch).
+
+        Returns tensor of shape (*shape, 3).
+        """
+        # Sample direction ~ N(0, I), then normalize -> uniform on sphere.
+        vec = torch.randn((*shape, 3), dtype=dtype, device=device)
+        vec = vec / (vec.norm(dim=-1, keepdim=True) + 1e-8)
+        return vec * float(radius)
+
+    def _independent_apo_chain_sampling(
+        self,
+        coords: torch.Tensor,
+        mask: torch.Tensor,
+        token_asym_id: torch.Tensor,
+        atom_token_index: torch.Tensor,
+        translation_scale: float,
+        chain_com_sampling_radius: float | None,
+    ) -> torch.Tensor:
+        """Independently sample apo coordinates per (sample, chain).
+
+        This reproduces dataset-side apo initialization behavior for validation/inference:
+        - If chain_com_sampling_radius is set: apply chain-wise random rotation (no random
+          translation) and then translate each chain so its COM lies on a sphere surface.
+        - Else: apply chain-wise random rotation + random translation
+          (scale=translation_scale).
+
+        Parameters
+        ----------
+        coords : torch.Tensor
+            Apo coordinates. Shape (B, N, L, 3).
+        mask : torch.Tensor
+            Apo mask. Shape (B, N, L) or (B, L).
+        token_asym_id : torch.Tensor
+            Token chain IDs. Shape (B, Lt) or (Lt,).
+        atom_token_index : torch.Tensor
+            Atom-to-token mapping indices. Shape (B, L) or (L,).
+        translation_scale : float
+            Random translation scale (Angstrom).
+        chain_com_sampling_radius : float | None
+            If set, place chain COM on sphere surface of this radius.
+
+        Returns
+        -------
+        torch.Tensor
+            Independently sampled apo coordinates. Shape (B, N, L, 3).
+        """
+        if not self.coordinate_augmentation:
+            return coords
+
+        if coords.dim() != 4:
+            raise ValueError(f"Expected coords shape (B, N, L, 3), got {coords.shape}.")
+
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(1)
+        if mask.dim() != 3:
+            raise ValueError(
+                f"Expected mask shape (B, N, L) or (B, L), got {mask.shape}."
+            )
+        if mask.shape[1] == 1 and coords.shape[1] > 1:
+            mask = mask.expand(-1, coords.shape[1], -1)
+
+        # Normalize token/atom mapping shapes
+        if token_asym_id.dim() == 1:
+            token_asym_id = token_asym_id.unsqueeze(0)
+        if atom_token_index.dim() == 1:
+            atom_token_index = atom_token_index.unsqueeze(0)
+        if token_asym_id.shape[0] == 1 and coords.shape[0] > 1:
+            token_asym_id = token_asym_id.expand(coords.shape[0], -1)
+        if atom_token_index.shape[0] == 1 and coords.shape[0] > 1:
+            atom_token_index = atom_token_index.expand(coords.shape[0], -1)
+
+        atom_chain_id = token_asym_id.gather(-1, atom_token_index.clamp(min=0))
+
+        mask_bool = mask.bool()
+        valid_mask = mask_bool.any(dim=1) & (atom_chain_id >= 0)
+        if not valid_mask.any():
+            return coords
+
+        max_chain_id = atom_chain_id.masked_select(valid_mask).max()
+        chain_id_stride = max_chain_id + 1
+        batch_idx = torch.arange(coords.shape[0], device=coords.device).unsqueeze(-1)
+        global_chain_id = atom_chain_id + batch_idx * chain_id_stride
+
+        _, chain_index = torch.unique(global_chain_id[valid_mask], return_inverse=True)
+        num_chains = int(chain_index.max().item() + 1)
+        chain_index_full = torch.full_like(atom_chain_id, -1)
+        chain_index_full[valid_mask] = chain_index
+
+        # (B, L, C) -> (B, C, L) -> (B, N, C, L)
+        chain_mask = F.one_hot(
+            chain_index_full.clamp(min=0), num_classes=num_chains
+        ).bool()
+        chain_mask = chain_mask & valid_mask[..., None]
+        chain_mask = chain_mask.permute(0, 2, 1)
+        chain_mask = chain_mask.unsqueeze(1) & mask_bool.unsqueeze(2)
+
+        chain_coords = coords.unsqueeze(2).masked_fill(~chain_mask[..., None], 0.0)
+        batch_size, num_samples, num_chains, num_atoms = chain_mask.shape
+
+        flat_coords = chain_coords.reshape(
+            batch_size * num_samples * num_chains, num_atoms, 3
+        )
+        flat_mask = chain_mask.reshape(batch_size * num_samples * num_chains, num_atoms)
+
+        # Dataset behavior:
+        # - If chain_com_sampling_radius is set: force random translation scale to 0.0
+        # - Else: use translation_scale
+        if chain_com_sampling_radius is not None:
+            translation_scale = 0.0
+
+        augment = CenterRandomAugmentation(
+            centering=True,
+            augmentation=True,
+            s_trans=float(translation_scale),
+        )
+        flat_coords = augment(flat_coords, mask=flat_mask)
+        chain_coords = flat_coords.reshape(
+            batch_size, num_samples, num_chains, num_atoms, 3
+        )
+
+        if chain_com_sampling_radius is not None:
+            # Translate each chain so its COM lies on the sphere surface.
+            chain_counts = chain_mask.sum(dim=-1, keepdim=True).clamp(min=1)
+            chain_centers = chain_coords.sum(dim=-2) / chain_counts.to(chain_coords.dtype)
+            target_centers = self._sample_uniform_sphere_surface_torch(
+                radius=float(chain_com_sampling_radius),
+                shape=(batch_size, num_samples, num_chains),
+                dtype=chain_coords.dtype,
+                device=chain_coords.device,
+            )
+            shift = target_centers - chain_centers  # (B, N, C, 3)
+            chain_coords = chain_coords + shift.unsqueeze(-2) * chain_mask[..., None].to(
+                chain_coords.dtype
+            )
+
+        # Combine chains back: (B, N, C, L, 3) -> (B, N, L, 3)
+        coords = chain_coords.sum(dim=2)
         return coords
 
     def _configure_route_functions(self, cfg: Config) -> None:
@@ -575,7 +731,7 @@ class KFoldECSI(BaseECSI):
         Returns
         -------
         denoised_coords : torch.Tensor
-            Denoised (target) atom coordinates \hat{x}_0. Shape (B, N, L, 3).
+            Denoised (target) atom coordinates \\hat{x}_0. Shape (B, N, L, 3).
         """
         if not isinstance(t_hat, torch.Tensor):
             t_hat = torch.full(
@@ -734,6 +890,23 @@ class KFoldECSI(BaseECSI):
         apo_coords : torch.Tensor
             Apo coordinates. Shape (B, N, La, 3).
         """
+        if label_coords is None and self.inference_independent_diffusion_apo_sampling:
+            # Validation/Inference: independently sample x_T per diffusion sample
+            # using parameters from structure module config.
+            apo_coords = self.sample_apo(
+                f_input, num_diffusion_samples, random_augment=False
+            )
+            apo_mask = f_input.atom.apo_mask
+            apo_coords = self._independent_apo_chain_sampling(
+                coords=apo_coords,
+                mask=apo_mask,
+                token_asym_id=f_input.token.asym_id,
+                atom_token_index=f_input.atom.token_index,
+                translation_scale=float(self.inference_apo_translation_scale),
+                chain_com_sampling_radius=self.inference_apo_chain_com_sampling_radius,
+            )
+            return apo_coords
+
         do_random_augment = label_coords is None
         apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
 
