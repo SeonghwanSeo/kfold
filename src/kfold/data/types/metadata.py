@@ -73,6 +73,8 @@ class ChainInfo(JsonSerializable):
     asym_id: int  # starts from 1
     sym_id: int  # starts from 1
     num_residues: int
+    num_atoms: int
+    num_tokens: int
     smiles: str | None = None
     description: str | None = None
     cluster_id: str | None = None

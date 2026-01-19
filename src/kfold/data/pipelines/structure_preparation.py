@@ -7,7 +7,7 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.types.ccd import CCD, Component
-from kfold.data.types.metadata import Metadata
+from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.structure import (
     Atom,
     Bond,
@@ -239,4 +239,31 @@ def prepare_ref_chain(
         residue=residue_struct,
         atom=atom_struct,
         bond=bond_struct,
+    )
+
+
+def prepare_chain_metadata(chain: Chain, name: str) -> ChainInfo:
+    """Prepare chain metadata.
+
+    Parameters
+    ----------
+    chain : Chain
+        The reference chain.
+    name : str
+        The user-defined chain name.
+
+    Returns
+    -------
+    ChainInfo
+        The prepared chain metadata.
+    """
+    return ChainInfo(
+        name=name,
+        type=chain.chain_type,
+        entity_id=chain.entity_id,
+        asym_id=chain.asym_id,
+        sym_id=chain.sym_id,
+        num_residues=chain.num_residues,
+        num_atoms=chain.num_atoms,
+        num_tokens=chain.num_tokens,
     )

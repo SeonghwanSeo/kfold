@@ -16,7 +16,6 @@ import kfold.constants as C
 from kfold.data.pipelines import structure_preparation
 from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import (
-    ChainInfo,
     ExperimentRecord,
     InterfaceInfo,
     Metadata,
@@ -104,9 +103,12 @@ def parse_cif(
     # Drop invalid chains
     prune_invalid_chains(ref_struct, invalid_chains)
 
+    # Crop to max_chains if specified
     if max_chains is not None:
-        # Limit number of chains for testing
         crop_substructure(ref_struct, max_chains)
+
+    # Final validation
+    ref_struct.validate()
 
     return ref_struct
 
@@ -378,8 +380,10 @@ def prepare_ref_structure(
 
     # Determine asym_id string to integer mapping
     asym_id_to_int: dict[AsymId, int] = {}
+    asym_id_to_str: dict[int, AsymId] = {}
     for i, asym_id in enumerate(sorted(asym_id_to_entity_id.keys()), start=1):
         asym_id_to_int[asym_id] = i
+        asym_id_to_str[i] = asym_id
 
     # ==================================================
     # Identify valid entities and chains
@@ -671,28 +675,11 @@ def prepare_ref_structure(
     # ==================================================
     # Add chain metadata
     # ==================================================
-    for entity in raw_struct.entities:
-        entity: gemmi.Entity
-        entity_id: EntityId = int(entity.name)
-        if entity_id not in valid_entity_ids:
-            # Skip invalid entities
-            continue
-        length = len(entity_id_to_seq[entity_id])
-        for asym_id in entity.subchains:
-            if asym_id not in valid_asym_ids:
-                # Skip invalid chains
-                continue
-            sym_id: SymId = asym_id_to_sym_id[asym_id]
-            ctype: C.ChainType = entity_id_to_chain_type[entity_id]
-            chain_meta = ChainInfo(
-                name=str(asym_id),  # store asym_id as chain_name
-                type=int(ctype.value),  # store as integer
-                entity_id=int(entity_id),
-                asym_id=int(asym_id_to_int[asym_id]),
-                sym_id=int(sym_id),
-                num_residues=int(length),
-            )
-            metadata.chains.append(chain_meta)
+    for c in chain_structs:
+        chain_info = structure_preparation.prepare_chain_metadata(
+            c, name=asym_id_to_str[c.asym_id]
+        )
+        metadata.chains.append(chain_info)
 
     return RefStructure(
         chains=chain_structs,

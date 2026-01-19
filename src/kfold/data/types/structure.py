@@ -676,6 +676,17 @@ class RefStructure:
         if meta_asym_ids != struct_asym_ids:
             raise ValueError("Mismatch between metadata asym_ids and structure asym_ids.")
 
+        for c, cm in zip(self.chains, self.metadata.chains, strict=True):
+            assert c.entity_id == cm.entity_id
+            assert c.asym_id == cm.asym_id
+            assert c.sym_id == cm.sym_id
+            assert c.num_residues == cm.num_residues
+
+        for iface in self.metadata.interfaces:
+            for asym_id in iface.asym_ids:
+                if asym_id not in valid_asym_ids:
+                    raise ValueError(f"Interface refers to invalid asym_id {asym_id}.")
+
     def to(self, *args, **kwargs) -> Self:
         """No-op for device/dtype movement for pytorch lightning compatibility."""
         return self
