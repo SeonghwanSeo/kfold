@@ -33,7 +33,7 @@ dependencies = [
   "omegaconf",
   "rdkit",
   "einops",
-  "gemmi==0.6.5",
+  "gemmi",
 
   # cuequivariance
   "cuequivariance_torch>=0.6.0",
