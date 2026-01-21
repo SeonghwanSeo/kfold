@@ -374,6 +374,7 @@ def _prepare_nucleic_acid_lookup(
 
     # Get sequence ID and residue mapping
     seq_id: str = seq_info["seq_id"]
+    seq_len: int = seq_info["seq_len"]
     seq_res_map: str = seq_info["res_map"]
 
     # === 2. Prepare sequence embedding info === #
@@ -384,6 +385,7 @@ def _prepare_nucleic_acid_lookup(
     return {
         "type": ctype.name.lower(),
         "seq_id": seq_id,
+        "seq_len": seq_len,
         "seq_emb": seq_emb,
     }
 
@@ -412,6 +414,7 @@ def _prepare_protein_lookup(
 
     # Get sequence ID and residue mapping
     seq_id: str = seq_info["seq_id"]
+    seq_len: int = seq_info["seq_len"]
     seq_res_map: str = seq_info["res_map"]
 
     # === 2. Prepare sequence embedding info === #
@@ -469,6 +472,7 @@ def _prepare_protein_lookup(
     return {
         "type": ctype.name.lower(),
         "seq_id": seq_id,
+        "seq_len": seq_len,
         "seq_emb": seq_emb,
         "struct_emb": struct_emb,
         "apo": apo_infos,
