@@ -87,12 +87,12 @@ Run the following script to prepare the Chemical Component Dictionary (CCD):
 ```bash
 # Run the preparation script
 # For data preprocessing and inference
-python scripts/process/rcsb/a_propare_ccd.py \
+python scripts/process/rcsb/a_prepare_ccd.py \
     --cif_path /raw_data/RCSB/components.cif \
     --out_path /data/processed/ccd-test.pkl
 
 # For model training (up to 10 cached conformers per molecule)
-python scripts/process/rcsb/a_propare_ccd.py \
+python scripts/process/rcsb/a_prepare_ccd.py \
     --cif_path /raw_data/RCSB/components.cif \
     --out_path /data/processed/ccd-train.pkl \
     --train
@@ -105,14 +105,14 @@ Run the following script to pre-process training set structures as npz files:
 ```bash
 # Step 3-1. Extract training sequences
 python scripts/process/rcsb/b_extract_all_sequences.py \
-    --cif_path /raw_data/rcsb/mmCIF/ \
+    --cif_path /raw_data/RCSB/mmCIF/ \
     --data_dir /data/processed/dataset/rcsb-train \
     --split train \
     --num_workers 128
 
 # Step 3-2: Pre-process training set structures as npz files
 python scripts/process/rcsb/c_process_cifs.py \
-    --cif_path /raw_data/rcsb/mmCIF/ \
+    --cif_path /raw_data/RCSB/mmCIF/ \
     --data_dir /data/processed/dataset/rcsb-train \
     --split train \
     --num_workers 128
@@ -137,14 +137,14 @@ Run the following scripts to create validation split pdb ids (`validation_id.txt
 ```bash
 # Step 4-1a. Extract validation sequences
 python scripts/process/rcsb/b_extract_all_sequences.py \
-    --cif_path /raw_data/rcsb/mmCIF/ \
+    --cif_path /raw_data/RCSB/mmCIF/ \
     --data_dir /data/processed/dataset/rcsb-val \
     --split val \
     --num_workers 128
 
 # Step 4-1b. Pre-process validation set structures as npz files
 python scripts/process/rcsb/c_process_cifs.py \
-    --cif_path /raw_data/rcsb/mmCIF/ \
+    --cif_path /raw_data/RCSB/mmCIF/ \
     --data_dir /data/processed/dataset/rcsb-val \
     --split val \
     --num_workers 128

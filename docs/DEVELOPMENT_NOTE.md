@@ -146,7 +146,7 @@ See [`scripts/process/rcsb/README.md`](../scripts/process/rcsb/README.md) for in
 ### RCSB Training set
 
 Our training dataset contains all PDB entries released before 2022-12-31 (inclusive). The filtering criteria follow those of AlphaFold3 (see SI 2.5.4 of the AlphaFold3 paper) with the following modifications:
-- For bioassemblies with more than 20 chains, we save the entire bioassembly using on-the-fly pre-cropping during training.
+- For bioassemblies with more than 20 chains, we save the entire bioassembly and apply on-the-fly pre-cropping during training.
 
 ### RCSB Validation set
 
