@@ -181,6 +181,8 @@ class ClusterSampler(BaseSampler):
 
     def __init__(self, config: Config) -> None:
         self.config = config
+        self.is_initialized = False
+
         # weights
         self.alpha_prot = config.alpha_prot
         self.alpha_nuc = config.alpha_nuc
@@ -197,6 +199,9 @@ class ClusterSampler(BaseSampler):
         self.num_clusters_in_complex: dict[str, dict[str, int]] = {}
 
     def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
+        assert self.is_initialized is False, "ClusterSampler can be used only once."
+        self.is_initialized = True
+
         # Estimate cluster sizes
         self.estimate_cluster_sizes(metadatas)
 
@@ -249,19 +254,19 @@ class ClusterSampler(BaseSampler):
     def estimate_cluster_sizes(self, metadatas: list[Metadata]):
         """Estimate cluster sizes of chains and interfaces"""
         for m in metadatas:
-            chain_clusters_in_metadata: list[str] = [
+            chain_clusters_in_entry: list[str] = [
                 get_chain_cluster_id(chain) for chain in m.chains
             ]
-            interface_clusters_in_metadata: list[str] = [
+            interface_clusters_in_entry: list[str] = [
                 get_interface_cluster_id(interface) for interface in m.interfaces
             ]
 
             if not self.allow_redundant:
                 # Store number of each cluster for each entry
                 num_clusters = defaultdict(int)
-                for cluster_id in chain_clusters_in_metadata:
+                for cluster_id in chain_clusters_in_entry:
                     num_clusters[cluster_id] += 1
-                for cluster_id in interface_clusters_in_metadata:
+                for cluster_id in interface_clusters_in_entry:
                     num_clusters[cluster_id] += 1
                 # Remove the count <= 1 to save memory
                 for cluster_id in list(num_clusters.keys()):
@@ -271,10 +276,10 @@ class ClusterSampler(BaseSampler):
                     self.num_clusters_in_complex[m.id] = dict(num_clusters)
 
                 # Remove redundant clusters in the metadata
-                chain_clusters_in_metadata = list(set(chain_clusters_in_metadata))
-                interface_clusters_in_metadata = list(set(interface_clusters_in_metadata))
+                chain_clusters_in_entry = list(set(chain_clusters_in_entry))
+                interface_clusters_in_entry = list(set(interface_clusters_in_entry))
 
-            for cluster_id in chain_clusters_in_metadata:
+            for cluster_id in chain_clusters_in_entry:
                 self.chain_cluster_sizes[cluster_id] += 1
-            for cluster_id in interface_clusters_in_metadata:
+            for cluster_id in interface_clusters_in_entry:
                 self.interface_cluster_sizes[cluster_id] += 1
