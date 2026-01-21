@@ -29,6 +29,10 @@ P_std: 1.5
 # eta=0: deterministic ODE, eta=1: full SDE (DDBM-style)
 eta: 1.0
 
+# Switch to deterministic update for small t (ODE-like) during sampling.
+# If set <= 0, this deterministic phase is disabled.
+ode_time_duration: 0.5
+
 # Other settings
 coordinate_augmentation: True
 synchronize_sigmas: False

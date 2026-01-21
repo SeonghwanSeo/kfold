@@ -116,6 +116,7 @@ class KFoldECSI(BaseECSI):
         inference_independent_diffusion_apo_sampling: bool = False
         inference_apo_translation_scale: float = 0.0
         inference_apo_chain_com_sampling_radius: float | None = None
+        ode_time_duration: float = 0.5
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -153,6 +154,7 @@ class KFoldECSI(BaseECSI):
         self.inference_apo_chain_com_sampling_radius: float | None = (
             cfg.inference_apo_chain_com_sampling_radius
         )
+        self.ode_time_duration: float = cfg.ode_time_duration
 
         self._configure_route_functions(cfg)
 
@@ -1150,14 +1152,30 @@ class KFoldECSI(BaseECSI):
             z_hat = (x_t - alpha_t * x0_hat - beta_t * x_apo) / (gamma_t + 1e-8)
 
             # Last 2 steps: use deterministic update (\epsilon_t = 0)
-            if step_idx >= num_steps - 2:
+            # if step_idx >= num_steps - 2:
+
+            ode_time_duration = float(self.ode_time_duration)
+            if ode_time_duration > 0.0 and t_curr <= ode_time_duration:
                 # x_{t-\Delta t} = \alpha_{t-\Delta t} \hat{x}_0 + \beta_{t-\Delta t} x_T
                 #                + \gamma_{t-\Delta t} \hat{z}_t
                 t_next_exp = torch.full_like(t_exp, t_next)
                 alpha_next = self.alpha(t_next_exp)
                 beta_next = self.beta(t_next_exp)
                 gamma_next = self.gamma(t_next_exp)
-                x_t = alpha_next * x0_hat + beta_next * x_apo + gamma_next * z_hat
+
+                # NOTE: weghting factor for z_hat is (cos(2pi(t_next-0.5)) + 1) / 2
+                weighting_factor = (
+                    math.cos(math.pi * (t_next - ode_time_duration) / ode_time_duration)
+                    + 1
+                ) / 2
+
+                # x_t = alpha_next * x0_hat + beta_next * x_apo + gamma_next * z_hat
+                # x_t = alpha_next * x0_hat + beta_next * x_apo
+                x_t = (
+                    alpha_next * x0_hat
+                    + beta_next * x_apo
+                    + gamma_next * z_hat * weighting_factor
+                )
             else:
                 # Compute \epsilon_t = \eta (\gamma_t \dot{\gamma}_t
                 #                    - \dot{\alpha}_t/\alpha_t \gamma_t^2)
