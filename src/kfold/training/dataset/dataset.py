@@ -90,7 +90,6 @@ from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
-from .filter import BaseFilter
 from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
 
@@ -137,8 +136,6 @@ class TrainingDatasetConfig(DatasetConfig):
     ----------
     weight : float
         Weight of the dataset during training.
-    filters : list[BaseFilter.Config]
-        List of filters to apply to the dataset.
     sampler : BaseSampler.Config | None
         Sampler configuration for generating samples.
     cropper : BaseCropper.Config | None
@@ -146,7 +143,6 @@ class TrainingDatasetConfig(DatasetConfig):
     """
 
     weight: float = 1.0
-    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
 
@@ -706,16 +702,6 @@ class TrainingDataset(LMDBDataset):
             )
         self.max_tokens: int = max_tokens
         self.max_chains: int = max_chains
-
-        # Initialize filters
-        self.filters: list[BaseFilter] = [
-            Registry.instantiate(config=c) for c in config.filters
-        ]
-
-        def do_filter(m: Metadata) -> bool:
-            return all(filt(m) for filt in self.filters)
-
-        self.metadatas = [m for m in self.metadatas if do_filter(m)]
 
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
