@@ -160,7 +160,7 @@ Closely following AlphaFold3's validation set construction methodology (see SI 5
 3. Select low-homology interfaces using the following criteria:
     1. Collect all interface chain pairs. Interfaces with multi-residue ligands are excluded.
     2. Filter for low-homology interfaces only:
-        - Remove the interface if any training target has two chains with sequence identity >= 40% (polymer) or Tanimoto similarity >= 80% (ligand) to the involved chains.
+        - Remove the interface if any training target has two chains with sequence identity >= 40% (polymer) or Tanimoto similarity >= 0.8 (ligand) to the involved chains.
         - Remove polymer-ion interfaces if any training target has one polymer chain with sequence identity >= 40% to the involved polymer chain.
         - Remove ligand-ligand interfaces.
     3. Assign interfaces to clusters `(cluster_id1, cluster_id2`) based on the following homology criteria:
@@ -184,3 +184,4 @@ Closely following AlphaFold3's validation set construction methodology (see SI 5
     2. Filter out polymers with greater than 40% sequence identity to any training target.
     3. Take all nucleic acid monomers.
 5. Take all PDB entries containing the selected interfaces or polymers, and filter out entries with a token count > 2048.
+6. Sample 1024 PDB entries among the selected 1056 entries for the final validation set.
