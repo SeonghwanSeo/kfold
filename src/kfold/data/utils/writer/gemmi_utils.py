@@ -131,7 +131,12 @@ def create_gemmi_structure(
     gemmi_struct.entities = entities
 
     # === Build Model === #
-    model = gemmi.Model(1)
+    try:
+        model = gemmi.Model(1)
+    except Exception:
+        # Fallback for older Gemmi versions
+        model = gemmi.Model("1")
+
     for chain_i in range(len(struct.chains)):
         ref_chain = struct.chains[chain_i]
         chain_meta = metadata.chains[chain_i]
