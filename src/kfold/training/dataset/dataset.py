@@ -74,6 +74,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 import lmdb
+import msgpack
 import numpy as np
 import torch
 from omegaconf import OmegaConf
@@ -89,7 +90,6 @@ from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
-from .filter import BaseFilter
 from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
 
@@ -136,8 +136,6 @@ class TrainingDatasetConfig(DatasetConfig):
     ----------
     weight : float
         Weight of the dataset during training.
-    filters : list[BaseFilter.Config]
-        List of filters to apply to the dataset.
     sampler : BaseSampler.Config | None
         Sampler configuration for generating samples.
     cropper : BaseCropper.Config | None
@@ -145,7 +143,6 @@ class TrainingDatasetConfig(DatasetConfig):
     """
 
     weight: float = 1.0
-    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
 
@@ -221,8 +218,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # === Validate parameters === #
         assert self.data_root.exists(), f"Dataset path {self.data_root} does not exist."
+        emb_root = self.data_root / "embedding"
         if self.seq_embedding is not None:
-            self.seq_emb_root = self.data_root / "seq_embedding" / self.seq_embedding
+            self.seq_emb_root = emb_root / "sequence" / self.seq_embedding
             assert self.seq_emb_root.exists(), (
                 f"Sequence embedding root {self.seq_emb_root} does not exist."
             )
@@ -231,9 +229,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             )
 
         if self.struct_embedding is not None:
-            self.struct_emb_root = (
-                self.data_root / "struct_embedding" / self.struct_embedding
-            )
+            self.struct_emb_root = emb_root / "structure" / self.struct_embedding
             assert self.struct_emb_root.exists(), (
                 f"Structure embedding root {self.struct_emb_root} does not exist."
             )
@@ -297,23 +293,25 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         if custom_manifest is not None:
             manifest_path = Path(custom_manifest)
         else:
-            manifest_path = self.data_root / "manifest.json"
+            manifest_path = self.data_root / "manifest.msgpack"
         if not manifest_path.exists():
             raise FileNotFoundError(f"Manifest file {manifest_path} not found.")
-        with open(manifest_path) as f:
-            metadata_dicts: list[dict] = json.load(f)
+
+        if manifest_path.suffix == ".msgpack":
+            with open(manifest_path, "rb") as f:
+                metadata_dicts: list[dict] = msgpack.unpack(f)
+        else:
+            with open(manifest_path) as f:
+                metadata_dicts: list[dict] = json.load(f)
+
         metadatas: list[Metadata] = [Metadata.from_dict(d) for d in metadata_dicts]
         del metadata_dicts
-        # Ensure all chains and interfaces are valid
-        for m in metadatas:
-            m.check_all_chains_valid()
-            m.check_all_interfaces_valid()
         return metadatas
 
     def load_lookup_table(self) -> dict:
-        lookup_path = self.data_root / "lookup.json"
-        with open(lookup_path) as f:
-            lookup_table = json.load(f)
+        lookup_path = self.data_root / "lookup.msgpack"
+        with open(lookup_path, "rb") as f:
+            lookup_table: dict = msgpack.unpack(f)
         for m in self.metadatas:
             if m.id not in lookup_table:
                 raise KeyError(f"Metadata ID {m.id} not found in lookup table.")
@@ -704,16 +702,6 @@ class TrainingDataset(LMDBDataset):
             )
         self.max_tokens: int = max_tokens
         self.max_chains: int = max_chains
-
-        # Initialize filters
-        self.filters: list[BaseFilter] = [
-            Registry.instantiate(config=c) for c in config.filters
-        ]
-
-        def do_filter(m: Metadata) -> bool:
-            return all(filt(m) for filt in self.filters)
-
-        self.metadatas = [m for m in self.metadatas if do_filter(m)]
 
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)

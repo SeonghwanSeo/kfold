@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def load_fasta(path: str | Path) -> dict[str, str]:
+def read_fasta(path: str | Path) -> list[tuple[str, str]]:
     """Load sequences from a fasta file (supports multi-line sequences).
 
     Parameters
@@ -11,45 +11,41 @@ def load_fasta(path: str | Path) -> dict[str, str]:
 
     Returns
     -------
-    sequences : dict[str, str]
-        key: sequence ID
-        value: sequence string
+    sequences : list[tuple[str, str]]
+        List of tuples (ID, sequence).
 
     """
-    sequences: dict[str, str] = {}
-
-    current_seq_id = None
-    current_seq_parts: list[str] = []
-
+    res: list[tuple[str, str]] = []
+    seq_id: str | None = None
+    seq_parts: list[str] = []
     with open(path) as f:
         for line in f:
-            line = line.strip()
-
+            line: str = line.strip()
             # Skip empty lines if any exist
             if not line:
                 continue
 
             if line.startswith(">"):
-                if current_seq_id is not None:
-                    sequences[current_seq_id] = "".join(current_seq_parts)
-
+                if seq_id is not None:
+                    sequence = "".join(seq_parts)
+                    res.append((seq_id, sequence))
                 # Start a new sequence entry
-                current_seq_id = line[1:]  # Remove '>'
-                current_seq_parts = []
+                seq_id = line[1:]  # Remove '>'
+                seq_parts = []
             else:
                 # Append sequence lines to the current list buffer
-                if current_seq_id is not None:
-                    current_seq_parts.append(line)
+                if seq_id is not None:
+                    seq_parts.append(line)
 
         # Add the last sequence after the loop ends
-        if current_seq_id is not None:
-            sequences[current_seq_id] = "".join(current_seq_parts)
+        if seq_id is not None:
+            sequence = "".join(seq_parts)
+            res.append((seq_id, sequence))
+    return res
 
-    return sequences
 
-
-def save_fasta(
-    sequences: list[tuple[str, str]],
+def write_fasta(
+    sequences: list[tuple[str, str]] | dict[str, str],
     path: str | Path,
     width: int | None = None,
 ) -> None:
@@ -57,14 +53,16 @@ def save_fasta(
 
     Parameters
     ----------
-    sequences : list[tuple[str, str]]
-        List of tuples containing sequence ID and sequence string.
+    sequences : list[tuple[str, str]] | dict[str, str]
+        List of tuples (ID, sequence) or a dictionary mapping IDs to sequences.
     path : str | Path
         Path to save the fasta file.
     width : int | None, optional
         Maximum line length for sequences.
         If None, sequences are written in a single line.
     """
+    if isinstance(sequences, dict):
+        sequences = list(sequences.items())
     with open(path, "w") as f:
         for seq_id, seq in sequences:
             f.write(f">{seq_id}\n")

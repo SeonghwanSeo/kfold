@@ -37,30 +37,30 @@ train:
     precision: bf16-mixed
 
   data:
-    ccd_path: /cache/wykim_lab/kfold_data/v260109/ccd-train.pkl
+    ccd_path: /cache/wykim_lab/kfold_data/v260121/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         weight: 1.0
-        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-train/
+        data_path: /cache/wykim_lab/kfold_data/v260121/dataset/rcsb-train/
       - _yaml_: "dataset/natural_ab.yaml"
         name: "NaturalAb"
         weight: 0.02
-        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/NaturalAb/
+        data_path: /cache/wykim_lab/kfold_data/v260121/dataset/NaturalAb/
       - _yaml_: "dataset/humap.yaml"
         name: "HuMAP_data_098"
         weight: 0.05
-        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/HuMAP_data_098/
+        data_path: /cache/wykim_lab/kfold_data/v260121/dataset/HuMAP_data_098/
       - _yaml_: "dataset/humap.yaml"
         name: "HuMAP_data_ood_mid"
         weight: 0.02
-        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/HuMAP_data_ood_mid/
+        data_path: /cache/wykim_lab/kfold_data/v260121/dataset/HuMAP_data_ood_mid/
       - _yaml_: "dataset/humap.yaml"
         name: "HuMAP_data_ood_low"
         weight: 0.02
-        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/HuMAP_data_ood_low/
+        data_path: /cache/wykim_lab/kfold_data/v260121/dataset/HuMAP_data_ood_low/
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-val/
+        data_path: /cache/wykim_lab/kfold_data/v260121/dataset/rcsb-val/
     pretrained_embedding:
       seq: esm2-3b
       seq_dim: 2560

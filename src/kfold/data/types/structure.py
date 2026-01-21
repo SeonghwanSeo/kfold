@@ -21,7 +21,7 @@ def pack_metadata(metadata: Metadata) -> np.ndarray:
 
     metadata_dict = metadata.to_dict()
     metadata_serialized = msgpack.packb(metadata_dict)
-    return np.array(metadata_serialized, dtype=np.bytes_)
+    return np.frombuffer(metadata_serialized, dtype=np.uint8)
 
 
 def unpack_metadata(data: np.ndarray) -> Metadata:
@@ -68,10 +68,60 @@ class Chain:
     bond: "Bond"
     smiles: str | None = None  # optional SMILES string for small molecule
 
-    @property
+    # === Properties === #
+    @cached_property
     def ctype(self) -> C.ChainType:
         """Chain type as enum."""
         return C.ChainType(self.chain_type)
+
+    @property
+    def is_protein(self) -> bool:
+        """Whether the chain is a protein."""
+        return self.ctype.is_protein
+
+    @property
+    def is_dna(self) -> bool:
+        """Whether the chain is a dna."""
+        return self.ctype.is_dna
+
+    @property
+    def is_rna(self) -> bool:
+        """Whether the chain is a rna."""
+        return self.ctype.is_rna
+
+    @property
+    def is_ligand(self) -> bool:
+        """Whether the chain is a ligand."""
+        return self.ctype.is_ligand
+
+    @property
+    def is_polymer(self) -> bool:
+        """Whether the chain is a polymer."""
+        return self.ctype.is_polymer
+
+    @property
+    def is_nonpolymer(self) -> bool:
+        """Whether the chain is a non-polymer."""
+        return self.ctype.is_nonpolymer
+
+    @property
+    def is_nucleic_acid(self) -> bool:
+        """Whether the chain is a nucleic acid."""
+        return self.ctype.is_nucleic_acid
+
+    @property
+    def is_ion(self) -> bool:
+        """Whether the chain is an ion."""
+        if self.num_atoms > 1 or self.num_residues > 1:
+            return False
+        if self.is_polymer:
+            return False
+        return self.residue.name[0].item() in C.ccd.IONS
+
+    @property
+    def is_small_molecule(self) -> bool:
+        """Whether the chain is a small molecule (non-polymer & non-ion)."""
+        return self.is_nonpolymer and not self.is_ion
 
     @property
     def num_residues(self) -> int:
@@ -88,6 +138,18 @@ class Chain:
         """Number of bonds in the chain."""
         return len(self.bond)
 
+    @property
+    def num_tokens(self) -> int:
+        """Number of tokens in the structure."""
+        num_tokens: int = 0
+        for res_i in range(self.num_residues):
+            if self.residue.is_standard[res_i]:
+                num_tokens += 1
+            else:
+                num_tokens += self.residue.num_atoms[res_i].item()
+        return num_tokens
+
+    # === Methods === #
     def get_sequence(self, map_to_standard: bool = False) -> str:
         """Get the amino acid / nucleotide sequence of the chain.
 
@@ -517,6 +579,11 @@ class RefStructure:
         """Number of atoms in the structure."""
         return sum(chain.num_atoms for chain in self.chains)
 
+    @cached_property
+    def num_tokens(self) -> int:
+        """Number of tokens in the structure."""
+        return sum(chain.num_tokens for chain in self.chains)
+
     @property
     def num_bonds(self) -> int:
         """Number of bonds in the structure."""
@@ -608,6 +675,17 @@ class RefStructure:
         struct_asym_ids = set(asym_ids)
         if meta_asym_ids != struct_asym_ids:
             raise ValueError("Mismatch between metadata asym_ids and structure asym_ids.")
+
+        for c, cm in zip(self.chains, self.metadata.chains, strict=True):
+            assert c.entity_id == cm.entity_id
+            assert c.asym_id == cm.asym_id
+            assert c.sym_id == cm.sym_id
+            assert c.num_residues == cm.num_residues
+
+        for iface in self.metadata.interfaces:
+            for asym_id in iface.asym_ids:
+                if asym_id not in valid_asym_ids:
+                    raise ValueError(f"Interface refers to invalid asym_id {asym_id}.")
 
     def to(self, *args, **kwargs) -> Self:
         """No-op for device/dtype movement for pytorch lightning compatibility."""

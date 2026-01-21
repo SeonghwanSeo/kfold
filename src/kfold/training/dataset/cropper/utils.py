@@ -1,4 +1,3 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License
 import numbers
 from collections.abc import Sequence
 from typing import TypeVar, overload

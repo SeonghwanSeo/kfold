@@ -19,6 +19,7 @@ from kfold.data.types.ccd import CCD, Component
 try:
     # pdbeccdutils is required for reading RCSB CCD data
     from pdbeccdutils.core import ccd_reader
+    from pdbeccdutils.core.ccd_reader import CCDReaderResult
 except ImportError as e:
     raise ImportError(
         "pdbeccdutils is required for this script. "
@@ -80,7 +81,7 @@ def parse_arguments():
     parser.add_argument(
         "--date_cutoff",
         type=str,
-        default="2021-09-30",
+        default="2022-12-31",
         help="Date cutoff for processing components (YYYY-MM-DD).",
     )
     return parser.parse_args()
@@ -94,13 +95,14 @@ def shift_seed(seed: int, code: str) -> int:
 def process_pdbe_ccd_component_and_save(
     code: str,
     mol: Chem.Mol,
+    smiles: str | None,
     ccd_cif_string: str,
     num_confs: int,
     compute_symmetry: bool,
     date_cutoff: datetime.date,
     seed: int,
     safety_mode: bool = True,
-) -> dict | None:
+) -> bytes | None:
     """Convert PDBeCCDComponent to Component."""
     seed = shift_seed(seed, code)
     rng = np.random.default_rng(seed)
@@ -110,6 +112,7 @@ def process_pdbe_ccd_component_and_save(
         comp = Component.from_ccd_cif(
             code=code,
             mol=mol,
+            smiles=smiles,
             cif_block=ccd_cif_block,
             num_confs=num_confs,
             compute_symmetry=compute_symmetry,
@@ -123,11 +126,11 @@ def process_pdbe_ccd_component_and_save(
             return
         else:
             raise e
-    return comp.to_dict()
+    return comp.to_bytes()
 
 
-def _process_wrapper(args_bundle) -> tuple[str, dict | None]:
-    code, mol, ccd_cif_string = args_bundle["dynamic"]
+def _process_wrapper(args_bundle) -> tuple[str, bytes | None]:
+    code, mol, smiles, ccd_cif_string = args_bundle["dynamic"]
     static = args_bundle["static"]
 
     if code in C.residue.STANDARD_RESIDUES_STR:
@@ -138,6 +141,7 @@ def _process_wrapper(args_bundle) -> tuple[str, dict | None]:
     comp_state = process_pdbe_ccd_component_and_save(
         code,
         mol,
+        smiles=smiles,
         ccd_cif_string=ccd_cif_string,
         num_confs=nconfs,
         compute_symmetry=static["compute_symmetry"],
@@ -160,7 +164,9 @@ def construct_ccd(
 ) -> CCD:
     # Load CCD components
     logger.info("Reading CCD components from CIF file...")
-    pdbe_results = ccd_reader.read_pdb_components_file(str(cif_path))
+    pdbe_results: dict[str, CCDReaderResult] = ccd_reader.read_pdb_components_file(
+        str(cif_path)
+    )
     total_count = len(pdbe_results)
     logger.info(f"Total components in CIF: {total_count}")
 
@@ -183,13 +189,26 @@ def construct_ccd(
 
     # Generator for tasks (to avoid overhead due to cif string conversion)
     def task_generator():
+        def get_smiles(comp) -> str | None:
+            for key in [
+                ("OpenEye OEToolkits", "SMILES_CANONICAL"),
+                ("OpenEye OEToolkits", "SMILES"),
+                ("CACTVS", "SMILES_CANONICAL"),
+                ("CACTVS", "SMILES"),
+                ("ACDLabs", "SMILES"),
+            ]:
+                for desc in comp.descriptors:
+                    if (desc.program, desc.type) == key:
+                        return desc.value
+            return None
+
         for code, result in pdbe_results.items():
             # Extract RDKit molecule and CIF string (to avoid serialization issues)
             mol: Chem.Mol = result.component.mol
             cif_string: str = result.component.ccd_cif_block.as_string()
-
+            smiles = get_smiles(result.component)
             # Yield dynamic and static arguments
-            yield {"dynamic": (code, mol, cif_string), "static": static_args}
+            yield {"dynamic": (code, mol, smiles, cif_string), "static": static_args}
 
     # Process components in parallel
     logger.info("Processing components...")
@@ -200,13 +219,16 @@ def construct_ccd(
                 total=total_count,
             )
         )
+    logger.info("Component processing completed.")
 
     # Collect processed components
     components = {}
     for code, comp_state in results:
         if comp_state is not None:
-            components[code] = Component.from_dict(comp_state)
-    logger.info(f"Successfully processed {len(components)} components.")
+            components[code] = comp_state
+    logger.info(
+        f"Successfully processed {len(components)} components out of {total_count}."
+    )
 
     return CCD(components)
 

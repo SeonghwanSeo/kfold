@@ -186,7 +186,7 @@ def summarize_prediction(
 
         summary: dict[str, Any] = {
             "type": ctype,
-            "name": cm.chain_name,
+            "name": cm.name,
             "entity_id": cm.entity_id,
             "asym_id": cm.asym_id,
             "num_valid_atoms": num_chain_atoms,
@@ -227,8 +227,8 @@ def summarize_prediction(
         interface_summary = {
             "type_1": cm1.ctype.name.lower(),
             "type_2": cm2.ctype.name.lower(),
-            "name_1": cm1.chain_name,
-            "name_2": cm2.chain_name,
+            "name_1": cm1.name,
+            "name_2": cm2.name,
             "entity_id_1": cm1.entity_id,
             "entity_id_2": cm2.entity_id,
             "asym_id_1": cm1.asym_id,
