@@ -76,14 +76,7 @@ from tqdm import tqdm
 
 import kfold.constants as C
 from kfold.data.types.structure import RefStructure
-
-# --- Thresholds for AFDB mapping ---
-# Minimum RCSB sequence length to consider (use ESMFold only)
-AFDB_LENGTH_THRESHOLD = 16
-# Minimum overlap ratio on RCSB side
-AFDB_RCSB_OVERLAP_THRESHOLD = 0.8
-# Minimum overlap ratio on Uniprot side
-AFDB_UNIPROT_OVERLAP_THRESHOLD = 0.5
+from kfold.data.utils.io.fasta import read_fasta
 
 # --- Global variables for worker processes ---
 _GLOBAL_POLYMER_SEQ_ID: dict = {}
@@ -144,16 +137,38 @@ def close_worker():
         _GLOBAL_LMDB_ENV = None
 
 
-def load_sequence_map(path: pathlib.Path) -> dict[str, dict]:
-    """Load sequence ID mapping from CSV file."""
+def load_sequence_map(
+    all_sequence_fasta: pathlib.Path,
+    protein_fasta: pathlib.Path,
+    dna_fasta: pathlib.Path,
+    rna_fasta: pathlib.Path,
+) -> dict[str, dict]:
+    """Load sequence ID mapping."""
+    # Load all sequences
+    prot_seq_to_id: dict[str, str] = {
+        seq: seq_id for seq_id, seq in read_fasta(protein_fasta)
+    }
+    dna_seq_to_id: dict[str, str] = {seq: seq_id for seq_id, seq in read_fasta(dna_fasta)}
+    rna_seq_to_id: dict[str, str] = {seq: seq_id for seq_id, seq in read_fasta(rna_fasta)}
+
     seq_id_map: dict = {}
-    assert path.suffix == ".csv"
-    df = pd.read_csv(path)
-    df_dict = df.set_index(["pdb_id", "entity_id"]).to_dict("index")
-    for (pdb_id, entity_id), row in df_dict.items():
-        ctype = row["type"]
-        seqlen = row["length"]
-        seq_id = row["seq_id"]
+
+    # Load sequence to id mapping
+    for key, seq in read_fasta(all_sequence_fasta):
+        pdb_id, entity_id_str, ctype_str = key.split("|")
+        entity_id = int(entity_id_str)
+        ctype = C.ChainType[ctype_str.upper()]
+        seqlen = len(seq)
+        match ctype:
+            case C.ChainType.PROTEIN:
+                seq_id = prot_seq_to_id[seq]
+            case C.ChainType.DNA:
+                seq_id = dna_seq_to_id[seq]
+            case C.ChainType.RNA:
+                seq_id = rna_seq_to_id[seq]
+            case _:
+                # ligand
+                continue
 
         # Construct residue mapping
         # Since apo structures are predicted from full sequences,
@@ -163,7 +178,9 @@ def load_sequence_map(path: pathlib.Path) -> dict[str, dict]:
         res_map = f"{seq_res}->{apo_res}"
 
         seq_id_map[(pdb_id, entity_id)] = {
-            "ctype": C.ChainType[ctype.upper()],
+            "ctype": ctype,
+            "sequence": seq,
+            "seq_len": seqlen,
             "seq_id": seq_id,
             "res_map": res_map,
         }
@@ -177,19 +194,13 @@ def load_afdb_map(path: pathlib.Path) -> dict[str, dict]:
     df = pd.read_csv(path)
     df_dict = df.set_index(["pdb_id", "entity_id"]).to_dict("index")
     for (pdb_id, entity_id), row in df_dict.items():
-        seq_len = row["seq_len"]
         seq_st = row["seq_st"]
         seq_end = row["seq_end"]
 
         # uniprot id
         uniprot_id = row["uniprot_id"]
-        uniprot_len = row["uniprot_len"]
         uniprot_st = row["uniprot_st"]
         uniprot_end = row["uniprot_end"]
-
-        if seq_len < AFDB_LENGTH_THRESHOLD:
-            # Too short to consider
-            continue
 
         if not (seq_end - seq_st) == (uniprot_end - uniprot_st):
             # There are some typos in the pdb to uniprot mapping file.
@@ -199,18 +210,11 @@ def load_afdb_map(path: pathlib.Path) -> dict[str, dict]:
         res_map = f"{seq_st}:{seq_end}->{uniprot_st}:{uniprot_end}"
 
         # Compute overlap ratio
-        seq_overlap = (seq_end - seq_st + 1) / seq_len
-        uniprot_overlap = (uniprot_end - uniprot_st + 1) / uniprot_len
-
-        if (
-            seq_overlap >= AFDB_RCSB_OVERLAP_THRESHOLD
-            and uniprot_overlap >= AFDB_UNIPROT_OVERLAP_THRESHOLD
-        ):
-            afdb_id_map[(pdb_id, entity_id)] = {
-                "uniprot_id": uniprot_id,
-                "source": "afdb",
-                "res_map": res_map,
-            }
+        afdb_id_map[(pdb_id, entity_id)] = {
+            "uniprot_id": uniprot_id,
+            "source": "afdb",
+            "res_map": res_map,
+        }
     return afdb_id_map
 
 
@@ -227,6 +231,7 @@ def process_batch(
     global _GLOBAL_LMDB_ENV, _GLOBAL_POLYMER_SEQ_ID, _GLOBAL_AFDB_ID
 
     env = _GLOBAL_LMDB_ENV
+    assert env is not None, "LMDB environment is not initialized in worker."
 
     lookup: dict[str, dict[str, Any]] = {}
     stats: dict[str, int] = {
@@ -265,7 +270,7 @@ def process_batch(
                 if chain.entity_id in entity_dict:
                     continue
                 if chain.ctype.is_nonpolymer:
-                    seq = ":".join(chain.get_ccd_sequence())
+                    seq = "-".join(chain.get_ccd_sequence())
                 else:
                     seq = chain.get_sequence(map_to_standard=True)
                 entity_dict[chain.entity_id] = (chain.ctype, seq)
@@ -290,7 +295,7 @@ def process_batch(
                         ctype, entry_name, entity_id, apo_dir
                     )
                     # Update apo statistics
-                    if entity_lookup.get("apo") is not None:
+                    if len(entity_lookup.get("apo", {})) > 0:
                         stats["with_apo"] += 1
                         has_esmfold = any(
                             apo_info["source"] == "esmfold"
@@ -315,7 +320,7 @@ def process_batch(
                             src_path = (
                                 apo_dir / ref_apo_info["source"] / ref_apo_info["path"]
                             )
-                            dst_path = apo_dir / "ref_apo" / ref_apo_info["path"]
+                            dst_path = apo_dir / "ref_apo" / src_path.name
                             if not dst_path.exists():
                                 shutil.copyfile(src_path, dst_path)
 
@@ -436,12 +441,13 @@ def _prepare_protein_lookup(
             apo_infos.append(afdb_apo)
 
     # Then, check PDB Apo Structure
-    esmfold_path = apo_dir / "esmfold" / f"{seq_id}.pdb.gz"
+    seqlen = seq_info["seq_len"]
+    esmfold_path = apo_dir / "esmfold" / f"{seqlen}/{seq_id}.pdb.gz"
     if esmfold_path.exists():
         esmfold_apo: dict[str, str] = {
             "source": "esmfold",
             "name": seq_id,
-            "path": esmfold_path.name,
+            "path": f"{seqlen}/{seq_id}.pdb.gz",
             "residue_map": seq_res_map,
         }
         apo_infos.append(esmfold_apo)
@@ -480,10 +486,15 @@ def main():
     ref_apo_dir.mkdir(parents=True, exist_ok=True)
 
     print("Loading ID mappings...")
-    seq_map_path = data_dir / "sequences" / "sequence_id.csv"
-    seq_map = load_sequence_map(seq_map_path)
+    seq_dir = data_dir / "sequences"
+    seq_map = load_sequence_map(
+        seq_dir / "all_sequences.fasta",
+        seq_dir / "unique_protein_sequences.fasta",
+        seq_dir / "unique_dna_sequences.fasta",
+        seq_dir / "unique_rna_sequences.fasta",
+    )
 
-    afdb_map_path = data_dir / "sequences" / "afdb_mapping.csv"
+    afdb_map_path = seq_dir / "afdb_mapping.csv"
     afdb_map = {}
     if afdb_map_path is not None and afdb_map_path.exists():
         afdb_map = load_afdb_map(afdb_map_path)
