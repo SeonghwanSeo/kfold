@@ -3,7 +3,6 @@ from collections import defaultdict
 
 import numpy as np
 
-import kfold.constants as C
 from kfold.data.types.metadata import ChainInfo, InterfaceInfo, Metadata
 from kfold.utils.registry import DATA_SAMPLER
 
@@ -24,7 +23,7 @@ def get_interface_cluster_id(iface_m: InterfaceInfo) -> str:
 
 
 def get_chain_weight(
-    chain: ChainInfo,
+    chain_m: ChainInfo,
     cluster_sizes: dict[str, int],
     beta_chain: float = 0.5,
     alpha_prot: float = 3.0,
@@ -35,7 +34,7 @@ def get_chain_weight(
 
     Parameters
     ----------
-    chain : ChainInfo
+    chain_m : ChainInfo
         The chain to get the weight for.
     cluster_sizes : dict[str, int]
         The cluster sizes.
@@ -54,14 +53,14 @@ def get_chain_weight(
         The weight of the chain.
     """
     n_prot, n_nuc, n_ligand = 0, 0, 0
-    if chain.chain_type is C.chain.ChainType.PROTEIN:
+    if chain_m.ctype.is_protein:
         n_prot += 1
-    elif chain.chain_type in (C.chain.ChainType.DNA, C.chain.ChainType.RNA):
+    elif chain_m.ctype.is_nucleic_acid:
         n_nuc += 1
     else:
         n_ligand += 1
 
-    cluster_id = get_chain_cluster_id(chain)
+    cluster_id = get_chain_cluster_id(chain_m)
     n_cluster = cluster_sizes[cluster_id]
 
     # See Section 2.5.1 Equation 1
@@ -109,9 +108,9 @@ def get_interface_weight(
     n_prot, n_nuc, n_ligand = 0, 0, 0
     for asym_id in interface.asym_ids:
         chain = chain_dict[asym_id]
-        if chain.chain_type is C.chain.ChainType.PROTEIN:
+        if chain.ctype.is_protein:
             n_prot += 1
-        elif chain.chain_type in (C.chain.ChainType.DNA, C.chain.ChainType.RNA):
+        elif chain.ctype.is_nucleic_acid:
             n_nuc += 1
         else:
             n_ligand += 1

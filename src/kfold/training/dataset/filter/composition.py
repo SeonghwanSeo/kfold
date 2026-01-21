@@ -37,19 +37,14 @@ class CompositionFilter(BaseFilter):
             chains = [
                 chain
                 for chain in metadata.chains
-                if not (
-                    chain.chain_type == C.chain.ChainType.LIGAND
-                    and chain.chain_name in C.ccd.LIGAND_EXCLUSIONS
-                )
+                if not (chain.ctype.is_ligand and chain.name in C.ccd.LIGAND_EXCLUSIONS)
             ]
 
         if len(chains) < 2:
             # Remove single-chain data
             return False
 
-        has_protein = any(
-            chain.chain_type == C.chain.ChainType.PROTEIN for chain in chains
-        )
+        has_protein = any(chain.ctype.is_protein for chain in chains)
         if not has_protein:
             return False
 

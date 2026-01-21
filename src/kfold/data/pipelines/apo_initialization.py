@@ -698,7 +698,7 @@ class ApoInitializer:
             lengths = [coords.shape[0] for coords in apo_coords_list]
             is_homologous: bool = all(v == lengths[0] for v in lengths)
             if not is_homologous:
-                assert entity_ctypes[eid].is_small_molecule, (
+                assert entity_ctypes[eid].is_ligand, (
                     "Non-homologous chains are only supported for covalent ligands."
                 )
                 entity_ids.remove(eid)
@@ -842,7 +842,7 @@ class ApoInitializer:
         for chain in struct.chains:
             ctype = chain.ctype
 
-            if ctype.is_ion:
+            if chain.is_ion:
                 # Skip ions (single atom)
                 continue
 
