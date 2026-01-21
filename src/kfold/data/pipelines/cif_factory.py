@@ -441,7 +441,7 @@ def prepare_ref_structure(
             gemmi.EntityType.Branched,
         }:
             # Ligand, ion, or branched ligands
-            chain_type = C.ChainType.LIGAND
+            ctype = C.ChainType.LIGAND
             ref_label_id: LabelId = entity.subchains[0]
             raw_chain: gemmi.ResidueSpan = raw_struct[0].get_subchain(ref_label_id)
             ccd_sequences: list[str] = [res.name for res in raw_chain]
@@ -477,7 +477,7 @@ def prepare_ref_structure(
         # Store entity
         valid_entities.append(entity)
         entity_id_to_entity[entity_id] = entity
-        entity_id_to_ctype[entity_id] = chain_type
+        entity_id_to_ctype[entity_id] = ctype
         entity_id_to_seq[entity_id] = ccd_sequences
 
         # Mark all label_ids as valid initially
