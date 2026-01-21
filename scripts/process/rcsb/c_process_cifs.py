@@ -121,9 +121,10 @@ KFOLD_SPLITS = {
     "val": DataFilter(
         date_start=datetime.fromisoformat("2023-01-01 00:00:00"),
         date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
-        max_resolution=4.5,
+        max_resolution=4.0,
         max_chains=1000,
         max_tokens=2560,
+        handle_invalid_chains="disallow",
     ),
     "test": DataFilter(
         date_start=datetime.fromisoformat("2024-01-01 00:00:00"),

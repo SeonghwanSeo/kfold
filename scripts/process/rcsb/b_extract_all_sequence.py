@@ -90,7 +90,6 @@ KFOLD_SPLITS = {
         date_start=datetime.fromisoformat("2023-01-01 00:00:00"),
         date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
         max_resolution=4.5,
-        min_chains=1,
         max_chains=1000,
         max_residues=2560,
     ),

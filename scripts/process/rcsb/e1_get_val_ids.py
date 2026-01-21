@@ -4,28 +4,28 @@ Intermediate results:
 --- Cluster-based sampling ---
 # Multimer:
 Stage 3: Final sampling interfaces for each interface type
-  Protein-Protein: 1862 -> 500
-  Protein-DNA: 541 -> 200
-  Protein-RNA: 232 -> 200
-  Protein-Ligand: 2516 -> 500
-  DNA-DNA: 345 -> 100
-  DNA-RNA: 45 -> 45
-  DNA-Ligand: 97 -> 50
-  RNA-RNA: 52 -> 50
-  RNA-Ligand: 20 -> 20
-  Ligand-Ligand: 373 -> 50
+  Protein-Protein: 1665 -> 500
+  Protein-DNA: 398 -> 100
+  Protein-RNA: 181 -> 100
+  Protein-Ligand: 2058 -> 400
+  DNA-DNA: 281 -> 50
+  DNA-RNA: 31 -> 31
+  DNA-Ligand: 70 -> 50
+  RNA-RNA: 42 -> 42
+  RNA-Ligand: 16 -> 16
+  Ligand-Ligand: 288 -> 0
 
 # Monomer:
 Stage 3: Final sampling polymers for each chain type
-  Protein: 559 -> 0
-  DNA: 33 -> 33
-  RNA: 30 -> 30
+  Protein: 198 -> 0
+  DNA: 20 -> 20
+  RNA: 25 -> 25
 
 --- Final sampling ---
-Multimer entries: 1264
-Monomer entries: 63
-Total entries: 1316
-Final entries: 1280
+Multimer entries: 1017
+Monomer entries: 45
+Total entries: 1056
+Final entries: 1024
 """
 
 import argparse
@@ -72,22 +72,24 @@ def get_rng(key: str) -> np.random.Generator:
 VERBOSE = 0
 INIT_MAX_TOKENS = 2560
 FINAL_MAX_TOKENS = 2048
+SEQUENCE_IDENTITY_THRESHOLD = 0.40
+TANIMOTO_SIMILARITY_THRESHOLD = 0.80
 NUM_INTERFACE_SAMPLES: dict[tuple[C.ChainType, C.ChainType], int] = {
     norm_key(C.ChainType.PROTEIN, C.ChainType.PROTEIN): 500,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.DNA): 200,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.RNA): 200,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.LIGAND): 500,
-    norm_key(C.ChainType.DNA, C.ChainType.DNA): 100,
-    # norm_key(C.ChainType.DNA, C.ChainType.RNA): 50,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.DNA): 100,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.RNA): 100,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.LIGAND): 400,
+    norm_key(C.ChainType.DNA, C.ChainType.DNA): 50,
+    norm_key(C.ChainType.DNA, C.ChainType.RNA): 50,
     norm_key(C.ChainType.DNA, C.ChainType.LIGAND): 50,
     norm_key(C.ChainType.RNA, C.ChainType.RNA): 50,
-    # norm_key(C.ChainType.RNA, C.ChainType.LIGAND): 50,
-    norm_key(C.ChainType.LIGAND, C.ChainType.LIGAND): 50,
+    norm_key(C.ChainType.RNA, C.ChainType.LIGAND): 50,
+    norm_key(C.ChainType.LIGAND, C.ChainType.LIGAND): 0,
 }
 NUM_MONOMER_SAMPLES: dict[C.ChainType, int] = {
     C.ChainType.PROTEIN: 0,  # No protein monomers
 }
-FINAL_VALIDATION_SET_SIZE = 1280
+FINAL_VALIDATION_SET_SIZE = 1024
 
 
 class Seq(NamedTuple):
@@ -106,7 +108,11 @@ class Seq(NamedTuple):
 
 
 def get_polymer_homologs(
-    ctype: C.ChainType, queries: list[Seq], targets: list[Seq], mmseqs: str
+    ctype: C.ChainType,
+    queries: list[Seq],
+    targets: list[Seq],
+    mmseqs: str,
+    sequence_identity: float = SEQUENCE_IDENTITY_THRESHOLD,
 ) -> dict[str, set[str]]:
     """Return high homology sequences from queries against targets."""
     assert ctype.is_polymer, "Polymer homology search only supports polymers."
@@ -138,7 +144,7 @@ def get_polymer_homologs(
         uniq_queries,
         uniq_targets,
         chain_type=ctype.name.lower(),
-        min_sequence_identity=0.4,
+        min_sequence_identity=sequence_identity,
         verbose=VERBOSE,
         print_cmd=(VERBOSE > 0),
         mmseqs2_exec=mmseqs,
@@ -168,7 +174,10 @@ def get_polymer_homologs(
 
 
 def get_ligand_homologs(
-    queries: list[Seq], targets: list[Seq], ccd: CCD, tanimoto_threshold: float = 0.85
+    queries: list[Seq],
+    targets: list[Seq],
+    ccd: CCD,
+    tanimoto_threshold: float = TANIMOTO_SIMILARITY_THRESHOLD,
 ) -> dict[str, set[str]]:
     """Return high homology ligands from queries against targets."""
     print(f"Getting ligand homologs with Tanimoto threshold {tanimoto_threshold}...")
@@ -217,17 +226,16 @@ def get_ligand_homologs(
     for code in tqdm(sorted(query_ccd_to_ids), desc="Tanimoto Similarity Check"):
         mol = ccd[code].mol
         Chem.SanitizeMol(mol, catchErrors=True)
+        sim_ccds: list[str] = []
         try:
             # Sanitize molecule
             fp = fpgen.GetFingerprint(mol)
         except Exception as e:
-            # If fingerprint computation fails, filter out the ligand
+            # If fingerprint computation fails, pass
             if VERBOSE:
                 print(f"Error computing fingerprint for CCD {code}: {e}")
-            sim_ccds: list[str] = []
         else:
             similarities = BulkTanimotoSimilarity(fp, target_fps)
-            sim_ccds: list[str] = []
             for i, sim in enumerate(similarities):
                 if sim >= tanimoto_threshold:
                     sim_ccds.append(target_fp_ccds[i])
@@ -250,7 +258,11 @@ def get_ligand_homologs(
     return results
 
 
-def run_clustering(all_sequences: list[Seq], mmseqs: str) -> dict[str, dict[str, str]]:
+def run_clustering(
+    all_sequences: list[Seq],
+    mmseqs: str,
+    sequence_identity: float = SEQUENCE_IDENTITY_THRESHOLD,
+) -> dict[str, dict[str, str]]:
     """Main function to process and cluster sequences."""
 
     # Sequence -> representative ID mapping
@@ -297,7 +309,7 @@ def run_clustering(all_sequences: list[Seq], mmseqs: str) -> dict[str, dict[str,
     )
     protein_cluster_map = run_mmseqs2_cluster(
         uniq_proteins,
-        min_sequence_identity=0.4,
+        min_sequence_identity=sequence_identity,
         chain_type="protein",
         verbose=VERBOSE,
         print_cmd=(VERBOSE > 0),
@@ -393,27 +405,41 @@ def filter_multier_interfaces(
     # ============================================================
     print("\nStage 1-2: Homology filtering of interfaces...")
     # Just keep pdb_id level homologs for interface filtering
-    seq_homologs_map: dict[str, set[str]] = {
+    high_homology_pdbs: dict[str, set[str]] = {
         seq_id: set(h.split("_")[0] for h in homologs)
         for seq_id, homologs in seq_homologs_map.items()
     }
     # Filter out high homology interfaces, defined as interfaces contains
     # two chains with high homology to any target in training set.
+    # In addition to AF3 protocol, also filter out ion - high homology chain interfaces.
+    is_ion = lambda seq: seq.ctype.is_ligand and seq.sequence in C.ccd.IONS  # noqa
+
+    n_high_homology = 0
+    n_ion_leakage = 0
     filtered_interfaces: list[tuple[Seq, Seq]] = []
     for seq1, seq2 in tqdm(all_interfaces, desc="Homology Filtering"):
         # Multi-residue ligands should have been filtered out.
         assert seq1.sequence.count("-") == 0
         assert seq2.sequence.count("-") == 0
-        seq1_homologs = seq_homologs_map[seq1.id]
-        seq2_homologs = seq_homologs_map[seq2.id]
-        if len(seq1_homologs) == 0 or len(seq2_homologs) == 0:
-            # Keep low homology interfaces
-            filtered_interfaces.append((seq1, seq2))
-            continue
         # Check that there is any target with high homology to both chains
-        if len(seq1_homologs.intersection(seq2_homologs)) == 0:
-            # Keep low homology interfaces
-            filtered_interfaces.append((seq1, seq2))
+        train_pdb1 = high_homology_pdbs[seq1.id]
+        train_pdb2 = high_homology_pdbs[seq2.id]
+        if len(train_pdb1 & train_pdb2) > 0:
+            n_high_homology += 1
+            continue
+
+        # Filter out high-homology chain - ion interfaces
+        if (is_ion(seq1) and len(train_pdb2) > 0) or (
+            is_ion(seq2) and len(train_pdb1) > 0
+        ):
+            n_ion_leakage += 1
+            continue
+
+        # Keep the interface
+        filtered_interfaces.append((seq1, seq2))
+
+    print(f"Total high homology interfaces filtered: {n_high_homology}")
+    print(f"Total ion - high homology chain interfaces filtered: {n_ion_leakage}")
     print("Total interfaces after homology filtering:", len(filtered_interfaces))
 
     # ============================================================
@@ -432,8 +458,8 @@ def filter_multier_interfaces(
     print(f"Fetching ranking model fit scores for {len(ligand_entities)} ligands...")
     ranking_model_fits: dict[str, float] = {}
     ligand_entities: list[str] = sorted(ligand_entities)
-    for i in tqdm(range(0, len(ligand_entities), 500)):
-        ranking_model_fits |= fetch_ranking_model_fit(ligand_entities[i : i + 500])
+    for i in tqdm(range(0, len(ligand_entities), 1000)):
+        ranking_model_fits |= fetch_ranking_model_fit(ligand_entities[i : i + 1000])
     print("Total ligands with ranking model fit scores:", len(ranking_model_fits))
 
     # Determine ligands to exclude
@@ -626,7 +652,7 @@ def read_npz_file(npz_file: pathlib.Path) -> dict:
         entity_id = chain.entity_id
         if entity_id not in entity_sequences:
             if chain.is_polymer:
-                # SCOP mapping to standard residues
+                # Mapping to standard residues
                 sequence = chain.get_sequence(map_to_standard=True)
             else:
                 # Handle multi-residue ligands (this will be filtered out later)
@@ -646,24 +672,35 @@ def read_npz_file(npz_file: pathlib.Path) -> dict:
         c1: Chain = struct.get_chain_by_asym_id(asym_id_1)
         c2: Chain = struct.get_chain_by_asym_id(asym_id_2)
         eid1, eid2 = c1.entity_id, c2.entity_id
-        if norm_key(eid1, eid2) in visited_iface_entities:
-            # Skip duplicate interfaces
+        key = norm_key(eid1, eid2)
+
+        # Skip duplicate interfaces
+        if key in visited_iface_entities:
             continue
+
+        # Skip multi-residue non-polymers in interfaces
         if (c1.is_nonpolymer and c1.num_residues > 1) or (
             c2.is_nonpolymer and c2.num_residues > 1
         ):
-            # Skip multi-residue non-polymers in interfaces
             continue
-        all_interfaces.append(
-            (entity_sequences[c1.entity_id], entity_sequences[c2.entity_id])
-        )
-        visited_iface_entities.add(norm_key(eid1, eid2))
 
-    # Monomers
+        # Add interface
+        seq1 = entity_sequences[c1.entity_id]
+        seq2 = entity_sequences[c2.entity_id]
+        all_interfaces.append((seq1, seq2))
+        visited_iface_entities.add(key)
+
+    # Monomers (exclude protein-only structures)
     if struct.num_polymer_chains == 1:
         chain: Chain = next(c for c in struct.chains if c.is_polymer)
         assert chain.is_polymer, "Monomer chain must be polymer."
-        all_monomers.append(entity_sequences[chain.entity_id])
+        seq = entity_sequences[chain.entity_id]
+        # Add polymer-ligand systems as monomers
+        if struct.num_chains > 1:
+            all_monomers.append(seq)
+        # Add nucleic acid monomers
+        elif struct.num_chains == 1 and chain.is_nucleic_acid:
+            all_monomers.append(seq)
 
     return {
         "pdb_id": pdb_id,
@@ -839,6 +876,8 @@ def main():
             len(val_ids), size=FINAL_VALIDATION_SET_SIZE, replace=False
         )
         val_ids = [val_ids[i] for i in sorted(sampled_indices)]
+    else:
+        val_ids = sorted(sampled_ids)
 
     print("Validation Set Final Summary")
     print(f"Multimer entries: {len(multimer_ids)}")
