@@ -8,8 +8,7 @@ This document provides all detailed notes on the development of the K-Fold proje
 - [Reference](#reference)
 - [Reproduction of AlphaFold3 Algorithms](#reproduction-of-alphafold3-algorithms)
 - [Implementation of K-Fold](#implementation-of-k-fold)
-- [Not Yet Implemented](#not-yet-implemented)
-- [To Be Modified](#to-be-modified)
+- [Data construction](#data-construction)
 
 ---
 
@@ -140,12 +139,48 @@ This section describes the additional implementations which are not part of the 
 
 ---
 
-## Not Yet Implemented
+## Data construction
 
-The following items require future implementation.
+See [`scripts/process/rcsb/README.md`](../scripts/process/rcsb/README.md) for instructions on downloading and preparing the RCSB PDB dataset.
 
-### Data Processing
+### RCSB Training set
 
-1. **Sequence Layout**: To be added for integrating with pre-trained language models.
-2. **Interface Conditioning**: Boltz1 utilizes Pocket conditioning during training (Implementation required).
-    - NOTE: Generalize this to multi-modal interface conditioning.
+Our training dataset contains all PDB entries released before 2022-12-31 (inclusive). The filtering criteria follow those of AlphaFold3 (see SI 2.5.4 of the AlphaFold3 paper) with the following modifications:
+- For bioassemblies with more than 20 chains, we save the entire bioassembly using on-the-fly pre-cropping during training.
+
+### RCSB Validation set
+
+Our validation set construction started by taking all PDB entries released between 2023-01-01 and 2023-12-31 (inclusive).
+We note that this time split is identical to Boltz2's validation set (2024-01-01), as there were no entries released on 2024-01-01.
+
+Closely following AlphaFold3's validation set construction methodology (see SI 5.8 of the AlphaFold3 paper), we implemented the following steps:
+
+1. Take all targets released between 2023-01-01 and 2023-12-31 (inclusive) with a token count <= 2560, chain count <= 1000, and resolution <= 4.0 Å.
+2. Remove entries where any chain was filtered out during the PDB data filtering step (see SI 2.5.4 of the AlphaFold3 paper).
+3. Select low-homology interfaces using the following criteria:
+    1. Collect all interface chain pairs. Interfaces with multi-residue ligands are excluded.
+    2. Filter for low-homology interfaces only:
+        - Remove the interface if any training target has two chains with sequence identity >= 40% (polymer) or Tanimoto similarity >= 80% (ligand) to the involved chains.
+        - Remove polymer-ion interfaces if any training target has one polymer chain with sequence identity >= 40% to the involved polymer chain.
+        - Remove ligand-ligand interfaces.
+    3. Assign interfaces to clusters `(cluster_id1, cluster_id2`) based on the following homology criteria:
+        - 40% sequence identity for protein chains.
+        - 100% sequence identity for DNA/RNA chains.
+        - CCD identity for ligands.
+    4. Sample one interface from each cluster.
+    5. Sample interfaces for each interface type:
+        - Protein-Protein: 500 interfaces
+        - Protein-DNA: 100 interfaces
+        - Protein-RNA: 100 interfaces
+        - Protein-Ligand: 400 interfaces
+        - DNA-DNA: 50 interfaces
+        - DNA-RNA: all interfaces
+        - DNA-Ligand: 50 interfaces
+        - RNA-RNA: all interfaces
+        - RNA-Ligand: all interfaces
+        - Ligand-Ligand: 0 interfaces
+4. Select low-homology monomers using the following criteria:
+    1. Take all targets with a single polymer chain released between 2023-01-01 and 2023-12-31 (inclusive) with a token count <= 2560 and resolution <= 4.0 Å.
+    2. Filter out polymers with greater than 40% sequence identity to any training target.
+    3. Take all nucleic acid monomers.
+5. Take all PDB entries containing the selected interfaces or polymers, and filter out entries with a token count > 2048.
