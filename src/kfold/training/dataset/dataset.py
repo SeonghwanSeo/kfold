@@ -74,6 +74,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 import lmdb
+import msgpack
 import numpy as np
 import torch
 from omegaconf import OmegaConf
@@ -221,8 +222,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # === Validate parameters === #
         assert self.data_root.exists(), f"Dataset path {self.data_root} does not exist."
+        emb_root = self.data_root / "embedding"
         if self.seq_embedding is not None:
-            self.seq_emb_root = self.data_root / "seq_embedding" / self.seq_embedding
+            self.seq_emb_root = emb_root / "sequence" / self.seq_embedding
             assert self.seq_emb_root.exists(), (
                 f"Sequence embedding root {self.seq_emb_root} does not exist."
             )
@@ -231,9 +233,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             )
 
         if self.struct_embedding is not None:
-            self.struct_emb_root = (
-                self.data_root / "struct_embedding" / self.struct_embedding
-            )
+            self.struct_emb_root = emb_root / "structure" / self.struct_embedding
             assert self.struct_emb_root.exists(), (
                 f"Structure embedding root {self.struct_emb_root} does not exist."
             )
@@ -297,19 +297,25 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         if custom_manifest is not None:
             manifest_path = Path(custom_manifest)
         else:
-            manifest_path = self.data_root / "manifest.json"
+            manifest_path = self.data_root / "manifest.msgpack"
         if not manifest_path.exists():
             raise FileNotFoundError(f"Manifest file {manifest_path} not found.")
-        with open(manifest_path) as f:
-            metadata_dicts: list[dict] = json.load(f)
+
+        if manifest_path.suffix == ".msgpack":
+            with open(manifest_path, "rb") as f:
+                metadata_dicts: list[dict] = msgpack.unpack(f)
+        else:
+            with open(manifest_path) as f:
+                metadata_dicts: list[dict] = json.load(f)
+
         metadatas: list[Metadata] = [Metadata.from_dict(d) for d in metadata_dicts]
         del metadata_dicts
         return metadatas
 
     def load_lookup_table(self) -> dict:
-        lookup_path = self.data_root / "lookup.json"
-        with open(lookup_path) as f:
-            lookup_table = json.load(f)
+        lookup_path = self.data_root / "lookup.msgpack"
+        with open(lookup_path, "rb") as f:
+            lookup_table: dict = msgpack.unpack(f)
         for m in self.metadatas:
             if m.id not in lookup_table:
                 raise KeyError(f"Metadata ID {m.id} not found in lookup table.")
