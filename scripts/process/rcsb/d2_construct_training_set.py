@@ -56,7 +56,7 @@ def main():
     manifest_path: pathlib.Path = data_dir / "manifest.msgpack"
     with open(manifest_path, "wb") as f:
         msgpack.pack(metadata_dicts, f)
-    print(f"Saved manifest (pickle) to {manifest_path}")
+    print(f"Saved manifest (msgpack) to {manifest_path}")
 
     # Get npz files
     npz_dir: pathlib.Path = args.data_dir / "npz"

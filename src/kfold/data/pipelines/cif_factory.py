@@ -81,7 +81,7 @@ def parse_cif(
 
     # Prepare gemmi structure
     raw_struct: gemmi.Structure = prepare_gemmi_structure(
-        block, clean_up=True, expand_assembly=True
+        block, expand_assembly=True, clean_up=True
     )
 
     # --- Reference structure preparation ---
@@ -247,8 +247,8 @@ def check_method(
 # ==================================================
 def prepare_gemmi_structure(
     block: gemmi.cif.Block,
-    clean_up: bool = True,
     expand_assembly: bool = True,
+    clean_up: bool = True,
 ) -> gemmi.Structure:
     """Prepare gemmi Structure object from CIF block."""
     raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
@@ -405,16 +405,18 @@ def prepare_ref_structure(
 
         if entity.entity_type == gemmi.EntityType.Polymer:
             # Protein, RNA, or DNA
+            # TODO: Do we have to consider more polymer types? e.g., DNA/RNA hybrids
             if entity.polymer_type not in polymer_type_to_chain_type:
                 # Skip unsupported polymer types
                 continue
-            chain_type: C.ChainType = polymer_type_to_chain_type[entity.polymer_type]
-            unk: str = chain_type_to_unk[chain_type]
+            ctype: C.ChainType = polymer_type_to_chain_type[entity.polymer_type]
+            unk: str = chain_type_to_unk[ctype]
 
             # Get CCD sequences with unknown mapping
+            ccd_sequences: list[str] = entity.full_sequence
             ccd_sequences: list[str] = [
                 v if (v in C.ccd.CCD_NAME_TO_ONE_LETTER and v in ccd) else unk
-                for v in entity.full_sequence
+                for v in ccd_sequences
             ]
 
             lengths = len(ccd_sequences)
@@ -443,6 +445,10 @@ def prepare_ref_structure(
             ref_label_id: LabelId = entity.subchains[0]
             raw_chain: gemmi.ResidueSpan = raw_struct[0].get_subchain(ref_label_id)
             ccd_sequences: list[str] = [res.name for res in raw_chain]
+
+            if len(ccd_sequences) == 0:
+                # Skip empty ligand entities
+                continue
 
             # Check if all ligand residues are in CCD
             is_valid_entity = True
@@ -545,25 +551,40 @@ def prepare_ref_structure(
                     "Custom ligand SMILES not supported in CIF parsing."
                 )
 
-        # Keep all atoms for non-polymer by default
-        # For covalent ligands and glycans, we will drop leaving atoms later
-        parsed_chain = structure_preparation.prepare_ref_chain(
+        # Parse reference chain once
+        # Drop leaving atoms for polymers, and keep all atoms for ligands as default
+        # (Will filter later based on covalent bonds)
+        parsed_chain: Chain = structure_preparation.prepare_ref_chain(
             chain_type=ctype,
             ccd_sequences=ccd_sequences,
             ccd=ccd,
             smiles=smiles,
             drop_leaving_atoms=ctype.is_polymer,
         )
+        if ctype.is_nonpolymer:
+            # Collect residue atom names for non-polymer chains
+            ref_residue_atom_names: dict[int, set[str]] = {}
+            for res_idx in range(1, parsed_chain.num_residues + 1):
+                atom_st = parsed_chain.residue.atom_starts[res_idx - 1]
+                atom_en = atom_st + parsed_chain.residue.num_atoms[res_idx - 1]
+                ref_residue_atom_names[res_idx] = set(
+                    parsed_chain.atom.name[atom_st:atom_en].tolist()
+                )
+
         for label_id in entity.subchains:
             if label_id not in valid_label_ids:
                 # Skip invalid chains
                 continue
 
-            # Glycans and covalent ligands: drop leaving atoms
-            is_covalent_ligand = ctype.is_nonpolymer and label_id in linked_label_ids
+            valid_atom_names: dict[int, set[str]] = {}
+            if ctype.is_nonpolymer and label_id in linked_label_ids:
+                # For non-polymer chains with covalent bonds, check valid atoms.
+                for i, res in enumerate(raw_struct[0].get_subchain(label_id), start=1):
+                    atom_names = set(atom.name.upper() for atom in res)
+                    if atom_names != ref_residue_atom_names[i]:
+                        valid_atom_names[i] = atom_names
 
-            if is_covalent_ligand:
-                # For covalent inhibitors, create a new chain struct without leaving atoms
+            if len(valid_atom_names) > 0:
                 c = structure_preparation.prepare_ref_chain(
                     chain_type=ctype,
                     entity_id=entity_id,
@@ -571,7 +592,7 @@ def prepare_ref_structure(
                     sym_id=label_id_to_sym_id[label_id],
                     ccd_sequences=ccd_sequences,
                     ccd=ccd,
-                    drop_leaving_atoms=True,
+                    valid_atom_names=valid_atom_names,
                 )
             else:
                 # Otherwise, clone chain for each subchain
@@ -624,8 +645,8 @@ def prepare_ref_structure(
             continue
         asym_id1: AsymId = label_id_to_asym_id[label_id1]
         asym_id2: AsymId = label_id_to_asym_id[label_id2]
-        c1 = asym_id_to_chain[asym_id1]
-        c2 = asym_id_to_chain[asym_id2]
+        c1: Chain = asym_id_to_chain[asym_id1]
+        c2: Chain = asym_id_to_chain[asym_id2]
 
         if c1.ctype.is_polymer and c2.ctype.is_polymer:
             # Skip polymer-polymer connections

@@ -3,10 +3,12 @@
 import argparse
 import json
 import pathlib
-import pickle
+from collections import defaultdict
 
 import lmdb
+import msgpack
 
+import kfold.constants as C
 from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import RefStructure
 
@@ -31,7 +33,7 @@ def main():
 
     # Get entry IDs to include
     print("Loading entry IDs...")
-    key_path: pathlib.Path = data_dir / "validation_pdb_ids.txt"
+    key_path: pathlib.Path = data_dir / "validation_ids.txt"
     print(key_path.absolute())
     with open(key_path) as f:
         entry_ids: list[str] = sorted(set(line.strip().lower() for line in f.readlines()))
@@ -73,11 +75,11 @@ def main():
     # Save metadatas to a single manifest file.
     metadata_dicts: list[dict] = [m.to_dict() for m in metadatas]
 
-    # Save to a pickle file (efficient)
-    manifest_path: pathlib.Path = data_dir / "manifest.pkl"
+    # Save to a msgpack file (efficient and fast)
+    manifest_path: pathlib.Path = data_dir / "manifest.msgpack"
     with open(manifest_path, "wb") as f:
-        pickle.dump(metadata_dicts, f)
-    print(f"Saved manifest (pickle) to {manifest_path}")
+        msgpack.pack(metadata_dicts, f)
+    print(f"Saved manifest (msgpack) to {manifest_path}")
 
     # Save to a json file (human-readable)
     manifest_path: pathlib.Path = data_dir / "manifest.json"
@@ -85,86 +87,33 @@ def main():
         json.dump(metadata_dicts, f, indent=2)
     print(f"Saved manifest (json) to {manifest_path}")
 
-    n_proteins = 0
-    n_rna = 0
-    n_dna = 0
-    n_ligands = 0
+    chains_per_ctype: dict[C.ChainType, int] = defaultdict(int)
+    interfaces_per_ctype: dict[tuple[C.ChainType, C.ChainType], int] = defaultdict(int)
 
-    n_protein_protein = 0
-    n_rna_rna = 0
-    n_dna_dna = 0
-    n_dna_rna = 0
+    def norm_ctype(c1: C.ChainType, c2: C.ChainType) -> tuple[C.ChainType, C.ChainType]:
+        return (c1, c2) if c1.value <= c2.value else (c2, c1)
 
-    n_protein_rna = 0
-    n_protein_dna = 0
-    n_protein_ligand = 0
+    for m in metadatas:
+        # Check chain composition
+        for cm in m.chains:
+            chains_per_ctype[cm.ctype] += 1
 
-    n_rna_ligand = 0
-
-    n_dna_ligand = 0
-
-    for metadata in metadatas:
-        ctypes = [chain.ctype for chain in metadata.chains]
-        if any(ctype.is_protein for ctype in ctypes):
-            n_proteins += 1
-        if any(ctype.is_rna for ctype in ctypes):
-            n_rna += 1
-        if any(ctype.is_dna for ctype in ctypes):
-            n_dna += 1
-        if any(ctype.is_ligand for ctype in ctypes):
-            n_ligands += 1
-
-        if sum(1 for ctype in ctypes if ctype.is_protein) >= 2:
-            n_protein_protein += 1
-        if sum(1 for ctype in ctypes if ctype.is_rna) >= 2:
-            n_rna_rna += 1
-        if sum(1 for ctype in ctypes if ctype.is_dna) >= 2:
-            n_dna_dna += 1
-        if (
-            sum(1 for ctype in ctypes if ctype.is_dna) >= 1
-            and sum(1 for ctype in ctypes if ctype.is_rna) >= 1
-        ):
-            n_dna_rna += 1
-
-        if any(ctype.is_protein for ctype in ctypes) and any(
-            ctype.is_rna for ctype in ctypes
-        ):
-            n_protein_rna += 1
-        if any(ctype.is_protein for ctype in ctypes) and any(
-            ctype.is_dna for ctype in ctypes
-        ):
-            n_protein_dna += 1
-
-        if any(ctype.is_protein for ctype in ctypes) and any(
-            ctype.is_ligand for ctype in ctypes
-        ):
-            n_protein_ligand += 1
-        if any(ctype.is_rna for ctype in ctypes) and any(
-            ctype.is_ligand for ctype in ctypes
-        ):
-            n_rna_ligand += 1
-        if any(ctype.is_dna for ctype in ctypes) and any(
-            ctype.is_ligand for ctype in ctypes
-        ):
-            n_dna_ligand += 1
+        for im in m.interfaces:
+            ctype1 = m.get_chain_by_asym_id(im.asym_ids[0]).ctype
+            ctype2 = m.get_chain_by_asym_id(im.asym_ids[1]).ctype
+            ctype_pair = norm_ctype(ctype1, ctype2)
+            interfaces_per_ctype[ctype_pair] += 1
 
     print("Composition statistics:")
-    print(f"Number of entries with protein: {n_proteins}")
-    print(f"Number of entries with RNA: {n_rna}")
-    print(f"Number of entries with DNA: {n_dna}")
-    print(f"Number of entries with ligands: {n_ligands}")
+    print("Final chain type statistics:")
+    for ctype in sorted(chains_per_ctype.keys()):
+        print(f"  {ctype}: {chains_per_ctype[ctype]}")
+    print()
 
-    print(f"Number of entries with protein-protein interactions: {n_protein_protein}")
-    print(f"Number of entries with RNA-RNA interactions: {n_rna_rna}")
-    print(f"Number of entries with DNA-DNA interactions: {n_dna_dna}")
-    print(f"Number of entries with DNA-RNA interactions: {n_dna_rna}")
-
-    print(f"Number of entries with protein-RNA interactions: {n_protein_rna}")
-    print(f"Number of entries with protein-DNA interactions: {n_protein_dna}")
-    print(f"Number of entries with protein-ligand interactions: {n_protein_ligand}")
-
-    print(f"Number of entries with RNA-ligand interactions: {n_rna_ligand}")
-    print(f"Number of entries with DNA-ligand interactions: {n_dna_ligand}")
+    print("Final interface type statistics:")
+    for ctypes in sorted(interfaces_per_ctype.keys()):
+        key = f"{ctypes[0]}-{ctypes[1]}"
+        print(f"  {key}: {interfaces_per_ctype[ctypes]}")
 
 
 if __name__ == "__main__":

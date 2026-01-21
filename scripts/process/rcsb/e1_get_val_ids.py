@@ -7,13 +7,13 @@ Stage 3: Final sampling interfaces for each interface type
   Protein-Protein: 1862 -> 500
   Protein-DNA: 541 -> 200
   Protein-RNA: 232 -> 200
-  Protein-Ligand: 2512 -> 500
+  Protein-Ligand: 2516 -> 500
   DNA-DNA: 345 -> 100
   DNA-RNA: 45 -> 45
-  DNA-Ligand: 92 -> 50
+  DNA-Ligand: 97 -> 50
   RNA-RNA: 52 -> 50
   RNA-Ligand: 20 -> 20
-  Ligand-Ligand: 381 -> 50
+  Ligand-Ligand: 373 -> 50
 
 # Monomer:
 Stage 3: Final sampling polymers for each chain type
@@ -22,9 +22,9 @@ Stage 3: Final sampling polymers for each chain type
   RNA: 30 -> 30
 
 --- Final sampling ---
-Multimer entries: 1259
+Multimer entries: 1264
 Monomer entries: 63
-Total entries: 1312
+Total entries: 1316
 Final entries: 1280
 """
 

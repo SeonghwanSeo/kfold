@@ -81,7 +81,7 @@ def parse_arguments():
     parser.add_argument(
         "--date_cutoff",
         type=str,
-        default="2021-09-30",
+        default="2022-12-31",
         help="Date cutoff for processing components (YYYY-MM-DD).",
     )
     return parser.parse_args()

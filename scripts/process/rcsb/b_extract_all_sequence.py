@@ -109,7 +109,9 @@ KFOLD_SPLITS = {
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Process RCSB mmCIF files.")
+    parser = argparse.ArgumentParser(
+        description="Extract sequences from RCSB mmCIF files."
+    )
     parser.add_argument(
         "--cif_dir",
         type=pathlib.Path,
@@ -120,7 +122,7 @@ def parse_args():
         "--data_dir",
         type=pathlib.Path,
         required=True,
-        help="Path to output directory for processed .npz files.",
+        help="Path to output directory to store sequence fasta files.",
     )
 
     # Predefined splits for date and resolution cutoffs

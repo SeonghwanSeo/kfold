@@ -9,12 +9,12 @@ python c_process_rcsb.py \
     --ccd_path /path/to/ccd.pkl \       # Path to CCD pickled file
     --out_dir /path/to/output_npz/ \    # Output Directory
     --split train \                     # Use predefined AlphaFold3 train split
-    --num_workers 8                     # Number of parallel workers
+    --num_workers 120                   # Number of parallel workers
 ```
 
 ## Train/valid splits:
-- train: up to 2021-09-30, max resolution 9.0A, max chains 300
-- val: 2021-10-01 to 2023-01-12, max resolution 4.5A, max chains 1000, max residues 2560
+- train: up to 2022-12-31, max resolution 9.0A, max chains 300
+- val: 2023-01-01 to 2023-12-31, max resolution 4.5A, max chains 1000, max residues 2560
 """
 
 import argparse
@@ -257,7 +257,7 @@ def parse_cif(
 
     # Prepare gemmi structure
     raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
-        block, clean_up=True, expand_assembly=True
+        block, expand_assembly=True, clean_up=True
     )
 
     # Filter by chain count
