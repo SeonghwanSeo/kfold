@@ -277,16 +277,17 @@ class BaseFoldingModel(torch.nn.Module):
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
         st = time.time()
-        dict_out.update(
-            self.structure_module.sample_structure(
-                f_input,
-                s_inputs,
-                s_trunk,
-                z_trunk,
-                num_steps,
-                num_diffusion_samples,
+        with torch.autocast("cuda", dtype=torch.float32):
+            dict_out.update(
+                self.structure_module.sample_structure(
+                    f_input,
+                    s_inputs,
+                    s_trunk,
+                    z_trunk,
+                    num_steps,
+                    num_diffusion_samples,
+                )
             )
-        )
         et = time.time()
         time_logs["diffusion_head"] = et - st
 
