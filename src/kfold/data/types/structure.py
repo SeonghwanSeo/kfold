@@ -5,7 +5,6 @@ import pathlib
 from functools import cached_property
 from typing import Self
 
-import msgpack
 import numpy as np
 
 import kfold.constants as C
@@ -18,6 +17,8 @@ __all__ = ["RefStructure"]
 # === Helper functions === #
 def pack_metadata(metadata: Metadata) -> np.ndarray:
     """Pack Metadata into a numpy bytes array."""
+    import msgpack
+
     metadata_dict = metadata.to_dict()
     metadata_serialized = msgpack.packb(metadata_dict)
     return np.array(metadata_serialized, dtype=np.bytes_)
@@ -25,6 +26,8 @@ def pack_metadata(metadata: Metadata) -> np.ndarray:
 
 def unpack_metadata(data: np.ndarray) -> Metadata:
     """Unpack Metadata from a numpy bytes array."""
+    import msgpack
+
     if isinstance(data, np.ndarray) and data.ndim == 0:
         data = data.item()
     metadata_dict = msgpack.unpackb(data)
@@ -561,8 +564,7 @@ class RefStructure:
     def copy_with_new_coords(self, coords: np.ndarray) -> Self:
         """Create a deep copy of the RefStructure."""
         assert coords.shape == (self.num_atoms, 3), (
-            "Invalid coords shape:",
-            coords.shape,
+            f"Invalid coords shape: {coords.shape}, expected ({self.num_atoms}, 3)"
         )
         new_chains = []
         atom_start = 0
@@ -578,28 +580,12 @@ class RefStructure:
         return dataclasses.replace(self, chains=new_chains)
 
     # === Writer === #
-    def write(self, out_path: str | pathlib.Path, save_apo: bool = False):
-        """Write the structure to a CIF or PDB file."""
-        out_path = pathlib.Path(out_path)
-        suffix = out_path.suffix.lower()
-        if suffix in {".cif", ".mmcif"}:
-            with open(out_path, "w") as w:
-                w.write(self.to_mmcif(save_apo))
-            return
-        if suffix == ".pdb":
-            import gemmi
+    def write(self, filename: str | pathlib.Path, save_apo: bool = False):
+        """Write the structure to a file."""
+        from kfold.data.utils.writer import KFoldWriter
 
-            doc = gemmi.cif.read_string(self.to_mmcif(save_apo))
-            structure = gemmi.make_structure_from_block(doc.sole_block())
-            structure.write_pdb(str(out_path))
-            return
-        raise ValueError(f"Unsupported file format: {out_path.suffix}")
-
-    def to_mmcif(self, save_apo: bool = False) -> str:
-        """Convert to mmCIF format string."""
-        import kfold.data.utils.writer.mmcif as mmcif_writer
-
-        return mmcif_writer.to_mmcifstring(self, save_apo)
+        writer = KFoldWriter()
+        writer.write(self, filename, save_apo=save_apo)
 
     # === Helper functions === #
     def validate(self) -> None:

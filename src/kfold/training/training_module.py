@@ -1,6 +1,7 @@
 """Define training modules for k-fold"""
 
 import gc
+import json
 import pathlib
 from dataclasses import dataclass
 from typing import Any
@@ -14,6 +15,8 @@ from torchmetrics import MeanMetric
 from kfold import constants as C
 from kfold.config import to_dict
 from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import RefStructure
+from kfold.data.utils.writer import KFoldWriter
 from kfold.model.models.kfold import KFold, KFoldConfig
 from kfold.training.utils.binned_loss_logging import (
     EntityBinConfig,
@@ -26,6 +29,7 @@ from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
 from . import metrics as validation_metrics
+from .logging.validation_summary import summarize_prediction
 from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
 
@@ -105,7 +109,8 @@ class ValidationConfig:
     return_traj: bool = False
     traj_format: str = "cif"
     symmetry_correction: bool = True
-    save_structure_path: str | None = None
+    # Validation output logging
+    save_predictions: bool = True
 
 
 @dataclass(kw_only=True)
@@ -177,6 +182,10 @@ class KFoldTrainingModule(pl.LightningModule):
         self.setup_losses()
         self.setup_metrics()
 
+        # Create writer
+        self.writer: KFoldWriter = KFoldWriter()
+
+        # Save hyperparameters
         self.save_hyperparameters(to_dict(self.global_config))
 
         # Pre-sample recycling steps for training
@@ -324,7 +333,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 sample_structures=self.train_confidence_head,
             )
         elif mode == "validation":
-            return_traj = bool(getattr(self.validation_config, "return_traj", False))
+            return_traj = self.validation_config.return_traj
             dict_out, _ = self.model.sample(
                 f_input,
                 num_recycles=num_recycles,
@@ -455,9 +464,6 @@ class KFoldTrainingModule(pl.LightningModule):
         batch: tuple[FoldingInput, list[dict]],
         batch_idx: int,
     ):
-        # TODO: sample molecules and compute validation metrics
-        val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
-
         val_config = self.validation_config
         num_diffusion_samples = val_config.num_diffusion_samples
 
@@ -484,43 +490,76 @@ class KFoldTrainingModule(pl.LightningModule):
             else:
                 raise e
 
+        struct_info = full_struct_list[0]
+        name: str = struct_info["id"]
+
+        # Compute validation metrics
         with torch.autocast("cuda", torch.float32):
-            # symmetry correction
-            # TODO: get_true_coordinates function to use symmetry correction
+            # Permute predicted and true coordinates to align
             true_coords, atom_mask = validation_metrics.permute_label_coordinates(
                 f_input=f_input,
                 pred_coords=sample_coords,
                 full_struct_list=full_struct_list,
                 symmetry_correction=val_config.symmetry_correction,
             )
+            # Compute metrics
             metrics = validation_metrics.compute_validation_metrics(
                 f_input=f_input,
                 true_coords=true_coords,
                 pred_coords=sample_coords,
                 atom_mask=atom_mask,
+                align=False,  # Already aligned
             )
+
+        # Update validation metrics
+        val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
         for k in val_metrics.keys():
             v, w = metrics[k]
             val_metrics[k].update(v, w)
 
-        if val_config.save_structure_path is not None:
-            save_dir = pathlib.Path(
-                val_config.save_structure_path, f"it-{self.global_step}"
+        # Save validation predictions if needed
+        if val_config.save_predictions:
+            if self.trainer.log_dir is None:
+                print(
+                    "Warning: trainer.log_dir is None, "
+                    "skipping saving validation predictions."
+                )
+                return
+            epoch: int = self.current_epoch
+            global_step: int = self.global_step
+            save_dir: pathlib.Path = (
+                pathlib.Path(self.trainer.log_dir)
+                / "validation"
+                / f"epoch-{epoch}_step-{global_step}"
+                / name
             )
-            rmsd_list = metrics["avg_rmsd"][0].tolist()
-            lddt_list = metrics["avg_lddt"][0].tolist()
-            self.save_structure(
-                f_input,
-                sample_coords,
-                true_coords,
-                atom_mask,
-                full_struct_list,
+            # Create directory to save validation outputs
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            ref_struct: RefStructure = struct_info["structure"]
+            all_metrics = self.save_metrics(
+                ref_struct,
+                sample_coords[0],  # [Nsample, Natom, 3]
+                true_coords[0],  # [Nsample, Natom, 3]
+                atom_mask[0],  # [Nsample, Natom]
                 save_dir,
-                rmsd_list,
-                lddt_list,
-                traj=traj,
-                traj_format=getattr(val_config, "traj_format", "cif"),
             )
+            self.save_structure(
+                ref_struct,
+                sample_coords[0],  # [Nsample, Natom, 3]
+                true_coords[0],  # [Nsample, Natom, 3]
+                atom_mask[0],  # [Nsample, Natom]
+                save_dir,
+                all_metrics,
+            )
+            if traj is not None:
+                # Save trajectory if available
+                self.save_trajectory(
+                    ref_struct,
+                    traj[:, 0],  # [T, Natom, 3]
+                    save_dir,
+                    format=val_config.traj_format,
+                )
 
     def on_validation_epoch_end(self):
         """Aggregate and log validation metrics at the end of the epoch."""
@@ -785,178 +824,106 @@ class KFoldTrainingModule(pl.LightningModule):
                 del self._ema
 
     # === Helper functions === #
-    def save_structure(
+    def save_metrics(
         self,
-        f_input: FoldingInput,
+        ref_struct: RefStructure,
         pred_coords: torch.Tensor,
         true_coords: torch.Tensor,
-        atom_mask: torch.Tensor | None,
-        full_struct_list: list[dict],
+        atom_mask: torch.Tensor,
         save_dir: pathlib.Path,
-        rmsd_list: list[float],
-        lddt_list: list[float],
-        traj: torch.Tensor | None = None,
-        traj_format: str = "cif",
-    ):
-        from kfold.data.types.structure import RefStructure
+    ) -> list[dict]:
+        """Save structure metrics as json files."""
+        name: str = ref_struct.id
+        num_atoms: int = ref_struct.num_atoms
+        num_samples: int = pred_coords.shape[0]
 
-        full_dict = full_struct_list[0]
-        name: str = full_dict["id"]
-        ref_struct: RefStructure | None = full_dict.get("ref_structure")
-        if ref_struct is None:
-            print(f"Failed to save structures for {name}: missing ref_structure.")
-            return
+        # Remove padding atoms
+        true_coords: torch.Tensor = true_coords[:, :num_atoms, :].detach()
+        pred_coords: torch.Tensor = pred_coords[:, :num_atoms, :].detach()
+        atom_mask: torch.Tensor = atom_mask[:, :num_atoms]
 
+        metrics_list: list[dict] = []
+        with torch.autocast("cuda", torch.float32):
+            for i in range(num_samples):
+                # Compute metrics
+                metrics: dict = summarize_prediction(
+                    ref_struct=ref_struct,
+                    true_coords=true_coords[i],
+                    pred_coords=pred_coords[i],
+                    atom_mask=atom_mask[i],
+                    align=False,
+                )
+                # Save metrics
+                with open(save_dir / f"{name}-sample-{i}_metrics.json", "w") as f:
+                    json.dump(metrics, f, indent=2)
+                metrics_list.append(metrics)
+        return metrics_list
+
+    def save_structure(
+        self,
+        ref_struct: RefStructure,
+        pred_coords: torch.Tensor,
+        true_coords: torch.Tensor,
+        atom_mask: torch.Tensor,
+        save_dir: pathlib.Path,
+        metrics_list: list[dict],
+    ) -> dict:
+        """Save predicted and ground-truth structures as mmCIF files."""
+        name: str = ref_struct.id
+        num_atoms: int = ref_struct.num_atoms
+        num_samples: int = pred_coords.shape[0]
+
+        # Save ground-truth, apo, and predicted structures
         save_dir.mkdir(parents=True, exist_ok=True)
+        self.writer.write(ref_struct, save_dir / f"{name}-gt.cif")
+        self.writer.write(ref_struct, save_dir / f"{name}-apo.cif", save_apo=True)
 
-        try:
-            save_path = save_dir / f"{name}-gt.cif"
-            ref_struct.write(save_path)
-        except Exception as e:
-            print(f"Failed to save ground-truth CIF for {name}: {e}")
+        # Remove padding atoms
+        true_coords: np.ndarray = true_coords[:, :num_atoms, :].detach().cpu().numpy()
+        pred_coords: np.ndarray = pred_coords[:, :num_atoms, :].detach().cpu().numpy()
+        atom_mask: np.ndarray = atom_mask[:, :num_atoms].detach().cpu().numpy()
 
-        try:
-            save_path = save_dir / f"{name}-apo.cif"
-            ref_struct.write(save_path, save_apo=True)
-        except Exception as e:
-            print(f"Failed to save apo CIF for {name}: {e}")
-            try:
-                save_path = save_dir / f"{name}-apo.pdb"
-                ref_struct.write(save_path, save_apo=True)
-            except Exception as e:
-                print(f"Failed to save apo PDB for {name}: {e}")
+        # Save predictions
+        for i in range(num_samples):
+            # Get metrics to annotate filenames
+            metrics = metrics_list[i]
+            rmsd = metrics["metrics"]["rmsd"]
+            lddt = metrics["metrics"]["lddt"] * 100  # scale to [0, 100]
 
-        num_atoms = ref_struct.num_atoms
-        true_coords_arr: np.ndarray | None = None
-        try:
-            true_coords_arr = true_coords[0].detach().cpu().numpy()  # [Nsample, Natom, 3]
-            mask_arr: np.ndarray | None = None
-            if atom_mask is not None:
-                # [B, Nsample, Natom] -> [Nsample, Natom]
-                mask_arr = atom_mask[0].detach().cpu().numpy().astype(bool, copy=False)
-            for i in range(true_coords_arr.shape[0]):
-                coords_i = true_coords_arr[i][:num_atoms].copy()
-                if mask_arr is not None:
-                    coords_i[~mask_arr[i][:num_atoms]] = np.nan
-                new_struct = ref_struct.copy_with_new_coords(
-                    coords_i
-                )
-                save_path = save_dir / f"{name}-gt-aligned{i}.cif"
-                new_struct.write(save_path)
-        except Exception as e:
-            print(f"Failed to save aligned ground-truth CIF for {name}: {e}")
+            # Store coordinates
+            true_coords_i = true_coords[i]
+            pred_coords_i = pred_coords[i]
+            atom_mask_i = atom_mask[i]
 
-        # [B, Nsample, Natom, 3] -> [Nsample, Natom, 3]
-        assert f_input.batch_size == 1, "Saving structure only supports batch size of 1."
-        pred_coords_arr = pred_coords[0].detach().cpu().float().numpy()
-        pred_coords_arr = pred_coords_arr[:, :num_atoms, :]  # [Nsample, Natom, 3]
+            aligned_gt_path = save_dir / f"{name}-sample-{i}-gt.cif"
+            true_coords_i[~atom_mask_i] = np.nan  # Mask aligned coordinates
+            self.writer.write_new_coords(ref_struct, true_coords_i, aligned_gt_path)
 
-        try:
-            for i in range(pred_coords_arr.shape[0]):
-                new_struct = ref_struct.copy_with_new_coords(pred_coords_arr[i])
-                rmsd, lddt = rmsd_list[i], lddt_list[i]
-                save_path = (
-                    save_dir / f"{name}-{i}-rmsd{rmsd:.2f}-lddt{lddt * 100:.2f}.cif"
-                )
-                new_struct.write(save_path)
-        except Exception as e:
-            print(f"Failed to save predicted CIF for {name}: {e}")
+            pred_path = save_dir / f"{name}-sample-{i}-rmsd{rmsd:.2f}-lddt{lddt:.2f}.cif"
+            self.writer.write_new_coords(ref_struct, pred_coords_i, pred_path)
 
-        traj_arr: np.ndarray | None = None
-        try:
-            pred_payload: dict[str, np.ndarray] = {
-                "pred_coords": pred_coords_arr,
-                "rmsd": np.asarray(rmsd_list, dtype=np.float32),
-                "lddt": np.asarray(lddt_list, dtype=np.float32),
-            }
-            if true_coords_arr is not None:
-                pred_payload["true_coords"] = true_coords_arr[:, :num_atoms, :]
-            if traj is not None:
-                traj_arr = traj.detach().cpu().numpy()
-                if traj_arr.ndim == 5:
-                    if traj_arr.shape[1] == 1:
-                        traj_arr = traj_arr[:, 0]
-                    elif traj_arr.shape[0] == 1:
-                        traj_arr = traj_arr[0]
-                if traj_arr.ndim == 4 and (traj_arr.shape[0] == pred_coords_arr.shape[0]):
-                    traj_arr = np.transpose(traj_arr, (1, 0, 2, 3))
-                if traj_arr is not None:
-                    if traj_arr.ndim != 4:
-                        raise ValueError(
-                            f"Unexpected traj shape for {name}: {traj_arr.shape}"
-                        )
-                    traj_arr = traj_arr[:, :, :num_atoms, :]
-                    pred_payload["traj"] = traj_arr
-            np.savez_compressed(save_dir / f"{name}-predictions.npz", **pred_payload)
-        except Exception as e:
-            print(f"Failed to save prediction NPZ for {name}: {e}")
-            traj_arr = None
+        return metrics
 
-        if traj_arr is None:
-            return
+    def save_trajectory(
+        self,
+        ref_struct: RefStructure,
+        traj: torch.Tensor,
+        save_dir: pathlib.Path,
+        format: str = "cif",
+    ):
+        """Save predicted and ground-truth structures as mmCIF files."""
+        name: str = ref_struct.id
 
-        traj_format = traj_format.lower()
-        if traj_format not in {"cif", "pdb"}:
-            print(f"Unsupported traj_format '{traj_format}' for {name}.")
-            return
+        assert traj.ndim == 4, "Trajectory must be of shape (Nframe, Nsample, Natom, 3)"
+        num_samples: int = traj.shape[1]
 
-        traj_dir = save_dir / f"{name}-traj"
-        try:
-            import gemmi
+        # Remove padding atoms
+        num_atoms: int = ref_struct.num_atoms
+        traj: np.ndarray = traj[:, :, :num_atoms, :].detach().cpu().numpy()
 
-            traj_dir.mkdir(parents=True, exist_ok=True)
-            num_frames, num_samples = traj_arr.shape[:2]
-            for sample_i in range(num_samples):
-                # Create a structure to hold the trajectory (multiple models)
-                traj_structure = gemmi.Structure()
-                traj_structure.name = f"{name}_sample_{sample_i}"
-
-                for frame_i in range(num_frames):
-                    coords = traj_arr[frame_i, sample_i]
-                    frame_struct = ref_struct.copy_with_new_coords(coords)
-
-                    # Convert to gemmi model via mmCIF string
-                    # This preserves all the metadata handling logic in
-                    # RefStructure.to_mmcif
-                    cif_str = frame_struct.to_mmcif()
-                    cif_doc = gemmi.cif.read_string(cif_str)
-                    frame_gemmi = gemmi.make_structure_from_block(cif_doc.sole_block())
-
-                    model = frame_gemmi[0]
-                    model.name = str(frame_i + 1)
-                    traj_structure.add_model(model, pos=-1)
-
-                save_path = traj_dir / f"sample-{sample_i}.{traj_format}"
-                if traj_format == "pdb":
-                    # PDB supports only 1-character chain IDs. If chain names are
-                    # multi-character (e.g. 'A1'), viewers like PyMOL may mis-parse
-                    # and merge chains. Remap chain names to A, B, C... just for PDB.
-                    # PDB legacy format has a 1-character chain ID field.
-                    # Here we remap (possibly multi-character) chain names into a fixed pool:
-                    # A-Z + a-z + 0-9 => 62 unique chain IDs max for PDB trajectory output.
-                    chain_pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-                    chain_map: dict[str, str] = {}
-                    used: set[str] = set()
-                    # Build deterministic mapping across all models.
-                    chain_names = sorted(
-                        {str(chain.name) for model in traj_structure for chain in model}
-                    )
-                    if len(chain_names) > len(chain_pool):
-                        raise ValueError(
-                            "Too many chains for PDB trajectory output: "
-                            f"{len(chain_names)} > {len(chain_pool)}. "
-                            "PDB chain IDs are 1-character; this code supports up to 62 chains "
-                            "(A-Z, a-z, 0-9). Use traj_format='cif' to keep multi-character chain IDs."
-                        )
-                    for idx, old_name in enumerate(chain_names):
-                        new_name = chain_pool[idx]
-                        chain_map[old_name] = new_name
-                        used.add(new_name)
-                    for model in traj_structure:
-                        for chain in model:
-                            chain.name = chain_map.get(str(chain.name), str(chain.name)[:1])
-                    traj_structure.write_pdb(str(save_path))
-                elif traj_format == "cif":
-                    traj_structure.make_mmcif_document().write_file(str(save_path))
-        except Exception as e:
-            print(f"Failed to save trajectory files for {name}: {e}")
+        # Compute structure metrics
+        for i in range(num_samples):
+            # Save trajectory
+            traj_i = traj[:, i, :, :]  # [Nframe, Natom, 3]
+            save_path = save_dir / f"{name}-sample-{i}-traj.{format}"
+            self.writer.write_trajectory(ref_struct, traj_i, save_path)

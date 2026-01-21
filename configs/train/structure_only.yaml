@@ -92,7 +92,9 @@ validation:
   num_steps: 200
   num_diffusion_samples: 5
   symmetry_correction: true
-  save_structure_path: null # if given, save structure
+  save_predictions: true
+  return_traj: false
+  traj_format: "pdb"
 
 optimizer:
   opt: "adam"
