@@ -1,4 +1,3 @@
-# Started from https://github.com/jwohlwend/boltz
 from collections import defaultdict
 
 import numpy as np

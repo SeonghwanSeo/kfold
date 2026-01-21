@@ -1,4 +1,3 @@
-# Started from https://github.com/jwohlwend/boltz
 import numpy as np
 
 from kfold.data.types.metadata import Metadata
