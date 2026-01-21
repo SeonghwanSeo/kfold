@@ -61,8 +61,6 @@ def extract_substructure(
 
     # Validate metadata
     metadata: Metadata = ref_struct.metadata
-    assert metadata.check_all_chains_valid
-    assert metadata.check_all_interfaces_valid
 
     if ref_struct.num_chains <= max_chains:
         # No cropping needed

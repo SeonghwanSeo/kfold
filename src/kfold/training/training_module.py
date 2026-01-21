@@ -554,8 +554,7 @@ class KFoldTrainingModule(pl.LightningModule):
             m.reset()
 
         # Compute weighted lddt scores (Monitored metrics)
-        # NOTE: this is equivalent to Boltz1's `lddt` metric.
-        lddt_weights = C.training.LDDTWeightsBoltz
+        lddt_weights = C.training.LDDTWeights
 
         for prefix in ["", "best_", "complex_"]:
             weighted_lddt = 0

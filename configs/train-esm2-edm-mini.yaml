@@ -38,10 +38,10 @@ train:
     precision: bf16-mixed
 
   data:
-    ccd_path: /cache/wykim_lab/kfold_data/v260109/ccd-train.pkl
+    ccd_path: /cache/wykim_lab/kfold_data/v260121/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-train/
+        data_path: /cache/wykim_lab/kfold_data/v260121/dataset/rcsb-train/
         apo_init:
           prior_sampler:
             type: null
@@ -50,7 +50,7 @@ train:
               rmsd_threshold: 15.0
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-val/
+        data_path: /cache/wykim_lab/kfold_data/v260121/dataset/rcsb-val/
         apo_init:
           prior_sampler:
             type: null

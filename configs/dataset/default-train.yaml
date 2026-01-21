@@ -7,7 +7,6 @@ weight: 1.0 # sample weight for this dataset
 # Data paths
 seed: null # should be null for data augmentation
 
-filters: []
 sampler: ???
 cropper: ???
 

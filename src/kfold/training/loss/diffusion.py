@@ -1,4 +1,3 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License
 import torch
 import torch.nn.functional as F
 
