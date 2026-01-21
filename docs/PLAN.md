@@ -21,9 +21,9 @@ If the features listed below are completed, I will include the corresponding PR 
     - [x] Protein: Consider AlphaFold2 / OpenFold predicted structures and Holo structures as well. - [#158](https://github.com/SeonghwanSeo/kfold/pull/158)
     - [x] Ligand: AlphaFold uses different conformers for each seed. - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
 - [ ] **Change time split**:
-    - [ ] Change the time split date to more recent one.
+    - [x] Change the time split date to more recent one. - [#171](https://github.com/SeonghwanSeo/kfold/pull/171)
 - [ ] **On-the-fly apo prior sampling on Riemannian manifold**:
-    - [ ] Short Protein (<16 residues)
+    - [ ] Peptide (<16 residues)
     - [ ] DNA
     - [ ] RNA
 
@@ -36,6 +36,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Implement apo perturbation module. - [#115](https://github.com/SeonghwanSeo/kfold/pull/115)
 - [x] Modularize apo perturbation module (RiePrody) - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
 - [x] Separate apo perturbation and prior sampling (langevin dynamics). - [#154](https://github.com/SeonghwanSeo/kfold/pull/154)
+- [ ] Implement on-the-fly apo perturbation during training (fallback).
 - [ ] Implement symmetry alignment between ref conformers and holo structures during training.
 - [ ] Implement contact conditioning features as in Boltz1.
 
@@ -65,7 +66,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Add **compile** option for training - [#138](https://github.com/SeonghwanSeo/kfold/pull/138)
     - [ ] Fix the issue related to model save/checkpointing after compilation (`_orig_mod`)
 - [x] Implement multi-dataset training pipeline (e.g., RCSB + AFDB + ...) - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
-- [ ] Prepare our own validation set.
+- [x] Prepare our own validation set. - [#171](https://github.com/SeonghwanSeo/kfold/pull/171)
 
 ### Inference
 - [x] Prepare data preparation pipeline for inference (from YAML config to `TokenizedStructure`) - [#113](https://github.com/SeonghwanSeo/kfold/pull/113)
@@ -74,3 +75,4 @@ If the features listed below are completed, I will include the corresponding PR 
 
 - [x] Implement PDB/mmCIF writer
 - [x] Implement benchmark pipeline for K-Fold - [#113](https://github.com/SeonghwanSeo/kfold/pull/113)
+- [ ] Prepare our own RecentPDB test set.
