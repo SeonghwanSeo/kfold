@@ -71,6 +71,7 @@ from functools import partial
 from typing import Any
 
 import lmdb
+import msgpack
 import pandas as pd
 from tqdm import tqdm
 
@@ -561,6 +562,11 @@ def main():
     print(f"Saving lookup to {lookup_path}")
     with open(lookup_path, "w") as f:
         json.dump(final_lookup, f, indent=2)
+
+    lookup_path = data_dir / "lookup.msgpack"
+    print(f"Saving lookup to {lookup_path} (msgpack format)")
+    with open(lookup_path, "wb") as f:
+        msgpack.pack(final_lookup, f)
 
     # Print statistics
     print("Processing complete. Statistics:")
