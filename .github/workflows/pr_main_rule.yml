@@ -1,27 +1,26 @@
-name: Enforce Develop Source for Main PR
+name: Enforce Git Flow Branching Policy
 
 on:
   pull_request:
     branches:
-      - main # main 브랜치로 들어오는 PR에 대해서만 실행
+      - main
 
 jobs:
   check_source_branch:
     runs-on: ubuntu-latest
     steps:
-      - name: Check if source branch is 'develop'
-        id: check
+      - name: Validate PR Source Branch
         run: |
-          SOURCE_BRANCH="${{ github.event.pull_request.head.ref }}"
-          TARGET_BRANCH="${{ github.base_ref }}"
-          
-          echo "Source Branch: $SOURCE_BRANCH"
-          echo "Target Branch: $TARGET_BRANCH"
-          
-          # main 브랜치로의 PR이 develop에서 왔는지 확인
-          if [[ "$TARGET_BRANCH" == "main" && "$SOURCE_BRANCH" != "develop" ]]; then
-            echo "::error title=PR Source Restriction::'main' 브랜치로의 병합은 'develop' 브랜치에서 시작된 Pull Request만 허용됩니다. 현재 소스 브랜치: $SOURCE_BRANCH"
-            exit 1
+          SOURCE="${{ github.head_ref }}"
+
+          echo "Checking PR source: $SOURCE"
+
+          # Use regex or glob pattern matching
+          if [[ "$SOURCE" == "develop" ]] || \
+             [[ "$SOURCE" == hotfix/* ]] || \
+             [[ "$SOURCE" == release/* ]]; then
+            echo "✅ Validation passed: '$SOURCE' is an authorized source for 'main'."
           else
-            echo "'main' 브랜치로의 병합 조건을 충족합니다."
+            echo "::error title=Invalid PR Source::PRs to 'main' must come from 'develop', 'hotfix/*', or 'release/*'. Current source '$SOURCE' is not allowed."
+            exit 1
           fi
