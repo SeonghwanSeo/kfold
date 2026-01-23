@@ -209,7 +209,6 @@ class ClusterSampler(BaseSampler):
         float
             The weight of the interface.
         """
-        weight = 0.0
         n_prot, n_nuc, n_ligand = 0, 0, 0
         for asym_id in interface.asym_ids:
             chain = chain_dict[asym_id]
