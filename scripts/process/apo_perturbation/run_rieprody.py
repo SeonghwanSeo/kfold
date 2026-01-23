@@ -53,8 +53,6 @@ def _initialize_rieprody(data_dir: Path):
         config=RieProdyConfig(
             metric_lmdb_path=data_dir / "rieprody_metric.lmdb",
             rmsd_threshold=10.0,  # disable rmsd filtering for testing
-            fallback_on_failure=False,
-            fallback_on_rmsd_exceed=False,
             disable_log=True,
         )
     )

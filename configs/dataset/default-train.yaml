@@ -41,7 +41,7 @@ apo_init:
       log_stats: false # Whether to log perturbation statistics periodically
       log_stats_interval: 1000 # Log statistics every N chain perturbations
     bioprior:
-      # BioProPrior perturbation settings (fallback if RieProDy is not used or fails)
+      # BioPrior perturbation settings (fallback if RieProDy is not used or fails)
       noise_scale: 1.0 # Perturbation scale
       min_steps: 1 # Minimum random walk steps
       max_steps: 30 # Maximum random walk steps

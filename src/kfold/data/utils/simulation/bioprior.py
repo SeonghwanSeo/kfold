@@ -1,6 +1,4 @@
-"""Module for apo structure perturbation using RieProDy.
-Fallback to Langevin dynamics if RieProDy perturbation is unavailable.
-"""
+"""Module for apo structure perturbation using BioPrior."""
 
 import dataclasses
 from typing import Self
@@ -29,7 +27,7 @@ class BioPriorConfig:
         Default is False, since structure will be cropped after perturbation.
     max_rmsd : float | None
         Maximum allowed RMSD after perturbation. If exceeded, perturbation fails.
-        Default is False, since structure will be cropped after perturbation.
+        Default is None, since structure will be cropped after perturbation.
         Global RMSD threshold is too strict for large proteins.
     """
 
@@ -41,7 +39,7 @@ class BioPriorConfig:
 
     @classmethod
     def from_config(cls, config: DictConfig | Self) -> Self:
-        """Create RieProdyConfig using omegaconf merge"""
+        """Create BioPriorConfig using omegaconf merge"""
         base_cfg = OmegaConf.structured(cls)
         merged_cfg = OmegaConf.merge(base_cfg, config)
         return OmegaConf.to_object(merged_cfg)
