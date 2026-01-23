@@ -204,9 +204,9 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
 
         @rank_zero_only
         def _save_config() -> None:
-            config_out = Path(wandb_logger.experiment.dir) / "config.yaml"
+            config_out = Path(wandb_logger.experiment.dir) / "train_config.yaml"
             save_config(cfg, config_out)
-            wandb_logger.experiment.save("config.yaml")
+            wandb_logger.experiment.save("train_config.yaml")
 
         _save_config()
 

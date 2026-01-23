@@ -335,8 +335,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng = rng or np.random.default_rng()
 
         # Fetch apo info from lookup table
-        name = ref_struct.metadata.id
-        entry_info = self.lookup_table[name]
+        entry_id = ref_struct.id
+        entry_info = self.lookup_table[entry_id]
 
         apo_dir = self.data_root / "apo"
         apo_lookup_map: dict[int, dict] = {}
@@ -350,7 +350,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 if len(apo_list) == 0:
                     print(
                         "Warning: No available apo structure found "
-                        f"for entity {entity_id} in entry {name}."
+                        f"for entity {entity_id} in entry {entry_id}."
                     )
                     continue
                 elif len(apo_list) == 1:
