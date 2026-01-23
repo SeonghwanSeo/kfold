@@ -6,22 +6,9 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.utils.simulation.bioprior import BioPriorConfig, BioPriorPerturbation
-from kfold.data.utils.simulation.langevin_dynamics import run_langevin_dynamics
 from kfold.data.utils.simulation.rieprody import RieProdyConfig, RieProdyPerturbation
 
 ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
-
-
-@dataclasses.dataclass(kw_only=True)
-class LangevinConfig:
-    # Langevin dynamics parameters (fallback)
-    min_steps: int = 1
-    max_steps: int = 3
-    dt: float = 0.25
-    res_r: float = 4.0
-    bond_r: float = 4.0
-    ent_r: float = 10.0
-    sphere_r: float = 10.0
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -29,7 +16,6 @@ class ApoPerturbationConfig:
     prob_rieprody: float = 1.0
     rieprody: RieProdyConfig | None = None
     bioprior: BioPriorConfig = dataclasses.field(default_factory=BioPriorConfig)
-    langevin: LangevinConfig = dataclasses.field(default_factory=LangevinConfig)
 
 
 class ApoPerturbation:
@@ -104,10 +90,10 @@ class ApoPerturbation:
             perturbed_coords = self.bioprior_perturbation(sequence, coords, rng)
 
         if perturbed_coords is None:
-            # Fallback to Langevin dynamics
-            perturbed_coords = self.langevin_dynamics_perturbation(coords, mask, rng)
-
-        return perturbed_coords
+            # Fallback to original coordinates if both perturbations fail
+            return coords
+        else:
+            return perturbed_coords
 
     def rieprody_perturbation(
         self,
@@ -170,41 +156,3 @@ class ApoPerturbation:
         except Exception as e:
             print(f"BioPrior perturbation failed: {e}")
             return None
-
-    def langevin_dynamics_perturbation(
-        self,
-        coords: np.ndarray,
-        mask: np.ndarray,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Perturbation using Langevin dynamics as a fallback.
-
-        Parameters
-        ----------
-        coords : np.ndarray
-            Coordinates of shape [L, 37, 3].
-        mask : np.ndarray
-            Mask indicating valid atoms of shape [L, 37].
-        rng : np.random.Generator
-            Random number generator for stochastic operations.
-
-        Returns
-        -------
-        perturbed_coords : np.ndarray | None
-            Perturbed coordinates or None if perturbation failed.
-        """
-        # Randomly select number of steps for Langevin dynamics
-        config = self.config.langevin
-        num_steps = rng.integers(config.min_steps, config.max_steps + 1)
-        perturbed_coords = run_langevin_dynamics(
-            x_init=coords,
-            mask=mask,
-            num_steps=int(num_steps),
-            dt=config.dt,
-            res_r=config.res_r,
-            bond_r=config.bond_r,
-            ent_r=config.ent_r,
-            sphere_r=config.sphere_r,
-            rng=rng,
-        )
-        return perturbed_coords
