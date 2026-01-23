@@ -126,6 +126,19 @@ class RiePrody:
         # Initialize RieProDy ProteinPerturbationModule
         self.metric_comp: MetricCompConfig = config.metric_comp
         self.random_walk: RandomWalkConfig = config.random_walk
+
+        # Check random_walk parameters
+        if self.random_walk.num_steps <= 0:
+            raise ValueError(
+                f"random_walk.num_steps must be positive, got "
+                f"{self.random_walk.num_steps}."
+            )
+        if self.random_walk.total_time_min > self.random_walk.total_time:
+            raise ValueError(
+                f"random_walk.total_time_min ({self.random_walk.total_time_min}) "
+                f"> random_walk.total_time ({self.random_walk.total_time})."
+            )
+
         module_config = SimpleConfig(
             {
                 "metric_comp": self.metric_comp,
@@ -396,8 +409,8 @@ class RiePrody:
 
         Returns
         -------
-        perturbed_coords : np.ndarray | RieProdyError
-            Perturbed coordinates of shape [L, 37, 3] or RieProDyError on failure.
+        perturbed_coords : np.ndarray
+            Perturbed coordinates of shape [L, 37, 3].
         """
         self._stats_total_perturbations += 1
         if (
@@ -471,15 +484,8 @@ class RiePrody:
         """
         max_time = self.random_walk.total_time
         min_time = self.random_walk.total_time_min
-        if max_time < min_time:
-            raise ValueError(
-                f"random_walk.total_time ({max_time}) < "
-                f"random_walk.total_time_min ({min_time})."
-            )
-
         if max_time == min_time:
             return max_time
-
         return float(rng.uniform(min_time, max_time))
 
     @property
