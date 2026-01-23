@@ -61,8 +61,6 @@ class RieProdyConfig:
     metric_lmdb_path: Path | str | None = None
     log_stats: bool = False
     log_stats_interval: int = 1000
-    fallback_on_failure: bool = True
-    fallback_on_rmsd_exceed: bool = True
     disable_log: bool = False
 
     @classmethod
@@ -83,7 +81,7 @@ class SimpleConfig:
                 setattr(self, key, value)
 
 
-class RiePrody:
+class RieProdyPerturbation:
     """Class to handle apo structure perturbation with RieProDy."""
 
     def __init__(self, config: RieProdyConfig) -> None:
@@ -116,8 +114,6 @@ class RiePrody:
         self.rmsd_threshold: float = config.rmsd_threshold
         self.log_stats: bool = config.log_stats
         self.log_stats_interval: int = config.log_stats_interval
-        self.fallback_on_failure: bool = config.fallback_on_failure
-        self.fallback_on_rmsd_exceed: bool = config.fallback_on_rmsd_exceed
         self._disable_log: bool = config.disable_log
 
         if os.environ.get("RIEPRODY_DISABLE_LOG", "0") == "1":
@@ -235,7 +231,7 @@ class RiePrody:
             metric_data = self._load_metric_from_lmdb(key)
             if metric_data is None:
                 self.log(f"LMDB load failure (key={key})")
-                return coords if self.fallback_on_failure else None
+                return None
             # Convert data to RieProDy format
             rieprody_data = self._prepare_rieprody_data(metric_data)
 
@@ -244,15 +240,15 @@ class RiePrody:
         except ShapeMismatchError as e:
             self.log(f"Output shape mismatch (key={key}), {e}")
             self._stats_shape_mismatch += 1
-            return coords if self.fallback_on_failure else None
+            return None
         except NanInfInOutputError as e:
             self.log(f"NaN/Inf detected! (key={key}), {e}")
             self._stats_nan_inf_in_output += 1
-            return coords if self.fallback_on_failure else None
+            return None
         except SimulationError as e:
             self.log(f"Simulation failure (key={key}), {e}")
             self._stats_exception += 1
-            return coords if self.fallback_on_failure else None
+            return None
         except Exception as e:
             raise e
 
@@ -280,7 +276,7 @@ class RiePrody:
                 f"RieProDy perturbation exceeded RMSD threshold "
                 f"(key={key}, rmsd={rmsd:.3f}A > {self.rmsd_threshold}A)"
             )
-            return coords if self.fallback_on_rmsd_exceed else None
+            return None
 
         self._stats_success += 1
         return aligned_coords

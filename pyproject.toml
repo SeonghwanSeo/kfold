@@ -48,6 +48,7 @@ train = [
   'wandb', # for experiment tracking
   'lmdb', # for training dataset storage
   'msgpack', # for data serialization
+  'bioprior @ git+https://github.com/SeonghwanSeo/bio-prior.git@v0.1.0', # for on-the-fly prior sampling
 ]
 preprocess = [
   'pdbeccdutils', # for ccd data handling

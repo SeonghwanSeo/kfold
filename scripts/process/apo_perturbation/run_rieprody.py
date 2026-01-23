@@ -6,9 +6,9 @@ from pathlib import Path
 from tqdm import tqdm
 
 from kfold.data.utils.io.structure import read_protein_structure, write_protein_structure
-from kfold.data.utils.simulation.rieprody import RiePrody, RieProdyConfig
+from kfold.data.utils.simulation.rieprody import RieProdyConfig, RieProdyPerturbation
 
-_RIEPRODY: RiePrody | None = None
+_RIEPRODY: RieProdyPerturbation | None = None
 
 
 def parse_args():
@@ -49,12 +49,10 @@ def parse_args():
 
 def _initialize_rieprody(data_dir: Path):
     global _RIEPRODY
-    module = RiePrody(
+    module = RieProdyPerturbation(
         config=RieProdyConfig(
             metric_lmdb_path=data_dir / "rieprody_metric.lmdb",
             rmsd_threshold=10.0,  # disable rmsd filtering for testing
-            fallback_on_error=False,
-            fallback_on_rmsd_exceed=False,
             disable_log=True,
         )
     )

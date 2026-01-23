@@ -520,12 +520,14 @@ class ApoInitializer:
         lmdb_key = apo_info["rieprody_key"]
 
         # Load apo structure
-        _, apo_coords = read_protein_structure(path)
+        sequence, apo_coords = read_protein_structure(path)
 
         # Apply perturbation if enabled
         if self.use_perturbation and rng.random() < self.prob_perturbation:
             apo_mask = np.isfinite(apo_coords).all(axis=-1)
-            apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=lmdb_key)
+            apo_coords = self.apply_perturbation(
+                sequence, apo_coords, apo_mask, rng, key=lmdb_key
+            )
 
         # Crop apo_coords based on residue_map
         length = len(ccd_sequence)
@@ -571,6 +573,7 @@ class ApoInitializer:
 
     def apply_perturbation(
         self,
+        sequence: str,
         apo_coords: np.ndarray,
         mask: np.ndarray,
         rng: np.random.Generator,
@@ -580,6 +583,8 @@ class ApoInitializer:
 
         Parameters
         ----------
+        sequence : str
+            Amino acid sequence of the protein.
         apo_coords : np.ndarray
             Apo structure coordinates of shape [L, Natom, 3].
         mask : np.ndarray
@@ -594,7 +599,7 @@ class ApoInitializer:
         augmented_coords : np.ndarray
             Augmented structure coordinates of shape [L, Natom, 3].
         """
-        return self.apo_perturbation.run(apo_coords, mask, rng=rng, key=key)
+        return self.apo_perturbation.run(sequence, apo_coords, mask, rng=rng, key=key)
 
     def apply_random_augmentation(
         self,
