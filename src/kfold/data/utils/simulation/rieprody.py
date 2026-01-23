@@ -61,8 +61,8 @@ class RieProdyConfig:
     metric_lmdb_path: Path | str | None = None
     log_stats: bool = False
     log_stats_interval: int = 1000
-    fallback_on_failure: bool = True
-    fallback_on_rmsd_exceed: bool = True
+    fallback_on_failure: bool = False
+    fallback_on_rmsd_exceed: bool = False
     disable_log: bool = False
 
     @classmethod
@@ -83,7 +83,7 @@ class SimpleConfig:
                 setattr(self, key, value)
 
 
-class RiePrody:
+class RieProdyPerturbation:
     """Class to handle apo structure perturbation with RieProDy."""
 
     def __init__(self, config: RieProdyConfig) -> None:

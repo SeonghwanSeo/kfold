@@ -5,8 +5,9 @@ import dataclasses
 import numpy as np
 
 import kfold.constants as C
+from kfold.data.utils.simulation.bioprior import BioPriorConfig, BioPriorPerturbation
 from kfold.data.utils.simulation.langevin_dynamics import run_langevin_dynamics
-from kfold.data.utils.simulation.rieprody import RiePrody, RieProdyConfig
+from kfold.data.utils.simulation.rieprody import RieProdyConfig, RieProdyPerturbation
 
 ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
 
@@ -27,6 +28,7 @@ class LangevinConfig:
 class ApoPerturbationConfig:
     prob_rieprody: float = 1.0
     rieprody: RieProdyConfig | None = None
+    bioprior: BioPriorConfig = dataclasses.field(default_factory=BioPriorConfig)
     langevin: LangevinConfig = dataclasses.field(default_factory=LangevinConfig)
 
 
@@ -35,26 +37,28 @@ class ApoPerturbation:
 
     def __init__(self, config: ApoPerturbationConfig) -> None:
         """Initialize ApoPerturbation."""
-        self.config = config
+        self.config: ApoPerturbationConfig = config
         self.prob_rieprody: float = config.prob_rieprody
-        self.langevin: LangevinConfig = config.langevin
         if config.rieprody is not None:
-            self.rieprody = RiePrody(config.rieprody)
+            self.rieprody = RieProdyPerturbation(config.rieprody)
         else:
             self.rieprody = None
+        self.bioprior = BioPriorPerturbation(config.bioprior)
 
     def __call__(
         self,
+        sequence: str,
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
         key: str | None = None,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates."""
-        return self.run(coords, mask, rng, key)
+        return self.run(sequence, coords, mask, rng, key)
 
     def run(
         self,
+        sequence: str,
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
@@ -64,6 +68,8 @@ class ApoPerturbation:
 
         Parameters
         ----------
+        sequence : str
+            Amino acid sequence of the protein.
         coords : np.ndarray
             Apo protein structure coordinates of shape [L, 37, 3].
         mask : np.ndarray
@@ -85,18 +91,22 @@ class ApoPerturbation:
         )
         if mask is None:
             # Create mask based on finite coordinates
-            # WARN: assumes that missing atoms are represented by NaN/Inf
+            # HACK: assumes that missing atoms are represented by NaN/Inf
             mask: np.ndarray = np.isfinite(coords).all(axis=-1)
 
         if self.rieprody is not None and rng.uniform() < self.prob_rieprody:
-            # Apply RieProDy perturbation and fallback to Langevin
+            # Apply RieProDy perturbation and fallback to bioPrior
             perturbed_coords = self.rieprody_perturbation(coords, mask, rng, key)
             if perturbed_coords is None:
-                # Fallback to Langevin dynamics perturbation
-                perturbed_coords = self.langevin_dynamics_perturbation(coords, mask, rng)
+                perturbed_coords = self.bioprior_perturbation(sequence, coords, rng)
         else:
-            # Directly apply Langevin dynamics perturbation
+            # Directly apply BioPrior perturbation
+            perturbed_coords = self.bioprior_perturbation(sequence, coords, rng)
+
+        if perturbed_coords is None:
+            # Fallback to Langevin dynamics
             perturbed_coords = self.langevin_dynamics_perturbation(coords, mask, rng)
+
         return perturbed_coords
 
     def rieprody_perturbation(
@@ -120,9 +130,46 @@ class ApoPerturbation:
             Random number generator for stochastic operations.
         key : str | None
             Key for lmdb lookup / logging for rieprody perturbation.
+
+        Returns
+        -------
+        perturbed_coords : np.ndarray | None
+            Perturbed coordinates or None if perturbation failed.
         """
         assert self.rieprody is not None, "RieProDy module is not initialized."
-        return self.rieprody.run(coords, mask, rng=rng, key=key)
+        try:
+            return self.rieprody.run(coords, mask, rng=rng, key=key)
+        except Exception as e:
+            print(f"RieProDy perturbation failed: {e}")
+            return None
+
+    def bioprior_perturbation(
+        self,
+        sequence: str,
+        coords: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray | None:
+        """Perturbation using BioPrior.
+
+        Parameters
+        ----------
+        sequence : str
+            Amino acid sequence of the protein.
+        coords : np.ndarray
+            Coordinates of shape [L, 37, 3].
+        rng : np.random.Generator
+            Random number generator for stochastic operations.
+
+        Returns
+        -------
+        perturbed_coords : np.ndarray | None
+            Perturbed coordinates or None if perturbation failed.
+        """
+        try:
+            return self.bioprior.run(sequence, coords, rng=rng)
+        except Exception as e:
+            print(f"BioPrior perturbation failed: {e}")
+            return None
 
     def langevin_dynamics_perturbation(
         self,
@@ -140,18 +187,24 @@ class ApoPerturbation:
             Mask indicating valid atoms of shape [L, 37].
         rng : np.random.Generator
             Random number generator for stochastic operations.
+
+        Returns
+        -------
+        perturbed_coords : np.ndarray | None
+            Perturbed coordinates or None if perturbation failed.
         """
         # Randomly select number of steps for Langevin dynamics
-        num_steps = rng.integers(self.langevin.min_steps, self.langevin.max_steps + 1)
+        config = self.config.langevin
+        num_steps = rng.integers(config.min_steps, config.max_steps + 1)
         perturbed_coords = run_langevin_dynamics(
             x_init=coords,
             mask=mask,
             num_steps=int(num_steps),
-            dt=self.langevin.dt,
-            res_r=self.langevin.res_r,
-            bond_r=self.langevin.bond_r,
-            ent_r=self.langevin.ent_r,
-            sphere_r=self.langevin.sphere_r,
+            dt=config.dt,
+            res_r=config.res_r,
+            bond_r=config.bond_r,
+            ent_r=config.ent_r,
+            sphere_r=config.sphere_r,
             rng=rng,
         )
         return perturbed_coords
