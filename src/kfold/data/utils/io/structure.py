@@ -81,7 +81,10 @@ def write_protein_structure(
     residue_atoms: dict[str, tuple[str, ...]] = C.atom.residue_atoms
 
     structure = gemmi.Structure()
-    model = gemmi.Model("model")
+    try:
+        model = gemmi.Model(1)
+    except TypeError:  # gemmi<0.6.6
+        model = gemmi.Model("1")
     chain = gemmi.Chain(chain_id)
 
     for res_i in range(coords.shape[0]):
