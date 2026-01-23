@@ -710,8 +710,8 @@ class TrainingDataset(LMDBDataset):
 
         # AF3-style sampling (chain/interface-based)
         assert config.sampler is not None, "Sampler config must be provided."
-        sampler: BaseSampler = Registry.instantiate(config.sampler)
-        samples, weights = sampler.get_samples(self.metadatas)
+        self.sampler: BaseSampler = Registry.instantiate(config.sampler)
+        samples, weights = self.sampler.get_samples(self.metadatas)
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights
 
