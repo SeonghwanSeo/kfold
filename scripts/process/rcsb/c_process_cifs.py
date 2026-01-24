@@ -14,7 +14,14 @@ python c_process_rcsb.py \
 
 ## Train/valid splits:
 - train: up to 2022-12-31, max resolution 9.0A, max chains 300
-- val: 2023-01-01 to 2023-12-31, max resolution 4.5A, max chains 1000, max residues 2560
+- val: 2023-01-01 to 2023-12-31, max resolution 4.0A, max chains 1000, max tokens 2560
+- test: 2024-01-01 to 2026-01-09, max resolution 4.5A, max chains 1000, max tokens 5120,
+    filter NMR.
+
+We follow similar processing and filtering criteria as in the AlphaFold3 paper. However,
+we also introduce additional filtering logic to extract high-quality structures for
+evaluation: `handle_invalid_chains="disallow"` in validation and test splits.
+This is to reduce biases due to extracting partial structures with valid chains only.
 """
 
 import argparse
@@ -41,10 +48,11 @@ FAILED = 1
 DATE_FILTERED = 2
 RESOLUTION_FILTERED = 3
 METHOD_FILTERED = 4
-CHAIN_COUNT_FILTERED = 5
-RESIDUE_COUNT_FILTERED = 6
-EMPTY_STRUCTURE_FILTERED = 7
-INVALID_CHAIN_FILTERED = 8
+INVALID_POLYMER_TYPES = 5
+CHAIN_COUNT_FILTERED = 6
+RESIDUE_COUNT_FILTERED = 7
+EMPTY_STRUCTURE_FILTERED = 8
+INVALID_CHAIN_FILTERED = 9
 
 
 @dataclasses.dataclass
@@ -121,8 +129,9 @@ KFOLD_SPLITS = {
     "val": DataFilter(
         date_start=datetime.fromisoformat("2023-01-01 00:00:00"),
         date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
-        max_resolution=4.0,
+        max_resolution=4.5,
         max_chains=1000,
+        min_tokens=16,
         max_tokens=2560,
         handle_invalid_chains="disallow",
     ),
@@ -261,6 +270,20 @@ def parse_cif(
         block, expand_assembly=True, clean_up=True
     )
 
+    # Filter out invalid polymer types (e.g., PNA)
+    if data_filter.handle_invalid_chains == "disallow":
+        for entity in raw_struct.entities:
+            if (
+                entity.entity_type == gemmi.EntityType.Polymer
+                and entity.polymer_type
+                not in (
+                    gemmi.PolymerType.PeptideL,
+                    gemmi.PolymerType.Dna,
+                    gemmi.PolymerType.Rna,
+                )
+            ):
+                return INVALID_POLYMER_TYPES
+
     # Filter by chain count
     if not check_chain_count_cutoff(
         raw_struct, data_filter.min_chains, data_filter.max_chains
@@ -379,6 +402,7 @@ def main():
     print(f"  Date filtered: {results.count(DATE_FILTERED)}")
     print(f"  Resolution filtered: {results.count(RESOLUTION_FILTERED)}")
     print(f"  Method filtered: {results.count(METHOD_FILTERED)}")
+    print(f"  Invalid polymer types filtered: {results.count(INVALID_POLYMER_TYPES)}")
     print(f"  Chain count filtered: {results.count(CHAIN_COUNT_FILTERED)}")
     print(f"  Residue count filtered: {results.count(RESIDUE_COUNT_FILTERED)}")
     print(f"  Empty structure filtered: {results.count(EMPTY_STRUCTURE_FILTERED)}")
