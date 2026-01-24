@@ -3,6 +3,7 @@ Fallback to Langevin dynamics if RieProDy perturbation is unavailable.
 """
 
 import dataclasses
+import logging
 import os
 from io import BytesIO
 from pathlib import Path
@@ -61,7 +62,7 @@ class RieProdyConfig:
     metric_lmdb_path: Path | str | None = None
     log_stats: bool = False
     log_stats_interval: int = 1000
-    disable_log: bool = False
+    log_level: str = "INFO"
 
     @classmethod
     def from_config(cls, config: DictConfig | Self) -> Self:
@@ -114,10 +115,13 @@ class RieProdyPerturbation:
         self.rmsd_threshold: float = config.rmsd_threshold
         self.log_stats: bool = config.log_stats
         self.log_stats_interval: int = config.log_stats_interval
-        self._disable_log: bool = config.disable_log
+
+        # Set up logging
+        self.logger: logging.Logger = logging.getLogger("RieProDyPerturbation")
+        self.logger.setLevel(config.log_level)
 
         if os.environ.get("RIEPRODY_DISABLE_LOG", "0") == "1":
-            self._disable_log = True
+            self.logger.disabled = True
 
         # Initialize RieProDy ProteinPerturbationModule
         self.metric_comp: MetricCompConfig = config.metric_comp
@@ -230,7 +234,7 @@ class RieProdyPerturbation:
             rng = rng or np.random.default_rng()
             metric_data = self._load_metric_from_lmdb(key)
             if metric_data is None:
-                self.log(f"LMDB load failure (key={key})")
+                self.logger.warning(f"LMDB load failure (key={key})")
                 return None
             # Convert data to RieProDy format
             rieprody_data = self._prepare_rieprody_data(metric_data)
@@ -238,15 +242,15 @@ class RieProdyPerturbation:
         try:
             perturbed_coords: np.ndarray = self.run_simulation(rieprody_data, rng)
         except ShapeMismatchError as e:
-            self.log(f"Output shape mismatch (key={key}), {e}")
+            self.logger.error(f"Output shape mismatch (key={key}), {e}")
             self._stats_shape_mismatch += 1
             return None
         except NanInfInOutputError as e:
-            self.log(f"NaN/Inf detected! (key={key}), {e}")
+            self.logger.warning(f"NaN/Inf detected! (key={key}), {e}")
             self._stats_nan_inf_in_output += 1
             return None
         except SimulationError as e:
-            self.log(f"Simulation failure (key={key}), {e}")
+            self.logger.warning(f"Simulation failure (key={key}), {e}")
             self._stats_exception += 1
             return None
         except Exception as e:
@@ -272,8 +276,8 @@ class RieProdyPerturbation:
 
         if rmsd > self.rmsd_threshold:
             self._stats_rmsd_filtered += 1
-            self.log(
-                f"RieProDy perturbation exceeded RMSD threshold "
+            self.logger.warning(
+                f"Exceeded RMSD threshold "
                 f"(key={key}, rmsd={rmsd:.3f}A > {self.rmsd_threshold}A)"
             )
             return None
@@ -329,7 +333,7 @@ class RieProdyPerturbation:
             # Sample RieProDy-perturbed coordinates
             metric_data = self._load_metric_from_lmdb(key)
             if metric_data is None:
-                self.log(f"LMDB load failure (key={key})")
+                self.logger.warning(f"LMDB load failure (key={key})")
                 return []
             # Convert data to RieProDy format
             rieprody_data = self._prepare_rieprody_data(metric_data)
@@ -340,15 +344,15 @@ class RieProdyPerturbation:
             try:
                 out = self.run_simulation(rieprody_data, rng)
             except ShapeMismatchError as e:
-                self.log(f"Output shape mismatch (key={key}), {e}")
+                self.logger.error(f"Output shape mismatch (key={key}), {e}")
                 self._stats_shape_mismatch += 1
                 continue
             except NanInfInOutputError as e:
-                self.log(f"NaN/Inf detected! (key={key}), {e}")
+                self.logger.warning(f"NaN/Inf detected! (key={key}), {e}")
                 self._stats_nan_inf_in_output += 1
                 continue
             except SimulationError as e:
-                self.log(f"Simulation failure (key={key}), {e}")
+                self.logger.warning(f"Simulation failure (key={key}), {e}")
                 self._stats_exception += 1
                 continue
             except Exception as e:
@@ -376,9 +380,9 @@ class RieProdyPerturbation:
 
             if rmsd > self.rmsd_threshold:
                 # Log RMSD exceed and continue
-                self.log(
-                    f"RieProDy perturbation exceeded RMSD threshold "
-                    f"(key={key}, rmsd={rmsd:.3f}A > {self.rmsd_threshold}A)"
+                self.logger.info(
+                    f"Exceeded RMSD threshold "
+                    f"(key={key}, rmsd={rmsd:.3f}A > {self.rmsd_threshold}A)",
                 )
                 self._stats_rmsd_filtered += 1
                 continue
@@ -463,12 +467,6 @@ class RieProdyPerturbation:
             raise SimulationError(f"Exception during RieProDy perturbation: {e}") from e
 
     # === Internal methods === #
-    def log(self, *args, **kwargs):
-        """Utility print function for debugging."""
-        # FIXME: remove debug prints later
-        if not self._disable_log:
-            print("[RieProDy]", *args, **kwargs)
-
     def _sample_random_walk_total_time(self, rng: np.random.Generator) -> float:
         """Sample random-walk total_time for Riemannian Brownian motion.
 
@@ -537,7 +535,7 @@ class RieProdyPerturbation:
 
     def _log_perturbation_stats(self) -> None:
         stats = self.get_perturbation_stats()
-        self.log(
+        self.logger.info(
             f"n={stats['total']}: "
             f"success={stats['success_pct']:.1f}%, "
             f"rmsd_filtered={stats['rmsd_filtered_pct']:.1f}%, "

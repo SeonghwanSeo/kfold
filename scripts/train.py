@@ -1,4 +1,5 @@
 import argparse
+import logging
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -304,5 +305,7 @@ def train(args) -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     args = parse_args()
     train(args)

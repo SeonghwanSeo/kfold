@@ -40,6 +40,7 @@ apo_init:
         kabsch_aligned_traj: false
       log_stats: false # Whether to log perturbation statistics periodically
       log_stats_interval: 1000 # Log statistics every N chain perturbations
+      log_level: "INFO" # Logging level
     bioprior:
       # BioPrior perturbation settings (fallback if RieProDy is not used or fails)
       noise_scale: 1.0 # Perturbation scale
@@ -47,3 +48,4 @@ apo_init:
       max_steps: 30 # Maximum random walk steps
       scale_length: false # Whether to scale noise based on protein length
       max_rmsd: null # Maximum RMSD (null means no limit)
+      log_level: "INFO" # Logging level

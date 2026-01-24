@@ -123,11 +123,7 @@ class ApoPerturbation:
             Perturbed coordinates or None if perturbation failed.
         """
         assert self.rieprody is not None, "RieProDy module is not initialized."
-        try:
-            return self.rieprody.run(coords, mask, rng=rng, key=key)
-        except Exception as e:
-            print(f"RieProDy perturbation failed: {e}")
-            return None
+        return self.rieprody.run(coords, mask, rng=rng, key=key)
 
     def bioprior_perturbation(
         self,
@@ -151,8 +147,4 @@ class ApoPerturbation:
         perturbed_coords : np.ndarray | None
             Perturbed coordinates or None if perturbation failed.
         """
-        try:
-            return self.bioprior.run(sequence, coords, rng=rng)
-        except Exception as e:
-            print(f"BioPrior perturbation failed: {e}")
-            return None
+        return self.bioprior.run(sequence, coords, rng=rng)
