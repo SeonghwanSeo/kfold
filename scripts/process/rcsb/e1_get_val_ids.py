@@ -3,27 +3,25 @@
 Intermediate results:
 --- Cluster-based sampling ---
 # Multimer:
-Stage 3: Final sampling interfaces for each interface type
   Protein-Protein: 1707 -> 600
   Protein-DNA: 402 -> 200
   Protein-RNA: 184 -> 184
-  Protein-Ligand: 2106 -> 500
+  Protein-Ligand: 2115 -> 500
   DNA-DNA: 293 -> 100
   DNA-RNA: 31 -> 31
   DNA-Ligand: 67 -> 50
   RNA-RNA: 42 -> 42
   RNA-Ligand: 16 -> 16
-  Ligand-Ligand: 296 -> 0
+  Ligand-Ligand: 293 -> 0
 
 # Monomer:
-Stage 3: Final sampling polymers for each chain type
-  DNA: 17 -> 17
-  RNA: 25 -> 25
+  DNA: 17
+  RNA: 25
 
 --- Final sampling ---
-Multimer entries: 1257
+Multimer entries: 1265
 Monomer entries: 42
-Total entries: 1295
+Total entries: 1303
 Final entries: 1280
 """
 
@@ -581,56 +579,19 @@ def filter_monomers(
     print("Total polymers after homology filtering:", len(filtered_polymers))
 
     # ============================================================
-    # Clustering and sampling polymers
+    # Collect all sequences
     # ============================================================
-    print("\nStage 2-1: Clustering interfaces...")
-    seq_to_cluster: dict[str, dict[str, str]] = run_clustering(
-        filtered_polymers, mmseqs=mmseqs
-    )
-    polymer_clusters: dict[str, list[Seq]] = defaultdict(list)
-    for seq in filtered_polymers:
-        cluster_id = seq_to_cluster[seq.ctype_str][seq.sequence]
-        polymer_clusters[cluster_id].append(seq)
-
-    print("\nStage 2-2: Sample polymer(s) for each cluster...")
-    # Protein: sample one per cluster.
-    # RNA/DNA: take all, except for over-represented RNA clusters.
-    sampled_polymers: list[Seq] = []
-    for cluster_id, polymers in polymer_clusters.items():
-        ctype = polymers[0].ctype
-        rng = get_rng(cluster_id)
-        n_cluster = len(polymers)
-        if ctype.is_protein:
-            sampled_polymers.append(polymers[rng.integers(n_cluster)])
-        else:
-            # For DNA/RNA, always take all
-            sampled_polymers.extend(polymers)
-    print(f"Total polymers after filtering and clustering: {len(sampled_polymers)}")
-
-    # ============================================================
-    # Final sampling for each chain type
-    # ============================================================
-    print("\nStage 3: Final sampling polymers for each chain type")
+    print("\nStage 2: Collect sequences...")
     polymers_per_ctype = defaultdict(list)
-    for seq in sampled_polymers:
+    for seq in filtered_polymers:
         polymers_per_ctype[seq.ctype].append(seq)
-    del sampled_polymers  # free up memory
+    del filtered_polymers  # free up memory
 
     sampled_polymers: list[Seq] = []
     for ctype in sorted(polymers_per_ctype):
         polymers = polymers_per_ctype[ctype]
-        rng = get_rng(ctype.name)
-        n_polymers = len(polymers)
-        n_samples = min(NUM_MONOMER_SAMPLES.get(ctype, n_polymers), n_polymers)
-        if n_samples == 0:
-            pass
-        elif n_polymers == n_samples:
-            sampled_polymers.extend(polymers)
-        else:
-            sampled_indices = rng.choice(len(polymers), size=n_samples, replace=False)
-            for idx in sampled_indices:
-                sampled_polymers.append(polymers[idx])
-        print(f"  {ctype}: {n_polymers} -> {n_samples}")
+        sampled_polymers.extend(polymers)
+        print(f"  {ctype}: {len(polymers)}")
 
     print("\nMonomer filtering completed.")
     print(f"Total polymers after final sampling: {len(sampled_polymers)}")
