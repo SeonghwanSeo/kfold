@@ -3,29 +3,26 @@
 Intermediate results:
 --- Cluster-based sampling ---
 # Multimer:
-Stage 3: Final sampling interfaces for each interface type
-  Protein-Protein: 1665 -> 500
-  Protein-DNA: 398 -> 100
-  Protein-RNA: 181 -> 100
-  Protein-Ligand: 2058 -> 400
-  DNA-DNA: 281 -> 50
+  Protein-Protein: 1707 -> 600
+  Protein-DNA: 402 -> 200
+  Protein-RNA: 184 -> 184
+  Protein-Ligand: 2115 -> 500
+  DNA-DNA: 293 -> 100
   DNA-RNA: 31 -> 31
-  DNA-Ligand: 70 -> 50
+  DNA-Ligand: 67 -> 50
   RNA-RNA: 42 -> 42
   RNA-Ligand: 16 -> 16
-  Ligand-Ligand: 288 -> 0
+  Ligand-Ligand: 293 -> 0
 
 # Monomer:
-Stage 3: Final sampling polymers for each chain type
-  Protein: 198 -> 0
-  DNA: 20 -> 20
-  RNA: 25 -> 25
+  DNA: 17
+  RNA: 25
 
 --- Final sampling ---
-Multimer entries: 1017
-Monomer entries: 45
-Total entries: 1056
-Final entries: 1024
+Multimer entries: 1265
+Monomer entries: 42
+Total entries: 1303
+Final entries: 1280
 """
 
 import argparse
@@ -34,6 +31,7 @@ import multiprocessing
 import os
 import pathlib
 from collections import defaultdict
+from datetime import datetime
 from typing import Any, NamedTuple, TypeVar
 
 import numpy as np
@@ -73,23 +71,21 @@ VERBOSE = 0
 INIT_MAX_TOKENS = 2560
 FINAL_MAX_TOKENS = 2048
 SEQUENCE_IDENTITY_THRESHOLD = 0.40
-TANIMOTO_SIMILARITY_THRESHOLD = 0.80
+TANIMOTO_SIMILARITY_THRESHOLD = 0.85
 NUM_INTERFACE_SAMPLES: dict[tuple[C.ChainType, C.ChainType], int] = {
-    norm_key(C.ChainType.PROTEIN, C.ChainType.PROTEIN): 500,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.DNA): 100,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.RNA): 100,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.LIGAND): 400,
-    norm_key(C.ChainType.DNA, C.ChainType.DNA): 50,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.PROTEIN): 600,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.DNA): 200,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.RNA): 200,
+    norm_key(C.ChainType.PROTEIN, C.ChainType.LIGAND): 500,
+    norm_key(C.ChainType.DNA, C.ChainType.DNA): 100,
     norm_key(C.ChainType.DNA, C.ChainType.RNA): 50,
     norm_key(C.ChainType.DNA, C.ChainType.LIGAND): 50,
     norm_key(C.ChainType.RNA, C.ChainType.RNA): 50,
     norm_key(C.ChainType.RNA, C.ChainType.LIGAND): 50,
     norm_key(C.ChainType.LIGAND, C.ChainType.LIGAND): 0,
 }
-NUM_MONOMER_SAMPLES: dict[C.ChainType, int] = {
-    C.ChainType.PROTEIN: 0,  # No protein monomers
-}
-FINAL_VALIDATION_SET_SIZE = 1024
+NUM_MONOMER_SAMPLES: dict[C.ChainType, int] = {}
+FINAL_VALIDATION_SET_SIZE = 1280
 
 
 class Seq(NamedTuple):
@@ -307,14 +303,17 @@ def run_clustering(
     uniq_proteins: list[tuple[str, str]] = sorted(
         [(repr_id, seq) for seq, repr_id in protein_to_repr_id.items()]
     )
-    protein_cluster_map = run_mmseqs2_cluster(
-        uniq_proteins,
-        min_sequence_identity=sequence_identity,
-        chain_type="protein",
-        verbose=VERBOSE,
-        print_cmd=(VERBOSE > 0),
-        mmseqs2_exec=mmseqs,
-    )
+    if len(uniq_proteins) > 0:
+        protein_cluster_map = run_mmseqs2_cluster(
+            uniq_proteins,
+            min_sequence_identity=sequence_identity,
+            chain_type="protein",
+            verbose=VERBOSE,
+            print_cmd=(VERBOSE > 0),
+            mmseqs2_exec=mmseqs,
+        )
+    else:
+        protein_cluster_map = {}
 
     # Construct Sequence to Cluster ID mapping
     # Protein sequences use 40% homology clustering
@@ -554,9 +553,6 @@ def filter_monomers(
     # Determine low homology polymers
     # ============================================================
     print("\nStage 1-1: Get homology mappings for all sequences...")
-    protein_homologs: dict[str, set[str]] = get_polymer_homologs(
-        C.ChainType.PROTEIN, all_polymers, train_sequences, mmseqs
-    )
     dna_homologs: dict[str, set[str]] = get_polymer_homologs(
         C.ChainType.DNA, all_polymers, train_sequences, mmseqs
     )
@@ -565,10 +561,10 @@ def filter_monomers(
     )
 
     # Combine homology results
-    seq_homologs_map: dict[str, set[str]] = protein_homologs | dna_homologs | rna_homologs
-    assert len(seq_homologs_map) == (
-        len(protein_homologs) + len(dna_homologs) + len(rna_homologs)
-    ), "Homology map size mismatch."
+    seq_homologs_map: dict[str, set[str]] = dna_homologs | rna_homologs
+    assert len(seq_homologs_map) == (len(dna_homologs) + len(rna_homologs)), (
+        "Homology map size mismatch."
+    )
     assert len(seq_homologs_map) == len(all_polymers), (
         "Some sequences missing in homology map."
     )
@@ -583,56 +579,19 @@ def filter_monomers(
     print("Total polymers after homology filtering:", len(filtered_polymers))
 
     # ============================================================
-    # Clustering and sampling polymers
+    # Collect all sequences
     # ============================================================
-    print("\nStage 2-1: Clustering interfaces...")
-    seq_to_cluster: dict[str, dict[str, str]] = run_clustering(
-        filtered_polymers, mmseqs=mmseqs
-    )
-    polymer_clusters: dict[str, list[Seq]] = defaultdict(list)
-    for seq in filtered_polymers:
-        cluster_id = seq_to_cluster[seq.ctype_str][seq.sequence]
-        polymer_clusters[cluster_id].append(seq)
-
-    print("\nStage 2-2: Sample polymer(s) for each cluster...")
-    # Protein: sample one per cluster.
-    # RNA/DNA: take all, except for over-represented RNA clusters.
-    sampled_polymers: list[Seq] = []
-    for cluster_id, polymers in polymer_clusters.items():
-        ctype = polymers[0].ctype
-        rng = get_rng(cluster_id)
-        n_cluster = len(polymers)
-        if ctype.is_protein:
-            sampled_polymers.append(polymers[rng.integers(n_cluster)])
-        else:
-            # For DNA/RNA, always take all
-            sampled_polymers.extend(polymers)
-    print(f"Total polymers after filtering and clustering: {len(sampled_polymers)}")
-
-    # ============================================================
-    # Final sampling for each chain type
-    # ============================================================
-    print("\nStage 3: Final sampling polymers for each chain type")
+    print("\nStage 2: Collect sequences...")
     polymers_per_ctype = defaultdict(list)
-    for seq in sampled_polymers:
+    for seq in filtered_polymers:
         polymers_per_ctype[seq.ctype].append(seq)
-    del sampled_polymers  # free up memory
+    del filtered_polymers  # free up memory
 
     sampled_polymers: list[Seq] = []
     for ctype in sorted(polymers_per_ctype):
         polymers = polymers_per_ctype[ctype]
-        rng = get_rng(ctype.name)
-        n_polymers = len(polymers)
-        n_samples = min(NUM_MONOMER_SAMPLES.get(ctype, n_polymers), n_polymers)
-        if n_samples == 0:
-            pass
-        elif n_polymers == n_samples:
-            sampled_polymers.extend(polymers)
-        else:
-            sampled_indices = rng.choice(len(polymers), size=n_samples, replace=False)
-            for idx in sampled_indices:
-                sampled_polymers.append(polymers[idx])
-        print(f"  {ctype}: {n_polymers} -> {n_samples}")
+        sampled_polymers.extend(polymers)
+        print(f"  {ctype}: {len(polymers)}")
 
     print("\nMonomer filtering completed.")
     print(f"Total polymers after final sampling: {len(sampled_polymers)}")
@@ -690,16 +649,13 @@ def read_npz_file(npz_file: pathlib.Path) -> dict:
         all_interfaces.append((seq1, seq2))
         visited_iface_entities.add(key)
 
-    # Monomers (exclude protein-only structures)
+    # Monomers (Nucleic acids only)
     if struct.num_polymer_chains == 1:
         chain: Chain = next(c for c in struct.chains if c.is_polymer)
         assert chain.is_polymer, "Monomer chain must be polymer."
         seq = entity_sequences[chain.entity_id]
-        # Add polymer-ligand systems as monomers
-        if struct.num_chains > 1:
-            all_monomers.append(seq)
-        # Add nucleic acid monomers
-        elif struct.num_chains == 1 and chain.is_nucleic_acid:
+        # Add nucleic acid monomers only
+        if chain.is_nucleic_acid:
             all_monomers.append(seq)
 
     return {
@@ -892,22 +848,29 @@ def main():
             f.write(f"{pdb_id}\n")
     print(f"Validation set PDB IDs saved to: {val_ids_file}")
 
-    # Extract statistics
+    # Summarize final validation set statistics
     print("\nExtracting final validation set statistics...")
     chains_per_ctype = defaultdict(int)
     interfaces_per_ctype = defaultdict(int)
 
-    # Load all NPZ files again
+    earlest_release_date = datetime.max
+    latest_release_date = datetime.min
     npz_files: list[pathlib.Path] = [f for f in npz_files if f.stem in val_ids]
     for f in npz_files:
         struct: RefStructure = RefStructure.load_npz(f)
         pdb_id = struct.id
+
+        # Update date
+        release_date = datetime.fromisoformat(struct.metadata.exp.release_date)
+        earlest_release_date = min(earlest_release_date, release_date)
+        latest_release_date = max(latest_release_date, release_date)
+
+        # Collect type info
         asym_id_to_type: dict[int, str] = {}
         for chain in struct.chains:
             ctype_str = str(chain.ctype)
             chains_per_ctype[ctype_str] += 1
             asym_id_to_type[chain.asym_id] = ctype_str
-
         m: Metadata = struct.metadata
         for interface in m.interfaces:
             asym_id_1, asym_id_2 = interface.asym_ids
@@ -916,6 +879,10 @@ def main():
             ctypes = norm_key(ctype1, ctype2)
             interfaces_per_ctype[ctypes] += 1
 
+    print("Release date range:")
+    print(f"  Earliest: {earlest_release_date.date().isoformat()}")
+    print(f"  Latest: {latest_release_date.date().isoformat()}")
+    print()
     print("Final chain type statistics:")
     for ctype in sorted(chains_per_ctype.keys()):
         print(f"  {ctype}: {chains_per_ctype[ctype]}")
