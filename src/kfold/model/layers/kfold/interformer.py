@@ -52,6 +52,7 @@ class InterformerStack(nn.Module):
         dropout: float = 0.25,
         use_separate_projections: bool = False,
         skip_tri_attn: bool = False,
+        use_qk_norm: bool = False,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         """Initialize the Interformer module."""
@@ -68,6 +69,7 @@ class InterformerStack(nn.Module):
                     dropout,
                     use_separate_projections,
                     skip_tri_attn,
+                    use_qk_norm,
                 )
             )
 
@@ -199,6 +201,7 @@ class InterformerBlock(nn.Module):
         dropout: float = 0.25,
         use_separate_projections: bool = False,
         skip_tri_attn: bool = False,
+        use_qk_norm: bool = False,
     ) -> None:
         """Initialize the Interformer module.
 
@@ -252,6 +255,7 @@ class InterformerBlock(nn.Module):
             num_heads=num_heads_attn,
             channel_s=None,
             use_single_cond=False,
+            qk_norm=use_qk_norm,
         )
 
         self.transition_s = Transition(channel_s, expansion_factor=4)
