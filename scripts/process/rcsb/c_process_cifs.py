@@ -14,7 +14,7 @@ python c_process_rcsb.py \
 
 ## Train/valid splits:
 - train: up to 2022-12-31, max resolution 9.0A, max chains 300
-- val: 2023-01-01 to 2023-12-31, max resolution 4.0A, max chains 1000, max tokens 2560
+- val: 2023-01-01 to 2023-12-31, max resolution 4.5A, max chains 1000, max tokens 2560
 - test: 2024-01-01 to 2026-01-09, max resolution 4.5A, max chains 1000, max tokens 5120,
     filter NMR.
 
