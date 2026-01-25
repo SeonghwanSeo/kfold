@@ -50,7 +50,7 @@ class InterformerStack(nn.Module):
         num_heads_tri_attn: int = 4,
         num_blocks: int = 48,
         dropout: float = 0.25,
-        use_separate_projections: bool = False,
+        use_separate_projections: bool = True,
         skip_tri_attn: bool = False,
         blocks_per_ckpt: int | None = None,
     ) -> None:
@@ -197,7 +197,7 @@ class InterformerBlock(nn.Module):
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         dropout: float = 0.25,
-        use_separate_projections: bool = False,
+        use_separate_projections: bool = True,
         skip_tri_attn: bool = False,
     ) -> None:
         """Initialize the Interformer module.
@@ -216,7 +216,7 @@ class InterformerBlock(nn.Module):
             The dropout rate, by default 0.25
         use_separate_projections : bool, optional
             Whether to use separate projections for intra- and inter-chain
-            residue pairs, by default False
+            residue pairs.
         skip_tri_attn : bool, optional
             Whether to skip triangle attention, by default False
         """
