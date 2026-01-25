@@ -5,7 +5,6 @@ out_dir: ./experiments/
 
 # Reproducibility
 seed: 42
-synchronize_seed: true # Use the same seed across DDP processes
 
 # Training parameters for multi-gpu setup.
 global_hparams:
@@ -137,7 +136,6 @@ loss:
       upweight_dna: 5.0
       upweight_rna: 5.0
       upweight_ligand: 10.0
-      scale: false
 
     # Bond Loss
     bond_loss: {}
