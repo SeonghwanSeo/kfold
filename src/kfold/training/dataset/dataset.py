@@ -70,6 +70,7 @@ rcsb-validation/ ...
 import dataclasses
 import io
 import json
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -92,6 +93,8 @@ from kfold.utils.registry import Registry
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
+
+logger = logging.getLogger(__name__)
 
 
 # === Dataset Classes === #
@@ -205,8 +208,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         for k in ["seq", "seq_dim", "struct", "struct_dim", "max_struct_ensembles"]:
             if k not in pretrained_embedding:
-                print(
-                    f"Warning: Pretrained embedding key '{k}' not found. Setting to None."
+                logger.warning(
+                    f"Pretrained embedding key '{k}' not found. Setting to None."
                 )
                 pretrained_embedding[k] = None
 
@@ -244,9 +247,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 # Skip warning if perturbation is disabled
                 pass
             elif config.apo_init.apo_perturbation is None:
-                print("Warning: RieProDy LMDB path found but apo_perturbation is None.")
+                logger.error("RieProDy LMDB path found but apo_perturbation is None.")
             elif config.apo_init.apo_perturbation.rieprody is None:
-                print("Warning: RieProDy LMDB path found but rieprody is disabled.")
+                logger.error("RieProDy LMDB path found but rieprody is disabled.")
             else:
                 config.apo_init.apo_perturbation.rieprody.metric_lmdb_path = (
                     rieprody_lmdb_path
@@ -348,8 +351,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
                 # Select apo structure (randomly if multiple)
                 if len(apo_list) == 0:
-                    print(
-                        "Warning: No available apo structure found "
+                    logger.warning(
+                        "No available apo structure found "
                         f"for entity {entity_id} in entry {entry_id}."
                     )
                     continue
@@ -366,7 +369,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 # Check apo structure file existence
                 apo_path = apo_dir / source / path
                 if not apo_path.exists():
-                    print(f"Warning: Apo structure file not found: {apo_path}.")
+                    logger.error(f"Apo structure file not found: {apo_path}.")
                     continue
 
                 # Get lmdb key
@@ -451,7 +454,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 if not self.safe_load:
                     raise e
                 sample_id = sample.id
-                print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
+                logger.error(
+                    f"Error loading index {sample_id}({index}): {e}. Retrying..."
+                )
                 index = int(rng.integers(0, len(self)))
                 trials.append(sample)
         raise RuntimeError(
@@ -571,28 +576,20 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             if entity_id in embedding_paths:
                 continue  # already found
             ctype = C.ChainType(struct.chain.chain_type[chain_i].item())
-            if ctype.is_polymer:
-                # Get embedding for polymer chain
-                entity_info = entry_info[str(entity_id)]
-                emb_id_info = (
-                    entity_info.get("seq_emb")
-                    if emb_type == "seq"
-                    else entity_info.get("struct_emb")
-                )
-                if emb_id_info is not None:
-                    emb_path = root_dir / emb_id_info["path"]
-                    residue_map = emb_id_info["residue_map"]
-                    embedding_paths[entity_id] = {
-                        "path": emb_path,
-                        "residue_map": residue_map,
-                    }
-                else:
-                    # FIXME: Temporary warning for missing protein embeddings
-                    if ctype.is_protein:
-                        print(
-                            f"Warning: Missing {emb_type} embedding for entity "
-                            f"{entity_id} in entry {name}."
-                        )
+            entity_info = entry_info[str(entity_id)]
+            # Get embedding info
+            if emb_type == "seq" and ctype.is_polymer:
+                emb_id_info = entity_info["seq_emb"]
+                embedding_paths[entity_id] = {
+                    "path": root_dir / emb_id_info["path"],
+                    "residue_map": emb_id_info["residue_map"],
+                }
+            elif emb_type == "struct" and ctype.is_protein:
+                emb_id_info = entity_info["struct_emb"]
+                embedding_paths[entity_id] = {
+                    "path": root_dir / emb_id_info["path"],
+                    "residue_map": emb_id_info["residue_map"],
+                }
         return embedding_paths
 
 
@@ -697,8 +694,8 @@ class TrainingDataset(LMDBDataset):
         )
         if self.seed is not None:
             # Warn about fixed seed affecting randomness
-            print(
-                "WARNING: Seed is set for TrainingDataset, which may affect randomness."
+            logger.warning(
+                "Seed is set for TrainingDataset, which may affect randomness."
             )
         self.max_tokens: int = max_tokens
         self.max_chains: int = max_chains
@@ -785,7 +782,9 @@ class TrainingDataset(LMDBDataset):
                 raise e
             except Exception as e:
                 sample_id = sample.metadata.id
-                print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
+                logger.error(
+                    f"Error loading index {sample_id}({index}): {e}. Retrying..."
+                )
                 index = np.random.randint(0, len(self))
                 if not self.safe_load:
                     raise e

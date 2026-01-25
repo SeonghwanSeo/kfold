@@ -1,6 +1,7 @@
 """Module for apo structure perturbation using BioPrior."""
 
 import dataclasses
+import logging
 from typing import Self
 
 import numpy as np
@@ -36,6 +37,7 @@ class BioPriorConfig:
     max_steps: int = 30
     scale_length: bool = False
     max_rmsd: float | None = None
+    log_level: int | str = "INFO"
 
     @classmethod
     def from_config(cls, config: DictConfig | Self) -> Self:
@@ -62,12 +64,53 @@ class BioPriorPerturbation:
             )
         )
 
+        self.logger = logging.getLogger("BioPriorPerturbation")
+        self.logger.setLevel(config.log_level)
+
     # === Main perturbation methods === #
     def run(
         self,
         sequence: str,
         coords: np.ndarray,
         rng: np.random.Generator | None = None,
+    ) -> np.ndarray | None:
+        """Apply perturbation to apo structure coordinates.
+
+        Parameters
+        ----------
+        sequence : str
+            Amino acid sequence of the protein.
+        coords : np.ndarray
+            Apo protein structure coordinates of shape [L, 37, 3].
+        rng : np.random.Generator, optional
+            Random number generator for stochastic operations.
+
+        Returns
+        -------
+        perturbed_coords : np.ndarray | None
+            Perturbed apo structure coordinates of shape [L, 37, 3].
+            Returns None if perturbation failed.
+        """
+        # Validate input shapes
+        if coords.ndim != 3 or coords.shape[1:] != (37, 3):
+            raise ValueError(
+                f"Input coords must have shape [L, 37, 3], got {coords.shape}"
+            )
+        rng = rng or np.random.default_rng()
+
+        try:
+            perturbed = self._run_perturbation(sequence, coords, rng)
+        except Exception as e:
+            self.logger.warning(f"Perturbation failed: {e}")
+            return None
+
+        return perturbed
+
+    def _run_perturbation(
+        self,
+        sequence: str,
+        coords: np.ndarray,
+        rng: np.random.Generator,
     ) -> np.ndarray | None:
         """Apply perturbation to apo structure coordinates.
 
@@ -86,11 +129,6 @@ class BioPriorPerturbation:
             Perturbed apo structure coordinates of shape [L, 37, 3].
             Returns None if perturbation failed.
         """
-        # Validate input shapes
-        if coords.ndim != 3 or coords.shape[1:] != (37, 3):
-            raise ValueError(
-                f"Input coords must have shape [L, 37, 3], got {coords.shape}"
-            )
         from bioprior.protein import Protein
 
         # Sanitize sequence: replace non-standard amino acids with 'X'
@@ -98,7 +136,6 @@ class BioPriorPerturbation:
             aa if aa in C.residue.PROTEIN_AMINO_ACIDS_SET else "X" for aa in sequence
         )
 
-        rng = rng or np.random.default_rng()
         seed = int(rng.integers(0, 1_000_000))
         num_steps = int(rng.integers(self.config.min_steps, self.config.max_steps + 1))
         if num_steps == 0:

@@ -64,7 +64,6 @@ class WeightedMSELoss(torch.nn.Module):
         upweight_dna: float = 5.0,
         upweight_rna: float = 5.0,
         upweight_ligand: float = 10.0,
-        scale: bool = False,
     ):
         """Initialize WeightedMSELoss.
         Parameters
@@ -77,18 +76,12 @@ class WeightedMSELoss(torch.nn.Module):
             The weight for RNA atoms
         weight_ligand: float
             The weight for ligand atoms
-        scale: bool
-            Whether to divide by the sum of weights.
-            Boltz1: scale.
-            AlphaFold3, Protenix, OpenFold-3: do not scale.
-            NOTE: loss value is lower when scale=True.
         """
         super().__init__()
         self.upweight_protein: float = upweight_protein
         self.upweight_dna: float = upweight_dna
         self.upweight_rna: float = upweight_rna
         self.upweight_ligand: float = upweight_ligand
-        self.scale: bool = scale
 
     def forward(
         self,
@@ -145,13 +138,9 @@ class WeightedMSELoss(torch.nn.Module):
                 mask=mask,  # [B, 1, L]
             )  # [B, N, L, 3]
 
-        d_sq = ((x_pred - x_true_aligned) ** 2).sum(dim=-1)  # [B, N, L]
-        if self.scale:
-            weight_sum = w.sum(-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / weight_sum  # [B, N]
-        else:
-            mask_sum = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
+        d_sq = ((x_pred - x_true_aligned) ** 2).sum(-1)  # [B, N, L]
+        mask_sum = mask.sum(-1).clamp(1)  # [B, 1]
+        mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
 
         return mse_loss
 

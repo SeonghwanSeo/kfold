@@ -6,7 +6,10 @@ import numpy as np
 import kfold.constants as C
 
 # Constants
-atom37_order = C.atom.protein_atom37_order
+atom37_order: dict[str, int] = C.atom.protein_atom37_order
+protein_one_letter_to_residue_name: dict[str, C.ResidueName] = (
+    C.residue.protein_one_letter_to_residue_name
+)
 
 
 def read_protein_structure(path: str | Path) -> tuple[str, np.ndarray]:
@@ -53,9 +56,7 @@ def read_protein_structure(path: str | Path) -> tuple[str, np.ndarray]:
             atom_name = atom.name
             aidx = atom37_order.get(atom_name, None)
             if aidx is not None:
-                coords[res_i, aidx, 0] = atom.pos.x
-                coords[res_i, aidx, 1] = atom.pos.y
-                coords[res_i, aidx, 2] = atom.pos.z
+                coords[res_i, aidx] = atom.pos.tolist()
     sequence = "".join(aa_list)
     return sequence, coords
 
@@ -89,7 +90,7 @@ def write_protein_structure(
 
     for res_i in range(coords.shape[0]):
         aa = sequence[res_i]
-        res_name = C.residue.protein_one_letter_to_residue_name[aa]
+        res_name = protein_one_letter_to_residue_name[aa]
         residue = gemmi.Residue()
         residue.name = res_name.name
         residue.seqid.num = res_i + 1
