@@ -28,6 +28,7 @@ class BaseFoldingModelConfig:
     score_model: BaseConfig
     structure_module: BaseConfig
     distogram_head: BaseConfig
+    interaction_head: BaseConfig | None = None
     # confidence_head: Baseconfig
 
 
@@ -61,6 +62,11 @@ class BaseFoldingModel(torch.nn.Module):
         self.distogram_head: submodules.distogram_head.BaseDistogramHead = (
             Registry.instantiate(config.distogram_head)
         )
+        self.interaction_head: submodules.interaction_head.BaseInteractionHead | None = (
+            Registry.instantiate(config.interaction_head)
+            if config.interaction_head is not None
+            else None
+        )
 
         # self.confidence_head: submodules.confidence_head.BaseConfidenceHead = (
         #     Registry.instantiate(config.confidence_head)
@@ -80,6 +86,7 @@ class BaseFoldingModel(torch.nn.Module):
         diffusion_batch_size: int = 48,
         sample_structures: bool = True,
         train_structure_module: bool = True,
+        train_interaction_head: bool = True,
         train_confidence_module: bool = True,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold for model training.
@@ -108,6 +115,8 @@ class BaseFoldingModel(torch.nn.Module):
             Whether to sample structures for confidence module training,
         train_structure_module : bool, optional
             Whether to train structure module, by default True
+        train_interaction_head : bool, optional
+            Whether to produce interaction logits, by default True
         train_confidence_module : bool, optional
             Whether to train confidence module, by default True
 
@@ -124,6 +133,9 @@ class BaseFoldingModel(torch.nn.Module):
             - distogram:
                 - logits: [B, Ltoken, Ltoken, Dd]
                     Distogram logits
+            - interaction:
+                - logits: [B, Ltoken, Ltoken, K]
+                    Interaction logits (K = num pair interaction types)
             - diffusion:
                 - loss_weights: [B, N_noise]
                     Weights for diffusion noise scale
@@ -158,16 +170,20 @@ class BaseFoldingModel(torch.nn.Module):
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
-        s_inputs, s_init, z_init = self.input_embedder(f_input)
+        embed_out = self.input_embedder(f_input)
+        s_inputs, s_init, z_init = embed_out[:3]
+        extra_embed_args = embed_out[3:]
 
         # Trunk with recycling
-        s_trunk, z_trunk = self.trunk(
+        trunk_out = self.trunk(
             s_inputs,
             s_init,
             z_init,
             f_input,
             num_recycles,
+            *extra_embed_args,
         )
+        s_trunk, z_trunk = trunk_out[:2]
 
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.
@@ -196,6 +212,12 @@ class BaseFoldingModel(torch.nn.Module):
                 "logits": self.distogram_head(z_trunk),
             }
 
+        if train_interaction_head and self.interaction_head is not None:
+            dict_out["interaction"] = {
+                "logits": self.interaction_head(z_trunk),
+            }
+
+        if train_structure_module:
             # Diffusion head
             self.score_model.train()
             with torch.autocast("cuda", dtype=torch.float32):
@@ -250,19 +272,23 @@ class BaseFoldingModel(torch.nn.Module):
 
         # Embed inputs
         st = time.time()
-        s_inputs, s_init, z_init = self.input_embedder(f_input)
+        embed_out = self.input_embedder(f_input)
+        s_inputs, s_init, z_init = embed_out[:3]
+        extra_embed_args = embed_out[3:]
         et = time.time()
         time_logs["input_embedder"] = et - st
 
         # Trunk with recycling
         st = time.time()
-        s_trunk, z_trunk = self.trunk(
+        trunk_out = self.trunk(
             s_inputs,
             s_init,
             z_init,
             f_input,
             num_recycles,
+            *extra_embed_args,
         )
+        s_trunk, z_trunk = trunk_out[:2]
         et = time.time()
         time_logs["trunk"] = et - st
 
@@ -276,6 +302,12 @@ class BaseFoldingModel(torch.nn.Module):
         dict_out["distogram_logits"] = self.distogram_head(z_trunk)
         et = time.time()
         time_logs["distogram_head"] = et - st
+
+        if self.interaction_head is not None:
+            st = time.time()
+            dict_out["interaction_logits"] = self.interaction_head(z_trunk)
+            et = time.time()
+            time_logs["interaction_head"] = et - st
 
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]

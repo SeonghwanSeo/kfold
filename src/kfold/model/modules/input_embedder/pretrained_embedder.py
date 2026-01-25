@@ -261,6 +261,8 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             s_seq = self.proj_seq_emb(seq_emb)  # [B, Lt, c_s]
             s_inputs = s_inputs + s_seq
 
+        s_inputs = self._add_token_interaction_embedding(s_inputs, f_input)
+
         # Get initial single representation
         s_init = self.linear_s_init(s_inputs)  # [B, L, c_s]
 
@@ -286,6 +288,11 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
             z_init = z_init + self.get_apo_embedding(f_input)  # [B, L, L, c_z]
 
         return s_inputs, s_init, z_init
+
+    def _add_token_interaction_embedding(
+        self, s_inputs: torch.Tensor, f_input: FoldingInput
+    ) -> torch.Tensor:
+        return s_inputs
 
     def get_apo_embedding(self, f_input: FoldingInput) -> torch.Tensor:
         """Get apo embedding for the input features.

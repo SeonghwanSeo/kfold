@@ -75,6 +75,7 @@ class TrainingConfig:
     # Whether to train each submodules
     train_trunk: bool = True
     train_distogram_head: bool = True
+    train_interaction_head: bool = True
     train_structure_module: bool = True
     train_confidence_head: bool = False
 
@@ -88,7 +89,8 @@ class TrainingConfig:
 
     # Logging: time-binned train losses (epoch-level)
     # If enabled, logs
-    # `train_bin/uXX_YY/{loss,mse_loss,bond_loss,smooth_lddt_loss,diffusion_loss}`
+    # `train_bin/uXX_YY/{loss,mse_loss,bond_loss,smooth_lddt_loss,diffusion_loss,
+    # interaction_loss}`
     # where u is normalized diffusion time in [0, 1] with bins of width `time_bin_width`.
     log_time_binned_losses: bool = False
     time_bin_width: float = 0.1
@@ -122,6 +124,7 @@ class LossConfig:
     weights: dict[str, float]
     distogram_loss: Any
     diffusion_loss: Any
+    interaction_loss: Any | None = None
     confidence_loss: Any
 
 
@@ -141,6 +144,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # These are set inside loss computation to avoid recomputation
         self._timebin_last_distogram_loss_per_batch: torch.Tensor | None = None
+        self._timebin_last_interaction_loss_per_batch: torch.Tensor | None = None
         self._timebin_last_diffusion_per_sample: dict[str, torch.Tensor] | None = None
 
         # Entity-count binned logging state
@@ -167,6 +171,7 @@ class KFoldTrainingModule(pl.LightningModule):
         # Whether to train structure and confidence modules
         self.train_trunk: bool = self.training_config.train_trunk
         self.train_distogram_head: bool = self.training_config.train_distogram_head
+        self.train_interaction_head: bool = self.training_config.train_interaction_head
         self.train_structure_module: bool = self.training_config.train_structure_module
         self.train_confidence_head: bool = self.training_config.train_confidence_head
 
@@ -209,6 +214,12 @@ class KFoldTrainingModule(pl.LightningModule):
         if self.train_distogram_head is False:
             self.frozen_modules += ["distogram_head"]
 
+        if (
+            self.train_interaction_head is False
+            and self.model.interaction_head is not None
+        ):
+            self.frozen_modules += ["interaction_head"]
+
         if self.train_structure_module is False:
             self.frozen_modules += ["score_model"]
 
@@ -218,6 +229,8 @@ class KFoldTrainingModule(pl.LightningModule):
 
         for module_name in self.frozen_modules:
             module = getattr(self.model, module_name)
+            if module is None:
+                continue
             for param in module.parameters():
                 param.requires_grad_(False)
 
@@ -254,6 +267,21 @@ class KFoldTrainingModule(pl.LightningModule):
                 self.smooth_lddt_loss = loss_fn.diffusion.SmoothLDDTLoss(
                     **diffusion_loss_config.smooth_lddt_loss
                 )
+
+        interaction_weight = self.loss_weights.get("interaction", 0.0)
+        if self.train_interaction_head and interaction_weight > 0:
+            if self.model.interaction_head is None:
+                raise ValueError(
+                    "interaction_head is not configured but interaction loss is enabled."
+                )
+            if loss_config.interaction_loss is None:
+                raise ValueError(
+                    "interaction_loss config is required "
+                    "when interaction loss is enabled."
+                )
+            self.interaction_loss = loss_fn.interaction.InteractionLoss(
+                **loss_config.interaction_loss
+            )
 
         if self.train_confidence_head:
             raise NotImplementedError("Confidence loss not implemented yet.")
@@ -329,6 +357,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_diffusion_samples=num_diffusion_samples,
                 diffusion_batch_size=diffusion_batch_size,
                 train_structure_module=self.train_structure_module,
+                train_interaction_head=self.train_interaction_head,
                 train_confidence_module=self.train_confidence_head,
                 sample_structures=self.train_confidence_head,
             )
@@ -378,6 +407,7 @@ class KFoldTrainingModule(pl.LightningModule):
             t_hat = out.get("diffusion", {}).get("t_hat", None)
             diffusion_per_sample = self._timebin_last_diffusion_per_sample
             distogram_loss_per_batch = self._timebin_last_distogram_loss_per_batch
+            interaction_loss_per_batch = self._timebin_last_interaction_loss_per_batch
 
             # These caches are populated inside compute_losses/compute_diffusion_loss.
             # Skip if anything is missing for this batch.
@@ -392,6 +422,7 @@ class KFoldTrainingModule(pl.LightningModule):
                         structure_module=self.model.structure_module,
                         diffusion_per_sample=diffusion_per_sample,
                         distogram_loss_per_batch=distogram_loss_per_batch,
+                        interaction_loss_per_batch=interaction_loss_per_batch,
                         loss_weights=self.loss_weights,
                     )
                 if self._entitybin_enabled:
@@ -399,6 +430,7 @@ class KFoldTrainingModule(pl.LightningModule):
                         f_input=f_input,
                         diffusion_per_sample=diffusion_per_sample,
                         distogram_loss_per_batch=distogram_loss_per_batch,
+                        interaction_loss_per_batch=interaction_loss_per_batch,
                         loss_weights=self.loss_weights,
                     )
 
@@ -431,6 +463,17 @@ class KFoldTrainingModule(pl.LightningModule):
                 distogram_loss, distogram_metrics = 0.0, {}
                 diffusion_loss, diffusion_metrics = 0.0, {}
 
+            interaction_weight = self.loss_weights.get("interaction", 0.0)
+            interaction_loss_per_batch: torch.Tensor | None = None
+            if self.train_interaction_head and interaction_weight > 0:
+                interaction_loss, interaction_metrics = self.compute_interaction_loss(
+                    logits=model_output["interaction"]["logits"],
+                    f_input=f_input,
+                )
+                interaction_loss_per_batch = interaction_loss.detach()
+            else:
+                interaction_loss, interaction_metrics = 0.0, {}
+
             if self.train_confidence_head:
                 confidence_loss, confidence_metrics = self.compute_confidence_loss()
             else:
@@ -443,6 +486,7 @@ class KFoldTrainingModule(pl.LightningModule):
             loss_weights["confidence"] * confidence_loss
             + loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
+            + loss_weights.get("interaction", 0.0) * interaction_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
@@ -450,12 +494,18 @@ class KFoldTrainingModule(pl.LightningModule):
         loss = loss.mean()
 
         # Log loss and metrics
-        all_metrics = distogram_metrics | diffusion_metrics | confidence_metrics
+        all_metrics = (
+            distogram_metrics
+            | diffusion_metrics
+            | interaction_metrics
+            | confidence_metrics
+        )
         all_metrics["loss"] = loss.detach()
 
         if self._binned_cache_enabled and self.train_structure_module:
             # Used to compute per-time-bin total loss without recomputing distogram head.
             self._timebin_last_distogram_loss_per_batch = distogram_loss.detach()
+            self._timebin_last_interaction_loss_per_batch = interaction_loss_per_batch
 
         return loss, all_metrics
 
@@ -617,6 +667,14 @@ class KFoldTrainingModule(pl.LightningModule):
         """
         loss = self.distogram_loss(logits, f_input)
         metrics = {"distogram_loss": loss.detach().mean()}
+        return loss, metrics
+
+    def compute_interaction_loss(
+        self, logits: torch.Tensor, f_input: FoldingInput
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute interaction loss."""
+        loss = self.interaction_loss(logits, f_input)
+        metrics = {"interaction_loss": loss.detach().mean()}
         return loss, metrics
 
     def compute_diffusion_loss(

@@ -343,6 +343,8 @@ class TokenArray(PlainLayout[np.ndarray]):
         Distogram atom index of shape [L,], used for distogram calculations.
     is_standard: np.ndarray (bool)
         Boolean tensor of shape [L,], indicating whether the token is standard.
+    interaction_type: np.ndarray (int8)
+        Multi-hot interaction types of shape [L, NUM_INTERACTION_TYPES].
 
     Cached Properties
     -----------------
@@ -367,6 +369,7 @@ class TokenArray(PlainLayout[np.ndarray]):
     center_index: np.ndarray  # [L,], int
     disto_index: np.ndarray  # [L,], int
     is_standard: np.ndarray  # [L,], bool
+    interaction_type: np.ndarray  # [L, NUM_INTERACTION_TYPES], int8
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
@@ -387,6 +390,12 @@ class TokenArray(PlainLayout[np.ndarray]):
         check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
         check_array(self.disto_index, name="disto_index", dtype=np.integer, shape=shape)
         check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
+        check_array(
+            self.interaction_type,
+            name="interaction_type",
+            dtype=np.integer,
+            shape=(*shape, C.NUM_INTERACTION_TYPES),
+        )
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -425,6 +434,9 @@ class TokenArray(PlainLayout[np.ndarray]):
             center_index=full_minus_one((num_tokens,)),
             disto_index=full_minus_one((num_tokens,)),
             is_standard=full_false((num_tokens,)),
+            interaction_type=np.zeros(
+                (num_tokens, C.NUM_INTERACTION_TYPES), dtype=np.int8
+            ),
         )
 
     def sanity_check(self) -> None:
@@ -759,6 +771,32 @@ class TokenizedStructure:
                 for key, value in data.items()
                 if key.startswith(prefix)
             }
+            if struct_cls is TokenArray:
+                if "interaction_type" not in struct_data:
+                    res_types = struct_data["res_type"]
+                    chain_types = struct_data["chain_type"]
+                    num_tokens = res_types.shape[0]
+                    interaction_type_arr = np.zeros(
+                        (num_tokens, C.NUM_INTERACTION_TYPES), dtype=np.int8
+                    )
+                    for i in range(num_tokens):
+                        res_type_val = int(res_types[i])
+                        chain_type_val = int(chain_types[i])
+                        res_enum = C.residue.residue_id_to_name.get(
+                            res_type_val, C.residue.ResidueName.UNK
+                        )
+                        interaction_indices = C.interaction.get_residue_interaction_type(
+                            res_enum, chain_type_val
+                        )
+                        if interaction_indices:
+                            interaction_type_arr[i, list(interaction_indices)] = 1
+                    struct_data["interaction_type"] = interaction_type_arr
+                else:
+                    interaction_type_arr = struct_data["interaction_type"]
+                    if not np.issubdtype(interaction_type_arr.dtype, np.integer):
+                        struct_data["interaction_type"] = (
+                            interaction_type_arr > 0.5
+                        ).astype(np.int8)
             reconstructed[prefix[:-1]] = struct_cls(**struct_data)
         return cls(**reconstructed)
 

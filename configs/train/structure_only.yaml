@@ -69,6 +69,7 @@ training:
   # Training step hyperparameters
   train_trunk: true
   train_distogram_head: true
+  train_interaction_head: false
   train_structure_module: true
   train_confidence_head: false
 
@@ -115,6 +116,7 @@ loss:
   weights:
     # global loss weights
     distogram: 3e-2
+    interaction: 0.0
     diffusion: 4.0
     confidence: 1e-4
     # diffusion loss weights
@@ -151,6 +153,11 @@ loss:
   # Confidence loss
   # TODO
   confidence_loss: {}
+
+  # Interaction loss
+  interaction_loss:
+    distance_threshold: 7.5
+    inter_chain_only: false
 
 wandb:
   use: false

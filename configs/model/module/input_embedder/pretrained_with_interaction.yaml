@@ -1,0 +1,25 @@
+_registry_: "input_embedder"
+_class_: "PretrainedInputEmbedderWithInteraction"
+channel_s: 384
+channel_z: 128
+channel_atom: 128
+channel_atompair: 16
+channel_seq_encoder: null
+channel_struct_encoder: null
+atoms_per_window_queries: 32
+atoms_per_window_keys: 128
+atom_encoder_blocks: 3
+atom_encoder_heads: 4
+max_relative_token: 32
+max_relative_chain: 2
+use_apo: true
+apo_distmap_type: "rbf"
+apo_min_dist: 2.0
+apo_max_dist: 22.0
+apo_num_bins: 64
+# Interaction-specific configs
+use_interaction: true
+interaction_mode: "fused" # "fused" or "separate"
+channel_z_interaction: 32
+debug_interaction: false
+debug_interaction_max_logs: 1

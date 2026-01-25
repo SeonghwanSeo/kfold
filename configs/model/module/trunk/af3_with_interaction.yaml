@@ -1,0 +1,17 @@
+_registry_: "trunk"
+_class_: "AF3PairformerTrunkWithInteraction"
+channel_s: 384
+channel_z: 128
+num_heads_attn: 16
+num_heads_tri_attn: 4
+num_blocks: 48
+dropout: 0.25
+use_msa: false
+use_template: false
+blocks_per_ckpt: null
+tri_attn_chunk_threshold: 384
+# Interaction-specific configs
+use_interaction: true
+interaction_mode: "fused" # "fused" or "separate"
+channel_z_interaction: 32
+interaction_num_heads: 2
