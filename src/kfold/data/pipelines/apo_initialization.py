@@ -10,7 +10,7 @@ from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.io.structure import read_protein_structure
 from kfold.utils.geometry.random_augment import center_random_augmentation
-from kfold.utils.geometry.rigid_align import weighted_rigid_align
+from kfold.utils.geometry.rigid_align import compute_rmsd, weighted_rigid_align
 
 from ._apo_perturbation import ApoPerturbation, ApoPerturbationConfig
 from ._apo_prior import PolymerPriorConfig, PolymerPriorSampler
@@ -129,49 +129,6 @@ def get_zero_coordinates(ctype: C.ChainType, ccd_sequence: list[str]) -> np.ndar
     mask = get_valid_atom_mask(ctype, ccd_sequence)
     coords[mask] = 0.0
     return coords
-
-
-def compute_minimal_rmsd_no_svd(
-    coords: np.ndarray, target: np.ndarray, mask: np.ndarray
-) -> float:
-    """Compute minimal RMSD between two sets of coordinates without SVD.
-    NOTE(SeonghwanSeo): This function replaces the SVD-based RMSD computation
-    for avoiding memory leakage issues in pytorch DataLoader workers.
-    """
-    # 1. Masking & Centering
-    p = coords[mask]
-    q = target[mask]
-    n = p.shape[0]
-
-    p_center = p.mean(axis=0)
-    q_center = q.mean(axis=0)
-    p_centered = p - p_center
-    q_centered = q - q_center
-
-    # E0 = sum(|p|^2) + sum(|q|^2)
-    e0 = np.sum(p_centered**2) + np.sum(q_centered**2)
-
-    # Covariance Matrix H (3x3)
-    # H = P.T @ Q
-    h = p_centered.T @ q_centered
-
-    # Compute singular values via eigen decomposition of H^T H
-    s_sq_matrix = h.T @ h
-    eigenvalues = np.linalg.eigvalsh(s_sq_matrix)
-
-    # Singular values are the square roots of eigenvalues
-    eigenvalues = np.clip(eigenvalues, 0, None)
-    singular_values = np.sqrt(eigenvalues)
-    if np.linalg.det(h) < 0:
-        singular_values[0] = -singular_values[0]
-
-    trace_max = np.sum(singular_values)
-    rmsd_sq = (e0 - 2 * trace_max) / n
-
-    # Numerical stability
-    if rmsd_sq < 0:
-        return 0.0
-    return np.sqrt(rmsd_sq)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -898,8 +855,12 @@ class ApoInitializer:
                     if np.sum(align_mask) < 5:
                         continue  # Not enough resolved atoms to align
                     permuted_apo_coords = res_apo_coords[perm, :]
-                    rmsd = compute_minimal_rmsd_no_svd(
-                        permuted_apo_coords, res_holo_coords, align_mask
+                    rmsd = compute_rmsd(
+                        permuted_apo_coords,
+                        res_holo_coords,
+                        align_mask,
+                        align=True,
+                        no_svd=True,
                     )
                     if rmsd < min_rmsd:
                         min_rmsd = rmsd
