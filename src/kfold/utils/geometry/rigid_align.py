@@ -177,7 +177,8 @@ def compute_rmsd_torch(
 
     if not align:
         # Direct RMSD
-        return ((q - p).pow(2).sum((-2, -1)) / n_points).clamp(0.0).sqrt()
+        rmsd = ((q - p).pow(2).sum((-2, -1)) / n_points).clamp(0.0).sqrt()
+        return rmsd.to(original_dtype)
 
     # Center coordinates
     p_center = p.sum(-2, keepdim=True) / n_points[..., None, None]

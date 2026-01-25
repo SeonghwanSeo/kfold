@@ -774,9 +774,11 @@ class ApoInitializer:
                 st += len(chain_coords)
             apo_mask = np.isfinite(apo_centers).all(-1)
             m = label_mask & apo_mask
+            if not m.any():
+                continue  # No overlapping anchors
 
             rmsd = compute_rmsd(
-                apo_centers[m], label_centers[m], mask=None, align=True, no_svd=False
+                apo_centers[m], label_centers[m], mask=None, align=True, no_svd=True
             )
             if rmsd < best_rmsd:
                 best_perm, best_rmsd = perm, rmsd
