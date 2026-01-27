@@ -292,6 +292,8 @@ class PretrainedInputEmbedder(BaseInputEmbedder):
     def _add_token_interaction_embedding(
         self, s_inputs: torch.Tensor, f_input: FoldingInput
     ) -> torch.Tensor:
+        """Placeholder for adding token interaction embeddings.
+        Used in `pretrained_embedder_with_interaction.py`."""
         return s_inputs
 
     def get_apo_embedding(self, f_input: FoldingInput) -> torch.Tensor:

@@ -18,7 +18,24 @@ from .pretrained_embedder import PretrainedInputEmbedder
 def compute_pair_interactions(
     interaction_type: torch.Tensor, chain_type: torch.Tensor | None = None
 ) -> torch.Tensor:
-    """Compute 5 pair interaction features from primitive interaction types."""
+    """Project primitive interaction types to 5 symmetric pair features.
+
+    Parameters
+    ----------
+    interaction_type : torch.Tensor
+        Multi-hot primitive interaction types of shape [B, L, T] or [L, T].
+        Values are clamped to [0, 1] before projection.
+    chain_type : torch.Tensor | None, optional
+        Chain types of shape [B, L] or [L]. When provided, ligand tokens that
+        still hold the placeholder "all-ones" primitive types are zeroed out to
+        avoid producing dense, meaningless pair labels.
+
+    Returns
+    -------
+    torch.Tensor
+        Pair interaction features of shape [B, L, L, 5] (or [L, L, 5]).
+        The last dimension follows ``C.PairInteractionType`` order.
+    """
     interaction_type = interaction_type.float().clamp(min=0.0, max=1.0)
     if chain_type is not None:
         ligand_mask = (chain_type == C.chain.ChainType.LIGAND.value) | (
@@ -26,6 +43,8 @@ def compute_pair_interactions(
         )
         num_active = interaction_type[..., 1:].sum(-1)
         placeholder_ligand = ligand_mask & (num_active == (C.NUM_INTERACTION_TYPES - 1))
+        # Legacy NPZ files may encode ligand primitives as "all ones". Treat
+        # those as unknown rather than as every possible interaction type.
         interaction_type = interaction_type.masked_fill(
             placeholder_ligand.unsqueeze(-1), 0.0
         )
@@ -52,9 +71,16 @@ def compute_pair_interactions(
 
 @INPUT_EMBEDDER.register()
 class PretrainedInputEmbedderWithInteraction(PretrainedInputEmbedder):
-    """Input embedding module with interaction-aware pair representation."""
+    """Input embedding module with interaction-aware pair representation.
+
+    This extends the pretrained embedder by:
+    - adding a token-level interaction embedding into ``s_inputs``
+    - optionally injecting pair interaction features into ``z_init``
+    """
 
     class Config(PretrainedInputEmbedder.Config):
+        """Configuration for interaction-aware input embeddings."""
+
         use_interaction: bool = True
         interaction_mode: str = "fused"
         channel_z_interaction: int = 32
@@ -73,17 +99,23 @@ class PretrainedInputEmbedderWithInteraction(PretrainedInputEmbedder):
         self._interaction_debug_logs = 0
 
         if self.use_interaction:
+            # Initialize to zero so that enabling the module does not
+            # immediately perturb the pretrained baseline before training.
             self.plip_embedder = LinearNoBias(
                 C.NUM_INTERACTION_TYPES, cfg.channel_s, init="zero"
             )
 
             if self.interaction_mode == "fused":
+                # "Fused" mode adds a projected interaction bias directly into
+                # the existing pair representation channel dimension.
                 self.linear_z_interaction = LinearNoBias(
                     C.NUM_PAIR_INTERACTION_TYPES,
                     cfg.channel_z,
                     init="zero",
                 )
             elif self.interaction_mode == "separate":
+                # "Separate" mode returns an auxiliary pair tensor that the
+                # trunk can merge with an explicit projection layer.
                 self.linear_z_interaction = LinearNoBias(
                     C.NUM_PAIR_INTERACTION_TYPES,
                     cfg.channel_z_interaction,
@@ -98,8 +130,10 @@ class PretrainedInputEmbedderWithInteraction(PretrainedInputEmbedder):
     def _add_token_interaction_embedding(
         self, s_inputs: torch.Tensor, f_input: FoldingInput
     ) -> torch.Tensor:
+        """Add token-level interaction embedding into the single representation."""
         if not self.use_interaction:
             return s_inputs
+        # Match dtype/device with the current representation for safe addition.
         plip_feat = f_input.token.interaction_type.to(dtype=s_inputs.dtype)
         plip_emb = self.plip_embedder(plip_feat)
         return s_inputs + plip_emb
@@ -109,6 +143,7 @@ class PretrainedInputEmbedderWithInteraction(PretrainedInputEmbedder):
         f_input: FoldingInput,
         **kwargs,
     ) -> tuple[torch.Tensor, ...]:
+        """Compute initial single/pair representations with interaction features."""
         s_inputs, s_init, z_init = super().forward(f_input, **kwargs)
 
         if not self.use_interaction:
@@ -128,10 +163,12 @@ class PretrainedInputEmbedderWithInteraction(PretrainedInputEmbedder):
                 z_interaction,
                 z_init,
             )
+            # Inject interaction-aware bias into the base pair representation.
             z_init = z_init + z_interaction
             return s_inputs, s_init, z_init
 
         z_interaction_proj = self.linear_z_interaction(pair_interactions)
+        # Keep raw pair features alongside their projection for downstream use.
         z_interaction = torch.cat([pair_interactions, z_interaction_proj], dim=-1)
         self._log_interaction_stats(
             f_input,
@@ -143,7 +180,7 @@ class PretrainedInputEmbedderWithInteraction(PretrainedInputEmbedder):
         return s_inputs, s_init, z_init, z_interaction
 
     def get_interaction_mask(self, f_input: FoldingInput) -> torch.Tensor:
-        """Get pair interaction mask for sparse attention."""
+        """Return pair interaction features suitable for masking/analysis."""
         interaction_type = f_input.token.interaction_type
         return compute_pair_interactions(interaction_type, f_input.token.chain_type)
 
@@ -155,6 +192,7 @@ class PretrainedInputEmbedderWithInteraction(PretrainedInputEmbedder):
         z_interaction: torch.Tensor,
         z_init: torch.Tensor,
     ) -> None:
+        """Log lightweight interaction statistics for debugging on rank 0."""
         if not self.debug_interaction:
             return
         if self._interaction_debug_logs >= self.debug_interaction_max_logs:

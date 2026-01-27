@@ -1,3 +1,5 @@
+"""Inspect interaction pseudo-label density and basic statistics per batch."""
+
 from __future__ import annotations
 
 import argparse
@@ -18,6 +20,7 @@ PAIR_TYPE_NAMES = [pair_type.name.lower() for pair_type in C.PairInteractionType
 
 
 def _get_nested(config: Any, path: str, default: Any) -> Any:
+    """Safely traverse nested config objects/dicts using dot paths."""
     current = config
     for key in path.split("."):
         if current is None:
@@ -32,6 +35,7 @@ def _get_nested(config: Any, path: str, default: Any) -> Any:
 
 
 def _build_pair_mask(f_input: FoldingInput, inter_chain_only: bool) -> torch.Tensor:
+    """Build a valid-pair mask aligned with interaction pseudo-labels."""
     token_mask = f_input.token.pad_mask & f_input.token.disto_mask
     if token_mask.ndim == 1:
         pair_mask = token_mask[:, None] & token_mask[None, :]
@@ -50,6 +54,7 @@ def _build_pair_mask(f_input: FoldingInput, inter_chain_only: bool) -> torch.Ten
 def _compute_target(
     f_input: FoldingInput, distance_threshold: float
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute distance-gated interaction pseudo-labels and auxiliaries."""
     disto_coords = f_input.token.disto_coords.float()
     pdist = torch.cdist(disto_coords, disto_coords)
     within_threshold = pdist <= distance_threshold
@@ -67,6 +72,7 @@ def _summarize_batch(
     inter_chain_only: bool,
     batch_idx: int,
 ) -> None:
+    """Print compact, per-sample interaction pseudo-label statistics."""
     if not f_input.is_batched:
         f_input = FoldingInput.from_list([f_input], pad_to_max=False)
         meta_infos = [meta_infos[0]]

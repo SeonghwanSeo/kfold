@@ -1,5 +1,6 @@
 import torch
 
+import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
@@ -38,6 +39,14 @@ class AF3PairformerTrunk(BaseTrunk):
             Whether to use MSA, by default False
         tri_attn_chunk_threshold : int, optional
             The threshold for chunking in triangle attention, by default 384
+        use_interaction : bool, optional
+            Whether to enable interaction features, by default False
+        interaction_mode : str, optional
+            How to handle interactions ("fused" or "separate"), by default "fused"
+        channel_z_interaction : int, optional
+            Interaction channel size (excluding type indicators), by default 32
+        interaction_num_heads : int, optional
+            Interaction attention heads (when applicable), by default 2
         """
 
         channel_s: int = 384
@@ -50,6 +59,11 @@ class AF3PairformerTrunk(BaseTrunk):
         use_template: bool = False
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
+        # Interaction-specific configs
+        use_interaction: bool = False
+        interaction_mode: str = "fused"
+        channel_z_interaction: int = 32
+        interaction_num_heads: int = 2
 
     def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairformer module."""
@@ -57,6 +71,8 @@ class AF3PairformerTrunk(BaseTrunk):
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
+        self.use_interaction: bool = cfg.use_interaction
+        self.interaction_mode: str = cfg.interaction_mode
 
         if self.use_template:
             raise NotImplementedError(
@@ -65,6 +81,13 @@ class AF3PairformerTrunk(BaseTrunk):
         if self.use_msa:
             # TODO: Implement MSA Module
             raise NotImplementedError("MSA Module is not implemented yet")
+
+        if self.use_interaction and self.interaction_mode == "separate":
+            interaction_dim = cfg.channel_z_interaction + C.NUM_PAIR_INTERACTION_TYPES
+            self.linear_z_concat = LinearNoBias(
+                cfg.channel_z + interaction_dim,
+                cfg.channel_z,
+            )
 
         self.pairformer_module: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
@@ -102,6 +125,7 @@ class AF3PairformerTrunk(BaseTrunk):
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
+        z_interaction_init: torch.Tensor | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -119,6 +143,9 @@ class AF3PairformerTrunk(BaseTrunk):
             The input features.
         num_recycles : int
             The number of recycling steps.
+        z_interaction_init : torch.Tensor | None
+            Optional interaction pair features. Required when
+            ``interaction_mode == "separate"``.
 
         Returns
         -------
@@ -134,6 +161,14 @@ class AF3PairformerTrunk(BaseTrunk):
                 chunk_size_tri_attn = 512
         else:
             chunk_size_tri_attn = None
+
+        if self.use_interaction and self.interaction_mode == "separate":
+            if z_interaction_init is None:
+                raise ValueError(
+                    "z_interaction_init is required for interaction_mode='separate'"
+                )
+            # Merge the auxiliary interaction tensor into the pair channels.
+            z_init = self._merge_interaction(z_init, z_interaction_init)
 
         # Revert to uncompiled version for validation
         pairformer_module: PairformerStack
@@ -186,3 +221,18 @@ class AF3PairformerTrunk(BaseTrunk):
 
         s_trunk, z_trunk = s_hat, z_hat
         return s_trunk, z_trunk
+
+    def _merge_interaction(
+        self,
+        z_init: torch.Tensor,
+        z_interaction_init: torch.Tensor,
+    ) -> torch.Tensor:
+        """Merge interaction channels into the base pair representation."""
+        expected_dim = self.cfg.channel_z_interaction + C.NUM_PAIR_INTERACTION_TYPES
+        if z_interaction_init.ndim != 4 or z_interaction_init.shape[-1] != expected_dim:
+            raise ValueError(
+                "z_interaction_init has unexpected shape. Expected "
+                f"[B, L, L, {expected_dim}], got {tuple(z_interaction_init.shape)}."
+            )
+        z_concat = torch.cat([z_init, z_interaction_init], dim=-1)
+        return self.linear_z_concat(z_concat)

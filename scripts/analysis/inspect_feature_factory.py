@@ -1,3 +1,5 @@
+"""Utility script to inspect RDKit feature factory outputs for SMILES."""
+
 from __future__ import annotations
 
 import argparse
@@ -12,6 +14,7 @@ FeatureRow = tuple[str, str, tuple[int, ...]]
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for SMILES inspection."""
     parser = argparse.ArgumentParser(
         description="Inspect RDKit feature factory output for SMILES strings."
     )
@@ -34,6 +37,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_smiles_file(path: Path) -> list[str]:
+    """Read SMILES strings from a text file, ignoring blanks and comments."""
     smiles_list: list[str] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -46,6 +50,7 @@ def read_smiles_file(path: Path) -> list[str]:
 
 
 def gather_smiles(args: argparse.Namespace) -> list[str]:
+    """Collect SMILES strings from direct args and optional file input."""
     smiles_list: list[str] = []
     if args.smiles:
         smiles_list.extend(args.smiles)
@@ -55,6 +60,7 @@ def gather_smiles(args: argparse.Namespace) -> list[str]:
 
 
 def build_mol(smiles: str, add_hs: bool) -> Chem.Mol:
+    """Construct an RDKit molecule, optionally with explicit hydrogens."""
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
         raise ValueError(f"Invalid SMILES: {smiles}")
@@ -64,6 +70,7 @@ def build_mol(smiles: str, add_hs: bool) -> Chem.Mol:
 
 
 def extract_feature_rows(features: Iterable[object]) -> list[FeatureRow]:
+    """Convert RDKit feature objects into a serializable row format."""
     rows: list[FeatureRow] = []
     for feature in features:
         family = feature.GetFamily()
@@ -74,6 +81,7 @@ def extract_feature_rows(features: Iterable[object]) -> list[FeatureRow]:
 
 
 def features_per_atom(num_atoms: int, feature_rows: list[FeatureRow]) -> list[list[str]]:
+    """Aggregate feature families per atom with stable deduplication."""
     per_atom: list[list[str]] = [[] for _ in range(num_atoms)]
     for family, _, atom_ids in feature_rows:
         for atom_id in atom_ids:
@@ -93,6 +101,7 @@ def features_per_atom(num_atoms: int, feature_rows: list[FeatureRow]) -> list[li
 
 
 def print_results(smiles: str, mol: Chem.Mol, feature_rows: list[FeatureRow]) -> None:
+    """Pretty-print feature rows and per-atom summaries."""
     per_atom = features_per_atom(mol.GetNumAtoms(), feature_rows)
 
     print(f"SMILES: {smiles}")

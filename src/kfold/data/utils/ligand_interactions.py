@@ -14,11 +14,13 @@ import kfold.constants as C
 
 @lru_cache(maxsize=1)
 def _get_feature_factory() -> ChemicalFeatures.MolChemicalFeatureFactory:
+    """Build and cache RDKit's default feature factory."""
     fdef_path = Path(RDConfig.RDDataDir) / "BaseFeatures.fdef"
     return ChemicalFeatures.BuildFeatureFactory(str(fdef_path))
 
 
 def _ring_info_initialized(ring_info: Chem.rdchem.RingInfo) -> bool:
+    """Return True when RDKit ring information is ready to query."""
     if hasattr(ring_info, "IsInitialized"):
         return ring_info.IsInitialized()
     try:
@@ -29,6 +31,7 @@ def _ring_info_initialized(ring_info: Chem.rdchem.RingInfo) -> bool:
 
 
 def _ensure_ring_info(mol: Chem.Mol) -> bool:
+    """Ensure ring information is available, with robust fallbacks."""
     ring_info = mol.GetRingInfo()
     if ring_info is not None and _ring_info_initialized(ring_info):
         return True
@@ -44,6 +47,7 @@ def _ensure_ring_info(mol: Chem.Mol) -> bool:
 
 
 def _try_sanitize_for_features(mol: Chem.Mol) -> bool:
+    """Best-effort sanitization that tolerates RDKit version differences."""
     try:
         result = Chem.SanitizeMol(mol, catchErrors=True)
     except TypeError:
@@ -76,9 +80,14 @@ def compute_ligand_interaction_types(mol: Chem.Mol) -> np.ndarray:
     if num_atoms == 0:
         return interaction_type
     if num_atoms == 1:
+        # For single-atom ligands (e.g., ions), formal charge is the most
+        # reliable interaction signal.
         _add_formal_charges(mol, interaction_type)
         return interaction_type
 
+    # Ring info is required for aromatic/pi-system detection. Some molecules
+    # arrive partially sanitized, so we try lightweight ring detection first
+    # and fall back to sanitization when needed.
     if not _ensure_ring_info(mol):
         if not _try_sanitize_for_features(mol):
             _add_formal_charges(mol, interaction_type)
@@ -97,6 +106,7 @@ def compute_ligand_interaction_types(mol: Chem.Mol) -> np.ndarray:
 
 
 def _add_hydrophobic_atoms(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
+    """Mark hydrophobic carbons following PLIP-style heuristics."""
     for atom in mol.GetAtoms():
         if atom.GetAtomicNum() != 6:
             continue
@@ -106,6 +116,7 @@ def _add_hydrophobic_atoms(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
 
 
 def _add_hbond_features(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
+    """Annotate hydrogen bond donors/acceptors via RDKit features."""
     factory = _get_feature_factory()
     for feature in factory.GetFeaturesForMol(mol):
         family = feature.GetFamily()
@@ -118,12 +129,14 @@ def _add_hbond_features(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
 
 
 def _add_aromatic_atoms(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
+    """Mark aromatic atoms as pi-systems."""
     for atom in mol.GetAtoms():
         if atom.GetIsAromatic():
             interaction_type[atom.GetIdx(), C.InteractionType.PP] = 1
 
 
 def _add_plip_charged_groups(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
+    """Detect charged groups using PLIP-inspired functional heuristics."""
     pos_atoms: set[int] = set()
     neg_atoms: set[int] = set()
 
@@ -168,6 +181,7 @@ def _add_plip_charged_groups(mol: Chem.Mol, interaction_type: np.ndarray) -> Non
 
 
 def _add_formal_charges(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
+    """Apply formal charges as a final, conservative signal."""
     for atom in mol.GetAtoms():
         charge = atom.GetFormalCharge()
         if charge > 0:
@@ -179,6 +193,7 @@ def _add_formal_charges(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
 def _mark_positive(
     interaction_type: np.ndarray, atom_indices: list[int] | set[int]
 ) -> None:
+    """Mark atoms as salt-bridge cations and pi-cation partners."""
     for atom_idx in atom_indices:
         interaction_type[atom_idx, C.InteractionType.SBC] = 1
         interaction_type[atom_idx, C.InteractionType.PC] = 1
@@ -187,9 +202,11 @@ def _mark_positive(
 def _mark_negative(
     interaction_type: np.ndarray, atom_indices: list[int] | set[int]
 ) -> None:
+    """Mark atoms as salt-bridge anions."""
     for atom_idx in atom_indices:
         interaction_type[atom_idx, C.InteractionType.SBA] = 1
 
 
 def _neighbor_indices(neighbors: list[Chem.Atom], atomic_num: int) -> list[int]:
+    """Return neighbor atom indices matching a given atomic number."""
     return [nbr.GetIdx() for nbr in neighbors if nbr.GetAtomicNum() == atomic_num]
