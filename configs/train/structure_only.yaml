@@ -157,7 +157,7 @@ loss:
   # Interaction loss
   interaction_loss:
     distance_threshold: 7.5
-    inter_chain_only: false
+    inter_chain_only: true
 
 wandb:
   use: false

@@ -81,10 +81,25 @@ class InteractionLoss(torch.nn.Module):
             target.float(),
             reduction="none",
         )
-        loss = loss * pair_mask.unsqueeze(-1)
+        pair_mask_expanded = pair_mask.unsqueeze(-1)
+        loss = loss * pair_mask_expanded
 
-        # Normalize by the number of valid pairs and pair types.
-        num_pairs = pair_mask.sum((-1, -2)).clamp_min(1)
-        denom = num_pairs * logits.shape[-1]
-        loss = loss.sum((-1, -2, -3)) / denom
-        return loss
+        # Class imbalance is extreme (very sparse positives), which drives the
+        # mean loss toward ~0 even when the head is learning. Balance the scale
+        # by averaging positive and negative terms separately, then combining
+        # them. This keeps the loss in a distogram-like range without changing
+        # external loss weights.
+        pos_mask = (target > 0).to(dtype=loss.dtype) * pair_mask_expanded
+        neg_mask = (target <= 0).to(dtype=loss.dtype) * pair_mask_expanded
+
+        pos_count_raw = pos_mask.sum((-1, -2, -3))
+        neg_count_raw = neg_mask.sum((-1, -2, -3))
+        pos_count = pos_count_raw.clamp_min(1.0)
+        neg_count = neg_count_raw.clamp_min(1.0)
+
+        pos_loss = (loss * pos_mask).sum((-1, -2, -3)) / pos_count
+        neg_loss = (loss * neg_mask).sum((-1, -2, -3)) / neg_count
+
+        has_pos = pos_count_raw > 0
+        balanced_loss = 0.5 * (pos_loss + neg_loss)
+        return torch.where(has_pos, balanced_loss, neg_loss)
