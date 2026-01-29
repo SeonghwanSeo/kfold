@@ -15,6 +15,7 @@ apo_init:
   use_random_augmentation: true
   use_ot_permutation: true
   translation_scale: 10.0 # Angstroms
+  fill_missing_atom: true
 
   apo_perturbation:
     # Apo structure perturbation settings (if use_perturbation is true)

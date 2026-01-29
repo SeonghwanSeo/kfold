@@ -1,294 +1,258 @@
+import numpy as np
 import torch
 
-from kfold.data.types.model_input import FoldingInput
-from kfold.utils.geometry.rigid_align import rigid_align
-from kfold.utils.misc import pad_dim
+from kfold.data.types.structure import RefStructure
+from kfold.utils.geometry.rigid_align import compute_rmsd, rigid_align
 
 from .symmetry import ResidueSymmetry
 
 __all__ = ["get_aligned_true_coords"]
 
 
-def compute_mse_loss(
-    a: torch.Tensor, b: torch.Tensor, mask: torch.Tensor
-) -> torch.Tensor:
-    """Compute mean squared error loss with masking.
+def get_aligned_true_coords(
+    ref_struct: RefStructure,
+    pred_coords: torch.Tensor,
+    find_best_permutation: bool = True,
+    symmetry_dict: dict | None = None,
+) -> RefStructure:
+    """Get aligned ground truth coordinates with minimum RMSD considering symmetries.
 
     Parameters
     ----------
-    a : torch.Tensor
-        First tensor. Shape: [..., Natoms, 3]
-    b : torch.Tensor
-        Second tensor. Shape: [..., Natoms, 3]
-    mask : torch.Tensor
-        Mask tensor. Shape: [..., Natoms]
+    ref_struct : RefStructure
+        The reference structure containing ground truth coordinates and masks.
+    pred_coords : torch.Tensor
+        The predicted coordinates. Shape: [Natoms, 3]
+    find_best_permutation : bool, optional
+        Whether to find the best permutation (default: True).
+    symmetry_dict : dict, optional
+        The dictionary containing symmetry information:
+            - "chain": list[list[int]]
+            - "residue": list[list[int] or None]
 
     Returns
     -------
-    loss : torch.Tensor
-        The mean squared error loss.
+    ref_struct_aligned: RefStructure
+        The reference structure with aligned ground truth coordinates.
     """
-    diff = (a - b) * mask[..., None]
-    n_resolved_atoms = mask.sum(dim=-1).clamp(min=1)
-    loss = torch.sum(diff**2, dim=(-1, -2)) / n_resolved_atoms
-    return loss
+    # Remove padding
+    original_num_atoms = ref_struct.num_atoms
+    assert pred_coords.shape == (original_num_atoms, 3), (
+        "Mismatch in number of atoms between coordinates and reference structure."
+    )
+    ref_struct = ref_struct.clone()
+    if find_best_permutation:
+        assert symmetry_dict is not None, (
+            "Symmetry dictionary must be provided when find_best_permutation is True."
+        )
+        # Chain-swap for chain permutation
+        ref_struct = _find_best_chain_permutation(
+            ref_struct,
+            pred_coords,
+            symmetry_dict["chain"],
+            deepcopy=False,
+        )
+        # Atom-swap for residue/molecule permutation
+        _find_best_residue_permutation(
+            ref_struct,
+            pred_coords,
+            symmetry_dict["residue"],
+            align_coords=False,
+            align_local_coords=True,
+            deepcopy=False,
+        )
+    else:
+        # Deepcopy the reference structure
+        ref_struct = ref_struct.clone()
+
+    # Create aligned coordinates
+    dev = pred_coords.device
+    gt_coords = torch.from_numpy(ref_struct.get_atom_coords()).to(dev)
+    gt_mask = gt_coords.isfinite().all(dim=-1)
+    aligned_gt_coords = rigid_align(gt_coords, pred_coords, gt_mask)
+    aligned_gt_coords[~gt_mask] = float("nan")
+
+    # Update the reference structure with aligned coordinates
+    ref_struct = ref_struct.copy_with_new_coords(aligned_gt_coords.cpu().numpy())
+
+    return ref_struct
 
 
-def find_best_chain_permutation(
+def _find_best_chain_permutation(
+    ref_struct: RefStructure,
     coords: torch.Tensor,
-    center_index: torch.Tensor,
-    all_alt_gt_coords: torch.Tensor,
-    all_alt_resolved_mask: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    permutations: list[list[int]],
+    deepcopy: bool = True,
+) -> RefStructure:
     """Compute minimum RMSD coordinates considering chain permutation.
 
     Parameters
     ----------
+    ref_struct : RefStructure
+        The reference structure containing ground truth coordinates and masks.
     coords : torch.Tensor
         The predicted coordinates. Shape: [Natoms, 3]
-    center_index : torch.Tensor
-        The center atom index for each token. Shape: [Ntoken]
-    all_alt_gt_coords : torch.Tensor
-        The alternative ground truth coordinates. Shape: [Nsym, Natoms, 3]
-    all_alt_resolved_mask : torch.Tensor
-        The resolved mask of alternative ground truth coordinates. Shape: [Nsym, Natoms]
+    permutations : list[list[int]]
+        The list of chain permutations (asym_id indices).
 
     Returns
     -------
-    gt_coords_aligned: torch.Tensor
-        The aligned ground truth coordinates with minimum RMSD. Shape: [Natoms, 3]
-    gt_resolved_mask: torch.Tensor
-        The resolved mask of aligned ground truth coordinates. Shape: [Natoms]
+    RefStructure
+        reference structure with best chain permutation applied.
     """
+    dev = coords.device
 
-    num_symmetries = all_alt_gt_coords.shape[0]
-    assert num_symmetries > 0, "There should be at least one symmetry (itself)."
+    if deepcopy:
+        ref_struct = ref_struct.clone()
 
-    # 1. Find the best symmetry using coarse-grained alignment on center atoms
-    center_coords = coords[center_index]  # [Ntoken, 3]
-    gt_center_coords = all_alt_gt_coords[:, center_index, :]  # [Nsym, Ntoken, 3]
-    center_mask = all_alt_resolved_mask[:, center_index]  # [Nsym, Ntoken]
+    if len(permutations) <= 1:
+        # No chain permutation
+        return ref_struct
 
-    if num_symmetries == 1:
-        # Only one symmetry (itself), skip search
-        best_symmetry_index = 0
-    elif not center_coords.isfinite().all():
-        # If predicted center coords contain NaN or inf, skip symmetry search
-        best_symmetry_index = 0
-    else:
-        best_symmetry_index: int = -1
-        best_mse: float = float("inf")
-        for s_i in range(num_symmetries):
-            gt_center_coords_i = gt_center_coords[s_i]
-            mask_i = center_mask[s_i]
-            if not mask_i.any():
-                # Skip if no resolved atoms
-                continue
-            try:
-                gt_center_coords_aligned_i = rigid_align(
-                    coords=gt_center_coords_i,
-                    target=center_coords,
-                    mask=mask_i,
-                )
-            except Exception as e:
-                print("Warning: error in rigid alignment inside symmetry code: ", e)
-                continue
-            mse_i = compute_mse_loss(
-                gt_center_coords_aligned_i, center_coords, mask_i
-            ).item()
-            if mse_i < best_mse:
-                best_mse = mse_i
-                best_symmetry_index = s_i
-        assert best_symmetry_index >= 0, "No valid symmetry found."
+    # Map asym_id to chain index
+    new_permutations: list[list[int]] = []
+    asym_id_to_chain_index = {c.asym_id: i for i, c in enumerate(ref_struct.chains)}
+    for perm in permutations:
+        new_permutations.append([asym_id_to_chain_index[asym_id] for asym_id in perm])
+    permutations = new_permutations
 
-    # 2. Align the best symmetry with all atoms
-    # NOTE: Since token-wise alighment can be overfitted to ligand atoms,
-    # we perform a full-atom rigid alignment here instead of token-wise alignment.
-    gt_coords = all_alt_gt_coords[best_symmetry_index]
-    gt_resolved_mask = all_alt_resolved_mask[best_symmetry_index]
-    gt_coords_aligned = rigid_align(
-        coords=gt_coords,
-        target=coords,
-        mask=gt_resolved_mask,
+    chain_coords_list: list[torch.Tensor] = []
+    chain_center_list: list[torch.Tensor] = []
+    chain_center_indices_list: list[torch.Tensor] = []
+    atom_st = 0
+    for c in ref_struct.chains:
+        chain_coords = torch.from_numpy(c.atom.coords).to(dev)
+        if c.is_protein:
+            center_indices = np.where(c.atom.name == "CA")[0]
+        elif c.is_nucleic_acid:
+            center_indices = np.where(c.atom.name == "C4'")[0]
+        else:
+            center_indices = np.arange(c.num_atoms)
+        center_indices = torch.from_numpy(center_indices).to(dev)
+
+        chain_coords_list.append(chain_coords)
+        chain_center_list.append(chain_coords[center_indices])
+        chain_center_indices_list.append(center_indices + atom_st)
+        atom_st += c.num_atoms
+
+    # NOTE: Assume the center index is static
+    center_index = torch.cat(chain_center_indices_list, dim=0)  # [Ncenter]
+
+    best_i: int = -1
+    best_rmsd: float = float("inf")
+    center_coords = coords[center_index]  # [Ncenter, 3]
+    gt_center_coords = torch.empty_like(center_coords)  # [Ncenter, 3]
+    gt_center_mask = torch.zeros(center_index.shape, dtype=torch.bool, device=dev)
+
+    for perm_i, perm in enumerate(permutations):
+        # Build permuted ground truth coordinates
+        ptr = 0
+        for c_i in perm:
+            n_centers = chain_center_list[c_i].shape[0]
+            gt_center_coords[ptr : ptr + n_centers] = chain_center_list[c_i]
+            ptr += n_centers
+        torch.all(gt_center_coords.isfinite(), dim=-1, out=gt_center_mask)
+        # Compute RMSD on center atoms after rigid alignment
+        rmsd = compute_rmsd(
+            gt_center_coords, center_coords, gt_center_mask, align=True
+        ).item()
+        # Update best permutation
+        if rmsd < best_rmsd:
+            best_rmsd, best_i = rmsd, perm_i
+    best_perm = permutations[best_i]
+
+    # Build new RefStructure with permuted chains
+    new_struct = RefStructure(
+        chains=[ref_struct.chains[i] for i in best_perm],
+        connections=ref_struct.connections,
+        metadata=ref_struct.metadata,
     )
-    return gt_coords_aligned, gt_resolved_mask
+    return new_struct
 
 
-def find_best_mol_permutation(
-    coords: torch.Tensor,
-    gt_coords_aligned: torch.Tensor,
-    gt_resolved_mask: torch.Tensor,
-    mol_symmetries: list[ResidueSymmetry],
-    align_coords: bool = False,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute minimum RMSD coordinates considering residue/molecule permutation.
+def _find_best_residue_permutation(
+    ref_struct: RefStructure,
+    pred_coords: torch.Tensor,
+    permutations: list[ResidueSymmetry],
+    align_coords: bool = True,
+    align_local_coords: bool = False,
+    deepcopy: bool = True,
+) -> RefStructure:
+    """Find the best residue/molecule permutation to minimize RMSD.
 
     Parameters
     ----------
-    coords : torch.Tensor
+    ref_struct : RefStructure
+        The reference structure containing ground truth coordinates and masks.
+    pred_coords : torch.Tensor
         The predicted coordinates. Shape: [Natoms, 3]
-    gt_coords_aligned : torch.Tensor
-        The aligned ground truth coordinates. Shape: [Natoms, 3]
-    gt_resolved_mask : torch.Tensor
-        The resolved mask of aligned ground truth coordinates. Shape: [Natoms]
-    mol_symmetries : list[ResidueSymmetry]
-        The list of atom swaps for residues/molecules.
+    permutations : list[ResidueSymmetry]
+        The list of residue/molecule symmetries.
     align_coords : bool, optional
-        Whether to align coordinates after each swap (default: False).
-
-    Returns
-    -------
-    gt_coords_aligned: torch.Tensor
-        The aligned ground truth coordinates with minimum RMSD. Shape: [Natoms, 3]
-    gt_resolved_mask: torch.Tensor
-        The resolved mask of aligned ground truth coordinates. Shape: [Natoms]
+        Whether to align coordinates before swapping (default: False).
+    align_local_coords : bool, optional
+        Whether to align local coordinates when computing RMSD (default: False).
+    deepcopy : bool, optional
+        Whether to deepcopy the reference structure (default: True).
     """
+    assert len(permutations) == ref_struct.num_residues, (
+        "Mismatch in number of residues between permutations and reference structure."
+    )
+    if deepcopy:
+        ref_struct = ref_struct.clone()
 
-    if len(mol_symmetries) == 0:
-        return gt_coords_aligned, gt_resolved_mask
+    if all(perm is None or len(perm) <= 1 for perm in permutations):
+        # No residue/molecule permutation
+        return ref_struct
 
-    gt_coords = gt_coords_aligned.clone()
-    gt_mask = gt_resolved_mask.clone()
+    # Construct ground truth coordinates and mask
+    dev = pred_coords.device
+    gt_coords = torch.from_numpy(ref_struct.get_atom_coords()).to(dev)
+    gt_mask = gt_coords.isfinite().all(dim=-1)  # [Natoms]
 
-    # Use MSE instead of RMSD for efficiency
-    best_mse = compute_mse_loss(coords, gt_coords, gt_mask).item()
-
-    # Inplace swap function to avoid extra memory allocation
-    def swap(a: torch.Tensor, src: list[int], dst: list[int]) -> torch.Tensor:
-        """Inplace swap of elements in tensor a at indices src and dst."""
-        out = a.clone()
-        out[dst] = a[src]
-        return out
+    # Align coordinates if needed
+    if align_coords and not align_local_coords:
+        gt_coords = rigid_align(gt_coords, pred_coords, gt_mask)
 
     # Find the best permutation greedily
-    for atom_swaps in mol_symmetries:
-        # Try all swaps and find the best one
-        best_swap_i = -1
-        best_mse_for_swap = best_mse
-        for s_i, (src, dst) in enumerate(atom_swaps):
-            # Swap atoms
-            gt_coords_swap = swap(gt_coords, src, dst)
-            gt_mask_swap = swap(gt_mask, src, dst)
+    atom_st = 0
+    perm_iterator = iter(permutations)
 
-            # Compute MSE after swap
-            if align_coords:
-                # Align after swap
-                gt_coords_swap = rigid_align(
-                    coords=gt_coords_swap, target=coords, mask=gt_mask_swap
-                )
-            mse = compute_mse_loss(coords, gt_coords_swap, gt_mask_swap).item()
+    for c in ref_struct.chains:
+        num_atoms_per_residue: list[int] = c.residue.num_atoms.tolist()
+        for res_i in range(c.num_residues):
+            res_idx = res_i + 1  # 1-based residue index
 
-            # Update best swap
-            if mse < best_mse_for_swap:
-                best_mse_for_swap = mse
-                best_swap_i = s_i
+            res_perms: list[int] | None = next(perm_iterator)
+            atom_end = atom_st + num_atoms_per_residue[res_i]
 
-        # Apply the best swap if it improves MSE
-        if best_swap_i >= 0:
-            src, dst = atom_swaps[best_swap_i]
-            gt_coords = swap(gt_coords, src, dst)
-            gt_mask = swap(gt_mask, src, dst)
-            if align_coords:
-                # Align after swap
-                gt_coords = rigid_align(coords=gt_coords, target=coords, mask=gt_mask)
-            best_mse = best_mse_for_swap
+            if res_perms is None or len(res_perms) <= 1:
+                # No permutation for this residue
+                atom_st = atom_end
+                continue
 
-    return gt_coords, gt_mask
+            x = pred_coords[atom_st:atom_end]  # [Nres_atoms, 3]
+            x_gt = gt_coords[atom_st:atom_end]  # [Nres_atoms, 3]
+            m = gt_mask[atom_st:atom_end]  # [Nres_atoms]
 
+            # Try all swaps and find the best one
+            best_i = -1
+            best_rmsd = float("inf")
+            for p_i, perm in enumerate(res_perms):
+                _x_gt = x_gt[perm]  # [Nres_atoms, 3]
+                _m = m[perm]  # [Nres_atoms]
+                rmsd = compute_rmsd(
+                    _x_gt, x, _m, align=align_local_coords, no_svd=True
+                ).item()
+                if rmsd < best_rmsd:
+                    best_rmsd, best_i = rmsd, p_i
 
-def get_aligned_true_coords(
-    coords: torch.Tensor,
-    f_input: FoldingInput,
-    symmetry_dict: dict,
-    index_batch: int,
-):
-    """Compute minimum RMSD coordinates considering symmetries.
-    Parameters
-    ----------
-    coords : torch.Tensor
-        The predicted coordinates. Shape: [Nsample, Natoms, 3]
-    f_input : FoldingInput
-        The folding input containing features.
-        NOTE: This includes all samples in the batch.
-    symmetry_dict : dict
-        The dictionary containing symmetry information:
-            - "alt_coordinates": torch.Tensor of shape [Nsym, Natoms, 3]
-            - "alt_resolved_mask": torch.Tensor of shape [Nsym, Natoms]
-            - "residue_symmetries": list[ResidueSymmetry]
-            - "molecule_symmetries": list[ResidueSymmetry]
-    index_batch : int
-        The batch index.
-    """
-    # Remove padding
-    original_num_atoms = f_input.num_atoms
-    num_valid_atoms = f_input.atom.pad_mask[index_batch].sum().item()
-    coords = coords[:, :num_valid_atoms, :]  # Remove padding
+            # Apply the best swap
+            assert best_i >= 0, "No valid permutation found."
+            best_perm = res_perms[best_i]
+            atom_slice = c.residue.get_atom_slice(res_idx)
+            c.atom.coords[atom_slice] = c.atom.coords[atom_slice][best_perm]
 
-    # For efficient backbone alignment
-    num_valid_tokens = f_input.token.pad_mask[index_batch].sum()
-    center_index = f_input.token.center_index[index_batch][:num_valid_tokens]
+            atom_st = atom_end
 
-    # For chain permutation
-    all_alt_gt_coords = symmetry_dict["alt_coordinates"].to(coords.device)
-    all_alt_resolved_mask = symmetry_dict["alt_resolved_mask"].to(coords.device)
-    assert all_alt_gt_coords.shape[1] == num_valid_atoms, (
-        "Mismatch in number of atoms between predicted coords and alt gt coords."
-    )
-
-    # For residue/molecule permutation
-    residue_symmetries = symmetry_dict["residue_symmetries"]
-    molecule_symmetries = symmetry_dict["molecule_symmetries"]
-
-    num_samples = coords.shape[0]
-    gt_coords_list = []
-    gt_resolved_mask_list = []
-    for i_sample in range(num_samples):
-        coords_i = coords[i_sample]  # [Natoms, 3]
-
-        # find the best chain permutation
-        gt_coords_i, gt_resolved_mask_i = find_best_chain_permutation(
-            coords_i,  # [Natoms, 3]
-            center_index,  # [Ntoken]
-            all_alt_gt_coords,  # [Nsym, Natoms, 3]
-            all_alt_resolved_mask,  # [Nsym, Natoms]
-        )  # [Natoms, 3], [Natoms]
-
-        # find the best residue permutation (skip rigid alignment)
-        gt_coords_i, gt_resolved_mask_i = find_best_mol_permutation(
-            coords_i,
-            gt_coords_i,
-            gt_resolved_mask_i,
-            residue_symmetries,
-            align_coords=False,
-        )  # [Natoms, 3], [Natoms]
-
-        # Rigid alignment after residue permutation
-        gt_coords_i = rigid_align(
-            coords=gt_coords_i, target=coords_i, mask=gt_resolved_mask_i
-        )
-
-        # find the best molecule permutation (with rigid alignment)
-        # TODO: if rigid alignment is bottleneck, consider skipping it here
-        gt_coords_i, gt_resolved_mask_i = find_best_mol_permutation(
-            coords_i,
-            gt_coords_i,
-            gt_resolved_mask_i,
-            molecule_symmetries,
-            align_coords=True,
-        )  # [Natoms, 3], [Natoms]
-
-        gt_coords_list.append(gt_coords_i)
-        gt_resolved_mask_list.append(gt_resolved_mask_i)
-
-    gt_coords_aligned = torch.stack(gt_coords_list, dim=0)  # [Nsample, Natoms, 3]
-    gt_resolved_mask = torch.stack(gt_resolved_mask_list, dim=0)  # [Nsample, Natoms]
-
-    # Pad back to original number of atoms
-    gt_coords_aligned = pad_dim(
-        gt_coords_aligned, dim=1, max_len=original_num_atoms, pad_value=0.0
-    )
-    gt_resolved_mask = pad_dim(
-        gt_resolved_mask, dim=1, max_len=original_num_atoms, pad_value=False
-    )
-
-    return gt_coords_aligned, gt_resolved_mask
+    return ref_struct

@@ -50,9 +50,10 @@ RESOLUTION_FILTERED = 3
 METHOD_FILTERED = 4
 INVALID_POLYMER_TYPES = 5
 CHAIN_COUNT_FILTERED = 6
-RESIDUE_COUNT_FILTERED = 7
-EMPTY_STRUCTURE_FILTERED = 8
-INVALID_CHAIN_FILTERED = 9
+TOKEN_COUNT_FILTERED = 7
+SHORT_POLYMER_FILTERED = 8
+EMPTY_STRUCTURE_FILTERED = 9
+INVALID_CHAIN_FILTERED = 10
 
 
 @dataclasses.dataclass
@@ -131,7 +132,6 @@ KFOLD_SPLITS = {
         date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
         max_resolution=4.5,
         max_chains=1000,
-        min_tokens=16,
         max_tokens=2560,
         handle_invalid_chains="disallow",
     ),
@@ -139,8 +139,7 @@ KFOLD_SPLITS = {
         date_start=datetime.fromisoformat("2024-01-01 00:00:00"),
         date_end=datetime.fromisoformat("2026-01-09 23:59:59"),
         max_resolution=4.5,
-        min_chains=1,
-        max_chains=1000,
+        max_chains=100,
         max_tokens=5120,
         filter_nmr=True,
         handle_invalid_chains="disallow",
@@ -270,31 +269,34 @@ def parse_cif(
         block, expand_assembly=True, clean_up=True
     )
 
-    # Filter out invalid polymer types (e.g., PNA)
-    if data_filter.handle_invalid_chains == "disallow":
-        for entity in raw_struct.entities:
-            if (
-                entity.entity_type == gemmi.EntityType.Polymer
-                and entity.polymer_type
-                not in (
-                    gemmi.PolymerType.PeptideL,
-                    gemmi.PolymerType.Dna,
-                    gemmi.PolymerType.Rna,
-                )
-            ):
-                return INVALID_POLYMER_TYPES
-
     # Filter by chain count
     if not check_chain_count_cutoff(
         raw_struct, data_filter.min_chains, data_filter.max_chains
     ):
         return CHAIN_COUNT_FILTERED
 
-    # Filter by token count (naive filter with residue count)
-    if not check_residue_count_cutoff(
-        raw_struct, data_filter.min_tokens, data_filter.max_tokens
-    ):
-        return RESIDUE_COUNT_FILTERED
+    # Filter by token count with naive residue counting
+    # NOTE: Only applied when invalid chains are disallowed since
+    # partial structures may skew the token count.
+    if data_filter.handle_invalid_chains == "disallow":
+        if not check_residue_count_cutoff(
+            raw_struct, data_filter.min_tokens, data_filter.max_tokens
+        ):
+            return TOKEN_COUNT_FILTERED
+
+    # Filter out invalid polymer types (e.g., PNA)
+    valid_polymer_types = {
+        gemmi.PolymerType.PeptideL,
+        gemmi.PolymerType.Dna,
+        gemmi.PolymerType.Rna,
+    }
+    if data_filter.handle_invalid_chains == "disallow":
+        for entity in raw_struct.entities:
+            if (
+                entity.entity_type == gemmi.EntityType.Polymer
+                and entity.polymer_type not in valid_polymer_types
+            ):
+                return INVALID_POLYMER_TYPES
 
     # Prepare reference structure with chain metadata
     ref_struct: RefStructure = cif_factory.prepare_ref_structure(
@@ -302,6 +304,10 @@ def parse_cif(
     )
     # Insert coordinates
     cif_factory.insert_coordinates(ref_struct, raw_struct, metadata)
+
+    # Validate target (AF3 SI 2.5.4: Filtering of targets)
+    if not cif_factory.validate_target(ref_struct):
+        return SHORT_POLYMER_FILTERED
 
     # Identify invalid chains
     invalid_chains: set[int] = set()
@@ -312,9 +318,11 @@ def parse_cif(
     # Get interfaces and those metadata; Detect clashes
     cif_factory.detect_interfaces_and_detect_clashes(ref_struct, invalid_chains)
 
-    if data_filter.handle_invalid_chains != "allow":
-        if len(invalid_chains) > 0:
-            return INVALID_CHAIN_FILTERED
+    # Detect orphaned branched ligands
+    cif_factory.propagate_invalidity_to_ligands(ref_struct, invalid_chains)
+
+    if data_filter.handle_invalid_chains == "disallow" and len(invalid_chains) > 0:
+        return INVALID_CHAIN_FILTERED
 
     # Drop invalid chains
     cif_factory.prune_invalid_chains(ref_struct, invalid_chains)
@@ -324,10 +332,12 @@ def parse_cif(
         return EMPTY_STRUCTURE_FILTERED
     if ref_struct.num_polymer_chains == 0:
         return EMPTY_STRUCTURE_FILTERED
-    if not (data_filter.min_chains <= ref_struct.num_chains <= data_filter.max_chains):
+    if not (
+        data_filter.min_chains <= ref_struct.num_polymer_chains <= data_filter.max_chains
+    ):
         return CHAIN_COUNT_FILTERED
     if not (data_filter.min_tokens <= ref_struct.num_tokens <= data_filter.max_tokens):
-        return RESIDUE_COUNT_FILTERED
+        return TOKEN_COUNT_FILTERED
 
     # Validate final structure
     ref_struct.validate()
@@ -387,7 +397,7 @@ def main():
     ) as pool:
         results = list(
             tqdm(
-                pool.imap_unordered(worker_wrapped, cif_paths, chunksize=10),
+                pool.imap_unordered(worker_wrapped, cif_paths),
                 total=len(cif_paths),
                 desc="Processing RCSB mmCIF files",
             )
@@ -404,7 +414,8 @@ def main():
     print(f"  Method filtered: {results.count(METHOD_FILTERED)}")
     print(f"  Invalid polymer types filtered: {results.count(INVALID_POLYMER_TYPES)}")
     print(f"  Chain count filtered: {results.count(CHAIN_COUNT_FILTERED)}")
-    print(f"  Residue count filtered: {results.count(RESIDUE_COUNT_FILTERED)}")
+    print(f"  Token count filtered: {results.count(TOKEN_COUNT_FILTERED)}")
+    print(f"  Short polymer filtered: {results.count(SHORT_POLYMER_FILTERED)}")
     print(f"  Empty structure filtered: {results.count(EMPTY_STRUCTURE_FILTERED)}")
     print(f"  Invalid chain filtered: {results.count(INVALID_CHAIN_FILTERED)}")
 

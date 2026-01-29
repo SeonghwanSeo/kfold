@@ -173,6 +173,13 @@ class Component:
         """Get the number of atoms in the component."""
         return len(self.names)
 
+    def get_atom_names(self, drop_leaving: bool = False) -> tuple[str, ...]:
+        """Get the names of atoms in the component."""
+        if drop_leaving:
+            return self.non_leaving_atom_names
+        else:
+            return self.names
+
     @property
     def non_leaving_atom_names(self) -> tuple[str, ...]:
         """Get the names of non-leaving atoms in the component."""
