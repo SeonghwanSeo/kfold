@@ -68,6 +68,7 @@ training:
   # Training step hyperparameters
   train_trunk: true
   train_distogram_head: true
+  train_interaction_head: false
   train_structure_module: true
   train_confidence_head: false
 
@@ -92,6 +93,8 @@ validation:
   num_diffusion_samples: 5
   symmetry_correction: true
   save_predictions: true
+  return_traj: false
+  traj_format: "pdb"
 
 optimizer:
   opt: "adam"
@@ -112,6 +115,7 @@ loss:
   weights:
     # global loss weights
     distogram: 3e-2
+    interaction: 0.0
     diffusion: 4.0
     confidence: 1e-4
     # diffusion loss weights
@@ -136,6 +140,7 @@ loss:
       upweight_dna: 5.0
       upweight_rna: 5.0
       upweight_ligand: 10.0
+      align_true_to_pred: true
 
     # Bond Loss
     bond_loss: {}
@@ -146,6 +151,11 @@ loss:
   # Confidence loss
   # TODO
   confidence_loss: {}
+
+  # Interaction loss
+  interaction_loss:
+    distance_threshold: 7.5
+    inter_chain_only: true
 
 wandb:
   use: false

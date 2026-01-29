@@ -64,6 +64,7 @@ class WeightedMSELoss(torch.nn.Module):
         upweight_dna: float = 5.0,
         upweight_rna: float = 5.0,
         upweight_ligand: float = 10.0,
+        align_true_to_pred: bool = True,
     ):
         """Initialize WeightedMSELoss.
         Parameters
@@ -76,12 +77,15 @@ class WeightedMSELoss(torch.nn.Module):
             The weight for RNA atoms
         weight_ligand: float
             The weight for ligand atoms
+        align_true_to_pred: bool
+            Whether to align ground truth coordinates to predictions before MSE.
         """
         super().__init__()
         self.upweight_protein: float = upweight_protein
         self.upweight_dna: float = upweight_dna
         self.upweight_rna: float = upweight_rna
         self.upweight_ligand: float = upweight_ligand
+        self.align_true_to_pred: bool = align_true_to_pred
 
     def forward(
         self,
@@ -130,15 +134,16 @@ class WeightedMSELoss(torch.nn.Module):
         mask = mask.unsqueeze(-2)  # [B, 1, L]
 
         # See Section 3.7.1 Equation 2
-        with torch.no_grad():
-            x_true_aligned = weighted_rigid_align(
-                coords=x_true.float(),  # [B, N, L, 3]
-                target=x_pred.float(),  # [B, N, L, 3]
-                weights=w,  # [B, 1, L], broadcasted over N
-                mask=mask,  # [B, 1, L]
-            )  # [B, N, L, 3]
+        if self.align_true_to_pred:
+            with torch.no_grad():
+                x_true = weighted_rigid_align(
+                    coords=x_true.float(),  # [B, N, L, 3]
+                    target=x_pred.float(),  # [B, N, L, 3]
+                    weights=w,  # [B, 1, L], broadcasted over N
+                    mask=mask,  # [B, 1, L]
+                )  # [B, N, L, 3]
 
-        d_sq = ((x_pred - x_true_aligned) ** 2).sum(-1)  # [B, N, L]
+        d_sq = ((x_pred - x_true) ** 2).sum(-1)  # [B, N, L]
         mask_sum = mask.sum(-1).clamp(1)  # [B, 1]
         mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
 

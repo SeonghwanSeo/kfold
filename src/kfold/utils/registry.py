@@ -228,6 +228,7 @@ SCORE_MODEL = Registry("score_model")
 
 # Section 3 Algorithm 1 Inference Loop
 DISTOGRAM_HEAD = Registry("distogram_head")
+INTERACTION_HEAD = Registry("interaction_head")
 
 CONFIDENCE_HEAD = Registry("confidence_head")
 

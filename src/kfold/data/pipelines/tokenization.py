@@ -1,5 +1,7 @@
 """Tokenization pipeline for structures."""
 
+# TODO: Add interaction types for training only.
+
 from functools import lru_cache
 
 import numpy as np
@@ -10,11 +12,12 @@ from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.utils.ligand_interactions import compute_ligand_interaction_types
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
 
 class Tokenizer:
-    def __init__(self, ccd: CCD) -> None:
+    def __init__(self, ccd: CCD, training: bool = True) -> None:
         """Tokenizer for structures.
 
         Parameters
@@ -23,6 +26,7 @@ class Tokenizer:
             The chemical component dictionary.
         """
         self.ccd: CCD = ccd
+        self.training: bool = training
 
     def __call__(
         self,
@@ -234,6 +238,11 @@ def tokenize_structure(
                 struct.token.center_index[g_tok_i] = atom_list.index(ref_atom)
                 struct.token.disto_index[g_tok_i] = atom_list.index(beta_atom)
                 struct.token.is_standard[g_tok_i] = True
+                interaction_indices = C.interaction.get_residue_interaction_type(
+                    res_name, ctype
+                )
+                if interaction_indices:
+                    struct.token.interaction_type[g_tok_i, list(interaction_indices)] = 1
 
                 # Update atom existence mask
                 struct.atom.pad_mask[g_tok_i, :natoms] = True
@@ -253,6 +262,11 @@ def tokenize_structure(
                 struct.token.center_index[st:end] = 0
                 struct.token.disto_index[st:end] = 0
                 struct.token.is_standard[st:end] = False
+                interaction_indices = C.interaction.get_residue_interaction_type(
+                    C.residue.unknown_residue_name.get(ctype, C.ResidueName.UNK), ctype
+                )
+                if interaction_indices:
+                    struct.token.interaction_type[st:end, list(interaction_indices)] = 1
 
                 # Update atom existence mask
                 struct.atom.pad_mask[st:end, 0] = True
@@ -289,6 +303,7 @@ def tokenize_structure(
     # ==================================================
     g_tok_i = 0
     for chain in input.chains:
+        ctype = chain.ctype
         # Valid atom mask for the chain
         asym_id = chain.asym_id
         token_st = chain_token_st[asym_id]
@@ -313,13 +328,15 @@ def tokenize_structure(
         )
 
         # Insert reference molecular conformers
+        chain_meta = _metadata.get_chain_by_asym_id(asym_id)
         for res_i in range(chain.num_residues):
             residue_index = res_i + 1  # 1-based index
             ccd_name = str(chain.residue.name[res_i])
+            smiles: str | None = None
 
             if ccd_name.startswith("LIG"):
                 # This residue is from a smiles string, load smiles from metadata
-                smiles = _metadata.get_chain_by_asym_id(asym_id).smiles
+                smiles = chain_meta.smiles
                 assert smiles is not None, (
                     "Smiles string not found in metadata for LIG residue."
                 )
@@ -353,6 +370,22 @@ def tokenize_structure(
                 "Atom indices are not in ascending order."
             )
             natoms = int(chain.residue.num_atoms[res_i])
+            if not chain.residue.is_standard[res_i] and ctype.is_ligand:
+                try:
+                    ligand_interactions = compute_ligand_interaction_types(ref_mol.mol)
+                except Exception as e:
+                    smiles_info = f", smiles={smiles}" if smiles is not None else ""
+                    print(
+                        "Error computing ligand interactions for "
+                        f"{_metadata.id} (ccd={ccd_name}, asym_id={asym_id}, "
+                        f"chain_name={chain_meta.name}{smiles_info}): {e}"
+                    )
+                    raise
+                st = g_tok_i
+                end = g_tok_i + natoms
+                struct.token.interaction_type[st:end, :] = ligand_interactions[
+                    atom_indices
+                ]
             if chain.residue.is_standard[res_i]:
                 # Standard residue
                 assert np.all(struct.atom.pad_mask[g_tok_i, :natoms]), (

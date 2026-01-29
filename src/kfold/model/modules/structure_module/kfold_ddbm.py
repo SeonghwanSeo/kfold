@@ -3,7 +3,7 @@ import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseEDM
@@ -71,9 +71,9 @@ class KFoldBridgeDiffusion(BaseEDM):
             This is important for SE(3)-equivariant biomolecular modeling.
         synchronize_sigmas : bool, optional
             Whether to synchronize the sigmas across diffusion samples, by default False.
-        alignment_entity_strategy : str, optional
-            Strategy for selecting entity to align: "largest" or "random_non_ligand",
-            by default "largest".
+        alignment_entity_strategy : str | None, optional
+            Strategy for selecting entity to align: None (all entities), "largest",
+            or "random_non_ligand", by default "largest".
         """
 
         num_steps: int = 200
@@ -413,12 +413,14 @@ class KFoldBridgeDiffusion(BaseEDM):
         do_random_augment = label_coords is None
         apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
 
-        if label_coords is not None and self.alignment_entity_strategy:
-            apo_coords = self.align_apo_to_label_by_entity_selection(
+        if label_coords is not None:
+            apo_mask = ~(apo_coords == 0.0).all(-1)
+            apo_coords = self.align_apo_to_label(
                 apo_coords,
                 label_coords,
                 f_input,
             )
+            apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
 
         return apo_coords
 

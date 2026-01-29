@@ -45,9 +45,6 @@ train:
           fill_missing_atom: false
           prior_sampler:
             type: null
-          apo_perturbation:
-            rieprody:
-              rmsd_threshold: 15.0
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260129/dataset/rcsb-val/

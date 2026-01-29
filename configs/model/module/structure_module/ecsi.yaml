@@ -7,7 +7,11 @@ sigma_min: 0.001  # t_min
 sigma_max: 0.999  # t_max (near 1)
 
 # Linear route parameters (Table 8)
-gamma_max: 0.25  # \gamma_t = 2 * \gamma_\max * \sqrt{t(1-t)}
+gamma_max: 16  # \gamma_t = 2 * \gamma_\max * \sqrt{t(1-t)}
+route_type: "linear"
+# DDBM-VP route parameters (Appendix C.2)
+ddbm_vp_beta_min: 0.1
+ddbm_vp_beta_d: 2.0
 
 # Data distribution parameters
 sigma_data: 16.0  # holo structures (\sigma_0)
@@ -15,7 +19,7 @@ sigma_data_end: 16.0  # apo structures (\sigma_T)
 cov_xy: 128.0  # \sigma_data * \sigma_data_end / 2
 
 # Karras schedule
-rho: 7
+rho: 0.7
 
 # Training noise level sampling (not used - uniform sampling used instead)
 P_mean: -1.2
@@ -25,14 +29,29 @@ P_std: 1.5
 # eta=0: deterministic ODE, eta=1: full SDE (DDBM-style)
 eta: 1.0
 
+# Switch to deterministic update for small t (ODE-like) during sampling.
+# If set <= 0, this deterministic phase is disabled.
+ode_time_duration: 0.5
+
 # Other settings
 coordinate_augmentation: True
 synchronize_sigmas: False
-normalize_data_end: False
+normalize_data_end: True
 use_prior_coords: true
 
 logit_normal_sampling: False
 sampling_alpha: 1.0
 sampling_beta: 1.0
 
-alignment_entity_strategy: "largest"
+alignment_entity_strategy: null
+alignment_level: "chain"
+s_trans: 0.0
+
+# ECSI-specific inference settings
+inference_align_x0_hat_to_x_apo: true
+chain_wise_perturbation: true   # CWP
+# NOTE: independent diffusion apo sampling
+# if true, CWP samples translation from gaussian or uniform sphere
+#   based on dataset.apo_init config (translation_scale & chain_com_sampling_radius)
+# if false, CWP uses s_trans for chain-wise translation and randomly rotate each chain
+inference_independent_diffusion_apo_sampling: true

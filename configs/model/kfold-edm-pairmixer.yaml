@@ -2,35 +2,23 @@
 _registry_: "main_module"
 _class_: KFold
 
-# kernel settings
-kernel:
-  cuequivariance: true
-
-# compilation settings
-compile_trunk: false
-compile_score_model: false
-compile_mode: "default"
-
-# Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/pretrained.yaml"
   channel_seq_encoder: null # Should be overriden
   channel_struct_encoder: null # Should be overriden
-  use_apo: true # Use apo input as default
+  use_apo: true
 
 trunk:
-  _yaml_: "module/trunk/kfold.yaml"
-  use_ensemble: False
-  use_multi_state: False
+  _yaml_: "module/trunk/pairmixer.yaml"
+  use_cuequiv_kernels: true
 
 structure_module:
   _yaml_: "module/structure_module/af3.yaml"
 
 score_model:
   _yaml_: "module/score_model/apo_conditioned.yaml"
+  use_prior_coords: false
   use_apo: false
 
 distogram_head:
   _yaml_: "module/distogram_head/af3.yaml"
-
-interaction_head: null

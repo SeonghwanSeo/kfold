@@ -15,7 +15,6 @@ apo_init:
   use_random_augmentation: true
   use_ot_permutation: true
   translation_scale: 10.0 # Angstroms
-  fill_missing_atom: true
 
   apo_perturbation:
     # Apo structure perturbation settings (if use_perturbation is true)
@@ -23,7 +22,7 @@ apo_init:
     rieprody:
       # RieProDy Riemannian perturbation settings
       metric_lmdb_path: null # NOTE: This is automatically set in the dataset.
-      rmsd_threshold: 10.0 # RMSD threshold for fallback
+      rmsd_threshold: 15.0 # RMSD threshold for fallback
       metric_comp:
         apo_internal_coord_metric_calculation_precision: "float64"
         apo_internal_coord_metric_save_precision: "float16"
@@ -34,6 +33,8 @@ apo_init:
         num_steps: 1 # Number of random walk steps per perturbation
         total_time: 15.0 # Maximum total simulation time (sampled uniformly in [total_time_min, total_time) per call)
         total_time_min: 0.0 # Minimum total simulation time for uniform sampling
+        total_time_sampling_power: 3.0 # Sampling power for total_time (1.0 = uniform, >1.0 = favor larger time)
+        total_time_uniform_ratio: 0.3 # Probability of sampling uniformly (mixture with power law)
         metric_calculation_period: 100
         metric: "lagrangian"
         use_precomputed_metric: true # Use pre-computed metric from LMDB

@@ -2,6 +2,8 @@
 # Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
 # Adapted from ECSI training code and kfold_ddbm.py
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -22,8 +24,9 @@ class KFoldECSI(BaseECSI):
 
     Key features:
     - Decoupled kernel parameters (\alpha_t, \beta_t, \gamma_t) for flexible bridge paths
-    - Linear interpolation: \alpha_t=1-t, \beta_t=t,
+    - Linear route: \alpha_t=1-t, \beta_t=t,
       \gamma_t^2=\gamma_{max}^2/4 \cdot t(1-t)
+    - DDBM-VP route (Appendix C.2): configurable via route_type="ddbm_vp"
     - Stochasticity control via \eta parameter during sampling
     - Preconditioning adapted from DDBM
 
@@ -46,6 +49,13 @@ class KFoldECSI(BaseECSI):
         gamma_max : float, optional
             Scale parameter for \gamma_t, by default 1.0.
             Uses \gamma_t^2 = \gamma_{max}^2/4 * t(1-t).
+        route_type : str, optional
+            Route selection for (\alpha_t, \beta_t, \gamma_t). Options: "linear"
+            (default) or "ddbm_vp".
+        ddbm_vp_beta_min : float, optional
+            DDBM-VP beta_min parameter for \sigma_t and a_t schedules.
+        ddbm_vp_beta_d : float, optional
+            DDBM-VP beta_d parameter for \sigma_t and a_t schedules.
         sigma_data : float, optional
             Standard deviation of target (holo) distribution, by default 16.0.
         sigma_data_end : float, optional
@@ -71,15 +81,18 @@ class KFoldECSI(BaseECSI):
             Whether to normalize the source (apo) input, by default False.
         normalize_coordinate : bool, optional
             Whether to normalize the source and target coordinates, by default False.
-        alignment_entity_strategy : str, optional
-            Strategy for selecting entity to align: "largest" or "random_non_ligand",
-            by default "largest".
+        alignment_entity_strategy : str | None, optional
+            Strategy for selecting entity to align: None (all entities), "largest",
+            or "random_non_ligand", by default "largest".
         """
 
         num_steps: int = 200
         sigma_min: float = 0.001
         sigma_max: float = 0.999
         gamma_max: float = 0.25
+        route_type: str = "linear"
+        ddbm_vp_beta_min: float = 0.1
+        ddbm_vp_beta_d: float = 16.0
         sigma_data: float = 16.0
         sigma_data_end: float = 16.0
         cov_xy: float = 128.0
@@ -95,7 +108,15 @@ class KFoldECSI(BaseECSI):
         sampling_alpha: float = 1.0
         sampling_beta: float = 1.0
         use_prior_coords: bool = True
-        alignment_entity_strategy: str = "largest"
+        alignment_entity_strategy: str | None = None
+        alignment_level: str = "chain"
+        s_trans: float = 1.0
+        inference_align_x0_hat_to_x_apo: bool = True
+        chain_wise_perturbation: bool = True
+        inference_independent_diffusion_apo_sampling: bool = False
+        inference_apo_translation_scale: float = 0.0
+        inference_apo_chain_com_sampling_radius: float | None = None
+        ode_time_duration: float = 0.5
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -103,6 +124,9 @@ class KFoldECSI(BaseECSI):
         self.sigma_min: float = cfg.sigma_min
         self.sigma_max: float = cfg.sigma_max
         self.gamma_max: float = cfg.gamma_max
+        self.route_type: str = cfg.route_type
+        self.ddbm_vp_beta_min: float = cfg.ddbm_vp_beta_min
+        self.ddbm_vp_beta_d: float = cfg.ddbm_vp_beta_d
         self.sigma_data: float = cfg.sigma_data
         self.sigma_data_end: float = cfg.sigma_data_end
         self.cov_xy: float = cfg.cov_xy
@@ -119,11 +143,25 @@ class KFoldECSI(BaseECSI):
         self.sampling_alpha: float = cfg.sampling_alpha
         self.sampling_beta: float = cfg.sampling_beta
         self.use_prior_coords: bool = cfg.use_prior_coords
+        self.s_trans: float = cfg.s_trans
+        self.alignment_level: str = cfg.alignment_level
+        self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
+        self.chain_wise_perturbation: bool = cfg.chain_wise_perturbation
+        self.inference_independent_diffusion_apo_sampling: bool = (
+            cfg.inference_independent_diffusion_apo_sampling
+        )
+        self.inference_apo_translation_scale: float = cfg.inference_apo_translation_scale
+        self.inference_apo_chain_com_sampling_radius: float | None = (
+            cfg.inference_apo_chain_com_sampling_radius
+        )
+        self.ode_time_duration: float = cfg.ode_time_duration
+
+        self._configure_route_functions(cfg)
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
             augmentation=self.coordinate_augmentation,
-            s_trans=1.0,
+            s_trans=self.s_trans,
         )
 
     @property
@@ -146,31 +184,405 @@ class KFoldECSI(BaseECSI):
         """Apply random augmentation to coordinates."""
         return self.random_augmentation(coords, mask=mask)
 
-    # === Linear Route Functions (Stochastic Interpolants) === #
+    def apply_chain_random_augmentation(
+        self,
+        coords: torch.Tensor,
+        mask: torch.Tensor,
+        f_input: FoldingInput,
+    ) -> torch.Tensor:
+        """Apply chain-wise random augmentation to coordinates."""
+        if not self.coordinate_augmentation:
+            return coords
+
+        added_sample_dim = False
+        if coords.dim() == 3:
+            coords = coords.unsqueeze(1)
+            added_sample_dim = True
+
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(1)
+        if mask.shape[1] == 1 and coords.shape[1] > 1:
+            mask = mask.expand(-1, coords.shape[1], -1)
+
+        if coords.dim() != 4 or mask.dim() != 3:
+            raise ValueError(
+                "Expected coords shape (B, N, L, 3) and mask shape (B, N, L), "
+                f"got coords {coords.shape} and mask {mask.shape}."
+            )
+
+        token_asym_id = f_input.token.asym_id
+        atom_token_index = f_input.atom.token_index
+
+        if token_asym_id.dim() == 1:
+            token_asym_id = token_asym_id.unsqueeze(0)
+        if atom_token_index.dim() == 1:
+            atom_token_index = atom_token_index.unsqueeze(0)
+
+        if token_asym_id.shape[0] == 1 and coords.shape[0] > 1:
+            token_asym_id = token_asym_id.expand(coords.shape[0], -1)
+        if atom_token_index.shape[0] == 1 and coords.shape[0] > 1:
+            atom_token_index = atom_token_index.expand(coords.shape[0], -1)
+
+        atom_chain_id = token_asym_id.gather(-1, atom_token_index.clamp(min=0))
+
+        mask_bool = mask.bool()
+        valid_mask = mask_bool.any(dim=1) & (atom_chain_id >= 0)
+        if not valid_mask.any():
+            return coords.squeeze(1) if added_sample_dim else coords
+
+        max_chain_id = atom_chain_id.masked_select(valid_mask).max()
+        chain_id_stride = max_chain_id + 1
+        batch_idx = torch.arange(coords.shape[0], device=coords.device).unsqueeze(-1)
+        global_chain_id = atom_chain_id + batch_idx * chain_id_stride
+
+        _, chain_index = torch.unique(global_chain_id[valid_mask], return_inverse=True)
+        num_chains = int(chain_index.max().item() + 1)
+        chain_index_full = torch.full_like(atom_chain_id, -1)
+        chain_index_full[valid_mask] = chain_index
+
+        chain_mask = F.one_hot(
+            chain_index_full.clamp(min=0), num_classes=num_chains
+        ).bool()
+        chain_mask = chain_mask & valid_mask[..., None]
+        chain_mask = chain_mask.permute(0, 2, 1)
+        chain_mask = chain_mask.unsqueeze(1) & mask_bool.unsqueeze(2)
+
+        chain_coords = coords.unsqueeze(2).masked_fill(~chain_mask[..., None], 0.0)
+        chain_counts = chain_mask.sum(dim=-1, keepdim=True).clamp(min=1)
+        chain_centers = chain_coords.sum(dim=-2) / chain_counts.to(coords.dtype)
+        chain_centers = chain_centers.unsqueeze(-2)
+        batch_size, num_samples, num_chains, num_atoms = chain_mask.shape
+        flat_coords = chain_coords.reshape(
+            batch_size * num_samples * num_chains, num_atoms, 3
+        )
+        flat_mask = chain_mask.reshape(batch_size * num_samples * num_chains, num_atoms)
+        flat_coords = self.random_augmentation(flat_coords, mask=flat_mask)
+        chain_coords = flat_coords.reshape(
+            batch_size, num_samples, num_chains, num_atoms, 3
+        )
+        chain_coords = chain_coords + chain_centers * chain_mask[..., None].to(
+            chain_coords.dtype
+        )
+        coords = chain_coords.sum(dim=2)
+
+        if added_sample_dim:
+            coords = coords.squeeze(1)
+
+        return coords
+
+    def _sample_uniform_sphere_surface_torch(
+        self,
+        radius: float,
+        shape: tuple[int, ...],
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Sample points uniformly from a sphere surface (torch).
+
+        Returns tensor of shape (*shape, 3).
+        """
+        # Sample direction ~ N(0, I), then normalize -> uniform on sphere.
+        vec = torch.randn((*shape, 3), dtype=dtype, device=device)
+        vec = vec / (vec.norm(dim=-1, keepdim=True) + 1e-8)
+        return vec * float(radius)
+
+    def _independent_apo_chain_sampling(
+        self,
+        coords: torch.Tensor,
+        mask: torch.Tensor,
+        token_asym_id: torch.Tensor,
+        atom_token_index: torch.Tensor,
+        translation_scale: float,
+        chain_com_sampling_radius: float | None,
+    ) -> torch.Tensor:
+        """Independently sample apo coordinates per (sample, chain).
+
+        This reproduces dataset-side apo initialization behavior for validation/inference:
+        - If chain_com_sampling_radius is set: apply chain-wise random rotation (no random
+          translation) and then translate each chain so its COM lies on a sphere surface.
+        - Else: apply chain-wise random rotation + random translation
+          (scale=translation_scale).
+
+        Parameters
+        ----------
+        coords : torch.Tensor
+            Apo coordinates. Shape (B, N, L, 3).
+        mask : torch.Tensor
+            Apo mask. Shape (B, N, L) or (B, L).
+        token_asym_id : torch.Tensor
+            Token chain IDs. Shape (B, Lt) or (Lt,).
+        atom_token_index : torch.Tensor
+            Atom-to-token mapping indices. Shape (B, L) or (L,).
+        translation_scale : float
+            Random translation scale (Angstrom).
+        chain_com_sampling_radius : float | None
+            If set, place chain COM on sphere surface of this radius.
+
+        Returns
+        -------
+        torch.Tensor
+            Independently sampled apo coordinates. Shape (B, N, L, 3).
+        """
+        if not self.coordinate_augmentation:
+            return coords
+
+        if coords.dim() != 4:
+            raise ValueError(f"Expected coords shape (B, N, L, 3), got {coords.shape}.")
+
+        if mask.dim() == 2:
+            mask = mask.unsqueeze(1)
+        if mask.dim() != 3:
+            raise ValueError(
+                f"Expected mask shape (B, N, L) or (B, L), got {mask.shape}."
+            )
+        if mask.shape[1] == 1 and coords.shape[1] > 1:
+            mask = mask.expand(-1, coords.shape[1], -1)
+
+        # Normalize token/atom mapping shapes
+        if token_asym_id.dim() == 1:
+            token_asym_id = token_asym_id.unsqueeze(0)
+        if atom_token_index.dim() == 1:
+            atom_token_index = atom_token_index.unsqueeze(0)
+        if token_asym_id.shape[0] == 1 and coords.shape[0] > 1:
+            token_asym_id = token_asym_id.expand(coords.shape[0], -1)
+        if atom_token_index.shape[0] == 1 and coords.shape[0] > 1:
+            atom_token_index = atom_token_index.expand(coords.shape[0], -1)
+
+        atom_chain_id = token_asym_id.gather(-1, atom_token_index.clamp(min=0))
+
+        mask_bool = mask.bool()
+        valid_mask = mask_bool.any(dim=1) & (atom_chain_id >= 0)
+        if not valid_mask.any():
+            return coords
+
+        max_chain_id = atom_chain_id.masked_select(valid_mask).max()
+        chain_id_stride = max_chain_id + 1
+        batch_idx = torch.arange(coords.shape[0], device=coords.device).unsqueeze(-1)
+        global_chain_id = atom_chain_id + batch_idx * chain_id_stride
+
+        _, chain_index = torch.unique(global_chain_id[valid_mask], return_inverse=True)
+        num_chains = int(chain_index.max().item() + 1)
+        chain_index_full = torch.full_like(atom_chain_id, -1)
+        chain_index_full[valid_mask] = chain_index
+
+        # (B, L, C) -> (B, C, L) -> (B, N, C, L)
+        chain_mask = F.one_hot(
+            chain_index_full.clamp(min=0), num_classes=num_chains
+        ).bool()
+        chain_mask = chain_mask & valid_mask[..., None]
+        chain_mask = chain_mask.permute(0, 2, 1)
+        chain_mask = chain_mask.unsqueeze(1) & mask_bool.unsqueeze(2)
+
+        chain_coords = coords.unsqueeze(2).masked_fill(~chain_mask[..., None], 0.0)
+        batch_size, num_samples, num_chains, num_atoms = chain_mask.shape
+
+        flat_coords = chain_coords.reshape(
+            batch_size * num_samples * num_chains, num_atoms, 3
+        )
+        flat_mask = chain_mask.reshape(batch_size * num_samples * num_chains, num_atoms)
+
+        # Dataset behavior:
+        # - If chain_com_sampling_radius is set: force random translation scale to 0.0
+        # - Else: use translation_scale
+        if chain_com_sampling_radius is not None:
+            translation_scale = 0.0
+
+        augment = CenterRandomAugmentation(
+            centering=True,
+            augmentation=True,
+            s_trans=float(translation_scale),
+        )
+        flat_coords = augment(flat_coords, mask=flat_mask)
+        chain_coords = flat_coords.reshape(
+            batch_size, num_samples, num_chains, num_atoms, 3
+        )
+
+        if chain_com_sampling_radius is not None:
+            # Translate each chain so its COM lies on the sphere surface.
+            chain_counts = chain_mask.sum(dim=-1, keepdim=True).clamp(min=1)
+            chain_centers = chain_coords.sum(dim=-2) / chain_counts.to(chain_coords.dtype)
+            target_centers = self._sample_uniform_sphere_surface_torch(
+                radius=float(chain_com_sampling_radius),
+                shape=(batch_size, num_samples, num_chains),
+                dtype=chain_coords.dtype,
+                device=chain_coords.device,
+            )
+            shift = target_centers - chain_centers  # (B, N, C, 3)
+            chain_coords = chain_coords + shift.unsqueeze(-2) * chain_mask[..., None].to(
+                chain_coords.dtype
+            )
+
+        # Combine chains back: (B, N, C, L, 3) -> (B, N, L, 3)
+        coords = chain_coords.sum(dim=2)
+        return coords
+
+    def _configure_route_functions(self, cfg: Config) -> None:
+        route = (cfg.route_type or "linear").lower().replace("-", "_")
+        self.route_type = route
+        if route == "linear":
+            self._alpha_fn = self._alpha_linear
+            self._alpha_deriv_fn = self._alpha_deriv_linear
+            self._beta_fn = self._beta_linear
+            self._beta_deriv_fn = self._beta_deriv_linear
+            self._gamma_fn = self._gamma_linear
+            self._gamma_deriv_fn = self._gamma_deriv_linear
+            return
+        if route == "ddbm_vp":
+            self._alpha_fn = self._alpha_ddbm_vp
+            self._alpha_deriv_fn = self._alpha_deriv_ddbm_vp
+            self._beta_fn = self._beta_ddbm_vp
+            self._beta_deriv_fn = self._beta_deriv_ddbm_vp
+            self._gamma_fn = self._gamma_ddbm_vp
+            self._gamma_deriv_fn = self._gamma_deriv_ddbm_vp
+            return
+        raise ValueError(
+            "Unsupported route_type; expected 'linear' or 'ddbm_vp', "
+            f"got {cfg.route_type!r}."
+        )
+
+    @property
+    def ddbm_vp_a1(self) -> float:
+        exponent = 0.5 * self.ddbm_vp_beta_d + self.ddbm_vp_beta_min
+        return math.exp(exponent) ** -0.5
+
+    @property
+    def ddbm_vp_sigma1_sq(self) -> float:
+        exponent = 0.5 * self.ddbm_vp_beta_d + self.ddbm_vp_beta_min
+        return math.exp(exponent) - 1.0
+
+    def _ddbm_vp_constants(self, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        a1 = t.new_tensor(self.ddbm_vp_a1)
+        sigma1_sq = t.new_tensor(self.ddbm_vp_sigma1_sq)
+        return a1, sigma1_sq
+
+    def _ddbm_vp_base(
+        self, t: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        beta_d = t.new_tensor(self.ddbm_vp_beta_d)
+        beta_min = t.new_tensor(self.ddbm_vp_beta_min)
+        log_snr = 0.5 * beta_d * t**2 + beta_min * t
+        exp_term = torch.exp(log_snr)
+        sigma_sq = exp_term - 1.0
+        sigma_sq_prime = exp_term * (beta_d * t + beta_min)
+        a_t = torch.rsqrt(exp_term)
+        a_t_prime = -0.5 * (beta_d * t + beta_min) * a_t
+        return a_t, a_t_prime, sigma_sq, sigma_sq_prime
+
+    # === Route Functions (Stochastic Interpolants) === #
     def alpha(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Weight for target (x_0/holo); route selected by config."""
+        return self._alpha_fn(t)
+
+    def alpha_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Derivative of alpha; route selected by config."""
+        return self._alpha_deriv_fn(t)
+
+    def beta(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Weight for source (x_T/apo); route selected by config."""
+        return self._beta_fn(t)
+
+    def beta_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Derivative of beta; route selected by config."""
+        return self._beta_deriv_fn(t)
+
+    def gamma(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Noise scale; route selected by config."""
+        return self._gamma_fn(t)
+
+    def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        r"""Derivative of gamma; route selected by config."""
+        return self._gamma_deriv_fn(t)
+
+    # === Linear Route Functions === #
+    def _alpha_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Weight for target (x_0/holo): \alpha_t = 1 - t"""
         return 1 - t
 
-    def alpha_deriv(self, t: torch.Tensor) -> torch.Tensor:
+    def _alpha_deriv_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Derivative of alpha: \dot{\alpha}_t = -1"""
         return -torch.ones_like(t)
 
-    def beta(self, t: torch.Tensor) -> torch.Tensor:
+    def _beta_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Weight for source (x_T/apo): \beta_t = t"""
         return t
 
-    def beta_deriv(self, t: torch.Tensor) -> torch.Tensor:
+    def _beta_deriv_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Derivative of beta: \dot{\beta}_t = 1"""
         return torch.ones_like(t)
 
-    def gamma(self, t: torch.Tensor) -> torch.Tensor:
+    def _gamma_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Noise scale: \gamma_t^2 = \gamma_{max}^2/4 * t(1-t)"""
         return 0.5 * self.gamma_max * torch.sqrt(t * (1 - t) + 1e-8)
 
-    def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
+    def _gamma_deriv_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Derivative: \dot{\gamma}_t = \gamma_{max} * (1-2t) / (4\sqrt{t(1-t)})"""
         denom = torch.sqrt(t * (1 - t) + 1e-8)
         return self.gamma_max * (1 - 2 * t) / (4 * denom)
+
+    # === DDBM-VP Route Functions (Appendix C.2) === #
+    def _alpha_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, _, sigma_sq, _ = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        a1_sq = a1 * a1
+        a_t_sq = a_t * a_t
+        denom = sigma1_sq * a_t_sq + 1e-8
+        ratio = sigma_sq * a1_sq / denom
+        return a_t * (1 - ratio)
+
+    def _alpha_deriv_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        a1_sq = a1 * a1
+        a_t_sq = a_t * a_t
+        a_t_sq_prime = 2 * a_t * a_t_prime
+        inv_a_t_sq = 1 / (a_t_sq + 1e-8)
+        k = a1_sq / (sigma1_sq + 1e-8)
+        ratio = k * sigma_sq * inv_a_t_sq
+        ratio_prime = k * (
+            sigma_sq_prime * inv_a_t_sq
+            - sigma_sq * a_t_sq_prime * inv_a_t_sq * inv_a_t_sq
+        )
+        return a_t_prime * (1 - ratio) - a_t * ratio_prime
+
+    def _beta_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, _, sigma_sq, _ = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        denom = sigma1_sq * a_t + 1e-8
+        return sigma_sq * a1 / denom
+
+    def _beta_deriv_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        inv_a_t = 1 / (a_t + 1e-8)
+        k = a1 / (sigma1_sq + 1e-8)
+        return k * (sigma_sq_prime * inv_a_t - sigma_sq * a_t_prime * inv_a_t * inv_a_t)
+
+    def _gamma_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, _, sigma_sq, _ = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        a1_sq = a1 * a1
+        a_t_sq = a_t * a_t
+        ratio = sigma_sq * a1_sq / (sigma1_sq * a_t_sq + 1e-8)
+        gamma_sq = sigma_sq * (1 - ratio)
+        return torch.sqrt(torch.clamp(gamma_sq, min=0.0) + 1e-8)
+
+    def _gamma_deriv_ddbm_vp(self, t: torch.Tensor) -> torch.Tensor:
+        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._ddbm_vp_base(t)
+        a1, sigma1_sq = self._ddbm_vp_constants(t)
+        a1_sq = a1 * a1
+        a_t_sq = a_t * a_t
+        a_t_sq_prime = 2 * a_t * a_t_prime
+        inv_a_t_sq = 1 / (a_t_sq + 1e-8)
+        k = a1_sq / (sigma1_sq + 1e-8)
+        ratio = k * sigma_sq * inv_a_t_sq
+        ratio_prime = k * (
+            sigma_sq_prime * inv_a_t_sq
+            - sigma_sq * a_t_sq_prime * inv_a_t_sq * inv_a_t_sq
+        )
+        gamma_sq = sigma_sq * (1 - ratio)
+        gamma_sq_prime = sigma_sq_prime * (1 - ratio) - sigma_sq * ratio_prime
+        gamma = torch.sqrt(torch.clamp(gamma_sq, min=0.0) + 1e-8)
+        return 0.5 * gamma_sq_prime / (gamma + 1e-8)
 
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(
@@ -321,7 +733,7 @@ class KFoldECSI(BaseECSI):
         Returns
         -------
         denoised_coords : torch.Tensor
-            Denoised (target) atom coordinates \hat{x}_0. Shape (B, N, L, 3).
+            Denoised (target) atom coordinates \\hat{x}_0. Shape (B, N, L, 3).
         """
         if not isinstance(t_hat, torch.Tensor):
             t_hat = torch.full(
@@ -480,15 +892,40 @@ class KFoldECSI(BaseECSI):
         apo_coords : torch.Tensor
             Apo coordinates. Shape (B, N, La, 3).
         """
+        if label_coords is None and self.inference_independent_diffusion_apo_sampling:
+            # Validation/Inference: independently sample x_T per diffusion sample
+            # using parameters from structure module config.
+            apo_coords = self.sample_apo(
+                f_input, num_diffusion_samples, random_augment=False
+            )
+            apo_mask = f_input.atom.apo_mask
+            apo_coords = self._independent_apo_chain_sampling(
+                coords=apo_coords,
+                mask=apo_mask,
+                token_asym_id=f_input.token.asym_id,
+                atom_token_index=f_input.atom.token_index,
+                translation_scale=float(self.inference_apo_translation_scale),
+                chain_com_sampling_radius=self.inference_apo_chain_com_sampling_radius,
+            )
+            return apo_coords
+
         do_random_augment = label_coords is None
         apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
 
-        if label_coords is not None and self.alignment_entity_strategy:
-            apo_coords = self.align_apo_to_label_by_entity_selection(
+        if self.chain_wise_perturbation:
+            apo_mask = f_input.atom.apo_mask
+            apo_coords = self.apply_chain_random_augmentation(
+                apo_coords, apo_mask, f_input
+            )
+
+        if label_coords is not None:
+            # apo_mask = ~(apo_coords == 0.0).all(-1)
+            apo_coords = self.align_apo_to_label(
                 apo_coords,
                 label_coords,
                 f_input,
             )
+            # apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
 
         return apo_coords
 
@@ -691,6 +1128,15 @@ class KFoldECSI(BaseECSI):
                     prior_coords=x_apo[:, st:end],
                 )
 
+                # align x0_hat to x_apo
+                if self.inference_align_x0_hat_to_x_apo:
+                    # Kabsch-align x0_hat into the x_apo frame.
+                    x0_hat[:, st:end] = self.align_apo_to_label(
+                        apo_coords=x0_hat[:, st:end],
+                        label_coords=x_apo[:, st:end],
+                        f_input=f_input,
+                    )
+
             # Expand t for coefficient computation
             t_exp = t_curr_tensor[:, :, None, None]  # (B, N, 1, 1)
 
@@ -706,14 +1152,30 @@ class KFoldECSI(BaseECSI):
             z_hat = (x_t - alpha_t * x0_hat - beta_t * x_apo) / (gamma_t + 1e-8)
 
             # Last 2 steps: use deterministic update (\epsilon_t = 0)
-            if step_idx >= num_steps - 2:
+            # if step_idx >= num_steps - 2:
+
+            ode_time_duration = float(self.ode_time_duration)
+            if ode_time_duration > 0.0 and t_curr <= ode_time_duration:
                 # x_{t-\Delta t} = \alpha_{t-\Delta t} \hat{x}_0 + \beta_{t-\Delta t} x_T
                 #                + \gamma_{t-\Delta t} \hat{z}_t
                 t_next_exp = torch.full_like(t_exp, t_next)
                 alpha_next = self.alpha(t_next_exp)
                 beta_next = self.beta(t_next_exp)
                 gamma_next = self.gamma(t_next_exp)
-                x_t = alpha_next * x0_hat + beta_next * x_apo + gamma_next * z_hat
+
+                # NOTE: weghting factor for z_hat is (cos(2pi(t_next-0.5)) + 1) / 2
+                weighting_factor = (
+                    math.cos(math.pi * (t_next - ode_time_duration) / ode_time_duration)
+                    + 1
+                ) / 2
+
+                # x_t = alpha_next * x0_hat + beta_next * x_apo + gamma_next * z_hat
+                # x_t = alpha_next * x0_hat + beta_next * x_apo
+                x_t = (
+                    alpha_next * x0_hat
+                    + beta_next * x_apo
+                    + gamma_next * z_hat * weighting_factor
+                )
             else:
                 # Compute \epsilon_t = \eta (\gamma_t \dot{\gamma}_t
                 #                    - \dot{\alpha}_t/\alpha_t \gamma_t^2)

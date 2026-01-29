@@ -32,6 +32,12 @@ train:
     num_nodes: 1
     precision: bf16-mixed
 
+  # Train loss binned logging
+  training:
+    log_time_binned_losses: true
+    time_bin_width: 0.1
+    log_entity_binned_losses: true
+
   data:
     ccd_path: /cache/wykim_lab/kfold_data/v260129/ccd-train.pkl
     train_datasets:
