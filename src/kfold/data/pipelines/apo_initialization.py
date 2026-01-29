@@ -659,28 +659,19 @@ class ApoInitializer:
         rng: np.random.Generator,
     ) -> None:
         # === 1. Prepare coordinates === #
-        asym_id_to_entity_id: dict[int, int] = {
-            chain.asym_id: chain.entity_id for chain in struct.chains
-        }
         entity_ids: list[int] = sorted(set(chain.entity_id for chain in struct.chains))
         entity_apo_dict: dict[int, list[np.ndarray]] = defaultdict(list)
         entity_ctypes: dict[int, C.ChainType] = {}
         entity_sizes: dict[int, int] = {}
         for chain in struct.chains:
+            if chain.is_covalent_ligand:
+                continue  # skip covalent ligands
             entity_apo_dict[chain.entity_id].append(chain.atom.apo_coords.copy())
             entity_ctypes[chain.entity_id] = chain.ctype
             entity_sizes[chain.entity_id] = chain.num_residues
 
         # Sort entities by size (largest first)
         entity_ids.sort(key=lambda x: entity_sizes[x], reverse=True)
-
-        # Remove all covalent ligands from permutation candidates
-        for conn in struct.connections:
-            for asym_id in conn.asym_id:
-                eid = asym_id_to_entity_id[asym_id]
-                if entity_ctypes[eid].is_ligand:
-                    if eid in entity_ids:
-                        entity_ids.remove(eid)
 
         for eid in list(entity_ids):
             apo_coords_list = entity_apo_dict[eid]

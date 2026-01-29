@@ -78,6 +78,17 @@ class ChainInfo(JsonSerializable):
     smiles: str | None = None
     description: str | None = None
     cluster_id: str | None = None
+    is_covalent_ligand: bool = False
+    is_ion: bool = False
+    is_low_homology: bool = False  # whether to use this chain for evaluation
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary, excluding default boolean values."""
+        data = JsonSerializable.to_dict(self)
+        for k in ["is_covalent_ligand", "is_ion", "is_low_homology"]:
+            if data[k] is False:
+                del data[k]
+        return data
 
     @property
     def ctype(self) -> C.ChainType:
@@ -88,6 +99,15 @@ class ChainInfo(JsonSerializable):
 class InterfaceInfo(JsonSerializable):
     asym_ids: tuple[int, int]
     cluster_id: str | None = None
+    is_low_homology: bool = False  # whether to use this interface for evaluation
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary, excluding default boolean values."""
+        data = JsonSerializable.to_dict(self)
+        for k in ["is_low_homology"]:
+            if data[k] is False:
+                del data[k]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:

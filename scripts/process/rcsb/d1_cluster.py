@@ -73,10 +73,10 @@ class Seq(NamedTuple):
         return self.ctype.name.lower()
 
 
-def parse_cif(
+def parse_npz(
     npz_path: pathlib.Path,
 ) -> tuple[list[Seq], Metadata]:
-    """Parse a CIF file and return a gemmi.cif.Document object."""
+    """Parse a NPZ file and return sequences and metadata."""
     struct: RefStructure = RefStructure.load_npz(npz_path)
     metadata: Metadata = struct.metadata
     name = struct.id
@@ -217,7 +217,7 @@ def main():
     with multiprocessing.Pool(args.num_workers) as pool:
         results = list(
             tqdm(
-                pool.imap_unordered(parse_cif, npz_paths),
+                pool.imap_unordered(parse_npz, npz_paths),
                 total=len(npz_paths),
                 desc="Extracting sequences",
             )

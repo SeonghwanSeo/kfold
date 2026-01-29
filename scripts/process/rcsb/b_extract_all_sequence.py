@@ -24,6 +24,22 @@ CHAIN_COUNT_FILTERED = 5
 RESIDUE_COUNT_FILTERED = 6
 
 
+polymer_type_to_ctype = {
+    gemmi.PolymerType.PeptideL: C.ChainType.PROTEIN,
+    gemmi.PolymerType.Dna: C.ChainType.DNA,
+    gemmi.PolymerType.Rna: C.ChainType.RNA,
+}
+ctype_to_unk = {
+    C.ChainType.PROTEIN: "X",
+    C.ChainType.DNA: "N",
+    C.ChainType.RNA: "N",
+}
+PROTEIN_AMINO_ACID_MAPPING = C.residue.PROTEIN_AMINO_ACID_MAPPING
+PROTEIN_AMINO_ACIDS_SET = C.residue.PROTEIN_AMINO_ACIDS_SET
+DNA_BASES_SET = C.residue.DNA_BASES_SET
+RNA_BASES_SET = C.residue.RNA_BASES_SET
+
+
 @dataclasses.dataclass
 class DataFilter:
     date_start: datetime = datetime.min
@@ -91,7 +107,7 @@ KFOLD_SPLITS = {
         date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
         max_resolution=4.5,
         max_chains=1000,
-        max_residues=2560,
+        max_residues=2048,
     ),
     "test": DataFilter(
         date_start=datetime.fromisoformat("2024-01-01 00:00:00"),
@@ -182,7 +198,7 @@ def check_residue_count_cutoff(
 def parse_cif(
     cif_path: pathlib.Path,
     data_filter: DataFilter,
-) -> tuple[int, list[tuple[str, str, str, str]]]:
+) -> tuple[int, list[tuple[str, str, C.ChainType, str]]]:
     """Parse a CIF file and return a gemmi.cif.Document object."""
 
     pdb_id = cif_path.name.split(".")[0].lower()  # both .cif and .cif.gz
@@ -240,7 +256,7 @@ def parse_cif(
         return RESIDUE_COUNT_FILTERED, []
 
     # Extract polymer sequences
-    polymer_sequences: list[tuple[str, str, str, str]] = []
+    polymer_sequences: list[tuple[str, str, C.ChainType, str]] = []
     for entity in raw_struct.entities:
         entity: gemmi.Entity
         entity_id = entity.name
@@ -248,32 +264,36 @@ def parse_cif(
         assert int(entity_id) >= 1
         if entity.entity_type != gemmi.EntityType.Polymer:
             continue
+        if entity.polymer_type not in polymer_type_to_ctype:
+            continue
         if len(entity.subchains) == 0:
             continue
         ccd_sequence: list[str] = entity.full_sequence
         if len(ccd_sequence) < 4:
             # Skip very short polymers
             continue
-        match entity.polymer_type:
-            case gemmi.PolymerType.PeptideL:
-                ctype = "protein"
-                unk = "X"
-            case gemmi.PolymerType.Dna:
-                ctype = "dna"
-                unk = "N"
-            case gemmi.PolymerType.Rna:
-                ctype = "rna"
-                unk = "N"
-            case _:
-                continue
+
+        ctype = polymer_type_to_ctype[entity.polymer_type]
+        unk = ctype_to_unk[ctype]
+
+        # Convert CCD names to one-letter codes
         seq = "".join(
             C.residue.convert_ccd_name_to_one_letter(residue_name, unk=unk)
             for residue_name in ccd_sequence
         )
+        # Replace ambiguous residues with standard ones
+        if ctype.is_protein:
+            tokens = [PROTEIN_AMINO_ACID_MAPPING.get(aa, aa) for aa in seq]
+            tokens = [aa if aa in PROTEIN_AMINO_ACIDS_SET else unk for aa in tokens]
+        elif ctype.is_dna:
+            tokens = [base if base in DNA_BASES_SET else unk for base in seq]
+        elif ctype.is_rna:
+            tokens = [base if base in RNA_BASES_SET else unk for base in seq]
+        seq = "".join(tokens)
         polymer_sequences.append((pdb_id, entity_id, ctype, seq))
 
     # Extract ligand sequences
-    nonpolymer_sequences: list[tuple[str, str, str, str]] = []
+    nonpolymer_sequences: list[tuple[str, str, C.ChainType, str]] = []
     for entity in raw_struct.entities:
         entity: gemmi.Entity
         entity_id = entity.name
@@ -290,7 +310,7 @@ def parse_cif(
         ccd_sequence: list[str] = [res.name for res in raw_chain]
         if len(ccd_sequence) == 0:
             continue
-        ctype = "ligand"
+        ctype = C.ChainType.LIGAND
         seq = "-".join(ccd_sequence)
         nonpolymer_sequences.append((pdb_id, entity_id, ctype, seq))
 
@@ -325,7 +345,7 @@ def main():
     cif_paths = sorted(cif_dir.rglob("*.cif.gz"))
     print(f"Found {len(cif_paths)} mmCIF files to process.")
     with multiprocessing.Pool(args.num_workers) as pool:
-        results: list[tuple[int, list[tuple[str, str, str, str]]]] = list(
+        results: list[tuple[int, list[tuple[str, str, C.ChainType, str]]]] = list(
             tqdm(
                 pool.imap_unordered(parse_cif_partial, cif_paths, chunksize=20),
                 total=len(cif_paths),
@@ -348,7 +368,7 @@ def main():
     print(f"  Residue count filtered: {flags.count(RESIDUE_COUNT_FILTERED)}")
 
     # Collect all sequences
-    all_sequences: list[tuple[str, str, str, str]] = []
+    all_sequences: list[tuple[str, str, C.ChainType, str]] = []
     for flag, sequences in results:
         if flag == SUCCESS:
             all_sequences.extend(sequences)
@@ -356,10 +376,10 @@ def main():
     # Print stats
     print("Sequence statistics:")
     print(f"  Total sequences extracted: {len(all_sequences)}")
-    print(f"  Proteins: {sum(ctype == 'protein' for _, _, ctype, _ in all_sequences)}")
-    print(f"  DNAs: {sum(ctype == 'dna' for _, _, ctype, _ in all_sequences)}")
-    print(f"  RNAs: {sum(ctype == 'rna' for _, _, ctype, _ in all_sequences)}")
-    print(f"  Ligands: {sum(ctype == 'ligand' for _, _, ctype, _ in all_sequences)}")
+    print(f"  Proteins: {sum(ctype.is_protein for _, _, ctype, _ in all_sequences)}")
+    print(f"  DNAs: {sum(ctype.is_dna for _, _, ctype, _ in all_sequences)}")
+    print(f"  RNAs: {sum(ctype.is_rna for _, _, ctype, _ in all_sequences)}")
+    print(f"  Ligands: {sum(ctype.is_ligand for _, _, ctype, _ in all_sequences)}")
 
     # save to fasta
     seq_dir = args.data_dir / "sequences"
@@ -367,14 +387,14 @@ def main():
 
     output_fasta_path = seq_dir / "all_sequences.fasta"
     all_rcsb_sequences: list[tuple[str, str]] = [
-        (f"{pdb_id}|{entity_id}|{chain_type}", sequence)
-        for pdb_id, entity_id, chain_type, sequence in sorted(all_sequences)
+        (f"{pdb_id}|{entity_id}|{ctype.name.lower()}", sequence)
+        for pdb_id, entity_id, ctype, sequence in sorted(all_sequences)
     ]
     write_fasta(all_rcsb_sequences, output_fasta_path)
 
     # save unique sequences only
     uniq_protein_fasta_path = seq_dir / "unique_protein_sequences.fasta"
-    uniq_proteins = set(seq for _, _, ctype, seq in all_sequences if ctype == "protein")
+    uniq_proteins = set(seq for _, _, ctype, seq in all_sequences if ctype.is_protein)
     uniq_proteins: list[tuple[str, str]] = [
         (f"uniq_protein_{i + 1}", seq)
         for i, seq in enumerate(sorted(uniq_proteins, key=lambda x: (len(x), x)))
@@ -382,7 +402,7 @@ def main():
     write_fasta(uniq_proteins, uniq_protein_fasta_path)
 
     uniq_dna_fasta_path = seq_dir / "unique_dna_sequences.fasta"
-    uniq_dnas = set(seq for _, _, ctype, seq in all_sequences if ctype == "dna")
+    uniq_dnas = set(seq for _, _, ctype, seq in all_sequences if ctype.is_dna)
     uniq_dnas: list[tuple[str, str]] = [
         (f"uniq_dna_{i + 1}", seq)
         for i, seq in enumerate(sorted(uniq_dnas, key=lambda x: (len(x), x)))
@@ -390,7 +410,7 @@ def main():
     write_fasta(uniq_dnas, uniq_dna_fasta_path)
 
     uniq_rna_fasta_path = seq_dir / "unique_rna_sequences.fasta"
-    uniq_rnas = set(seq for _, _, ctype, seq in all_sequences if ctype == "rna")
+    uniq_rnas = set(seq for _, _, ctype, seq in all_sequences if ctype.is_rna)
     uniq_rnas: list[tuple[str, str]] = [
         (f"uniq_rna_{i + 1}", seq)
         for i, seq in enumerate(sorted(uniq_rnas, key=lambda x: (len(x), x)))

@@ -63,10 +63,11 @@ class Chain:
     entity_id: int
     asym_id: int
     sym_id: int
-    residue: "Residue"
-    atom: "Atom"
-    bond: "Bond"
+    residue: "ResidueLayout"
+    atom: "AtomLayout"
+    bond: "BondLayout"
     smiles: str | None = None  # optional SMILES string for small molecule
+    is_covalent_ligand: bool = False  # whether the chain is a covalent ligand
 
     # === Properties === #
     @cached_property
@@ -272,6 +273,8 @@ class Chain:
                 result[key] = value
         if self.smiles is not None:
             result["smiles"] = np.array(self.smiles, dtype=np.dtype("U"))
+        if self.is_covalent_ligand is not None:
+            result["is_covalent_ligand"] = np.array(self.is_covalent_ligand, dtype=bool)
         return result
 
     @classmethod
@@ -279,23 +282,20 @@ class Chain:
         """Reconstruct from NPZ dictionary."""
         reconstructed = {}
         for prefix, struct_cls in [
-            ("residue.", Residue),
-            ("atom.", Atom),
-            ("bond.", Bond),
+            ("residue.", ResidueLayout),
+            ("atom.", AtomLayout),
+            ("bond.", BondLayout),
         ]:
             struct_data = {
                 key[len(prefix) :]: value
                 for key, value in data.items()
                 if key.startswith(prefix)
             }
-            # FIXME: for backward compatibility
-            if prefix == "atom." and "label_coords" in struct_data:
-                struct_data["coords"] = struct_data.pop("label_coords")
             reconstructed[prefix[:-1]] = struct_cls(**struct_data)
         if "smiles" in data:
             reconstructed["smiles"] = data["smiles"].item()
-        if "apo_type" in data:
-            reconstructed["apo_type"] = tuple(x.item() for x in data["apo_type"])
+        if "is_covalent_ligand" in data:
+            reconstructed["is_covalent_ligand"] = data["is_covalent_ligand"].item()
         return cls(
             chain_type=data["chain_type"].item(),
             entity_id=data["entity_id"].item(),
@@ -306,7 +306,7 @@ class Chain:
 
 
 @dataclasses.dataclass(frozen=True)
-class Residue:
+class ResidueLayout:
     """Residue information.
 
     Attributes
@@ -361,7 +361,7 @@ class Residue:
 
 
 @dataclasses.dataclass(frozen=True)
-class Atom:
+class AtomLayout:
     """Atom information.
 
     Attributes
@@ -446,7 +446,7 @@ class Atom:
 
 
 @dataclasses.dataclass(frozen=True)
-class Bond:
+class BondLayout:
     """Intra-chain Bond information.
 
     Shape: [Nbond, ...]
