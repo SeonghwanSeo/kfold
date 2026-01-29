@@ -67,9 +67,9 @@ def get_aligned_structure(
     ref_struct : RefStructure
         The reference structure containing ground truth coordinates and masks.
     pred_coords : torch.Tensor
-        Predicted atom coordinates, Shape of [Nsample, Natom, 3]
-    symmetry_correction : bool
-        Whether to apply symmetry correction
+        Predicted atom coordinates, Shape of [Natom, 3]
+    find_best_permutation : bool, optional
+        Whether to find the best permutation (default: True).
     symmetry_dict : dict (optional)
         The dictionary containing symmetry information:
 
@@ -79,10 +79,7 @@ def get_aligned_structure(
         The reference structure with permuted ground truth coordinates.
     """
     return get_aligned_true_coords(
-        ref_struct,
-        pred_coords,
-        find_best_permutation=find_best_permutation,
-        symmetry_dict=symmetry_dict,
+        ref_struct, pred_coords, find_best_permutation, symmetry_dict
     )  # [Nsample, Natom, 3]
 
 
@@ -160,7 +157,7 @@ def compute_validation_metric(
         Predicted atom coordinates, Shape of [Natom, 3]
     align : bool
         Whether to align the predicted coordinates to the true coordinates
-        brefore metric computation.
+        before metric computation.
 
     Returns
     -------

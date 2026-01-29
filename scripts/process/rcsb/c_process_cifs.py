@@ -230,8 +230,8 @@ def parse_cif(
     data_filter: DataFilter,
 ) -> int:
     """Parse a CIF file and return a gemmi.cif.Document object."""
-    # if out_path.exists():
-    #     return SUCCESS
+    if out_path.exists():
+        return SUCCESS
 
     # Read CIF file
     if cif_path.suffix == ".gz":

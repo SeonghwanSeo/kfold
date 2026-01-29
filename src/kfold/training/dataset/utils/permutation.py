@@ -68,7 +68,7 @@ def get_aligned_true_coords(
     # Create aligned coordinates
     dev = pred_coords.device
     gt_coords = torch.from_numpy(ref_struct.get_atom_coords()).to(dev)
-    gt_mask = gt_coords.isfinite().all(dim=-1)  # [Natoms
+    gt_mask = gt_coords.isfinite().all(dim=-1)
     aligned_gt_coords = rigid_align(gt_coords, pred_coords, gt_mask)
     aligned_gt_coords[~gt_mask] = float("nan")
 

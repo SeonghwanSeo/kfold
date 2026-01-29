@@ -644,7 +644,6 @@ class ApoInitializer:
         try:
             self.find_best_chain_permutation(struct, max_permutations=2_000, rng=rng)
         except Exception as e:
-            raise e
             self.logger.error(f"Failed to find best chain permutation: {e}.")
 
         # Second, residue-level permutation (e.g., flipping)

@@ -513,7 +513,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 struct_i = validation_metrics.get_aligned_structure(
                     ref_struct,
                     pred_coords_i,
-                    find_best_permutation=True,
+                    find_best_permutation=val_config.symmetry_correction,
                     symmetry_dict=symmetry_dict,
                 )
                 metric_i = validation_metrics.compute_validation_metric(
@@ -540,7 +540,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 self.metrics["val_metrics"][_k].update(_m[k])
 
         # Save validation predictions if needed
-        if False and val_config.save_predictions:
+        if val_config.save_predictions:
             if self.trainer.log_dir is None:
                 print(
                     "Warning: trainer.log_dir is None, "
@@ -838,7 +838,7 @@ class KFoldTrainingModule(pl.LightningModule):
             "pred_coords must have shape (Natoms, 3)."
         )
         # Save metrics
-        with open(f"{prefix}-metrics.json", "w") as f:
+        with open(f"{prefix}_metrics.json", "w") as f:
             json.dump(metrics, f, indent=2)
 
         # Save aligned ground-truth structure
