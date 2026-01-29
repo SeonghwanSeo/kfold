@@ -65,8 +65,8 @@ def prepare_ref_chain(
     entity_id: int = 0,
     asym_id: int = 0,
     sym_id: int = 0,
-    drop_leaving_atoms: bool = True,
-    bonded_atoms: dict[int, list[str]] | None = None,
+    drop_ligand_leaving_atoms: bool = False,
+    bonded_atoms: dict[int, set[str]] | None = None,
 ) -> Chain:
     """Get an empty reference chain structure.
 
@@ -86,9 +86,9 @@ def prepare_ref_chain(
         The asymmetric unit ID of the chain.
     sym_id : int
         The symmetry ID of the chain.
-    drop_leaving_atoms : bool, optional
-        Whether to drop leaving atoms for non-standard polymer residues and glycans.
-    bonded_atoms : dict[int, list[str]] | None, optional
+    drop_ligand_leaving_atoms : bool, optional
+        Whether to drop leaving atoms for ligands, by default False.
+    bonded_atoms : dict[int, set[str]] | None, optional
         List of bonded atoms for covalent ligands (res_idx: atom_name), by default None.
     """
     # ==================================================
@@ -100,9 +100,6 @@ def prepare_ref_chain(
         assert ccd_sequences[0].startswith("LIG")
 
     bonded_atoms = bonded_atoms or {}
-
-    if chain_type.is_polymer:
-        assert drop_leaving_atoms, "Leaving atoms must be dropped for polymer chains."
 
     # Normalize residue names to uppercase
     ccd_sequences = [v.upper() for v in ccd_sequences]
@@ -121,7 +118,6 @@ def prepare_ref_chain(
     standard_residues: set[str] = chain_type_to_standard_residues[chain_type]
 
     is_standard_list: list[bool] = []
-    residue_atoms_list: list[tuple[str, ...]] = []
     atom_name_list: list[np.ndarray] = []
     atom_elem_list: list[np.ndarray] = []
     atom_charge_list: list[np.ndarray] = []
@@ -143,22 +139,22 @@ def prepare_ref_chain(
             # NOTE: For polymers, this should not happen due to prior conversion to UNK.
             raise ValueError(f"Residue {code} not found in CCD database.")
 
-        if chain_type.is_polymer and code in standard_residues:
+        if chain_type.is_polymer:
             # Return pre-defined atoms for standard polymer residues to
-            # ensure consistency across different CCD versions.
-            atom_names = C.atom.residue_atoms[code]
-        elif drop_leaving_atoms:
-            # Drop leaving atoms for polymer, glycan, and covalent ligands.
-            atom_names = ref_mol.non_leaving_atom_names
+            # ensure consistency across different CCD versions. Otherwise,
+            # use all non-leaving atoms.
+            if code in standard_residues:
+                atom_names = C.atom.residue_atoms[code]
+            else:
+                atom_names = ref_mol.non_leaving_atom_names
         else:
-            # Return all atoms for ligands.
-            atom_names = ref_mol.names
-
-        # Special handling for glycans in covalent ligands
-        if chain_type.is_ligand and code in C.ccd.GLYCAN_CCDS:
-            # Only retain oxygen if it is bonded in covalent ligands
-            if "O" not in bonded_atoms.get(res_idx, []):
-                atom_names = [an for an in atom_names if an != "O"]
+            # Get atom names.
+            atom_names = ref_mol.get_atom_names(drop_leaving=drop_ligand_leaving_atoms)
+            # Special handling for glycans in covalent ligands
+            if code in C.ccd.GLYCAN_CCDS:
+                # Only retain oxygen if it is participating in the covalent bond
+                if "O1" not in bonded_atoms.get(res_idx, set()):
+                    atom_names = [an for an in atom_names if an != "O1"]
 
         atom_to_index: dict[str, int] = ref_mol.get_atom_index_map()
         atom_indices: list[int] = [atom_to_index[an] for an in atom_names]
@@ -195,7 +191,7 @@ def prepare_ref_chain(
     if chain_type is C.ChainType.LIGAND:
         for residue_index, ref_mol in enumerate(ref_mols, start=1):
             # Get ref atom names
-            ref_atom_names: tuple[str, ...] = residue_atoms_list[residue_index - 1]
+            ref_atom_names = set(atom_name_list[residue_index - 1].tolist())
             for (atom_name1, atom_name2), bond_type in ref_mol.bonds.items():
                 if atom_name1 in ref_atom_names and atom_name2 in ref_atom_names:
                     bond_residue_index_list.append((residue_index, residue_index))
