@@ -88,6 +88,7 @@ from kfold.data.types.metadata import Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.utils.misc import hash_seq
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
@@ -451,12 +452,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
-                if not self.safe_load:
-                    raise e
                 sample_id = sample.id
                 logger.error(
                     f"Error loading index {sample_id}({index}): {e}. Retrying..."
                 )
+                if not self.safe_load:
+                    raise e
                 index = int(rng.integers(0, len(self)))
                 trials.append(sample)
         raise RuntimeError(
@@ -473,7 +474,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # Initialize random number generator (create new rng based on metadata_id)
         if self.seed is not None:
-            rng = np.random.default_rng(self.seed + hash(metadata_id) % (1 << 15))
+            offset = int(hash_seq(metadata.id), 16)
+            rng = np.random.default_rng((self.seed + offset) % (1 << 32))
         else:
             rng = np.random.default_rng()
 
@@ -503,7 +505,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         if self.return_symmetry:
             # WARN: symmetry computation should be done before padding
             struct_info["symmetry"] = symmetry.get_symmetries(
-                f_input, cropped_struct, struct, self.ccd, rng=rng
+                ref_struct,
+                self.ccd,
+                max_chain_permutations=1000,
+                rng=rng,
             )
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
@@ -626,23 +631,26 @@ class LMDBDataset(SafeLoadingDataset):
             ref_struct = RefStructure.load_npz(byte_stream)
 
         # NOTE: Validate loaded record matches requested metadata
-        # If there is no problem, only the cluster ID should differ.
+        # If there is no problem, the cluster ID (for training) and
+        # low_homology flag (for validation) will be missing in npz
         ref_metadata = ref_struct.metadata
         assert ref_metadata.id == name, (
-            f"Loaded record ID {ref_metadata.id} does not match requested ID {name}."
+            f"Loaded ID {ref_metadata.id} does not match requested ID {name}."
         )
         assert ref_metadata.num_chains == metadata.num_chains, (
-            f"Loaded record num_chains {ref_metadata.num_chains} does not match "
+            f"Loaded num_chains {ref_metadata.num_chains} does not match "
             f"requested num_chains {metadata.num_chains}."
         )
         assert ref_metadata.num_residues == metadata.num_residues, (
-            f"Loaded record num_residues {ref_metadata.num_residues} does not match "
+            f"Loaded num_residues {ref_metadata.num_residues} does not match "
             f"requested num_residues {metadata.num_residues}."
         )
         assert ref_metadata.num_interfaces == metadata.num_interfaces, (
-            f"Loaded record num_interfaces {ref_metadata.num_interfaces} does not match "
+            f"Loaded num_interfaces {ref_metadata.num_interfaces} does not match "
             f"requested num_interfaces {metadata.num_interfaces}."
         )
+        # Copy metadata (to update cluster_id if needed)
+        ref_struct.metadata = metadata.copy()
         return ref_struct
 
 
@@ -785,9 +793,9 @@ class TrainingDataset(LMDBDataset):
                 logger.error(
                     f"Error loading index {sample_id}({index}): {e}. Retrying..."
                 )
-                index = np.random.randint(0, len(self))
                 if not self.safe_load:
                     raise e
+                index = np.random.randint(0, len(self))
                 trials.append(sample)
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"

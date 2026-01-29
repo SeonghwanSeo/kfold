@@ -239,10 +239,13 @@ class Chain:
             + ")"
         )
 
+    def clone(self) -> Self:
+        """Create a copy of the Chain."""
+        return copy.deepcopy(self)
+
     def copy_with(self, deepcopy: bool = False, **kwargs) -> Self:
         """Create a copy of the Chain with modified fields."""
         if deepcopy:
-            # Deep copy all fields
             out = copy.deepcopy(self)
         else:
             out = self
@@ -341,6 +344,13 @@ class ResidueLayout:
         return np.concatenate(
             [np.array([0], dtype=dtype), np.cumsum(self.num_atoms, dtype=dtype)[:-1]]
         )
+
+    def get_atom_slice(self, residue_index: int) -> slice:
+        """Get slice objects for each residue's atoms."""
+        res_i = residue_index - 1  # convert to 0-based index
+        start = self.atom_starts[res_i]
+        end = start + self.num_atoms[res_i]
+        return slice(start, end)
 
     def iter_residue_atoms(self, residue_index: int) -> range:
         """Get the range of atom indices for a given residue index."""
@@ -594,13 +604,6 @@ class RefStructure:
         """Number of covalent connections in the structure."""
         return len(self.connections)
 
-    def get_chain_by_asym_id(self, asym_id: int) -> Chain:
-        """Get chain by asym_id."""
-        for chain in self.chains:
-            if chain.asym_id == asym_id:
-                return chain
-        raise KeyError(f"Chain with asym_id {asym_id} not found.")
-
     def __repr__(self) -> str:
         """FoldingInput summary representation."""
         # Summary statistics
@@ -623,6 +626,23 @@ class RefStructure:
             + "]\n"
             + ")"
         )
+
+    def get_chain_by_asym_id(self, asym_id: int) -> Chain:
+        """Get chain by asym_id."""
+        for chain in self.chains:
+            if chain.asym_id == asym_id:
+                return chain
+        raise KeyError(f"Chain with asym_id {asym_id} not found.")
+
+    def get_atom_coords(self) -> np.ndarray:
+        """Get atom coordinates of the structure.
+
+        Returns
+        -------
+        coords: np.ndarray
+            Shape [Natom, 3], float32
+        """
+        return np.concatenate([c.atom.coords for c in self.chains], axis=0)
 
     def clone(self) -> Self:
         """Create a deep copy of the RefStructure."""

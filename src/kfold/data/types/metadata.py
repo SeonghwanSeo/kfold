@@ -176,6 +176,15 @@ class Metadata:
                 return chain
         raise ValueError(f"Chain with asym_id {asym_id} not found.")
 
+    def get_interface_by_asym_ids(self, asym_id1: int, asym_id2: int) -> InterfaceInfo:
+        for iface in self.interfaces:
+            aid1, aid2 = iface.asym_ids
+            if (aid1 == asym_id1 and aid2 == asym_id2) or (
+                aid1 == asym_id2 and aid2 == asym_id1
+            ):
+                return iface
+        raise ValueError(f"Interface with asym_ids ({asym_id1}, {asym_id2}) not found.")
+
     @property
     def num_chains(self) -> int:
         return len(self.chains)

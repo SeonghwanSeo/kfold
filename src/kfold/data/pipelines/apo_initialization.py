@@ -30,7 +30,7 @@ def get_ambiguous_atoms_in_residue(
 ) -> list[list[int]] | None:
     """Get the indices of ambiguous atoms for a given residue type."""
     res_name: C.ResidueName = C.ResidueName[res_name]
-    if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS:
+    if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS_EXTENDED:
         # If there is no ambiguous atoms, return empty list
         return None
     residue_atoms = C.atom.RESIDUE_ATOMS[res_name]
@@ -644,6 +644,7 @@ class ApoInitializer:
         try:
             self.find_best_chain_permutation(struct, max_permutations=2_000, rng=rng)
         except Exception as e:
+            raise e
             self.logger.error(f"Failed to find best chain permutation: {e}.")
 
         # Second, residue-level permutation (e.g., flipping)
@@ -664,8 +665,6 @@ class ApoInitializer:
         entity_ctypes: dict[int, C.ChainType] = {}
         entity_sizes: dict[int, int] = {}
         for chain in struct.chains:
-            if chain.is_covalent_ligand:
-                continue  # skip covalent ligands
             entity_apo_dict[chain.entity_id].append(chain.atom.apo_coords.copy())
             entity_ctypes[chain.entity_id] = chain.ctype
             entity_sizes[chain.entity_id] = chain.num_residues
@@ -673,12 +672,17 @@ class ApoInitializer:
         # Sort entities by size (largest first)
         entity_ids.sort(key=lambda x: entity_sizes[x], reverse=True)
 
+        # Remove entities with all-missing apo coordinates
         for eid in list(entity_ids):
             apo_coords_list = entity_apo_dict[eid]
-            # Check the chain apo coordinates are provided
             if any(np.isnan(coords).all() for coords in apo_coords_list):
-                # If any chain has no apo coordinates, remove from permutation
                 entity_ids.remove(eid)
+
+        # Remove entities with covalent ligands
+        for chain in struct.chains:
+            if chain.is_covalent_ligand:
+                if chain.entity_id in entity_ids:
+                    entity_ids.remove(chain.entity_id)
 
         if len(entity_ids) == 0:
             # No entities to permute
