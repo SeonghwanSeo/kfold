@@ -1,4 +1,3 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License
 import torch
 import torch.nn.functional as F
 
@@ -66,7 +65,6 @@ class WeightedMSELoss(torch.nn.Module):
         upweight_rna: float = 5.0,
         upweight_ligand: float = 10.0,
         align_true_to_pred: bool = True,
-        scale: bool = False,
     ):
         """Initialize WeightedMSELoss.
         Parameters
@@ -81,11 +79,6 @@ class WeightedMSELoss(torch.nn.Module):
             The weight for ligand atoms
         align_true_to_pred: bool
             Whether to align ground truth coordinates to predictions before MSE.
-        scale: bool
-            Whether to divide by the sum of weights.
-            Boltz1: scale.
-            AlphaFold3, Protenix, OpenFold-3: do not scale.
-            NOTE: loss value is lower when scale=True.
         """
         super().__init__()
         self.upweight_protein: float = upweight_protein
@@ -93,7 +86,6 @@ class WeightedMSELoss(torch.nn.Module):
         self.upweight_rna: float = upweight_rna
         self.upweight_ligand: float = upweight_ligand
         self.align_true_to_pred: bool = align_true_to_pred
-        self.scale: bool = scale
 
     def forward(
         self,
@@ -144,22 +136,16 @@ class WeightedMSELoss(torch.nn.Module):
         # See Section 3.7.1 Equation 2
         if self.align_true_to_pred:
             with torch.no_grad():
-                x_true_aligned = weighted_rigid_align(
+                x_true = weighted_rigid_align(
                     coords=x_true.float(),  # [B, N, L, 3]
                     target=x_pred.float(),  # [B, N, L, 3]
                     weights=w,  # [B, 1, L], broadcasted over N
                     mask=mask,  # [B, 1, L]
                 )  # [B, N, L, 3]
-        else:
-            x_true_aligned = x_true
 
-        d_sq = ((x_pred - x_true_aligned) ** 2).sum(dim=-1)  # [B, N, L]
-        if self.scale:
-            weight_sum = w.sum(-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / weight_sum  # [B, N]
-        else:
-            mask_sum = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
-            mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
+        d_sq = ((x_pred - x_true) ** 2).sum(-1)  # [B, N, L]
+        mask_sum = mask.sum(-1).clamp(1)  # [B, 1]
+        mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
 
         return mse_loss
 

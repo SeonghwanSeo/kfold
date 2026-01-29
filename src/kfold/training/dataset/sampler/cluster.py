@@ -1,9 +1,7 @@
-# Started from https://github.com/jwohlwend/boltz
 from collections import defaultdict
 
 import numpy as np
 
-import kfold.constants as C
 from kfold.data.types.metadata import ChainInfo, InterfaceInfo, Metadata
 from kfold.utils.registry import DATA_SAMPLER
 
@@ -21,109 +19,6 @@ def get_interface_cluster_id(iface_m: InterfaceInfo) -> str:
     """Get the cluster ID of an interface."""
     assert iface_m.cluster_id is not None
     return iface_m.cluster_id
-
-
-def get_chain_weight(
-    chain: ChainInfo,
-    cluster_sizes: dict[str, int],
-    beta_chain: float = 0.5,
-    alpha_prot: float = 3.0,
-    alpha_nuc: float = 3.0,
-    alpha_ligand: float = 1.0,
-) -> float:
-    """Get the weight of a chain.
-
-    Parameters
-    ----------
-    chain : ChainInfo
-        The chain to get the weight for.
-    cluster_sizes : dict[str, int]
-        The cluster sizes.
-    beta_chain : float
-        The beta value for chains.
-    alpha_prot : float
-        The alpha value for proteins.
-    alpha_nuc : float
-        The alpha value for nucleic acids.
-    alpha_ligand : float
-        The alpha value for ligands.
-
-    Returns
-    -------
-    float
-        The weight of the chain.
-    """
-    n_prot, n_nuc, n_ligand = 0, 0, 0
-    if chain.chain_type is C.chain.ChainType.PROTEIN:
-        n_prot += 1
-    elif chain.chain_type in (C.chain.ChainType.DNA, C.chain.ChainType.RNA):
-        n_nuc += 1
-    else:
-        n_ligand += 1
-
-    cluster_id = get_chain_cluster_id(chain)
-    n_cluster = cluster_sizes[cluster_id]
-
-    # See Section 2.5.1 Equation 1
-    weight = (beta_chain / n_cluster) * (
-        alpha_prot * n_prot + alpha_nuc * n_nuc + alpha_ligand * n_ligand
-    )
-    return weight
-
-
-def get_interface_weight(
-    interface: InterfaceInfo,
-    chain_dict: dict[int, ChainInfo],
-    cluster_sizes: dict[str, int],
-    beta_interface: float = 1.0,
-    alpha_prot: float = 3.0,
-    alpha_nuc: float = 3.0,
-    alpha_ligand: float = 1.0,
-) -> float:
-    """Get the weight of an interface.
-
-    Parameters
-    ----------
-    interface : InterfaceInfo
-        The interface to get the weight for.
-    chain_dict : dict[int, ChainInfo]
-        The dictionary of chains in the complex. {asym_id: ChainInfo}
-    cluster_sizes : dict[str, int]
-        The cluster sizes.
-    beta_interface : float
-        The beta value for interfaces.
-    alpha_prot : float
-        The alpha value for proteins.
-    alpha_nuc : float
-        The alpha value for nucleic acids.
-    alpha_ligand : float
-        The alpha value for ligands.
-
-    Returns
-    -------
-    float
-        The weight of the interface.
-
-    """
-    weight = 0.0
-    n_prot, n_nuc, n_ligand = 0, 0, 0
-    for asym_id in interface.asym_ids:
-        chain = chain_dict[asym_id]
-        if chain.chain_type is C.chain.ChainType.PROTEIN:
-            n_prot += 1
-        elif chain.chain_type in (C.chain.ChainType.DNA, C.chain.ChainType.RNA):
-            n_nuc += 1
-        else:
-            n_ligand += 1
-
-    cluster_id = get_interface_cluster_id(interface)
-    n_cluster = cluster_sizes[cluster_id]
-
-    # See Section 2.5.1 Equation 1
-    weight = (beta_interface / n_cluster) * (
-        alpha_prot * n_prot + alpha_nuc * n_nuc + alpha_ligand * n_ligand
-    )
-    return weight
 
 
 @DATA_SAMPLER.register()
@@ -183,6 +78,8 @@ class ClusterSampler(BaseSampler):
 
     def __init__(self, config: Config) -> None:
         self.config = config
+        self.is_initialized = False
+
         # weights
         self.alpha_prot = config.alpha_prot
         self.alpha_nuc = config.alpha_nuc
@@ -199,6 +96,9 @@ class ClusterSampler(BaseSampler):
         self.num_clusters_in_complex: dict[str, dict[str, int]] = {}
 
     def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
+        assert self.is_initialized is False, "ClusterSampler can be used only once."
+        self.is_initialized = True
+
         # Estimate cluster sizes
         self.estimate_cluster_sizes(metadatas)
 
@@ -210,37 +110,20 @@ class ClusterSampler(BaseSampler):
             chain_dict: dict[int, ChainInfo] = {
                 chain.asym_id: chain for chain in m.chains
             }
-            num_clusters_in_complex = self.num_clusters_in_complex.get(m.id, {})
+            num_clusters_in_complex = self.num_clusters_in_complex[m.id]
             for chain in m.chains:
-                weight = get_chain_weight(
-                    chain,
-                    self.chain_cluster_sizes,
-                    self.beta_chain,
-                    self.alpha_prot,
-                    self.alpha_nuc,
-                    self.alpha_ligand,
-                )
+                weight = self._get_chain_weight(chain)
                 if not self.allow_redundant:
                     # Adjust weight by number of clusters in the metadata
-                    weight /= num_clusters_in_complex.get(get_chain_cluster_id(chain), 1)
+                    weight /= num_clusters_in_complex[get_chain_cluster_id(chain)]
                 samples.append(Sample(m, chain.asym_id))
                 weights.append(weight)
 
             for interface in m.interfaces:
-                weight = get_interface_weight(
-                    interface,
-                    chain_dict,
-                    self.interface_cluster_sizes,
-                    self.beta_interface,
-                    self.alpha_prot,
-                    self.alpha_nuc,
-                    self.alpha_ligand,
-                )
+                weight = self._get_interface_weight(interface, chain_dict)
                 if not self.allow_redundant:
                     # Adjust weight by number of clusters in the metadata
-                    weight /= num_clusters_in_complex.get(
-                        get_interface_cluster_id(interface), 1
-                    )
+                    weight /= num_clusters_in_complex[get_interface_cluster_id(interface)]
                 samples.append(Sample(m, interface.asym_ids))
                 weights.append(weight)
 
@@ -251,32 +134,99 @@ class ClusterSampler(BaseSampler):
     def estimate_cluster_sizes(self, metadatas: list[Metadata]):
         """Estimate cluster sizes of chains and interfaces"""
         for m in metadatas:
-            chain_clusters_in_metadata: list[str] = [
+            chain_clusters_in_entry: list[str] = [
                 get_chain_cluster_id(chain) for chain in m.chains
             ]
-            interface_clusters_in_metadata: list[str] = [
+            interface_clusters_in_entry: list[str] = [
                 get_interface_cluster_id(interface) for interface in m.interfaces
             ]
 
             if not self.allow_redundant:
                 # Store number of each cluster for each entry
                 num_clusters = defaultdict(int)
-                for cluster_id in chain_clusters_in_metadata:
+                for cluster_id in chain_clusters_in_entry:
                     num_clusters[cluster_id] += 1
-                for cluster_id in interface_clusters_in_metadata:
+                for cluster_id in interface_clusters_in_entry:
                     num_clusters[cluster_id] += 1
-                # Remove the count <= 1 to save memory
-                for cluster_id in list(num_clusters.keys()):
-                    if num_clusters[cluster_id] <= 1:
-                        del num_clusters[cluster_id]
-                if len(num_clusters) > 0:
-                    self.num_clusters_in_complex[m.id] = dict(num_clusters)
+                self.num_clusters_in_complex[m.id] = dict(num_clusters)
 
                 # Remove redundant clusters in the metadata
-                chain_clusters_in_metadata = list(set(chain_clusters_in_metadata))
-                interface_clusters_in_metadata = list(set(interface_clusters_in_metadata))
+                chain_clusters_in_entry = list(set(chain_clusters_in_entry))
+                interface_clusters_in_entry = list(set(interface_clusters_in_entry))
 
-            for cluster_id in chain_clusters_in_metadata:
+            for cluster_id in chain_clusters_in_entry:
                 self.chain_cluster_sizes[cluster_id] += 1
-            for cluster_id in interface_clusters_in_metadata:
+            for cluster_id in interface_clusters_in_entry:
                 self.interface_cluster_sizes[cluster_id] += 1
+
+    def _get_chain_weight(self, chain_m: ChainInfo) -> float:
+        """Get the weight of a chain.
+
+        Parameters
+        ----------
+        chain_m : ChainInfo
+            The chain to get the weight for.
+
+        Returns
+        -------
+        float
+            The weight of the chain.
+        """
+        n_prot, n_nuc, n_ligand = 0, 0, 0
+        ctype = chain_m.ctype
+        if ctype.is_protein:
+            n_prot += 1
+        elif ctype.is_nucleic_acid:
+            n_nuc += 1
+        else:
+            n_ligand += 1
+
+        cluster_id = get_chain_cluster_id(chain_m)
+        n_cluster = self.chain_cluster_sizes[cluster_id]
+
+        # See Section 2.5.1 Equation 1
+        weight = (self.beta_chain / n_cluster) * (
+            self.alpha_prot * n_prot
+            + self.alpha_nuc * n_nuc
+            + self.alpha_ligand * n_ligand
+        )
+        return weight
+
+    def _get_interface_weight(
+        self, interface: InterfaceInfo, chain_dict: dict[int, ChainInfo]
+    ) -> float:
+        """Get the weight of an interface.
+
+        Parameters
+        ----------
+        interface : InterfaceInfo
+            The interface to get the weight for.
+        chain_dict : dict[int, ChainInfo]
+            The dictionary of chains in the complex. {asym_id: ChainInfo}
+
+        Returns
+        -------
+        float
+            The weight of the interface.
+        """
+        n_prot, n_nuc, n_ligand = 0, 0, 0
+        for asym_id in interface.asym_ids:
+            chain = chain_dict[asym_id]
+            ctype = chain.ctype
+            if ctype.is_protein:
+                n_prot += 1
+            elif ctype.is_nucleic_acid:
+                n_nuc += 1
+            else:
+                n_ligand += 1
+
+        cluster_id = get_interface_cluster_id(interface)
+        n_cluster = self.interface_cluster_sizes[cluster_id]
+
+        # See Section 2.5.1 Equation 1
+        weight = (self.beta_interface / n_cluster) * (
+            self.alpha_prot * n_prot
+            + self.alpha_nuc * n_nuc
+            + self.alpha_ligand * n_ligand
+        )
+        return weight

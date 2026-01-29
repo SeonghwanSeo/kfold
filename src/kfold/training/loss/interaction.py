@@ -54,10 +54,7 @@ class InteractionLoss(torch.nn.Module):
         # Exclude legacy ligand/ion tokens that carry "all-ones" placeholder
         # primitives to avoid training on dense all-negative pairs.
         interaction_type = f_input.token.interaction_type
-        chain_type = f_input.token.chain_type
-        ligand_mask = (chain_type == C.chain.ChainType.LIGAND.value) | (
-            chain_type == C.chain.ChainType.ION.value
-        )
+        ligand_mask = f_input.token.is_ligand
         num_active = interaction_type[..., 1:].sum(-1)
         placeholder_ligand = ligand_mask & (num_active == (C.NUM_INTERACTION_TYPES - 1))
 

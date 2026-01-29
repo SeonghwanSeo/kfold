@@ -38,9 +38,7 @@ def compute_pair_interactions(
     """
     interaction_type = interaction_type.float().clamp(min=0.0, max=1.0)
     if chain_type is not None:
-        ligand_mask = (chain_type == C.chain.ChainType.LIGAND.value) | (
-            chain_type == C.chain.ChainType.ION.value
-        )
+        ligand_mask = chain_type == C.chain.ChainType.LIGAND.value
         num_active = interaction_type[..., 1:].sum(-1)
         placeholder_ligand = ligand_mask & (num_active == (C.NUM_INTERACTION_TYPES - 1))
         # Legacy NPZ files may encode ligand primitives as "all ones". Treat

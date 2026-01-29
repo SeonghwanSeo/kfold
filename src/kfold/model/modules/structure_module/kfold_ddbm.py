@@ -1,6 +1,3 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License
-# adapted with DDBM bridge diffusion approach
-
 import torch
 import torch.nn.functional as F
 

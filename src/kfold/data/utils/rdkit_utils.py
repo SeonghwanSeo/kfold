@@ -62,7 +62,7 @@ def run_etkdg(
 def compute_rdkit_conformer(
     mol: Chem.Mol,
     num_confs: int = 1,
-    add_hydrogens: bool = True,
+    add_hydrogens: bool = False,
     seed: int = 42,
     timeout: int = 30,
 ) -> Chem.Mol:

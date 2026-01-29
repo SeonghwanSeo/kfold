@@ -1,5 +1,7 @@
 """Tokenization pipeline for structures."""
 
+# TODO: Add interaction types for training only.
+
 from functools import lru_cache
 
 import numpy as np
@@ -15,7 +17,7 @@ from kfold.utils.geometry.random_augment import center_random_augmentation, do_c
 
 
 class Tokenizer:
-    def __init__(self, ccd: CCD) -> None:
+    def __init__(self, ccd: CCD, training: bool = True) -> None:
         """Tokenizer for structures.
 
         Parameters
@@ -24,6 +26,7 @@ class Tokenizer:
             The chemical component dictionary.
         """
         self.ccd: CCD = ccd
+        self.training: bool = training
 
     def __call__(
         self,
@@ -236,7 +239,7 @@ def tokenize_structure(
                 struct.token.disto_index[g_tok_i] = atom_list.index(beta_atom)
                 struct.token.is_standard[g_tok_i] = True
                 interaction_indices = C.interaction.get_residue_interaction_type(
-                    res_name, chain.chain_type
+                    res_name, ctype
                 )
                 if interaction_indices:
                     struct.token.interaction_type[g_tok_i, list(interaction_indices)] = 1
@@ -260,7 +263,7 @@ def tokenize_structure(
                 struct.token.disto_index[st:end] = 0
                 struct.token.is_standard[st:end] = False
                 interaction_indices = C.interaction.get_residue_interaction_type(
-                    C.residue.ResidueName.UNK, chain.chain_type
+                    C.residue.unknown_residue_name.get(ctype, C.ResidueName.UNK), ctype
                 )
                 if interaction_indices:
                     struct.token.interaction_type[st:end, list(interaction_indices)] = 1
@@ -367,10 +370,7 @@ def tokenize_structure(
                 "Atom indices are not in ascending order."
             )
             natoms = int(chain.residue.num_atoms[res_i])
-            if not chain.residue.is_standard[res_i] and ctype in (
-                C.ChainType.LIGAND,
-                C.ChainType.ION,
-            ):
+            if not chain.residue.is_standard[res_i] and ctype.is_ligand:
                 try:
                     ligand_interactions = compute_ligand_interaction_types(ref_mol.mol)
                 except Exception as e:
@@ -378,7 +378,7 @@ def tokenize_structure(
                     print(
                         "Error computing ligand interactions for "
                         f"{_metadata.id} (ccd={ccd_name}, asym_id={asym_id}, "
-                        f"chain_name={chain_meta.chain_name}{smiles_info}): {e}"
+                        f"chain_name={chain_meta.name}{smiles_info}): {e}"
                     )
                     raise
                 st = g_tok_i

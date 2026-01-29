@@ -1,4 +1,5 @@
 import argparse
+import logging
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -123,7 +124,7 @@ def parse_config(args) -> DictConfig:
         cfg.train.trainer.num_nodes = 1
         cfg.train.trainer.accumulate_grad_batches = 1
         cfg.train.trainer.log_every_n_steps = 1
-        cfg.train.trainer.limit_train_batches = 10
+        cfg.train.trainer.limit_train_batches = 100
         cfg.train.trainer.limit_val_batches = 10
         cfg.train.trainer.enable_checkpointing = False
         cfg.train.data.train_batch_size = 1
@@ -204,9 +205,9 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
 
         @rank_zero_only
         def _save_config() -> None:
-            config_out = Path(wandb_logger.experiment.dir) / "config.yaml"
+            config_out = Path(wandb_logger.experiment.dir) / "train_config.yaml"
             save_config(cfg, config_out)
-            wandb_logger.experiment.save("config.yaml")
+            wandb_logger.experiment.save("train_config.yaml")
 
         _save_config()
 
@@ -277,17 +278,7 @@ def train(args) -> None:
     trainer = build_trainer(cfg, args.debug)
 
     # Set random seed
-    # TODO: let's discuss to use different seeds for different ranks or not
-    # Pros: when we use `synchronize_sigma` option, use different seeds is essential to
-    #       train the model on various time steps.
-    # Cons: it makes the training less reproducible.
-    if cfg.train.synchronize_seed:
-        # Same seed for all ranks
-        seed = cfg.train.seed
-    else:
-        # Different seed for each rank
-        seed = cfg.train.seed + trainer.global_rank
-    pl.seed_everything(seed, workers=True, verbose=False)
+    pl.seed_everything(cfg.train.seed, workers=True, verbose=False)
 
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
@@ -304,5 +295,7 @@ def train(args) -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
     args = parse_args()
     train(args)

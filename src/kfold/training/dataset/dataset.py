@@ -70,10 +70,12 @@ rcsb-validation/ ...
 import dataclasses
 import io
 import json
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 import lmdb
+import msgpack
 import numpy as np
 import torch
 from omegaconf import OmegaConf
@@ -86,12 +88,14 @@ from kfold.data.types.metadata import Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.utils.misc import hash_seq
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
-from .filter import BaseFilter
 from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
+
+logger = logging.getLogger(__name__)
 
 
 # === Dataset Classes === #
@@ -136,8 +140,6 @@ class TrainingDatasetConfig(DatasetConfig):
     ----------
     weight : float
         Weight of the dataset during training.
-    filters : list[BaseFilter.Config]
-        List of filters to apply to the dataset.
     sampler : BaseSampler.Config | None
         Sampler configuration for generating samples.
     cropper : BaseCropper.Config | None
@@ -145,7 +147,6 @@ class TrainingDatasetConfig(DatasetConfig):
     """
 
     weight: float = 1.0
-    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
 
@@ -208,8 +209,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         for k in ["seq", "seq_dim", "struct", "struct_dim", "max_struct_ensembles"]:
             if k not in pretrained_embedding:
-                print(
-                    f"Warning: Pretrained embedding key '{k}' not found. Setting to None."
+                logger.warning(
+                    f"Pretrained embedding key '{k}' not found. Setting to None."
                 )
                 pretrained_embedding[k] = None
 
@@ -221,8 +222,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # === Validate parameters === #
         assert self.data_root.exists(), f"Dataset path {self.data_root} does not exist."
+        emb_root = self.data_root / "embedding"
         if self.seq_embedding is not None:
-            self.seq_emb_root = self.data_root / "seq_embedding" / self.seq_embedding
+            self.seq_emb_root = emb_root / "sequence" / self.seq_embedding
             assert self.seq_emb_root.exists(), (
                 f"Sequence embedding root {self.seq_emb_root} does not exist."
             )
@@ -231,9 +233,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             )
 
         if self.struct_embedding is not None:
-            self.struct_emb_root = (
-                self.data_root / "struct_embedding" / self.struct_embedding
-            )
+            self.struct_emb_root = emb_root / "structure" / self.struct_embedding
             assert self.struct_emb_root.exists(), (
                 f"Structure embedding root {self.struct_emb_root} does not exist."
             )
@@ -248,9 +248,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 # Skip warning if perturbation is disabled
                 pass
             elif config.apo_init.apo_perturbation is None:
-                print("Warning: RieProDy LMDB path found but apo_perturbation is None.")
+                logger.error("RieProDy LMDB path found but apo_perturbation is None.")
             elif config.apo_init.apo_perturbation.rieprody is None:
-                print("Warning: RieProDy LMDB path found but rieprody is disabled.")
+                logger.error("RieProDy LMDB path found but rieprody is disabled.")
             else:
                 config.apo_init.apo_perturbation.rieprody.metric_lmdb_path = (
                     rieprody_lmdb_path
@@ -297,23 +297,25 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         if custom_manifest is not None:
             manifest_path = Path(custom_manifest)
         else:
-            manifest_path = self.data_root / "manifest.json"
+            manifest_path = self.data_root / "manifest.msgpack"
         if not manifest_path.exists():
             raise FileNotFoundError(f"Manifest file {manifest_path} not found.")
-        with open(manifest_path) as f:
-            metadata_dicts: list[dict] = json.load(f)
+
+        if manifest_path.suffix == ".msgpack":
+            with open(manifest_path, "rb") as f:
+                metadata_dicts: list[dict] = msgpack.unpack(f)
+        else:
+            with open(manifest_path) as f:
+                metadata_dicts: list[dict] = json.load(f)
+
         metadatas: list[Metadata] = [Metadata.from_dict(d) for d in metadata_dicts]
         del metadata_dicts
-        # Ensure all chains and interfaces are valid
-        for m in metadatas:
-            m.check_all_chains_valid()
-            m.check_all_interfaces_valid()
         return metadatas
 
     def load_lookup_table(self) -> dict:
-        lookup_path = self.data_root / "lookup.json"
-        with open(lookup_path) as f:
-            lookup_table = json.load(f)
+        lookup_path = self.data_root / "lookup.msgpack"
+        with open(lookup_path, "rb") as f:
+            lookup_table: dict = msgpack.unpack(f)
         for m in self.metadatas:
             if m.id not in lookup_table:
                 raise KeyError(f"Metadata ID {m.id} not found in lookup table.")
@@ -337,8 +339,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng = rng or np.random.default_rng()
 
         # Fetch apo info from lookup table
-        name = ref_struct.metadata.id
-        entry_info = self.lookup_table[name]
+        entry_id = ref_struct.id
+        entry_info = self.lookup_table[entry_id]
 
         apo_dir = self.data_root / "apo"
         apo_lookup_map: dict[int, dict] = {}
@@ -350,9 +352,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
                 # Select apo structure (randomly if multiple)
                 if len(apo_list) == 0:
-                    print(
-                        "Warning: No available apo structure found "
-                        f"for entity {entity_id} in entry {name}."
+                    logger.warning(
+                        "No available apo structure found "
+                        f"for entity {entity_id} in entry {entry_id}."
                     )
                     continue
                 elif len(apo_list) == 1:
@@ -368,7 +370,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 # Check apo structure file existence
                 apo_path = apo_dir / source / path
                 if not apo_path.exists():
-                    print(f"Warning: Apo structure file not found: {apo_path}.")
+                    logger.error(f"Apo structure file not found: {apo_path}.")
                     continue
 
                 # Get lmdb key
@@ -450,10 +452,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
+                sample_id = sample.id
+                logger.error(
+                    f"Error loading index {sample_id}({index}): {e}. Retrying..."
+                )
                 if not self.safe_load:
                     raise e
-                sample_id = sample.id
-                print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
                 index = int(rng.integers(0, len(self)))
                 trials.append(sample)
         raise RuntimeError(
@@ -470,7 +474,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # Initialize random number generator (create new rng based on metadata_id)
         if self.seed is not None:
-            rng = np.random.default_rng(self.seed + hash(metadata_id) % (1 << 15))
+            offset = int(hash_seq(metadata.id), 16)
+            rng = np.random.default_rng((self.seed + offset) % (1 << 32))
         else:
             rng = np.random.default_rng()
 
@@ -500,7 +505,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         if self.return_symmetry:
             # WARN: symmetry computation should be done before padding
             struct_info["symmetry"] = symmetry.get_symmetries(
-                f_input, cropped_struct, struct, self.ccd, rng=rng
+                ref_struct,
+                self.ccd,
+                max_chain_permutations=1000,
+                rng=rng,
             )
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
@@ -573,28 +581,20 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             if entity_id in embedding_paths:
                 continue  # already found
             ctype = C.ChainType(struct.chain.chain_type[chain_i].item())
-            if ctype.is_polymer:
-                # Get embedding for polymer chain
-                entity_info = entry_info[str(entity_id)]
-                emb_id_info = (
-                    entity_info.get("seq_emb")
-                    if emb_type == "seq"
-                    else entity_info.get("struct_emb")
-                )
-                if emb_id_info is not None:
-                    emb_path = root_dir / emb_id_info["path"]
-                    residue_map = emb_id_info["residue_map"]
-                    embedding_paths[entity_id] = {
-                        "path": emb_path,
-                        "residue_map": residue_map,
-                    }
-                else:
-                    # FIXME: Temporary warning for missing protein embeddings
-                    if ctype.is_protein:
-                        print(
-                            f"Warning: Missing {emb_type} embedding for entity "
-                            f"{entity_id} in entry {name}."
-                        )
+            entity_info = entry_info[str(entity_id)]
+            # Get embedding info
+            if emb_type == "seq" and ctype.is_polymer:
+                emb_id_info = entity_info["seq_emb"]
+                embedding_paths[entity_id] = {
+                    "path": root_dir / emb_id_info["path"],
+                    "residue_map": emb_id_info["residue_map"],
+                }
+            elif emb_type == "struct" and ctype.is_protein:
+                emb_id_info = entity_info["struct_emb"]
+                embedding_paths[entity_id] = {
+                    "path": root_dir / emb_id_info["path"],
+                    "residue_map": emb_id_info["residue_map"],
+                }
         return embedding_paths
 
 
@@ -631,23 +631,26 @@ class LMDBDataset(SafeLoadingDataset):
             ref_struct = RefStructure.load_npz(byte_stream)
 
         # NOTE: Validate loaded record matches requested metadata
-        # If there is no problem, only the cluster ID should differ.
+        # If there is no problem, the cluster ID (for training) and
+        # low_homology flag (for validation) will be missing in npz
         ref_metadata = ref_struct.metadata
         assert ref_metadata.id == name, (
-            f"Loaded record ID {ref_metadata.id} does not match requested ID {name}."
+            f"Loaded ID {ref_metadata.id} does not match requested ID {name}."
         )
         assert ref_metadata.num_chains == metadata.num_chains, (
-            f"Loaded record num_chains {ref_metadata.num_chains} does not match "
+            f"Loaded num_chains {ref_metadata.num_chains} does not match "
             f"requested num_chains {metadata.num_chains}."
         )
         assert ref_metadata.num_residues == metadata.num_residues, (
-            f"Loaded record num_residues {ref_metadata.num_residues} does not match "
+            f"Loaded num_residues {ref_metadata.num_residues} does not match "
             f"requested num_residues {metadata.num_residues}."
         )
         assert ref_metadata.num_interfaces == metadata.num_interfaces, (
-            f"Loaded record num_interfaces {ref_metadata.num_interfaces} does not match "
+            f"Loaded num_interfaces {ref_metadata.num_interfaces} does not match "
             f"requested num_interfaces {metadata.num_interfaces}."
         )
+        # Copy metadata (to update cluster_id if needed)
+        ref_struct.metadata = metadata.copy()
         return ref_struct
 
 
@@ -699,21 +702,11 @@ class TrainingDataset(LMDBDataset):
         )
         if self.seed is not None:
             # Warn about fixed seed affecting randomness
-            print(
-                "WARNING: Seed is set for TrainingDataset, which may affect randomness."
+            logger.warning(
+                "Seed is set for TrainingDataset, which may affect randomness."
             )
         self.max_tokens: int = max_tokens
         self.max_chains: int = max_chains
-
-        # Initialize filters
-        self.filters: list[BaseFilter] = [
-            Registry.instantiate(config=c) for c in config.filters
-        ]
-
-        def do_filter(m: Metadata) -> bool:
-            return all(filt(m) for filt in self.filters)
-
-        self.metadatas = [m for m in self.metadatas if do_filter(m)]
 
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
@@ -722,8 +715,8 @@ class TrainingDataset(LMDBDataset):
 
         # AF3-style sampling (chain/interface-based)
         assert config.sampler is not None, "Sampler config must be provided."
-        sampler: BaseSampler = Registry.instantiate(config.sampler)
-        samples, weights = sampler.get_samples(self.metadatas)
+        self.sampler: BaseSampler = Registry.instantiate(config.sampler)
+        samples, weights = self.sampler.get_samples(self.metadatas)
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights
 
@@ -797,10 +790,12 @@ class TrainingDataset(LMDBDataset):
                 raise e
             except Exception as e:
                 sample_id = sample.metadata.id
-                print(f"Error loading index {sample_id}({index}): {e}. Retrying...")
-                index = np.random.randint(0, len(self))
+                logger.error(
+                    f"Error loading index {sample_id}({index}): {e}. Retrying..."
+                )
                 if not self.safe_load:
                     raise e
+                index = np.random.randint(0, len(self))
                 trials.append(sample)
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"

@@ -1,5 +1,3 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License
-
 import math
 
 import torch

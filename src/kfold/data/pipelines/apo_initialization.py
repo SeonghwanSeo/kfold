@@ -1,5 +1,6 @@
 import dataclasses
 import itertools
+import logging
 from collections import defaultdict
 from functools import lru_cache
 
@@ -10,7 +11,7 @@ from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.io.structure import read_protein_structure
 from kfold.utils.geometry.random_augment import center_random_augmentation
-from kfold.utils.geometry.rigid_align import weighted_rigid_align
+from kfold.utils.geometry.rigid_align import compute_rmsd
 
 from ._apo_perturbation import ApoPerturbation, ApoPerturbationConfig
 from ._apo_prior import PolymerPriorConfig, PolymerPriorSampler
@@ -29,7 +30,7 @@ def get_ambiguous_atoms_in_residue(
 ) -> list[list[int]] | None:
     """Get the indices of ambiguous atoms for a given residue type."""
     res_name: C.ResidueName = C.ResidueName[res_name]
-    if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS:
+    if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS_EXTENDED:
         # If there is no ambiguous atoms, return empty list
         return None
     residue_atoms = C.atom.RESIDUE_ATOMS[res_name]
@@ -143,49 +144,6 @@ def get_zero_coordinates(ctype: C.ChainType, ccd_sequence: list[str]) -> np.ndar
     return coords
 
 
-def compute_minimal_rmsd_no_svd(
-    coords: np.ndarray, target: np.ndarray, mask: np.ndarray
-) -> float:
-    """Compute minimal RMSD between two sets of coordinates without SVD.
-    NOTE(SeonghwanSeo): This function replaces the SVD-based RMSD computation
-    for avoiding memory leakage issues in pytorch DataLoader workers.
-    """
-    # 1. Masking & Centering
-    p = coords[mask]
-    q = target[mask]
-    n = p.shape[0]
-
-    p_center = p.mean(axis=0)
-    q_center = q.mean(axis=0)
-    p_centered = p - p_center
-    q_centered = q - q_center
-
-    # E0 = sum(|p|^2) + sum(|q|^2)
-    e0 = np.sum(p_centered**2) + np.sum(q_centered**2)
-
-    # Covariance Matrix H (3x3)
-    # H = P.T @ Q
-    h = p_centered.T @ q_centered
-
-    # Compute singular values via eigen decomposition of H^T H
-    s_sq_matrix = h.T @ h
-    eigenvalues = np.linalg.eigvalsh(s_sq_matrix)
-
-    # Singular values are the square roots of eigenvalues
-    eigenvalues = np.clip(eigenvalues, 0, None)
-    singular_values = np.sqrt(eigenvalues)
-    if np.linalg.det(h) < 0:
-        singular_values[0] = -singular_values[0]
-
-    trace_max = np.sum(singular_values)
-    rmsd_sq = (e0 - 2 * trace_max) / n
-
-    # Numerical stability
-    if rmsd_sq < 0:
-        return 0.0
-    return np.sqrt(rmsd_sq)
-
-
 @dataclasses.dataclass(kw_only=True)
 class ApoInitializerConfig:
     """Configuration for ApoInitializer.
@@ -229,7 +187,7 @@ class ApoInitializerConfig:
     use_random_augmentation: bool = True
     chain_com_sampling_radius: float | None = None
     use_ot_permutation: bool = False
-    translation_scale: float = 10.0  # Angstrom
+    translation_scale: float = 100.0  # Angstrom
     prob_perturbation: float = 1.0
     prob_replace_to_holo: float = 0.0
     apo_perturbation: ApoPerturbationConfig | None = dataclasses.field(
@@ -290,6 +248,9 @@ class ApoInitializer:
         # During training, disable ETKDG generation for efficiency,
         # i.e., only the cached ETKDG and CCD conformers (ideal, mode) are used.
         self.conformer_mode: str = "train" if self.training else "auto"
+
+        # Logger
+        self.logger = logging.getLogger("ApoInitializer")
 
     def __call__(
         self,
@@ -394,7 +355,7 @@ class ApoInitializer:
                     except Exception as e:
                         # NOTE: There are some errors in rcsb-to-uniprot mapping file.
                         # For robustness, we fall back to prior sampling if loading fails.
-                        print(
+                        self.logger.error(
                             "Failed to load apo structure for entity "
                             f"{entity_id}: {e}. Sampling from prior instead."
                         )
@@ -548,12 +509,14 @@ class ApoInitializer:
         lmdb_key = apo_info["rieprody_key"]
 
         # Load apo structure
-        _, apo_coords = read_protein_structure(path)
+        sequence, apo_coords = read_protein_structure(path)
 
         # Apply perturbation if enabled
         if self.use_perturbation and rng.random() < self.prob_perturbation:
             apo_mask = np.isfinite(apo_coords).all(axis=-1)
-            apo_coords = self.apply_perturbation(apo_coords, apo_mask, rng, key=lmdb_key)
+            apo_coords = self.apply_perturbation(
+                sequence, apo_coords, apo_mask, rng, key=lmdb_key
+            )
 
         # Crop apo_coords based on residue_map
         length = len(ccd_sequence)
@@ -599,6 +562,7 @@ class ApoInitializer:
 
     def apply_perturbation(
         self,
+        sequence: str,
         apo_coords: np.ndarray,
         mask: np.ndarray,
         rng: np.random.Generator,
@@ -608,6 +572,8 @@ class ApoInitializer:
 
         Parameters
         ----------
+        sequence : str
+            Amino acid sequence of the protein.
         apo_coords : np.ndarray
             Apo structure coordinates of shape [L, Natom, 3].
         mask : np.ndarray
@@ -622,7 +588,7 @@ class ApoInitializer:
         augmented_coords : np.ndarray
             Augmented structure coordinates of shape [L, Natom, 3].
         """
-        return self.apo_perturbation.run(apo_coords, mask, rng=rng, key=key)
+        return self.apo_perturbation.run(sequence, apo_coords, mask, rng=rng, key=key)
 
     def apply_chain_com_surface_sampling(
         self,
@@ -668,13 +634,22 @@ class ApoInitializer:
         # Flatten
         L, Natom = coords.shape[:2]
         mask = np.isfinite(coords).all(axis=-1)
+        # Apply random rotation
         augmented_coords = center_random_augmentation(
             coords.reshape(L * Natom, 3),
             mask.reshape(L * Natom),
             augmentation=True,
-            s_trans=self.translation_scale,
+            s_trans=-0.0,
             rng=rng,
         ).reshape(L, Natom, 3)
+
+        # Apply random translation
+        # Random unit vector
+        rand_dir = rng.normal(size=(3,))
+        rand_dir /= np.linalg.norm(rand_dir)
+        translation = rand_dir * self.translation_scale
+        augmented_coords += translation
+
         augmented_coords[~mask] = np.nan
         return augmented_coords
 
@@ -716,15 +691,15 @@ class ApoInitializer:
         # First, chain permutation
         # RNG state is used for sampling permutations when too many exist
         try:
-            self.find_best_chain_permutation(struct, max_permutations=100, rng=rng)
+            self.find_best_chain_permutation(struct, max_permutations=2_000, rng=rng)
         except Exception as e:
-            print(f"Failed to find best chain permutation: {e}. Skipping permutation.")
+            self.logger.error(f"Failed to find best chain permutation: {e}.")
 
         # Second, residue-level permutation (e.g., flipping)
         try:
             self.find_best_residue_permutation(struct)
         except Exception as e:
-            print(f"Failed to find best residue permutation: {e}. Skipping permutation.")
+            self.logger.error(f"Failed to find best residue permutation: {e}.")
 
     def find_best_chain_permutation(
         self,
@@ -736,82 +711,67 @@ class ApoInitializer:
         entity_ids: list[int] = sorted(set(chain.entity_id for chain in struct.chains))
         entity_apo_dict: dict[int, list[np.ndarray]] = defaultdict(list)
         entity_ctypes: dict[int, C.ChainType] = {}
+        entity_sizes: dict[int, int] = {}
         for chain in struct.chains:
             entity_apo_dict[chain.entity_id].append(chain.atom.apo_coords.copy())
             entity_ctypes[chain.entity_id] = chain.ctype
+            entity_sizes[chain.entity_id] = chain.num_residues
 
+        # Sort entities by size (largest first)
+        entity_ids.sort(key=lambda x: entity_sizes[x], reverse=True)
+
+        # Remove entities with all-missing apo coordinates
         for eid in list(entity_ids):
             apo_coords_list = entity_apo_dict[eid]
-
-            # Check if all chains are homologous (same length)
-            lengths = [coords.shape[0] for coords in apo_coords_list]
-            is_homologous: bool = all(v == lengths[0] for v in lengths)
-            if not is_homologous:
-                assert entity_ctypes[eid].is_small_molecule, (
-                    "Non-homologous chains are only supported for covalent ligands."
-                )
+            if any(np.isnan(coords).all() for coords in apo_coords_list):
                 entity_ids.remove(eid)
 
-            # Check the chain apo coordinates are provided
-            elif any(np.isnan(coords).all() for coords in apo_coords_list):
-                # If any chain has no apo coordinates, remove from permutation
-                entity_ids.remove(eid)
+        # Remove entities with covalent ligands
+        for chain in struct.chains:
+            if chain.is_covalent_ligand:
+                if chain.entity_id in entity_ids:
+                    entity_ids.remove(chain.entity_id)
+
+        if len(entity_ids) == 0:
+            # No entities to permute
+            return
+
+        if all(len(entity_apo_dict[eid]) == 1 for eid in entity_ids):
+            # Only one chain per entity, no permutation needed
+            return
 
         perm_chains = [chain for chain in struct.chains if chain.entity_id in entity_ids]
-        entity_order = [chain.entity_id for chain in perm_chains]
-
-        if len(perm_chains) == 0:
-            # No chains to permute
-            return
-
-        # If the total number of resolved apo atoms is less than 5, skip permutation
-        if sum(chain.atom.is_apo_resolved.sum() for chain in perm_chains) < 5:
-            return
 
         # === 2. Anchor Selection for Alignment === #
         entity_anchors: dict[int, np.ndarray] = {}
-        entity_anchor_weights: dict[int, np.ndarray] = {}
         entity_anchor_coords: dict[int, list[np.ndarray]] = {}
 
         for chain in perm_chains:
             eid = chain.entity_id
             if eid in entity_anchors:
                 continue
-
-            # Atom selection logic
             if chain.ctype.is_protein:
                 idx = np.where(chain.atom.name == "CA")[0]
+                num_anchors = 10
             elif chain.ctype.is_nucleic_acid:
                 idx = np.where(chain.atom.name == "C1'")[0]
+                num_anchors = 10
             else:
-                idx = np.arange(chain.num_atoms)
+                idx = chain.atom.is_apo_resolved.nonzero()[0]
+                num_anchors = 2
 
             if len(idx) == 0:
-                idx = np.arange(chain.num_atoms)
+                # Fallback to any resolved atoms
+                idx = chain.atom.is_apo_resolved.nonzero()[0]
+                num_anchors = 2
 
-            # Subsampling to max 20 anchors
-            stride = max(1, len(idx) // 20)
+            # Take evenly spaced anchors up to num_anchors
+            stride = max(1, len(idx) // num_anchors)
             idx = idx[::stride]
             entity_anchors[eid] = idx
-            entity_anchor_weights[eid] = np.full(
-                len(idx), chain.num_atoms / len(idx), dtype=np.float32
-            )
             entity_anchor_coords[eid] = [coords[idx] for coords in entity_apo_dict[eid]]
 
-        align_weights = np.concatenate(
-            [entity_anchor_weights[chain.entity_id] for chain in perm_chains], axis=0
-        )
-        del entity_anchor_weights
-
-        # === 3. Prepare label centers and masks === #
-        label_centers = np.concatenate(
-            [chain.atom.coords[entity_anchors[chain.entity_id]] for chain in perm_chains],
-            axis=0,
-        )
-        label_mask = np.isfinite(label_centers).all(axis=-1)
-
-        # === 4. Generate candidate permutations === #
-        rng.shuffle(entity_ids)
+        # === 3. Generate candidate permutations === #
         entity_to_perms = {}
         for eid in entity_ids:
             num_chains = len(entity_apo_dict[eid])
@@ -827,51 +787,55 @@ class ApoInitializer:
             {eid: perm for eid, perm in zip(entity_ids, perms, strict=True)}
             for perms in itertools.islice(
                 itertools.product(*(entity_to_perms[eid] for eid in entity_ids)),
-                max_permutations * 10,
+                max_permutations * 5,
             )
         ]
         if len(final_permutations) > max_permutations:
             rng.shuffle(final_permutations)
             final_permutations = final_permutations[:max_permutations]
 
+        # === 4. Prepare label centers and masks === #
+        label_centers = np.concatenate(
+            [chain.atom.coords[entity_anchors[chain.entity_id]] for chain in perm_chains],
+            axis=0,
+        )
+        label_mask = np.isfinite(label_centers).all(-1)
+        entity_order = [chain.entity_id for chain in perm_chains]
+
         # === 5. Evaluate permutations === #
-        best_permutation = None
-        min_weighted_mse = float("inf")
+        best_perm = None
+        best_rmsd = float("inf")
+        apo_centers = np.empty_like(label_centers)
         for perm in final_permutations:
             # Use a simpler way to track which index to take for each entity
-            counts = defaultdict(int)
-            anchors_list: list[np.ndarray] = []
+            st = 0
+            _perm = {eid: list(perm[eid]) for eid in entity_ids}
             for eid in entity_order:
-                orig_idx = counts[eid]
-                swap_idx = perm[eid][orig_idx]
-                counts[eid] += 1
-                anchors_list.append(entity_anchor_coords[eid][swap_idx])
-            del counts
-            apo_centers = np.concatenate(anchors_list, axis=0)
-            apo_mask = np.isfinite(apo_centers).all(axis=-1)
-            align_mask = label_mask & apo_mask
+                swap_idx = _perm[eid].pop(0)
+                chain_coords = entity_anchor_coords[eid][swap_idx]
+                apo_centers[st : st + len(chain_coords)] = chain_coords
+                st += len(chain_coords)
+            apo_mask = np.isfinite(apo_centers).all(-1)
+            m = label_mask & apo_mask
+            if not m.any():
+                continue  # No overlapping anchors
 
-            coords = apo_centers[align_mask]
-            target = label_centers[align_mask]
-            weights = align_weights[align_mask]
-            aligned = weighted_rigid_align(coords, target, weights, mask=None)
-            d_sq = np.sum((aligned - target) ** 2, axis=-1)
-            weighted_mse = np.sum(d_sq * weights)
-
-            if weighted_mse < min_weighted_mse:
-                min_weighted_mse = weighted_mse
-                best_permutation = perm
+            rmsd = compute_rmsd(
+                apo_centers[m], label_centers[m], mask=None, align=True, no_svd=True
+            )
+            if rmsd < best_rmsd:
+                best_perm, best_rmsd = perm, rmsd
 
         # === 6. Apply permutations === #
         counts = defaultdict(int)
-        if best_permutation is not None:
+        if best_perm is not None:
             # Reorder apo coordinates according to best permutation
             for chain in perm_chains:
                 eid = chain.entity_id
                 if eid not in entity_ids:
                     continue
                 orig_idx = counts[eid]  # index in the entity
-                perm_idx = best_permutation[eid][orig_idx]
+                perm_idx = best_perm[eid][orig_idx]
                 if orig_idx != perm_idx:
                     # Apply permutation
                     chain.atom.apo_coords[:] = entity_apo_dict[eid][perm_idx]
@@ -891,7 +855,7 @@ class ApoInitializer:
         for chain in struct.chains:
             ctype = chain.ctype
 
-            if ctype.is_ion:
+            if chain.is_ion:
                 # Skip ions (single atom)
                 continue
 
@@ -900,10 +864,6 @@ class ApoInitializer:
                 num_atoms: int = chain.residue.num_atoms[res_i]
                 atom_st: int = chain.residue.atom_starts[res_i]
                 atom_end: int = atom_st + num_atoms
-
-                if num_atoms < 5:
-                    # Not enough atoms to consider permutation
-                    continue
 
                 if ctype.is_polymer and chain.residue.is_standard[res_i]:
                     # Get ambiguous atom permutations for this standard residue
@@ -926,32 +886,26 @@ class ApoInitializer:
                     continue
 
                 # Find the best permutation
+                res_holo = chain.atom.coords[atom_st:atom_end]  # [num_atoms, 3]
+                res_apo = chain.atom.apo_coords[atom_st:atom_end]  # [num_atoms, 3]
+                res_holo_mask = np.isfinite(res_holo).all(-1)  # [num_atoms,]
+                res_apo_mask = np.isfinite(res_apo).all(-1)  # [num_atoms,]
+
                 best_perm = None
                 min_rmsd = float("inf")
-
-                res_holo_coords = chain.atom.coords[atom_st:atom_end]  # [num_atoms, 3]
-                res_apo_coords = chain.atom.apo_coords[atom_st:atom_end]  # [num_atoms, 3]
-                res_holo_mask = np.isfinite(res_holo_coords).all(-1)  # [num_atoms,]
-                res_apo_mask = np.isfinite(res_apo_coords).all(-1)  # [num_atoms,]
-                if res_holo_mask.sum() < 5:
-                    continue  # Not enough resolved atoms to align
-
                 for perm in perms:
                     permuted_apo_mask = res_apo_mask[perm]
                     align_mask = res_holo_mask & permuted_apo_mask
-                    if np.sum(align_mask) < 5:
-                        continue  # Not enough resolved atoms to align
-                    permuted_apo_coords = res_apo_coords[perm, :]
-                    rmsd = compute_minimal_rmsd_no_svd(
-                        permuted_apo_coords, res_holo_coords, align_mask
+                    permuted_apo = res_apo[perm, :]
+                    rmsd = compute_rmsd(
+                        permuted_apo, res_holo, align_mask, align=True, no_svd=True
                     )
                     if rmsd < min_rmsd:
-                        min_rmsd = rmsd
-                        best_perm = perm
+                        min_rmsd, best_perm = rmsd, perm
 
                 if best_perm is not None:
                     # Apply best permutation
-                    res_apo_coords[:, :] = res_apo_coords[best_perm, :]
+                    res_apo[:, :] = res_apo[best_perm, :]
                 else:
                     pass
 

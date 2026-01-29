@@ -8,8 +8,6 @@ weight: 0.02
 data_path: <DATA_PATH_PLACEHOLDER>
 seed: null # should be null for data augmentation
 
-filters: []
-
 sampler:
   _registry_: "data_sampler"
   _class_: UniformSampler

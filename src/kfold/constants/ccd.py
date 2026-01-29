@@ -291,6 +291,7 @@ CCD_NAME_TO_ONE_LETTER: dict[str, str] = {
     for ccd_name, one_letter in _BIOPYTHON_SCOP_RAW.items()
     if len(one_letter) == 1
 }
+CCD_NAMES: set[str] = set(CCD_NAME_TO_ONE_LETTER.keys())
 # Cleanup namespace
 del _BIOPYTHON_SCOP_RAW
 
