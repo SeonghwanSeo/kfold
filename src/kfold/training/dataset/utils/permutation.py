@@ -234,6 +234,10 @@ def _find_best_residue_permutation(
             x = pred_coords[atom_st:atom_end]  # [Nres_atoms, 3]
             x_gt = gt_coords[atom_st:atom_end]  # [Nres_atoms, 3]
             m = gt_mask[atom_st:atom_end]  # [Nres_atoms]
+            if not m.any():
+                # No valid atoms to compare
+                atom_st = atom_end
+                continue
 
             # Try all swaps and find the best one
             best_i = -1
@@ -248,10 +252,10 @@ def _find_best_residue_permutation(
                     best_rmsd, best_i = rmsd, p_i
 
             # Apply the best swap
-            assert best_i >= 0, "No valid permutation found."
-            best_perm = res_perms[best_i]
-            atom_slice = c.residue.get_atom_slice(res_idx)
-            c.atom.coords[atom_slice] = c.atom.coords[atom_slice][best_perm]
+            if best_i >= 0:
+                best_perm = res_perms[best_i]
+                atom_slice = c.residue.get_atom_slice(res_idx)
+                c.atom.coords[atom_slice] = c.atom.coords[atom_slice][best_perm]
 
             atom_st = atom_end
 

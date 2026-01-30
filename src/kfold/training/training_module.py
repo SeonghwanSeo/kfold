@@ -289,11 +289,11 @@ class KFoldTrainingModule(pl.LightningModule):
         # NOTE (Seonghwan): MeanMetric is required since the number of values
         # per each metric key are different for each batch during validation.
         # self.log() raises deadlock error when aggregating metrics in DDP.
-        val_metrics = {}
-
         self.val_dataset_names: list[str] = [
             ds.name for ds in self.global_config.train.data.val_datasets
         ]
+
+        val_metrics = {}
 
         for name in self.val_dataset_names:
             for prefix in ["avg", "top1", "top5"]:
@@ -643,18 +643,19 @@ class KFoldTrainingModule(pl.LightningModule):
     def on_validation_epoch_end(self):
         torch.backends.cudnn.benchmark = True
 
-        # Aggregate validation metrics
-        avg_values: dict[str, torch.Tensor] = {}
-        for k, m in self.metrics["val_metrics"].items():
-            v = m.compute()
-            if not v.isfinite():
-                # Ignore non-finite values
-                continue
-            avg_values[k] = v
-            m.reset()
-        # HACK: Since TorchMetrics automatically syncs the metrics across processes,
-        # we need to log them with sync_dist=True to avoid warning logs.
-        self.log_dict(avg_values, sync_dist=True)
+        metrics: MetricCollection = self.metrics["val_metrics"]
+        avg_values = metrics.compute()
+        # Filter out non-finite values
+        avg_values = {k: v for k, v in avg_values.items() if v.isfinite().all()}
+        self.log_dict(
+            avg_values,
+            on_step=False,
+            on_epoch=True,
+            logger=True,
+            add_dataloader_idx=False,
+            sync_dist=True,  # Already synced in compute(), but keep to avoid warning...
+        )
+        metrics.reset()
 
         # Clear cache after validation
         # NOTE: is this necessary?

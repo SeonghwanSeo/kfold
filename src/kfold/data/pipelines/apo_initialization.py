@@ -639,16 +639,17 @@ class ApoInitializer:
             coords.reshape(L * Natom, 3),
             mask.reshape(L * Natom),
             augmentation=True,
-            s_trans=-0.0,
+            s_trans=self.translation_scale,
             rng=rng,
         ).reshape(L, Natom, 3)
 
+        # TODO: perform random translation in ecsi module.
         # Apply random translation
         # Random unit vector
-        rand_dir = rng.normal(size=(3,))
-        rand_dir /= np.linalg.norm(rand_dir)
-        translation = rand_dir * self.translation_scale
-        augmented_coords += translation
+        # rand_dir = rng.normal(size=(3,))
+        # rand_dir /= np.linalg.norm(rand_dir)
+        # translation = rand_dir * self.translation_scale
+        # augmented_coords += translation
 
         augmented_coords[~mask] = np.nan
         return augmented_coords

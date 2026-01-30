@@ -239,9 +239,9 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
             )
         else:
             checkpoint_callback = pl_callbacks.ModelCheckpoint(
-                monitor="val/weighted_lddt",
+                monitor="rcsb-val/monitor/weighted_lddt",
                 save_top_k=-1,
-                filename="epoch{epoch:04d}_step{step:08d}_lddt{val/weighted_lddt:.4f}",
+                filename="epoch{epoch:04d}_step{step:08d}_wlddt{rcsb-val/monitor/weighted_lddt:.4f}",
                 mode="max",
                 auto_insert_metric_name=False,
             )
