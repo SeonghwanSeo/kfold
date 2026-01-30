@@ -153,7 +153,7 @@ class Chain:
 
     @property
     def is_glycan(self) -> bool:
-        """Whether the chain is a small molecule (non-polymer & non-ion)."""
+        """Whether the chain is a glycan."""
         return self.is_covalent_ligand and all(
             res in C.ccd.GLYCANS for res in self.residue.name.tolist()
         )
