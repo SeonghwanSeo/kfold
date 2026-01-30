@@ -2,7 +2,7 @@ __all__ = [
     "CCD_NAME_TO_ONE_LETTER",
     "LIGAND_EXCLUSIONS",
     "CRYSTALLIZATION_AIDS",
-    "GLYCAN_CCDS",
+    "GLYCANS",
     "IONS",
 ]
 
@@ -291,6 +291,7 @@ CCD_NAME_TO_ONE_LETTER: dict[str, str] = {
     for ccd_name, one_letter in _BIOPYTHON_SCOP_RAW.items()
     if len(one_letter) == 1
 }
+CCD_NAMES: set[str] = set(CCD_NAME_TO_ONE_LETTER.keys())
 # Cleanup namespace
 del _BIOPYTHON_SCOP_RAW
 
@@ -319,7 +320,7 @@ LIGAND_EXCLUSIONS: set[str] = {
 }  # fmt: skip
 
 # AlphaFold3 SI Tabel 11
-GLYCAN_CCDS: set[str] = {
+GLYCANS: set[str] = {
     "045", "05L", "07E", "07Y", "08U", "09X", "0BD", "0H0", "0HX", "0LP",
     "0MK", "0NZ", "0UB", "0V4", "0WK", "0XY", "0YT", "10M", "12E", "145",
     "147", "149", "14T", "15L", "16F", "16G", "16O", "17T", "18D", "18O",
@@ -414,12 +415,12 @@ GLYCAN_CCDS: set[str] = {
     "X2F", "X2Y", "X34", "X6X", "X6Y", "XDX", "XGP", "XIL", "XKJ", "XLF",
     "XLS", "XMM", "XS2", "XXM", "XXR", "XXX", "XYF", "XYL", "XYP", "XYS",
     "XYT", "XYZ", "YDR", "YIO", "YJM", "YKR", "YO5", "YX0", "YX1", "YYB",
-    "YYH", "YYJ", "YYK", "YYM", "YYQ", "YZ0", "Z0F", "Z15", "Z16", "Z2D",
-    "Z2T", "Z3K", "Z3L", "Z3Q", "Z3U", "Z4K", "Z4R", "Z4S", "Z4U", "Z4V",
-    "Z4W", "Z4Y", "Z57", "Z5J", "Z5L", "Z61", "Z6H", "Z6J", "Z6W", "Z8H",
-    "Z8T", "Z9D", "Z9E", "Z9H", "Z9K", "Z9L", "Z9M", "Z9N", "Z9W", "ZB0",
-    "ZB1", "ZB2", "ZB3", "ZCD", "ZCZ", "ZD0", "ZDC", "ZDO", "ZEE", "ZEL",
-    "ZGE", "ZMR"
+    "YYD", "YYH", "YYJ", "YYK", "YYM", "YYQ", "YZ0", "Z0F", "Z15", "Z16",
+    "Z2D", "Z2T", "Z3K", "Z3L", "Z3Q", "Z3U", "Z4K", "Z4R", "Z4S", "Z4U",
+    "Z4V", "Z4W", "Z4Y", "Z57", "Z5J", "Z5L", "Z61", "Z6H", "Z6J", "Z6W",
+    "Z8H", "Z8T", "Z9D", "Z9E", "Z9H", "Z9K", "Z9L", "Z9M", "Z9N", "Z9W",
+    "ZB0", "ZB1", "ZB2", "ZB3", "ZCD", "ZCZ", "ZD0", "ZDC", "ZDO", "ZEE",
+    "ZEL", "ZGE", "ZMR"
 }  # fmt: skip
 
 # AlphaFold3 SI Tabel 12

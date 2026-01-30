@@ -42,13 +42,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pre-commit"]
+dev = ["pre-commit", "pytest"]
 train = [
   'lightning', # for training loop
   'wandb', # for experiment tracking
   'lmdb', # for training dataset storage
   'msgpack', # for data serialization
+  'bioprior @ git+https://github.com/SeonghwanSeo/bio-prior.git@v0.1.2', # for on-the-fly prior sampling
 ]
 preprocess = [
   'pdbeccdutils', # for ccd data handling
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit_tests"]

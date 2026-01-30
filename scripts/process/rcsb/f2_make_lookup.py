@@ -91,7 +91,7 @@ def parse_args():
         "--data_dir",
         type=pathlib.Path,
         required=True,
-        help="Path to the preprocessed data directory.",
+        help="Path to working directory.",
     )
     parser.add_argument(
         "--num_workers",
@@ -483,7 +483,7 @@ def _prepare_protein_lookup(
 def main():
     """Main function to extract sequences from npz files using multiprocessing."""
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir
+    data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
     lmdb_path = data_dir / "structure.lmdb"
 
     apo_dir = data_dir / "apo"

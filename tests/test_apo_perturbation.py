@@ -1,0 +1,65 @@
+import random
+from pathlib import Path
+
+import numpy as np
+
+from kfold.data.pipelines._apo_perturbation import ApoPerturbation, ApoPerturbationConfig
+from kfold.data.utils.io.structure import read_protein_structure, write_protein_structure
+from kfold.data.utils.simulation.rieprody import RieProdyConfig
+
+ROOT_DIR = Path("/cache/wykim_lab/kfold_data/v260121/")
+
+if __name__ == "__main__":
+    data_dir = ROOT_DIR / "dataset" / "rcsb-train"
+    save_dir = Path("./tmp/apo_perturbation")
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    metric_path = data_dir / "rieprody_metric.lmdb"
+    assert metric_path.exists(), f"RiePrody metric not found at {metric_path}"
+
+    # create rieprody config
+    rieprody_config = RieProdyConfig(
+        metric_lmdb_path=metric_path,
+        rmsd_threshold=100.0,  # disable rmsd filtering for testing
+        disable_log=False,
+    )
+
+    module = ApoPerturbation(ApoPerturbationConfig(rieprody=rieprody_config))
+
+    # Example usage
+    source = "esmfold"
+    files = sorted(list((data_dir / "apo" / source).rglob("*.pdb.gz")))
+    random.seed(42)
+    random.shuffle(files)
+
+    for pdb_file in files[:10]:  # test on one file
+        print(f"Processing {pdb_file}")
+        name = pdb_file.name.split(".")[0]
+        lmdb_key = f"{source}:{name}"
+
+        seq, apo_coords = read_protein_structure(pdb_file)
+        mask: np.ndarray = np.isfinite(apo_coords).all(axis=-1)
+
+        rng = np.random.default_rng(42)
+
+        # Save original structure
+        output_file = save_dir / f"{name}.pdb"
+        write_protein_structure(seq, apo_coords, output_file)
+
+        # # Rieprody perturbation
+        perturb_coords = module.rieprody_perturbation(
+            apo_coords, mask, key=lmdb_key, rng=rng
+        )
+        if perturb_coords is None:
+            print(f"RiePrody perturbation failed for {name}, skipping...")
+        else:
+            output_file = save_dir / f"{name}_rieprody.pdb"
+            write_protein_structure(seq, perturb_coords, output_file)
+
+        # BioPrior perturbation
+        perturb_coords = module.bioprior_perturbation(seq, apo_coords, rng=rng)
+        if perturb_coords is None:
+            print(f"BioPrior perturbation failed for {name}, skipping...")
+        else:
+            output_file = save_dir / f"{name}_bioprior.pdb"
+            write_protein_structure(seq, perturb_coords, output_file)

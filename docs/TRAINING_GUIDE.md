@@ -46,11 +46,11 @@ export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 # Navigate to the data directory
 cd $KFOLD_DATA_DIR
 
-# Clone pre-built dataset (latest: v260121)
-cp -r /storage/wykim_lab/icl_shwan/dataset/v260121 .
+# Clone pre-built dataset (latest: v260130)
+cp -r /storage/wykim_lab/icl_shwan/dataset/v260130/ .
 
 # Extract the datasets you need
-cd v260121/dataset
+cd v260130/dataset
 tar --zstd -xvf rcsb-train.tar.zst
 tar --zstd -xvf rcsb-val.tar.zst
 tar --zstd -xvf NaturalAb.tar.zst

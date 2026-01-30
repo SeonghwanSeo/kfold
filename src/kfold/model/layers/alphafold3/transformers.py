@@ -41,6 +41,7 @@ class AttentionPairBias(nn.Module):
         channel_s: int | None,  # c_atom (atom-attn) or c_s (token-attn)
         num_heads: int,
         use_single_cond: bool = True,
+        qk_norm: bool = False,
         inf: float = 1e6,
     ) -> None:
         """Initialize the attention pair bias layer.
@@ -70,6 +71,7 @@ class AttentionPairBias(nn.Module):
         self.num_heads: int = num_heads
         self.head_dim: int = channel_a // num_heads
         self.inf: float = inf
+        self.qk_norm: bool = qk_norm
 
         self.use_single_cond: bool = use_single_cond
         if self.use_single_cond:
@@ -81,14 +83,22 @@ class AttentionPairBias(nn.Module):
             assert channel_s is None, "channel_s must be None if use_single_cond is False"
             self.layernorm_a = LayerNorm(channel_a, create_offset=True)
 
-        self.linear_q = nn.Sequential(
-            Linear(channel_a, channel_a, init="default"),
-            Rearrange("b ... l (h d) -> b ... h l d", h=num_heads),
-        )
-        self.linear_k = nn.Sequential(
+        # NOTE: Proteina-style QK normalization.
+        # Apply LayerNorm to Q and K *after* projection and *before* the multi-head split.
+        # This is intentionally disabled by default so diffusion modules that share this
+        # attention layer remain unchanged unless explicitly enabled.
+        q_layers: list[nn.Module] = [Linear(channel_a, channel_a, init="default")]
+        k_layers: list[nn.Module] = [
             LinearNoBias(channel_a, channel_a, init="default"),
-            Rearrange("b ... l (h d) -> b ... h l d", h=num_heads),
-        )
+        ]
+        if self.qk_norm:
+            q_layers.append(LayerNorm(channel_a, create_offset=True))
+            k_layers.append(LayerNorm(channel_a, create_offset=True))
+
+        q_layers.append(Rearrange("b ... l (h d) -> b ... h l d", h=num_heads))
+        k_layers.append(Rearrange("b ... l (h d) -> b ... h l d", h=num_heads))
+        self.linear_q = nn.Sequential(*q_layers)
+        self.linear_k = nn.Sequential(*k_layers)
         self.linear_v = nn.Sequential(
             LinearNoBias(channel_a, channel_a, init="default"),
             Rearrange("b ... l (h d) -> b ... h l d", h=num_heads),

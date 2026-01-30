@@ -17,3 +17,4 @@ coordinate_augmentation: True
 synchronize_sigmas: False
 normalize_data_end: False
 alignment_entity_strategy: "largest"
+alignment_level: "chain"

@@ -63,16 +63,39 @@ class Chain:
     entity_id: int
     asym_id: int
     sym_id: int
-    residue: "Residue"
-    atom: "Atom"
-    bond: "Bond"
+    residue: "ResidueLayout"
+    atom: "AtomLayout"
+    bond: "BondLayout"
     smiles: str | None = None  # optional SMILES string for small molecule
+    is_covalent_ligand: bool = False  # whether the chain is a covalent ligand
 
     # === Properties === #
     @cached_property
     def ctype(self) -> C.ChainType:
         """Chain type as enum."""
         return C.ChainType(self.chain_type)
+
+    @cached_property
+    def subtype(self) -> C.SubChainType:
+        """Chain type as enum."""
+        if self.is_protein:
+            if self.is_peptide:
+                return C.SubChainType.PEPTIDE
+            else:
+                return C.SubChainType.PROTEIN
+        elif self.is_dna:
+            return C.SubChainType.DNA
+        elif self.is_rna:
+            return C.SubChainType.RNA
+        else:
+            if self.is_glycan:
+                return C.SubChainType.GLYCAN
+            elif self.is_covalent_ligand:
+                return C.SubChainType.COVALENT_LIGAND
+            elif self.is_ion:
+                return C.SubChainType.ION
+            else:
+                return C.SubChainType.SMALL_MOLECULE
 
     @property
     def is_protein(self) -> bool:
@@ -110,6 +133,11 @@ class Chain:
         return self.ctype.is_nucleic_acid
 
     @property
+    def is_peptide(self) -> bool:
+        """Whether the chain is a peptide."""
+        return self.ctype.is_protein and self.num_residues < 16
+
+    @property
     def is_ion(self) -> bool:
         """Whether the chain is an ion."""
         if self.num_atoms > 1 or self.num_residues > 1:
@@ -122,6 +150,13 @@ class Chain:
     def is_small_molecule(self) -> bool:
         """Whether the chain is a small molecule (non-polymer & non-ion)."""
         return self.is_nonpolymer and not self.is_ion
+
+    @property
+    def is_glycan(self) -> bool:
+        """Whether the chain is a glycan."""
+        return self.is_covalent_ligand and all(
+            res in C.ccd.GLYCANS for res in self.residue.name.tolist()
+        )
 
     @property
     def num_residues(self) -> int:
@@ -238,10 +273,13 @@ class Chain:
             + ")"
         )
 
+    def clone(self) -> Self:
+        """Create a copy of the Chain."""
+        return copy.deepcopy(self)
+
     def copy_with(self, deepcopy: bool = False, **kwargs) -> Self:
         """Create a copy of the Chain with modified fields."""
         if deepcopy:
-            # Deep copy all fields
             out = copy.deepcopy(self)
         else:
             out = self
@@ -272,6 +310,8 @@ class Chain:
                 result[key] = value
         if self.smiles is not None:
             result["smiles"] = np.array(self.smiles, dtype=np.dtype("U"))
+        if self.is_covalent_ligand is not None:
+            result["is_covalent_ligand"] = np.array(self.is_covalent_ligand, dtype=bool)
         return result
 
     @classmethod
@@ -279,23 +319,20 @@ class Chain:
         """Reconstruct from NPZ dictionary."""
         reconstructed = {}
         for prefix, struct_cls in [
-            ("residue.", Residue),
-            ("atom.", Atom),
-            ("bond.", Bond),
+            ("residue.", ResidueLayout),
+            ("atom.", AtomLayout),
+            ("bond.", BondLayout),
         ]:
             struct_data = {
                 key[len(prefix) :]: value
                 for key, value in data.items()
                 if key.startswith(prefix)
             }
-            # FIXME: for backward compatibility
-            if prefix == "atom." and "label_coords" in struct_data:
-                struct_data["coords"] = struct_data.pop("label_coords")
             reconstructed[prefix[:-1]] = struct_cls(**struct_data)
         if "smiles" in data:
             reconstructed["smiles"] = data["smiles"].item()
-        if "apo_type" in data:
-            reconstructed["apo_type"] = tuple(x.item() for x in data["apo_type"])
+        if "is_covalent_ligand" in data:
+            reconstructed["is_covalent_ligand"] = data["is_covalent_ligand"].item()
         return cls(
             chain_type=data["chain_type"].item(),
             entity_id=data["entity_id"].item(),
@@ -306,7 +343,7 @@ class Chain:
 
 
 @dataclasses.dataclass(frozen=True)
-class Residue:
+class ResidueLayout:
     """Residue information.
 
     Attributes
@@ -342,6 +379,13 @@ class Residue:
             [np.array([0], dtype=dtype), np.cumsum(self.num_atoms, dtype=dtype)[:-1]]
         )
 
+    def get_atom_slice(self, residue_index: int) -> slice:
+        """Get slice objects for each residue's atoms."""
+        res_i = residue_index - 1  # convert to 0-based index
+        start = self.atom_starts[res_i]
+        end = start + self.num_atoms[res_i]
+        return slice(start, end)
+
     def iter_residue_atoms(self, residue_index: int) -> range:
         """Get the range of atom indices for a given residue index."""
         # residue_index: 1-based index
@@ -361,7 +405,7 @@ class Residue:
 
 
 @dataclasses.dataclass(frozen=True)
-class Atom:
+class AtomLayout:
     """Atom information.
 
     Attributes
@@ -446,7 +490,7 @@ class Atom:
 
 
 @dataclasses.dataclass(frozen=True)
-class Bond:
+class BondLayout:
     """Intra-chain Bond information.
 
     Shape: [Nbond, ...]
@@ -594,13 +638,6 @@ class RefStructure:
         """Number of covalent connections in the structure."""
         return len(self.connections)
 
-    def get_chain_by_asym_id(self, asym_id: int) -> Chain:
-        """Get chain by asym_id."""
-        for chain in self.chains:
-            if chain.asym_id == asym_id:
-                return chain
-        raise KeyError(f"Chain with asym_id {asym_id} not found.")
-
     def __repr__(self) -> str:
         """FoldingInput summary representation."""
         # Summary statistics
@@ -623,6 +660,23 @@ class RefStructure:
             + "]\n"
             + ")"
         )
+
+    def get_chain_by_asym_id(self, asym_id: int) -> Chain:
+        """Get chain by asym_id."""
+        for chain in self.chains:
+            if chain.asym_id == asym_id:
+                return chain
+        raise KeyError(f"Chain with asym_id {asym_id} not found.")
+
+    def get_atom_coords(self) -> np.ndarray:
+        """Get atom coordinates of the structure.
+
+        Returns
+        -------
+        coords: np.ndarray
+            Shape [Natom, 3], float32
+        """
+        return np.concatenate([c.atom.coords for c in self.chains], axis=0)
 
     def clone(self) -> Self:
         """Create a deep copy of the RefStructure."""

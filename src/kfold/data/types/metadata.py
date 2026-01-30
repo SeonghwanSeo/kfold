@@ -78,6 +78,17 @@ class ChainInfo(JsonSerializable):
     smiles: str | None = None
     description: str | None = None
     cluster_id: str | None = None
+    is_covalent_ligand: bool = False
+    is_ion: bool = False
+    is_low_homology: bool = False  # whether to use this chain for evaluation
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary, excluding default boolean values."""
+        data = JsonSerializable.to_dict(self)
+        for k in ["is_covalent_ligand", "is_ion", "is_low_homology"]:
+            if data[k] is False:
+                del data[k]
+        return data
 
     @property
     def ctype(self) -> C.ChainType:
@@ -88,6 +99,15 @@ class ChainInfo(JsonSerializable):
 class InterfaceInfo(JsonSerializable):
     asym_ids: tuple[int, int]
     cluster_id: str | None = None
+    is_low_homology: bool = False  # whether to use this interface for evaluation
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary, excluding default boolean values."""
+        data = JsonSerializable.to_dict(self)
+        for k in ["is_low_homology"]:
+            if data[k] is False:
+                del data[k]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
@@ -155,6 +175,15 @@ class Metadata:
             if chain.asym_id == asym_id:
                 return chain
         raise ValueError(f"Chain with asym_id {asym_id} not found.")
+
+    def get_interface_by_asym_ids(self, asym_id1: int, asym_id2: int) -> InterfaceInfo:
+        for iface in self.interfaces:
+            aid1, aid2 = iface.asym_ids
+            if (aid1 == asym_id1 and aid2 == asym_id2) or (
+                aid1 == asym_id2 and aid2 == asym_id1
+            ):
+                return iface
+        raise ValueError(f"Interface with asym_ids ({asym_id1}, {asym_id2}) not found.")
 
     @property
     def num_chains(self) -> int:

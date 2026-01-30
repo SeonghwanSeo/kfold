@@ -34,6 +34,7 @@ class PairformerStack(nn.Module):
         num_heads_tri_attn: int = 4,
         num_blocks: int = 48,
         dropout: float = 0.25,
+        use_qk_norm: bool = False,
         blocks_per_ckpt: int | None = None,
     ):
         """Initialize the Pairformer module."""
@@ -56,6 +57,7 @@ class PairformerStack(nn.Module):
                     self.num_heads_attn,
                     self.num_heads_tri_attn,
                     self.dropout,
+                    use_qk_norm,
                 )
             )
 
@@ -136,6 +138,7 @@ class PairformerBlock(nn.Module):
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         dropout: float = 0.25,
+        use_qk_norm: bool = False,
     ):
         """Initialize the Pairformer module.
 
@@ -173,6 +176,7 @@ class PairformerBlock(nn.Module):
             num_heads=num_heads_attn,
             channel_s=None,
             use_single_cond=False,
+            qk_norm=use_qk_norm,
         )
 
         self.transition_s = Transition(channel_s, expansion_factor=4)

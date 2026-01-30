@@ -1,4 +1,4 @@
-"""Cluster training PDB set.
+"""Construct RCSB training set with cluster IDs.
 
 1. Extract sequences from npz files. (invalid targets were filtered)
 2. Deduplicate sequences based on hash values.
@@ -15,15 +15,17 @@ Procedure:
 2. Deduplicate sequences based on hash values.
 3. Cluster sequences using MMseqs2.
 4. Construct mapping from (PDB ID, entity ID) to cluster ID.
-5. Save updated metadata with cluster IDs as JSON files.
+5. Save updated metadata with cluster IDs.
 """
 
 import argparse
+import json
 import multiprocessing
 import os
 import pathlib
 from typing import NamedTuple
 
+import msgpack
 from tqdm import tqdm
 
 import kfold.constants as C
@@ -33,13 +35,14 @@ from kfold.utils.mmseqs2 import run_mmseqs2_cluster
 
 
 def parse_args():
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Process RCSB CCD data.")
+    parser = argparse.ArgumentParser(
+        description="Cluster training set sequences using MMseqs2.",
+    )
     parser.add_argument(
         "--data_dir",
         type=pathlib.Path,
         required=True,
-        help="Working directory containing preprocessed npz/ folder.",
+        help="Path to working directory.",
     )
     parser.add_argument(
         "--mmseqs",
@@ -73,10 +76,10 @@ class Seq(NamedTuple):
         return self.ctype.name.lower()
 
 
-def parse_cif(
+def parse_npz(
     npz_path: pathlib.Path,
 ) -> tuple[list[Seq], Metadata]:
-    """Parse a CIF file and return a gemmi.cif.Document object."""
+    """Parse a NPZ file and return sequences and metadata."""
     struct: RefStructure = RefStructure.load_npz(npz_path)
     metadata: Metadata = struct.metadata
     name = struct.id
@@ -207,57 +210,65 @@ def update_metadata(
 
 
 def main():
-    """Main function to process and cluster sequences."""
+    """Main function to construct RCSB training set."""
     args = parse_args()
+    data_dir: pathlib.Path = args.data_dir / "rcsb-train"
 
-    # Prepare partial function for multiprocessing
-    npz_dir: pathlib.Path = args.data_dir / "npz"
-    npz_paths = sorted(npz_dir.rglob("*.npz"))
-    print(f"Found {len(npz_paths)} preprocessed files to process.")
+    # Step 1. Extract sequences from npz files
+    npz_dir = data_dir / "npz"
+    npz_files = sorted(npz_dir.rglob("*.npz"))
+    print(f"Found {len(npz_files)} preprocessed files to process.")
     with multiprocessing.Pool(args.num_workers) as pool:
         results = list(
             tqdm(
-                pool.imap_unordered(parse_cif, npz_paths),
-                total=len(npz_paths),
+                pool.imap_unordered(parse_npz, npz_files),
+                total=len(npz_files),
                 desc="Extracting sequences",
             )
         )
-    # Collect all chain sequences
-    metadatas: dict[str, Metadata] = {}
+    # Step 2. Collect all chain sequences
+    metadata_dict: dict[str, Metadata] = {}
     all_sequences: list[Seq] = []
     entry_sequences: dict[str, list[Seq]] = {}
     for seqs, m in results:
-        metadatas[m.id] = m
+        metadata_dict[m.id] = m
         all_sequences.extend(seqs)
         entry_sequences[m.id] = seqs
-    all_pdb_ids: list[str] = sorted(metadatas.keys())
+    all_pdb_ids: list[str] = sorted(metadata_dict.keys())
 
     print("Sequence extraction completed.")
-    print(f"Total structures processed: {len(metadatas)}")
+    print(f"Total structures processed: {len(metadata_dict)}")
     print(f"Total extracted sequences: {len(all_sequences)}")
     del results  # free memory
 
-    # Run clustering
+    # Step 3. Cluster sequences using MMseqs2
     print("Starting sequence clustering...")
     cluter_mapping: dict[str, dict[str, str]] = run_clustering(all_sequences, args.mmseqs)
 
-    # Update metadata
+    # Step 4. Update metadata with cluster IDs
     for pdb_id in tqdm(all_pdb_ids, desc="Populating cluster IDs in metadata"):
         update_metadata(
-            metadatas[pdb_id],
+            metadata_dict[pdb_id],
             entry_sequences[pdb_id],
             cluter_mapping,
         )
+    # Sort metadatas by PDB ID
+    metadatas: list[Metadata] = [metadata_dict[pdb_id] for pdb_id in all_pdb_ids]
 
-    # Save updated metadata with cluster IDs
-    metadata_dir = args.data_dir / "metadata/"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    for pdb_id in tqdm(all_pdb_ids, desc="Saving metadata"):
-        metadata_path = metadata_dir / pdb_id[1:3] / f"{pdb_id}.json"
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
-        metadatas[pdb_id].save_json(metadata_path)
+    # Step 5. Save updated metadata with cluster IDs
+    metadata_dicts: list[dict] = [m.to_dict() for m in metadatas]
 
-    print("Metadata saving completed.")
+    # Save to json file (human-readable)
+    manifest_path: pathlib.Path = data_dir / "manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(metadata_dicts, f, indent=2)
+    print(f"Saved manifest (json) to {manifest_path}")
+
+    # Save to msgpack file (efficient and fast)
+    manifest_path: pathlib.Path = data_dir / "manifest.msgpack"
+    with open(manifest_path, "wb") as f:
+        msgpack.pack(metadata_dicts, f)
+    print(f"Saved manifest (msgpack) to {manifest_path}")
 
 
 if __name__ == "__main__":

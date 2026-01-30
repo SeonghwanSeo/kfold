@@ -14,7 +14,14 @@ python c_process_rcsb.py \
 
 ## Train/valid splits:
 - train: up to 2022-12-31, max resolution 9.0A, max chains 300
-- val: 2023-01-01 to 2023-12-31, max resolution 4.5A, max chains 1000, max residues 2560
+- val: 2023-01-01 to 2023-12-31, max resolution 4.5A, max chains 1000, max tokens 2560
+- test: 2024-01-01 to 2026-01-09, max resolution 4.5A, max chains 1000, max tokens 5120,
+    filter NMR.
+
+We follow similar processing and filtering criteria as in the AlphaFold3 paper. However,
+we also introduce additional filtering logic to extract high-quality structures for
+evaluation: `handle_invalid_chains="disallow"` in validation and test splits.
+This is to reduce biases due to extracting partial structures with valid chains only.
 """
 
 import argparse
@@ -41,10 +48,12 @@ FAILED = 1
 DATE_FILTERED = 2
 RESOLUTION_FILTERED = 3
 METHOD_FILTERED = 4
-CHAIN_COUNT_FILTERED = 5
-RESIDUE_COUNT_FILTERED = 6
-EMPTY_STRUCTURE_FILTERED = 7
-INVALID_CHAIN_FILTERED = 8
+INVALID_POLYMER_TYPES = 5
+CHAIN_COUNT_FILTERED = 6
+TOKEN_COUNT_FILTERED = 7
+SHORT_POLYMER_FILTERED = 8
+EMPTY_STRUCTURE_FILTERED = 9
+INVALID_CHAIN_FILTERED = 10
 
 
 @dataclasses.dataclass
@@ -121,7 +130,7 @@ KFOLD_SPLITS = {
     "val": DataFilter(
         date_start=datetime.fromisoformat("2023-01-01 00:00:00"),
         date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
-        max_resolution=4.0,
+        max_resolution=4.5,
         max_chains=1000,
         max_tokens=2560,
         handle_invalid_chains="disallow",
@@ -130,8 +139,7 @@ KFOLD_SPLITS = {
         date_start=datetime.fromisoformat("2024-01-01 00:00:00"),
         date_end=datetime.fromisoformat("2026-01-09 23:59:59"),
         max_resolution=4.5,
-        min_chains=1,
-        max_chains=1000,
+        max_chains=100,
         max_tokens=5120,
         filter_nmr=True,
         handle_invalid_chains="disallow",
@@ -267,11 +275,28 @@ def parse_cif(
     ):
         return CHAIN_COUNT_FILTERED
 
-    # Filter by token count (naive filter with residue count)
-    if not check_residue_count_cutoff(
-        raw_struct, data_filter.min_tokens, data_filter.max_tokens
-    ):
-        return RESIDUE_COUNT_FILTERED
+    # Filter by token count with naive residue counting
+    # NOTE: Only applied when invalid chains are disallowed since
+    # partial structures may skew the token count.
+    if data_filter.handle_invalid_chains == "disallow":
+        if not check_residue_count_cutoff(
+            raw_struct, data_filter.min_tokens, data_filter.max_tokens
+        ):
+            return TOKEN_COUNT_FILTERED
+
+    # Filter out invalid polymer types (e.g., PNA)
+    valid_polymer_types = {
+        gemmi.PolymerType.PeptideL,
+        gemmi.PolymerType.Dna,
+        gemmi.PolymerType.Rna,
+    }
+    if data_filter.handle_invalid_chains == "disallow":
+        for entity in raw_struct.entities:
+            if (
+                entity.entity_type == gemmi.EntityType.Polymer
+                and entity.polymer_type not in valid_polymer_types
+            ):
+                return INVALID_POLYMER_TYPES
 
     # Prepare reference structure with chain metadata
     ref_struct: RefStructure = cif_factory.prepare_ref_structure(
@@ -279,6 +304,10 @@ def parse_cif(
     )
     # Insert coordinates
     cif_factory.insert_coordinates(ref_struct, raw_struct, metadata)
+
+    # Validate target (AF3 SI 2.5.4: Filtering of targets)
+    if not cif_factory.validate_target(ref_struct):
+        return SHORT_POLYMER_FILTERED
 
     # Identify invalid chains
     invalid_chains: set[int] = set()
@@ -289,9 +318,11 @@ def parse_cif(
     # Get interfaces and those metadata; Detect clashes
     cif_factory.detect_interfaces_and_detect_clashes(ref_struct, invalid_chains)
 
-    if data_filter.handle_invalid_chains != "allow":
-        if len(invalid_chains) > 0:
-            return INVALID_CHAIN_FILTERED
+    # Detect orphaned branched ligands
+    cif_factory.propagate_invalidity_to_ligands(ref_struct, invalid_chains)
+
+    if data_filter.handle_invalid_chains == "disallow" and len(invalid_chains) > 0:
+        return INVALID_CHAIN_FILTERED
 
     # Drop invalid chains
     cif_factory.prune_invalid_chains(ref_struct, invalid_chains)
@@ -301,10 +332,12 @@ def parse_cif(
         return EMPTY_STRUCTURE_FILTERED
     if ref_struct.num_polymer_chains == 0:
         return EMPTY_STRUCTURE_FILTERED
-    if not (data_filter.min_chains <= ref_struct.num_chains <= data_filter.max_chains):
+    if not (
+        data_filter.min_chains <= ref_struct.num_polymer_chains <= data_filter.max_chains
+    ):
         return CHAIN_COUNT_FILTERED
     if not (data_filter.min_tokens <= ref_struct.num_tokens <= data_filter.max_tokens):
-        return RESIDUE_COUNT_FILTERED
+        return TOKEN_COUNT_FILTERED
 
     # Validate final structure
     ref_struct.validate()
@@ -340,8 +373,12 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    out_dir: pathlib.Path = args.data_dir / "npz"
+    data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
+
+    out_dir: pathlib.Path = data_dir / "npz"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    assert args.ccd_path.exists(), f"CCD file not found: {args.ccd_path}"
 
     # Apply split defaults if specified
     print(f"Applying KFold {args.split} split parameters...")
@@ -364,7 +401,7 @@ def main():
     ) as pool:
         results = list(
             tqdm(
-                pool.imap_unordered(worker_wrapped, cif_paths, chunksize=10),
+                pool.imap_unordered(worker_wrapped, cif_paths),
                 total=len(cif_paths),
                 desc="Processing RCSB mmCIF files",
             )
@@ -379,8 +416,10 @@ def main():
     print(f"  Date filtered: {results.count(DATE_FILTERED)}")
     print(f"  Resolution filtered: {results.count(RESOLUTION_FILTERED)}")
     print(f"  Method filtered: {results.count(METHOD_FILTERED)}")
+    print(f"  Invalid polymer types filtered: {results.count(INVALID_POLYMER_TYPES)}")
     print(f"  Chain count filtered: {results.count(CHAIN_COUNT_FILTERED)}")
-    print(f"  Residue count filtered: {results.count(RESIDUE_COUNT_FILTERED)}")
+    print(f"  Token count filtered: {results.count(TOKEN_COUNT_FILTERED)}")
+    print(f"  Short polymer filtered: {results.count(SHORT_POLYMER_FILTERED)}")
     print(f"  Empty structure filtered: {results.count(EMPTY_STRUCTURE_FILTERED)}")
     print(f"  Invalid chain filtered: {results.count(INVALID_CHAIN_FILTERED)}")
 

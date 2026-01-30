@@ -53,10 +53,15 @@ def fetch_ranking_model_fit(entities: Iterable[str]) -> dict[str, float]:
                 rcsb_id = entity["rcsb_id"]
                 instances = entity["nonpolymer_entity_instances"]
                 for instance in instances:
-                    rank = instance["rcsb_nonpolymer_instance_validation_score"][0][
-                        "ranking_model_fit"
+                    ranks = [
+                        score["ranking_model_fit"]
+                        for score in instance["rcsb_nonpolymer_instance_validation_score"]
                     ]
-                    out[rcsb_id] = rank
+                    ranks = [r for r in ranks if r is not None]
+                    if len(ranks) > 0:
+                        out[rcsb_id] = max(ranks)
+        else:
+            warnings.warn(f"No data found for query: {query}")
     else:
         warnings.warn(
             f"Query failed to run by returning code of {response.status_code}.\n"
