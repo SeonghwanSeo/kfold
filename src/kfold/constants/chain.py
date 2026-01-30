@@ -47,5 +47,35 @@ class ChainType(IntEnum):
                 return "Ligand"
 
 
+class SubChainType(IntEnum):
+    PROTEIN = 0
+    DNA = 1
+    RNA = 2
+    SMALL_MOLECULE = 3
+    ION = 4
+    PEPTIDE = 5
+    GLYCAN = 6
+    COVALENT_LIGAND = 7
+
+    def __str__(self) -> str:
+        match self:
+            case SubChainType.PROTEIN:
+                return "Protein"
+            case SubChainType.DNA:
+                return "DNA"
+            case SubChainType.RNA:
+                return "RNA"
+            case SubChainType.SMALL_MOLECULE:
+                return "SmallMolecule"
+            case SubChainType.ION:
+                return "Ion"
+            case SubChainType.PEPTIDE:
+                return "Peptide"
+            case SubChainType.GLYCAN:
+                return "Glycan"
+            case SubChainType.COVALENT_LIGAND:
+                return "CovalentLigand"
+
+
 # TODO: may want to add some mmcif-related informations for data preprocessing
 # e.g., mmcif chain type naming.
