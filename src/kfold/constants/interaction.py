@@ -30,7 +30,6 @@ Pair Interaction Types (formed by primitive type pairs):
 from enum import IntEnum
 from functools import lru_cache
 
-from .chain import ChainType
 from .residue import ResidueName
 
 __all__ = [
@@ -110,14 +109,36 @@ RESIDUE_INTERACTION_FEATURES: dict[ResidueName, tuple[InteractionType, ...]] = {
         InteractionType.PP,
     ),
     # Polar residues - H-bond donors/acceptors
-    ResidueName.SER: (InteractionType.HBD, InteractionType.HBA),
-    ResidueName.THR: (InteractionType.HBD, InteractionType.HBA),
-    ResidueName.CYS: (InteractionType.HI, InteractionType.HBD, InteractionType.HBA),
-    ResidueName.ASN: (InteractionType.HBD, InteractionType.HBA),
-    ResidueName.GLN: (InteractionType.HBD, InteractionType.HBA),
+    ResidueName.SER: (
+        InteractionType.HBD,
+        InteractionType.HBA,
+    ),
+    ResidueName.THR: (
+        InteractionType.HBD,
+        InteractionType.HBA,
+    ),
+    ResidueName.CYS: (
+        InteractionType.HI,
+        InteractionType.HBD,
+        InteractionType.HBA,
+    ),
+    ResidueName.ASN: (
+        InteractionType.HBD,
+        InteractionType.HBA,
+    ),
+    ResidueName.GLN: (
+        InteractionType.HBD,
+        InteractionType.HBA,
+    ),
     # Charged residues - Salt bridge capable
-    ResidueName.ASP: (InteractionType.HBA, InteractionType.SBA),
-    ResidueName.GLU: (InteractionType.HBA, InteractionType.SBA),
+    ResidueName.ASP: (
+        InteractionType.HBA,
+        InteractionType.SBA,
+    ),
+    ResidueName.GLU: (
+        InteractionType.HBA,
+        InteractionType.SBA,
+    ),
     ResidueName.LYS: (
         InteractionType.HBD,
         InteractionType.SBC,
@@ -213,19 +234,7 @@ RESIDUE_INTERACTION_FEATURES: dict[ResidueName, tuple[InteractionType, ...]] = {
 
 
 @lru_cache(maxsize=128)
-def get_residue_interaction_type(
-    res_name: ResidueName | str,
-    chain_type: ChainType,
-) -> tuple[int, ...]:
-    """Get multi-hot interaction type indices for a residue."""
-    if chain_type.is_ligand:
-        return tuple(range(1, NUM_INTERACTION_TYPES))
-
-    if isinstance(res_name, str):
-        try:
-            res_name = ResidueName[res_name]
-        except KeyError:
-            pass
-
-    interactions = RESIDUE_INTERACTION_FEATURES.get(res_name, ())  # type: ignore
-    return tuple(interaction.idx for interaction in interactions)
+def get_residue_interaction_type(res_name: ResidueName) -> list[int]:
+    """Get multi-hot interaction type indices for a standard residue."""
+    interactions = RESIDUE_INTERACTION_FEATURES[res_name]
+    return [interaction.value for interaction in interactions]
