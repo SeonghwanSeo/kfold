@@ -418,7 +418,7 @@ def tokenize_structure(
 
             assert (
                 struct.token.is_ligand[g_tok_i1] and struct.token.is_ligand[g_tok_i2]
-            ), "Intra-chain bonds should only exist within non-ligand chains."
+            ), "Intra-chain bonds should only exist within ligand chains."
 
             # Insert bond info
             struct.bond.asym_id[g_bond_i, :] = asym_id

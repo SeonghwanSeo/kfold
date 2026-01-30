@@ -156,7 +156,7 @@ class Component:
     names: tuple[str, ...]  # (n_atoms,)
     elements: np.ndarray  # (n_atoms,) with dtype=np.uint8
     charges: np.ndarray  # (n_atoms,) with dtype=np.int8
-    interaction_types: np.ndarray  # (n_atoms,) with dtype=np.bool
+    interaction_types: np.ndarray  # (n_atoms, NUM_INTERACTION_TYPES) with dtype=np.bool
     is_leaving_atom: np.ndarray  # (n_atoms,) with dtype=bool
     bonds: dict[tuple[str, str], int]  # Bond orders between atom pairs
     etkdg_coords: np.ndarray | None  # (n_conf, n_atoms, 3) with dtype=np.float16

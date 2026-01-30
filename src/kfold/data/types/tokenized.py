@@ -26,7 +26,7 @@ def full_minus_one(shape: tuple[int, ...]) -> np.ndarray:
 
 
 def full_zero(shape: tuple[int, ...]) -> np.ndarray:
-    """Create an array of the given shape filled with False."""
+    """Create an array of the given shape filled with zero."""
     return np.zeros(shape, dtype=np.float32)
 
 
