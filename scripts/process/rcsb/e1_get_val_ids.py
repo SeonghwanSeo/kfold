@@ -6,10 +6,10 @@ Intermediate results:
   Protein-Protein: 1707 -> 600
   Protein-DNA: 398 -> 200
   Protein-RNA: 183 -> 183
-  Protein-Ligand: 1899 -> 500
+  Protein-Ligand: 1928 -> 500
   DNA-DNA: 282 -> 100
   DNA-RNA: 30 -> 30
-  DNA-Ligand: 39 -> 39
+  DNA-Ligand: 42 -> 42
   RNA-RNA: 40 -> 40
   RNA-Ligand: 11 -> 11
 
@@ -20,7 +20,7 @@ Intermediate results:
 --- Final sampling ---
 Multimer entries: 1262
 Monomer entries: 37
-Total entries: 1298
+Total entries: 1398
 Final entries: 1280
 """
 
@@ -31,7 +31,6 @@ import multiprocessing
 import os
 import pathlib
 from collections import defaultdict
-from datetime import datetime
 from typing import Any, NamedTuple, TypeVar
 
 import msgpack
@@ -738,13 +737,7 @@ def parse_args():
         "--data_dir",
         type=pathlib.Path,
         required=True,
-        help="Path to the preprocessed data directory.",
-    )
-    parser.add_argument(
-        "--train_data_dir",
-        type=pathlib.Path,
-        required=True,
-        help="Path to the training preprocessed data directory.",
+        help="Path to working directory.",
     )
     parser.add_argument(
         "--ccd_path",
@@ -771,12 +764,11 @@ def parse_args():
 
 def main():
     """Main function to construct validation set.
-
     See AlphaFold3 Supplementary Section 5.8 for details: Multimer and Monomer selection.
     """
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir
-    train_dir: pathlib.Path = args.train_data_dir
+    data_dir: pathlib.Path = args.data_dir / "rcsb-val"
+    train_dir: pathlib.Path = args.data_dir / "rcsb-train"
 
     # ======================================================================
     # Load training sequences
@@ -797,7 +789,8 @@ def main():
     # ======================================================================
     # Load validation candidates from NPZ files
     # ======================================================================
-    npz_files: list[pathlib.Path] = list((data_dir / "npz").rglob("*.npz"))
+    npz_dir: pathlib.Path = data_dir / "npz"
+    npz_files: list[pathlib.Path] = list(npz_dir.rglob("*.npz"))
     print(f"Total NPZ files found: {len(npz_files)}")
 
     with multiprocessing.Pool(args.num_workers) as pool:
@@ -914,7 +907,7 @@ def main():
     # Save validation set PDB IDs
     val_ids_file: pathlib.Path = data_dir / "validation_ids.txt"
     with val_ids_file.open("w") as f:
-        for pdb_id in sorted(val_ids):
+        for pdb_id in val_ids:
             f.write(f"{pdb_id}\n")
     print(f"Validation set PDB IDs saved to: {val_ids_file}")
 
@@ -922,58 +915,13 @@ def main():
     # Save metadata files
     # ======================================================================
     npz_files: list[pathlib.Path] = [f for f in npz_files if f.stem in val_ids]
-    metadatas = save_metadata(
+    save_metadata(
         npz_files=npz_files,
         save_dir=data_dir,
         train_sequences=train_seqs,
         mmseqs=args.mmseqs,
         ccd=ccd,
     )
-
-    # ======================================================================
-    # Final summary
-    # ======================================================================
-    # Summarize final validation set statistics
-    print("\nExtracting final validation set statistics...")
-    n_chains_per_type: dict[C.ChainType, int] = defaultdict(int)
-    n_eval_chains_per_type: dict[C.ChainType, int] = defaultdict(int)
-    n_ifaces_per_type: dict[tuple[C.ChainType, C.ChainType], int] = defaultdict(int)
-    n_eval_ifaces_per_type: dict[tuple[C.ChainType, C.ChainType], int] = defaultdict(int)
-
-    earlest_release_date = datetime.max
-    latest_release_date = datetime.min
-    for m in metadatas:
-        # Update date
-        release_date = datetime.fromisoformat(m.exp.release_date)
-        earlest_release_date = min(earlest_release_date, release_date)
-        latest_release_date = max(latest_release_date, release_date)
-        # Collect type info
-        asym_id_to_type: dict[int, C.ChainType] = {c.asym_id: c.ctype for c in m.chains}
-        for chain in m.chains:
-            n_chains_per_type[chain.ctype] += 1
-            if chain.is_low_homology:
-                n_eval_chains_per_type[chain.ctype] += 1
-        for iface in m.interfaces:
-            asym_id_1, asym_id_2 = iface.asym_ids
-            ctype1 = asym_id_to_type[asym_id_1]
-            ctype2 = asym_id_to_type[asym_id_2]
-            ctypes = norm_key(ctype1, ctype2)
-            n_ifaces_per_type[ctypes] += 1
-            if iface.is_low_homology:
-                n_eval_ifaces_per_type[ctypes] += 1
-
-    print("Release date range:")
-    print(f"  Earliest: {earlest_release_date.date().isoformat()}")
-    print(f"  Latest: {latest_release_date.date().isoformat()}")
-    print()
-    print("Final chain type statistics:")
-    for ctype in sorted(n_chains_per_type.keys()):
-        print(f"  {ctype}: {n_eval_chains_per_type[ctype]} / {n_chains_per_type[ctype]}")
-    print()
-    print("Final interface type statistics:")
-    for ctypes in sorted(n_ifaces_per_type.keys()):
-        key = f"{ctypes[0]}-{ctypes[1]}"
-        print(f"  {key}: {n_eval_ifaces_per_type[ctypes]} / {n_ifaces_per_type[ctypes]}")
 
 
 if __name__ == "__main__":

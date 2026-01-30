@@ -415,12 +415,12 @@ GLYCANS: set[str] = {
     "X2F", "X2Y", "X34", "X6X", "X6Y", "XDX", "XGP", "XIL", "XKJ", "XLF",
     "XLS", "XMM", "XS2", "XXM", "XXR", "XXX", "XYF", "XYL", "XYP", "XYS",
     "XYT", "XYZ", "YDR", "YIO", "YJM", "YKR", "YO5", "YX0", "YX1", "YYB",
-    "YYH", "YYJ", "YYK", "YYM", "YYQ", "YZ0", "Z0F", "Z15", "Z16", "Z2D",
-    "Z2T", "Z3K", "Z3L", "Z3Q", "Z3U", "Z4K", "Z4R", "Z4S", "Z4U", "Z4V",
-    "Z4W", "Z4Y", "Z57", "Z5J", "Z5L", "Z61", "Z6H", "Z6J", "Z6W", "Z8H",
-    "Z8T", "Z9D", "Z9E", "Z9H", "Z9K", "Z9L", "Z9M", "Z9N", "Z9W", "ZB0",
-    "ZB1", "ZB2", "ZB3", "ZCD", "ZCZ", "ZD0", "ZDC", "ZDO", "ZEE", "ZEL",
-    "ZGE", "ZMR"
+    "YYD", "YYH", "YYJ", "YYK", "YYM", "YYQ", "YZ0", "Z0F", "Z15", "Z16",
+    "Z2D", "Z2T", "Z3K", "Z3L", "Z3Q", "Z3U", "Z4K", "Z4R", "Z4S", "Z4U",
+    "Z4V", "Z4W", "Z4Y", "Z57", "Z5J", "Z5L", "Z61", "Z6H", "Z6J", "Z6W",
+    "Z8H", "Z8T", "Z9D", "Z9E", "Z9H", "Z9K", "Z9L", "Z9M", "Z9N", "Z9W",
+    "ZB0", "ZB1", "ZB2", "ZB3", "ZCD", "ZCZ", "ZD0", "ZDC", "ZDO", "ZEE",
+    "ZEL", "ZGE", "ZMR"
 }  # fmt: skip
 
 # AlphaFold3 SI Tabel 12

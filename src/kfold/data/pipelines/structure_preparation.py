@@ -65,7 +65,6 @@ def prepare_ref_chain(
     entity_id: int = 0,
     asym_id: int = 0,
     sym_id: int = 0,
-    drop_ligand_leaving_atoms: bool = False,
     bonded_atoms: dict[int, set[str]] | None = None,
 ) -> Chain:
     """Get an empty reference chain structure.
@@ -86,8 +85,6 @@ def prepare_ref_chain(
         The asymmetric unit ID of the chain.
     sym_id : int
         The symmetry ID of the chain.
-    drop_ligand_leaving_atoms : bool, optional
-        Whether to drop leaving atoms for ligands, by default False.
     bonded_atoms : dict[int, set[str]] | None, optional
         List of bonded atoms for covalent ligands (res_idx: atom_name), by default None.
     """
@@ -146,15 +143,23 @@ def prepare_ref_chain(
             if code in standard_residues:
                 atom_names = C.atom.residue_atoms[code]
             else:
-                atom_names = ref_mol.non_leaving_atom_names
+                atom_names = ref_mol.get_atom_names(drop_leaving_atoms=True)
         else:
-            # Get atom names.
-            atom_names = ref_mol.get_atom_names(drop_leaving=drop_ligand_leaving_atoms)
             # Special handling for glycans in covalent ligands
+            res_bonded_atoms = bonded_atoms.get(res_idx, set())
             if code in C.ccd.GLYCANS:
                 # Only retain oxygen if it is participating in the covalent bond
-                if "O1" not in bonded_atoms.get(res_idx, set()):
-                    atom_names = [an for an in atom_names if an != "O1"]
+                atom_names = ref_mol.get_atom_names()
+                if "O1" not in res_bonded_atoms:
+                    atom_names = [n for n in atom_names if n != "O1"]
+            else:
+                # For common ligands, keep all atoms.
+                # For covalent ligands, keep leaving atoms only if
+                # any of them is involved in the covalent bond.
+                is_covalent = len(res_bonded_atoms) > 0
+                atom_names = ref_mol.get_atom_names(drop_leaving_atoms=is_covalent)
+                if not res_bonded_atoms <= set(atom_names):
+                    atom_names = ref_mol.get_atom_names()
 
         atom_to_index: dict[str, int] = ref_mol.get_atom_index_map()
         atom_indices: list[int] = [atom_to_index[an] for an in atom_names]

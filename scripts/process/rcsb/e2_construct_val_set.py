@@ -12,7 +12,7 @@ def parse_args():
         "--data_dir",
         type=pathlib.Path,
         required=True,
-        help="Path to the preprocessed data directory.",
+        help="Path to working directory.",
     )
     args = parser.parse_args()
 
@@ -22,7 +22,7 @@ def parse_args():
 def main():
     """Main function to extract sequences from npz files."""
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir
+    data_dir: pathlib.Path = args.data_dir / "rcsb-val"
 
     # Get entry IDs to include
     print("Loading entry IDs...")

@@ -98,77 +98,79 @@ python scripts/process/rcsb/a_prepare_ccd.py \
     --train
 ```
 
-**Step 3**: Prepare training set
+**Step 3**: Pre-process cif files
 
-Run the following script to pre-process training set structures as npz files:
+Run the following script to process mmCIF files.
 
 ```bash
-# Step 3-1. Extract training sequences
+# Step 3-1. Extract sequences
 python scripts/process/rcsb/b_extract_all_sequences.py \
-    --cif_path /raw_data/RCSB/mmCIF/ \
-    --data_dir /data/processed/dataset/rcsb-train \
+    --cif_dir /raw_data/RCSB/mmCIF/ \
+    --data_dir /data/processed/dataset \
     --split train \
     --num_workers 128
 
-# Step 3-2: Pre-process training set structures as npz files
+python scripts/process/rcsb/b_extract_all_sequences.py \
+    --cif_dir /raw_data/RCSB/mmCIF/ \
+    --data_dir /data/processed/dataset \
+    --split val \
+    --num_workers 128
+
+# Step 3-2: Pre-process structures as npz files
 python scripts/process/rcsb/c_process_cifs.py \
     --cif_path /raw_data/RCSB/mmCIF/ \
-    --data_dir /data/processed/dataset/rcsb-train \
+    --data_dir /data/processed/dataset \
     --split train \
     --num_workers 128
 
-# Step 3-3: Run clustering and save metadata with cluster ids
+python scripts/process/rcsb/c_process_cifs.py \
+    --cif_path /raw_data/RCSB/mmCIF/ \
+    --data_dir /data/processed/dataset \
+    --split val \
+    --num_workers 128
+```
+
+**Step 3**: Construct training set
+
+Run the following script to construct the training set lmdb database:
+
+```bash
+# Step 3-1: Run clustering and save metadata with cluster ids
 python scripts/process/rcsb/d1_cluster.py \
-    --data_dir /data/processed/dataset/rcsb-train \
+    --data_dir /data/processed/dataset \
     --mmseqs "mmseqs2-binary-path" \
     --num_workers 128
 
-# Step 3-4: Combine all npz files into a single lmdb database
+# Step 3-2: Combine all npz files into a single lmdb database
 python scripts/process/rcsb/d2_construct_training_set.py \
-    --data_dir /data/processed/dataset/rcsb-train
+    --data_dir /data/processed/dataset
 ```
 
 Finally, you can get the training set lmdb database at `/data/processed/dataset/rcsb-train/structure.lmdb` and the metadata file at `/data/processed/dataset/rcsb-train/metadata.json`.
 
-**Step 4-1**: Prepare validation split
+**Step 4**: Construct validation set
 
-Run the following scripts to create validation split pdb ids (`validation_id.txt`):
+Run the following scripts to construct the validation set lmdb database:
 
 ```bash
-# Step 4-1a. Extract validation sequences
-python scripts/process/rcsb/b_extract_all_sequences.py \
-    --cif_path /raw_data/RCSB/mmCIF/ \
-    --data_dir /data/processed/dataset/rcsb-val \
-    --split val \
-    --num_workers 128
-
-# Step 4-1b. Pre-process validation set structures as npz files
-python scripts/process/rcsb/c_process_cifs.py \
-    --cif_path /raw_data/RCSB/mmCIF/ \
-    --data_dir /data/processed/dataset/rcsb-val \
-    --split val \
-    --num_workers 128
-
-# Step 4-1c. Create `validation_ids.txt`
+# Step 4-1: Get validation pdb ids
 python scripts/process/rcsb/e1_get_val_ids.py \
-    --data_dir /data/processed/dataset/rcsb-val \
-    --train_data_dir /data/processed/dataset/rcsb-train \
+    --data_dir /data/processed/dataset \
     --ccd_path /data/processed/ccd-test.pkl \
     --mmseqs "mmseqs2-binary-path" \
     --num_workers 128
-```
 
-Finally, you can get the validation pdb ids at `/data/processed/dataset/rcsb-val/validation_ids.txt`.
-
-**Step 4-2**: Construct validation set lmdb database
-Run the following script to create the validation set lmdb database:
-
-```bash
+# Step 4-2: Construct validation set
 python scripts/process/rcsb/e2_construct_val_set.py \
-    --data_dir /data/processed/dataset/rcsb-val
+    --data_dir /data/processed/dataset
+
+# Step 4-3: (Optional) Get validation set statistics
+python scripts/process/rcsb/e3_get_val_statistics.py \
+    --data_dir /data/processed/dataset
 ```
 
 Finally, you can get the validation set lmdb database at `/data/processed/dataset/rcsb-val/structure.lmdb` and the metadata file at `/data/processed/dataset/rcsb-val/metadata.json`.
+The validation pdb ids are saved at `/data/processed/dataset/rcsb-val/validation_ids.txt`.
 
 ### Pre-trained embedding extraction
 
@@ -178,7 +180,7 @@ You can use these sequences to extract pre-trained embeddings using your preferr
 ```bash
 # Example command for ESM-2 embedding extraction
 esm-extract \
-    --model esm2_t33_650M_UR50D
+    --model esm2_t33_650M_UR50D \
     --input_fasta /data/processed/dataset/rcsb-train/sequences/unique_proteins.fasta \
     --output_dir /data/processed/dataset/rcsb-train/embedding/sequence/esm2-650m/ \
     ...
@@ -191,9 +193,12 @@ Since ESMFold returns unresolved residues when the input sequence contains `X` t
 
 ```bash
 python scripts/process/rcsb/f1_prepare_esmfold_input.py \
-    --data_dir /data/processed/dataset/rcsb-train
+    --data_dir /data/processed/dataset \
+    --split train
+
 python scripts/process/rcsb/f1_prepare_esmfold_input.py \
-    --data_dir /data/processed/dataset/rcsb-val
+    --data_dir /data/processed/dataset \
+    --split val
 
 # Run ESMFold structure prediction (example command)
 mkdir -p /data/processed/dataset/rcsb-train/apo/esmfold/

@@ -137,7 +137,7 @@ def parse_args():
         "--data_dir",
         type=pathlib.Path,
         required=True,
-        help="Path to output directory to store sequence fasta files.",
+        help="Path to working directory.",
     )
 
     # Predefined splits for date and resolution cutoffs
@@ -330,6 +330,7 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
+    data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
 
     # Apply split defaults if specified
     print(f"Applying {args.split} split parameters...")
@@ -382,7 +383,7 @@ def main():
     print(f"  Ligands: {sum(ctype.is_ligand for _, _, ctype, _ in all_sequences)}")
 
     # save to fasta
-    seq_dir = args.data_dir / "sequences"
+    seq_dir = data_dir / "sequences"
     seq_dir.mkdir(parents=True, exist_ok=True)
 
     output_fasta_path = seq_dir / "all_sequences.fasta"

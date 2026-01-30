@@ -373,8 +373,12 @@ def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    out_dir: pathlib.Path = args.data_dir / "npz"
+    data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
+
+    out_dir: pathlib.Path = data_dir / "npz"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    assert args.ccd_path.exists(), f"CCD file not found: {args.ccd_path}"
 
     # Apply split defaults if specified
     print(f"Applying KFold {args.split} split parameters...")
