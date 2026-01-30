@@ -151,7 +151,7 @@ def prepare_ref_chain(
             # Get atom names.
             atom_names = ref_mol.get_atom_names(drop_leaving=drop_ligand_leaving_atoms)
             # Special handling for glycans in covalent ligands
-            if code in C.ccd.GLYCAN_CCDS:
+            if code in C.ccd.GLYCANS:
                 # Only retain oxygen if it is participating in the covalent bond
                 if "O1" not in bonded_atoms.get(res_idx, set()):
                     atom_names = [an for an in atom_names if an != "O1"]

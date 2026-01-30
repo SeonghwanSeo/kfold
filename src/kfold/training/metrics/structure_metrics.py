@@ -3,7 +3,7 @@
 import logging
 from collections import defaultdict
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, TypeVar
 
 import torch
 
@@ -24,12 +24,15 @@ for k, v in C.training.LDDTWeights.items():
     LDDTWeights[key_name] = v
 
 main_metric_names = [
+    # complex-level metrics
     "complex/rmsd",
     "complex/lddt",
+    # chain-level metrics
     "chain/lddt-protein",
     "chain/lddt-dna",
     "chain/lddt-rna",
     "chain/lddt-ligand",
+    # interface-level metrics
     "interface/lddt-protein_protein",
     "interface/lddt-protein_dna",
     "interface/lddt-protein_rna",
@@ -40,6 +43,14 @@ main_metric_names = [
     "interface/lddt-rna_rna",
     "interface/lddt-rna_ligand",
     "interface/lddt-ligand_ligand",
+    # additional metrics for other subtypes
+    "special/chain/lddt-peptide",
+    "special/chain/lddt-small_molecule",
+    "special/chain/lddt-covalent_ligand",
+    "special/interface/lddt-protein_small_molecule",
+    "special/interface/lddt-protein_peptide",
+    "special/interface/lddt-protein_ion",
+    "special/interface/lddt-protein_glycan",
 ]
 monitor_metric_names = [
     "weighted_lddt",
@@ -48,6 +59,13 @@ monitor_metric_names = [
     "top1_lddt",
     "top5_lddt",
 ]
+
+_T = TypeVar("_T")
+
+
+def norm_key(k1: _T, k2: _T) -> tuple[_T, _T]:
+    """Return a normalized key tuple (k_min, k_max)."""
+    return (k1, k2) if k1 <= k2 else (k2, k1)
 
 
 # ============================================================
@@ -263,12 +281,11 @@ def compute_validation_metric(
     # Compute chain-level metrics
     chain_summaries: dict[str, dict] = {}
     for asym_id in chain_asym_ids:
-        key = str(asym_id)
+        c = ref_struct.get_chain_by_asym_id(asym_id)
         cm = metadata.get_chain_by_asym_id(asym_id)
-        ctype = cm.ctype
+
         chain_mask = atom_asym_ids == asym_id  # [Natom_resolved]
         num_chain_atoms = chain_mask.sum().item()
-
         if num_chain_atoms == 0:
             logger.warning(f"No resolved atoms found for chain: {struct_id} {asym_id}")
             continue
@@ -290,7 +307,7 @@ def compute_validation_metric(
         if num_chain_atoms > 1:
             # Compute LDDT
             intra_mask = chain_mask[:, None] & chain_mask[None, :]
-            if ctype.is_nucleic_acid:
+            if c.is_nucleic_acid:
                 # Use 30Å cutoff for DNA/RNA intra-chains
                 cutoff_mask = cutoff_mask_30
             else:
@@ -306,34 +323,36 @@ def compute_validation_metric(
             # Compute chain LDDT
             metrics["lddt"] = lddt_score[lddt_mask].mean().item()
 
+        # Determine chain subtype for ligands
         summary: dict[str, Any] = {
-            "type": str(ctype),
             "name": cm.name,
-            "entity_id": cm.entity_id,
-            "asym_id": cm.asym_id,
+            "type": c.ctype.name.lower(),
+            "subtype": c.subtype.name.lower(),
+            "entity_id": c.entity_id,
+            "asym_id": c.asym_id,
             "is_low_homology": cm.is_low_homology,
             "num_valid_atoms": num_chain_atoms,
             "metrics": metrics,
         }
         # Store chain summary
-        chain_summaries[key] = summary
+        chain_summaries[cm.name] = summary
 
     # Compute interface-level metrics
     interface_summaries: dict[str, dict] = {}
     for aid1, aid2 in iface_asym_ids:
         assert aid1 != aid2, "Interface cannot be intra-chain."
-        key = f"{aid1}:{aid2}"
-        iface = metadata.get_interface_by_asym_ids(aid1, aid2)
+        c1 = ref_struct.get_chain_by_asym_id(aid1)
+        c2 = ref_struct.get_chain_by_asym_id(aid2)
         cm1 = metadata.get_chain_by_asym_id(aid1)
         cm2 = metadata.get_chain_by_asym_id(aid2)
-        ctypes = (cm1.ctype.name.lower(), cm2.ctype.name.lower())
+        im = metadata.get_interface_by_asym_ids(aid1, aid2)
 
         # Check if interface atoms are present
         chain1_mask = atom_asym_ids == aid1  # [Natom_resolved]
         chain2_mask = atom_asym_ids == aid2  # [Natom_resolved]
         interface_mask = chain1_mask[:, None] & chain2_mask[None, :]
 
-        if "dna" in ctypes or "rna" in ctypes:
+        if c1.is_nucleic_acid or c2.is_nucleic_acid:
             # Use 30Å cutoff for DNA/RNA involved interfaces
             cutoff_mask = cutoff_mask_30
         else:
@@ -347,23 +366,24 @@ def compute_validation_metric(
 
         # Compute interface LDDT
         interface_lddt = lddt_score[lddt_mask].mean().item()
+        metrics = {"lddt": interface_lddt}
 
         interface_summary = {
-            "type_1": str(cm1.ctype),
-            "type_2": str(cm2.ctype),
             "name_1": cm1.name,
             "name_2": cm2.name,
-            "entity_id_1": cm1.entity_id,
-            "entity_id_2": cm2.entity_id,
-            "asym_id_1": cm1.asym_id,
-            "asym_id_2": cm2.asym_id,
-            "is_low_homology": iface.is_low_homology,
+            "type_1": c1.ctype.name.lower(),
+            "type_2": c2.ctype.name.lower(),
+            "subtype_1": c1.subtype.name.lower(),
+            "subtype_2": c2.subtype.name.lower(),
+            "entity_id_1": c1.entity_id,
+            "entity_id_2": c2.entity_id,
+            "asym_id_1": c1.asym_id,
+            "asym_id_2": c2.asym_id,
+            "is_low_homology": im.is_low_homology,
             "num_valid_atom_pairs": num_interface_pairs,
-            "metrics": {
-                "lddt": interface_lddt,
-            },
+            "metrics": metrics,
         }
-        interface_summaries[key] = interface_summary
+        interface_summaries[f"{cm1.name}:{cm2.name}"] = interface_summary
 
     # TODO: add confidence metrics if available
 
@@ -376,6 +396,58 @@ def compute_validation_metric(
     }
 
 
+def extract_validation_metrics(summary: dict[str, Any]) -> dict[str, float]:
+    # Collect chain lddt metrics
+    chain_metrics = defaultdict(list)
+    special_chain_metrics = defaultdict(list)
+    for v in summary["chains"].values():
+        if not v["is_low_homology"]:
+            continue
+        c_metrics = v["metrics"]
+        if "lddt" in c_metrics:
+            lddt = c_metrics["lddt"]
+
+            chain_metrics[f"lddt-{v['type']}"].append(lddt)
+            # Additional metrics
+            special_chain_metrics[f"lddt-{v['subtype']}"].append(lddt)
+
+    # Collect interface lddt metrics
+    iface_metrics = defaultdict(list)
+    special_iface_metrics = defaultdict(list)
+    for v in summary["interfaces"].values():
+        if not v["is_low_homology"]:
+            continue
+        i_metrics = v["metrics"]
+        lddt = i_metrics["lddt"]
+
+        ctype1 = C.ChainType[v["type_1"].upper()]
+        ctype2 = C.ChainType[v["type_2"].upper()]
+        ctypes = norm_key(ctype1, ctype2)
+        key = f"lddt-{ctypes[0].name.lower()}_{ctypes[1].name.lower()}"
+        iface_metrics[key].append(lddt)
+
+        # Additional metrics
+        subtype1 = C.SubChainType[v["subtype_1"].upper()]
+        subtype2 = C.SubChainType[v["subtype_2"].upper()]
+        subtypes = norm_key(subtype1, subtype2)
+        key = f"lddt-{subtypes[0].name.lower()}_{subtypes[1].name.lower()}"
+        special_iface_metrics[key].append(lddt)
+
+    # Aggregate chain-level and interface-level LDDTs
+    extracted_metrics: dict[str, float] = {}
+    for k, v in summary["metrics"].items():
+        extracted_metrics[f"complex/{k}"] = v
+    for k, vs in chain_metrics.items():
+        extracted_metrics[f"chain/{k}"] = sum(vs) / len(vs)
+    for k, vs in iface_metrics.items():
+        extracted_metrics[f"interface/{k}"] = sum(vs) / len(vs)
+    for k, vs in special_chain_metrics.items():
+        extracted_metrics[f"special/chain/{k}"] = sum(vs) / len(vs)
+    for k, vs in special_iface_metrics.items():
+        extracted_metrics[f"special/interface/{k}"] = sum(vs) / len(vs)
+    return extracted_metrics
+
+
 def aggregate_validation_metrics(
     sample_summaries: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -384,39 +456,9 @@ def aggregate_validation_metrics(
     all_metrics: dict[str, list[float]] = {}
     for sample in sample_summaries:
         # Collect complex-level metrics
-        for k, v in sample["metrics"].items():
-            all_metrics.setdefault(f"complex/{k}", []).append(v)
-
-        # Collect chain-level metrics
-        chain_metrics = defaultdict(list)
-        for chain_summary in sample["chains"].values():
-            if not chain_summary["is_low_homology"]:
-                continue
-            ctypes: C.ChainType = C.ChainType[chain_summary["type"].upper()]
-            c_metrics = chain_summary["metrics"]
-            if "lddt" in c_metrics:
-                chain_metrics[ctypes].append(c_metrics["lddt"])
-
-        # Collect interface-level metrics
-        iface_metrics = defaultdict(list)
-        for iface_summary in sample["interfaces"].values():
-            if not iface_summary["is_low_homology"]:
-                continue
-            ctype1 = C.ChainType[iface_summary["type_1"].upper()]
-            ctype2 = C.ChainType[iface_summary["type_2"].upper()]
-            key = (ctype1, ctype2) if ctype1 <= ctype2 else (ctype2, ctype1)
-            i_metrics = iface_summary["metrics"]
-            iface_metrics[key].append(i_metrics["lddt"])
-
-        # Aggregate chain-level and interface-level LDDTs
-        for k, vs in chain_metrics.items():
-            key_name = f"chain/lddt-{k.name.lower()}"
-            mean_lddt = sum(vs) / len(vs)
-            all_metrics.setdefault(key_name, []).append(mean_lddt)
-        for k, vs in iface_metrics.items():
-            key_name = f"interface/lddt-{k[0].name.lower()}_{k[1].name.lower()}"
-            mean_lddt = sum(vs) / len(vs)
-            all_metrics.setdefault(key_name, []).append(mean_lddt)
+        sample_metrics = extract_validation_metrics(sample)
+        for k, v in sample_metrics.items():
+            all_metrics.setdefault(k, []).append(v)
 
     # Aggregate metrics across samples
     # Average

@@ -75,6 +75,28 @@ class Chain:
         """Chain type as enum."""
         return C.ChainType(self.chain_type)
 
+    @cached_property
+    def subtype(self) -> C.SubChainType:
+        """Chain type as enum."""
+        if self.is_protein:
+            if self.is_peptide:
+                return C.SubChainType.PEPTIDE
+            else:
+                return C.SubChainType.PROTEIN
+        elif self.is_dna:
+            return C.SubChainType.DNA
+        elif self.is_rna:
+            return C.SubChainType.RNA
+        else:
+            if self.is_glycan:
+                return C.SubChainType.GLYCAN
+            elif self.is_covalent_ligand:
+                return C.SubChainType.COVALENT_LIGAND
+            elif self.is_ion:
+                return C.SubChainType.ION
+            else:
+                return C.SubChainType.SMALL_MOLECULE
+
     @property
     def is_protein(self) -> bool:
         """Whether the chain is a protein."""
@@ -111,6 +133,11 @@ class Chain:
         return self.ctype.is_nucleic_acid
 
     @property
+    def is_peptide(self) -> bool:
+        """Whether the chain is a peptide."""
+        return self.ctype.is_protein and self.num_residues < 16
+
+    @property
     def is_ion(self) -> bool:
         """Whether the chain is an ion."""
         if self.num_atoms > 1 or self.num_residues > 1:
@@ -123,6 +150,13 @@ class Chain:
     def is_small_molecule(self) -> bool:
         """Whether the chain is a small molecule (non-polymer & non-ion)."""
         return self.is_nonpolymer and not self.is_ion
+
+    @property
+    def is_glycan(self) -> bool:
+        """Whether the chain is a small molecule (non-polymer & non-ion)."""
+        return self.is_covalent_ligand and all(
+            res in C.ccd.GLYCANS for res in self.residue.name.tolist()
+        )
 
     @property
     def num_residues(self) -> int:

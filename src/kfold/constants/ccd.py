@@ -2,7 +2,7 @@ __all__ = [
     "CCD_NAME_TO_ONE_LETTER",
     "LIGAND_EXCLUSIONS",
     "CRYSTALLIZATION_AIDS",
-    "GLYCAN_CCDS",
+    "GLYCANS",
     "IONS",
 ]
 
@@ -320,7 +320,7 @@ LIGAND_EXCLUSIONS: set[str] = {
 }  # fmt: skip
 
 # AlphaFold3 SI Tabel 11
-GLYCAN_CCDS: set[str] = {
+GLYCANS: set[str] = {
     "045", "05L", "07E", "07Y", "08U", "09X", "0BD", "0H0", "0HX", "0LP",
     "0MK", "0NZ", "0UB", "0V4", "0WK", "0XY", "0YT", "10M", "12E", "145",
     "147", "149", "14T", "15L", "16F", "16G", "16O", "17T", "18D", "18O",
