@@ -13,7 +13,7 @@ import numpy as np
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data.utils import rdkit_utils
+from kfold.data.utils import interaction_utils, rdkit_utils
 
 # Helper function
 
@@ -156,6 +156,7 @@ class Component:
     names: tuple[str, ...]  # (n_atoms,)
     elements: np.ndarray  # (n_atoms,) with dtype=np.uint8
     charges: np.ndarray  # (n_atoms,) with dtype=np.int8
+    interaction_types: np.ndarray  # (n_atoms,) with dtype=np.bool
     is_leaving_atom: np.ndarray  # (n_atoms,) with dtype=bool
     bonds: dict[tuple[str, str], int]  # Bond orders between atom pairs
     etkdg_coords: np.ndarray | None  # (n_conf, n_atoms, 3) with dtype=np.float16
@@ -225,6 +226,32 @@ class Component:
             A dictionary mapping atom names to their indices.
         """
         return {name: idx for idx, name in enumerate(self.names)}
+
+    def get_atom_indices(self, atom_names: Sequence[str]) -> list[int]:
+        """Get the indices of the specified atom names.
+
+        Parameters
+        ----------
+        atom_names : Sequence[str]
+            A sequence of atom names.
+
+        Returns
+        -------
+        list[int]
+            A list of atom indices corresponding to the specified names.
+
+        Raises
+        ------
+        KeyError
+            If any of the specified atom names are not found in the component.
+        """
+        name_to_index = self.get_atom_index_map()
+        indices: list[int] = []
+        for name in atom_names:
+            if name not in name_to_index:
+                raise KeyError(f"Atom '{name}' not found in component {self.code}.")
+            indices.append(name_to_index[name])
+        return indices
 
     def get_conformer(
         self,
@@ -518,7 +545,10 @@ class Component:
         else:
             symmetries = None
 
-        # 7. Clean up molecule properties and conformers
+        # 7. Compute interaction types
+        interaction_types = interaction_utils.compute_interaction_types(mol)
+
+        # 8. Clean up molecule properties and conformers
         mol.RemoveAllConformers()
         for prop_name in mol.GetPropNames():
             mol.ClearProp(prop_name)
@@ -536,6 +566,7 @@ class Component:
             names=tuple(atom_names),
             elements=elements,
             charges=charges,
+            interaction_types=interaction_types,
             is_leaving_atom=is_leaving_atom,
             bonds=bonds,
             ideal_coords=ideal_coords_arr,

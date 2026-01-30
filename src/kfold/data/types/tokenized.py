@@ -1,8 +1,6 @@
 import copy
 import dataclasses
-import io
 from functools import cached_property
-from pathlib import Path
 from typing import Self
 
 import numpy as np
@@ -25,6 +23,11 @@ def full_false(shape: tuple[int, ...]) -> np.ndarray:
 def full_minus_one(shape: tuple[int, ...]) -> np.ndarray:
     """Create an array of the given shape filled with -1."""
     return np.full(shape, -1, dtype=np.int64)
+
+
+def full_zero(shape: tuple[int, ...]) -> np.ndarray:
+    """Create an array of the given shape filled with False."""
+    return np.zeros(shape, dtype=np.float32)
 
 
 def full_nan(shape: tuple[int, ...]) -> np.ndarray:
@@ -339,7 +342,7 @@ class TokenArray(PlainLayout[np.ndarray]):
         Distogram atom index of shape [L,], used for distogram calculations.
     is_standard: np.ndarray (bool)
         Boolean tensor of shape [L,], indicating whether the token is standard.
-    interaction_type: np.ndarray (int8)
+    interaction_type: np.ndarray (bool)
         Multi-hot interaction types of shape [L, NUM_INTERACTION_TYPES].
 
     Cached Properties
@@ -365,7 +368,7 @@ class TokenArray(PlainLayout[np.ndarray]):
     center_index: np.ndarray  # [L,], int
     disto_index: np.ndarray  # [L,], int
     is_standard: np.ndarray  # [L,], bool
-    interaction_type: np.ndarray  # [L, NUM_INTERACTION_TYPES], int8
+    interaction_type: np.ndarray  # [L, NUM_INTERACTION_TYPES], bool
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
@@ -389,7 +392,7 @@ class TokenArray(PlainLayout[np.ndarray]):
         check_array(
             self.interaction_type,
             name="interaction_type",
-            dtype=np.integer,
+            dtype=np.bool_,
             shape=(*shape, C.NUM_INTERACTION_TYPES),
         )
 
@@ -428,9 +431,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             center_index=full_minus_one((num_tokens,)),
             disto_index=full_minus_one((num_tokens,)),
             is_standard=full_false((num_tokens,)),
-            interaction_type=np.zeros(
-                (num_tokens, C.NUM_INTERACTION_TYPES), dtype=np.int8
-            ),
+            interaction_type=full_false((num_tokens, C.NUM_INTERACTION_TYPES)),
         )
 
     def sanity_check(self) -> None:
@@ -454,9 +455,9 @@ class AtomArray(PlainLayout[np.ndarray]):
     ref_atom_name_chars: np.ndarray (int)
         Encoded atom name of shape [Ntoken, 24, 4].
     ref_element: np.ndarray (int)
-        One-hot encoded atomic numbers of shape [Ntoken, 24,].
+        Atomic numbers of shape [Ntoken, 24].
     ref_charge: np.ndarray (float)
-        Formal charges of shape [Ntoken, 24,].
+        Formal charges of shape [Ntoken, 24].
     ref_pos: np.ndarray (float32)
         Reference coordinates of shape [Ntoken, 24, 3].
         Generated from ETKDG or ccd
@@ -479,7 +480,7 @@ class AtomArray(PlainLayout[np.ndarray]):
 
     ref_atom_name_chars: np.ndarray  # [Ntoken, 24, 4], int
     ref_element: np.ndarray  # [Ntoken, 24], int
-    ref_charge: np.ndarray  # [Ntoken, 24,], float
+    ref_charge: np.ndarray  # [Ntoken, 24], float
     ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
     ref_mask: np.ndarray  # [Ntoken, 24], bool
     label_coords: np.ndarray  # [Ntoken, 24, 3], float32
@@ -695,120 +696,6 @@ class TokenizedStructure:
             bond=BondArray.get_empty(num_bonds),
             metadata=metadata,
         )
-
-    # === PDB/MMCIF writing === #
-    def write(
-        self,
-        path: Path | str,
-        save_apo: bool = False,
-    ) -> None:
-        """Write to PDB or MMCIF file based on the file extension."""
-        from kfold.data.utils.writer import KFoldWriter
-
-        KFoldWriter.write(self, path, save_apo)
-
-    def to_pdb(
-        self,
-        path: Path | str,
-        save_apo: bool = False,
-    ) -> None:
-        """Write to PDB file."""
-        from kfold.data.utils.writer import KFoldWriter
-
-        KFoldWriter.write_pdb(self, path, save_apo)
-
-    def to_mmcif(
-        self,
-        path: Path | str,
-        save_apo: bool = False,
-    ) -> None:
-        """Write to MMCIF file."""
-        from kfold.data.utils.writer import KFoldWriter
-
-        KFoldWriter.write_mmcif(self, path, save_apo)
-
-    # === Numpy serialization for model training === #
-    def to_npz_dict(self) -> dict[str, np.ndarray]:
-        """Convert to a flat dictionary for NPZ storage.
-
-        Returns a dictionary where tensor fields are converted to numpy arrays
-        with hierarchical keys like 'chain.asym_id', 'token.token_type', etc.
-        """
-        chain_dict = self.chain.to_dict()
-        residue_dict = self.residue.to_dict()
-        token_dict = self.token.to_dict()
-        atom_dict = self.atom.to_dict()
-        bond_dict = self.bond.to_dict()
-
-        result = {
-            **{f"chain.{key}": value for key, value in chain_dict.items()},
-            **{f"residue.{key}": value for key, value in residue_dict.items()},
-            **{f"token.{key}": value for key, value in token_dict.items()},
-            **{f"atom.{key}": value for key, value in atom_dict.items()},
-            **{f"bond.{key}": value for key, value in bond_dict.items()},
-        }
-        return result
-
-    @classmethod
-    def from_npz_dict(cls, data: dict[str, np.ndarray]) -> Self:
-        """Reconstruct from NPZ dictionary."""
-        reconstructed = {}
-        for prefix, struct_cls in [
-            ("chain.", ChainArray),
-            ("residue.", ResidueArray),
-            ("token.", TokenArray),
-            ("atom.", AtomArray),
-            ("bond.", BondArray),
-        ]:
-            struct_data = {
-                key[len(prefix) :]: value
-                for key, value in data.items()
-                if key.startswith(prefix)
-            }
-            if struct_cls is TokenArray:
-                if "interaction_type" not in struct_data:
-                    res_types = struct_data["res_type"]
-                    chain_types = struct_data["chain_type"]
-                    num_tokens = res_types.shape[0]
-                    interaction_type_arr = np.zeros(
-                        (num_tokens, C.NUM_INTERACTION_TYPES), dtype=np.int8
-                    )
-                    for i in range(num_tokens):
-                        res_type_val = int(res_types[i])
-                        chain_type_val = int(chain_types[i])
-                        res_enum = C.residue.residue_id_to_name.get(
-                            res_type_val, C.residue.ResidueName.UNK
-                        )
-                        interaction_indices = C.interaction.get_residue_interaction_type(
-                            res_enum, chain_type_val
-                        )
-                        if interaction_indices:
-                            interaction_type_arr[i, list(interaction_indices)] = 1
-                    struct_data["interaction_type"] = interaction_type_arr
-                else:
-                    interaction_type_arr = struct_data["interaction_type"]
-                    if not np.issubdtype(interaction_type_arr.dtype, np.integer):
-                        struct_data["interaction_type"] = (
-                            interaction_type_arr > 0.5
-                        ).astype(np.int8)
-            reconstructed[prefix[:-1]] = struct_cls(**struct_data)
-        return cls(**reconstructed)
-
-    def dump_npz(self, path: Path | str) -> None:
-        """Save to compressed NPZ file."""
-        path = Path(path)
-        data = self.to_npz_dict()
-        np.savez_compressed(path, **data)
-
-    def save_npz(self, path: Path | str) -> None:
-        """Save to compressed NPZ file."""
-        self.dump_npz(path)
-
-    @classmethod
-    def load_npz(cls, path: Path | str | io.BytesIO) -> Self:
-        """Load from NPZ file."""
-        with np.load(path) as data:
-            return cls.from_npz_dict(dict(data))
 
     # === Utility functions === #
     def to(self, *args, **kwargs) -> Self:

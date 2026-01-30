@@ -204,18 +204,8 @@ def featurize_structure(
     """
     rng = rng or np.random.default_rng()
 
-    def cast(data: np.ndarray) -> np.ndarray:
-        if np.issubdtype(data.dtype, np.floating):
-            return data.astype(np.float32, copy=False)
-        elif np.issubdtype(data.dtype, np.integer):
-            return data.astype(np.int64, copy=False)
-        elif np.issubdtype(data.dtype, np.bool_):
-            return data
-        else:
-            raise ValueError(f"Unsupported data type: {data.dtype}")
-
     # =========================================== #
-    # ====== Extract raw features and cast ====== #
+    # ========== Extract raw features =========== #
     # =========================================== #
 
     chain_data = struct.chain
@@ -225,16 +215,12 @@ def featurize_structure(
 
     # === Chain-level features ===
     num_chains = chain_data.length
-    chain_dict: dict[str, np.ndarray] = {
-        k: cast(v) for k, v in chain_data.to_dict().items()
-    }
+    chain_dict: dict[str, np.ndarray] = chain_data.to_dict()
     chain_dict["pad_mask"] = np.ones((num_chains,), dtype=np.bool_)
 
     # === Token-level features ===
     num_tokens = token_data.length
-    token_dict: dict[str, np.ndarray] = {
-        k: cast(v) for k, v in token_data.to_dict().items()
-    }
+    token_dict: dict[str, np.ndarray] = token_data.to_dict()
     token_dict["pad_mask"] = np.ones((num_tokens,), dtype=np.bool_)
 
     # === Atom-level features ===
@@ -249,7 +235,7 @@ def featurize_structure(
         token_dict["num_atoms"],
     )  # [Nallatom,]
     atom_dict = {
-        k: cast(v)[atom_to_token, atom_in_token_idx]  # Fancy indexing - no loop!
+        k: v[atom_to_token, atom_in_token_idx]  # Fancy indexing - no loop!
         for k, v in atom_data.to_dict().items()
     }
     atom_dict["apo_coords"] = np.nan_to_num(atom_dict["apo_coords"], nan=0.0)
@@ -259,9 +245,7 @@ def featurize_structure(
 
     # === Bond-level features ===
     num_bonds = bond_data.length
-    bond_dict: dict[str, np.ndarray] = {
-        k: cast(v) for k, v in bond_data.to_dict().items()
-    }
+    bond_dict: dict[str, np.ndarray] = bond_data.to_dict()
     bond_dict["pad_mask"] = np.ones((num_bonds,), dtype=np.bool_)
 
     # ============================================
@@ -280,6 +264,9 @@ def featurize_structure(
     token_dict["pocket_contact_type"] = np.full(
         (num_tokens,), C.constraint.ConstraintType.UNSPECIFIED, dtype=np.int64
     )
+
+    # Change interaction types to float32
+    token_dict["interaction_type"] = token_dict["interaction_type"].astype(np.float32)
 
     # Add frame information
     token_dict["frames_index"] = np.zeros((num_tokens, 3), dtype=np.int64)
