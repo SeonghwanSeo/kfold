@@ -6,12 +6,19 @@ from kfold.data.utils.io.fasta import read_fasta, write_fasta
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Process RCSB mmCIF files.")
+    parser = argparse.ArgumentParser(description="Prepare ESMFold input sequences.")
     parser.add_argument(
         "--data_dir",
         type=pathlib.Path,
         required=True,
-        help="Path to output directory for processed .npz files.",
+        help="Path to working directory.",
+    )
+    parser.add_argument(
+        "--split",
+        type=str,
+        required=True,
+        choices=["train", "val", "test"],
+        help="Dataset split to process.",
     )
     args = parser.parse_args()
     return args
@@ -19,7 +26,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    data_dir = args.data_dir
+    data_dir = args.data_dir / f"rcsb-{args.split}"
     seq_dir = data_dir / "sequences"
 
     # Prepare pretrained model inputs
