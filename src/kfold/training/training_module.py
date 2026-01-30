@@ -425,7 +425,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     )
 
         for k, v in metrics.items():
-            self.log(f"train/{k}", v, prog_bar=(k == "loss"))
+            self.log(f"train/{k}", v, prog_bar=(k == "loss"), sync_dist=False)
 
         return loss
 
@@ -781,29 +781,33 @@ class KFoldTrainingModule(pl.LightningModule):
         """Log model parameter and gradient norms."""
 
         model = self.model
-        self.log("train/grad_norm", gradient_norm(model), prog_bar=False)
-        self.log("train/param_norm", parameter_norm(model), prog_bar=False)
+        self.log("monitor/grad_norm", gradient_norm(model), prog_bar=False)
+        self.log("monitor/param_norm", parameter_norm(model), prog_bar=False)
 
         if self.train_structure_module:
             self.log(
-                "train/grad_norm_trunk",
+                "monitor/grad_norm_trunk",
                 gradient_norm(model.trunk),
+                sync_dist=False,
                 prog_bar=False,
             )
             self.log(
-                "train/param_norm_trunk",
+                "monitor/param_norm_trunk",
                 parameter_norm(model.trunk),
+                sync_dist=False,
                 prog_bar=False,
             )
 
             self.log(
-                "train/grad_norm_score_model",
+                "monitor/grad_norm_score_model",
                 gradient_norm(model.score_model),
+                sync_dist=False,
                 prog_bar=False,
             )
             self.log(
-                "train/param_norm_score_model",
+                "monitor/param_norm_score_model",
                 parameter_norm(model.score_model),
+                sync_dist=False,
                 prog_bar=False,
             )
 
@@ -812,13 +816,15 @@ class KFoldTrainingModule(pl.LightningModule):
                 "Logging for confidence module not implemented yet."
             )
             # self.log(
-            #     "train/grad_norm_confidence_head",
+            #     "monitor/grad_norm_confidence_head",
             #     gradient_norm(model.confidence_head),
+            #     sync_dist=False,
             #     prog_bar=False,
             # )
             # self.log(
-            #     "train/param_norm_confidence_head",
+            #     "monitor/param_norm_confidence_head",
             #     parameter_norm(model.confidence_head),
+            #     sync_dist=False,
             #     prog_bar=False,
             # )
 

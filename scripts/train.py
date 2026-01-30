@@ -223,7 +223,7 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
     callbacks.append(model_summary)
 
     # TQDM
-    tqdm_refresh_rate = 1 if debug else 10
+    tqdm_refresh_rate = 1 if debug else cfg.train.trainer.log_every_n_steps
     tqdm_callback = pl_callbacks.TQDMProgressBar(refresh_rate=tqdm_refresh_rate)
     callbacks.append(tqdm_callback)
 
