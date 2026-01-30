@@ -292,23 +292,16 @@ class KFoldTrainingModule(pl.LightningModule):
         self.val_dataset_names: list[str] = [
             ds.name for ds in self.global_config.train.data.val_datasets
         ]
-
-        val_metrics = {}
-
+        val_metrics = []
         for name in self.val_dataset_names:
-            for prefix in ["avg", "top1", "top5"]:
+            dataset_metrics = {}
+            for prefix in ["top1", "top5"]:
                 for k in validation_metrics.main_metric_names:
-                    metric_key = f"{name}/{prefix}/{k}"
-                    val_metrics[metric_key] = MeanMetric()
+                    dataset_metrics[f"{prefix}/{k}"] = MeanMetric()
             for k in validation_metrics.monitor_metric_names:
-                metric_key = f"{name}/monitor/{k}"
-                val_metrics[metric_key] = MeanMetric()
-
-        self.metrics = torch.nn.ModuleDict(
-            {
-                "val_metrics": MetricCollection(val_metrics),
-            }
-        )
+                dataset_metrics[f"monitor/{k}"] = MeanMetric()
+            val_metrics.append(MetricCollection(dataset_metrics, prefix=f"{name}/"))
+        self.val_metrics = torch.nn.ModuleList(val_metrics)
 
     def configure_optimizers(self):  # type: ignore
         config = self.optimizer_config
@@ -582,18 +575,16 @@ class KFoldTrainingModule(pl.LightningModule):
         aggr_metrics = validation_metrics.aggregate_validation_metrics(sample_metrics)
 
         # Update validation metrics
-        dataset_name = self.val_dataset_names[dataloader_idx]
-        for prefix in ["avg", "top1", "top5"]:
+        metrics: MetricCollection = self.val_metrics[dataloader_idx]
+        for prefix in ["top1", "top5"]:
             _m = aggr_metrics[prefix]
             for k in validation_metrics.main_metric_names:
                 if k in _m:
-                    _k = f"{dataset_name}/{prefix}/{k}"
-                    self.metrics["val_metrics"][_k].update(_m[k])
+                    metrics[f"{prefix}/{k}"].update(_m[k])
         for k in validation_metrics.monitor_metric_names:
             _m = aggr_metrics["monitor"]
             if k in _m:
-                _k = f"{dataset_name}/monitor/{k}"
-                self.metrics["val_metrics"][_k].update(_m[k])
+                metrics[f"monitor/{k}"].update(_m[k])
 
         # Save validation predictions if needed
         if val_config.save_predictions:
@@ -602,60 +593,58 @@ class KFoldTrainingModule(pl.LightningModule):
                     "Warning: trainer.log_dir is None, "
                     "skipping saving validation predictions."
                 )
-                return
-
-            save_dir: pathlib.Path = (
-                pathlib.Path(self.trainer.log_dir)
-                / "validation"
-                / dataset_name
-                / f"epoch-{self.current_epoch}_step-{self.global_step}"
-                / ref_struct.id
-            )
-            save_dir.mkdir(parents=True, exist_ok=True)
-
-            # Save ground-truth and apo structures
-            name = ref_struct.id
-            self.writer.write(ref_struct, save_dir / f"{name}-gt.cif")
-            self.writer.write(ref_struct, save_dir / f"{name}-apo.cif", save_apo=True)
-
-            # Save predicted structures and metrics
-            for i in range(num_diffusion_samples):
-                prefix = str(save_dir / f"{name}-sample{i}")
-                self.save_structure_and_metrics(
-                    ref_struct=ref_struct_aligned[i],
-                    pred_coords=sample_coords[i],
-                    metrics=sample_metrics[i],
-                    prefix=prefix,
+            else:
+                dataset_name = self.val_dataset_names[dataloader_idx]
+                save_dir: pathlib.Path = (
+                    pathlib.Path(self.trainer.log_dir)
+                    / "validation_logs"
+                    / dataset_name
+                    / f"epoch-{self.current_epoch}_step-{self.global_step}"
+                    / ref_struct.id
                 )
+                save_dir.mkdir(parents=True, exist_ok=True)
 
-            # Save trajectory if available
-            if traj is not None:
-                self.save_trajectory(
-                    ref_struct,
-                    traj[:, 0],  # [T, Natom, 3]
-                    save_dir,
-                    format=val_config.traj_format,
-                )
+                # Save ground-truth and apo structures
+                name = ref_struct.id
+                self.writer.write(ref_struct, save_dir / f"{name}-gt.cif")
+                self.writer.write(ref_struct, save_dir / f"{name}-apo.cif", save_apo=True)
+
+                # Save predicted structures and metrics
+                for i in range(num_diffusion_samples):
+                    prefix = str(save_dir / f"{name}-sample{i}")
+                    self.save_structure_and_metrics(
+                        ref_struct=ref_struct_aligned[i],
+                        pred_coords=sample_coords[i],
+                        metrics=sample_metrics[i],
+                        prefix=prefix,
+                    )
+
+                # Save trajectory if available
+                if traj is not None:
+                    self.save_trajectory(
+                        ref_struct,
+                        traj[:, 0],  # [T, Natom, 3]
+                        save_dir,
+                        format=val_config.traj_format,
+                    )
 
     def on_validation_epoch_start(self):
         torch.backends.cudnn.benchmark = False
 
     def on_validation_epoch_end(self):
         torch.backends.cudnn.benchmark = True
-
-        metrics: MetricCollection = self.metrics["val_metrics"]
-        avg_values = metrics.compute()
-        # Filter out non-finite values
-        avg_values = {k: v for k, v in avg_values.items() if v.isfinite().all()}
-        self.log_dict(
-            avg_values,
-            on_step=False,
-            on_epoch=True,
-            logger=True,
-            add_dataloader_idx=False,
-            sync_dist=True,  # Already synced in compute(), but keep to avoid warning...
-        )
-        metrics.reset()
+        for metrics in self.val_metrics:
+            if not self.trainer.sanity_checking:
+                avg_values = metrics.compute()
+                # NOTE: do not filter out NaN values to avoid deadlock in DDP
+                self.log_dict(
+                    avg_values,
+                    on_step=False,
+                    on_epoch=True,
+                    # Already synced in compute(), but keep to avoid warning...
+                    sync_dist=True,
+                )
+            metrics.reset()
 
         # Clear cache after validation
         # NOTE: is this necessary?
