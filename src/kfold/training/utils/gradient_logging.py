@@ -20,6 +20,6 @@ def parameter_norm(module: torch.nn.Module) -> float:
     parameters = [p for p in module.parameters() if p.requires_grad]
     if not parameters:
         return 0.0
-    norms = torch._foreach_norm(parameters)
+    norms = torch._foreach_norm(parameters, ord=2)
     total_norm = torch.linalg.vector_norm(torch.stack(norms), ord=2)
     return total_norm.item()
