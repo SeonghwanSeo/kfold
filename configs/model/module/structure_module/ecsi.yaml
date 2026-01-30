@@ -7,7 +7,9 @@ sigma_min: 0.001  # t_min
 sigma_max: 0.999  # t_max (near 1)
 
 # Linear route parameters (Table 8)
-gamma_max: 16  # \gamma_t = 2 * \gamma_\max * \sqrt{t(1-t)}
+gamma_max: 24  # \gamma_t = 0.5 * \gamma_\max * \sqrt{t^k(1-t^k)}
+gamma_power_protein: 1.0
+gamma_power_non_protein: 1.0
 route_type: "linear"
 # DDBM-VP route parameters (Appendix C.2)
 ddbm_vp_beta_min: 0.1
@@ -50,6 +52,8 @@ s_trans: 0.0
 # ECSI-specific inference settings
 inference_align_x0_hat_to_x_apo: true
 chain_wise_perturbation: true   # CWP
+# Reduce noise scale for non-protein (DNA/RNA/ligand/ion) atoms.
+non_protein_gamma_scale: 1.0
 # NOTE: independent diffusion apo sampling
 # if true, CWP samples translation from gaussian or uniform sphere
 #   based on dataset.apo_init config (translation_scale & chain_com_sampling_radius)
