@@ -38,17 +38,15 @@ train:
     precision: bf16-mixed
 
   data:
-    ccd_path: /cache/wykim_lab/kfold_data/v260129/ccd-train.pkl
+    ccd_path: /cache/wykim_lab/kfold_data/v260130/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260129/dataset/rcsb-train/
-        manifest_path: /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/v260110/all/rcsb-train.json
+        data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-train/
         apo_init:
           translation_scale: 1.0
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260129/dataset/rcsb-val/
-        manifest_path: /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/v260110/all/rcsb-val.json
+        data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-val/
         apo_init:
           translation_scale: 1.0
     pretrained_embedding:
