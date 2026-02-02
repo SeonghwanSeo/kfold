@@ -51,6 +51,10 @@ class KFoldECSI_EDM(KFoldECSI):
         gamma_max: float = 0.25  # Not used in EDM (gamma_t = t)
         gamma_power_protein: float = 1.0
         gamma_power_non_protein: float = 1.0
+        use_powered_alpha_beta: bool = False
+        protein_gamma_scale: float = 1.0
+        nucleic_acid_gamma_scale: float = 1.0
+        ligand_gamma_scale: float = 1.0
         sigma_data: float = 16.0
         sigma_data_end: float = 16.0  # Used for noise scaling
         cov_xy: float = 0.0  # No covariance in EDM (independent prior)
@@ -68,7 +72,7 @@ class KFoldECSI_EDM(KFoldECSI):
         use_prior_coords: bool = False  # EDM does not condition on prior
         alignment_entity_strategy: str = "largest"
         s_trans: float = 0.0
-        non_protein_gamma_scale: float = 1.0
+        non_protein_gamma_scale: float | None = None
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the EDM module."""

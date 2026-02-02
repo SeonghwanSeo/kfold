@@ -14,6 +14,10 @@ from kfold.utils.geometry.rigid_align import weighted_rigid_align
 
 from ._apo_perturbation import ApoPerturbation, ApoPerturbationConfig
 from ._apo_prior import PolymerPriorConfig, PolymerPriorSampler
+from ._small_mol_perturbation import (
+    SmallMolPerturbation,
+    SmallMolPerturbationConfig,
+)
 
 NUM_ATOMS_PER_RESIDUE: dict[C.ChainType, int] = {
     C.ChainType.PROTEIN: 37,
@@ -214,6 +218,8 @@ class ApoInitializerConfig:
         NOTE: This should be used for training only.
     apo_perturbation : ApoPerturbationConfig | None
         Configuration for protein apo perturbation.
+    small_mol_perturbation : SmallMolPerturbationConfig
+        Configuration for small molecule perturbation.
     prior_sampler : PolymerPriorConfig
         Configuration for polymer prior sampler.
     training : bool
@@ -234,6 +240,9 @@ class ApoInitializerConfig:
     prob_replace_to_holo: float = 0.0
     apo_perturbation: ApoPerturbationConfig | None = dataclasses.field(
         default_factory=ApoPerturbationConfig
+    )
+    small_mol_perturbation: SmallMolPerturbationConfig = dataclasses.field(
+        default_factory=SmallMolPerturbationConfig
     )
     prior_sampler: PolymerPriorConfig = dataclasses.field(
         default_factory=PolymerPriorConfig
@@ -278,6 +287,13 @@ class ApoInitializer:
             )
             self.apo_perturbation: ApoPerturbation = ApoPerturbation(
                 config.apo_perturbation
+            )
+            assert config.small_mol_perturbation is not None, (
+                "SmallMolPerturbationConfig must be provided when use_perturbation "
+                "is True."
+            )
+            self.small_mol_perturbation = SmallMolPerturbation(
+                config.small_mol_perturbation
             )
 
         # Polymer prior sampler module
@@ -489,6 +505,9 @@ class ApoInitializer:
                         src_atom_indices.append(ref_at_idx)
                         dst_atom_indices.append(atom_i)
                 apo_coords[dst_atom_indices] = ref_pos[src_atom_indices]
+
+            if self.use_perturbation and rng.random() < self.prob_perturbation:
+                apo_coords = self.small_mol_perturbation(apo_coords, chain, rng)
 
             if self.use_random_augmentation:
                 # Apply random rotation augmentation

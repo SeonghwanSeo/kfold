@@ -16,3 +16,5 @@ apo_init:
   use_random_augmentation: true
   use_ot_permutation: true
   translation_scale: 10.0 # Angstroms
+  small_mol_perturbation:
+    mode: "none"

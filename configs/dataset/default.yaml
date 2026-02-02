@@ -17,6 +17,9 @@ apo_init:
   training: true # If True, skip etkdg generation if there is no cached etkdg conformer. (use ideal/model conformer)
   fill_missing_atom: false # Whether to fill missing atoms in apo structure using neighbors
 
+  small_mol_perturbation:
+    mode: "langevin"
+
   prior_sampler:
     # polymer prior sampler if apo structure is unavailable
     type: "globular" # 'null', 'zero', 'normal', 'globular'

@@ -26,6 +26,7 @@ class KFoldECSI(BaseECSI):
     - Decoupled kernel parameters (\alpha_t, \beta_t, \gamma_t) for flexible bridge paths
     - Linear route: \alpha_t=1-t, \beta_t=t,
       \gamma_t^2=\gamma_{max}^2/4 \cdot t(1-t)
+      (optionally \alpha_t=1-t^k, \beta_t=t^k when enabled)
     - DDBM-VP route (Appendix C.2): configurable via route_type="ddbm_vp"
     - Stochasticity control via \eta parameter during sampling
     - Preconditioning adapted from DDBM
@@ -52,7 +53,17 @@ class KFoldECSI(BaseECSI):
         gamma_power_protein : float, optional
             Exponent k for protein in t^k(1-t^k), by default 1.0.
         gamma_power_non_protein : float, optional
-            Exponent k for non-protein in t^k(1-t^k), by default 1.0.
+            Exponent k for nucleic acid/ligand in t^k(1-t^k), by default 1.0.
+        use_powered_alpha_beta : bool, optional
+            If True, use t^k for alpha/beta in linear route
+            (alpha_t = 1 - t^k, beta_t = t^k). Uses modality-specific
+            gamma_power_* when f_input is provided. By default False.
+        protein_gamma_scale : float, optional
+            Scale factor applied to gamma for protein atoms, by default 1.0.
+        nucleic_acid_gamma_scale : float, optional
+            Scale factor applied to gamma for nucleic acid atoms, by default 1.0.
+        ligand_gamma_scale : float, optional
+            Scale factor applied to gamma for ligand/ion atoms, by default 1.0.
         route_type : str, optional
             Route selection for (\alpha_t, \beta_t, \gamma_t). Options: "linear"
             (default) or "ddbm_vp".
@@ -85,8 +96,9 @@ class KFoldECSI(BaseECSI):
             Whether to normalize the source (apo) input, by default False.
         normalize_coordinate : bool, optional
             Whether to normalize the source and target coordinates, by default False.
-        non_protein_gamma_scale : float, optional
-            Scale factor applied to gamma for non-protein atoms, by default 1.0.
+        non_protein_gamma_scale : float | None, optional
+            Deprecated alias for nucleic_acid_gamma_scale/ligand_gamma_scale. If set
+            and those are left at default 1.0, it is applied to both.
         alignment_entity_strategy : str | None, optional
             Strategy for selecting entity to align: None (all entities), "largest",
             or "random_non_ligand", by default "largest".
@@ -98,6 +110,10 @@ class KFoldECSI(BaseECSI):
         gamma_max: float = 0.25
         gamma_power_protein: float = 1.0
         gamma_power_non_protein: float = 1.0
+        use_powered_alpha_beta: bool = False
+        protein_gamma_scale: float = 1.0
+        nucleic_acid_gamma_scale: float = 1.0
+        ligand_gamma_scale: float = 1.0
         route_type: str = "linear"
         ddbm_vp_beta_min: float = 0.1
         ddbm_vp_beta_d: float = 16.0
@@ -119,7 +135,7 @@ class KFoldECSI(BaseECSI):
         alignment_entity_strategy: str | None = None
         alignment_level: str = "chain"
         s_trans: float = 1.0
-        non_protein_gamma_scale: float = 1.0
+        non_protein_gamma_scale: float | None = None
         inference_align_x0_hat_to_x_apo: bool = True
         chain_wise_perturbation: bool = True
         inference_independent_diffusion_apo_sampling: bool = False
@@ -135,6 +151,7 @@ class KFoldECSI(BaseECSI):
         self.gamma_max: float = cfg.gamma_max
         self.gamma_power_protein: float = cfg.gamma_power_protein
         self.gamma_power_non_protein: float = cfg.gamma_power_non_protein
+        self.use_powered_alpha_beta: bool = cfg.use_powered_alpha_beta
         self.route_type: str = cfg.route_type
         self.ddbm_vp_beta_min: float = cfg.ddbm_vp_beta_min
         self.ddbm_vp_beta_d: float = cfg.ddbm_vp_beta_d
@@ -156,7 +173,13 @@ class KFoldECSI(BaseECSI):
         self.use_prior_coords: bool = cfg.use_prior_coords
         self.s_trans: float = cfg.s_trans
         self.alignment_level: str = cfg.alignment_level
-        self.non_protein_gamma_scale: float = cfg.non_protein_gamma_scale
+        self.protein_gamma_scale: float = cfg.protein_gamma_scale
+        self.nucleic_acid_gamma_scale: float = cfg.nucleic_acid_gamma_scale
+        self.ligand_gamma_scale: float = cfg.ligand_gamma_scale
+        if cfg.non_protein_gamma_scale is not None:
+            if self.nucleic_acid_gamma_scale == 1.0 and self.ligand_gamma_scale == 1.0:
+                self.nucleic_acid_gamma_scale = cfg.non_protein_gamma_scale
+                self.ligand_gamma_scale = cfg.non_protein_gamma_scale
         self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
         self.chain_wise_perturbation: bool = cfg.chain_wise_perturbation
         self.inference_independent_diffusion_apo_sampling: bool = (
@@ -176,46 +199,72 @@ class KFoldECSI(BaseECSI):
             s_trans=self.s_trans,
         )
 
-    def _get_non_protein_atom_mask(self, f_input: FoldingInput) -> torch.Tensor:
-        token_is_protein = f_input.token.is_protein
-        atom_token_index = f_input.atom.token_index
-        atom_pad_mask = f_input.atom.pad_mask
-
-        if token_is_protein.dim() == 1:
-            token_is_protein = token_is_protein.unsqueeze(0)
+    def _gather_atom_mask(
+        self,
+        token_mask: torch.Tensor,
+        atom_token_index: torch.Tensor,
+        atom_pad_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        if token_mask.dim() == 1:
+            token_mask = token_mask.unsqueeze(0)
         if atom_token_index.dim() == 1:
             atom_token_index = atom_token_index.unsqueeze(0)
         if atom_pad_mask.dim() == 1:
             atom_pad_mask = atom_pad_mask.unsqueeze(0)
 
-        if token_is_protein.shape[0] == 1 and atom_token_index.shape[0] > 1:
-            token_is_protein = token_is_protein.expand(atom_token_index.shape[0], -1)
-        if atom_token_index.shape[0] == 1 and token_is_protein.shape[0] > 1:
-            atom_token_index = atom_token_index.expand(token_is_protein.shape[0], -1)
+        if token_mask.shape[0] == 1 and atom_token_index.shape[0] > 1:
+            token_mask = token_mask.expand(atom_token_index.shape[0], -1)
+        if atom_token_index.shape[0] == 1 and token_mask.shape[0] > 1:
+            atom_token_index = atom_token_index.expand(token_mask.shape[0], -1)
         if atom_pad_mask.shape[0] == 1 and atom_token_index.shape[0] > 1:
             atom_pad_mask = atom_pad_mask.expand(atom_token_index.shape[0], -1)
 
-        token_count = token_is_protein.shape[-1]
+        token_count = token_mask.shape[-1]
         atom_token_index = atom_token_index.clamp(min=0, max=token_count - 1)
-        atom_is_protein = token_is_protein.gather(-1, atom_token_index)
-        atom_non_protein = ~atom_is_protein
-        return atom_non_protein & atom_pad_mask
+        atom_type = token_mask.gather(-1, atom_token_index)
+        return atom_type & atom_pad_mask
+
+    def _get_atom_type_masks(
+        self, f_input: FoldingInput
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        atom_token_index = f_input.atom.token_index
+        atom_pad_mask = f_input.atom.pad_mask
+        token_is_protein = f_input.token.is_protein
+        token_is_nucleic = f_input.token.is_dna | f_input.token.is_rna
+        token_is_ligand = f_input.token.is_ligand
+
+        protein_mask = self._gather_atom_mask(
+            token_is_protein, atom_token_index, atom_pad_mask
+        )
+        nucleic_mask = self._gather_atom_mask(
+            token_is_nucleic, atom_token_index, atom_pad_mask
+        )
+        ligand_mask = self._gather_atom_mask(
+            token_is_ligand, atom_token_index, atom_pad_mask
+        )
+        return protein_mask, nucleic_mask, ligand_mask
 
     def _select_by_atom_type(
         self,
         protein_value: torch.Tensor,
-        non_protein_value: torch.Tensor,
+        nucleic_acid_value: torch.Tensor,
+        ligand_value: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
-        non_protein_mask = self._get_non_protein_atom_mask(f_input)
         if (
             self.gamma_power_non_protein == self.gamma_power_protein
-            and self.non_protein_gamma_scale == 1.0
+            and self.protein_gamma_scale == self.nucleic_acid_gamma_scale
+            and self.protein_gamma_scale == self.ligand_gamma_scale
         ):
             return protein_value
 
-        mask = non_protein_mask[:, None, :, None]
-        return torch.where(mask, non_protein_value, protein_value)
+        _, nucleic_mask, ligand_mask = self._get_atom_type_masks(f_input)
+        nucleic_mask = nucleic_mask[:, None, :, None]
+        ligand_mask = ligand_mask[:, None, :, None]
+        values = protein_value
+        values = torch.where(nucleic_mask, nucleic_acid_value, values)
+        values = torch.where(ligand_mask, ligand_value, values)
+        return values
 
     def _gamma_with_type(self, t: torch.Tensor, f_input: FoldingInput) -> torch.Tensor:
         if self.route_type == "linear":
@@ -227,10 +276,13 @@ class KFoldECSI(BaseECSI):
             gamma_protein = self.gamma(t)
             gamma_non_protein = gamma_protein
 
-        if self.non_protein_gamma_scale != 1.0:
-            gamma_non_protein = gamma_non_protein * self.non_protein_gamma_scale
+        gamma_protein = gamma_protein * self.protein_gamma_scale
+        gamma_nucleic = gamma_non_protein * self.nucleic_acid_gamma_scale
+        gamma_ligand = gamma_non_protein * self.ligand_gamma_scale
 
-        return self._select_by_atom_type(gamma_protein, gamma_non_protein, f_input)
+        return self._select_by_atom_type(
+            gamma_protein, gamma_nucleic, gamma_ligand, f_input
+        )
 
     def _gamma_deriv_with_type(
         self, t: torch.Tensor, f_input: FoldingInput
@@ -246,10 +298,61 @@ class KFoldECSI(BaseECSI):
             gamma_protein = self.gamma_deriv(t)
             gamma_non_protein = gamma_protein
 
-        if self.non_protein_gamma_scale != 1.0:
-            gamma_non_protein = gamma_non_protein * self.non_protein_gamma_scale
+        gamma_protein = gamma_protein * self.protein_gamma_scale
+        gamma_nucleic = gamma_non_protein * self.nucleic_acid_gamma_scale
+        gamma_ligand = gamma_non_protein * self.ligand_gamma_scale
 
-        return self._select_by_atom_type(gamma_protein, gamma_non_protein, f_input)
+        return self._select_by_atom_type(
+            gamma_protein, gamma_nucleic, gamma_ligand, f_input
+        )
+
+    def _alpha_with_type(self, t: torch.Tensor, f_input: FoldingInput) -> torch.Tensor:
+        if not self.use_powered_alpha_beta or self.route_type != "linear":
+            return self.alpha(t)
+
+        alpha_protein = self._alpha_linear_with_power(t, self.gamma_power_protein)
+        alpha_non_protein = self._alpha_linear_with_power(t, self.gamma_power_non_protein)
+        return self._select_by_atom_type(
+            alpha_protein, alpha_non_protein, alpha_non_protein, f_input
+        )
+
+    def _alpha_deriv_with_type(
+        self, t: torch.Tensor, f_input: FoldingInput
+    ) -> torch.Tensor:
+        if not self.use_powered_alpha_beta or self.route_type != "linear":
+            return self.alpha_deriv(t)
+
+        alpha_protein = self._alpha_deriv_linear_with_power(t, self.gamma_power_protein)
+        alpha_non_protein = self._alpha_deriv_linear_with_power(
+            t, self.gamma_power_non_protein
+        )
+        return self._select_by_atom_type(
+            alpha_protein, alpha_non_protein, alpha_non_protein, f_input
+        )
+
+    def _beta_with_type(self, t: torch.Tensor, f_input: FoldingInput) -> torch.Tensor:
+        if not self.use_powered_alpha_beta or self.route_type != "linear":
+            return self.beta(t)
+
+        beta_protein = self._beta_linear_with_power(t, self.gamma_power_protein)
+        beta_non_protein = self._beta_linear_with_power(t, self.gamma_power_non_protein)
+        return self._select_by_atom_type(
+            beta_protein, beta_non_protein, beta_non_protein, f_input
+        )
+
+    def _beta_deriv_with_type(
+        self, t: torch.Tensor, f_input: FoldingInput
+    ) -> torch.Tensor:
+        if not self.use_powered_alpha_beta or self.route_type != "linear":
+            return self.beta_deriv(t)
+
+        beta_protein = self._beta_deriv_linear_with_power(t, self.gamma_power_protein)
+        beta_non_protein = self._beta_deriv_linear_with_power(
+            t, self.gamma_power_non_protein
+        )
+        return self._select_by_atom_type(
+            beta_protein, beta_non_protein, beta_non_protein, f_input
+        )
 
     @property
     def _effective_sigma_data(self) -> float:
@@ -582,20 +685,50 @@ class KFoldECSI(BaseECSI):
 
     # === Linear Route Functions === #
     def _alpha_linear(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Weight for target (x_0/holo): \alpha_t = 1 - t"""
+        r"""Weight for target (x_0/holo): \alpha_t = 1 - t (or 1 - t^k)."""
+        if self.use_powered_alpha_beta:
+            return self._alpha_linear_with_power(t, self.gamma_power_protein)
         return 1 - t
 
     def _alpha_deriv_linear(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Derivative of alpha: \dot{\alpha}_t = -1"""
+        r"""Derivative of alpha: \dot{\alpha}_t = -1 (or -k t^{k-1})."""
+        if self.use_powered_alpha_beta:
+            return self._alpha_deriv_linear_with_power(t, self.gamma_power_protein)
         return -torch.ones_like(t)
 
     def _beta_linear(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Weight for source (x_T/apo): \beta_t = t"""
+        r"""Weight for source (x_T/apo): \beta_t = t (or t^k)."""
+        if self.use_powered_alpha_beta:
+            return self._beta_linear_with_power(t, self.gamma_power_protein)
         return t
 
     def _beta_deriv_linear(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Derivative of beta: \dot{\beta}_t = 1"""
+        r"""Derivative of beta: \dot{\beta}_t = 1 (or k t^{k-1})."""
+        if self.use_powered_alpha_beta:
+            return self._beta_deriv_linear_with_power(t, self.gamma_power_protein)
         return torch.ones_like(t)
+
+    def _alpha_linear_with_power(self, t: torch.Tensor, power: float) -> torch.Tensor:
+        t_clamped = t.clamp(min=1e-8)
+        t_pow = torch.pow(t_clamped, power)
+        return 1 - t_pow
+
+    def _alpha_deriv_linear_with_power(
+        self, t: torch.Tensor, power: float
+    ) -> torch.Tensor:
+        t_clamped = t.clamp(min=1e-8)
+        coeff = power * torch.pow(t_clamped, power - 1)
+        return -coeff
+
+    def _beta_linear_with_power(self, t: torch.Tensor, power: float) -> torch.Tensor:
+        t_clamped = t.clamp(min=1e-8)
+        return torch.pow(t_clamped, power)
+
+    def _beta_deriv_linear_with_power(
+        self, t: torch.Tensor, power: float
+    ) -> torch.Tensor:
+        t_clamped = t.clamp(min=1e-8)
+        return power * torch.pow(t_clamped, power - 1)
 
     def _gamma_linear(self, t: torch.Tensor) -> torch.Tensor:
         r"""Noise scale: \gamma_t^2 = \gamma_{max}^2/4 * t^k(1-t^k)."""
@@ -1067,11 +1200,13 @@ class KFoldECSI(BaseECSI):
         t_expanded = t_hat[:, :, None, None]  # (B, N, 1, 1)
 
         # Compute interpolation coefficients
-        alpha_t = self.alpha(t_expanded)  # weight for x_0 (holo)
-        beta_t = self.beta(t_expanded)  # weight for x_T (apo)
         if f_input is None:
+            alpha_t = self.alpha(t_expanded)  # weight for x_0 (holo)
+            beta_t = self.beta(t_expanded)  # weight for x_T (apo)
             gamma_t = self.gamma(t_expanded)  # noise scale
         else:
+            alpha_t = self._alpha_with_type(t_expanded, f_input)
+            beta_t = self._beta_with_type(t_expanded, f_input)
             gamma_t = self._gamma_with_type(t_expanded, f_input)
 
         # Mean of bridge distribution: \mu_t = \alpha_t x_0 + \beta_t x_T
@@ -1247,11 +1382,11 @@ class KFoldECSI(BaseECSI):
             t_exp = t_curr_tensor[:, :, None, None]  # (B, N, 1, 1)
 
             # Compute route coefficients
-            alpha_t = self.alpha(t_exp)
-            beta_t = self.beta(t_exp)
+            alpha_t = self._alpha_with_type(t_exp, f_input)
+            beta_t = self._beta_with_type(t_exp, f_input)
             gamma_t = self._gamma_with_type(t_exp, f_input)
-            alpha_dot = self.alpha_deriv(t_exp)
-            beta_dot = self.beta_deriv(t_exp)
+            alpha_dot = self._alpha_deriv_with_type(t_exp, f_input)
+            beta_dot = self._beta_deriv_with_type(t_exp, f_input)
             gamma_dot = self._gamma_deriv_with_type(t_exp, f_input)
 
             # Compute \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / \gamma_t
@@ -1265,8 +1400,8 @@ class KFoldECSI(BaseECSI):
                 # x_{t-\Delta t} = \alpha_{t-\Delta t} \hat{x}_0 + \beta_{t-\Delta t} x_T
                 #                + \gamma_{t-\Delta t} \hat{z}_t
                 t_next_exp = torch.full_like(t_exp, t_next)
-                alpha_next = self.alpha(t_next_exp)
-                beta_next = self.beta(t_next_exp)
+                alpha_next = self._alpha_with_type(t_next_exp, f_input)
+                beta_next = self._beta_with_type(t_next_exp, f_input)
                 gamma_next = self._gamma_with_type(t_next_exp, f_input)
 
                 # NOTE: weghting factor for z_hat is (cos(2pi(t_next-0.5)) + 1) / 2
