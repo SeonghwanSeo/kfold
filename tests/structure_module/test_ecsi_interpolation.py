@@ -190,7 +190,7 @@ if __name__ == "__main__":
     SAVE_PATH.mkdir(parents=True, exist_ok=True)
 
     # Number of time steps for visualization
-    num_samples = 20
+    num_samples = 200
 
     # Load config
     global_config = load_config(TEST_CONFIG_PATH)
@@ -214,6 +214,8 @@ if __name__ == "__main__":
     compare_k_values = [1.0, 2.0]
     use_powered_alpha_beta = True
     interpolation_noise_seed = 42
+    min_protein_atoms = 400
+    required_ligand_chains = 1
 
     def _coords_to_np(
         coords: torch.Tensor, struct: RefStructure | TokenizedStructure
@@ -235,6 +237,21 @@ if __name__ == "__main__":
             struct.to_pdb(path)
         else:
             KFoldWriter.write_new_coords(struct, coords_np, path)
+
+    def _count_atoms_by_token_mask(
+        f_input_single: FoldingInput, token_mask: torch.Tensor
+    ) -> int:
+        atom_token_index = f_input_single.atom.token_index
+        atom_pad_mask = f_input_single.atom.pad_mask
+        token_count = token_mask.shape[-1]
+        atom_token_index = atom_token_index.clamp(min=0, max=token_count - 1)
+        atom_type = token_mask.gather(-1, atom_token_index)
+        return int((atom_type & atom_pad_mask).sum().item())
+
+    def _count_ligand_chains(struct: RefStructure | TokenizedStructure) -> int:
+        if isinstance(struct, RefStructure):
+            return sum(1 for chain in struct.chains if chain.ctype.is_ligand)
+        return int(struct.token.is_ligand.any().item())
 
     def _build_structure_module(power: float) -> KFoldECSI:
         ecsi_config = KFoldECSI.Config(
@@ -311,16 +328,40 @@ if __name__ == "__main__":
         )
 
     candidate_set = set(candidate_ids)
-    selected_index = None
+    selected = None
     for idx, meta in enumerate(val_dataset.metadatas):
-        if not candidate_set or meta.id in candidate_set:
-            selected_index = idx
-            break
+        if candidate_set and meta.id not in candidate_set:
+            continue
+        f_input_single, full_dict = val_dataset[idx]
+        struct = full_dict["structure"]
+        ligand_chains = _count_ligand_chains(struct)
+        protein_atoms = _count_atoms_by_token_mask(
+            f_input_single, f_input_single.token.is_protein
+        )
+        ligand_atoms = _count_atoms_by_token_mask(
+            f_input_single, f_input_single.token.is_ligand
+        )
+        if ligand_chains != required_ligand_chains:
+            continue
+        if protein_atoms < min_protein_atoms:
+            continue
+        if ligand_atoms == 0:
+            continue
+        selected = (f_input_single, full_dict, protein_atoms, ligand_atoms)
+        break
 
-    if selected_index is None:
-        raise RuntimeError("Failed to select a validation sample.")
+    if selected is None:
+        print("No matching sample found; falling back to the first validation sample.")
+        f_input_single, full_dict = val_dataset[0]
+        protein_atoms = _count_atoms_by_token_mask(
+            f_input_single, f_input_single.token.is_protein
+        )
+        ligand_atoms = _count_atoms_by_token_mask(
+            f_input_single, f_input_single.token.is_ligand
+        )
+    else:
+        f_input_single, full_dict, protein_atoms, ligand_atoms = selected
 
-    f_input_single, full_dict = val_dataset[selected_index]
     f_input = FoldingInput.from_list([f_input_single], pad_to_max=False)
     full_dict_list = [full_dict]
 
@@ -330,6 +371,8 @@ if __name__ == "__main__":
 
     print(f"Testing with sample: {name}")
     print(f"  Number of atoms: {f_input.atom.pad_mask.sum().item()}")
+    print(f"  Protein atoms: {protein_atoms}")
+    print(f"  Ligand atoms: {ligand_atoms}")
 
     # Get label (holo) coords: [B, 1, Natom, 3]
     label_coords = structure_module.sample_holo(f_input, 1)
