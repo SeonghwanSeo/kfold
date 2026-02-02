@@ -112,6 +112,10 @@ def main():
         # Get model config if wrapped in a higher-level config
         config = config.model
     model: KFold = KFold.from_checkpoint(config, args.checkpoint)
+    try:
+        use_interaction = bool(config.input_embedder.get("use_interaction", False))
+    except Exception:
+        use_interaction = False
 
     # Inference configuration
     inference_config = InferenceConfig(
@@ -143,6 +147,7 @@ def main():
         struct_embedding_dim=model.channel_struct_encoder,
         seed=args.seed,
         num_workers=args.num_workers,
+        use_interaction=use_interaction,
     )
 
     trainer = pl.Trainer(

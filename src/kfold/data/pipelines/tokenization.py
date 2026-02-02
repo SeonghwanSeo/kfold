@@ -1,5 +1,7 @@
 """Tokenization pipeline for structures."""
 
+import json
+import os
 from functools import lru_cache
 
 import numpy as np
@@ -14,16 +16,46 @@ from kfold.data.utils.ligand_interactions import compute_ligand_interaction_type
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 
 
+def _log_ligand_interaction_error(
+    log_path: str,
+    metadata: Metadata,
+    ccd_name: str,
+    asym_id: int,
+    chain_name: str,
+    smiles: str | None,
+    error: Exception,
+) -> None:
+    record = {
+        "id": metadata.id,
+        "ccd": ccd_name,
+        "asym_id": asym_id,
+        "chain_name": chain_name,
+        "smiles": smiles,
+        "error": repr(error),
+        "rank": os.environ.get("RANK"),
+        "local_rank": os.environ.get("LOCAL_RANK"),
+        "pid": os.getpid(),
+    }
+    try:
+        with open(log_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        return
+
+
 class Tokenizer:
-    def __init__(self, ccd: CCD) -> None:
+    def __init__(self, ccd: CCD, use_interaction: bool = True) -> None:
         """Tokenizer for structures.
 
         Parameters
         ----------
         ccd : CCD
             The chemical component dictionary.
+        use_interaction : bool, optional
+            Whether to compute interaction types, by default True.
         """
         self.ccd: CCD = ccd
+        self.use_interaction: bool = use_interaction
 
     def __call__(
         self,
@@ -71,7 +103,13 @@ class Tokenizer:
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return tokenize_structure(input, self.ccd, rng, use_only_cached_conformers)
+        return tokenize_structure(
+            input,
+            self.ccd,
+            rng,
+            use_only_cached_conformers,
+            use_interaction=self.use_interaction,
+        )
 
 
 def tokenize_structure(
@@ -79,6 +117,7 @@ def tokenize_structure(
     ccd: CCD,
     rng: np.random.Generator | None = None,
     use_only_cached_conformers: bool = False,
+    use_interaction: bool = True,
 ) -> TokenizedStructure:
     """Tokenize structure.
 
@@ -95,6 +134,8 @@ def tokenize_structure(
           - EKTDG-cached (up to 10 conformers by default with `ccd-train.pkl`)
           - Ideal
           - Model (Experimental)
+    use_interaction : bool, optional
+        Whether to compute interaction types, by default True.
 
     Returns
     -------
@@ -235,11 +276,14 @@ def tokenize_structure(
                 struct.token.center_index[g_tok_i] = atom_list.index(ref_atom)
                 struct.token.disto_index[g_tok_i] = atom_list.index(beta_atom)
                 struct.token.is_standard[g_tok_i] = True
-                interaction_indices = C.interaction.get_residue_interaction_type(
-                    res_name, chain.chain_type
-                )
-                if interaction_indices:
-                    struct.token.interaction_type[g_tok_i, list(interaction_indices)] = 1
+                if use_interaction:
+                    interaction_indices = C.interaction.get_residue_interaction_type(
+                        res_name, chain.chain_type
+                    )
+                    if interaction_indices:
+                        struct.token.interaction_type[
+                            g_tok_i, list(interaction_indices)
+                        ] = 1
 
                 # Update atom existence mask
                 struct.atom.pad_mask[g_tok_i, :natoms] = True
@@ -259,11 +303,14 @@ def tokenize_structure(
                 struct.token.center_index[st:end] = 0
                 struct.token.disto_index[st:end] = 0
                 struct.token.is_standard[st:end] = False
-                interaction_indices = C.interaction.get_residue_interaction_type(
-                    C.residue.ResidueName.UNK, chain.chain_type
-                )
-                if interaction_indices:
-                    struct.token.interaction_type[st:end, list(interaction_indices)] = 1
+                if use_interaction:
+                    interaction_indices = C.interaction.get_residue_interaction_type(
+                        C.residue.ResidueName.UNK, chain.chain_type
+                    )
+                    if interaction_indices:
+                        struct.token.interaction_type[
+                            st:end, list(interaction_indices)
+                        ] = 1
 
                 # Update atom existence mask
                 struct.atom.pad_mask[st:end, 0] = True
@@ -367,9 +414,10 @@ def tokenize_structure(
                 "Atom indices are not in ascending order."
             )
             natoms = int(chain.residue.num_atoms[res_i])
-            if not chain.residue.is_standard[res_i] and ctype in (
-                C.ChainType.LIGAND,
-                C.ChainType.ION,
+            if (
+                use_interaction
+                and not chain.residue.is_standard[res_i]
+                and ctype in (C.ChainType.LIGAND, C.ChainType.ION)
             ):
                 try:
                     ligand_interactions = compute_ligand_interaction_types(ref_mol.mol)
@@ -378,9 +426,28 @@ def tokenize_structure(
                     print(
                         "Error computing ligand interactions for "
                         f"{_metadata.id} (ccd={ccd_name}, asym_id={asym_id}, "
-                        f"chain_name={chain_meta.chain_name}{smiles_info}): {e}"
+                        f"chain_name={chain_meta.chain_name}{smiles_info}): {e}",
+                        flush=True,
                     )
-                    raise
+                    log_path = os.environ.get("KFO_BAD_LIGAND_LOG")
+                    if log_path:
+                        _log_ligand_interaction_error(
+                            log_path=log_path,
+                            metadata=_metadata,
+                            ccd_name=ccd_name,
+                            asym_id=asym_id,
+                            chain_name=chain_meta.chain_name,
+                            smiles=smiles,
+                            error=e,
+                        )
+                    if os.environ.get("KFO_SKIP_BAD_LIGANDS", "0") == "1":
+                        num_atoms = ref_mol.mol.GetNumAtoms()
+                        ligand_interactions = np.zeros(
+                            (num_atoms, C.NUM_INTERACTION_TYPES),
+                            dtype=np.int8,
+                        )
+                    else:
+                        raise
                 st = g_tok_i
                 end = g_tok_i + natoms
                 struct.token.interaction_type[st:end, :] = ligand_interactions[

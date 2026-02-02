@@ -116,6 +116,10 @@ def main():
         config = config.model
     model: KFold = KFold.from_checkpoint(config, args.checkpoint)
     model = model.eval().cuda()
+    try:
+        use_interaction = bool(config.input_embedder.get("use_interaction", False))
+    except Exception:
+        use_interaction = False
 
     # Load CCD data
     ccd: CCD = CCD.load(args.ccd)
@@ -136,6 +140,7 @@ def main():
         struct_embedding_dim=model.channel_struct_encoder,
         seed=args.seed,
         num_workers=args.num_workers,
+        use_interaction=use_interaction,
     )
 
     # mmCIF writer

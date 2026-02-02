@@ -35,6 +35,7 @@ class InputDataPipeline:
         struct_embedding_dim: int | None,
         max_struct_ensembles: int = 1,
         seed: int = 1,
+        use_interaction: bool = True,
     ) -> None:
         self.ccd: CCD = ccd
         self.seed: int = seed
@@ -53,7 +54,7 @@ class InputDataPipeline:
         )
 
         # Initialize tokenizer
-        self.tokenizer = tokenization.Tokenizer(self.ccd)
+        self.tokenizer = tokenization.Tokenizer(self.ccd, use_interaction=use_interaction)
 
         # Initialize featurizer
         self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer(
