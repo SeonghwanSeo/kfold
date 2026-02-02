@@ -6,6 +6,7 @@ This test validates the `interpolate` method of the KFoldECSI module by:
 3. Visualizing the interpolated structures at different time steps
 """
 
+import json
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -15,7 +16,9 @@ import torch
 import kfold.model.modules as submodules
 from kfold.config import load_config
 from kfold.data.types.model_input import FoldingInput
+from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.utils.writer import KFoldWriter
 from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.utils import errors
@@ -123,7 +126,7 @@ def test_interpolation_smoothness(
     apo_coords: torch.Tensor,
     label_coords: torch.Tensor,
     mask: torch.Tensor,
-    num_steps: int = 20,
+    num_steps: int = 200,
 ) -> None:
     """Test that interpolation produces smooth transitions."""
     print(f"\n=== Testing Interpolation Smoothness ({num_steps} steps) ===")
@@ -194,20 +197,44 @@ if __name__ == "__main__":
     global_config.train.data.val_batch_size = 1
     global_config.train.data.num_workers = 0
     global_config.train.data.safe_load = False
+    global_config.train.data.val_datasets[0].apo_init.translation_scale = 0
+    global_config.train.data.val_datasets[0].apo_init.chain_com_sampling_radius = None
 
-    # Load validation loader
+    # Load validation dataset
     data_module = TrainingDataModule(global_config.train.data)
     data_module.setup("validate")
-    dataloader = data_module.val_dataloader()
+    val_dataset = data_module._val_ds
 
     # Instantiate score model first
+    kernel_config = global_config.model.kernel
     score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
-        global_config.model.score_model
+        global_config.model.score_model, kernel_config=kernel_config
     )
 
     compare_k_values = [1.0, 2.0]
     use_powered_alpha_beta = True
     interpolation_noise_seed = 42
+
+    def _coords_to_np(
+        coords: torch.Tensor, struct: RefStructure | TokenizedStructure
+    ) -> np.ndarray:
+        coords_np = coords.detach().cpu().numpy()
+        num_atoms = getattr(struct, "num_atoms", coords_np.shape[0])
+        if coords_np.shape[0] > num_atoms:
+            coords_np = coords_np[:num_atoms]
+        return coords_np
+
+    def _write_coords(
+        struct: RefStructure | TokenizedStructure,
+        coords: torch.Tensor,
+        path: Path,
+    ) -> None:
+        coords_np = _coords_to_np(coords, struct)
+        if isinstance(struct, TokenizedStructure):
+            struct = struct.replace_atom_coords(atom_coords=coords_np)
+            struct.to_pdb(path)
+        else:
+            KFoldWriter.write_new_coords(struct, coords_np, path)
 
     def _build_structure_module(power: float) -> KFoldECSI:
         ecsi_config = KFoldECSI.Config(
@@ -247,161 +274,169 @@ if __name__ == "__main__":
     # Load a single sample for interpolation tests
     print("\n=== Loading Single Sample ===")
     f_input: FoldingInput
-    struct: TokenizedStructure
+    struct: RefStructure | TokenizedStructure
 
-    for iter, (f_input, full_dict_list) in enumerate(dataloader):
-        if iter > 0:
+    manifest_paths = []
+    manifest_from_config = (
+        global_config.train.data.val_datasets[0].manifest_path
+        if global_config.train.data.val_datasets
+        else None
+    )
+    if manifest_from_config is not None:
+        manifest_paths.append(Path(manifest_from_config))
+    manifest_paths.append(Path("manifest-rcsb-val-smallmol.json"))
+
+    candidate_ids: list[str] = []
+    for manifest_path in manifest_paths:
+        if not manifest_path.exists():
+            continue
+        try:
+            with manifest_path.open() as f:
+                manifest_data = json.load(f)
+        except Exception as exc:
+            print(f"Failed to read manifest {manifest_path}: {exc}")
+            continue
+
+        for item in manifest_data:
+            chain_types = {c.get("chain_type") for c in item.get("chains", [])}
+            if 0 in chain_types and 3 in chain_types:
+                candidate_ids.append(item["id"])
+        if candidate_ids:
+            print(f"Selected manifest: {manifest_path}")
             break
 
-        full_dict = full_dict_list[0]
-        name: str = full_dict["id"]
-        struct = full_dict["structure"]
-
-        print(f"Testing with sample: {name}")
-        print(f"  Number of atoms: {f_input.atom.pad_mask.sum().item()}")
-
-        # Get label (holo) coords: [B, 1, Natom, 3]
-        label_coords = structure_module.sample_holo(f_input, 1)
-        # Get apo coords: [B, 1, Natom, 3]
-        apo_coords = structure_module.sample_prior(f_input, 1, label_coords)
-
-        # Get mask
-        mask = f_input.atom.resolved_mask  # [B, Natom]
-
-        # Run tests on the base module
-        test_interpolation_boundary_conditions(
-            structure_module, apo_coords, label_coords, mask
-        )
-        test_interpolation_smoothness(
-            structure_module, apo_coords, label_coords, mask, num_samples
+    if not candidate_ids:
+        print(
+            "No protein+ligand entries found in manifest; falling back to first sample."
         )
 
-        base_struct = struct
+    candidate_set = set(candidate_ids)
+    selected_index = None
+    for idx, meta in enumerate(val_dataset.metadatas):
+        if not candidate_set or meta.id in candidate_set:
+            selected_index = idx
+            break
 
-        for power in compare_k_values:
-            structure_module = _build_structure_module(power)
-            k_tag = f"k{power:g}"
-            k_save_path = SAVE_PATH / k_tag
-            k_save_path.mkdir(parents=True, exist_ok=True)
+    if selected_index is None:
+        raise RuntimeError("Failed to select a validation sample.")
 
-            # ====== Save interpolated structures for visualization ====== #
-            print(f"\n=== Saving Interpolated Structures ({k_tag}) ===")
+    f_input_single, full_dict = val_dataset[selected_index]
+    f_input = FoldingInput.from_list([f_input_single], pad_to_max=False)
+    full_dict_list = [full_dict]
 
-            # Generate time values
-            t_hat = torch.linspace(
-                structure_module.sigma_min, structure_module.sigma_max, num_samples
-            )[None, :]  # [1, num_samples]
+    full_dict = full_dict_list[0]
+    name: str = full_dict["id"]
+    struct = full_dict["structure"]
 
-            # Expand coords for multiple samples
-            apo_expanded = apo_coords.expand(-1, num_samples, -1, -1)
-            label_expanded = label_coords.expand(-1, num_samples, -1, -1)
+    print(f"Testing with sample: {name}")
+    print(f"  Number of atoms: {f_input.atom.pad_mask.sum().item()}")
 
-            # Get interpolated coords (fix seed for fair comparison)
-            torch.manual_seed(interpolation_noise_seed)
-            noisy_coords = structure_module.interpolate(
-                apo_expanded,
-                label_expanded,
-                t_hat,
-                mask,
-                f_input=f_input,
+    # Get label (holo) coords: [B, 1, Natom, 3]
+    label_coords = structure_module.sample_holo(f_input, 1)
+    # Get apo coords: [B, 1, Natom, 3]
+    apo_coords = structure_module.sample_prior(f_input, 1, label_coords)
+
+    # Get mask
+    mask = f_input.atom.resolved_mask  # [B, Natom]
+
+    # Run tests on the base module
+    test_interpolation_boundary_conditions(
+        structure_module, apo_coords, label_coords, mask
+    )
+    test_interpolation_smoothness(
+        structure_module, apo_coords, label_coords, mask, num_samples
+    )
+
+    base_struct = struct
+
+    for power in compare_k_values:
+        structure_module = _build_structure_module(power)
+        k_tag = f"k{power:g}"
+        k_save_path = SAVE_PATH / k_tag
+        k_save_path.mkdir(parents=True, exist_ok=True)
+
+        # ====== Save interpolated structures for visualization ====== #
+        print(f"\n=== Saving Interpolated Structures ({k_tag}) ===")
+
+        # Generate time values
+        t_hat = torch.linspace(
+            structure_module.sigma_max, structure_module.sigma_min, num_samples
+        )[None, :]  # [1, num_samples]
+
+        # Expand coords for multiple samples
+        apo_expanded = apo_coords.expand(-1, num_samples, -1, -1)
+        label_expanded = label_coords.expand(-1, num_samples, -1, -1)
+
+        # Get interpolated coords (fix seed for fair comparison)
+        torch.manual_seed(interpolation_noise_seed)
+        noisy_coords = structure_module.interpolate(
+            apo_expanded,
+            label_expanded,
+            t_hat,
+            mask,
+            f_input=f_input,
+        )
+
+        # Save endpoints
+        try:
+            _write_coords(
+                base_struct,
+                label_coords[0, 0],
+                k_save_path / f"{name}-ecsi-holo-{k_tag}.pdb",
             )
 
-            # Save endpoints
-            try:
-                struct = base_struct.replace_atom_coords(
-                    atom_coords=label_coords[0].numpy(),
+            _write_coords(
+                base_struct,
+                apo_coords[0, 0],
+                k_save_path / f"{name}-ecsi-apo-{k_tag}.pdb",
+            )
+
+            # Save interpolated structures
+            for i in range(num_samples):
+                t_val = t_hat[0, i].item()
+                _write_coords(
+                    base_struct,
+                    noisy_coords[0, i],
+                    k_save_path / f"{name}-ecsi-{k_tag}-t{i:02d}_t{t_val:.3f}.pdb",
                 )
-                struct.to_pdb(
-                    k_save_path / f"{name}-ecsi-holo-{k_tag}.pdb",
+
+            print(f"  Saved {num_samples + 2} PDB files to {k_save_path}")
+
+            # ====== Create single trajectory file from apo to holo ====== #
+            print(f"\n=== Creating Trajectory File ({k_tag}) ===")
+
+            # Combine all structures into trajectory: apo -> interpolation -> holo
+            trajectory_coords = []
+
+            # Start with apo structure
+            trajectory_coords.append(_coords_to_np(apo_coords[0, 0], base_struct))
+
+            # Add interpolated structures (excluding endpoints to avoid duplicates)
+            for i in range(1, num_samples - 1):
+                trajectory_coords.append(_coords_to_np(noisy_coords[0, i], base_struct))
+
+            # End with holo structure
+            trajectory_coords.append(_coords_to_np(label_coords[0, 0], base_struct))
+
+            # Create multi-conformer structure
+            trajectory_coords_array = np.stack(
+                trajectory_coords, axis=0
+            )  # [Nframes, Natom, 3]
+
+            trajectory_path = k_save_path / f"{name}-ecsi-trajectory-{k_tag}.pdb"
+            if isinstance(base_struct, RefStructure):
+                KFoldWriter.write_trajectory(
+                    base_struct, trajectory_coords_array, trajectory_path
                 )
-
-                struct = base_struct.replace_atom_coords(
-                    atom_coords=apo_coords[0].numpy(),
-                )
-                struct.to_pdb(
-                    k_save_path / f"{name}-ecsi-apo-{k_tag}.pdb",
-                )
-
-                # Save interpolated structures
-                struct = base_struct.replace_atom_coords(
-                    atom_coords=noisy_coords[0].numpy(),
-                )
-                for i in range(num_samples):
-                    t_val = t_hat[0, i].item()
-                    struct.to_pdb(
-                        k_save_path / f"{name}-ecsi-{k_tag}-t{i:02d}_t{t_val:.3f}.pdb",
-                        conformer_id=i,
-                    )
-
-                print(f"  Saved {num_samples + 2} PDB files to {k_save_path}")
-
-                # ====== Create single trajectory file from apo to holo ====== #
-                print(f"\n=== Creating Trajectory File ({k_tag}) ===")
-
-                # Combine all structures into trajectory: apo -> interpolation -> holo
-                trajectory_coords = []
-
-                # Start with apo structure
-                # [Natom, 3] - squeeze the first dimension
-                apo_flat = apo_coords[0, 0]
-                trajectory_coords.append(apo_flat.numpy())
-
-                # Add interpolated structures (excluding endpoints to avoid duplicates)
-                for i in range(1, num_samples - 1):
-                    interp_flat = noisy_coords[0, i]  # [Natom, 3]
-                    trajectory_coords.append(interp_flat.numpy())
-
-                # End with holo structure
-                # [Natom, 3] - squeeze the first dimension
-                holo_flat = label_coords[0, 0]
-                trajectory_coords.append(holo_flat.numpy())
-
-                # Create multi-conformer structure
-                trajectory_coords_array = np.stack(
-                    trajectory_coords, axis=0
-                )  # [Nframes, Natom, 3]
-
-                # Create multi-model PDB file by concatenating PDB strings
-                trajectory_path = k_save_path / f"{name}-ecsi-trajectory-{k_tag}.pdb"
-                with open(trajectory_path, "w") as f:
-                    for frame_idx in range(len(trajectory_coords)):
-                        # Write model header for all frames including the first one
-                        f.write(f"MODEL     {frame_idx + 1}\n")
-
-                        # Get PDB string for this conformer
-                        from kfold.utils.writer.pdb import to_pdbstring
-
-                        trajectory_struct = base_struct.replace_atom_coords(
-                            atom_coords=trajectory_coords_array[frame_idx],
-                        )
-                        pdb_string = to_pdbstring(trajectory_struct)
-
-                        # Remove END record from all models (will add single END at end)
-                        pdb_string = pdb_string.rstrip()
-                        if pdb_string.endswith("END"):
-                            pdb_string = pdb_string[:-3].rstrip()
-
-                        # Remove TER records and add them only at proper residue boundary
-                        # For simplicity, let's remove all TER records for now
-                        lines = pdb_string.split("\n")
-                        filtered_lines = [
-                            line for line in lines if not line.strip().startswith("TER")
-                        ]
-
-                        # Write the filtered PDB content
-                        f.write("\n".join(filtered_lines) + "\n")
-
-                        # Write model footer for all frames except the last one
-                        if frame_idx < len(trajectory_coords) - 1:
-                            f.write("ENDMDL\n")
-
-                    # Write single END record at the very end
-                    f.write("END\n")
-
                 print(f"  Created trajectory file with {len(trajectory_coords)} frames")
+            else:
+                print(
+                    "  Skipping trajectory file: "
+                    "TokenizedStructure multi-model PDB not supported."
+                )
 
-            except errors.PDBWriterMaxChainError:
-                print(f"  Skipping PDB writing for {name} due to max chain error.")
+        except errors.PDBWriterMaxChainError:
+            print(f"  Skipping PDB writing for {name} due to max chain error.")
 
     print("\n" + "=" * 60)
     print("All ECSI interpolation tests passed!")

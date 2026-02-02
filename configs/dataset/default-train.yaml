@@ -17,4 +17,4 @@ apo_init:
   use_ot_permutation: true
   translation_scale: 10.0 # Angstroms
   small_mol_perturbation:
-    mode: "none"
+    mode: "langevin"

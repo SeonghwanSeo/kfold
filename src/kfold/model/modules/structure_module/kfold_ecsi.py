@@ -52,8 +52,10 @@ class KFoldECSI(BaseECSI):
             Uses \gamma_t^2 = \gamma_{max}^2/4 * t(1-t).
         gamma_power_protein : float, optional
             Exponent k for protein in t^k(1-t^k), by default 1.0.
-        gamma_power_non_protein : float, optional
-            Exponent k for nucleic acid/ligand in t^k(1-t^k), by default 1.0.
+        nucleic_acid_gamma_power : float, optional
+            Exponent k for nucleic acids in t^k(1-t^k), by default 1.0.
+        ligand_gamma_power : float, optional
+            Exponent k for ligands in t^k(1-t^k), by default 1.0.
         use_powered_alpha_beta : bool, optional
             If True, use t^k for alpha/beta in linear route
             (alpha_t = 1 - t^k, beta_t = t^k). Uses modality-specific
@@ -99,6 +101,9 @@ class KFoldECSI(BaseECSI):
         non_protein_gamma_scale : float | None, optional
             Deprecated alias for nucleic_acid_gamma_scale/ligand_gamma_scale. If set
             and those are left at default 1.0, it is applied to both.
+        gamma_power_non_protein : float | None, optional
+            Deprecated alias for nucleic_acid_gamma_power/ligand_gamma_power. If set
+            and those are left at default 1.0, it is applied to both.
         alignment_entity_strategy : str | None, optional
             Strategy for selecting entity to align: None (all entities), "largest",
             or "random_non_ligand", by default "largest".
@@ -109,7 +114,8 @@ class KFoldECSI(BaseECSI):
         sigma_max: float = 0.999
         gamma_max: float = 0.25
         gamma_power_protein: float = 1.0
-        gamma_power_non_protein: float = 1.0
+        nucleic_acid_gamma_power: float = 1.0
+        ligand_gamma_power: float = 1.0
         use_powered_alpha_beta: bool = False
         protein_gamma_scale: float = 1.0
         nucleic_acid_gamma_scale: float = 1.0
@@ -136,6 +142,7 @@ class KFoldECSI(BaseECSI):
         alignment_level: str = "chain"
         s_trans: float = 1.0
         non_protein_gamma_scale: float | None = None
+        gamma_power_non_protein: float | None = None
         inference_align_x0_hat_to_x_apo: bool = True
         chain_wise_perturbation: bool = True
         inference_independent_diffusion_apo_sampling: bool = False
@@ -150,7 +157,8 @@ class KFoldECSI(BaseECSI):
         self.sigma_max: float = cfg.sigma_max
         self.gamma_max: float = cfg.gamma_max
         self.gamma_power_protein: float = cfg.gamma_power_protein
-        self.gamma_power_non_protein: float = cfg.gamma_power_non_protein
+        self.nucleic_acid_gamma_power: float = cfg.nucleic_acid_gamma_power
+        self.ligand_gamma_power: float = cfg.ligand_gamma_power
         self.use_powered_alpha_beta: bool = cfg.use_powered_alpha_beta
         self.route_type: str = cfg.route_type
         self.ddbm_vp_beta_min: float = cfg.ddbm_vp_beta_min
@@ -176,6 +184,10 @@ class KFoldECSI(BaseECSI):
         self.protein_gamma_scale: float = cfg.protein_gamma_scale
         self.nucleic_acid_gamma_scale: float = cfg.nucleic_acid_gamma_scale
         self.ligand_gamma_scale: float = cfg.ligand_gamma_scale
+        if cfg.gamma_power_non_protein is not None:
+            if self.nucleic_acid_gamma_power == 1.0 and self.ligand_gamma_power == 1.0:
+                self.nucleic_acid_gamma_power = cfg.gamma_power_non_protein
+                self.ligand_gamma_power = cfg.gamma_power_non_protein
         if cfg.non_protein_gamma_scale is not None:
             if self.nucleic_acid_gamma_scale == 1.0 and self.ligand_gamma_scale == 1.0:
                 self.nucleic_acid_gamma_scale = cfg.non_protein_gamma_scale
@@ -252,7 +264,8 @@ class KFoldECSI(BaseECSI):
         f_input: FoldingInput,
     ) -> torch.Tensor:
         if (
-            self.gamma_power_non_protein == self.gamma_power_protein
+            self.nucleic_acid_gamma_power == self.gamma_power_protein
+            and self.ligand_gamma_power == self.gamma_power_protein
             and self.protein_gamma_scale == self.nucleic_acid_gamma_scale
             and self.protein_gamma_scale == self.ligand_gamma_scale
         ):
@@ -269,16 +282,18 @@ class KFoldECSI(BaseECSI):
     def _gamma_with_type(self, t: torch.Tensor, f_input: FoldingInput) -> torch.Tensor:
         if self.route_type == "linear":
             gamma_protein = self._gamma_linear_with_power(t, self.gamma_power_protein)
-            gamma_non_protein = self._gamma_linear_with_power(
-                t, self.gamma_power_non_protein
+            gamma_nucleic = self._gamma_linear_with_power(
+                t, self.nucleic_acid_gamma_power
             )
+            gamma_ligand = self._gamma_linear_with_power(t, self.ligand_gamma_power)
         else:
             gamma_protein = self.gamma(t)
-            gamma_non_protein = gamma_protein
+            gamma_nucleic = gamma_protein
+            gamma_ligand = gamma_protein
 
         gamma_protein = gamma_protein * self.protein_gamma_scale
-        gamma_nucleic = gamma_non_protein * self.nucleic_acid_gamma_scale
-        gamma_ligand = gamma_non_protein * self.ligand_gamma_scale
+        gamma_nucleic = gamma_nucleic * self.nucleic_acid_gamma_scale
+        gamma_ligand = gamma_ligand * self.ligand_gamma_scale
 
         return self._select_by_atom_type(
             gamma_protein, gamma_nucleic, gamma_ligand, f_input
@@ -291,16 +306,18 @@ class KFoldECSI(BaseECSI):
             gamma_protein = self._gamma_deriv_linear_with_power(
                 t, self.gamma_power_protein
             )
-            gamma_non_protein = self._gamma_deriv_linear_with_power(
-                t, self.gamma_power_non_protein
+            gamma_nucleic = self._gamma_deriv_linear_with_power(
+                t, self.nucleic_acid_gamma_power
             )
+            gamma_ligand = self._gamma_deriv_linear_with_power(t, self.ligand_gamma_power)
         else:
             gamma_protein = self.gamma_deriv(t)
-            gamma_non_protein = gamma_protein
+            gamma_nucleic = gamma_protein
+            gamma_ligand = gamma_protein
 
         gamma_protein = gamma_protein * self.protein_gamma_scale
-        gamma_nucleic = gamma_non_protein * self.nucleic_acid_gamma_scale
-        gamma_ligand = gamma_non_protein * self.ligand_gamma_scale
+        gamma_nucleic = gamma_nucleic * self.nucleic_acid_gamma_scale
+        gamma_ligand = gamma_ligand * self.ligand_gamma_scale
 
         return self._select_by_atom_type(
             gamma_protein, gamma_nucleic, gamma_ligand, f_input
@@ -311,9 +328,10 @@ class KFoldECSI(BaseECSI):
             return self.alpha(t)
 
         alpha_protein = self._alpha_linear_with_power(t, self.gamma_power_protein)
-        alpha_non_protein = self._alpha_linear_with_power(t, self.gamma_power_non_protein)
+        alpha_nucleic = self._alpha_linear_with_power(t, self.nucleic_acid_gamma_power)
+        alpha_ligand = self._alpha_linear_with_power(t, self.ligand_gamma_power)
         return self._select_by_atom_type(
-            alpha_protein, alpha_non_protein, alpha_non_protein, f_input
+            alpha_protein, alpha_nucleic, alpha_ligand, f_input
         )
 
     def _alpha_deriv_with_type(
@@ -323,11 +341,12 @@ class KFoldECSI(BaseECSI):
             return self.alpha_deriv(t)
 
         alpha_protein = self._alpha_deriv_linear_with_power(t, self.gamma_power_protein)
-        alpha_non_protein = self._alpha_deriv_linear_with_power(
-            t, self.gamma_power_non_protein
+        alpha_nucleic = self._alpha_deriv_linear_with_power(
+            t, self.nucleic_acid_gamma_power
         )
+        alpha_ligand = self._alpha_deriv_linear_with_power(t, self.ligand_gamma_power)
         return self._select_by_atom_type(
-            alpha_protein, alpha_non_protein, alpha_non_protein, f_input
+            alpha_protein, alpha_nucleic, alpha_ligand, f_input
         )
 
     def _beta_with_type(self, t: torch.Tensor, f_input: FoldingInput) -> torch.Tensor:
@@ -335,10 +354,9 @@ class KFoldECSI(BaseECSI):
             return self.beta(t)
 
         beta_protein = self._beta_linear_with_power(t, self.gamma_power_protein)
-        beta_non_protein = self._beta_linear_with_power(t, self.gamma_power_non_protein)
-        return self._select_by_atom_type(
-            beta_protein, beta_non_protein, beta_non_protein, f_input
-        )
+        beta_nucleic = self._beta_linear_with_power(t, self.nucleic_acid_gamma_power)
+        beta_ligand = self._beta_linear_with_power(t, self.ligand_gamma_power)
+        return self._select_by_atom_type(beta_protein, beta_nucleic, beta_ligand, f_input)
 
     def _beta_deriv_with_type(
         self, t: torch.Tensor, f_input: FoldingInput
@@ -347,12 +365,11 @@ class KFoldECSI(BaseECSI):
             return self.beta_deriv(t)
 
         beta_protein = self._beta_deriv_linear_with_power(t, self.gamma_power_protein)
-        beta_non_protein = self._beta_deriv_linear_with_power(
-            t, self.gamma_power_non_protein
+        beta_nucleic = self._beta_deriv_linear_with_power(
+            t, self.nucleic_acid_gamma_power
         )
-        return self._select_by_atom_type(
-            beta_protein, beta_non_protein, beta_non_protein, f_input
-        )
+        beta_ligand = self._beta_deriv_linear_with_power(t, self.ligand_gamma_power)
+        return self._select_by_atom_type(beta_protein, beta_nucleic, beta_ligand, f_input)
 
     @property
     def _effective_sigma_data(self) -> float:
