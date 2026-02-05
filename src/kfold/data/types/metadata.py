@@ -81,6 +81,8 @@ class ChainInfo(JsonSerializable):
     is_covalent_ligand: bool = False
     is_ion: bool = False
     is_low_homology: bool = False  # whether to use this chain for evaluation
+    label_asym_id: str | None = None  # chain id assigned by PDB
+    auth_asym_id: str | None = None  # chain id assigned by author
 
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding default boolean values."""

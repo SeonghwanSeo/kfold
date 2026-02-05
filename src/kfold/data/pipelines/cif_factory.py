@@ -386,6 +386,14 @@ def prepare_ref_structure(
             label_id_to_asym_id[label_id] = asym_id
     del asym_id_counter  # free memory
 
+    label_id_to_auth_id: dict[LabelId, AuthId] = {}
+    for chain in raw_struct[0]:
+        auth_id: AuthId = "".join(filter(str.isalpha, chain.name))
+        for subchain in chain.subchains():
+            label_id: LabelId = subchain.subchain_id()
+            label_id = "".join(filter(str.isalpha, label_id))
+            label_id_to_auth_id[label_id] = auth_id
+
     # ==================================================
     # Identify valid entities and chains
     # ==================================================
@@ -649,8 +657,13 @@ def prepare_ref_structure(
         v: k for k, v in label_id_to_asym_id.items()
     }
     for c in chain_structs:
-        label_id: LabelId = asym_id_to_label_id[c.asym_id]
-        chain_info = structure_preparation.prepare_chain_metadata(c, name=label_id)
+        # label id: including chain letter and optional assembly number
+        name: LabelId = asym_id_to_label_id[c.asym_id]
+        chain_info = structure_preparation.prepare_chain_metadata(c, name=name)
+        # Save label_asym_id/auth_asym_id, which is same to visualized in RCSB
+        label_asym_id: LabelId = "".join(filter(str.isalpha, name))
+        chain_info.label_asym_id = label_asym_id
+        chain_info.auth_asym_id = label_id_to_auth_id[label_asym_id]
         metadata.chains.append(chain_info)
 
     return RefStructure(
@@ -674,6 +687,10 @@ def insert_chain_coordinates(
         if ref_chain.ctype.is_polymer:
             residue_index: int = res.label_seq
             if residue_index is None:
+                logger.warning(
+                    f"Residue {res.name} in chain {raw_chain.subchain_id()} "
+                    f"missing label_seq; skipping."
+                )
                 continue
         else:
             # For non-polymer residues, use 1-based index within the entity
@@ -682,7 +699,7 @@ def insert_chain_coordinates(
 
         if residue_index < 1 or residue_index > len(ccd_sequence):
             # Skip invalid residue indices
-            logger.debug(
+            logger.warning(
                 f"Residue index {residue_index} out of bounds for chain with length "
                 f"{len(ccd_sequence)}."
             )
@@ -696,10 +713,8 @@ def insert_chain_coordinates(
             if n in name_to_atom:
                 atom: gemmi.Atom = name_to_atom[n]
                 coords: gemmi.Position = atom.pos
-                ref_chain.atom.coords[atom_i, 0] = coords.x
-                ref_chain.atom.coords[atom_i, 1] = coords.y
-                ref_chain.atom.coords[atom_i, 2] = coords.z
-                ref_chain.atom.bfactor[atom_i] = atom.b_iso
+                ref_chain.atom.coords[atom_i, :] = (coords.x, coords.y, coords.z)
+                ref_chain.atom.bfactor[atom_i] = min(atom.b_iso, 99.9)  # cap bfactor
                 name_to_atom.pop(n)
             else:
                 # Leave as NaN if atom not found
