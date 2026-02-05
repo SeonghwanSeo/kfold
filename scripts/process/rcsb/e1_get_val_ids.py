@@ -318,7 +318,7 @@ def run_clustering(
     all_sequences: list[Seq],
     mmseqs: str,
     sequence_identity: float = SEQUENCE_IDENTITY_THRESHOLD,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, str]:
     """Main function to process and cluster sequences."""
 
     # Sequence -> representative ID mapping
@@ -329,7 +329,7 @@ def run_clustering(
     ligand_to_repr_id: dict[str, str] = {}
 
     # Collect sequences
-    for seq in all_sequences:
+    for seq in sorted(all_sequences, key=lambda x: x.id):
         sequence = seq.sequence
         if seq.ctype.is_polymer:
             # Use first occurrence as representative
@@ -394,13 +394,16 @@ def run_clustering(
     print(f"  Ligands: {len(set(ligand_clusters.values()))}")
 
     # Return clustering mapping
-    cluster_mapping: dict[str, dict[str, str]] = {
-        "protein": protein_clusters | short_protein_clusters,
-        "dna": dna_clusters,
-        "rna": rna_clusters,
-        "ligand": ligand_clusters,
+    cluster_mapping: dict[C.ChainType, dict[str, str]] = {
+        C.ChainType.PROTEIN: protein_clusters | short_protein_clusters,
+        C.ChainType.DNA: dna_clusters,
+        C.ChainType.RNA: rna_clusters,
+        C.ChainType.LIGAND: ligand_clusters,
     }
-    return cluster_mapping
+    clustering: dict[str, str] = {
+        seq.id: cluster_mapping[seq.ctype][seq.sequence] for seq in all_sequences
+    }
+    return clustering
 
 
 def filter_multier_interfaces(
@@ -523,16 +526,12 @@ def filter_multier_interfaces(
     for seq1, seq2 in filtered_interfaces:
         all_sequences.extend([seq1, seq2])
     # Run clustering
-    seq_to_clusters: dict[str, dict[str, str]] = run_clustering(
-        all_sequences, mmseqs=mmseqs
-    )
+    clusters: dict[str, str] = run_clustering(all_sequences, mmseqs)
     # Interface-level clustering
     interface_clusters: dict[str, list[Interface]] = defaultdict(list)
     for iface in filtered_interfaces:
         seq1, seq2 = iface
-        cluster_id1 = seq_to_clusters[seq1.ctype_str][seq1.sequence]
-        cluster_id2 = seq_to_clusters[seq2.ctype_str][seq2.sequence]
-        cluster_id = ":".join(norm_key(cluster_id1, cluster_id2))
+        cluster_id = ":".join(norm_key(clusters[seq1.id], clusters[seq2.id]))
         interface_clusters[cluster_id].append(iface)
 
     # Sample one interface per cluster
@@ -624,13 +623,11 @@ def filter_monomers(
     # ============================================================
     print("\nStage 3-1: Clustering interfaces...")
     # Run clustering
-    seq_to_clusters: dict[str, dict[str, str]] = run_clustering(
-        filtered_polymers, mmseqs=mmseqs
-    )
+    clusters: dict[str, str] = run_clustering(filtered_polymers, mmseqs=mmseqs)
     # Interface-level clustering
     clusters: dict[str, list[Seq]] = defaultdict(list)
     for seq in filtered_polymers:
-        cluster_id = seq_to_clusters[seq.ctype_str][seq.sequence]
+        cluster_id = clusters[seq.id]
         clusters[cluster_id].append(seq)
 
     print("\nStage 3-2: Sample one polymer per cluster...")

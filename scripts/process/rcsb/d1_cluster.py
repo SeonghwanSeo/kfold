@@ -206,7 +206,7 @@ def update_metadata(
         entity_id_2 = asym_id_to_entity_id[asym_id_2]
         cluster_id_1 = entity_id_to_cluster[entity_id_1]
         cluster_id_2 = entity_id_to_cluster[entity_id_2]
-        iface.cluster_id = ":".join(sorted([cluster_id_1, cluster_id_2]))
+        iface.cluster_id = "|".join(sorted([cluster_id_1, cluster_id_2]))
 
 
 def main():
