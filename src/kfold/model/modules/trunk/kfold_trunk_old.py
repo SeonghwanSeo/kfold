@@ -1,4 +1,40 @@
-"""KFold trunk module."""
+"""KFold trunk module.
+
+Compared to the AlphaFold3 trunk (which comprises the MSAModule, TemplateModule,
+and Pairformer), KFold replaces these components with custom modules designed to
+incorporate apo structure information and evolutionary pre-trained sequence
+features.
+
+1. Feeding apo structure information
+------------------------------------
+There are four sources for apo structures:
+1. Experimental apo structures
+2. Experimental holo structures
+3. Predicted apo structures (e.g., AlphaFold2, ESMFold)
+4. Permuted structures from KFold's apo-permutation module.
+
+Sources 1-3 provide multi-state information about the protein.
+Source 4 provides local flexibility information.
+
+2. Bidirectional information flow (Single <-> Pairwise)
+-------------------------------------------------------
+The InterformerStack is a modified version of the AlphaFold3 PairformerStack.
+In InterformerStack, the information flow between single (s) and pairwise (z)
+representations is fully bidirectional (s <-> z). This enables a more integrated
+representation that captures the interplay between evolutionary features and
+interaction features.
+
+Sub-modules
+-----------
+The KFoldTrunk module consists of the following:
+    - MultiStateModule (Modified Template Embedder, Not implemented yet):
+        Directly uses multi-state apo coordinates.
+        Input shape: (B, N_atom, N_apo, 3)
+    - InterformerStack (Modified Pairformer Stack):
+        Performs bidirectional updates between single (s) and pairwise (z)
+        representations.
+        Input shape: s: (B, L, c_s), z: (B, L, L, c_z)
+"""
 
 import dataclasses
 
@@ -6,8 +42,7 @@ import torch
 import torch.nn as nn
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.layers.alphafold3.pairformer import PairformerStack
-from kfold.model.layers.kfold.plm_module import PLMModule
+from kfold.model.layers.kfold.interformer import InterformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
@@ -15,24 +50,19 @@ from .base import BaseTrunk
 
 
 @dataclasses.dataclass(kw_only=True)
-class PLMModuleConfig:
-    channel_plm: int = 2560
-    use_separate_projections: bool = True
-
-
-@dataclasses.dataclass(kw_only=True)
-class PairformerConfig:
+class InterformerConfig:
     num_heads_attn: int = 16
     num_heads_tri_attn: int = 4
     num_blocks: int = 48
     dropout: float = 0.25
+    use_separate_projections: bool = True
     skip_tri_attn: bool = False
     # Proteina-style QK normalization (LayerNorm on Q and K before head split)
     use_qk_norm: bool = False
 
 
 @TRUNK.register()
-class KFoldTrunk(BaseTrunk):
+class KFoldTrunkV0(BaseTrunk):
     class Config(BaseTrunk.Config):
         """Configuration for the KFoldTrunk module.
 
@@ -55,43 +85,39 @@ class KFoldTrunk(BaseTrunk):
         channel_s: int = 384
         channel_z: int = 128
 
-        # plm module
-        use_plm_module: bool = True
-        plm_module: PLMModuleConfig = dataclasses.field(default_factory=PLMModuleConfig)
-
         # pairformer
-        pairformer: PairformerConfig = dataclasses.field(default_factory=PairformerConfig)
+        interformer: InterformerConfig = dataclasses.field(
+            default_factory=InterformerConfig
+        )
 
         # other options
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
         # Proteina-style register tokens.
-        # These tokens are prepended to representations and removed after trunk.
+        # These tokens are prepended to the sequence representation inside the trunk,
+        # and removed before returning (so downstream structure modules remain
+        # unchanged).
         num_register_tokens: int = 0
         register_token_init_std: float = 0.05
+        # How register tokens participate in intra-chain masking:
+        # - "all": register tokens are treated as intra with all chains (default).
+        # - "separate": register tokens form their own chain.
+        register_token_intra_mode: str = "all"
 
     def __init__(self, cfg: Config, kernel_config=None):
         """Initialize the MultiStateApoTrunk module."""
         super().__init__(cfg, kernel_config)
-        # PLM module
-        self.use_plm_module: bool = cfg.use_plm_module
-        if self.use_plm_module:
-            self.plm_module: PLMModule = PLMModule(
-                channel_plm=cfg.plm_module.channel_plm,
-                channel_z=cfg.channel_z,
-                use_separate_projections=cfg.plm_module.use_separate_projections,
-            )
-
-        # Pairformer module
-        self.pairformer_module: PairformerStack = PairformerStack(
+        self.pairformer_module: InterformerStack = InterformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
-            num_heads_attn=cfg.pairformer.num_heads_attn,
-            num_heads_tri_attn=cfg.pairformer.num_heads_tri_attn,
-            num_blocks=cfg.pairformer.num_blocks,
-            dropout=cfg.pairformer.dropout,
-            use_qk_norm=cfg.pairformer.use_qk_norm,
+            num_heads_attn=cfg.interformer.num_heads_attn,
+            num_heads_tri_attn=cfg.interformer.num_heads_tri_attn,
+            num_blocks=cfg.interformer.num_blocks,
+            dropout=cfg.interformer.dropout,
+            skip_tri_attn=cfg.interformer.skip_tri_attn,
+            use_separate_projections=cfg.interformer.use_separate_projections,
+            use_qk_norm=cfg.interformer.use_qk_norm,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
@@ -108,6 +134,11 @@ class KFoldTrunk(BaseTrunk):
         self.num_register_tokens: int = int(cfg.num_register_tokens)
         if self.num_register_tokens < 0:
             raise ValueError("num_register_tokens must be >= 0")
+        self.register_token_intra_mode = str(cfg.register_token_intra_mode)
+        if self.register_token_intra_mode not in {"all", "separate"}:
+            raise ValueError(
+                "register_token_intra_mode must be one of: 'all', 'separate'"
+            )
         if self.num_register_tokens > 0:
             self.register_tokens = nn.Parameter(
                 torch.empty(self.num_register_tokens, cfg.channel_s)
@@ -132,6 +163,60 @@ class KFoldTrunk(BaseTrunk):
             dynamic=False,
             fullgraph=False,
         )  # type: ignore
+
+    def _extend_registers(
+        self,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
+        mask: torch.Tensor,
+        intra_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Prepend register tokens to s/z/mask/intra_mask (Proteina-style)."""
+        R = self.num_register_tokens
+        if R <= 0:
+            return s_init, z_init, mask, intra_mask
+
+        assert self.register_tokens is not None
+        B, L, _ = s_init.shape
+        reg = self.register_tokens.to(dtype=s_init.dtype, device=s_init.device)
+        reg = reg.unsqueeze(0).expand(B, -1, -1)  # [B, R, C_s]
+        s_init = torch.cat([reg, s_init], dim=1)  # [B, R+L, C_s]
+
+        z_pad = torch.zeros(
+            (B, L + R, L + R, z_init.shape[-1]),
+            device=z_init.device,
+            dtype=z_init.dtype,
+        )
+        z_pad[:, R:, R:] = z_init
+        z_init = z_pad
+
+        reg_mask = torch.ones((B, R), device=mask.device, dtype=mask.dtype)
+        mask = torch.cat([reg_mask, mask], dim=-1)  # [B, R+L]
+
+        intra_pad = torch.zeros(
+            (B, L + R, L + R),
+            device=intra_mask.device,
+            dtype=intra_mask.dtype,
+        )
+        intra_pad[:, R:, R:] = intra_mask
+        if self.register_token_intra_mode == "all":
+            intra_pad[:, :R, :] = True
+            intra_pad[:, :, :R] = True
+        else:
+            intra_pad[:, :R, :R] = True
+        intra_mask = intra_pad
+        return s_init, z_init, mask, intra_mask
+
+    def _undo_registers(
+        self,
+        s_trunk: torch.Tensor,
+        z_trunk: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Remove register tokens from s/z outputs."""
+        R = self.num_register_tokens
+        if R <= 0:
+            return s_trunk, z_trunk
+        return s_trunk[:, R:], z_trunk[:, R:, R:]
 
     def forward(
         self,
@@ -172,17 +257,20 @@ class KFoldTrunk(BaseTrunk):
         else:
             chunk_size_tri_attn = None
 
-        s_plm = f_input.pretrained.sequence_embedding  # [B, L, c_plm]
-
         # === Proteina-style register tokens (optional) ===
-        mask = f_input.token.pad_mask
-        asym_id = f_input.token.asym_id
-        s_init, z_init, s_plm, asym_id, mask = self._extend_registers(
-            s_init, z_init, s_plm, asym_id, mask
+        # We extend (s, z, mask, intra_mask) internally, and slice them out before
+        # return.
+        mask_real = f_input.token.pad_mask
+        intra_mask_real = (
+            f_input.token.asym_id[..., :, None] == f_input.token.asym_id[..., None, :]
+        )  # [..., L, L]
+
+        s_init, z_init, mask, intra_mask = self._extend_registers(
+            s_init, z_init, mask_real, intra_mask_real
         )
 
         # Revert to uncompiled version for validation
-        pairformer_module: PairformerStack
+        pairformer_module: InterformerStack
         if self.is_compiled and not self.training:
             pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
         else:
@@ -202,13 +290,11 @@ class KFoldTrunk(BaseTrunk):
                 s = s_init + self.linear_s(self.layernorm_s(s_hat))
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
 
-                if self.use_plm_module:
-                    z = self.plm_module(z, s_plm, asym_id, mask)
-
                 s, z = pairformer_module(
                     s,
                     z,
                     mask=mask,
+                    intra_mask=intra_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
                     use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
@@ -217,54 +303,3 @@ class KFoldTrunk(BaseTrunk):
 
         # Remove register tokens before returning.
         return self._undo_registers(s_hat, z_hat)
-
-    def _extend_registers(
-        self,
-        s_init: torch.Tensor,
-        z_init: torch.Tensor,
-        s_plm: torch.Tensor,
-        asym_id: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Prepend register tokens (Proteina-style)."""
-        R = self.num_register_tokens
-        if R <= 0:
-            return s_init, z_init, s_plm, asym_id, mask
-
-        device = s_init.device
-
-        assert self.register_tokens is not None
-        B, L, _ = s_init.shape
-        reg = self.register_tokens.to(device=device, dtype=s_init.dtype)
-        reg = reg.unsqueeze(0).expand(B, -1, -1)  # [B, R, C_s]
-        s_init = torch.cat([reg, s_init], dim=1)  # [B, R+L, C_s]
-
-        z_pad = torch.zeros(
-            (B, L + R, L + R, z_init.shape[-1]), device=device, dtype=z_init.dtype
-        )
-        z_pad[:, R:, R:] = z_init
-        z_init = z_pad
-
-        s_plm_pad = torch.zeros(
-            (B, L + R, s_plm.shape[-1]), device=device, dtype=s_plm.dtype
-        )
-        s_plm_pad[:, R:] = s_plm
-
-        asym_id_pad = torch.zeros((B, L + R), device=device, dtype=asym_id.dtype)
-        asym_id_pad[:, R:] = asym_id
-
-        mask_pad = torch.ones((B, L + R), device=device, dtype=mask.dtype)
-        mask_pad[:, R:] = mask
-
-        return s_init, z_init, s_plm_pad, asym_id, mask_pad
-
-    def _undo_registers(
-        self,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Remove register tokens from s/z outputs."""
-        R = self.num_register_tokens
-        if R <= 0:
-            return s_trunk, z_trunk
-        return s_trunk[:, R:], z_trunk[:, R:, R:]

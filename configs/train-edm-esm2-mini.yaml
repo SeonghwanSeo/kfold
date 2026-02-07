@@ -1,9 +1,9 @@
 model:
   _yaml_: "model/kfold-edm.yaml"
-  input_embedder:
-    channel_seq_encoder: 2560
   trunk:
-    interformer:
+    plm_module:
+      channel_plm: 2560
+    pairformer:
       num_blocks: 16
   score_model:
     atom_encoder_blocks: 1

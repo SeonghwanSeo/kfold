@@ -23,7 +23,7 @@ channel_seq_encoder: null
 
 # Interaction-specific configs
 use_interaction: false
-num_interaction_types: 9
+num_interaction_types: 8
 num_pair_interaction_types: 5
 debug_interaction: false
 debug_interaction_max_logs: 1
