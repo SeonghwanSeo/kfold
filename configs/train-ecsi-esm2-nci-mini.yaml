@@ -1,19 +1,14 @@
 model:
-  _yaml_: "model/kfold-ecsi.yaml"
-  input_embedder:
-    channel_seq_encoder: 2560
-    use_interaction: true
+  _yaml_: "model/kfold-ecsi-nci.yaml"
   trunk:
-    interformer:
+    plm_module:
+      channel_plm: 2560
+    pairformer:
       num_blocks: 16
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
     atom_decoder_blocks: 1
-  interaction_head:
-    _yaml_: "model/module/interaction_head/linear.yaml"
-    channel_z: 128
-    num_pair_types: 5
 
 train:
   _yaml_: "train/stage_1.yaml"

@@ -93,7 +93,7 @@ validation:
   num_steps: 200
   num_diffusion_samples: 5
   symmetry_correction: true
-  save_predictions: true
+  save_predictions: false
   return_traj: false
   traj_format: "pdb"
 
