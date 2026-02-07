@@ -265,7 +265,7 @@ def featurize_structure(
         (num_tokens,), C.constraint.ConstraintType.UNSPECIFIED, dtype=np.int64
     )
 
-    # Change interaction types to float32
+    # TODO: Change interaction types to float32
     token_dict["interaction_type"] = token_dict["interaction_type"].astype(np.int64)
 
     # Add frame information
