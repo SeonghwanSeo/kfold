@@ -1,70 +1,20 @@
-"""KFold trunk module.
-
-Compared to the AlphaFold3 trunk (which comprises the MSAModule, TemplateModule,
-and Pairformer), KFold replaces these components with custom modules designed to
-incorporate apo structure information and evolutionary pre-trained sequence
-features.
-
-1. Feeding apo structure information
-------------------------------------
-There are four sources for apo structures:
-1. Experimental apo structures
-2. Experimental holo structures
-3. Predicted apo structures (e.g., AlphaFold2, ESMFold)
-4. Permuted structures from KFold's apo-permutation module.
-
-Sources 1-3 provide multi-state information about the protein.
-Source 4 provides local flexibility information.
-
-2. Bidirectional information flow (Single <-> Pairwise)
--------------------------------------------------------
-The InterformerStack is a modified version of the AlphaFold3 PairformerStack.
-In InterformerStack, the information flow between single (s) and pairwise (z)
-representations is fully bidirectional (s <-> z). This enables a more integrated
-representation that captures the interplay between evolutionary features and
-interaction features.
-
-Sub-modules
------------
-The KFoldTrunk module consists of the following:
-    - MultiStateModule (Modified Template Embedder, Not implemented yet):
-        Directly uses multi-state apo coordinates.
-        Input shape: (B, N_atom, N_apo, 3)
-    - InterformerStack (Modified Pairformer Stack):
-        Performs bidirectional updates between single (s) and pairwise (z)
-        representations.
-        Input shape: s: (B, L, c_s), z: (B, L, L, c_z)
-"""
-
-import dataclasses
-
 import torch
 import torch.nn as nn
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.layers.kfold.interformer import InterformerStack
+from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
 from .base import BaseTrunk
 
 
-@dataclasses.dataclass(kw_only=True)
-class InterformerConfig:
-    num_heads_attn: int = 16
-    num_heads_tri_attn: int = 4
-    num_blocks: int = 48
-    dropout: float = 0.25
-    use_separate_projections: bool = True
-    skip_tri_attn: bool = False
-    # Proteina-style QK normalization (LayerNorm on Q and K before head split)
-    use_qk_norm: bool = False
-
-
 @TRUNK.register()
-class KFoldTrunk(BaseTrunk):
+class PairformerTrunkV2(BaseTrunk):
+    """Pairformer Trunk for ECSI"""
+
     class Config(BaseTrunk.Config):
-        """Configuration for the KFoldTrunk module.
+        """Configuration for the Pairformer module.
 
         Parameters
         ----------
@@ -76,48 +26,65 @@ class KFoldTrunk(BaseTrunk):
             The number of attention heads, by default 16
         num_heads_tri_attn : int, optional
             The number of triangle attention heads, by default 4
+        num_blocks : int
+            The number of blocks.
         dropout : float, optional
             The dropout rate, by default 0.25
+        use_template: bool, optional
+            Whether to use template, by default False
+        use_msa: bool, optional
+            Whether to use MSA, by default False
         tri_attn_chunk_threshold : int, optional
             The threshold for chunking in triangle attention, by default 384
+
+        use_qk_norm : bool, optional
+            Whether to apply Proteina-style QK normalization (LayerNorm on Q/K
+            before head split) inside pairformer attention blocks.
+        num_register_tokens : int, optional
+            Number of Proteina-style register tokens to prepend internally to the
+            sequence representation. These tokens are removed before returning
+            (so downstream structure modules remain unchanged).
         """
 
         channel_s: int = 384
         channel_z: int = 128
-
-        # pairformer
-        interformer: InterformerConfig = dataclasses.field(
-            default_factory=InterformerConfig
-        )
-
-        # other options
+        num_heads_attn: int = 16
+        num_heads_tri_attn: int = 4
+        num_blocks: int = 48
+        dropout: float = 0.25
+        use_msa: bool = False
+        use_template: bool = False
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
-        # Proteina-style register tokens.
-        # These tokens are prepended to the sequence representation inside the trunk,
-        # and removed before returning (so downstream structure modules remain
-        # unchanged).
+        # Proteina-style options
+        use_qk_norm: bool = False
         num_register_tokens: int = 0
         register_token_init_std: float = 0.05
-        # How register tokens participate in intra-chain masking:
-        # - "all": register tokens are treated as intra with all chains (default).
-        # - "separate": register tokens form their own chain.
-        register_token_intra_mode: str = "all"
 
-    def __init__(self, cfg: Config, kernel_config=None):
-        """Initialize the MultiStateApoTrunk module."""
+    def __init__(self, cfg: Config, kernel_config):
+        """Initialize the Pairformer module."""
         super().__init__(cfg, kernel_config)
-        self.pairformer_module: InterformerStack = InterformerStack(
+        self.use_msa: bool = cfg.use_msa
+        self.use_template: bool = cfg.use_template
+        self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
+
+        if self.use_template:
+            raise NotImplementedError(
+                "Template Embedder is not implemented yet (Boltz1 does not support too)"
+            )
+        if self.use_msa:
+            # TODO: Implement MSA Module
+            raise NotImplementedError("MSA Module is not implemented yet")
+
+        self.pairformer_module: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
-            num_heads_attn=cfg.interformer.num_heads_attn,
-            num_heads_tri_attn=cfg.interformer.num_heads_tri_attn,
-            num_blocks=cfg.interformer.num_blocks,
-            dropout=cfg.interformer.dropout,
-            skip_tri_attn=cfg.interformer.skip_tri_attn,
-            use_separate_projections=cfg.interformer.use_separate_projections,
-            use_qk_norm=cfg.interformer.use_qk_norm,
+            num_heads_attn=cfg.num_heads_attn,
+            num_heads_tri_attn=cfg.num_heads_tri_attn,
+            num_blocks=cfg.num_blocks,
+            dropout=cfg.dropout,
+            use_qk_norm=cfg.use_qk_norm,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
@@ -127,26 +94,16 @@ class KFoldTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-        # Other options
-        self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
-
-        # Proteina-style register tokens (learnable sequence-level registers).
+        # Proteina-style register tokens.
         self.num_register_tokens: int = int(cfg.num_register_tokens)
         if self.num_register_tokens < 0:
             raise ValueError("num_register_tokens must be >= 0")
-        self.register_token_intra_mode = str(cfg.register_token_intra_mode)
-        if self.register_token_intra_mode not in {"all", "separate"}:
-            raise ValueError(
-                "register_token_intra_mode must be one of: 'all', 'separate'"
-            )
         if self.num_register_tokens > 0:
             self.register_tokens = nn.Parameter(
                 torch.empty(self.num_register_tokens, cfg.channel_s)
             )
             nn.init.normal_(
-                self.register_tokens,
-                mean=0.0,
-                std=float(cfg.register_token_init_std),
+                self.register_tokens, mean=0.0, std=float(cfg.register_token_init_std)
             )
         else:
             self.register_tokens = None
@@ -169,12 +126,11 @@ class KFoldTrunk(BaseTrunk):
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         mask: torch.Tensor,
-        intra_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Prepend register tokens to s/z/mask/intra_mask (Proteina-style)."""
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Prepend register tokens to s/z/mask (Proteina-style)."""
         R = self.num_register_tokens
         if R <= 0:
-            return s_init, z_init, mask, intra_mask
+            return s_init, z_init, mask
 
         assert self.register_tokens is not None
         B, L, _ = s_init.shape
@@ -192,20 +148,7 @@ class KFoldTrunk(BaseTrunk):
 
         reg_mask = torch.ones((B, R), device=mask.device, dtype=mask.dtype)
         mask = torch.cat([reg_mask, mask], dim=-1)  # [B, R+L]
-
-        intra_pad = torch.zeros(
-            (B, L + R, L + R),
-            device=intra_mask.device,
-            dtype=intra_mask.dtype,
-        )
-        intra_pad[:, R:, R:] = intra_mask
-        if self.register_token_intra_mode == "all":
-            intra_pad[:, :R, :] = True
-            intra_pad[:, :, :R] = True
-        else:
-            intra_pad[:, :R, :R] = True
-        intra_mask = intra_pad
-        return s_init, z_init, mask, intra_mask
+        return s_init, z_init, mask
 
     def _undo_registers(
         self,
@@ -225,22 +168,27 @@ class KFoldTrunk(BaseTrunk):
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
+        z_interaction_init: torch.Tensor | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
+        See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
 
         Parameters
         ----------
         s_inputs : torch.Tensor
             Tensor of shape (B, L, C_s) containing input single features
-        s_init: torch.Tensor
+        s_inits: torch.Tensor
             Tensor of shape (B, L, C_s) containing initial single representation
-        z_init: torch.Tensor
+        z_inits: torch.Tensor
             Tensor of shape (B, L, L, C_s) containing initial pair representation
         f_input : FoldingInput
             The input features.
         num_recycles : int
             The number of recycling steps.
+        z_interaction_init : torch.Tensor | None
+            Optional interaction pair features. Required when
+            ``interaction_mode == "separate"``.
 
         Returns
         -------
@@ -258,25 +206,18 @@ class KFoldTrunk(BaseTrunk):
             chunk_size_tri_attn = None
 
         # === Proteina-style register tokens (optional) ===
-        # We extend (s, z, mask, intra_mask) internally, and slice them out before
-        # return.
+        # We extend (s, z, mask) internally, and slice them out before return.
         mask_real = f_input.token.pad_mask
-        intra_mask_real = (
-            f_input.token.asym_id[..., :, None] == f_input.token.asym_id[..., None, :]
-        )  # [..., L, L]
-
-        s_init, z_init, mask, intra_mask = self._extend_registers(
-            s_init, z_init, mask_real, intra_mask_real
-        )
+        s_init, z_init, mask = self._extend_registers(s_init, z_init, mask_real)
 
         # Revert to uncompiled version for validation
-        pairformer_module: InterformerStack
+        pairformer_module: PairformerStack
         if self.is_compiled and not self.training:
             pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
         else:
             pairformer_module = self.pairformer_module
 
-        # z_hat, s_hat = 0, 0
+        # Line 6, z_hat, s_hat = 0, 0
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
 
@@ -287,18 +228,30 @@ class KFoldTrunk(BaseTrunk):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
-                s = s_init + self.linear_s(self.layernorm_s(s_hat))
+                # Line 8
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
 
+                # Line 9: TemplateEmbedder
+                if self.use_template:
+                    raise NotImplementedError("Template Embedder is not implemented yet")
+
+                # Line 10: MSAModule
+                if self.use_msa:
+                    raise NotImplementedError("MSA Module is not implemented yet")
+
+                # Line 11
+                s = s_init + self.linear_s(self.layernorm_s(s_hat))
+
+                # Line 12
                 s, z = pairformer_module(
                     s,
                     z,
                     mask=mask,
-                    intra_mask=intra_mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
                     use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 
+                # Line 13
                 s_hat, z_hat = s, z
 
         # Remove register tokens before returning.

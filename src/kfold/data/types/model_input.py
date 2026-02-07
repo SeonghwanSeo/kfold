@@ -167,7 +167,7 @@ class TokenTensor(TensorLayout):
         Mask tensor of shape [Ntoken,], indicating valid tokens.
     pocket_contact_type: torch.Tensor (long)
         Pocket contact types of shape [Ntoken,], indicating pocket contact information.
-    interaction_type: torch.Tensor (long)
+    interaction_type: torch.Tensor (bool)
         Multi-hot interaction types of shape [Ntoken, NUM_INTERACTION_TYPES].
 
     # For model training
@@ -195,7 +195,7 @@ class TokenTensor(TensorLayout):
     frames_mask: torch.Tensor  # [Ntoken,], bool
     pad_mask: torch.Tensor  # [Ntoken,], bool
     pocket_contact_type: torch.Tensor  # [Ntoken,], bool
-    interaction_type: torch.Tensor  # [Ntoken, NUM_INTERACTION_TYPES], long
+    interaction_type: torch.Tensor  # [Ntoken, NUM_INTERACTION_TYPES], bool
 
     # For model training
     center_coords: torch.Tensor  # [Ntoken, 3], long
@@ -249,7 +249,7 @@ class TokenTensor(TensorLayout):
         check_tensor(
             self.interaction_type,
             name="interaction_type",
-            dtype=torch.long,
+            dtype=torch.bool,
             shape=(*shape, C.NUM_INTERACTION_TYPES),
         )
 
@@ -313,7 +313,7 @@ class TokenTensor(TensorLayout):
             "frames_mask": False,
             "pad_mask": False,
             "pocket_contact_type": 0,
-            "interaction_type": 0,
+            "interaction_type": False,
             # For model training
             "center_coords": 0.0,
             "disto_coords": 0.0,

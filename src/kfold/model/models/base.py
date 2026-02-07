@@ -272,9 +272,7 @@ class BaseFoldingModel(torch.nn.Module):
 
         # Embed inputs
         st = time.time()
-        embed_out = self.input_embedder(f_input)
-        s_inputs, s_init, z_init = embed_out[:3]
-        extra_embed_args = embed_out[3:]
+        s_inputs, s_init, z_init = self.input_embedder(f_input)
         et = time.time()
         time_logs["input_embedder"] = et - st
 
@@ -286,7 +284,6 @@ class BaseFoldingModel(torch.nn.Module):
             z_init,
             f_input,
             num_recycles,
-            *extra_embed_args,
         )
         s_trunk, z_trunk = trunk_out[:2]
         et = time.time()

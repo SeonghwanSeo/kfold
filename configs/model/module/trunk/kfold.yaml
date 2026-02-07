@@ -10,19 +10,8 @@ interformer:
   skip_tri_attn: false
   use_separate_projections: true
   use_qk_norm: false
-ensemble_module:
-  channel_struct_input: 0 # to be filled in by the ensemble config
-  channel_struct: 128
-  channel_hidden_opm: 32
-  num_heads_pwa: 8
-  num_heads_tri_attn: 4
-  num_blocks: 4
-  dropout_struct: 0.15
-  dropout_z: 0.25
-multi_state_module: {}
-use_ensemble: false
-use_multi_state: false
 blocks_per_ckpt: 1
+
 tri_attn_chunk_threshold: 384
 num_register_tokens: 0
 register_token_init_std: 0.05

@@ -122,7 +122,7 @@ class LossConfig:
     weights: dict[str, float]
     distogram_loss: Any
     diffusion_loss: Any
-    interaction_loss: Any | None = None
+    interaction_loss: Any
     confidence_loss: Any
 
 
@@ -266,8 +266,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     **diffusion_loss_config.smooth_lddt_loss
                 )
 
-        interaction_weight = self.loss_weights.get("interaction", 0.0)
-        if self.train_interaction_head and interaction_weight > 0:
+        if self.train_interaction_head:
             if self.model.interaction_head is None:
                 raise ValueError(
                     "interaction_head is not configured but interaction loss is enabled."
@@ -476,7 +475,7 @@ class KFoldTrainingModule(pl.LightningModule):
             loss_weights["confidence"] * confidence_loss
             + loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
-            + loss_weights.get("interaction", 0.0) * interaction_loss
+            + loss_weights["interaction"] * interaction_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
