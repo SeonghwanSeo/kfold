@@ -1,3 +1,5 @@
+import math
+
 import torch
 
 from kfold.data.types.model_input import FoldingInput
@@ -66,6 +68,9 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
         atom_encoder_heads: int = 4
         token_transformer_blocks: int = 24
         token_transformer_heads: int = 8
+        use_geonorm: bool = True
+        geonorm_decay: str = "harmonic"
+        geonorm_clamp: float = math.pi / 4
         atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
         conditioning_transition_layers: int = 2
@@ -74,7 +79,9 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
     def __init__(self, cfg: Config, kernel_config):
         super().__init__(cfg, kernel_config)
 
-        diffusion_stack_class = DiffusionModuleWithApo if cfg.use_apo else DiffusionModule
+        diffusion_stack_class = (
+            DiffusionModuleWithApo if cfg.use_apo else DiffusionModule
+        )
         self.diffusion_stack = diffusion_stack_class(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
@@ -88,6 +95,9 @@ class ApoConditionedDiffusionModule(BaseScoreModel):
             atom_encoder_heads=cfg.atom_encoder_heads,
             token_transformer_blocks=cfg.token_transformer_blocks,
             token_transformer_heads=cfg.token_transformer_heads,
+            use_geonorm=cfg.use_geonorm,
+            geonorm_decay=cfg.geonorm_decay,
+            geonorm_clamp=cfg.geonorm_clamp,
             atom_decoder_blocks=cfg.atom_decoder_blocks,
             atom_decoder_heads=cfg.atom_decoder_heads,
             conditioning_transition_layers=cfg.conditioning_transition_layers,

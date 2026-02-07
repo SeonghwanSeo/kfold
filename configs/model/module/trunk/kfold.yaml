@@ -13,6 +13,9 @@ pairformer:
   num_blocks: 48
   dropout: 0.25
   use_qk_norm: false
+  use_geonorm: true
+  geonorm_decay: "harmonic"
+  geonorm_clamp: 0.7853981633974483
 
 blocks_per_ckpt: 1
 tri_attn_chunk_threshold: 384

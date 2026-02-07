@@ -37,6 +37,7 @@ The KFoldTrunk module consists of the following:
 """
 
 import dataclasses
+import math
 
 import torch
 import torch.nn as nn
@@ -59,6 +60,9 @@ class InterformerConfig:
     skip_tri_attn: bool = False
     # Proteina-style QK normalization (LayerNorm on Q and K before head split)
     use_qk_norm: bool = False
+    use_geonorm: bool = True
+    geonorm_decay: str = "harmonic"
+    geonorm_clamp: float = math.pi / 4
 
 
 @TRUNK.register()
@@ -118,6 +122,9 @@ class KFoldTrunkV0(BaseTrunk):
             skip_tri_attn=cfg.interformer.skip_tri_attn,
             use_separate_projections=cfg.interformer.use_separate_projections,
             use_qk_norm=cfg.interformer.use_qk_norm,
+            use_geonorm=cfg.interformer.use_geonorm,
+            geonorm_decay=cfg.interformer.geonorm_decay,
+            geonorm_clamp=cfg.interformer.geonorm_clamp,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 

@@ -19,6 +19,7 @@ ESMFold—which updates the pairwise embeddings using both the element-wise
 difference and product of the single embeddings.
 """
 
+import math
 from functools import partial
 
 import torch
@@ -29,6 +30,7 @@ from kfold.model.layers.alphafold3.transition import Transition
 from kfold.model.layers.primitives import (
     DropoutColumnwise,
     DropoutRowwise,
+    GeoNorm,
     LayerNorm,
     Linear,
     TriangleAttentionEndingNode,
@@ -54,9 +56,13 @@ class InterformerStack(nn.Module):
         skip_tri_attn: bool = False,
         use_qk_norm: bool = False,
         blocks_per_ckpt: int | None = None,
+        use_geonorm: bool = True,
+        geonorm_decay: str = "harmonic",
+        geonorm_clamp: float = math.pi / 4,
     ) -> None:
         """Initialize the Interformer module."""
         super().__init__()
+        self.num_blocks: int = num_blocks
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
         self.blocks = nn.ModuleList()
         for _ in range(num_blocks):
@@ -70,6 +76,9 @@ class InterformerStack(nn.Module):
                     use_separate_projections,
                     skip_tri_attn,
                     use_qk_norm,
+                    use_geonorm=use_geonorm,
+                    geonorm_decay=geonorm_decay,
+                    geonorm_clamp=geonorm_clamp,
                 )
             )
 
@@ -122,8 +131,10 @@ class InterformerStack(nn.Module):
                 pair_mask=pair_mask,
                 chunk_size_tri_attn=chunk_size_tri_attn,
                 use_cuequiv_kernels=use_cuequiv_kernels,
+                layer_number=layer_number,
+                layer_total=self.num_blocks,
             )
-            for b in self.blocks
+            for layer_number, b in enumerate(self.blocks)
         ]
         blocks_per_ckpt = self.blocks_per_ckpt
 
@@ -202,6 +213,9 @@ class InterformerBlock(nn.Module):
         use_separate_projections: bool = True,
         skip_tri_attn: bool = False,
         use_qk_norm: bool = False,
+        use_geonorm: bool = True,
+        geonorm_decay: str = "harmonic",
+        geonorm_clamp: float = math.pi / 4,
     ) -> None:
         """Initialize the Interformer module.
 
@@ -230,6 +244,44 @@ class InterformerBlock(nn.Module):
         self.num_heads_tri_attn: int = num_heads_tri_attn
         self.skip_tri_attn: bool = skip_tri_attn
         self.dropout: float = dropout
+
+        self.use_geonorm: bool = use_geonorm
+        if self.use_geonorm:
+            # GeoNorm replaces x <- x + g with a geodesic update on the ℓ2 sphere.
+            # We keep the internal modules unchanged and only modify residual updates.
+            if use_separate_projections:
+                self.geonorm_z_proj_intra = GeoNorm(
+                    decay=geonorm_decay, clamp=geonorm_clamp
+                )
+                self.geonorm_z_proj_inter = GeoNorm(
+                    decay=geonorm_decay, clamp=geonorm_clamp
+                )
+            else:
+                self.geonorm_z_proj = GeoNorm(decay=geonorm_decay, clamp=geonorm_clamp)
+
+            self.geonorm_z_tri_mul_out = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            self.geonorm_z_tri_mul_in = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            if not skip_tri_attn:
+                self.geonorm_z_tri_att_start = GeoNorm(
+                    decay=geonorm_decay, clamp=geonorm_clamp
+                )
+                self.geonorm_z_tri_att_end = GeoNorm(
+                    decay=geonorm_decay, clamp=geonorm_clamp
+                )
+            self.geonorm_z_transition = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+
+            self.geonorm_s_attention = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            self.geonorm_s_transition = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
 
         self.use_separate_projections: bool = use_separate_projections
         if self.use_separate_projections:
@@ -273,35 +325,59 @@ class InterformerBlock(nn.Module):
         intra_mask: torch.Tensor,
         chunk_size_tri_attn: int | None = None,
         use_cuequiv_kernels: bool = False,
+        layer_number: int = 0,
+        layer_total: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass."""
 
         # Information flow from single (s) to pairwise (z)
         # Separate projections for intra- and inter-chain residue pairs
         if self.use_separate_projections:
-            z = z + self.pairwise_proj_intra(s) * intra_mask[..., None]
-            z = z + self.pairwise_proj_inter(s) * (~intra_mask)[..., None]
+            g_intra = self.pairwise_proj_intra(s) * intra_mask[..., None]
+            if self.use_geonorm:
+                z = self.geonorm_z_proj_intra(z, g_intra, layer_number, layer_total)
+            else:
+                z = z + g_intra
+
+            g_inter = self.pairwise_proj_inter(s) * (~intra_mask)[..., None]
+            if self.use_geonorm:
+                z = self.geonorm_z_proj_inter(z, g_inter, layer_number, layer_total)
+            else:
+                z = z + g_inter
         else:
-            z = z + self.pairwise_proj(s)
+            g_proj = self.pairwise_proj(s)
+            if self.use_geonorm:
+                z = self.geonorm_z_proj(z, g_proj, layer_number, layer_total)
+            else:
+                z = z + g_proj
 
         # Triangle multiplicative update
-        z = z + self.dropout_rowwise(
+        g_tri_mul_out = self.dropout_rowwise(
             self.tri_mul_out(
                 z,
                 pair_mask,
                 use_kernels=use_cuequiv_kernels,
             )
         )
-        z = z + self.dropout_rowwise(
+        if self.use_geonorm:
+            z = self.geonorm_z_tri_mul_out(z, g_tri_mul_out, layer_number, layer_total)
+        else:
+            z = z + g_tri_mul_out
+
+        g_tri_mul_in = self.dropout_rowwise(
             self.tri_mul_in(
                 z,
                 mask=pair_mask,
                 use_kernels=use_cuequiv_kernels,
             )
         )
+        if self.use_geonorm:
+            z = self.geonorm_z_tri_mul_in(z, g_tri_mul_in, layer_number, layer_total)
+        else:
+            z = z + g_tri_mul_in
         if not self.skip_tri_attn:
             # Triangle attention update
-            z = z + self.dropout_rowwise(
+            g_tri_att_start = self.dropout_rowwise(
                 self.tri_att_start(
                     z,
                     mask=pair_mask,
@@ -309,7 +385,14 @@ class InterformerBlock(nn.Module):
                     use_kernels=use_cuequiv_kernels,
                 )
             )
-            z = z + self.dropout_columnwise(
+            if self.use_geonorm:
+                z = self.geonorm_z_tri_att_start(
+                    z, g_tri_att_start, layer_number, layer_total
+                )
+            else:
+                z = z + g_tri_att_start
+
+            g_tri_att_end = self.dropout_columnwise(
                 self.tri_att_end(
                     z,
                     mask=pair_mask,
@@ -317,18 +400,37 @@ class InterformerBlock(nn.Module):
                     use_kernels=use_cuequiv_kernels,
                 )
             )
+            if self.use_geonorm:
+                z = self.geonorm_z_tri_att_end(
+                    z, g_tri_att_end, layer_number, layer_total
+                )
+            else:
+                z = z + g_tri_att_end
 
         # Transition for pairwise representation
-        z = z + self.transition_z(z)
+        g_z = self.transition_z(z)
+        if self.use_geonorm:
+            z = self.geonorm_z_transition(z, g_z, layer_number, layer_total)
+        else:
+            z = z + g_z
 
         # Information flow from pairwise (z) to single (s)
-        s = s + self.attention(
+        g_s_attn = self.attention(
             s,  # [B, L, C_s]
             None,
             z,  # [B, L, L, C_z]
             attn_mask=single_mask,  # [B, L]
             use_kernels=use_cuequiv_kernels,
         )
-        s = s + self.transition_s(s)
+        if self.use_geonorm:
+            s = self.geonorm_s_attention(s, g_s_attn, layer_number, layer_total)
+        else:
+            s = s + g_s_attn
+
+        g_s = self.transition_s(s)
+        if self.use_geonorm:
+            s = self.geonorm_s_transition(s, g_s, layer_number, layer_total)
+        else:
+            s = s + g_s
 
         return s, z

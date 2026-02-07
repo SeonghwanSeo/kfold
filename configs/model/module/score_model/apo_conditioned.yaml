@@ -14,6 +14,9 @@ atom_encoder_blocks: 3
 atom_encoder_heads: 4
 token_transformer_blocks: 24
 token_transformer_heads: 16
+use_geonorm: true
+geonorm_decay: "harmonic"
+geonorm_clamp: 0.7853981633974483
 atom_decoder_blocks: 3
 atom_decoder_heads: 4
 conditioning_transition_layers: 2

@@ -2,6 +2,7 @@
 
 # started from code from https://github.com/jwohlwend/boltz, MIT License,
 
+import math
 from functools import partial
 
 import torch
@@ -10,6 +11,7 @@ import torch.nn as nn
 from kfold.model.layers.primitives import (
     DropoutColumnwise,
     DropoutRowwise,
+    GeoNorm,
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
     TriangleMultiplicationIncoming,
@@ -35,6 +37,9 @@ class PairformerStack(nn.Module):
         num_blocks: int = 48,
         dropout: float = 0.25,
         use_qk_norm: bool = False,
+        use_geonorm: bool = False,
+        geonorm_decay: str = "harmonic",
+        geonorm_clamp: float = math.pi / 4,
         blocks_per_ckpt: int | None = None,
     ):
         """Initialize the Pairformer module."""
@@ -45,6 +50,7 @@ class PairformerStack(nn.Module):
         self.num_heads_tri_attn: int = num_heads_tri_attn
         self.dropout: float = dropout
         self.num_blocks: int = num_blocks
+        self.use_geonorm: bool = use_geonorm
 
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
@@ -57,7 +63,10 @@ class PairformerStack(nn.Module):
                     self.num_heads_attn,
                     self.num_heads_tri_attn,
                     self.dropout,
-                    use_qk_norm,
+                    use_qk_norm=use_qk_norm,
+                    use_geonorm=use_geonorm,
+                    geonorm_decay=geonorm_decay,
+                    geonorm_clamp=geonorm_clamp,
                 )
             )
 
@@ -106,8 +115,10 @@ class PairformerStack(nn.Module):
                 pair_mask=pair_mask.float(),
                 chunk_size_tri_attn=chunk_size_tri_attn,
                 use_cuequiv_kernels=use_cuequiv_kernels,
+                layer_number=layer_number,
+                layer_total=self.num_blocks,
             )
-            for b in self.blocks
+            for layer_number, b in enumerate(self.blocks)
         ]
         blocks_per_ckpt = self.blocks_per_ckpt
 
@@ -139,6 +150,9 @@ class PairformerBlock(nn.Module):
         num_heads_tri_attn: int = 4,
         dropout: float = 0.25,
         use_qk_norm: bool = False,
+        use_geonorm: bool = False,
+        geonorm_decay: str = "harmonic",
+        geonorm_clamp: float = math.pi / 4,
     ):
         """Initialize the Pairformer module.
 
@@ -159,6 +173,7 @@ class PairformerBlock(nn.Module):
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
         self.dropout: float = dropout
+        self.use_geonorm: bool = use_geonorm
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
@@ -185,6 +200,29 @@ class PairformerBlock(nn.Module):
         self.dropout_rowwise = DropoutRowwise(dropout)
         self.dropout_columnwise = DropoutColumnwise(dropout)
 
+        if self.use_geonorm:
+            self.geonorm_z_tri_mul_out = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            self.geonorm_z_tri_mul_in = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            self.geonorm_z_tri_att_start = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            self.geonorm_z_tri_att_end = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            self.geonorm_z_transition = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            self.geonorm_s_attention = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+            self.geonorm_s_transition = GeoNorm(
+                decay=geonorm_decay, clamp=geonorm_clamp
+            )
+
     def forward(
         self,
         s: torch.Tensor,
@@ -193,31 +231,41 @@ class PairformerBlock(nn.Module):
         pair_mask: torch.Tensor,
         chunk_size_tri_attn: int | None = None,
         use_cuequiv_kernels: bool = False,
+        layer_number: int = 0,
+        layer_total: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
         See Section 3.6 Algorithm 20 Pairformer Stack
         """
 
         # Line 2
-        z = z + self.dropout_rowwise(
+        g_tri_mul_out = self.dropout_rowwise(
             self.tri_mul_out(
                 z,
                 pair_mask,
                 use_kernels=use_cuequiv_kernels,
             )
         )
+        if self.use_geonorm:
+            z = self.geonorm_z_tri_mul_out(z, g_tri_mul_out, layer_number, layer_total)
+        else:
+            z = z + g_tri_mul_out
 
         # Line 3
-        z = z + self.dropout_rowwise(
+        g_tri_mul_in = self.dropout_rowwise(
             self.tri_mul_in(
                 z,
                 mask=pair_mask,
                 use_kernels=use_cuequiv_kernels,
             )
         )
+        if self.use_geonorm:
+            z = self.geonorm_z_tri_mul_in(z, g_tri_mul_in, layer_number, layer_total)
+        else:
+            z = z + g_tri_mul_in
 
         # Line 4
-        z = z + self.dropout_rowwise(
+        g_tri_att_start = self.dropout_rowwise(
             self.tri_att_start(
                 z,
                 mask=pair_mask,
@@ -225,9 +273,15 @@ class PairformerBlock(nn.Module):
                 use_kernels=use_cuequiv_kernels,
             )
         )
+        if self.use_geonorm:
+            z = self.geonorm_z_tri_att_start(
+                z, g_tri_att_start, layer_number, layer_total
+            )
+        else:
+            z = z + g_tri_att_start
 
         # Line 5
-        z = z + self.dropout_columnwise(
+        g_tri_att_end = self.dropout_columnwise(
             self.tri_att_end(
                 z,
                 mask=pair_mask,
@@ -235,20 +289,36 @@ class PairformerBlock(nn.Module):
                 use_kernels=use_cuequiv_kernels,
             )
         )
+        if self.use_geonorm:
+            z = self.geonorm_z_tri_att_end(z, g_tri_att_end, layer_number, layer_total)
+        else:
+            z = z + g_tri_att_end
 
         # Line 6
-        z = z + self.transition_z(z)
+        g_z = self.transition_z(z)
+        if self.use_geonorm:
+            z = self.geonorm_z_transition(z, g_z, layer_number, layer_total)
+        else:
+            z = z + g_z
 
         # Line 7
-        s = s + self.attention(
+        g_s_attn = self.attention(
             s,  # [B, L, C_s]
             None,
             z,  # [B, L, L, C_z]
             attn_mask=single_mask,  # [B, L]
             use_kernels=use_cuequiv_kernels,
         )
+        if self.use_geonorm:
+            s = self.geonorm_s_attention(s, g_s_attn, layer_number, layer_total)
+        else:
+            s = s + g_s_attn
 
         # Line 8
-        s = s + self.transition_s(s)
+        g_s = self.transition_s(s)
+        if self.use_geonorm:
+            s = self.geonorm_s_transition(s, g_s, layer_number, layer_total)
+        else:
+            s = s + g_s
 
         return s, z

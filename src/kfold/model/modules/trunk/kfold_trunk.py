@@ -1,6 +1,7 @@
 """KFold trunk module."""
 
 import dataclasses
+import math
 
 import torch
 import torch.nn as nn
@@ -28,6 +29,9 @@ class PairformerConfig:
     dropout: float = 0.25
     # Proteina-style QK normalization (LayerNorm on Q and K before head split)
     use_qk_norm: bool = False
+    use_geonorm: bool = False
+    geonorm_decay: str = "harmonic"
+    geonorm_clamp: float = math.pi / 4
 
 
 @TRUNK.register()
@@ -91,6 +95,9 @@ class KFoldTrunk(BaseTrunk):
             num_blocks=cfg.pairformer.num_blocks,
             dropout=cfg.pairformer.dropout,
             use_qk_norm=cfg.pairformer.use_qk_norm,
+            use_geonorm=cfg.pairformer.use_geonorm,
+            geonorm_decay=cfg.pairformer.geonorm_decay,
+            geonorm_clamp=cfg.pairformer.geonorm_clamp,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 

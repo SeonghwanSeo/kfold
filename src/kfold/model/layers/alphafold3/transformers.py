@@ -11,6 +11,7 @@ from einops.layers.torch import Rearrange
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import (
     AdaLN,
+    GeoNorm,
     LayerNorm,
     Linear,
     LinearNoBias,
@@ -249,6 +250,9 @@ class DiffusionTransformer(nn.Module):
         num_blocks: int,
         num_heads: int,
         blocks_per_ckpt: int | None = None,
+        use_geonorm: bool = True,
+        geonorm_decay: str = "harmonic",
+        geonorm_clamp: float = math.pi / 4,
     ):
         """Initialize the diffusion transformer.
 
@@ -269,6 +273,8 @@ class DiffusionTransformer(nn.Module):
 
         """
         super().__init__()
+        self.use_geonorm: bool = use_geonorm
+        self.num_blocks: int = num_blocks
         self.blocks = nn.ModuleList()
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
         for _ in range(num_blocks):
@@ -278,6 +284,9 @@ class DiffusionTransformer(nn.Module):
                     channel_s,
                     channel_z,
                     num_heads,
+                    use_geonorm=use_geonorm,
+                    geonorm_decay=geonorm_decay,
+                    geonorm_clamp=geonorm_clamp,
                 )
             )
 
@@ -309,15 +318,19 @@ class DiffusionTransformer(nn.Module):
             Whether to use custom kernel for attention, by default False
         """
         # Line 1, 4
-        blocks = [
-            partial(
-                b,
-                attn_mask=attn_mask,
-                local_attn_index=local_attn_index,
-                use_cuequiv_kernels=use_cuequiv_kernels,
+        layer_total = self.num_blocks
+        blocks = []
+        for layer_number, b in enumerate(self.blocks):
+            blocks.append(
+                partial(
+                    b,
+                    attn_mask=attn_mask,
+                    local_attn_index=local_attn_index,
+                    use_cuequiv_kernels=use_cuequiv_kernels,
+                    layer_number=layer_number,
+                    layer_total=layer_total,
+                )
             )
-            for b in self.blocks
-        ]
 
         if self.training and torch.is_grad_enabled():
             a, s, z = checkpoint_blocks(
@@ -344,6 +357,9 @@ class DiffusionTransformerBlock(nn.Module):
         channel_s: int,  # c_atom (atom-attn) or c_s (token-attn)
         channel_z: int,  # c_atompair (atom-attn) or c_z (token-attn)
         num_heads: int,
+        use_geonorm: bool = True,
+        geonorm_decay: str = "harmonic",
+        geonorm_clamp: float = math.pi / 4,
     ):
         """Initialize the diffusion transformer block.
 
@@ -360,6 +376,14 @@ class DiffusionTransformerBlock(nn.Module):
 
         """
         super().__init__()
+        self.use_geonorm: bool = use_geonorm
+
+        # GeoNorm replaces x <- x + g with a geodesic update on the ℓ2 sphere.
+        # We keep the Attention/Transition modules unchanged and only modify
+        # the residual update, matching the paper's recommendation.
+        if self.use_geonorm:
+            self.geonorm_attn = GeoNorm(decay=geonorm_decay, clamp=geonorm_clamp)
+            self.geonorm_ffn = GeoNorm(decay=geonorm_decay, clamp=geonorm_clamp)
         self.attention = AttentionPairBias(
             channel_a=channel_a,
             channel_z=channel_z,
@@ -380,6 +404,8 @@ class DiffusionTransformerBlock(nn.Module):
         attn_mask: torch.Tensor,
         local_attn_index: LocalAttentionIndex | None = None,
         use_cuequiv_kernels: bool = False,
+        layer_number: int = 0,
+        layer_total: int = 1,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """See Section 3.7 Algorithm 23 Diffusion Transformer
 
@@ -415,7 +441,7 @@ class DiffusionTransformerBlock(nn.Module):
 
         """
         # Line 2
-        a = a + self.attention(
+        g_attn = self.attention(
             a=a,
             s=s,
             z=z,
@@ -423,8 +449,18 @@ class DiffusionTransformerBlock(nn.Module):
             local_attn_index=local_attn_index,
             use_kernels=use_cuequiv_kernels,
         )
+
+        if self.use_geonorm:
+            a = self.geonorm_attn(a, g_attn, layer_number, layer_total)
+        else:
+            a = a + g_attn
+
         # Line 3
-        a = a + self.transition(a, s)
+        g_ffn = self.transition(a, s)
+        if self.use_geonorm:
+            a = self.geonorm_ffn(a, g_ffn, layer_number, layer_total)
+        else:
+            a = a + g_ffn
 
         # NOTE: Return updated a, s, z (s and z are unchanged)
         # This is to maintain compatibility with checkpoint_blocks

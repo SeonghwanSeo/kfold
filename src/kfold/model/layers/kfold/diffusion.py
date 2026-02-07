@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 
@@ -31,6 +33,9 @@ class DiffusionModuleWithApo(nn.Module):
         atom_encoder_heads: int = 4,
         token_transformer_blocks: int = 24,
         token_transformer_heads: int = 8,
+        use_geonorm: bool = True,
+        geonorm_decay: str = "harmonic",
+        geonorm_clamp: float = math.pi / 4,
         atom_decoder_blocks: int = 3,
         atom_decoder_heads: int = 4,
         conditioning_transition_layers: int = 2,
@@ -118,6 +123,9 @@ class DiffusionModuleWithApo(nn.Module):
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             blocks_per_ckpt=blocks_per_ckpt,
+            use_geonorm=use_geonorm,
+            geonorm_decay=geonorm_decay,
+            geonorm_clamp=geonorm_clamp,
         )
         self.layernorm_a = LayerNorm(channel_token, create_offset=False)
 
