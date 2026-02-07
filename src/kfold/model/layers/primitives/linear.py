@@ -1,5 +1,3 @@
-from functools import partial
-
 import torch.nn as nn
 
 from . import initialize
@@ -54,4 +52,8 @@ class Linear(nn.Linear):
             raise ValueError(f"Unknown initialization method: {init}")
 
 
-LinearNoBias = partial(Linear, bias=False)
+class LinearNoBias(Linear):
+    """A linear layer without bias term."""
+
+    def __init__(self, in_features: int, out_features: int, init: str = "default"):
+        super().__init__(in_features, out_features, bias=False, init=init)
