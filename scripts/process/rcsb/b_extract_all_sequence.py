@@ -139,18 +139,12 @@ def parse_args():
         required=True,
         help="Path to working directory.",
     )
-
-    # Predefined splits for date and resolution cutoffs
     parser.add_argument(
         "--split",
         type=str,
         required=True,
         choices=["train", "val", "test"],
-        help="If given, cutoffs are set according to "
-        "the specified split (train/val/test) used in AlphaFold3.\n"
-        "- train: up to 2021-09-30, max resolution 9.0A, max chains 300\n"
-        "- val: 2021-10-01 to 2023-01-12, max resolution 4.5A, max chains 1000, "
-        "max residues 2560\n",
+        help="If given, cutoffs are set according to the specified split",
     )
     parser.add_argument(
         "--num_workers",
@@ -201,23 +195,17 @@ def parse_cif(
 ) -> tuple[int, list[tuple[str, str, C.ChainType, str]]]:
     """Parse a CIF file and return a gemmi.cif.Document object."""
 
-    pdb_id = cif_path.name.split(".")[0].lower()  # both .cif and .cif.gz
-
     # Read CIF file
     if cif_path.suffix == ".gz":
-        doc: gemmi.cif.Document = gemmi.cif.read(str(cif_path))
+        block: gemmi.cif.Block = gemmi.cif.read(str(cif_path))[0]
     else:
-        doc: gemmi.cif.Document = gemmi.cif.read_file(str(cif_path))
-    block: gemmi.cif.Block = doc[0]
-    del doc
+        block: gemmi.cif.Block = gemmi.cif.read_file(str(cif_path))[0]
 
     # Get metadata without chain information
     # Handle cases like "1abc.cif.gz"
     pdb_id = cif_path.name.split(".")[0].lower()
     metadata: Metadata = cif_factory.prepare_metadata_from_rcsb(pdb_id, block)
     assert metadata.exp is not None, "Experimental metadata should not be None."
-    if metadata.exp.release_date == "2024-01-01":
-        print(f"Found release date 2024-01-01 for {pdb_id}.")
 
     # Filter by date
     if not cif_factory.check_date_cutoff(

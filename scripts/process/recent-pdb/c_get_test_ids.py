@@ -1,30 +1,7 @@
-"""Construct validation set by filtering and clustering RCSB PDB entries.
-
-Intermediate results:
---- Cluster-based sampling ---
-# Multimer:
-  Protein-Protein: 1707 -> 600
-  Protein-DNA: 398 -> 200
-  Protein-RNA: 183 -> 183
-  Protein-Ligand: 1928 -> 500
-  DNA-DNA: 282 -> 100
-  DNA-RNA: 30 -> 30
-  DNA-Ligand: 42 -> 42
-  RNA-RNA: 40 -> 40
-  RNA-Ligand: 11 -> 11
-
-# Monomer:
-  DNA: 18
-  RNA: 21
-
---- Final sampling ---
-Multimer entries: 1262
-Monomer entries: 37
-Total entries: 1398
-Final entries: 1280
-"""
+"""Construct test set by filtering RCSB PDB entries."""
 
 import argparse
+import functools
 import hashlib
 import json
 import multiprocessing
@@ -46,7 +23,6 @@ from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.io.fasta import read_fasta
 from kfold.utils.mmseqs2 import run_mmseqs2_cluster, run_mmseqs2_search
-from kfold.utils.rcsb_api import fetch_ranking_model_fit
 
 # Suppress RDKit warnings
 RDLogger.DisableLog("rdApp.*")
@@ -68,23 +44,10 @@ def get_rng(key: str) -> np.random.Generator:
 
 # Constants
 VERBOSE = 0
-INIT_MAX_TOKENS = 2560
-MIN_TOKENS = 16
-MAX_TOKENS = 2048
+MAX_TOKENS = 5120
+MAX_POLYMER_RESIDUES = 1280  # Same to AlphaFoldDB UniProt length limit
 SEQUENCE_IDENTITY_THRESHOLD = 0.40
 TANIMOTO_SIMILARITY_THRESHOLD = 0.85
-NUM_INTERFACE_SAMPLES: dict[tuple[C.ChainType, C.ChainType], int] = {
-    norm_key(C.ChainType.PROTEIN, C.ChainType.PROTEIN): 600,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.DNA): 200,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.RNA): 200,
-    norm_key(C.ChainType.PROTEIN, C.ChainType.LIGAND): 500,
-    norm_key(C.ChainType.DNA, C.ChainType.DNA): 100,
-    norm_key(C.ChainType.DNA, C.ChainType.RNA): 50,
-    norm_key(C.ChainType.DNA, C.ChainType.LIGAND): 50,
-    norm_key(C.ChainType.RNA, C.ChainType.RNA): 50,
-    norm_key(C.ChainType.RNA, C.ChainType.LIGAND): 50,
-}
-FINAL_VALIDATION_SET_SIZE = 1280
 
 
 class Seq(NamedTuple):
@@ -329,7 +292,7 @@ def run_clustering(
     ligand_to_repr_id: dict[str, str] = {}
 
     # Collect sequences
-    for seq in sorted(all_sequences, key=lambda x: x.id):
+    for seq in all_sequences:
         sequence = seq.sequence
         if seq.ctype.is_polymer:
             # Use first occurrence as representative
@@ -359,7 +322,6 @@ def run_clustering(
 
     # Perform clustering using MMseqs2
     # Save the sequences
-    print()
     uniq_proteins: list[tuple[str, str]] = sorted(
         [(repr_id, seq) for seq, repr_id in protein_to_repr_id.items()]
     )
@@ -386,6 +348,7 @@ def run_clustering(
     rna_clusters: dict[str, str] = rna_to_repr_id
     ligand_clusters: dict[str, str] = ligand_to_repr_id
 
+    print()
     print("Total clusters: ")
     print(f"  Proteins (>=10 aa): {len(set(protein_clusters.values()))}")
     print(f"  Short Proteins (<10 aa): {len(set(short_protein_clusters.values()))}")
@@ -400,6 +363,7 @@ def run_clustering(
         C.ChainType.RNA: rna_clusters,
         C.ChainType.LIGAND: ligand_clusters,
     }
+
     clustering: dict[str, str] = {
         seq.id: cluster_mapping[seq.ctype][seq.sequence] for seq in all_sequences
     }
@@ -422,9 +386,13 @@ def filter_multier_interfaces(
     # ============================================================
     print("\nStage 1: Pre-filter interfaces...")
     is_ion = lambda seq: seq.ctype.is_ligand and seq.sequence in C.ccd.IONS  # noqa
+    is_peptide = lambda seq: seq.ctype.is_protein and len(seq.sequence) < 16  # noqa
     interfaces: list[Interface] = []
     for iface in all_interfaces:
         seq1, seq2 = iface
+        # Skip peptide-peptide interfaces
+        if is_peptide(seq1) and is_peptide(seq2):
+            continue
         # Skip ligand-ligand interfaces
         if seq1.ctype.is_ligand and seq2.ctype.is_ligand:
             continue
@@ -476,102 +444,23 @@ def filter_multier_interfaces(
     # two chains with high homology to any target in training set.
     filtered_interfaces: list[Interface] = []
     for iface in tqdm(all_interfaces, desc="Homology Filtering"):
-        # Check that there is any target with high homology to both chains
         train_pdb1 = homologs[iface.seq1.id]
         train_pdb2 = homologs[iface.seq2.id]
-        if len(train_pdb1 & train_pdb2) == 0:
-            filtered_interfaces.append(iface)
+        if len(train_pdb1 & train_pdb2) > 0:
+            # Skip if there is any target with homology to both chains
+            continue
+        if (is_peptide(iface.seq1) and len(train_pdb2) > 0) or (
+            is_peptide(iface.seq2) and len(train_pdb1) > 0
+        ):
+            # Skip if one chain is a peptide and the other has homology
+            continue
+        filtered_interfaces.append(iface)
     print(
         f"Total interfaces after homology filtering: {len(filtered_interfaces)} "
         f"out of {len(all_interfaces)}"
     )
 
-    # ============================================================
-    # Filter ligand interfaces by ranking model fit
-    # ============================================================
-    print("\nStage 2-3: Filtering ligand interfaces by ranking model fit...")
-    # Collect ligand entities in interfaces
-    ligands: set[str] = set()
-    for seq1, seq2 in filtered_interfaces:
-        for seq in (seq1, seq2):
-            if seq.ctype.is_ligand:
-                ligands.add(seq.id.upper())  # RCSB uses uppercase IDs
-    # Fetch ranking model fit scores
-    print(f"Fetching ranking model fit scores for {len(ligands)} ligands...")
-    ligands: list[str] = sorted(ligands)
-    ranking_model_fits: dict[str, float] = {}
-    for i in tqdm(range(0, len(ligands), 500)):
-        ranking_model_fits |= fetch_ranking_model_fit(ligands[i : i + 500])
-    print("Total ligands with ranking model fit scores:", len(ranking_model_fits))
-    # Determine ligands to exclude
-    excluding_ligands: set[str] = set(
-        seq_id.lower() for seq_id in ligands if ranking_model_fits.get(seq_id, 0.0) < 0.5
-    )
-
-    # Filter interfaces with low ranking model fit ligands
-    filtered_interfaces: list[Interface] = [
-        iface
-        for iface in filtered_interfaces
-        if iface.seq1.id not in excluding_ligands
-        and iface.seq2.id not in excluding_ligands
-    ]
-    print("Total interfaces after ranking model fit filtering:", len(filtered_interfaces))
-
-    # ============================================================
-    # Clustering and sampling interfaces
-    # ============================================================
-    print("\nStage 3-1: Clustering interfaces...")
-    # Collect all sequences
-    all_sequences: list[Seq] = []
-    for seq1, seq2 in filtered_interfaces:
-        all_sequences.extend([seq1, seq2])
-    # Run clustering
-    clusters: dict[str, str] = run_clustering(all_sequences, mmseqs)
-    # Interface-level clustering
-    interface_clusters: dict[str, list[Interface]] = defaultdict(list)
-    for iface in filtered_interfaces:
-        seq1, seq2 = iface
-        cluster_id = ":".join(norm_key(clusters[seq1.id], clusters[seq2.id]))
-        interface_clusters[cluster_id].append(iface)
-
-    # Sample one interface per cluster
-    print("\nStage 3-2: Sample one interface per cluster...")
-    sampled_interfaces: list[Interface] = []
-    for cluster_id, interfaces in interface_clusters.items():
-        interfaces.sort()
-        n_cluster = len(interfaces)
-        rng = get_rng(cluster_id)
-        sampled_interfaces.append(interfaces[rng.integers(n_cluster)])
-    print(f"Total interfaces after filtering and clustering: {len(sampled_interfaces)}")
-
-    # ============================================================
-    # Final sampling for each interface type
-    # ============================================================
-    print("\nStage 4: Final sampling interfaces for each interface type")
-    interfaces_per_type = defaultdict(list)
-    for seq1, seq2 in sampled_interfaces:
-        ctypes = norm_key(seq1.ctype, seq2.ctype)
-        interfaces_per_type[ctypes].append((seq1, seq2))
-    del sampled_interfaces  # free up memory
-
-    sampled_interfaces: list[Interface] = []
-    for ctypes in sorted(interfaces_per_type):
-        key = f"{ctypes[0]}-{ctypes[1]}"
-        interfaces = sorted(interfaces_per_type[ctypes])
-        rng = get_rng(key)
-        n_interfaces = len(interfaces)
-        n_samples = min(NUM_INTERFACE_SAMPLES.get(ctypes, n_interfaces), n_interfaces)
-        if n_interfaces == n_samples:
-            sampled_interfaces.extend(interfaces)
-        else:
-            sampled_indices = rng.choice(len(interfaces), size=n_samples, replace=False)
-            for idx in sampled_indices:
-                sampled_interfaces.append(interfaces[idx])
-        print(f"  {key}: {n_interfaces} -> {n_samples}")
-
-    print("\nMultimer filtering completed.")
-    print(f"Total interfaces after final sampling: {len(sampled_interfaces)}")
-    return sampled_interfaces
+    return filtered_interfaces
 
 
 def filter_monomers(
@@ -588,22 +477,19 @@ def filter_monomers(
     # ============================================================
     # Pre-filter monomers
     # ============================================================
-    print("\nStage 1: Pre-filter interfaces...")
+    print("\nStage 1: Extract RNA polymers...")
     monomers: list[Seq] = []
     for seq in all_polymers:
-        if seq.ctype.is_nucleic_acid:
+        if seq.ctype.is_rna:
             monomers.append(seq)
     all_polymers = monomers
     print("Total polymers after pre-filtering:", len(all_polymers))
 
     # ============================================================
-    # Determine low homology polymers
+    # Determine low homology rnas
     # ============================================================
     print("\nStage 2-1: Get homology mappings for all sequences...")
     homologs: dict[str, set[str]] = {}
-    homologs |= get_polymer_homologs(
-        C.ChainType.DNA, all_polymers, train_sequences, mmseqs
-    )
     homologs |= get_polymer_homologs(
         C.ChainType.RNA, all_polymers, train_sequences, mmseqs
     )
@@ -617,37 +503,7 @@ def filter_monomers(
         seq for seq in all_polymers if len(homologs[seq.id]) == 0
     ]
     print("Total polymers after homology filtering:", len(filtered_polymers))
-
-    # ============================================================
-    # Clustering monomers
-    # ============================================================
-    print("\nStage 3-1: Clustering interfaces...")
-    # Run clustering
-    clusters: dict[str, str] = run_clustering(filtered_polymers, mmseqs=mmseqs)
-    # Interface-level clustering
-    clusters: dict[str, list[Seq]] = defaultdict(list)
-    for seq in filtered_polymers:
-        cluster_id = clusters[seq.id]
-        clusters[cluster_id].append(seq)
-
-    print("\nStage 3-2: Sample one polymer per cluster...")
-    sampled_polymers: list[Seq] = []
-    for cluster_id, polymers in clusters.items():
-        rng = get_rng(cluster_id)
-        sampled_polymers.append(polymers[rng.integers(len(polymers))])
-
-    print("\nSummary after clustering:")
-    polymers_per_ctype = defaultdict(list)
-    for seq in sampled_polymers:
-        polymers_per_ctype[seq.ctype].append(seq)
-
-    for ctype in sorted(polymers_per_ctype):
-        n_polymers = len(polymers_per_ctype[ctype])
-        print(f"  {ctype.name}: {n_polymers}")
-
-    print("\nMonomer filtering completed.")
-    print(f"Total polymers after final sampling: {len(sampled_polymers)}")
-    return sampled_polymers
+    return filtered_polymers
 
 
 def save_metadata(
@@ -656,8 +512,9 @@ def save_metadata(
     train_sequences: list[Seq],
     mmseqs: str,
     ccd: CCD,
+    num_workers: int = 1,
 ) -> list[Metadata]:
-    """Save metadata files for the validation set."""
+    """Save metadata files with cluster ids"""
     print("=" * 50)
     print("Saving Metadata Files")
     print("Total entries:", len(npz_files))
@@ -668,11 +525,21 @@ def save_metadata(
     all_chains: list[Seq] = []
     all_interfaces: list[Interface] = []
     metadatas: list[Metadata] = []
-    for npz_file in tqdm(npz_files, desc="Collecting sequences from NPZ files"):
-        res = read_npz_file(npz_file, return_metadata=True)
+    func = functools.partial(read_npz_file, return_metadata=True)
+    with multiprocessing.Pool(num_workers) as pool:
+        results = list(
+            tqdm(
+                pool.imap_unordered(func, npz_files, chunksize=10),
+                total=len(npz_files),
+                desc="Processing NPZ files",
+            )
+        )
+    for res in results:
         all_chains.extend(res["chains"])
         all_interfaces.extend(res["interfaces"])
         metadatas.append(res["metadata"])
+
+    seq_id_to_seq: dict[str, Seq] = {seq.id: seq for seq in all_chains}
 
     # ============================================================
     # Homology search
@@ -695,23 +562,37 @@ def save_metadata(
     print("Homology search completed.")
 
     # ============================================================
+    # Clustering
+    # ============================================================
+    print("\nStage 2: Clustering all sequences...")
+    clusters: dict[str, str] = run_clustering(all_sequences, mmseqs)
+
+    # ============================================================
     # Save metadata files
     # ============================================================
     print("\nStage 2: Saving metadata files...")
     for m in metadatas:
         # Update homology information
         for cm in m.chains:
-            seq_id = f"{m.id}_{cm.entity_id}"
-            if len(homologs[seq_id]) == 0:
-                cm.is_low_homology = True
+            seq = seq_id_to_seq[f"{m.id}_{cm.entity_id}"]
+            cm.cluster_id = clusters[seq.id]
+            cm.is_low_homology = len(homologs[seq.id]) == 0
+
         for im in m.interfaces:
             asym_id_1, asym_id_2 = im.asym_ids
-            eid1 = m.get_chain_by_asym_id(asym_id_1).entity_id
-            eid2 = m.get_chain_by_asym_id(asym_id_2).entity_id
-            seq_id1 = f"{m.id}_{eid1}"
-            seq_id2 = f"{m.id}_{eid2}"
-            if len(homologs[seq_id1] & homologs[seq_id2]) == 0:
-                im.is_low_homology = True
+            cm1 = m.get_chain_by_asym_id(asym_id_1)
+            cm2 = m.get_chain_by_asym_id(asym_id_2)
+            seq1 = seq_id_to_seq[f"{m.id}_{cm1.entity_id}"]
+            seq2 = seq_id_to_seq[f"{m.id}_{cm2.entity_id}"]
+            cluster_id1, cluster_id2 = clusters[seq1.id], clusters[seq2.id]
+            if seq1.ctype.is_polymer and seq2.ctype.is_ligand:
+                im.cluster_id = f"{cluster_id1}"
+            elif seq1.ctype.is_ligand and seq2.ctype.is_polymer:
+                im.cluster_id = f"{cluster_id2}"
+            else:
+                cid1, cid2 = norm_key(cluster_id1, cluster_id2)
+                im.cluster_id = f"{cid1}|{cid2}"
+            im.is_low_homology = len(homologs[seq1.id] & homologs[seq2.id]) == 0
 
     metadata_dicts: list[dict] = [m.to_dict() for m in metadatas]
     # Save to a msgpack file (efficient and fast)
@@ -729,7 +610,7 @@ def save_metadata(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Construct validation set.")
+    parser = argparse.ArgumentParser(description="Extract test pdb ids.")
     parser.add_argument(
         "--data_dir",
         type=pathlib.Path,
@@ -760,18 +641,17 @@ def parse_args():
 
 
 def main():
-    """Main function to construct validation set.
+    """Main function to construct test set.
     See AlphaFold3 Supplementary Section 5.8 for details: Multimer and Monomer selection.
     """
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir / "rcsb-val"
-    train_dir: pathlib.Path = args.data_dir / "rcsb-train"
+    data_dir: pathlib.Path = args.data_dir
 
     # ======================================================================
     # Load training sequences
     # ======================================================================
     train_seqs: list[Seq] = []
-    train_seq_fasta: pathlib.Path = train_dir / "sequences" / "all_sequences.fasta"
+    train_seq_fasta: pathlib.Path = data_dir / "rcsb-train-sequences.fasta"
     for header, sequence in read_fasta(train_seq_fasta):
         pdb_id, entity_id, ctype_str = header.split("|")
         entity_id = int(entity_id)
@@ -784,10 +664,10 @@ def main():
         train_seqs.append(Seq(pdb_id, entity_id, sequence, ctype))
 
     # ======================================================================
-    # Load validation candidates from NPZ files
+    # Load test candidates from NPZ files
     # ======================================================================
     npz_dir: pathlib.Path = data_dir / "npz"
-    npz_files: list[pathlib.Path] = list(npz_dir.rglob("*.npz"))
+    npz_files: list[pathlib.Path] = sorted(npz_dir.rglob("*.npz"))
     print(f"Total NPZ files found: {len(npz_files)}")
 
     with multiprocessing.Pool(args.num_workers) as pool:
@@ -802,12 +682,22 @@ def main():
     # Collect all monomers and interfaces
     interfaces: list[Interface] = []
     monomers: list[Seq] = []
-    entry_size: dict[str, int] = {}
+    n_entries: int = 0
     for res in results:
-        if not (res["num_tokens"] <= INIT_MAX_TOKENS):
+        if res["num_tokens"] > MAX_TOKENS:
+            # Skip entries exceeding max token limit
             continue
-        entry_size[res["pdb_id"]] = res["num_tokens"]
+        if any(
+            len(seq.sequence) > MAX_POLYMER_RESIDUES
+            for seq in res["chains"]
+            if seq.ctype.is_polymer
+        ):
+            # Skip entries with long polymer chains
+            continue
+
+        n_entries += 1
         interfaces.extend(res["interfaces"])
+
         if res["is_monomer"]:
             polymer_chains = [seq for seq in res["chains"] if seq.ctype.is_polymer]
             assert len(polymer_chains) == 1, (
@@ -820,7 +710,7 @@ def main():
     interfaces.sort(key=lambda x: x.id)
     monomers.sort(key=lambda x: x.id)
 
-    print(f"Total entries processed: {len(entry_size)}.")
+    print(f"Total entries processed: {n_entries}")
     print(f"Total interfaces collected: {len(interfaces)}")
     print(f"Total monomers collected: {len(monomers)}")
 
@@ -860,10 +750,6 @@ def main():
         multimer_ids.add(seq1.pdb_id)
     print(f"Multimer PDB entries: {len(multimer_ids)}")
 
-    # Filter with max token limit
-    multimer_ids = {v for v in multimer_ids if MIN_TOKENS <= entry_size[v] <= MAX_TOKENS}
-    print(f"Multimer PDB entries after size filtering: {len(multimer_ids)}")
-
     # ======================================================================
     # Monomer filtering
     # ======================================================================
@@ -878,46 +764,31 @@ def main():
         monomer_ids.add(seq.pdb_id)
     print(f"Monomer PDB entries: {len(monomer_ids)}")
 
-    # Filter with max token limit
-    monomer_ids = {v for v in monomer_ids if MIN_TOKENS <= entry_size[v] <= MAX_TOKENS}
-    print(f"Monomer PDB entries after size filtering: {len(monomer_ids)}")
-
     # ======================================================================
-    # Final validation set sampling
+    # Final test set
     # ======================================================================
     print("\n" + "=" * 50)
-    sampled_ids = multimer_ids | monomer_ids
-    if len(sampled_ids) > FINAL_VALIDATION_SET_SIZE:
-        val_ids: list[str] = sorted(sampled_ids)
-        sampled_indices = get_rng("final").choice(
-            len(val_ids), size=FINAL_VALIDATION_SET_SIZE, replace=False
-        )
-        val_ids = [val_ids[i] for i in sorted(sampled_indices)]
-    else:
-        val_ids = sorted(sampled_ids)
+    test_ids = multimer_ids | monomer_ids
     print("Validation Set Final Summary")
     print(f"Multimer entries: {len(multimer_ids)}")
     print(f"Monomer entries: {len(monomer_ids)}")
-    print(f"Total entries: {len(sampled_ids)}")
-    print(f"Final entries: {len(val_ids)}")
+    print(f"Total entries: {len(test_ids)}")
 
-    # Save validation set PDB IDs
-    val_ids_file: pathlib.Path = data_dir / "validation_ids.txt"
-    with val_ids_file.open("w") as f:
-        for pdb_id in val_ids:
+    # Save test set PDB IDs
+    test_ids_file: pathlib.Path = data_dir / "test_ids.txt"
+    with test_ids_file.open("w") as f:
+        for pdb_id in sorted(test_ids):
             f.write(f"{pdb_id}\n")
-    print(f"Validation set PDB IDs saved to: {val_ids_file}")
 
-    # ======================================================================
-    # Save metadata files
-    # ======================================================================
-    npz_files: list[pathlib.Path] = [f for f in npz_files if f.stem in val_ids]
+    # Save metadata files for the test set
+    npz_files: list[pathlib.Path] = [f for f in npz_files if f.stem in test_ids]
     save_metadata(
         npz_files=npz_files,
         save_dir=data_dir,
         train_sequences=train_seqs,
         mmseqs=args.mmseqs,
         ccd=ccd,
+        num_workers=args.num_workers,
     )
 
 

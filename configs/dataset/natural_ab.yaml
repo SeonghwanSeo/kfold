@@ -20,7 +20,3 @@ cropper:
   w_contiguous: 0.25
   w_spatial: 0.25
   w_spatial_interface: 0.5
-
-apo_init:
-  use_perturbation: false
-  apo_perturbation: null

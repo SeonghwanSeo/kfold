@@ -54,15 +54,18 @@ def main():
 
     n_chains_per_type: dict[ChainType, int] = defaultdict(int)
     n_eval_chains_per_type: dict[ChainType, int] = defaultdict(int)
-
     n_ifaces_per_type: dict[InterfaceType, int] = defaultdict(int)
     n_eval_ifaces_per_type: dict[InterfaceType, int] = defaultdict(int)
 
     n_chains_per_subtype: dict[SubChainType, int] = defaultdict(int)
     n_eval_chains_per_subtype: dict[SubChainType, int] = defaultdict(int)
-
     n_ifaces_per_subtype: dict[SubInterfaceType, int] = defaultdict(int)
     n_eval_ifaces_per_subtype: dict[SubInterfaceType, int] = defaultdict(int)
+
+    entry_per_chain_type: dict[ChainType, set[str]] = defaultdict(set)
+    entry_per_iface_type: dict[InterfaceType, set[str]] = defaultdict(set)
+    entry_per_chain_subtype: dict[SubChainType, set[str]] = defaultdict(set)
+    entry_per_iface_subtype: dict[SubInterfaceType, set[str]] = defaultdict(set)
 
     earlest_release_date = datetime.max
     latest_release_date = datetime.min
@@ -82,6 +85,7 @@ def main():
             release_date = datetime.fromisoformat(m.exp.release_date)
             earlest_release_date = min(earlest_release_date, release_date)
             latest_release_date = max(latest_release_date, release_date)
+
             # Collect type info
             asym_id_to_chain: dict[int, Chain] = {c.asym_id: c for c in struct.chains}
             for cm in m.chains:
@@ -92,6 +96,8 @@ def main():
                 if cm.is_low_homology:
                     n_eval_chains_per_type[c.ctype] += 1
                     n_eval_chains_per_subtype[c.subtype] += 1
+                    entry_per_chain_type[c.ctype].add(entry_id)
+                    entry_per_chain_subtype[c.subtype].add(entry_id)
 
             for iface in m.interfaces:
                 asym_id_1, asym_id_2 = iface.asym_ids
@@ -106,6 +112,9 @@ def main():
                 if iface.is_low_homology:
                     n_eval_ifaces_per_type[ctype] += 1
                     n_eval_ifaces_per_subtype[subtype] += 1
+                    entry_per_iface_type[ctype].add(entry_id)
+                    entry_per_iface_subtype[subtype].add(entry_id)
+
     env.close()
 
     print("Release date range:")
@@ -124,8 +133,8 @@ def main():
         v1 = n_eval_ifaces_per_type[ctypes]
         v2 = n_ifaces_per_type[ctypes]
         print(f"  {key}: {v1} / {v2}")
-
     print()
+
     print("Final chain subtype statistics:")
     for subtype in sorted(n_chains_per_subtype.keys()):
         v1 = n_eval_chains_per_subtype[subtype]
@@ -138,6 +147,30 @@ def main():
         v1 = n_eval_ifaces_per_subtype[subtypes]
         v2 = n_ifaces_per_subtype[subtypes]
         print(f"  {key}: {v1} / {v2}")
+    print()
+
+    print("Entries per chain type:")
+    for ctype in sorted(entry_per_chain_type.keys()):
+        n_entries = len(entry_per_chain_type[ctype])
+        print(f"  {ctype}: {n_entries}")
+    print()
+    print("Entries per interface type:")
+    for ctypes in sorted(entry_per_iface_type.keys()):
+        key = f"{ctypes[0]}-{ctypes[1]}"
+        n_entries = len(entry_per_iface_type[ctypes])
+        print(f"  {key}: {n_entries}")
+    print()
+    print("Entries per chain subtype:")
+    for subtype in sorted(entry_per_chain_subtype.keys()):
+        n_entries = len(entry_per_chain_subtype[subtype])
+        print(f"  {subtype}: {n_entries}")
+    print()
+    print("Entries per interface subtype:")
+    for subtypes in sorted(entry_per_iface_subtype.keys()):
+        key = f"{subtypes[0]}-{subtypes[1]}"
+        n_entries = len(entry_per_iface_subtype[subtypes])
+        print(f"  {key}: {n_entries}")
+    print()
 
 
 if __name__ == "__main__":
