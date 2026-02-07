@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from kfold.model.layers.primitives import LayerNorm, Linear, LinearNoBias
+from kfold.model.layers.primitives import LayerNorm, Linear
 
 
 class PairwiseProdDiff(nn.Module):
@@ -13,7 +13,7 @@ class PairwiseProdDiff(nn.Module):
         super().__init__()
         assert c_out % 2 == 0, "c_out must be even."
         c_hidden = c_out // 2
-        self.linear_in = LinearNoBias(c_in, c_hidden * 2, init="default")
+        self.linear_in = Linear(c_in, c_hidden * 2, init="default")
         self.linear_out = Linear(c_hidden * 2, c_out, init="final")
 
     def forward(self, s: torch.Tensor) -> torch.Tensor:
