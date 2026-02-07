@@ -30,7 +30,6 @@ def prepare_inference_dataloader(
     struct_embedding_dim: int | None,
     seed: int = 1,
     num_workers: int = 0,
-    use_interaction: bool = True,
 ) -> torch.utils.data.DataLoader:
     dataset = InferenceDataset(
         queries=queries,
@@ -38,7 +37,6 @@ def prepare_inference_dataloader(
         seq_embedding_dim=seq_embedding_dim,
         struct_embedding_dim=struct_embedding_dim,
         seed=seed,
-        use_interaction=use_interaction,
     )
     return torch.utils.data.DataLoader(
         dataset,
@@ -59,7 +57,6 @@ class InferenceDataset(torch.utils.data.Dataset):
         seq_embedding_dim: int | None,
         struct_embedding_dim: int | None,
         seed: int = 1,
-        use_interaction: bool = True,
     ) -> None:
         """
         Parameters
@@ -84,7 +81,6 @@ class InferenceDataset(torch.utils.data.Dataset):
             seq_embedding_dim=seq_embedding_dim,
             struct_embedding_dim=struct_embedding_dim,
             seed=seed,
-            use_interaction=use_interaction,
         )
 
     def __len__(self) -> int:
