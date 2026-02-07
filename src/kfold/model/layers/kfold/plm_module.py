@@ -93,10 +93,12 @@ class PLMModule(nn.Module):
         """
         s_plm = self.layernorm(s_plm)
         if self.use_separate_projections:
-            intra_mask = asym_id[..., None] == asym_id[..., None, :]
-            intra_mask = intra_mask & (mask[..., None] & mask[..., None, :])
+            pair_mask = mask[..., None] & mask[..., None, :]
+            is_same_chain = asym_id[..., None] == asym_id[..., None, :]
+            intra_mask = is_same_chain & pair_mask
+            inter_mask = (~is_same_chain) & pair_mask
             z = z + self.pairwise_proj_intra(s_plm) * intra_mask[..., None]
-            z = z + self.pairwise_proj_inter(s_plm) * (~intra_mask)[..., None]
+            z = z + self.pairwise_proj_inter(s_plm) * inter_mask[..., None]
         else:
             pair_mask = mask[..., None] & mask[..., None, :]
             z = z + self.pairwise_proj(s_plm) * pair_mask[..., None]
