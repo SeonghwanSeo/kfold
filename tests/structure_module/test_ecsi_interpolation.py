@@ -212,7 +212,6 @@ if __name__ == "__main__":
     )
 
     compare_k_values = [1.0, 2.0]
-    use_powered_alpha_beta = True
     interpolation_noise_seed = 42
     min_protein_atoms = 400
     required_ligand_chains = 1
@@ -265,10 +264,7 @@ if __name__ == "__main__":
             rho=7,
             eta=1.0,
             coordinate_augmentation=False,  # Disable for testing
-            gamma_power_protein=power,
-            nucleic_acid_gamma_power=power,
-            ligand_gamma_power=power,
-            use_powered_alpha_beta=use_powered_alpha_beta,
+            time_power=power,
         )
         return KFoldECSI(ecsi_config, score_model)
 
@@ -277,8 +273,7 @@ if __name__ == "__main__":
     print(
         "Loaded KFoldECSI module with "
         f"gamma_max={structure_module.gamma_max}, "
-        f"compare_k_values={compare_k_values}, "
-        f"use_powered_alpha_beta={use_powered_alpha_beta}"
+        f"compare_k_values={compare_k_values}"
     )
 
     # Turn off gradient
