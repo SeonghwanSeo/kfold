@@ -6,10 +6,12 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from rdkit import Chem, RDConfig
+from rdkit import Chem, RDConfig, RDLogger
 from rdkit.Chem import ChemicalFeatures
 
 import kfold.constants as C
+
+RDLogger.DisableLog("rdApp.*")
 
 
 @lru_cache(maxsize=1)

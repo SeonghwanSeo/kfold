@@ -8,7 +8,8 @@ seed: 42 # fixed seed for validation
 apo_init:
   # Only apply random rotation and translation during validation
   use_random_augmentation: true
-  translation_scale: 10.0 # Angstroms
+  translation_scale: 0.0 # Angstroms
+  chain_com_sampling_radius: null
 
   # Disable following during validation
   use_ot_permutation: false

@@ -266,7 +266,8 @@ if __name__ == "__main__":
             eta=1.0,
             coordinate_augmentation=False,  # Disable for testing
             gamma_power_protein=power,
-            gamma_power_non_protein=power,
+            nucleic_acid_gamma_power=power,
+            ligand_gamma_power=power,
             use_powered_alpha_beta=use_powered_alpha_beta,
         )
         return KFoldECSI(ecsi_config, score_model)

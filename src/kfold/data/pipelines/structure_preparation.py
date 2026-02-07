@@ -7,24 +7,17 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.types.ccd import CCD, Component
-from kfold.data.types.metadata import Metadata
+from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.structure import (
-    Atom,
-    Bond,
+    AtomLayout,
+    BondLayout,
     Chain,
     CovalentConnection,
     RefStructure,
-    Residue,
+    ResidueLayout,
 )
 
 logger = logging.getLogger(__name__)
-
-# Type aliases for better readability
-EntityId = int
-AsymId = str
-SymId = int
-AuthId = str
-ResKey = tuple[AsymId, str, int | None]
 
 # Constants
 # three-letter codes
@@ -33,7 +26,6 @@ chain_type_to_standard_residues: dict[C.ChainType, set[str]] = {
     C.ChainType.RNA: C.residue.RNA_RESIDUES_STR_SET,
     C.ChainType.DNA: C.residue.DNA_RESIDUES_STR_SET,
     C.ChainType.LIGAND: set(),
-    C.ChainType.ION: set(),
 }
 
 
@@ -73,7 +65,7 @@ def prepare_ref_chain(
     entity_id: int = 0,
     asym_id: int = 0,
     sym_id: int = 0,
-    drop_leaving_atoms: bool = True,
+    bonded_atoms: dict[int, set[str]] | None = None,
 ) -> Chain:
     """Get an empty reference chain structure.
 
@@ -93,8 +85,8 @@ def prepare_ref_chain(
         The asymmetric unit ID of the chain.
     sym_id : int
         The symmetry ID of the chain.
-    drop_leaving_atoms : bool, optional
-        Whether to drop leaving atoms for polymer residues, by default True.
+    bonded_atoms : dict[int, set[str]] | None, optional
+        List of bonded atoms for covalent ligands (res_idx: atom_name), by default None.
     """
     # ==================================================
     # Validate inputs
@@ -104,106 +96,94 @@ def prepare_ref_chain(
         assert len(ccd_sequences) == 1
         assert ccd_sequences[0].startswith("LIG")
 
-    standard_residues: set[str] = chain_type_to_standard_residues[chain_type]
+    bonded_atoms = bonded_atoms or {}
+
+    # Normalize residue names to uppercase
+    ccd_sequences = [v.upper() for v in ccd_sequences]
 
     @lru_cache  # No cache limit within a single function call
-    def get_ref_atom_names(res_name: str) -> tuple[str, ...]:
-        """Get reference atom names for a residue."""
-        if res_name in ccd:
-            ref_mol = ccd[res_name]
-            if chain_type.is_polymer and res_name in standard_residues:
-                # Return pre-defined residue atoms for standard polymer residues
-                return C.atom.residue_atoms[res_name]
-            elif drop_leaving_atoms:
-                # Drop leaving atoms for non-standard polymer residues, glycans,
-                # and covalent ligands.
-                return ref_mol.non_leaving_atom_names
-            else:
-                # Return all atoms for non-polymer residues.
-                return ref_mol.names
+    def get_ref_mol(ccd_code: str) -> Component:
+        """Get reference molecule for a residue."""
+        if ccd_code in ccd:
+            return ccd[ccd_code]
         else:
-            raise ValueError(f"Residue {res_name} not found in CCD database.")
+            raise ValueError(f"Residue {ccd_code} not found in CCD database.")
 
     # ==================================================
-    # Prepare residue information
+    # Prepare residue and atom information
     # ==================================================
-    is_res_standards: list[bool] = []
-    ref_mols: list[Component] = []
-    num_residue_atoms: list[int] = []
-    for name in ccd_sequences:
-        if name in ccd:
-            # Common molecule from CCD
-            if name.startswith("LIG"):
-                logging.info("Use custom ligand residue from CCD:", name)
-            ref_mol = ccd[name]
-        elif name.startswith("LIG"):
-            # Ligand residue created from SMILES
-            if smiles is None:
-                raise ValueError(f"SMILES must be provided for ligand residue {name}.")
-            ref_mol = Component.from_smiles(name, smiles)
-        else:
-            # Residue not found in CCD
-            # NOTE: For polymers, this should not happen due to prior conversion to UNK.
-            raise ValueError(f"Residue {name} not found in CCD database.")
+    standard_residues: set[str] = chain_type_to_standard_residues[chain_type]
 
-        is_standard = name in standard_residues
-        is_res_standards.append(is_standard)
-        ref_mols.append(ref_mol)
-        num_residue_atoms.append(len(get_ref_atom_names(name)))
-
-    residue_struct = Residue(
-        name=np.array(ccd_sequences, dtype=np.dtype("<U6")),
-        num_atoms=np.array(num_residue_atoms, dtype=np.uint8),
-        is_standard=np.array(is_res_standards, dtype=bool),
-    )
-
-    # ==================================================
-    # Prepare atom information
-    # ==================================================
+    is_standard_list: list[bool] = []
     atom_name_list: list[np.ndarray] = []
     atom_elem_list: list[np.ndarray] = []
     atom_charge_list: list[np.ndarray] = []
+    ref_mols: list[Component] = []
 
-    # Cache for reference molecule atom information
-    ref_mol_infos: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-
-    for i, ref_mol in enumerate(ref_mols):
-        res_name = ref_mol.code
-        assert res_name == ccd_sequences[i]
-
-        if res_name in ref_mol_infos:
-            # Reuse cached atom information
-            atom_names, atom_elem, atom_charge = ref_mol_infos[res_name]
+    for res_idx, code in enumerate(ccd_sequences, start=1):
+        is_standard_list.append(code in standard_residues)
+        if code in ccd:
+            # Common molecule from CCD
+            assert not code.startswith("LIG"), "LIG codes should be handled separately."
+            ref_mol = get_ref_mol(code)
+        elif code.startswith("LIG"):
+            # Ligand residue created from SMILES
+            if smiles is None:
+                raise ValueError(f"SMILES must be provided for ligand residue {code}.")
+            ref_mol = Component.from_smiles(code, smiles)
         else:
-            # Get reference atom names
-            atom_to_index = ref_mol.get_atom_index_map()
-            atom_names = get_ref_atom_names(res_name)
-            atom_indices = [atom_to_index[atom_name] for atom_name in atom_names]
+            # Residue not found in CCD
+            # NOTE: For polymers, this should not happen due to prior conversion to UNK.
+            raise ValueError(f"Residue {code} not found in CCD database.")
 
-            atom_names = np.array(atom_names, dtype=np.dtype("<U4"))
-            atom_elem = ref_mol.elements[atom_indices]
-            atom_charge = ref_mol.charges[atom_indices]
-            ref_mol_infos[res_name] = (atom_names, atom_elem, atom_charge)
+        if chain_type.is_polymer:
+            # Return pre-defined atoms for standard polymer residues to
+            # ensure consistency across different CCD versions. Otherwise,
+            # use all non-leaving atoms.
+            if code in standard_residues:
+                atom_names = C.atom.residue_atoms[code]
+            else:
+                atom_names = ref_mol.get_atom_names(drop_leaving_atoms=True)
+        else:
+            # Special handling for glycans in covalent ligands
+            res_bonded_atoms = bonded_atoms.get(res_idx, set())
+            if code in C.ccd.GLYCANS:
+                # Only retain oxygen if it is participating in the covalent bond
+                atom_names = ref_mol.get_atom_names()
+                if "O1" not in res_bonded_atoms:
+                    atom_names = [n for n in atom_names if n != "O1"]
+            else:
+                # For common ligands, keep all atoms.
+                # For covalent ligands, keep leaving atoms only if
+                # any of them is involved in the covalent bond.
+                is_covalent = len(res_bonded_atoms) > 0
+                atom_names = ref_mol.get_atom_names(drop_leaving_atoms=is_covalent)
+                if not res_bonded_atoms <= set(atom_names):
+                    atom_names = ref_mol.get_atom_names()
 
-        atom_name_list.append(atom_names)
-        atom_elem_list.append(atom_elem)
-        atom_charge_list.append(atom_charge)
+        atom_to_index: dict[str, int] = ref_mol.get_atom_index_map()
+        atom_indices: list[int] = [atom_to_index[an] for an in atom_names]
+        atom_name_list.append(np.array(atom_names, dtype=np.dtype("<U4")))
+        atom_elem_list.append(ref_mol.elements[atom_indices])
+        atom_charge_list.append(ref_mol.charges[atom_indices])
+        ref_mols.append(ref_mol)
 
-    # Empty coordinates, bfactors, apo coordinates, and apo pLDDT
-    num_atoms = sum(num_residue_atoms)
-    coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
-    bfactors = np.full((num_atoms,), np.nan, dtype=np.float32)
-    apo_coords = np.full((num_atoms, 3), np.nan, dtype=np.float32)
-    apo_plddt = np.full((num_atoms), np.nan, dtype=np.float32)
-
-    atom_struct = Atom(
+    num_res_atoms = [arr.shape[0] for arr in atom_name_list]
+    residue_struct = ResidueLayout(
+        name=np.array(ccd_sequences, dtype=np.dtype("<U6")),
+        num_atoms=np.array(num_res_atoms, dtype=np.uint8),
+        is_standard=np.array(is_standard_list, dtype=bool),
+    )
+    num_atoms = sum(num_res_atoms)
+    atom_struct = AtomLayout(
         name=np.concatenate(atom_name_list, dtype=np.dtype("<U4")),
         element=np.concatenate(atom_elem_list, dtype=np.uint8),
         charge=np.concatenate(atom_charge_list, dtype=np.int8),
-        coords=coords,
-        bfactor=bfactors,
-        apo_coords=apo_coords,
-        apo_plddt=apo_plddt,
+        # Empty coordinates, bfactors, apo coordinates, and apo pLDDT
+        coords=np.full((num_atoms, 3), np.nan, dtype=np.float32),
+        bfactor=np.full((num_atoms,), np.nan, dtype=np.float16),
+        apo_coords=np.full((num_atoms, 3), np.nan, dtype=np.float32),
+        apo_plddt=np.full((num_atoms), np.nan, dtype=np.float16),
     )
 
     # ==================================================
@@ -213,17 +193,17 @@ def prepare_ref_chain(
     bond_residue_index_list: list[tuple[int, int]] = []
     bond_atom_name_list: list[tuple[str, str]] = []
     bond_type_list: list[int] = []
-    if chain_type is C.ChainType.LIGAND:  # Only ligand bonds; there is no ion bonds.
+    if chain_type is C.ChainType.LIGAND:
         for residue_index, ref_mol in enumerate(ref_mols, start=1):
             # Get ref atom names
-            ref_atom_names = get_ref_atom_names(ref_mol.code)
+            ref_atom_names = set(atom_name_list[residue_index - 1].tolist())
             for (atom_name1, atom_name2), bond_type in ref_mol.bonds.items():
                 if atom_name1 in ref_atom_names and atom_name2 in ref_atom_names:
                     bond_residue_index_list.append((residue_index, residue_index))
                     bond_atom_name_list.append((atom_name1, atom_name2))
                     bond_type_list.append(bond_type)
 
-    bond_struct = Bond(
+    bond_struct = BondLayout(
         residue_index=np.array(bond_residue_index_list, dtype=np.uint32).reshape(-1, 2),
         atom_name=np.array(bond_atom_name_list, dtype=np.dtype("<U4")).reshape(-1, 2),
         bond_type=np.array(bond_type_list, dtype=np.uint8),
@@ -237,4 +217,40 @@ def prepare_ref_chain(
         residue=residue_struct,
         atom=atom_struct,
         bond=bond_struct,
+        smiles=smiles,
+        is_covalent_ligand=chain_type.is_ligand and len(bonded_atoms) > 0,
+    )
+
+
+def prepare_chain_metadata(chain: Chain, name: str) -> ChainInfo:
+    """Prepare chain metadata.
+
+    Parameters
+    ----------
+    chain : Chain
+        The reference chain.
+    name : str
+        The user-defined chain name.
+
+    Returns
+    -------
+    ChainInfo
+        The prepared chain metadata.
+    """
+    return ChainInfo(
+        name=name,
+        type=chain.chain_type,
+        entity_id=chain.entity_id,
+        asym_id=chain.asym_id,
+        sym_id=chain.sym_id,
+        num_residues=chain.num_residues,
+        num_atoms=chain.num_atoms,
+        num_tokens=chain.num_tokens,
+        smiles=chain.smiles,
+        is_covalent_ligand=chain.is_covalent_ligand,
+        is_ion=chain.is_ion,
+        # placeholders
+        description=None,
+        cluster_id=None,
+        is_low_homology=False,
     )

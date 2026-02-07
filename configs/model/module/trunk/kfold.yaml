@@ -8,7 +8,7 @@ interformer:
   num_blocks: 48
   dropout: 0.25
   skip_tri_attn: false
-  use_separate_projections: false
+  use_separate_projections: true
   use_qk_norm: false
 ensemble_module:
   channel_struct_input: 0 # to be filled in by the ensemble config

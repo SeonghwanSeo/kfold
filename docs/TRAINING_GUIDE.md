@@ -31,7 +31,6 @@ pre-commit install
 ```
 
 ## Preparing the Dataset
-The training dataset is prepared based on the pre-processed dataset provided by [Boltz1 Official Github](https://github.com/jwohlwend/boltz/blob/v1.0.0/docs/training.md#download-the-pre-processed-data).
 
 ### For K-Fold Consortium Users (Internal)
 
@@ -47,11 +46,11 @@ export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 # Navigate to the data directory
 cd $KFOLD_DATA_DIR
 
-# Clone pre-built dataset (latest: v260109)
-cp -r /storage/wykim_lab/icl_shwan/dataset/v260109 .
+# Clone pre-built dataset (latest: v260130)
+cp -r /storage/wykim_lab/icl_shwan/dataset/v260130/ .
 
 # Extract the datasets you need
-cd v260109/dataset
+cd v260130/dataset
 tar --zstd -xvf rcsb-train.tar.zst
 tar --zstd -xvf rcsb-val.tar.zst
 tar --zstd -xvf NaturalAb.tar.zst
@@ -63,25 +62,14 @@ tar --zstd -xvf NaturalAb.tar.zst
 If you need to regenerate the dataset from scratch, follow these steps.
 
 **Source Data Paths:**
-- RCSB:
-  - mmCIF files: `/mnt/parallel_storage/wykim_lab/icl_shwan/raw_data/rcsb/rcsb.tar`
-  - apo structures: `/mnt/parallel_storage/wykim_lab/icl_shwan/raw_data/rcsb/apo.tar`
+- RCSB: `/storage/wykim_lab/icl_shwan/data/rcsb-260109/`
 
-##### Dataset Creation Steps:
-To create the dataset, execute scripts in `scripts/process/rcsb/` sequentially as follows
-
-TODO write...
-
-##### Custom Dataset Creation Steps:
-
-To create the manifest files to train with subsets of the dataset, execute scripts in `scripts/process/manifest/` sequentially as follows:
-
-TODO write...
+See [`scripts/process/rcsb/README.md`](../scripts/process/rcsb/README.md) for instructions on downloading and preparing the RCSB PDB dataset.
 
 
 ### For Community Users (Public)
 
-TODO
+TODO: Add public data links.
 
 ## Training
 

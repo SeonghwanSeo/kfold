@@ -24,6 +24,7 @@ NUM_PAIR_INTERACTION_TYPES: int = interaction.NUM_PAIR_INTERACTION_TYPES
 INTERFACE_CUTOFF: float = 15.0  # Angstroms
 
 ChainType = chain.ChainType
+SubChainType = chain.SubChainType
 ResidueName = residue.ResidueName
 ConstraintType = constraint.ConstraintType
 AtomName = atom.AtomName

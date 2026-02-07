@@ -10,9 +10,8 @@ import lightning.pytorch as pl
 import numpy as np
 import torch
 from omegaconf import DictConfig
-from torchmetrics import MeanMetric
+from torchmetrics import MeanMetric, MetricCollection
 
-from kfold import constants as C
 from kfold.config import to_dict
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
@@ -28,8 +27,7 @@ from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
 from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
-from . import metrics as validation_metrics
-from .logging.validation_summary import summarize_prediction
+from .metrics import structure_metrics as validation_metrics
 from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
 
@@ -288,30 +286,22 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def setup_metrics(self):
         """Setup metrics for validation"""
-        val_metrics = {}
-
-        # RMSD
-        val_metrics["avg_rmsd"] = MeanMetric()
-        val_metrics["rmsd"] = MeanMetric()
-        val_metrics["best_rmsd"] = MeanMetric()
-
-        # LDDT
-        val_metrics["lddt"] = MeanMetric()
-        val_metrics["best_lddt"] = MeanMetric()
-        val_metrics["complex_lddt"] = MeanMetric()
-        for m in C.training.LDDTType:
-            # HACK: Currently, `lddt_...` and `best_lddt_...` are the same
-            # since we do not perform confidence ranking yet.
-            val_metrics[f"lddt_{m.value}"] = MeanMetric()
-            val_metrics[f"best_lddt_{m.value}"] = MeanMetric()
-            val_metrics[f"complex_lddt_{m.value}"] = MeanMetric()
-
-        self.metrics = torch.nn.ModuleDict(
-            {
-                "train_metrics": torch.nn.ModuleDict(),
-                "val_metrics": torch.nn.ModuleDict(val_metrics),
-            }
-        )
+        # NOTE (Seonghwan): MeanMetric is required since the number of values
+        # per each metric key are different for each batch during validation.
+        # self.log() raises deadlock error when aggregating metrics in DDP.
+        self.val_dataset_names: list[str] = [
+            ds.name for ds in self.global_config.train.data.val_datasets
+        ]
+        val_metrics = []
+        for name in self.val_dataset_names:
+            dataset_metrics = {}
+            for prefix in ["top1", "top5"]:
+                for k in validation_metrics.main_metric_names:
+                    dataset_metrics[f"{prefix}/{k}"] = MeanMetric()
+            for k in validation_metrics.monitor_metric_names:
+                dataset_metrics[f"monitor/{k}"] = MeanMetric()
+            val_metrics.append(MetricCollection(dataset_metrics, prefix=f"{name}/"))
+        self.val_metrics = torch.nn.ModuleList(val_metrics)
 
     def configure_optimizers(self):  # type: ignore
         config = self.optimizer_config
@@ -513,12 +503,15 @@ class KFoldTrainingModule(pl.LightningModule):
         self,
         batch: tuple[FoldingInput, list[dict]],
         batch_idx: int,
+        dataloader_idx: int = 0,
     ):
         val_config = self.validation_config
         num_diffusion_samples = val_config.num_diffusion_samples
 
         f_input, full_struct_list = batch
         assert f_input.batch_size == 1, "Validation batch size should be 1"
+        struct_info = full_struct_list[0]
+        ref_struct: RefStructure = struct_info["structure"]
 
         try:
             out = self(
@@ -540,32 +533,58 @@ class KFoldTrainingModule(pl.LightningModule):
             else:
                 raise e
 
-        struct_info = full_struct_list[0]
-        name: str = struct_info["id"]
+        # Remove padding atoms
+        assert sample_coords.shape[:2] == (1, num_diffusion_samples), (
+            "Expected sample_coords shape is (1, Nsample, Natom, 3)."
+        )
+        num_atoms: int = ref_struct.num_atoms
+        assert f_input.atom.pad_mask[:, :num_atoms].all(), (
+            "Non-padding atoms found in the padding mask."
+        )
+        assert not f_input.atom.pad_mask[:, num_atoms:].any(), (
+            "Padding atoms found in the non-padding region of the padding mask."
+        )
+        sample_coords = sample_coords[0, :, :num_atoms, :]  # [Nsample, Natom, 3]
 
         # Compute validation metrics
+        ref_struct_aligned: list[RefStructure] = []
+        sample_metrics: list[dict[str, Any]] = []
         with torch.autocast("cuda", torch.float32):
             # Permute predicted and true coordinates to align
-            true_coords, atom_mask = validation_metrics.permute_label_coordinates(
-                f_input=f_input,
-                pred_coords=sample_coords,
-                full_struct_list=full_struct_list,
-                symmetry_correction=val_config.symmetry_correction,
-            )
-            # Compute metrics
-            metrics = validation_metrics.compute_validation_metrics(
-                f_input=f_input,
-                true_coords=true_coords,
-                pred_coords=sample_coords,
-                atom_mask=atom_mask,
-                align=False,  # Already aligned
-            )
+            if val_config.symmetry_correction:
+                assert "symmetry" in struct_info, (
+                    "symmetry_dict must be provided in struct_info "
+                    "for symmetry correction during validation."
+                )
+            symmetry_dict = struct_info.get("symmetry", None)
+            for i in range(num_diffusion_samples):
+                pred_coords_i = sample_coords[i]  # [Natom, 3]
+                struct_i = validation_metrics.get_aligned_structure(
+                    ref_struct,
+                    pred_coords_i,
+                    find_best_permutation=val_config.symmetry_correction,
+                    symmetry_dict=symmetry_dict,
+                )
+                metric_i = validation_metrics.compute_validation_metric(
+                    struct_i, pred_coords_i, align=False
+                )
+                ref_struct_aligned.append(struct_i)
+                sample_metrics.append(metric_i)
+
+        # Aggregate metrics
+        aggr_metrics = validation_metrics.aggregate_validation_metrics(sample_metrics)
 
         # Update validation metrics
-        val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
-        for k in val_metrics.keys():
-            v, w = metrics[k]
-            val_metrics[k].update(v, w)
+        metrics: MetricCollection = self.val_metrics[dataloader_idx]
+        for prefix in ["top1", "top5"]:
+            _m = aggr_metrics[prefix]
+            for k in validation_metrics.main_metric_names:
+                if k in _m:
+                    metrics[f"{prefix}/{k}"].update(_m[k])
+        for k in validation_metrics.monitor_metric_names:
+            _m = aggr_metrics["monitor"]
+            if k in _m:
+                metrics[f"monitor/{k}"].update(_m[k])
 
         # Save validation predictions if needed
         if val_config.save_predictions:
@@ -574,74 +593,61 @@ class KFoldTrainingModule(pl.LightningModule):
                     "Warning: trainer.log_dir is None, "
                     "skipping saving validation predictions."
                 )
-                return
-            epoch: int = self.current_epoch
-            global_step: int = self.global_step
-            save_dir: pathlib.Path = (
-                pathlib.Path(self.trainer.log_dir)
-                / "validation"
-                / f"epoch-{epoch}_step-{global_step}"
-                / name
-            )
-            # Create directory to save validation outputs
-            save_dir.mkdir(parents=True, exist_ok=True)
-
-            ref_struct: RefStructure = struct_info["structure"]
-            all_metrics = self.save_metrics(
-                ref_struct,
-                sample_coords[0],  # [Nsample, Natom, 3]
-                true_coords[0],  # [Nsample, Natom, 3]
-                atom_mask[0],  # [Nsample, Natom]
-                save_dir,
-            )
-            self.save_structure(
-                ref_struct,
-                sample_coords[0],  # [Nsample, Natom, 3]
-                true_coords[0],  # [Nsample, Natom, 3]
-                atom_mask[0],  # [Nsample, Natom]
-                save_dir,
-                all_metrics,
-            )
-            if traj is not None:
-                # Save trajectory if available
-                self.save_trajectory(
-                    ref_struct,
-                    traj[:, 0],  # [T, Natom, 3]
-                    save_dir,
-                    format=val_config.traj_format,
+            else:
+                dataset_name = self.val_dataset_names[dataloader_idx]
+                save_dir: pathlib.Path = (
+                    pathlib.Path(self.trainer.log_dir)
+                    / "validation_logs"
+                    / dataset_name
+                    / f"epoch-{self.current_epoch}_step-{self.global_step}"
+                    / ref_struct.id
                 )
+                save_dir.mkdir(parents=True, exist_ok=True)
+
+                # Save ground-truth and apo structures
+                name = ref_struct.id
+                self.writer.write(ref_struct, save_dir / f"{name}-gt.cif")
+                self.writer.write(ref_struct, save_dir / f"{name}-apo.cif", save_apo=True)
+
+                # Save predicted structures and metrics
+                for i in range(num_diffusion_samples):
+                    prefix = str(save_dir / f"{name}-sample{i}")
+                    self.save_structure_and_metrics(
+                        ref_struct=ref_struct_aligned[i],
+                        pred_coords=sample_coords[i],
+                        metrics=sample_metrics[i],
+                        prefix=prefix,
+                    )
+
+                # Save trajectory if available
+                if traj is not None:
+                    self.save_trajectory(
+                        ref_struct,
+                        traj[:, 0],  # [T, Natom, 3]
+                        save_dir,
+                        format=val_config.traj_format,
+                    )
+
+    def on_validation_epoch_start(self):
+        torch.backends.cudnn.benchmark = False
 
     def on_validation_epoch_end(self):
-        """Aggregate and log validation metrics at the end of the epoch."""
-        val_metrics: dict[str, MeanMetric] = self.metrics["val_metrics"]
-
-        # Aggregate validation metrics
-        avg_values: dict[str, torch.Tensor] = {}
-        for k, m in val_metrics.items():
-            v = m.compute()
-            if not v.isfinite().all():
-                # Ignore non-finite values
-                continue
-            avg_values[k] = v
-            m.reset()
-
-        # Compute weighted lddt scores (Monitored metrics)
-        # NOTE: this is equivalent to Boltz1's `lddt` metric.
-        lddt_weights = C.training.LDDTWeightsBoltz
-
-        for prefix in ["", "best_", "complex_"]:
-            weighted_lddt = 0
-            sum_weights = 0
-            for m, w in lddt_weights.items():
-                weighted_lddt += avg_values.get(f"{prefix}lddt_{m.value}", 0.0) * w
-                sum_weights += w
-            weighted_lddt /= sum_weights
-            avg_values[f"{prefix}weighted_lddt"] = weighted_lddt  # type: ignore
-
-        avg_values = {f"val/{k}": v for k, v in avg_values.items()}
-        self.log_dict(avg_values, sync_dist=True)
+        torch.backends.cudnn.benchmark = True
+        for metrics in self.val_metrics:
+            if not self.trainer.sanity_checking:
+                avg_values = metrics.compute()
+                # NOTE: do not filter out NaN values to avoid deadlock in DDP
+                self.log_dict(
+                    avg_values,
+                    on_step=False,
+                    on_epoch=True,
+                    # Already synced in compute(), but keep to avoid warning...
+                    sync_dist=True,
+                )
+            metrics.reset()
 
         # Clear cache after validation
+        # NOTE: is this necessary?
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -882,85 +888,31 @@ class KFoldTrainingModule(pl.LightningModule):
                 del self._ema
 
     # === Helper functions === #
-    def save_metrics(
+    def save_structure_and_metrics(
         self,
         ref_struct: RefStructure,
         pred_coords: torch.Tensor,
-        true_coords: torch.Tensor,
-        atom_mask: torch.Tensor,
-        save_dir: pathlib.Path,
-    ) -> list[dict]:
-        """Save structure metrics as json files."""
-        name: str = ref_struct.id
-        num_atoms: int = ref_struct.num_atoms
-        num_samples: int = pred_coords.shape[0]
-
-        # Remove padding atoms
-        true_coords: torch.Tensor = true_coords[:, :num_atoms, :].detach()
-        pred_coords: torch.Tensor = pred_coords[:, :num_atoms, :].detach()
-        atom_mask: torch.Tensor = atom_mask[:, :num_atoms]
-
-        metrics_list: list[dict] = []
-        with torch.autocast("cuda", torch.float32):
-            for i in range(num_samples):
-                # Compute metrics
-                metrics: dict = summarize_prediction(
-                    ref_struct=ref_struct,
-                    true_coords=true_coords[i],
-                    pred_coords=pred_coords[i],
-                    atom_mask=atom_mask[i],
-                    align=False,
-                )
-                # Save metrics
-                with open(save_dir / f"{name}-sample-{i}_metrics.json", "w") as f:
-                    json.dump(metrics, f, indent=2)
-                metrics_list.append(metrics)
-        return metrics_list
-
-    def save_structure(
-        self,
-        ref_struct: RefStructure,
-        pred_coords: torch.Tensor,
-        true_coords: torch.Tensor,
-        atom_mask: torch.Tensor,
-        save_dir: pathlib.Path,
-        metrics_list: list[dict],
-    ) -> dict:
+        metrics: dict[str, Any],
+        prefix: str,
+    ):
         """Save predicted and ground-truth structures as mmCIF files."""
-        name: str = ref_struct.id
-        num_atoms: int = ref_struct.num_atoms
-        num_samples: int = pred_coords.shape[0]
+        num_atoms = ref_struct.num_atoms
+        assert pred_coords.shape == (num_atoms, 3), (
+            "pred_coords must have shape (Natoms, 3)."
+        )
+        # Save metrics
+        with open(f"{prefix}_metrics.json", "w") as f:
+            json.dump(metrics, f, indent=2)
 
-        # Save ground-truth, apo, and predicted structures
-        save_dir.mkdir(parents=True, exist_ok=True)
-        self.writer.write(ref_struct, save_dir / f"{name}-gt.cif")
-        self.writer.write(ref_struct, save_dir / f"{name}-apo.cif", save_apo=True)
+        # Save aligned ground-truth structure
+        aligned_gt_path = f"{prefix}-gt_aligned.cif"
+        self.writer.write(ref_struct, aligned_gt_path)
 
-        # Remove padding atoms
-        true_coords: np.ndarray = true_coords[:, :num_atoms, :].detach().cpu().numpy()
-        pred_coords: np.ndarray = pred_coords[:, :num_atoms, :].detach().cpu().numpy()
-        atom_mask: np.ndarray = atom_mask[:, :num_atoms].detach().cpu().numpy()
-
-        # Save predictions
-        for i in range(num_samples):
-            # Get metrics to annotate filenames
-            metrics = metrics_list[i]
-            rmsd = metrics["metrics"]["rmsd"]
-            lddt = metrics["metrics"]["lddt"] * 100  # scale to [0, 100]
-
-            # Store coordinates
-            true_coords_i = true_coords[i]
-            pred_coords_i = pred_coords[i]
-            atom_mask_i = atom_mask[i]
-
-            aligned_gt_path = save_dir / f"{name}-sample-{i}-gt.cif"
-            true_coords_i[~atom_mask_i] = np.nan  # Mask aligned coordinates
-            self.writer.write_new_coords(ref_struct, true_coords_i, aligned_gt_path)
-
-            pred_path = save_dir / f"{name}-sample-{i}-rmsd{rmsd:.2f}-lddt{lddt:.2f}.cif"
-            self.writer.write_new_coords(ref_struct, pred_coords_i, pred_path)
-
-        return metrics
+        # Save predicted structure
+        rmsd = metrics["metrics"]["rmsd"]
+        lddt = metrics["metrics"]["lddt"] * 100  # scale to [0, 100]
+        pred_path = f"{prefix}-rmsd{rmsd:.2f}-lddt{lddt:.2f}.cif"
+        self.writer.write_new_coords(ref_struct, pred_coords.cpu().numpy(), pred_path)
 
     def save_trajectory(
         self,

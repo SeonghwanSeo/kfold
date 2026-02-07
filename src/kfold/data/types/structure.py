@@ -21,7 +21,7 @@ def pack_metadata(metadata: Metadata) -> np.ndarray:
 
     metadata_dict = metadata.to_dict()
     metadata_serialized = msgpack.packb(metadata_dict)
-    return np.array(metadata_serialized, dtype=np.bytes_)
+    return np.frombuffer(metadata_serialized, dtype=np.uint8)
 
 
 def unpack_metadata(data: np.ndarray) -> Metadata:
@@ -63,15 +63,100 @@ class Chain:
     entity_id: int
     asym_id: int
     sym_id: int
-    residue: "Residue"
-    atom: "Atom"
-    bond: "Bond"
+    residue: "ResidueLayout"
+    atom: "AtomLayout"
+    bond: "BondLayout"
     smiles: str | None = None  # optional SMILES string for small molecule
+    is_covalent_ligand: bool = False  # whether the chain is a covalent ligand
 
-    @property
+    # === Properties === #
+    @cached_property
     def ctype(self) -> C.ChainType:
         """Chain type as enum."""
         return C.ChainType(self.chain_type)
+
+    @cached_property
+    def subtype(self) -> C.SubChainType:
+        """Chain type as enum."""
+        if self.is_protein:
+            if self.is_peptide:
+                return C.SubChainType.PEPTIDE
+            else:
+                return C.SubChainType.PROTEIN
+        elif self.is_dna:
+            return C.SubChainType.DNA
+        elif self.is_rna:
+            return C.SubChainType.RNA
+        else:
+            if self.is_glycan:
+                return C.SubChainType.GLYCAN
+            elif self.is_covalent_ligand:
+                return C.SubChainType.COVALENT_LIGAND
+            elif self.is_ion:
+                return C.SubChainType.ION
+            else:
+                return C.SubChainType.SMALL_MOLECULE
+
+    @property
+    def is_protein(self) -> bool:
+        """Whether the chain is a protein."""
+        return self.ctype.is_protein
+
+    @property
+    def is_dna(self) -> bool:
+        """Whether the chain is a dna."""
+        return self.ctype.is_dna
+
+    @property
+    def is_rna(self) -> bool:
+        """Whether the chain is a rna."""
+        return self.ctype.is_rna
+
+    @property
+    def is_ligand(self) -> bool:
+        """Whether the chain is a ligand."""
+        return self.ctype.is_ligand
+
+    @property
+    def is_polymer(self) -> bool:
+        """Whether the chain is a polymer."""
+        return self.ctype.is_polymer
+
+    @property
+    def is_nonpolymer(self) -> bool:
+        """Whether the chain is a non-polymer."""
+        return self.ctype.is_nonpolymer
+
+    @property
+    def is_nucleic_acid(self) -> bool:
+        """Whether the chain is a nucleic acid."""
+        return self.ctype.is_nucleic_acid
+
+    @property
+    def is_peptide(self) -> bool:
+        """Whether the chain is a peptide."""
+        return self.ctype.is_protein and self.num_residues < 16
+
+    @property
+    def is_ion(self) -> bool:
+        """Whether the chain is an ion."""
+        if self.num_atoms > 1 or self.num_residues > 1:
+            return False
+        if self.is_polymer:
+            return False
+        return self.residue.name[0].item() in C.ccd.IONS
+
+    @property
+    def is_small_molecule(self) -> bool:
+        """Whether the chain is a small molecule (non-polymer & non-ion)."""
+        return self.is_nonpolymer and not self.is_ion
+
+    @property
+    def is_glycan(self) -> bool:
+        """Whether the chain is a glycan."""
+        return self.is_covalent_ligand and all(
+            res in C.ccd.GLYCANS for res in self.residue.name.tolist()
+        )
 
     @property
     def num_residues(self) -> int:
@@ -88,6 +173,18 @@ class Chain:
         """Number of bonds in the chain."""
         return len(self.bond)
 
+    @property
+    def num_tokens(self) -> int:
+        """Number of tokens in the structure."""
+        num_tokens: int = 0
+        for res_i in range(self.num_residues):
+            if self.residue.is_standard[res_i]:
+                num_tokens += 1
+            else:
+                num_tokens += self.residue.num_atoms[res_i].item()
+        return num_tokens
+
+    # === Methods === #
     def get_sequence(self, map_to_standard: bool = False) -> str:
         """Get the amino acid / nucleotide sequence of the chain.
 
@@ -176,10 +273,13 @@ class Chain:
             + ")"
         )
 
+    def clone(self) -> Self:
+        """Create a copy of the Chain."""
+        return copy.deepcopy(self)
+
     def copy_with(self, deepcopy: bool = False, **kwargs) -> Self:
         """Create a copy of the Chain with modified fields."""
         if deepcopy:
-            # Deep copy all fields
             out = copy.deepcopy(self)
         else:
             out = self
@@ -210,6 +310,8 @@ class Chain:
                 result[key] = value
         if self.smiles is not None:
             result["smiles"] = np.array(self.smiles, dtype=np.dtype("U"))
+        if self.is_covalent_ligand is not None:
+            result["is_covalent_ligand"] = np.array(self.is_covalent_ligand, dtype=bool)
         return result
 
     @classmethod
@@ -217,23 +319,20 @@ class Chain:
         """Reconstruct from NPZ dictionary."""
         reconstructed = {}
         for prefix, struct_cls in [
-            ("residue.", Residue),
-            ("atom.", Atom),
-            ("bond.", Bond),
+            ("residue.", ResidueLayout),
+            ("atom.", AtomLayout),
+            ("bond.", BondLayout),
         ]:
             struct_data = {
                 key[len(prefix) :]: value
                 for key, value in data.items()
                 if key.startswith(prefix)
             }
-            # FIXME: for backward compatibility
-            if prefix == "atom." and "label_coords" in struct_data:
-                struct_data["coords"] = struct_data.pop("label_coords")
             reconstructed[prefix[:-1]] = struct_cls(**struct_data)
         if "smiles" in data:
             reconstructed["smiles"] = data["smiles"].item()
-        if "apo_type" in data:
-            reconstructed["apo_type"] = tuple(x.item() for x in data["apo_type"])
+        if "is_covalent_ligand" in data:
+            reconstructed["is_covalent_ligand"] = data["is_covalent_ligand"].item()
         return cls(
             chain_type=data["chain_type"].item(),
             entity_id=data["entity_id"].item(),
@@ -244,7 +343,7 @@ class Chain:
 
 
 @dataclasses.dataclass(frozen=True)
-class Residue:
+class ResidueLayout:
     """Residue information.
 
     Attributes
@@ -280,6 +379,13 @@ class Residue:
             [np.array([0], dtype=dtype), np.cumsum(self.num_atoms, dtype=dtype)[:-1]]
         )
 
+    def get_atom_slice(self, residue_index: int) -> slice:
+        """Get slice objects for each residue's atoms."""
+        res_i = residue_index - 1  # convert to 0-based index
+        start = self.atom_starts[res_i]
+        end = start + self.num_atoms[res_i]
+        return slice(start, end)
+
     def iter_residue_atoms(self, residue_index: int) -> range:
         """Get the range of atom indices for a given residue index."""
         # residue_index: 1-based index
@@ -299,7 +405,7 @@ class Residue:
 
 
 @dataclasses.dataclass(frozen=True)
-class Atom:
+class AtomLayout:
     """Atom information.
 
     Attributes
@@ -384,7 +490,7 @@ class Atom:
 
 
 @dataclasses.dataclass(frozen=True)
-class Bond:
+class BondLayout:
     """Intra-chain Bond information.
 
     Shape: [Nbond, ...]
@@ -517,6 +623,11 @@ class RefStructure:
         """Number of atoms in the structure."""
         return sum(chain.num_atoms for chain in self.chains)
 
+    @cached_property
+    def num_tokens(self) -> int:
+        """Number of tokens in the structure."""
+        return sum(chain.num_tokens for chain in self.chains)
+
     @property
     def num_bonds(self) -> int:
         """Number of bonds in the structure."""
@@ -526,13 +637,6 @@ class RefStructure:
     def num_connections(self) -> int:
         """Number of covalent connections in the structure."""
         return len(self.connections)
-
-    def get_chain_by_asym_id(self, asym_id: int) -> Chain:
-        """Get chain by asym_id."""
-        for chain in self.chains:
-            if chain.asym_id == asym_id:
-                return chain
-        raise KeyError(f"Chain with asym_id {asym_id} not found.")
 
     def __repr__(self) -> str:
         """FoldingInput summary representation."""
@@ -556,6 +660,23 @@ class RefStructure:
             + "]\n"
             + ")"
         )
+
+    def get_chain_by_asym_id(self, asym_id: int) -> Chain:
+        """Get chain by asym_id."""
+        for chain in self.chains:
+            if chain.asym_id == asym_id:
+                return chain
+        raise KeyError(f"Chain with asym_id {asym_id} not found.")
+
+    def get_atom_coords(self) -> np.ndarray:
+        """Get atom coordinates of the structure.
+
+        Returns
+        -------
+        coords: np.ndarray
+            Shape [Natom, 3], float32
+        """
+        return np.concatenate([c.atom.coords for c in self.chains], axis=0)
 
     def clone(self) -> Self:
         """Create a deep copy of the RefStructure."""
@@ -608,6 +729,17 @@ class RefStructure:
         struct_asym_ids = set(asym_ids)
         if meta_asym_ids != struct_asym_ids:
             raise ValueError("Mismatch between metadata asym_ids and structure asym_ids.")
+
+        for c, cm in zip(self.chains, self.metadata.chains, strict=True):
+            assert c.entity_id == cm.entity_id
+            assert c.asym_id == cm.asym_id
+            assert c.sym_id == cm.sym_id
+            assert c.num_residues == cm.num_residues
+
+        for iface in self.metadata.interfaces:
+            for asym_id in iface.asym_ids:
+                if asym_id not in valid_asym_ids:
+                    raise ValueError(f"Interface refers to invalid asym_id {asym_id}.")
 
     def to(self, *args, **kwargs) -> Self:
         """No-op for device/dtype movement for pytorch lightning compatibility."""

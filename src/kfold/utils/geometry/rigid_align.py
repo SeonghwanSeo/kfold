@@ -9,13 +9,21 @@ __all__ = ["compute_rmsd", "rigid_align", "weighted_rigid_align"]
 
 @overload
 def compute_rmsd(
-    coords: np.ndarray, target: np.ndarray, mask: np.ndarray, align: bool = False
+    coords: np.ndarray,
+    target: np.ndarray,
+    mask: np.ndarray | None,
+    align: bool = False,
+    no_svd: bool = False,
 ) -> np.ndarray: ...
 
 
 @overload
 def compute_rmsd(
-    coords: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, align: bool = False
+    coords: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor | None,
+    align: bool = False,
+    no_svd: bool = False,
 ) -> torch.Tensor: ...
 
 
@@ -24,6 +32,7 @@ def compute_rmsd(
     target: np.ndarray | torch.Tensor,
     mask: np.ndarray | torch.Tensor | None,
     align: bool = False,
+    no_svd: bool = False,
 ) -> np.ndarray | torch.Tensor:
     """
     computes the root mean square deviation (rmsd) between two sets of coordinates.
@@ -31,61 +40,174 @@ def compute_rmsd(
     Parameters
     ----------
     coords : np.ndarray | torch.Tensor
-        Array of shape (..., N, 3) representing the coordinates to be aligned.
+        Array of shape (*, N, 3) representing the coordinates to be aligned.
     target : np.ndarray | torch.Tensor
-        Array of shape (..., N, 3) representing the target coordinates.
+        Array of shape (*, N, 3) representing the target coordinates.
     mask : np.ndarray | torch.Tensor (optional)
-        Array of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
+        Array of shape (*, N) indicating valid points (1 for valid, 0 for invalid).
     align : bool, optional
         If True, perform rigid alignment before computing RMSD (default: False).
+    no_svd : bool, optional
+        If True, use non-SVD method for RMSD computation (default: False).
 
     Returns
     -------
     rmsd : np.ndarray | torch.Tensor
         RMSD values.
     """
-    if mask is None:
+    if no_svd:
+        # Non-SVD based RMSD computation (float64 for numerical stability)
         if isinstance(coords, np.ndarray):
-            mask = np.ones(coords.shape[:-1], dtype=bool)
+            assert isinstance(target, np.ndarray) and isinstance(mask, np.ndarray | None)
+            return compute_rmsd_numpy(coords, target, mask, align)
         elif isinstance(coords, torch.Tensor):
-            mask = torch.ones(coords.shape[:-1], dtype=torch.bool, device=coords.device)
-
-    if align:
-        coords = rigid_align(coords, target, mask)
-
-    if isinstance(coords, np.ndarray):
-        assert isinstance(target, np.ndarray) and isinstance(mask, np.ndarray)
-        mask = mask.astype(bool, copy=False)
-        diff = coords - target
-        diff[~mask] = 0.0
-        # Weighted sum of squares (masked positions contribute 0)
-        mse = np.sum(diff**2, axis=(-2, -1)) / np.clip(
-            np.sum(mask, axis=-1), a_min=1, a_max=None
-        )
-        rmsd = np.sqrt(mse)
-        return rmsd
-
-    elif isinstance(coords, torch.Tensor):
-        assert isinstance(target, torch.Tensor) and isinstance(mask, torch.Tensor)
-
-        # Expand mask for broadcasting
-        mask_expanded = mask[..., None]
-        mask_bool = mask_expanded.bool()
-
-        # Sanitize inputs: replace values with 0 where mask is False (0).
-        # We use masked_fill for efficiency and safety against NaNs in masked regions.
-        safe_coords = coords.masked_fill(~mask_bool, 0.0)
-        safe_target = target.masked_fill(~mask_bool, 0.0)
-
-        diff = safe_coords - safe_target
-        mse = torch.sum(diff**2, dim=(-2, -1)) / (torch.sum(mask, dim=-1).clamp(min=1))
-        rmsd = torch.sqrt(mse)
-        return rmsd
+            assert isinstance(target, torch.Tensor) and isinstance(
+                mask, torch.Tensor | None
+            )
+            return compute_rmsd_torch(coords, target, mask, align)
+        else:
+            raise TypeError(
+                f"Unsupported array type: {type(coords)}. "
+                "Expected np.ndarray or torch.Tensor."
+            )
     else:
-        raise TypeError(
-            f"Unsupported array type: {type(coords)}. "
-            "Expected np.ndarray or torch.Tensor."
-        )
+        # Use SVD-based method via rigid alignment
+        if align:
+            coords = rigid_align(coords, target, mask)
+        diff = coords - target
+        if mask is None:
+            n_points = coords.shape[-2]
+        else:
+            mask_expanded = mask[..., None]
+            n_points = mask.sum(-1, dtype=target.dtype).clip(1)
+            diff = (
+                torch.where(mask_expanded, diff, 0.0)
+                if isinstance(diff, torch.Tensor)
+                else np.where(mask_expanded, diff, 0.0)
+            )
+
+        rmsd_sq = (diff**2).sum((-2, -1)) / n_points
+        rmsd = (rmsd_sq.clip(0.0)) ** 0.5
+        return rmsd
+
+
+def compute_rmsd_numpy(
+    coords: np.ndarray,
+    target: np.ndarray,
+    mask: np.ndarray | None,
+    align: bool = False,
+) -> np.ndarray:
+    """Compute minimal RMSD between two sets of coordinates without SVD.
+    NOTE(SeonghwanSeo): This function replaces the SVD-based RMSD computation
+    """
+    original_dtype = coords.dtype
+    # 1. Masking & Centering
+    if mask is None:
+        mask = np.ones(coords.shape[:-1], dtype=bool)
+
+    mask = mask.astype(bool, copy=False)  # [*, N]
+    mask_expanded = mask[..., np.newaxis]  # [*, N, 1]
+    mask_weights = mask_expanded.astype(np.float64)  # [*, N, 1]
+    n_points = mask.sum(axis=-1).clip(1)  # [*,]
+
+    # Sanitize inputs: If there are NaNs in masked regions, they will propagate
+    p = np.where(mask_expanded, coords, 0.0).astype(np.float64)  # [*, N, 3]
+    q = np.where(mask_expanded, target, 0.0).astype(np.float64)  # [*, N, 3]
+    del coords, target
+
+    if not align:
+        # Direct RMSD computation without alignment
+        rmsd = np.sqrt((((q - p) ** 2).sum(axis=(-2, -1)) / n_points).clip(0.0))
+        return rmsd.astype(original_dtype)
+
+    # Center coordinates
+    p_center = p.sum(-2, keepdims=True) / n_points[..., None, None]
+    q_center = q.sum(-2, keepdims=True) / n_points[..., None, None]
+    p_centered = (p - p_center) * mask_weights
+    q_centered = (q - q_center) * mask_weights
+
+    # 2. Compute E0 (Sum of squared norms)
+    e0 = (p_centered**2).sum(axis=(-1, -2)) + (q_centered**2).sum(axis=(-1, -2))  # [*,]
+
+    # 3. Compute Covariance Matrix H (P^T @ Q)
+    h = np.einsum("...ni, ...nj -> ...ij", p_centered, q_centered)  # [*, 3, 3]
+
+    # 4. Compute eigenvalues of H^T @ H
+    s_sq_matrix = np.matmul(h.swapaxes(-1, -2), h)
+    eigenvalues = np.linalg.eigvalsh(s_sq_matrix)
+    singular_values = np.sqrt(eigenvalues.clip(0.0))  # [*, 3]
+
+    # 5. Handle Reflection (Chirality check)
+    det_h = np.linalg.det(h)
+    sign = np.where(det_h < 0, -1.0, 1.0)
+    singular_values[..., 0] *= sign
+
+    # 6. Compute RMSD
+    # Trace of Sigma (sum of singular values)
+    trace_max = np.sum(singular_values, axis=-1)
+    rmsd_sq = (e0 - 2 * trace_max) / n_points
+    rmsd = np.sqrt(rmsd_sq.clip(0.0))
+    return rmsd.astype(original_dtype)
+
+
+def compute_rmsd_torch(
+    coords: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor | None = None,
+    align: bool = False,
+) -> torch.Tensor:
+    """Compute minimal RMSD between two sets of coordinates using PyTorch."""
+    original_dtype = coords.dtype
+
+    # 1. Masking & Centering
+    if mask is None:
+        mask = torch.ones(coords.shape[:-1], dtype=torch.bool, device=coords.device)
+
+    mask = mask.bool()
+    mask_expanded = mask.unsqueeze(-1)
+    mask_weights = mask_expanded.double()
+
+    # Sanitize inputs: If there are NaNs in masked regions, they will propagate
+    p = torch.where(mask_expanded, coords, 0.0).double()
+    q = torch.where(mask_expanded, target, 0.0).double()
+    del coords, target
+
+    # mask_weights: [*, N, 1]
+    n_points = mask.sum(dim=-1).clamp(min=1.0)
+
+    if not align:
+        # Direct RMSD
+        rmsd = ((q - p).pow(2).sum((-2, -1)) / n_points).clamp(0.0).sqrt()
+        return rmsd.to(original_dtype)
+
+    # Center coordinates
+    p_center = p.sum(-2, keepdim=True) / n_points[..., None, None]
+    q_center = q.sum(-2, keepdim=True) / n_points[..., None, None]
+    p_centered = (p - p_center) * mask_weights
+    q_centered = (q - q_center) * mask_weights
+
+    # 2. Compute E0 (Sum of squared norms)
+    e0 = q_centered.pow(2).sum(dim=(-1, -2)) + p_centered.pow(2).sum(dim=(-1, -2))
+
+    # 3. Compute Covariance Matrix H (P^T @ Q)
+    h = torch.einsum("...ni,...nj->...ij", p_centered, q_centered)  # [*, 3, 3]
+
+    # 4. Compute eigenvalues of H^T @ H
+    h_th = torch.matmul(h.transpose(-1, -2), h)
+    eigenvalues = torch.linalg.eigvalsh(h_th)
+    singular_values = torch.sqrt(eigenvalues.clamp(min=0.0))
+
+    # 5. Handle Reflection (Chirality check)
+    det_h = torch.linalg.det(h)
+    sign = torch.where(det_h < 0, -1.0, 1.0)
+    s_others = singular_values[..., 1:].sum(dim=-1)
+    s_min = singular_values[..., 0] * sign
+
+    # 6. Compute RMSD
+    trace_max = s_others + s_min
+    rmsd_sq = (e0 - 2.0 * trace_max) / n_points
+    rmsd = rmsd_sq.clamp(min=0.0).sqrt()
+    return rmsd.to(original_dtype)
 
 
 @overload
@@ -118,18 +240,18 @@ def rigid_align(
     Parameters
     ----------
     coords : np.ndarray | torch.Tensor
-        Array of shape (..., N, 3) representing the coordinates to be aligned.
+        Array of shape (*, N, 3) representing the coordinates to be aligned.
     target : np.ndarray | torch.Tensor
-        Array of shape (..., N, 3) representing the target coordinates.
+        Array of shape (*, N, 3) representing the target coordinates.
     mask : np.ndarray | torch.Tensor
-        Array of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
+        Array of shape (*, N) indicating valid points (1 for valid, 0 for invalid).
     anchor_index : np.ndarray | torch.Tensor | None, optional
         Array of shape (N,) containing indices of anchors to be used for alignment.
 
     Returns
     -------
     aligned_coords : np.ndarray | torch.Tensor
-        Array or tensor of shape (..., N, 3) containing the aligned coordinates.
+        Array or tensor of shape (*, N, 3) containing the aligned coordinates.
     """
     if isinstance(coords, np.ndarray):
         return weighted_rigid_align_numpy(coords, target, None, mask, anchor_index)  # type: ignore
@@ -179,20 +301,20 @@ def weighted_rigid_align(
     Parameters
     ----------
     coords : np.ndarray | torch.Tensor
-        Array of shape (..., N, 3) representing the coordinates to be aligned.
+        Array of shape (*, N, 3) representing the coordinates to be aligned.
     target : np.ndarray | torch.Tensor
-        Array of shape (..., N, 3) representing the target coordinates.
+        Array of shape (*, N, 3) representing the target coordinates.
     weights : np.ndarray | torch.Tensor (optional)
-        Array of shape (..., N) containing weights for each point.
+        Array of shape (*, N) containing weights for each point.
     mask : np.ndarray | torch.Tensor (optional)
-        Array of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
+        Array of shape (*, N) indicating valid points (1 for valid, 0 for invalid).
     anchor_index : np.ndarray | torch.Tensor (optional)
         Array of shape (N,) containing indices of anchors to be used for alignment.
 
     Returns
     -------
     aligned_coords : np.ndarray | torch.Tensor
-        Array of shape (..., N, 3) containing the aligned coordinates.
+        Array of shape (*, N, 3) containing the aligned coordinates.
 
     Notes
     -----
@@ -228,20 +350,20 @@ def weighted_rigid_align_numpy(
     Parameters
     ----------
     coords : np.ndarray
-        Array of shape (..., N, 3) representing the coordinates to be aligned.
+        Array of shape (*, N, 3) representing the coordinates to be aligned.
     target : np.ndarray
-        Array of shape (..., N, 3) representing the target coordinates.
+        Array of shape (*, N, 3) representing the target coordinates.
     weights : np.ndarray | None (optional)
-        Array of shape (..., N) containing weights for each point.
+        Array of shape (*, N) containing weights for each point.
     mask : np.ndarray | None (optional)
-        Array of shape (..., N) indicating valid points (1 for valid, 0 for invalid).
+        Array of shape (*, N) indicating valid points (1 for valid, 0 for invalid).
     anchor_index : np.ndarray | None, optional
         Array of shape (N,) containing indices of anchors to be used for alignment.
 
     Returns
     -------
     aligned_coords : np.ndarray
-        Array of shape (..., N, 3) containing the aligned coordinates.
+        Array of shape (*, N, 3) containing the aligned coordinates.
 
     Notes
     -----
@@ -296,20 +418,20 @@ def get_rigid_transform_numpy(
     Parameters
     ----------
     coords : np.ndarray
-        Array of shape (..., N, 3) representing the coordinates to be aligned.
+        Array of shape (*, N, 3) representing the coordinates to be aligned.
     target : np.ndarray
-        Array of shape (..., N, 3) representing the target coordinates.
+        Array of shape (*, N, 3) representing the target coordinates.
     weights : np.ndarray
-        Array of shape (..., N) containing weights for each point.
+        Array of shape (*, N) containing weights for each point.
     eps : float, optional
         Small value added for numerical stability (default: 1e-8).
 
     Returns
     -------
     R : np.ndarray
-        Array of shape (..., 3, 3) representing the rotation matrices.
+        Array of shape (*, 3, 3) representing the rotation matrices.
     t : np.ndarray
-        Array of shape (..., 3) representing the translation vectors.
+        Array of shape (*, 3) representing the translation vectors.
     """
     dtype = coords.dtype
 
@@ -447,20 +569,20 @@ def get_rigid_transform_torch(
     Parameters
     ----------
     coords : torch.Tensor
-        Tensor of shape (..., N, 3) representing the coordinates to be aligned.
+        Tensor of shape (*, N, 3) representing the coordinates to be aligned.
     target : torch.Tensor
-        Tensor of shape (..., N, 3) representing the target coordinates.
+        Tensor of shape (*, N, 3) representing the target coordinates.
     weights : torch.Tensor
-        Tensor of shape (..., N) containing weights for each point.
+        Tensor of shape (*, N) containing weights for each point.
     eps : float, optional
         Small value added for numerical stability (default: 1e-8).
 
     Returns
     -------
     R : torch.Tensor
-        Tensor of shape (..., 3, 3) representing the rotation matrices.
+        Tensor of shape (*, 3, 3) representing the rotation matrices.
     t : torch.Tensor
-        Tensor of shape (..., 3) representing the translation vectors.
+        Tensor of shape (*, 3) representing the translation vectors.
     """
     device = coords.device
     original_dtype = coords.dtype

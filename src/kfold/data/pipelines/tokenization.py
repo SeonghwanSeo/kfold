@@ -1,5 +1,7 @@
 """Tokenization pipeline for structures."""
 
+# TODO: Add interaction types for training only.
+
 import json
 import os
 from functools import lru_cache
@@ -44,7 +46,9 @@ def _log_ligand_interaction_error(
 
 
 class Tokenizer:
-    def __init__(self, ccd: CCD, use_interaction: bool = True) -> None:
+    def __init__(
+        self, ccd: CCD, use_interaction: bool = True, training: bool = True
+    ) -> None:
         """Tokenizer for structures.
 
         Parameters
@@ -53,9 +57,12 @@ class Tokenizer:
             The chemical component dictionary.
         use_interaction : bool, optional
             Whether to compute interaction types, by default True.
+        training : bool, optional
+            Whether the tokenizer is used for training, by default True.
         """
         self.ccd: CCD = ccd
         self.use_interaction: bool = use_interaction
+        self.training: bool = training
 
     def __call__(
         self,
@@ -278,7 +285,7 @@ def tokenize_structure(
                 struct.token.is_standard[g_tok_i] = True
                 if use_interaction:
                     interaction_indices = C.interaction.get_residue_interaction_type(
-                        res_name, chain.chain_type
+                        res_name, ctype
                     )
                     if interaction_indices:
                         struct.token.interaction_type[
@@ -305,7 +312,8 @@ def tokenize_structure(
                 struct.token.is_standard[st:end] = False
                 if use_interaction:
                     interaction_indices = C.interaction.get_residue_interaction_type(
-                        C.residue.ResidueName.UNK, chain.chain_type
+                        C.residue.unknown_residue_name.get(ctype, C.ResidueName.UNK),
+                        ctype,
                     )
                     if interaction_indices:
                         struct.token.interaction_type[
@@ -417,7 +425,7 @@ def tokenize_structure(
             if (
                 use_interaction
                 and not chain.residue.is_standard[res_i]
-                and ctype in (C.ChainType.LIGAND, C.ChainType.ION)
+                and ctype.is_ligand
             ):
                 try:
                     ligand_interactions = compute_ligand_interaction_types(ref_mol.mol)
@@ -426,8 +434,7 @@ def tokenize_structure(
                     print(
                         "Error computing ligand interactions for "
                         f"{_metadata.id} (ccd={ccd_name}, asym_id={asym_id}, "
-                        f"chain_name={chain_meta.chain_name}{smiles_info}): {e}",
-                        flush=True,
+                        f"chain_name={chain_meta.name}{smiles_info}): {e}"
                     )
                     log_path = os.environ.get("KFO_BAD_LIGAND_LOG")
                     if log_path:

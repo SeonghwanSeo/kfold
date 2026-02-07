@@ -1,4 +1,5 @@
 import dataclasses
+import logging
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -16,6 +17,8 @@ from .dataset import (
     ValidationDatasetConfig,
 )
 from .dl_sampler import DistributedWeightedSampler
+
+logger = logging.getLogger(__name__)
 
 
 def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
@@ -181,4 +184,4 @@ class TrainingDataModule(pl.LightningDataModule):
 
     def print_rank_zero(self, msg: str, prefix: str = "[DataModule] ") -> None:
         if self.trainer is None or self.trainer.global_rank == 0:
-            print(prefix + msg)
+            logger.info(f"{prefix}{msg}")

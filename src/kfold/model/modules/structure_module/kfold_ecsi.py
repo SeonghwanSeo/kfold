@@ -98,12 +98,6 @@ class KFoldECSI(BaseECSI):
             Whether to normalize the source (apo) input, by default False.
         normalize_coordinate : bool, optional
             Whether to normalize the source and target coordinates, by default False.
-        non_protein_gamma_scale : float | None, optional
-            Deprecated alias for nucleic_acid_gamma_scale/ligand_gamma_scale. If set
-            and those are left at default 1.0, it is applied to both.
-        gamma_power_non_protein : float | None, optional
-            Deprecated alias for nucleic_acid_gamma_power/ligand_gamma_power. If set
-            and those are left at default 1.0, it is applied to both.
         alignment_entity_strategy : str | None, optional
             Strategy for selecting entity to align: None (all entities), "largest",
             or "random_non_ligand", by default "largest".
@@ -141,8 +135,6 @@ class KFoldECSI(BaseECSI):
         alignment_entity_strategy: str | None = None
         alignment_level: str = "chain"
         s_trans: float = 1.0
-        non_protein_gamma_scale: float | None = None
-        gamma_power_non_protein: float | None = None
         inference_align_x0_hat_to_x_apo: bool = True
         chain_wise_perturbation: bool = True
         inference_independent_diffusion_apo_sampling: bool = False
@@ -184,14 +176,6 @@ class KFoldECSI(BaseECSI):
         self.protein_gamma_scale: float = cfg.protein_gamma_scale
         self.nucleic_acid_gamma_scale: float = cfg.nucleic_acid_gamma_scale
         self.ligand_gamma_scale: float = cfg.ligand_gamma_scale
-        if cfg.gamma_power_non_protein is not None:
-            if self.nucleic_acid_gamma_power == 1.0 and self.ligand_gamma_power == 1.0:
-                self.nucleic_acid_gamma_power = cfg.gamma_power_non_protein
-                self.ligand_gamma_power = cfg.gamma_power_non_protein
-        if cfg.non_protein_gamma_scale is not None:
-            if self.nucleic_acid_gamma_scale == 1.0 and self.ligand_gamma_scale == 1.0:
-                self.nucleic_acid_gamma_scale = cfg.non_protein_gamma_scale
-                self.ligand_gamma_scale = cfg.non_protein_gamma_scale
         self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
         self.chain_wise_perturbation: bool = cfg.chain_wise_perturbation
         self.inference_independent_diffusion_apo_sampling: bool = (

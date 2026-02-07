@@ -59,7 +59,7 @@ class InterformerConfig:
     num_heads_tri_attn: int = 4
     num_blocks: int = 48
     dropout: float = 0.25
-    use_separate_projections: bool = False
+    use_separate_projections: bool = True
     skip_tri_attn: bool = False
     # Proteina-style QK normalization (LayerNorm on Q and K before head split)
     use_qk_norm: bool = False

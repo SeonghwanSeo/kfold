@@ -1,13 +1,11 @@
 from enum import IntEnum
 
 
-# Same to Boltz's order
 class ChainType(IntEnum):
     PROTEIN = 0
     DNA = 1
     RNA = 2
     LIGAND = 3
-    ION = 4
 
     @property
     def is_polymer(self) -> bool:
@@ -15,7 +13,7 @@ class ChainType(IntEnum):
 
     @property
     def is_nonpolymer(self) -> bool:
-        return self in {ChainType.LIGAND, ChainType.ION}
+        return self in {ChainType.LIGAND}
 
     @property
     def is_protein(self) -> bool:
@@ -35,29 +33,48 @@ class ChainType(IntEnum):
 
     @property
     def is_ligand(self) -> bool:
-        return self in {ChainType.LIGAND, ChainType.ION}
-
-    @property
-    def is_small_molecule(self) -> bool:
         return self is ChainType.LIGAND
 
-    @property
-    def is_ion(self) -> bool:
-        return self is ChainType.ION
+    def __str__(self) -> str:
+        match self:
+            case ChainType.PROTEIN:
+                return "Protein"
+            case ChainType.DNA:
+                return "DNA"
+            case ChainType.RNA:
+                return "RNA"
+            case ChainType.LIGAND:
+                return "Ligand"
+
+
+class SubChainType(IntEnum):
+    PROTEIN = 0
+    DNA = 1
+    RNA = 2
+    SMALL_MOLECULE = 3
+    ION = 4
+    PEPTIDE = 5
+    GLYCAN = 6
+    COVALENT_LIGAND = 7
 
     def __str__(self) -> str:
-        if self == ChainType.PROTEIN:
-            return "Protein"
-        elif self == ChainType.DNA:
-            return "DNA"
-        elif self == ChainType.RNA:
-            return "RNA"
-        elif self == ChainType.LIGAND:
-            return "Ligand"
-        elif self == ChainType.ION:
-            return "Ion"
-        else:
-            raise ValueError(f"Unknown ChainType: {self.value}")
+        match self:
+            case SubChainType.PROTEIN:
+                return "Protein"
+            case SubChainType.DNA:
+                return "DNA"
+            case SubChainType.RNA:
+                return "RNA"
+            case SubChainType.SMALL_MOLECULE:
+                return "SmallMolecule"
+            case SubChainType.ION:
+                return "Ion"
+            case SubChainType.PEPTIDE:
+                return "Peptide"
+            case SubChainType.GLYCAN:
+                return "Glycan"
+            case SubChainType.COVALENT_LIGAND:
+                return "CovalentLigand"
 
 
 # TODO: may want to add some mmcif-related informations for data preprocessing

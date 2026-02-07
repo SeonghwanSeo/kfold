@@ -1,8 +1,10 @@
 # Common component dictionary (CCD)
 import dataclasses
 import datetime
+import itertools
 import pathlib
 import pickle
+import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Self, TypeVar
 
@@ -10,6 +12,7 @@ import gemmi
 import numpy as np
 from rdkit import Chem
 
+import kfold.constants as C
 from kfold.data.utils import rdkit_utils
 
 # Helper function
@@ -20,7 +23,7 @@ Point3D = tuple[float, float, float]
 
 def filter_items(items: Iterable[_T], mask: Iterable[Any]) -> list[_T]:
     """Filter items based on a boolean mask."""
-    return [item for item, m in zip(items, mask, strict=True) if m]
+    return list(itertools.compress(items, mask))
 
 
 def get_ideal_coordinates(cif_block: gemmi.cif.Block) -> dict[str, Point3D] | None:
@@ -124,6 +127,8 @@ class Component:
         The unique code (CCD or SMILES) of the component.
     mol : Chem.Mol
         The RDKit molecule object.
+    smiles : str
+        The SMILES string of the component.
     names : tuple[str, ...]
         A tuple of atom names with shape (n_atoms,).
     elements : np.ndarray (np.uint8)
@@ -146,7 +151,8 @@ class Component:
     """
 
     code: str
-    mol: Chem.Mol
+    mol_bytes: bytes
+    smiles: str
     names: tuple[str, ...]  # (n_atoms,)
     elements: np.ndarray  # (n_atoms,) with dtype=np.uint8
     charges: np.ndarray  # (n_atoms,) with dtype=np.int8
@@ -158,9 +164,21 @@ class Component:
     symmetries: Sequence[list[int]] | None = None  # Permutational symmetries
 
     @property
+    def mol(self) -> Chem.Mol:
+        """Get the RDKit molecule object."""
+        return Chem.Mol(self.mol_bytes)
+
+    @property
     def num_atoms(self) -> int:
         """Get the number of atoms in the component."""
         return len(self.names)
+
+    def get_atom_names(self, drop_leaving_atoms: bool = False) -> tuple[str, ...]:
+        """Get the names of atoms in the component."""
+        if drop_leaving_atoms:
+            return self.non_leaving_atom_names
+        else:
+            return self.names
 
     @property
     def non_leaving_atom_names(self) -> tuple[str, ...]:
@@ -308,7 +326,6 @@ class Component:
                 return None
             conf = mol.GetConformer(0)
             coords = np.array(conf.GetPositions(), dtype=np.float32)
-            coords -= np.mean(coords, axis=0, keepdims=True)  # Center the coordinates
             return coords
         elif conformer_type == "etkdg-cached":
             # Return one of pre-computed ektdg conformers
@@ -342,6 +359,7 @@ class Component:
         cls,
         code: str,
         mol: Chem.Mol,
+        smiles: str | None = None,
         num_confs: int = 0,
         ideal_coords: dict[str, Point3D] | None = None,
         model_coords: dict[str, Point3D] | None = None,
@@ -383,10 +401,14 @@ class Component:
             A Component instance with the specified properties.
         """
         # 1. Prepare molecule
+        mol = Chem.Mol(mol)  # Create a copy to avoid modifying the original
+
         if remove_hydrogens:
             mol = Chem.RemoveAllHs(mol, sanitize=False)  # Remove hydrogens for processing
-        else:
-            mol = Chem.Mol(mol)  # Create a copy to avoid modifying the original
+
+        if smiles is None or "":
+            smiles = Chem.MolToSmiles(mol)
+
         if sanitize:
             # Sanitize molecule
             success = rdkit_utils.sanitize_molecule(mol, allow_fail=True)
@@ -509,7 +531,8 @@ class Component:
 
         return cls(
             code=code,
-            mol=mol,
+            mol_bytes=mol.ToBinary(),
+            smiles=smiles,
             names=tuple(atom_names),
             elements=elements,
             charges=charges,
@@ -526,6 +549,7 @@ class Component:
         cls,
         code: str,
         mol: Chem.Mol,
+        smiles: str | None,
         cif_block: gemmi.cif.Block,
         num_confs: int = 0,
         compute_symmetry: bool = False,
@@ -554,6 +578,9 @@ class Component:
         # Remove molecule coordinates
         mol.RemoveAllConformers()
 
+        if smiles is None or "":
+            smiles = Chem.MolToSmiles(mol)
+
         # Sanitize
         mol = Chem.RemoveAllHs(mol, sanitize=False)
         success = rdkit_utils.sanitize_molecule(mol, allow_fail=True)
@@ -569,6 +596,7 @@ class Component:
         return cls.from_mol(
             code=code,
             mol=mol,
+            smiles=smiles,
             num_confs=num_confs,
             ideal_coords=ideal_coords,
             model_coords=model_coords,
@@ -616,6 +644,7 @@ class Component:
         return cls.from_mol(
             code=code,
             mol=mol,
+            smiles=smiles,
             num_confs=num_confs,
             compute_symmetry=compute_symmetry,
             is_ccd_component=False,
@@ -629,28 +658,45 @@ class CCD(Mapping[str, Component]):
     """Common Component Dictionary (CCD) for data processing components.
 
     NOTE: (SeonghwanSeo) This class only contains the serialized bytes of each
-    component instead of objects to avoid memory leakage when used in multiprocessing
-    (e.g., DataLoader in PyTorch). Each component is deserialized on-the-fly when
-    accessed. This may introduce some overhead due to repeated deserialization.
-    Therefore, it is recommended to use caching mechanisms (e.g., `functools.lru_cache`).
+    component instead of objects to reduce memory overhead. Components are
+    deserialized on-the-fly when accessed. Therefore, it is recommended to
+    use caching (e.g., `functools.lru_cache`) when accessing components multiple
+    times.
+    - example 1:
+        ```python
+        def process(..., ccd: CCD):
 
-    example:
+            @lru_cache(maxsize=128)
+            def get_ccd_component(ccd_name: str) -> Component:
+                return ccd[ccd_name]
 
-    ```python
-    def process(..., ccd: CCD):
-        @lru_cache(maxsize=128)
-        def get_ccd_component(ccd_name: str) -> Component:
-            return ccd[ccd_name]
-
-        comp = get_ccd_component("ALA") # deserialized
-        comp = get_ccd_component("ALA") # cached
-        ...
-    ```
-
+            comp = get_ccd_component("ALA") # deserialized
+            comp = get_ccd_component("ALA") # cached
+            ...
+        ```
+    - example 2:
+        ```python
+        def process(..., ccd: CCD):
+            cache: dict[str, Component] = {}
+            if code not in cache:
+                comp = get_ccd_component(code)
+                cache[code] = comp
+            else:
+                comp = cache[code]
+            ...
+        ```
     """
 
     def __init__(self, component_bytes: dict[str, bytes]) -> None:
         self.component_bytes: dict[str, bytes] = component_bytes
+
+        # Pre-deserialize standard residues for faster access
+        self.standard_residues: dict[str, Component] = {}
+        for code in C.residue.STANDARD_RESIDUES_STR:
+            if code not in component_bytes:
+                warnings.warn(f"Standard residue {code} not found in CCD.", stacklevel=2)
+                continue
+            self.standard_residues[code] = self.get_component(code)
 
     def __keys__(self):
         return self.component_bytes.keys()
@@ -662,7 +708,10 @@ class CCD(Mapping[str, Component]):
         return iter(self.component_bytes)
 
     def __getitem__(self, key: str) -> Component:
-        return self.get_component(key)
+        if key in self.standard_residues:
+            return self.standard_residues[key]
+        else:
+            return self.get_component(key)
 
     def get_component(self, code: str) -> Component:
         """Get a component by its code."""
@@ -702,9 +751,5 @@ class CCD(Mapping[str, Component]):
             A CCD instance loaded from the file.
         """
         with open(load_path, "rb") as f:
-            dicts = pickle.load(f)
-        if isinstance(next(iter(dicts.values())), bytes):
-            return cls(dicts)
-        # Convert from dict to bytes for backward compatibility
-        components = {code: pickle.dumps(comp_dict) for code, comp_dict in dicts.items()}
-        return cls(components)
+            dicts: dict[str, bytes] = pickle.load(f)
+        return cls(dicts)

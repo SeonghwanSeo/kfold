@@ -205,7 +205,6 @@ class Registry:
 # data
 DATAMODULE = Registry("datamodule")
 DATASET = Registry("dataset")
-DATA_FILTER = Registry("data_filter")
 DATA_SAMPLER = Registry("data_sampler")
 DATA_CROPPER = Registry("data_cropper")
 

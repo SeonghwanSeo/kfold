@@ -1,7 +1,6 @@
 import copy
 import json
 import pathlib
-import pickle
 from dataclasses import dataclass, field, fields
 from typing import Self
 
@@ -12,7 +11,8 @@ import kfold.constants as C
 class JsonSerializable:
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding None values."""
-        return {f.name: getattr(self, f.name) for f in fields(self)}
+        data = {f.name: getattr(self, f.name) for f in fields(self)}
+        return {k: v for k, v in data.items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
@@ -20,16 +20,40 @@ class JsonSerializable:
         return cls(**data)
 
 
+# TODO: do we need separate rcsb from experiment record?
 @dataclass(slots=True)
 class ExperimentRecord(JsonSerializable):
     """Metadata record from RCSB PDB."""
 
-    pdb_id: str | None = None
-    resolution: float | None = None
-    method: str | None = None
-    release_date: str | None = None
+    pdb_id: str
+    release_date: str
+    method: str
+    resolution: float | None = None  # NMR: None
     pH: float | None = None
     temperature: float | None = None
+
+    @property
+    def is_nmr_structure(self) -> bool:
+        return self.method in C.training.NMR_METHODS
+
+    @property
+    def is_crystal_structure(self) -> bool:
+        return self.method in C.training.CRYSTALLIZATION_METHODS
+
+    @property
+    def is_em_structure(self) -> bool:
+        return self.method in C.training.EM_METHODS
+
+    def __repr__(self) -> str:
+        return (
+            f"ExperimentRecord("
+            f"pdb_id={self.pdb_id}, "
+            f"method={self.method}, "
+            f"resolution={self.resolution}, "
+            f"pH={self.pH}, "
+            f"temperature={self.temperature}"
+            ")"
+        )
 
 
 @dataclass(slots=True)
@@ -43,27 +67,47 @@ class PredictionRecord(JsonSerializable):
 
 @dataclass(slots=True)
 class ChainInfo(JsonSerializable):
-    chain_name: str  # User/Author-defined chain name
-    chain_type: int  # C.ChainType enum value
+    name: str  # User/Author-defined chain name
+    type: int  # C.ChainType enum value
     entity_id: int  # starts from 1
     asym_id: int  # starts from 1
     sym_id: int  # starts from 1
     num_residues: int
-    is_valid: bool = True
+    num_atoms: int
+    num_tokens: int
     smiles: str | None = None
     description: str | None = None
     cluster_id: str | None = None
+    is_covalent_ligand: bool = False
+    is_ion: bool = False
+    is_low_homology: bool = False  # whether to use this chain for evaluation
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary, excluding default boolean values."""
+        data = JsonSerializable.to_dict(self)
+        for k in ["is_covalent_ligand", "is_ion", "is_low_homology"]:
+            if data[k] is False:
+                del data[k]
+        return data
 
     @property
     def ctype(self) -> C.ChainType:
-        return C.ChainType(self.chain_type)
+        return C.ChainType(self.type)
 
 
 @dataclass(slots=True)
 class InterfaceInfo(JsonSerializable):
     asym_ids: tuple[int, int]
-    is_valid: bool = True
     cluster_id: str | None = None
+    is_low_homology: bool = False  # whether to use this interface for evaluation
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary, excluding default boolean values."""
+        data = JsonSerializable.to_dict(self)
+        for k in ["is_low_homology"]:
+            if data[k] is False:
+                del data[k]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
@@ -120,17 +164,26 @@ class Metadata:
         asym_ids = [chain.asym_id for chain in self.chains]
         return asym_ids
 
-    def get_chain_by_chain_name(self, chain_name: str) -> ChainInfo:
+    def get_chain_by_name(self, name: str) -> ChainInfo:
         for chain in self.chains:
-            if chain.chain_name == chain_name:
+            if chain.name == name:
                 return chain
-        raise ValueError(f"Chain with name {chain_name} not found.")
+        raise ValueError(f"Chain with name {name} not found.")
 
     def get_chain_by_asym_id(self, asym_id: int) -> ChainInfo:
         for chain in self.chains:
             if chain.asym_id == asym_id:
                 return chain
         raise ValueError(f"Chain with asym_id {asym_id} not found.")
+
+    def get_interface_by_asym_ids(self, asym_id1: int, asym_id2: int) -> InterfaceInfo:
+        for iface in self.interfaces:
+            aid1, aid2 = iface.asym_ids
+            if (aid1 == asym_id1 and aid2 == asym_id2) or (
+                aid1 == asym_id2 and aid2 == asym_id1
+            ):
+                return iface
+        raise ValueError(f"Interface with asym_ids ({asym_id1}, {asym_id2}) not found.")
 
     @property
     def num_chains(self) -> int:
@@ -144,39 +197,41 @@ class Metadata:
     def num_residues(self) -> int:
         return sum(chain.num_residues for chain in self.chains)
 
-    def check_all_chains_valid(self) -> bool:
-        return all(chain.is_valid for chain in self.chains)
-
-    def check_all_interfaces_valid(self) -> bool:
-        return all(interface.is_valid for interface in self.interfaces)
-
     def to_dict(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "source": self.source,
-            "exp": self.exp.to_dict() if self.exp else None,
-            "prediction": self.prediction.to_dict() if self.prediction else None,
             "chains": [chain.to_dict() for chain in self.chains],
             "interfaces": [interface.to_dict() for interface in self.interfaces],
         }
+        if self.exp:
+            data["exp"] = self.exp.to_dict()
+        if self.prediction:
+            data["prediction"] = self.prediction.to_dict()
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
-        exp = ExperimentRecord.from_dict(data["exp"]) if data.get("exp") else None
-        prediction = (
-            PredictionRecord.from_dict(data["prediction"])
-            if data.get("prediction")
-            else None
-        )
         chains = [ChainInfo.from_dict(c) for c in data.get("chains", [])]
         interfaces = [InterfaceInfo.from_dict(i) for i in data.get("interfaces", [])]
+
+        if data.get("exp", None):
+            exp = ExperimentRecord.from_dict(data["exp"])
+        else:
+            exp = None
+
+        if data.get("prediction", None):
+            prediction = PredictionRecord.from_dict(data["prediction"])
+        else:
+            prediction = None
+
         return cls(
             id=data["id"],
             source=data["source"],
-            exp=exp,
-            prediction=prediction,
             chains=chains,
             interfaces=interfaces,
+            exp=exp,
+            prediction=prediction,
         )
 
     def save_json(self, filepath: str | pathlib.Path) -> None:
@@ -190,15 +245,3 @@ class Metadata:
         with open(filepath) as f:
             data = json.load(f)
         return cls.from_dict(data)
-
-    def save_pickle(self, filepath: str | pathlib.Path) -> None:
-        """Save metadata to a pickle file."""
-        with open(filepath, "wb") as f:
-            pickle.dump(self, f)
-
-    @classmethod
-    def load_pickle(cls, filepath: str | pathlib.Path) -> Self:
-        """Load metadata from a pickle file."""
-        with open(filepath, "rb") as f:
-            data = pickle.load(f)
-        return data

@@ -63,7 +63,6 @@ def main():
 
         case "pp-pl-only":
             print("Including only protein-protein and protein-ligand complex structures.")
-            print("NOTE: This will exclude single-protein and single-ion complexes.")
 
             def filter_func(m: Metadata) -> bool:
                 if any(chain.ctype.is_nucleic_acid for chain in m.chains):
@@ -72,9 +71,6 @@ def main():
                 if all(chain.ctype.is_nonpolymer for chain in m.chains):
                     # Need at least one polymer chain
                     # NOTE: this is not required since they have been already excluded.
-                    return False
-                if len([chain for chain in m.chains if not chain.ctype.is_ion]) < 2:
-                    # Need at least two non-ion chains for PP or PL complex
                     return False
                 return True
 

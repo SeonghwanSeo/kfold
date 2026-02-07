@@ -559,9 +559,7 @@ class MultiAnchorCropper(BaseCropper):
         assert metadata is not None, "Structure metadata is required"
         all_chains: set[int] = set(struct.chain.asym_id.tolist())
         all_interfaces: list[tuple[int, int]] = [
-            tuple(interface.asym_ids)
-            for interface in metadata.interfaces
-            if interface.is_valid
+            tuple(interface.asym_ids) for interface in metadata.interfaces
         ]
         all_interfaces = [v for v in all_interfaces if set(v).issubset(all_chains)]
         return sorted(set(all_interfaces))

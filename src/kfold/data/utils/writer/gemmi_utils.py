@@ -87,7 +87,7 @@ def create_gemmi_structure(
 
         metadata = metadata.copy()
         for chain in metadata.chains:
-            chain.chain_name = next(gen)
+            chain.name = next(gen)
 
     # === Create entity lists === #
     entity_ctypes: dict[int, C.ChainType] = {}
@@ -102,7 +102,7 @@ def create_gemmi_structure(
             entity_ctypes[entity_id] = ref_chain.ctype
             entity_sequences[entity_id] = ref_chain.get_ccd_sequence()
         # Append asym_id (chain name) to the entity's list
-        entity_asym_ids[entity_id].append(chain_meta.chain_name)
+        entity_asym_ids[entity_id].append(chain_meta.name)
 
     entity_list: list[gemmi.Entity] = []
     for entity_id in sorted(entity_sequences.keys()):
@@ -131,7 +131,12 @@ def create_gemmi_structure(
     gemmi_struct.entities = entities
 
     # === Build Model === #
-    model = gemmi.Model("1")
+    try:
+        model = gemmi.Model(1)
+    except Exception:
+        # Fallback for older Gemmi versions
+        model = gemmi.Model("1")
+
     for chain_i in range(len(struct.chains)):
         ref_chain = struct.chains[chain_i]
         chain_meta = metadata.chains[chain_i]
@@ -150,7 +155,7 @@ def create_gemmi_structure(
         else:
             atom_coords = atom_layout.coords
 
-        chain_id = chain_meta.chain_name  # e.g., "A", "B", etc.
+        chain_id = chain_meta.name  # e.g., "A", "B", etc.
         entity_id = chain_meta.entity_id
 
         # Determine if it is a polymer (ATOM) or non-polymer/ligand (HETATM)

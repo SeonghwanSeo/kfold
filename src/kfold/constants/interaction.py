@@ -212,15 +212,13 @@ RESIDUE_INTERACTION_FEATURES: dict[ResidueName, tuple[InteractionType, ...]] = {
 }
 
 
-@lru_cache
+@lru_cache(maxsize=128)
 def get_residue_interaction_type(
-    res_name: ResidueName | str, chain_type: int
+    res_name: ResidueName | str,
+    chain_type: ChainType,
 ) -> tuple[int, ...]:
     """Get multi-hot interaction type indices for a residue."""
-    if chain_type in (
-        ChainType.LIGAND.value,
-        ChainType.ION.value,
-    ):
+    if chain_type.is_ligand:
         return tuple(range(1, NUM_INTERACTION_TYPES))
 
     if isinstance(res_name, str):

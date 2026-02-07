@@ -8,17 +8,6 @@ weight: 1.0
 data_path: <DATA_PATH_PLACEHOLDER>
 seed: null # should be null for data augmentation
 
-filters:
-  - _registry_: "data_filter"
-    _class_: NumChainFilter
-    max_chains: 300
-  - _registry_: "data_filter"
-    _class_: ReleaseDateFilter
-    date: "2021-09-30"
-  - _registry_: "data_filter"
-    _class_: ResolutionFilter
-    resolution: 9.0
-
 sampler:
   _registry_: "data_sampler"
   _class_: ClusterSampler

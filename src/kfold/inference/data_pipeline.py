@@ -157,8 +157,8 @@ class InputDataPipeline:
 
                 # Add chain metadata
                 chain_meta = ChainInfo(
-                    chain_type=entity_chain.ctype,
-                    chain_name=chain_name,
+                    type=entity_chain.ctype,
+                    name=chain_name,
                     entity_id=entity_id,
                     asym_id=asym_id,
                     sym_id=sym_id,
@@ -323,11 +323,7 @@ class InputDataPipeline:
         """
         # Load ccd or smiles
         if seq.ccd_ids is not None:
-            if seq.ccd_ids[0] in C.ccd.IONS:
-                assert len(seq.ccd_ids) == 1, "Only single ion CCD code is supported."
-                ctype = C.ChainType.ION
-            else:
-                ctype = C.ChainType.LIGAND
+            ctype = C.ChainType.LIGAND
             return structure_preparation.prepare_ref_chain(
                 chain_type=ctype,
                 ccd_sequences=seq.ccd_ids,
