@@ -14,9 +14,10 @@ apo_init:
   use_perturbation: true
   use_random_augmentation: true
   use_ot_permutation: true
-  translation_scale: 1.0 # Angstroms
 
   prob_perturbation: 0.95
+  small_mol_perturbation:
+    mode: "langevin"
   apo_perturbation:
     prob_rieprody: 0.0 # Default: use metric-free BioPrior perturbation
     rieprody: null

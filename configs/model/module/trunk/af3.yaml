@@ -9,12 +9,4 @@ dropout: 0.25
 use_msa: False
 use_template: False
 tri_attn_chunk_threshold: 384
-use_qk_norm: False
-num_register_tokens: 0
-register_token_init_std: 0.05
 blocks_per_ckpt: 1
-# Interaction-specific configs
-use_interaction: false
-interaction_mode: "fused" # "fused" or "separate"
-channel_z_interaction: 32
-interaction_num_heads: 2

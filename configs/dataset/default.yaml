@@ -10,9 +10,9 @@ apo_init:
   use_perturbation: false
   use_random_augmentation: true
   use_ot_permutation: false
-  translation_scale: 30.0 # Angstroms
-  chain_com_sampling_radius: 100.0
-  prob_perturbation: 1.0
+  translation_scale: 1.0 # Angstroms
+  chain_com_sampling_radius: null
+  prob_perturbation: 0.0
   prob_replace_to_holo: 0.0 # enabled during training
   training: true # If True, skip etkdg generation if there is no cached etkdg conformer. (use ideal/model conformer)
   fill_missing_atom: true # Whether to fill missing atoms in apo structure using neighbors

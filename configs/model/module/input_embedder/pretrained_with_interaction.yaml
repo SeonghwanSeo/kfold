@@ -19,7 +19,6 @@ apo_max_dist: 22.0
 apo_num_bins: 64
 # Interaction-specific configs
 use_interaction: true
-interaction_mode: "fused" # "fused" or "separate"
 channel_z_interaction: 32
 debug_interaction: false
 debug_interaction_max_logs: 1
