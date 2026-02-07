@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from kfold.model.layers.primitives import LayerNorm, Linear
+from kfold.model.layers.primitives import LayerNorm, Linear, LinearNoBias
 
 
 class PairwiseProdDiff(nn.Module):
@@ -13,7 +13,7 @@ class PairwiseProdDiff(nn.Module):
         super().__init__()
         assert c_out % 2 == 0, "c_out must be even."
         c_hidden = c_out // 2
-        self.linear_in = Linear(c_in, c_hidden * 2, init="default")
+        self.linear_in = LinearNoBias(c_in, c_hidden * 2, init="default")
         self.linear_out = Linear(c_hidden * 2, c_out, init="final")
 
     def forward(self, s: torch.Tensor) -> torch.Tensor:
@@ -93,10 +93,11 @@ class PLMModule(nn.Module):
         """
         s_plm = self.layernorm(s_plm)
         if self.use_separate_projections:
+            pair_mask = mask[..., None] & mask[..., None, :]
             intra_mask = asym_id[..., None] == asym_id[..., None, :]
-            intra_mask = intra_mask & (mask[..., None] & mask[..., None, :])
+            intra_mask, inter_mask = intra_mask & pair_mask, (~intra_mask) & pair_mask
             z = z + self.pairwise_proj_intra(s_plm) * intra_mask[..., None]
-            z = z + self.pairwise_proj_inter(s_plm) * (~intra_mask)[..., None]
+            z = z + self.pairwise_proj_inter(s_plm) * inter_mask[..., None]
         else:
             pair_mask = mask[..., None] & mask[..., None, :]
             z = z + self.pairwise_proj(s_plm) * pair_mask[..., None]
