@@ -161,8 +161,7 @@ def prepare_ref_chain(
                 if not res_bonded_atoms <= set(atom_names):
                     atom_names = ref_mol.get_atom_names()
 
-        atom_to_index: dict[str, int] = ref_mol.get_atom_index_map()
-        atom_indices: list[int] = [atom_to_index[an] for an in atom_names]
+        atom_indices: list[int] = ref_mol.get_atom_indices(atom_names)
         atom_name_list.append(np.array(atom_names, dtype=np.dtype("<U4")))
         atom_elem_list.append(ref_mol.elements[atom_indices])
         atom_charge_list.append(ref_mol.charges[atom_indices])

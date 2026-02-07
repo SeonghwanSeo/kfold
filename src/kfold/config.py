@@ -35,7 +35,6 @@ def load_config(
     if override_registry_defaults:
         config = _resolve_registry_defaults(config)
         config = _sync_inference_apo_sampling_from_dataset(config)
-        config = _sync_interaction_type_from_model(config)
     return config
 
 
@@ -205,50 +204,4 @@ def _sync_inference_apo_sampling_from_dataset(config: DictConfig) -> DictConfig:
         # If fields are missing or immutable, silently skip.
         return config
 
-    return config
-
-
-def _sync_interaction_type_from_model(config: DictConfig) -> DictConfig:
-    """Ensure model/data interaction types are consistent.
-
-    Policy:
-    - If `train.data.interaction_type` is "auto", set it to match the model.
-    - Otherwise, assert it matches `model.input_embedder.use_interaction`.
-    """
-    try:
-        model_cfg = config.model
-        data_cfg = config.train.data
-    except Exception:
-        return config
-
-    try:
-        input_cfg = model_cfg.input_embedder
-    except Exception:
-        return config
-
-    try:
-        model_use_interaction = bool(input_cfg.get("use_interaction", False))
-    except Exception:
-        model_use_interaction = False
-
-    model_type = "plip" if model_use_interaction else "none"
-
-    try:
-        data_type = data_cfg.get("interaction_type", "auto")
-    except Exception:
-        return config
-
-    if data_type is None:
-        data_type = "auto"
-
-    if data_type == "auto":
-        data_cfg.interaction_type = model_type
-        return config
-
-    assert data_type in {"none", "plip"}, (
-        "train.data.interaction_type must be one of {'auto', 'none', 'plip'}."
-    )
-    assert data_type == model_type, (
-        "model.input_embedder.use_interaction does not match train.data.interaction_type."
-    )
     return config

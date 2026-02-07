@@ -81,7 +81,7 @@ def parse_arguments():
     parser.add_argument(
         "--date_cutoff",
         type=str,
-        default="2022-12-31",
+        default="2023-12-31",  # train&validation split date
         help="Date cutoff for processing components (YYYY-MM-DD).",
     )
     return parser.parse_args()
@@ -173,6 +173,10 @@ def construct_ccd(
     # Reset stdout and stderr, as pdbccdutils messes with them
     sys.stdout = sys.__stdout__
     sys.stderr = sys.__stderr__
+
+    # Disable RDKit warnings
+    RDLogger.DisableLog("rdApp.*")
+    rdBase.BlockLogs()
 
     # Prepare static arguments for processing
     static_args = {

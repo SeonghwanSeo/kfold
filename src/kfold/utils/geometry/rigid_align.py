@@ -391,12 +391,12 @@ def weighted_rigid_align_numpy(
     else:
         weights = weights * mask
 
-    # Select anchor points if provided
     if anchor_index is not None:
-        anchor_coords = coords[..., anchor_index, :]
-        anchor_target = target[..., anchor_index, :]
-        anchor_weights = weights[..., anchor_index]
-        RT, T = get_rigid_transform_numpy(anchor_coords, anchor_target, anchor_weights)
+        # Select anchor points if provided
+        _coords = coords[..., anchor_index, :]
+        _target = target[..., anchor_index, :]
+        weights = weights[..., anchor_index]
+        RT, T = get_rigid_transform_numpy(_coords, _target, weights)
     else:
         RT, T = get_rigid_transform_numpy(coords, target, weights)
 
@@ -542,16 +542,17 @@ def weighted_rigid_align_torch(
     else:
         weights = weights * mask
 
+    # Compute rigid transformation under autocast for numerical stability
     with torch.autocast(device_type=coords.device.type, dtype=torch.float32):
         if anchor_index is not None:
-            anchor_coords = coords[..., anchor_index, :]
-            anchor_target = target[..., anchor_index, :]
-            anchor_weights = weights[..., anchor_index]
-            RT, T = get_rigid_transform_torch(
-                anchor_coords, anchor_target, anchor_weights
-            )
+            # Select anchor points if provided
+            _coords = coords[..., anchor_index, :]
+            _target = target[..., anchor_index, :]
+            weights = weights[..., anchor_index]
+            RT, T = get_rigid_transform_torch(_coords, _target, weights)
         else:
             RT, T = get_rigid_transform_torch(coords, target, weights)
+
         aligned_coords = coords @ RT + T[..., None, :]
 
     return aligned_coords.to(original_dtype)
