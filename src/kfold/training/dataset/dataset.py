@@ -176,7 +176,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         return_symmetry: bool = False,
         return_structure: bool = False,
         safe_load: bool = True,
-        use_interaction: bool = True,
     ) -> None:
         """
         Parameters
@@ -195,8 +194,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             Whether to return the original tokenized structure.
         safe_load : bool
             Whether to retry loading on failure.
-        use_interaction : bool
-            Whether to compute interaction types in tokenization.
         """
         # === Initialize parameters === #
         self.config: DatasetConfig = config
@@ -281,7 +278,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.apo_initializer = apo_initialization.ApoInitializer(
             config.apo_init, self.ccd
         )
-        self.tokenizer = tokenization.Tokenizer(self.ccd, use_interaction=use_interaction)
+        self.tokenizer = tokenization.Tokenizer(self.ccd)
         self.featurizer = featurization.InputFeaturizer(
             **featurization_args,
             seq_embedding_dim=self.seq_embedding_dim,
@@ -669,7 +666,6 @@ class TrainingDataset(LMDBDataset):
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
-        use_interaction: bool = True,
     ) -> None:
         """
         Parameters
@@ -687,8 +683,6 @@ class TrainingDataset(LMDBDataset):
         max_tokens : int
             Maximum number of tokens per sample. Must be a multiple of 64 for
             LocalAtomAttention.
-        use_interaction : bool
-            Whether to compute interaction types in tokenization.
 
         Notes
         -----
@@ -705,7 +699,6 @@ class TrainingDataset(LMDBDataset):
             return_symmetry=False,
             return_structure=False,
             safe_load=safe_load,
-            use_interaction=use_interaction,
         )
         if self.seed is not None:
             # Warn about fixed seed affecting randomness
@@ -821,7 +814,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
-        use_interaction: bool = True,
     ) -> None:
         """
         Parameters
@@ -841,8 +833,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         max_tokens : int
             Maximum number of tokens per sample. Must be a multiple of 64 for
             LocalAtomAttention.
-        use_interaction : bool
-            Whether to compute interaction types in tokenization.
 
         Notes
         -----
@@ -860,7 +850,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
                 safe_load,
                 max_chains,
                 max_tokens,
-                use_interaction=use_interaction,
             )
             for config in configs
         ]
@@ -896,7 +885,6 @@ class ValidationDataset(LMDBDataset):
         pretrained_embedding: dict,
         featurization_args: dict,
         safe_load: bool = True,
-        use_interaction: bool = True,
     ) -> None:
         """
         Parameters
@@ -909,8 +897,6 @@ class ValidationDataset(LMDBDataset):
             Pretrained embedding configuration.
         featurization_args : dict
             Additional arguments for featurization.
-        use_interaction : bool
-            Whether to compute interaction types in tokenization.
         """
         super().__init__(
             config,
@@ -920,7 +906,6 @@ class ValidationDataset(LMDBDataset):
             return_symmetry=True,
             return_structure=True,
             safe_load=safe_load,
-            use_interaction=use_interaction,
         )
 
     def setup(self) -> None:

@@ -383,8 +383,8 @@ def weighted_rigid_align_numpy(
     # Sanitize inputs: If there are NaNs in masked regions, they will propagate
     # during centroid calculation even if weights are zero (NaN * 0 = NaN).
     # We force masked regions to 0.0.
-    _coords = np.where(mask_expanded, coords, 0.0)
-    _target = np.where(mask_expanded, target, 0.0)
+    coords = np.where(mask_expanded, coords, 0.0)
+    target = np.where(mask_expanded, target, 0.0)
 
     if weights is None:
         weights = mask.astype(coords.dtype)
@@ -393,12 +393,12 @@ def weighted_rigid_align_numpy(
 
     if anchor_index is not None:
         # Select anchor points if provided
-        _coords = _coords[..., anchor_index, :]
-        _target = _target[..., anchor_index, :]
+        _coords = coords[..., anchor_index, :]
+        _target = target[..., anchor_index, :]
         weights = weights[..., anchor_index]
-
-    # Compute rigid transformation
-    RT, T = get_rigid_transform_numpy(_coords, _target, weights)
+        RT, T = get_rigid_transform_numpy(_coords, _target, weights)
+    else:
+        RT, T = get_rigid_transform_numpy(coords, target, weights)
 
     # Apply transformation: coords @ RT + T
     aligned_coords = np.matmul(coords, RT) + T[..., np.newaxis, :]
@@ -534,8 +534,8 @@ def weighted_rigid_align_torch(
 
     # Sanitize inputs: masked_fill handles NaNs correctly by replacing them with 0.0
     # where the mask is False (masked out). This is crucial before any math.
-    _coords = coords.masked_fill(~mask_bool, 0.0)
-    _target = target.masked_fill(~mask_bool, 0.0)
+    coords = coords.masked_fill(~mask_bool, 0.0)
+    target = target.masked_fill(~mask_bool, 0.0)
 
     if weights is None:
         weights = mask.to(dtype=coords.dtype)
@@ -546,11 +546,13 @@ def weighted_rigid_align_torch(
     with torch.autocast(device_type=coords.device.type, dtype=torch.float32):
         if anchor_index is not None:
             # Select anchor points if provided
-            _coords = _coords[..., anchor_index, :]
-            _target = _target[..., anchor_index, :]
+            _coords = coords[..., anchor_index, :]
+            _target = target[..., anchor_index, :]
             weights = weights[..., anchor_index]
+            RT, T = get_rigid_transform_torch(_coords, _target, weights)
+        else:
+            RT, T = get_rigid_transform_torch(coords, target, weights)
 
-        RT, T = get_rigid_transform_torch(_coords, _target, weights)
         aligned_coords = coords @ RT + T[..., None, :]
 
     return aligned_coords.to(original_dtype)

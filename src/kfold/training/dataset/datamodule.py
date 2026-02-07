@@ -78,17 +78,8 @@ class TrainingDataModule(pl.LightningDataModule):
         else:
             raise NotImplementedError("Not implemented yet.")
 
-    def _resolve_use_interaction(self) -> bool:
-        interaction_type = self.config.interaction_type
-        if interaction_type == "auto":
-            interaction_type = "none"
-        if interaction_type not in {"none", "plip"}:
-            raise ValueError("interaction_type must be one of {'auto', 'none', 'plip'}.")
-        return interaction_type == "plip"
-
     def construct_train_dataset(self) -> MultiTrainingDataset:
         """Construct training dataset."""
-        use_interaction = self._resolve_use_interaction()
         multi_ds = MultiTrainingDataset(
             configs=self.config.train_datasets,
             ccd=self.ccd,
@@ -97,7 +88,6 @@ class TrainingDataModule(pl.LightningDataModule):
             max_chains=self.config.max_chains,
             max_tokens=self.config.max_tokens,
             safe_load=self.config.safe_load,
-            use_interaction=use_interaction,
         )
         # Print dataset info
         for d in multi_ds.datasets:
@@ -115,14 +105,12 @@ class TrainingDataModule(pl.LightningDataModule):
                 "Currently only single validation dataset is supported."
             )
 
-        use_interaction = self._resolve_use_interaction()
         ds = ValidationDataset(
             config=self.config.val_datasets[0],
             ccd=self.ccd,
             pretrained_embedding=self.config.pretrained_embedding,
             featurization_args=self.config.featurization,
             safe_load=self.config.safe_load,
-            use_interaction=use_interaction,
         )
         self.print_rank_zero(
             f"Constructed validation dataset '{ds.name}':\n"
