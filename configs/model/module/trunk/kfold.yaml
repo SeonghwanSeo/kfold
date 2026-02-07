@@ -12,8 +12,6 @@ pairformer:
   num_heads_tri_attn: 4
   num_blocks: 48
   dropout: 0.25
-  skip_tri_attn: false
-  use_separate_projections: true
   use_qk_norm: false
 
 blocks_per_ckpt: 1
