@@ -215,3 +215,4 @@ configs/validate_eta_rho_*
 slurm*
 sweep*
 validate_*
+bashlogs/
