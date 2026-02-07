@@ -4,7 +4,8 @@ name: structure-only
 out_dir: ./experiments/
 
 # Reproducibility
-seed: 42
+# NOTE: you may have to set different seeds for different stages
+seed: 1
 
 # Training parameters for multi-gpu setup.
 global_hparams:
@@ -53,7 +54,7 @@ trainer:
   accelerator: "auto"
   strategy: "auto"
   devices: "auto"
-  num_nodes: "auto"
+  num_nodes: 1
   precision: bf16-mixed
   max_epochs: -1
   limit_train_batches: 1 # NOTE: overridden by global_hparam
@@ -92,7 +93,7 @@ validation:
   num_steps: 200
   num_diffusion_samples: 5
   symmetry_correction: true
-  save_predictions: true
+  save_predictions: false
   return_traj: false
   traj_format: "pdb"
 
@@ -115,7 +116,7 @@ loss:
   weights:
     # global loss weights
     distogram: 3e-2
-    interaction: 0.0
+    interaction: 3e-2
     diffusion: 4.0
     confidence: 1e-4
     # diffusion loss weights

@@ -4,9 +4,7 @@ import torch
 
 import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.input_embedder.pretrained_embedder_with_interaction import (
-    compute_pair_interactions,
-)
+from kfold.utils.interaction_utils import compute_pair_interactions
 
 
 class InteractionLoss(torch.nn.Module):
@@ -45,11 +43,9 @@ class InteractionLoss(torch.nn.Module):
                 f_input.token.disto_coords,
             )
             within_threshold = pdist <= self.distance_threshold
-            pair_interactions = compute_pair_interactions(
-                f_input.token.interaction_type,
-                f_input.token.chain_type,
-            )
-            target = pair_interactions * within_threshold.unsqueeze(-1)
+            pair_interactions = compute_pair_interactions(f_input.token.interaction_type)
+            target = pair_interactions & within_threshold.unsqueeze(-1)
+            target = target.to(dtype=logits.dtype)
 
         # Exclude legacy ligand/ion tokens that carry "all-ones" placeholder
         # primitives to avoid training on dense all-negative pairs.

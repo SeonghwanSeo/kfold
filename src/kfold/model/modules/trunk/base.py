@@ -43,7 +43,6 @@ class BaseTrunk(torch.nn.Module, ABC):
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
-        **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
         See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]

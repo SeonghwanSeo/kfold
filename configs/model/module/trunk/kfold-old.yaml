@@ -1,13 +1,8 @@
 _registry_: "trunk"
-_class_: "KFoldTrunk"
+_class_: "KFoldTrunkV0"
 channel_s: 384
 channel_z: 128
-
-plm_module:
-  channel_plm: ???
-  use_separate_projections: true
-
-pairformer:
+interformer:
   num_heads_attn: 16
   num_heads_tri_attn: 4
   num_blocks: 48
@@ -15,8 +10,9 @@ pairformer:
   skip_tri_attn: false
   use_separate_projections: true
   use_qk_norm: false
-
 blocks_per_ckpt: 1
+
 tri_attn_chunk_threshold: 384
 num_register_tokens: 0
 register_token_init_std: 0.05
+register_token_intra_mode: "all"

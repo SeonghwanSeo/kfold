@@ -13,22 +13,19 @@ compile_mode: "default"
 
 # Module configurations
 input_embedder:
-  _yaml_: "module/input_embedder/pretrained.yaml"
+  _yaml_: "module/input_embedder/kfold.yaml"
   channel_seq_encoder: null # Should be overriden
-  channel_struct_encoder: null # Should be overriden
-  use_apo: true # Use apo input as default
+  use_apo: true
+  use_interaction: false
 
 trunk:
   _yaml_: "module/trunk/kfold.yaml"
-  use_ensemble: False
-  use_multi_state: False
 
 structure_module:
   _yaml_: "module/structure_module/af3.yaml"
 
 score_model:
-  _yaml_: "module/score_model/apo_conditioned.yaml"
-  use_apo: false
+  _yaml_: "module/score_model/af3.yaml"
 
 distogram_head:
   _yaml_: "module/distogram_head/af3.yaml"

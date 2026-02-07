@@ -1,46 +1,34 @@
 model:
-  _yaml_: "model/kfold-ecsi-edm.yaml"
-  input_embedder:
-    channel_seq_encoder: 2560
-    use_apo: false # EDM does not use apo input
+  _yaml_: "model/kfold-ecsi-nci.yaml"
   trunk:
-    num_blocks: 16
+    plm_module:
+      channel_plm: 2560
+    pairformer:
+      num_blocks: 16
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
     atom_decoder_blocks: 1
 
 train:
-  _yaml_: "train/structure_only.yaml"
+  _yaml_: "train/stage_1.yaml"
 
-  name: esm2-ecsi-edm-mini
+  name: ecsi-mini-esm2-nci
   out_dir: ./experiments/
 
-  seed: 42
-
   global_hparams:
-    max_chains: 20
-    max_tokens: 384
     batch_size: 4
-    diffusion_batch_size: 48
     global_batch_size: 128
     num_global_steps_per_epoch: 1000
 
-  # pytorch lightning trainer hparams
-  trainer:
-    strategy: "auto"
-    devices: "auto"
-    num_nodes: 1
-    precision: bf16-mixed
+  training:
+    train_interaction_head: true
 
   data:
     ccd_path: /cache/wykim_lab/kfold_data/v260130/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-train/
-        apo_init:
-          # EDM does not use apo perturbation - prior is Gaussian noise
-          use_perturbation: false
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-val/
@@ -53,6 +41,6 @@ train:
 
   wandb:
     use: false
-    project: "KFold-esm"
-    group: esm # set your group name
+    project: "DDBM"
+    group: ddbm # set your group name
     entity: K-Fold # set your entity name

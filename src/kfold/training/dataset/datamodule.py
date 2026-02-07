@@ -51,6 +51,9 @@ class DataModuleConfig(BaseConfig):
     pretrained_embedding: dict = dataclasses.field(default_factory=dict)
     featurization: dict = dataclasses.field(default_factory=dict)
 
+    # === Interaction annotation === #
+    interaction_type: str = "auto"
+
 
 @DATAMODULE.register(config_cls=DataModuleConfig)
 class TrainingDataModule(pl.LightningDataModule):

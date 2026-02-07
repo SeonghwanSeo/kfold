@@ -122,7 +122,7 @@ class LossConfig:
     weights: dict[str, float]
     distogram_loss: Any
     diffusion_loss: Any
-    interaction_loss: Any | None = None
+    interaction_loss: Any
     confidence_loss: Any
 
 
@@ -266,8 +266,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     **diffusion_loss_config.smooth_lddt_loss
                 )
 
-        interaction_weight = self.loss_weights.get("interaction", 0.0)
-        if self.train_interaction_head and interaction_weight > 0:
+        if self.train_interaction_head:
             if self.model.interaction_head is None:
                 raise ValueError(
                     "interaction_head is not configured but interaction loss is enabled."
@@ -425,7 +424,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     )
 
         for k, v in metrics.items():
-            self.log(f"train/{k}", v, prog_bar=(k == "loss"))
+            self.log(f"train/{k}", v, prog_bar=(k == "loss"), sync_dist=False)
 
         return loss
 
@@ -476,7 +475,7 @@ class KFoldTrainingModule(pl.LightningModule):
             loss_weights["confidence"] * confidence_loss
             + loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
-            + loss_weights.get("interaction", 0.0) * interaction_loss
+            + loss_weights["interaction"] * interaction_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
@@ -781,29 +780,33 @@ class KFoldTrainingModule(pl.LightningModule):
         """Log model parameter and gradient norms."""
 
         model = self.model
-        self.log("train/grad_norm", gradient_norm(model), prog_bar=False)
-        self.log("train/param_norm", parameter_norm(model), prog_bar=False)
+        self.log("monitor/grad_norm", gradient_norm(model), prog_bar=False)
+        self.log("monitor/param_norm", parameter_norm(model), prog_bar=False)
 
         if self.train_structure_module:
             self.log(
-                "train/grad_norm_trunk",
+                "monitor/grad_norm_trunk",
                 gradient_norm(model.trunk),
+                sync_dist=False,
                 prog_bar=False,
             )
             self.log(
-                "train/param_norm_trunk",
+                "monitor/param_norm_trunk",
                 parameter_norm(model.trunk),
+                sync_dist=False,
                 prog_bar=False,
             )
 
             self.log(
-                "train/grad_norm_score_model",
+                "monitor/grad_norm_score_model",
                 gradient_norm(model.score_model),
+                sync_dist=False,
                 prog_bar=False,
             )
             self.log(
-                "train/param_norm_score_model",
+                "monitor/param_norm_score_model",
                 parameter_norm(model.score_model),
+                sync_dist=False,
                 prog_bar=False,
             )
 
@@ -812,13 +815,15 @@ class KFoldTrainingModule(pl.LightningModule):
                 "Logging for confidence module not implemented yet."
             )
             # self.log(
-            #     "train/grad_norm_confidence_head",
+            #     "monitor/grad_norm_confidence_head",
             #     gradient_norm(model.confidence_head),
+            #     sync_dist=False,
             #     prog_bar=False,
             # )
             # self.log(
-            #     "train/param_norm_confidence_head",
+            #     "monitor/param_norm_confidence_head",
             #     parameter_norm(model.confidence_head),
+            #     sync_dist=False,
             #     prog_bar=False,
             # )
 

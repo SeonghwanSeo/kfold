@@ -7,7 +7,8 @@ sigma_min: 0.001  # t_min
 sigma_max: 0.999  # t_max (near 1)
 
 # Linear route parameters (Table 8)
-gamma_max: 16  # \gamma_t = 2 * \gamma_\max * \sqrt{t(1-t)}
+gamma_max: 24  # \gamma_t = 0.5 * \gamma_\max * \sqrt{t^k(1-t^k)}
+time_power: 2.0
 route_type: "linear"
 # DDBM-VP route parameters (Appendix C.2)
 ddbm_vp_beta_min: 0.1
