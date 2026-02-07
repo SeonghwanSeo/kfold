@@ -26,7 +26,6 @@ class PairformerConfig:
     num_heads_tri_attn: int = 4
     num_blocks: int = 48
     dropout: float = 0.25
-    skip_tri_attn: bool = False
     # Proteina-style QK normalization (LayerNorm on Q and K before head split)
     use_qk_norm: bool = False
 
@@ -256,7 +255,7 @@ class KFoldTrunk(BaseTrunk):
         mask_pad = torch.ones((B, L + R), device=device, dtype=mask.dtype)
         mask_pad[:, R:] = mask
 
-        return s_init, z_init, s_plm_pad, asym_id, mask_pad
+        return s_init, z_init, s_plm_pad, asym_id_pad, mask_pad
 
     def _undo_registers(
         self,
