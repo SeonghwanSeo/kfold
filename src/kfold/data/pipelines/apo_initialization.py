@@ -53,9 +53,8 @@ def get_ambiguous_atoms_in_residue(
 
 
 def get_molecule_symmetries(
-    ccd_id: str,
-    mol_atom_names: list[str],
     ref_mol: Component,
+    atom_names: list[str],
 ) -> list[list[int]] | None:
     """Get molecule's symmetries from ccd."""
     symmetries = ref_mol.symmetries
@@ -63,16 +62,16 @@ def get_molecule_symmetries(
         # No symmetries
         return None
 
-    if len(mol_atom_names) == ref_mol.num_atoms:
+    if len(atom_names) == ref_mol.num_atoms:
         # All atoms are present, no need to filter
         return list(symmetries)
 
     # Some atoms are missing (drop_leaving_atoms=True; e.g., covalent ligands)
-    valid_atoms: set[str] = set(mol_atom_names)
+    valid_atoms: set[str] = set(atom_names)
 
     name_to_index = ref_mol.get_atom_index_map()
     mol_to_ref_i_map: dict[int, int] = {
-        name_to_index[name]: i for i, name in enumerate(mol_atom_names)
+        name_to_index[name]: i for i, name in enumerate(atom_names)
     }
 
     all_perms: list[list[int]] = []  # identity
@@ -897,7 +896,7 @@ class ApoInitializer:
                     else:
                         ref_mol = component_cache[res_name]
                     atom_names: list[str] = chain.atom.name[atom_st:atom_end].tolist()
-                    perms = get_molecule_symmetries(res_name, atom_names, ref_mol)
+                    perms = get_molecule_symmetries(ref_mol, atom_names)
                 else:
                     perms = None
 
