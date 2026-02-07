@@ -209,6 +209,9 @@ REF_ATOM: dict[ResidueName, AtomName] = {
     ResidueName.DT: AtomName.C1_PRIME,
     ResidueName.DN: AtomName.C1_PRIME,
 }
+REF_ATOM_INDEX: dict[ResidueName, int] = {
+    res: RESIDUE_ATOMS[res].index(atom) for res, atom in REF_ATOM.items()
+}
 
 # pseudo-beta atom for each residue to compute distogram
 PSEUDO_BETA_ATOM: dict[ResidueName, AtomName] = {
@@ -246,6 +249,9 @@ PSEUDO_BETA_ATOM: dict[ResidueName, AtomName] = {
     ResidueName.DC: AtomName.C2,
     ResidueName.DT: AtomName.C2,
     ResidueName.DN: AtomName.C1_PRIME,
+}
+PSEUDO_BETA_ATOM_INDEX: dict[ResidueName, int] = {
+    res: RESIDUE_ATOMS[res].index(atom) for res, atom in PSEUDO_BETA_ATOM.items()
 }
 
 # NOTE: There are no name-swap for RNA/DNA in AlphaFold3 paper and its implementation.

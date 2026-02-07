@@ -6,12 +6,10 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
-from rdkit import Chem, RDConfig, RDLogger
+from rdkit import Chem, RDConfig
 from rdkit.Chem import ChemicalFeatures
 
 import kfold.constants as C
-
-RDLogger.DisableLog("rdApp.*")
 
 
 @lru_cache(maxsize=1)
@@ -68,8 +66,8 @@ def _try_sanitize_for_features(mol: Chem.Mol) -> bool:
         return False
 
 
-def compute_ligand_interaction_types(mol: Chem.Mol) -> np.ndarray:
-    """Compute per-atom interaction types for ligand atoms.
+def compute_interaction_types(mol: Chem.Mol) -> np.ndarray:
+    """Compute per-atom interaction types for molecule atoms.
 
     The rules are adapted from PLIP's ligand preparation logic:
     - hydrophobic carbons: carbon atoms with only carbon/hydrogen neighbors
@@ -78,11 +76,11 @@ def compute_ligand_interaction_types(mol: Chem.Mol) -> np.ndarray:
     - charged groups: PLIP functional group heuristics + formal charges
     """
     num_atoms = mol.GetNumAtoms()
-    interaction_type = np.zeros((num_atoms, C.NUM_INTERACTION_TYPES), dtype=np.int8)
+    interaction_type = np.zeros((num_atoms, C.NUM_INTERACTION_TYPES), dtype=bool)
     if num_atoms == 0:
         return interaction_type
     if num_atoms == 1:
-        # For single-atom ligands (e.g., ions), formal charge is the most
+        # For single-atom molecules (e.g., ions), formal charge is the most
         # reliable interaction signal.
         _add_formal_charges(mol, interaction_type)
         return interaction_type
@@ -114,7 +112,7 @@ def _add_hydrophobic_atoms(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
             continue
         neighbor_nums = [nbr.GetAtomicNum() for nbr in atom.GetNeighbors()]
         if all(num in (1, 6) for num in neighbor_nums):
-            interaction_type[atom.GetIdx(), C.InteractionType.HI] = 1
+            interaction_type[atom.GetIdx(), C.InteractionType.HI] = True
 
 
 def _add_hbond_features(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
@@ -124,17 +122,17 @@ def _add_hbond_features(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
         family = feature.GetFamily()
         if family == "Donor":
             for atom_idx in feature.GetAtomIds():
-                interaction_type[atom_idx, C.InteractionType.HBD] = 1
+                interaction_type[atom_idx, C.InteractionType.HBD] = True
         elif family == "Acceptor":
             for atom_idx in feature.GetAtomIds():
-                interaction_type[atom_idx, C.InteractionType.HBA] = 1
+                interaction_type[atom_idx, C.InteractionType.HBA] = True
 
 
 def _add_aromatic_atoms(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
     """Mark aromatic atoms as pi-systems."""
     for atom in mol.GetAtoms():
         if atom.GetIsAromatic():
-            interaction_type[atom.GetIdx(), C.InteractionType.PP] = 1
+            interaction_type[atom.GetIdx(), C.InteractionType.PP] = True
 
 
 def _add_plip_charged_groups(mol: Chem.Mol, interaction_type: np.ndarray) -> None:
@@ -197,8 +195,8 @@ def _mark_positive(
 ) -> None:
     """Mark atoms as salt-bridge cations and pi-cation partners."""
     for atom_idx in atom_indices:
-        interaction_type[atom_idx, C.InteractionType.SBC] = 1
-        interaction_type[atom_idx, C.InteractionType.PC] = 1
+        interaction_type[atom_idx, C.InteractionType.SBC] = True
+        interaction_type[atom_idx, C.InteractionType.PC] = True
 
 
 def _mark_negative(
@@ -206,7 +204,7 @@ def _mark_negative(
 ) -> None:
     """Mark atoms as salt-bridge anions."""
     for atom_idx in atom_indices:
-        interaction_type[atom_idx, C.InteractionType.SBA] = 1
+        interaction_type[atom_idx, C.InteractionType.SBA] = True
 
 
 def _neighbor_indices(neighbors: list[Chem.Atom], atomic_num: int) -> list[int]:
