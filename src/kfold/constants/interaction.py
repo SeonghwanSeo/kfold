@@ -10,14 +10,14 @@ Reference:
 - PLIP 2025: https://academic.oup.com/nar/article/53/W1/W463/8128215
 
 Primitive Interaction Types (properties that tokens/atoms can have):
-- DUMMY: No interaction capability (padding or unknown)
-- HI: Hydrophobic
-- HBD: Hydrogen Bond Donor
-- HBA: Hydrogen Bond Acceptor
-- SBC: Salt Bridge Cation (positive charge)
-- SBA: Salt Bridge Anion (negative charge)
-- PP: Pi-system (aromatic ring)
-- PC: Positive Charge for pi-cation interaction
+1. DUMMY: No interaction capability (padding or unknown)
+2. HI: Hydrophobic
+3. HBD: Hydrogen Bond Donor
+4. HBA: Hydrogen Bond Acceptor
+5. SBC: Salt Bridge Cation (positive charge)
+6. SBA: Salt Bridge Anion (negative charge)
+7. PP: Pi-system (aromatic ring)
+8. PC: Positive Charge for pi-cation interaction
 
 Pair Interaction Types (formed by primitive type pairs):
 1. Hydrophobic Interaction: HI - HI
