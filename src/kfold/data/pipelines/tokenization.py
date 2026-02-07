@@ -22,6 +22,8 @@ class Tokenizer:
         ----------
         ccd : CCD
             The chemical component dictionary.
+        training : bool, optional
+            Whether the tokenizer is used for training, by default True.
         """
         self.ccd: CCD = ccd
 
@@ -71,7 +73,12 @@ class Tokenizer:
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return tokenize_structure(input, self.ccd, rng, use_only_cached_conformers)
+        return tokenize_structure(
+            input,
+            self.ccd,
+            rng,
+            use_only_cached_conformers,
+        )
 
 
 def tokenize_structure(

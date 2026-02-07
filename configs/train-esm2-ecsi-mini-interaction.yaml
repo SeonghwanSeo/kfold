@@ -1,0 +1,83 @@
+model:
+  _yaml_: "model/kfold-ecsi.yaml"
+  input_embedder:
+    _yaml_: "model/module/input_embedder/pretrained_with_interaction.yaml"
+    _class_: "PretrainedInputEmbedderWithInteraction"
+    channel_seq_encoder: 2560
+    channel_struct_encoder: null
+    use_apo: true
+    use_interaction: true
+    interaction_mode: "fused"
+  trunk:
+    use_ensemble: false
+    ensemble_module:
+      channel_struct_input: null
+      num_blocks: 2
+    interformer:
+      num_blocks: 16
+  interaction_head:
+    _yaml_: "model/module/interaction_head/linear.yaml"
+    channel_z: 128
+    num_pair_types: 5
+  score_model:
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 8
+    atom_decoder_blocks: 1
+
+train:
+  _yaml_: "train/structure_only.yaml"
+
+  name: mini-esm2-rbf-ecsi-interaction
+  out_dir: ./experiments/
+  seed: 42
+
+  global_hparams:
+    max_chains: 20
+    max_tokens: 384
+    batch_size: 8
+    diffusion_batch_size: 48
+    global_batch_size: 128
+    num_global_steps_per_epoch: 1000
+
+  # pytorch lightning trainer hparams
+  trainer:
+    strategy: "auto"
+    devices: "auto"
+    num_nodes: 1
+    precision: bf16-mixed
+
+  data:
+    ccd_path: /cache/wykim_lab/kfold_data/v260109/ccd-train.pkl
+    train_datasets:
+      - _yaml_: "dataset/rcsb-train.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-train/
+        manifest_path: /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/v260110/all/rcsb-train.json
+        apo_init:
+          translation_scale: 1.0
+          fill_missing_atom: true
+    val_datasets:
+      - _yaml_: "dataset/rcsb-val.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260109/dataset/rcsb-val/
+        manifest_path: /mnt/parallel_storage/wykim_lab/icl_shwan/data/manifests/v260110/all/rcsb-val.json
+        apo_init:
+          translation_scale: 1.0
+          fill_missing_atom: true
+    pretrained_embedding:
+      seq: esm2-3b
+      seq_dim: 2560
+      struct: null
+      struct_dim: null
+      max_struct_ensembles: 1
+
+  training:
+    train_interaction_head: true
+
+  loss:
+    weights:
+      interaction: 3.0e-2
+
+  wandb:
+    use: false
+    project: "DDBM"
+    group: ddbm # set your group name
+    entity: K-Fold # set your entity name
