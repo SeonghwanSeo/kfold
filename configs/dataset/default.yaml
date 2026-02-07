@@ -12,10 +12,20 @@ apo_init:
   use_ot_permutation: false
   translation_scale: 1.0 # Angstroms
   chain_com_sampling_radius: null
-  prob_perturbation: 0.0
+  prob_perturbation: 0.95
   prob_replace_to_holo: 0.0 # enabled during training
   training: true # If True, skip etkdg generation if there is no cached etkdg conformer. (use ideal/model conformer)
   fill_missing_atom: true # Whether to fill missing atoms in apo structure using neighbors
+
+  small_mol_perturbation:
+    mode: "langevin"
+    gaussian_sigma: 0.3
+    langevin_num_steps: 200
+    langevin_dt: 0.005
+    langevin_k_bond: 50.0
+    langevin_k_angle: 10.0
+    langevin_temperature: 1.0
+    recenter: true
 
   prior_sampler:
     # polymer prior sampler if apo structure is unavailable
