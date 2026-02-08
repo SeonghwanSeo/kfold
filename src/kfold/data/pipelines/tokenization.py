@@ -7,29 +7,31 @@ from rdkit import Chem
 
 import kfold.constants as C
 from kfold.constants.interaction import get_residue_interaction_type
-from kfold.data.pipelines.apo_initialization import (
-    get_ambiguous_atoms_in_residue,
-    get_molecule_symmetries,
-)
 from kfold.data.types.ccd import CCD, Component
-from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
+from .apo_initialization import (
+    get_ambiguous_atoms_in_residue,
+    get_molecule_symmetries,
+)
+from .prior_sampling import PriorSampler
+
 
 class Tokenizer:
-    def __init__(self, ccd: CCD) -> None:
+    def __init__(self, prior_sampler: PriorSampler, ccd: CCD):
         """Tokenizer for structures.
 
         Parameters
         ----------
+        prior_sampler : PriorSampler
+            The prior sampler.
         ccd : CCD
             The chemical component dictionary.
-        training : bool, optional
-            Whether the tokenizer is used for training, by default True.
         """
+        self.prior_sampler: PriorSampler = prior_sampler
         self.ccd: CCD = ccd
 
     def __call__(
@@ -86,6 +88,7 @@ class Tokenizer:
         """
         return tokenize_structure(
             input,
+            self.prior_sampler,
             self.ccd,
             rng,
             use_only_cached_conformers,
@@ -95,6 +98,7 @@ class Tokenizer:
 
 def tokenize_structure(
     input: RefStructure,
+    prior_sampler: PriorSampler,
     ccd: CCD,
     rng: np.random.Generator | None = None,
     use_only_cached_conformers: bool = False,
@@ -140,13 +144,6 @@ def tokenize_structure(
     if use_only_cached_conformers:
         conformer_mode = "train"
 
-    # Get metadata
-    _metadata: Metadata = input.metadata
-    assert len(_metadata.chains) == len(input.chains), (
-        "Number of chains in metadata does not match number of chains in structure."
-        f" ({len(_metadata.chains)} != {len(input.chains)})"
-    )
-
     # ==================================================
     # Estimate sizes
     # ==================================================
@@ -169,7 +166,7 @@ def tokenize_structure(
         num_residues=input.num_residues,
         num_tokens=input.num_tokens,
         num_bonds=input.num_bonds + input.num_connections,
-        metadata=input.metadata,
+        num_priors=prior_sampler.num_samples,
     )
 
     # ==================================================
@@ -179,18 +176,18 @@ def tokenize_structure(
     ccd_components: dict[tuple[int, int], Component] = {}
     for chain in input.chains:
         asym_id = chain.asym_id
-        cm = _metadata.get_chain_by_asym_id(asym_id)
         ccd_sequence: list[str] = chain.get_ccd_sequence()
         for res_idx, ccd_name in enumerate(ccd_sequence, start=1):
             if ccd_name.startswith("LIG"):
                 # This residue is from a smiles string, load smiles from metadata
-                assert cm.smiles is not None, (
+                smiles = chain.smiles
+                assert smiles is not None, (
                     "Smiles string not found in metadata for LIG residue."
                 )
                 assert chain.num_residues == 1, (
                     "Residue with LIG prefix found in chain with multiple residues."
                 )
-                comp: Component = Component.from_smiles(ccd_name, cm.smiles, num_confs=1)
+                comp: Component = Component.from_smiles(ccd_name, smiles, num_confs=1)
             else:
                 assert ccd_name in ccd, f"Residue name {ccd_name} not found in CCD."
                 comp = get_ccd_component(ccd_name)
@@ -406,24 +403,31 @@ def tokenize_structure(
                 struct.atom.ref_pos[st:end, 0, :] = ref_pos
                 g_tok_i += natoms
 
+    # Sample prior coordinates (xT)
+    pad_mask = struct.atom.pad_mask
+    if prior_sampler.num_samples > 0:
+        struct.atom.prior_coords[pad_mask] = prior_sampler(input, rng=rng)
+
     # Update atom masks at once
     struct.atom.ref_mask[:] = np.isfinite(struct.atom.ref_pos).all(axis=-1)
     struct.atom.resolved_mask[:] = np.isfinite(struct.atom.label_coords).all(axis=-1)
     struct.atom.apo_mask[:] = np.isfinite(struct.atom.apo_coords).all(axis=-1)
 
     # Update NaN to zero
-    struct.atom.ref_charge[np.isnan(struct.atom.ref_charge)] = 0.0
+    struct.atom.ref_charge[pad_mask] = np.nan_to_num(
+        struct.atom.ref_charge[pad_mask], nan=0.0
+    )
 
     # Update apo/holo coordinates (centering & NaN to zero)
     struct.atom.apo_coords[:] = do_centering(
         struct.atom.apo_coords.reshape(-1, 3),
         struct.atom.apo_mask.reshape(-1),
-        mask_to_zero=True,
+        mask_to_zero=False,
     ).reshape(struct.atom.apo_coords.shape)
     struct.atom.label_coords[:] = do_centering(
         struct.atom.label_coords.reshape(-1, 3),
         struct.atom.resolved_mask.reshape(-1),
-        mask_to_zero=True,
+        mask_to_zero=False,
     ).reshape(struct.atom.label_coords.shape)
 
     # ==================================================
@@ -497,6 +501,9 @@ def tokenize_structure(
 
         # Update global bond index
         g_bond_i += 1
+
+    # Sanity check
+    struct.validate()
 
     return struct
 
