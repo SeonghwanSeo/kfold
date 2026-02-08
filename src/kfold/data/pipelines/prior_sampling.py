@@ -294,12 +294,15 @@ class PriorSampler:
             self.logger.error(f"Failed to find best chain permutation: {e}.")
 
         # Second, residue-level permutation (e.g., flipping)
-        try:
-            for c_i, chain in enumerate(struct.chains):
-                chain_coords = prior_coords_list[c_i]
-                self.find_best_residue_permutation(chain_coords, chain)
-        except Exception as e:
-            self.logger.error(f"Failed to find best residue permutation: {e}.")
+        # TODO (SeonghwanSeo): Can we accelerate this?
+        # Currently, we replace this by apo-residue-permutation during apo initialization
+        # and ref_pos permutation during tokenization.
+        # try:
+        #     for c_i, chain in enumerate(struct.chains):
+        #         chain_coords = prior_coords_list[c_i]
+        #         self.find_best_residue_permutation(chain_coords, chain)
+        # except Exception as e:
+        #     self.logger.error(f"Failed to find best residue permutation: {e}.")
 
         return prior_coords_list
 
@@ -426,6 +429,7 @@ class PriorSampler:
         best_perm = None
         best_rmsd = float("inf")
         prior_centers = np.empty_like(label_centers)
+        label_centers_masked = label_centers[label_mask]
         for perm in final_permutations:
             # Use a simpler way to track which index to take for each entity
             st = 0
@@ -437,7 +441,11 @@ class PriorSampler:
                 st += len(chain_coords)
             # Eigenvalue-based rmsd computation to avoid memory leakage
             rmsd = compute_rmsd(
-                prior_centers, label_centers, label_mask, align=True, no_svd=True
+                prior_centers[label_mask],
+                label_centers_masked,
+                mask=None,
+                align=True,
+                no_svd=True,
             )
             if rmsd < best_rmsd:
                 best_perm, best_rmsd = perm, rmsd
@@ -524,19 +532,23 @@ class PriorSampler:
             # Find the best permutation
             res_prior: np.ndarray = prior_coords[atom_st:atom_end]
             res_label: np.ndarray = ref_chain.atom.coords[atom_st:atom_end]
-            res_mask: np.ndarray = np.isfinite(res_label).all(-1)
+            m: np.ndarray = np.isfinite(res_label).all(-1)
+
+            if not m.any():
+                # No resolved atoms in this residue
+                continue
 
             best_perm = None
             min_rmsd = float("inf")
             for perm in perms[:10]:
                 permuted_prior = res_prior[perm, :]
                 rmsd = compute_rmsd(
-                    permuted_prior, res_label, res_mask, align=True, no_svd=True
+                    permuted_prior[m], res_label[m], mask=None, align=True, no_svd=True
                 )
                 if rmsd < min_rmsd:
                     min_rmsd, best_perm = rmsd, perm
 
-            if best_perm is not None:
+            if best_perm is not None and best_perm != list(range(len(best_perm))):
                 # Apply best permutation
                 res_prior[:, :] = res_prior[best_perm, :]
             else:

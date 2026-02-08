@@ -618,9 +618,9 @@ class ApoInitializer:
                 for perm in perms[:100]:
                     permuted_apo = res_apo[perm, :]
                     permuted_apo_mask = res_apo_mask[perm]
-                    align_mask = res_holo_mask & permuted_apo_mask
+                    m = res_holo_mask & permuted_apo_mask
                     rmsd = compute_rmsd(
-                        permuted_apo, res_holo, align_mask, align=True, no_svd=True
+                        permuted_apo[m], res_holo[m], mask=None, align=True, no_svd=True
                     )
                     if rmsd < min_rmsd:
                         min_rmsd, best_perm = rmsd, perm
