@@ -8,6 +8,7 @@ Implements three kinds of cropping strategies:
 
 import numpy as np
 
+from kfold.data.types.metadata import Metadata
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
@@ -50,6 +51,7 @@ class AlphaFold3Cropper(BaseCropper):
     def get_token_indices(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
@@ -60,6 +62,8 @@ class AlphaFold3Cropper(BaseCropper):
         ----------
         struct: TokenizedStructure
             The tokenized structure.
+        metadata: Metadata
+            The structure metadata.
         max_tokens: int
             The maximum number of tokens to crop.
         bias_asym_id: int | tuple[int, ...] | None
@@ -94,6 +98,7 @@ class AlphaFold3Cropper(BaseCropper):
     def crop_contiguous(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         rng: np.random.Generator,
     ) -> np.ndarray:
@@ -107,6 +112,8 @@ class AlphaFold3Cropper(BaseCropper):
         ----------
         struct: TokenizedStructure
             The tokenized structure.
+        metadata: Metadata
+            The structure metadata.
         max_tokens: int
             The maximum number of tokens to crop.
         rng: np.random.Generator
@@ -154,6 +161,7 @@ class AlphaFold3Cropper(BaseCropper):
     def crop_spatial(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
@@ -164,6 +172,8 @@ class AlphaFold3Cropper(BaseCropper):
         ----------
         struct: TokenizedStructure
             The tokenized structure.
+        metadata: Metadata
+            The structure metadata.
         max_tokens: int
             The maximum number of tokens to crop.
         bias_asym_id: int | tuple[int, ...] | None
@@ -191,6 +201,7 @@ class AlphaFold3Cropper(BaseCropper):
     def crop_spatial_interface(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
@@ -205,6 +216,8 @@ class AlphaFold3Cropper(BaseCropper):
         ----------
         struct: TokenizedStructure
             The tokenized structure.
+        metadata: Metadata
+            The structure metadata.
         max_tokens: int
             The maximum number of tokens to crop.
         bias_asym_id: int | tuple[int, ...] | None
@@ -219,10 +232,10 @@ class AlphaFold3Cropper(BaseCropper):
             The selected token indices.
         """
         # get valid interfaces
-        all_interfaces: list[tuple[int, int]] = self.get_valid_interfaces(struct)
+        all_interfaces: list[tuple[int, int]] = self.get_valid_interfaces(metadata)
         if len(all_interfaces) == 0:
             # no valid interfaces found; default to a random center
-            return self.crop_spatial(struct, max_tokens, bias_asym_id, rng)
+            return self.crop_spatial(struct, metadata, max_tokens, bias_asym_id, rng)
 
         # pick a random token from an interface
         if bias_asym_id is None:
@@ -286,24 +299,20 @@ class AlphaFold3Cropper(BaseCropper):
         return neighbor_indices
 
     @staticmethod
-    def get_valid_interfaces(struct: TokenizedStructure) -> list[tuple[int, int]]:
+    def get_valid_interfaces(metadata: Metadata) -> list[tuple[int, int]]:
         """Get all valid interfaces in the structure.
 
         Parameters
         ----------
-        struct : TokenizedStructure
-            The tokenized structure.
+        metadata : Metadata
+            The structure metadata.
 
         Returns
         -------
         interface_ids : list[tuple[int, int]]
             The valid interfaces in the structure.
         """
-        metadata = struct.metadata
-        assert metadata is not None, "Structure metadata is required"
-        all_chains: set[int] = set(struct.chain.asym_id.tolist())
         all_interfaces: list[tuple[int, int]] = [
             interface.asym_ids for interface in metadata.interfaces
         ]
-        all_interfaces = [v for v in all_interfaces if set(v).issubset(all_chains)]
         return sorted(set(all_interfaces))

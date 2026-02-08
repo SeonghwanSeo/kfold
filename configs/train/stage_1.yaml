@@ -47,8 +47,6 @@ data:
     struct_dim: null
     max_struct_ensembles: 1
 
-  featurization: {}
-
 # Lightning Trainer Configuration
 trainer:
   accelerator: "auto"

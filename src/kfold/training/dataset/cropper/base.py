@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from kfold.data.types.metadata import Metadata
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER, BaseConfig
 
@@ -16,6 +17,7 @@ class BaseCropper(ABC):
     def crop(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None = None,
         rng: np.random.Generator | None = None,
@@ -49,7 +51,11 @@ class BaseCropper(ABC):
 
         # Get the token indices to include in the crop
         selected_token_indices = self.get_token_indices(
-            struct, max_tokens, bias_asym_id, rng=rng
+            struct,
+            metadata,
+            max_tokens,
+            bias_asym_id,
+            rng=rng,
         )
         return struct.crop(selected_token_indices)
 
@@ -57,6 +63,7 @@ class BaseCropper(ABC):
     def get_token_indices(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
@@ -67,6 +74,8 @@ class BaseCropper(ABC):
         ----------
         struct : TokenizedStructure
             The tokenized structure.
+        metadata : Metadata
+            The metadata for the structure.
         max_tokens : int
             The maximum number of tokens to crop.
         bias_asym_id : int | tuple[int, int] | None

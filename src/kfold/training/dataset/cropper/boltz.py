@@ -1,6 +1,7 @@
 # started from code from https://github.com/jwohlwend/boltz, MIT License
 import numpy as np
 
+from kfold.data.types.metadata import Metadata
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
@@ -39,6 +40,7 @@ class BoltzCropper(BaseCropper):
     def get_token_indices(  # noqa: PLR0915
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
