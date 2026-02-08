@@ -9,7 +9,7 @@ import dataclasses
 
 import numpy as np
 
-from kfold.data.utils.simulation.langevin_dynamics import run_langevin_dynamics
+from kfold.data.utils.simulation.langevin_dynamics import run_langevin_dynamics_polymer
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -155,7 +155,7 @@ class PolymerPriorSampler:
             rng.standard_normal(size=(L, Natoms, 3), dtype=np.float32) * self.sphere_r
         )
         x_init[~mask] = 0.0  # Initialize masked positions to zero for dynamics.
-        x_init = run_langevin_dynamics(
+        x_init = run_langevin_dynamics_polymer(
             x_init,
             mask,
             num_steps=self.num_steps,
