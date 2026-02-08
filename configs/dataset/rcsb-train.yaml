@@ -24,8 +24,7 @@ cropper:
   w_spatial_interface: 0.5
 
 apo_init:
-  prob_perturbation: 0.95
-  apo_perturbation:
+  protein_perturbation:
     # Apo structure perturbation settings (if use_perturbation is true)
     prob_rieprody: 0.8 # Probability of using RieProDy perturbation
     rieprody:
