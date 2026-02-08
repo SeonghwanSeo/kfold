@@ -58,7 +58,11 @@ class PriorSamplerConfig:
     translation_scale: float = 1.0  # Angstrom
     # Langevin dynamics parameters for relaxing missing atoms
     relaxation: LangevinDynamicsConfig = dataclasses.field(
-        default_factory=lambda: LangevinDynamicsConfig(num_steps=64)
+        default_factory=lambda: LangevinDynamicsConfig(
+            num_steps=200,
+            res_r=4.0,
+            bond_r=2.0,
+        )
     )
 
 
@@ -223,43 +227,34 @@ class PriorSampler:
         Parameters
         ----------
         coords : np.ndarray
-            Structure coordinates of shape [L, Natom, 3].
+            Structure coordinates of shape [Natom, 3].
         rng : np.random.Generator
             Random number generator for stochastic operations.
 
         Returns
         -------
         augmented_coords : np.ndarray
-            Augmented structure coordinates of shape [L, Natom, 3].
+            Augmented structure coordinates of shape [Natom, 3].
         """
-        assert coords.ndim == 3, "Apo coordinates must be of shape [L, Natom, 3]."
+        assert coords.ndim == 2, "Apo coordinates must be of shape [Natom, 3]."
         # Flatten
-        L, Natom = coords.shape[:2]
-        mask = np.isfinite(coords).all(axis=-1)
+        mask: np.ndarray = np.isfinite(coords).all(axis=-1)
         if not mask.any():
             return coords
 
         # Apply random augmentation
         if self.use_chain_com_sampling:
             augmented_coords = center_random_augmentation(
-                coords.reshape(L * Natom, 3),
-                mask.reshape(L * Natom),
-                augmentation=True,
-                s_trans=0.0,  # no translation here
-                rng=rng,
-            ).reshape(L, Natom, 3)
+                coords, mask, augmentation=True, s_trans=0.0, rng=rng
+            )
             current_com = coords[mask].mean(axis=0)
             target_com = sample_uniform_sphere_surface(self.translation_scale, rng)
             shift = target_com - current_com
             augmented_coords += shift[None, None, :]
         else:
             augmented_coords = center_random_augmentation(
-                coords.reshape(L * Natom, 3),
-                mask.reshape(L * Natom),
-                augmentation=True,
-                s_trans=self.translation_scale,
-                rng=rng,
-            ).reshape(L, Natom, 3)
+                coords, mask, augmentation=True, s_trans=self.translation_scale, rng=rng
+            )
 
         augmented_coords[~mask] = np.nan
         return augmented_coords
@@ -291,7 +286,7 @@ class PriorSampler:
         # RNG state is used for sampling permutations when too many exist
         try:
             prior_coords_list = self.find_best_chain_permutation(
-                prior_coords_list, struct, max_permutations=1000, rng=rng
+                prior_coords_list, struct, max_permutations=100, rng=rng
             )
         except Exception as e:
             self.logger.error(f"Failed to find best chain permutation: {e}.")
@@ -319,7 +314,7 @@ class PriorSampler:
             "Number of prior chains must match number of structure chains."
         )
         assert all(
-            prior_chain_coords[i].shape == struct.chains[i].num_atoms
+            prior_chain_coords[i].shape[0] == struct.chains[i].num_atoms
             for i in range(struct.num_chains)
         ), "Prior chain coordinates shape must match structure chain apo coords shape."
         assert all(

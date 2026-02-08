@@ -406,7 +406,8 @@ def tokenize_structure(
     # Sample prior coordinates (xT)
     pad_mask = struct.atom.pad_mask
     if prior_sampler.num_samples > 0:
-        struct.atom.prior_coords[pad_mask] = prior_sampler(input, rng=rng)
+        prior_coords = prior_sampler(input, rng=rng)  # (num_samples, num_atoms, 3)
+        struct.atom.prior_coords[pad_mask] = prior_coords.transpose(1, 0, 2)
 
     # Update atom masks at once
     struct.atom.ref_mask[:] = np.isfinite(struct.atom.ref_pos).all(axis=-1)
