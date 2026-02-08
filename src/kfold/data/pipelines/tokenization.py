@@ -7,11 +7,16 @@ from rdkit import Chem
 
 import kfold.constants as C
 from kfold.constants.interaction import get_residue_interaction_type
+from kfold.data.pipelines.apo_initialization import (
+    get_ambiguous_atoms_in_residue,
+    get_molecule_symmetries,
+)
 from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
+from kfold.utils.geometry.rigid_align import compute_rmsd
 
 
 class Tokenizer:
@@ -32,6 +37,7 @@ class Tokenizer:
         input: RefStructure,
         rng: np.random.Generator | None = None,
         use_only_cached_conformers: bool = False,
+        ref_pos_permutation: bool = False,
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -43,19 +49,22 @@ class Tokenizer:
             Random number generator for stochastic processes, by default None.
         use_only_cached_conformers : bool, optional
             if True, only the cached conformers in the CCD will be used.
+        ref_pos_permutation : bool, optional
+            If True, apply permutation to reference positions to match label structure.
 
         Returns
         -------
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return self.tokenize(input, rng, use_only_cached_conformers)
+        return self.tokenize(input, rng, use_only_cached_conformers, ref_pos_permutation)
 
     def tokenize(
         self,
         input: RefStructure,
         rng: np.random.Generator | None = None,
         use_only_cached_conformers: bool = False,
+        ref_pos_permutation: bool = False,
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -67,6 +76,8 @@ class Tokenizer:
             Random number generator for stochastic processes, by default None.
         use_only_cached_conformers : bool, optional
             if True, only the cached conformers in the CCD will be used.
+        ref_pos_permutation : bool, optional
+            If True, apply permutation to reference positions to match label structure.
 
         Returns
         -------
@@ -78,6 +89,7 @@ class Tokenizer:
             self.ccd,
             rng,
             use_only_cached_conformers,
+            ref_pos_permutation=ref_pos_permutation,
         )
 
 
@@ -86,6 +98,7 @@ def tokenize_structure(
     ccd: CCD,
     rng: np.random.Generator | None = None,
     use_only_cached_conformers: bool = False,
+    ref_pos_permutation: bool = False,
 ) -> TokenizedStructure:
     """Tokenize structure.
 
@@ -102,6 +115,8 @@ def tokenize_structure(
           - EKTDG-cached (up to 10 conformers by default with `ccd-train.pkl`)
           - Ideal
           - Model (Experimental)
+    ref_pos_permutation : bool, optional
+        If True, apply permutation to reference positions to match label structure.
 
     Returns
     -------
@@ -350,21 +365,36 @@ def tokenize_structure(
             # Get reference conformer positions with random augmentation
             ref_pos: np.ndarray = ref_comp.get_conformer(conformer_mode, rng)  # type: ignore
             assert ref_pos is not None, "Auto mode always provides a conformer."
-            ref_mask = np.isfinite(ref_pos).all(axis=-1)
-            if ref_mask.any():
-                ref_pos = center_random_augmentation(ref_pos, ref_mask, rng=rng)
 
             # Insert coordinates based on atom names
-            atom_names = all_atom_names[chain.residue.get_atom_slice(res_idx)]
+            atom_slices = chain.residue.get_atom_slice(res_idx)
+            atom_names = all_atom_names[atom_slices]
             atom_indices: list[int] = ref_comp.get_atom_indices(atom_names)
             natoms = len(atom_names)
+            ref_pos = ref_pos[atom_indices, :]
+            ref_mask = np.isfinite(ref_pos).all(axis=-1)
+
+            if ref_mask.any():
+                # Match residue permutation to label structure
+                if ref_pos_permutation:
+                    label_pos = chain.atom.coords[atom_slices]
+                    align_mask = np.isfinite(label_pos).all(axis=-1) & ref_mask
+                    perm = find_best_residue_permutation(
+                        ref_pos, label_pos, ref_comp, atom_names, align_mask, is_standard
+                    )
+                    ref_pos, ref_mask = ref_pos[perm], ref_mask[perm]
+
+                # Apply random augmentation to reference positions
+                ref_pos = center_random_augmentation(ref_pos, ref_mask, rng=rng)
+                ref_pos[~ref_mask] = np.nan
+
             if is_standard:
                 # Standard residue (one token)
                 assert np.all(struct.atom.pad_mask[g_tok_i, :natoms]), (
                     "Atom pad mask mismatch for standard residue."
                     f" (g_tok_i={g_tok_i}, natoms={natoms})"
                 )
-                struct.atom.ref_pos[g_tok_i, :natoms, :] = ref_pos[atom_indices, :]
+                struct.atom.ref_pos[g_tok_i, :natoms, :] = ref_pos
                 g_tok_i += 1
             else:
                 # Non-standard residue (multiple tokens, one per atom)
@@ -373,7 +403,7 @@ def tokenize_structure(
                 )
                 st = g_tok_i
                 end = g_tok_i + natoms
-                struct.atom.ref_pos[st:end, 0, :] = ref_pos[atom_indices, :]
+                struct.atom.ref_pos[st:end, 0, :] = ref_pos
                 g_tok_i += natoms
 
     # Update atom masks at once
@@ -469,3 +499,59 @@ def tokenize_structure(
         g_bond_i += 1
 
     return struct
+
+
+def find_best_residue_permutation(
+    ref_pos: np.ndarray,
+    label_pos: np.ndarray,
+    ref_comp: Component,
+    atom_names: list[str],
+    mask: np.ndarray,
+    is_standard: bool,
+) -> np.ndarray:
+    """Find the best permutation of reference positions to match label positions.
+
+    Parameters
+    ----------
+    ref_pos : np.ndarray
+        Reference positions. Shape: (N, 3)
+    label_pos : np.ndarray
+        Label positions. Shape: (N, 3)
+    ref_comp : Component
+        Reference component from CCD.
+    atom_names : list[str]
+        List of atom names in the residue.
+    mask : np.ndarray
+        Boolean mask indicating valid atoms. Shape: (N,)
+    is_standard : bool
+        Whether the residue is standard.
+
+    Returns
+    -------
+    np.ndarray
+        The best permutation of reference positions. Shape: (N,)
+    """
+    if not mask.any():
+        return np.arange(ref_pos.shape[0])
+
+    if is_standard:
+        # Standard residue: use predefined ambiguous atom groups
+        perms = get_ambiguous_atoms_in_residue(ref_comp.code)
+    else:
+        # Non-standard residue: use molecular symmetries from CCD
+        perms = get_molecule_symmetries(ref_comp, atom_names)
+
+    if perms is None or len(perms) == 0:
+        return np.arange(ref_pos.shape[0])
+
+    best_rmsd = np.inf
+    best_perm = list(range(ref_pos.shape[0]))
+    for perm in perms:
+        permuted_pos = ref_pos[perm, :]
+        rmsd = compute_rmsd(
+            permuted_pos[mask], label_pos[mask], mask=None, align=True, no_svd=True
+        )
+        if rmsd < best_rmsd:
+            best_rmsd = rmsd
+            best_perm = perm
+    return np.array(best_perm)

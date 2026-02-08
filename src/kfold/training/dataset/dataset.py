@@ -394,12 +394,17 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng: np.random.Generator | None = None,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        return self.tokenizer(ref_struct, rng, use_only_cached_conformers=True)
+        return self.tokenizer(
+            ref_struct,
+            rng,
+            use_only_cached_conformers=True,
+            ref_pos_permutation=False,
+        )
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
         self,
-        struct: RefStructure,
+        ref_struct: RefStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
     ) -> RefStructure:
@@ -410,7 +415,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         sampling sub-complexes from the original structure before applying
         the main cropping strategy.
         """
-        return struct
+        return ref_struct
 
     def crop_structure(
         self,
@@ -729,21 +734,36 @@ class TrainingDataset(LMDBDataset):
     @override
     def extract_substructure(
         self,
-        struct: RefStructure,
+        ref_struct: RefStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
     ) -> RefStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
-        if self.max_chains < struct.num_chains:
+        if self.max_chains < ref_struct.num_chains:
             # Get sub-complex with limited number of chains
-            struct = pre_crop.extract_substructure(
-                struct,
+            ref_struct = pre_crop.extract_substructure(
+                ref_struct,
                 max_chains=self.max_chains,
                 bias_asym_id=asym_ids,
                 rng=rng,
             )
-        return struct
+        return ref_struct
+
+    @override
+    def tokenize(
+        self,
+        ref_struct: RefStructure,
+        rng: np.random.Generator | None = None,
+    ) -> TokenizedStructure:
+        """Tokenize the given structure."""
+        # Enable ref conformer permutation for training
+        return self.tokenizer(
+            ref_struct,
+            rng,
+            use_only_cached_conformers=True,
+            ref_pos_permutation=True,
+        )
 
     @override
     def crop_structure(
