@@ -509,7 +509,28 @@ def find_best_residue_permutation(
     mask: np.ndarray,
     is_standard: bool,
 ) -> np.ndarray:
-    """Find the best permutation of reference positions to match label positions."""
+    """Find the best permutation of reference positions to match label positions.
+
+    Parameters
+    ----------
+    ref_pos : np.ndarray
+        Reference positions. Shape: (N, 3)
+    label_pos : np.ndarray
+        Label positions. Shape: (N, 3)
+    ref_comp : Component
+        Reference component from CCD.
+    atom_names : list[str]
+        List of atom names in the residue.
+    mask : np.ndarray
+        Boolean mask indicating valid atoms. Shape: (N,)
+    is_standard : bool
+        Whether the residue is standard.
+
+    Returns
+    -------
+    np.ndarray
+        The best permutation of reference positions. Shape: (N,)
+    """
     if not mask.any():
         return np.arange(ref_pos.shape[0])
 
@@ -524,7 +545,7 @@ def find_best_residue_permutation(
         return np.arange(ref_pos.shape[0])
 
     best_rmsd = np.inf
-    best_perm = np.arange(ref_pos.shape[0])
+    best_perm = list(range(ref_pos.shape[0]))
     for perm in perms:
         permuted_pos = ref_pos[perm, :]
         rmsd = compute_rmsd(
@@ -533,4 +554,4 @@ def find_best_residue_permutation(
         if rmsd < best_rmsd:
             best_rmsd = rmsd
             best_perm = perm
-    return best_perm
+    return np.array(best_perm)

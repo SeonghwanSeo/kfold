@@ -750,6 +750,7 @@ class TrainingDataset(LMDBDataset):
             )
         return ref_struct
 
+    @override
     def tokenize(
         self,
         ref_struct: RefStructure,
