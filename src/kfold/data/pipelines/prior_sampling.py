@@ -158,7 +158,9 @@ class PriorSampler:
                 )
 
             # Apply random rotation/translation augmentation
-            augmented_coords = self.apply_random_augmentation(chain_coords, rng)
+            augmented_coords = chain_coords
+            if self.config.use_random_augmentation:
+                augmented_coords = self.apply_random_augmentation(chain_coords, rng)
             prior_coords_list.append(augmented_coords)
 
         if self.use_ot_permutation:
@@ -247,10 +249,10 @@ class PriorSampler:
             augmented_coords = center_random_augmentation(
                 coords, mask, augmentation=True, s_trans=0.0, rng=rng
             )
-            current_com = coords[mask].mean(axis=0)
+            current_com = augmented_coords[mask].mean(axis=0)
             target_com = sample_uniform_sphere_surface(self.translation_scale, rng)
             shift = target_com - current_com
-            augmented_coords += shift[None, None, :]
+            augmented_coords += shift[None, :]
         else:
             augmented_coords = center_random_augmentation(
                 coords, mask, augmentation=True, s_trans=self.translation_scale, rng=rng

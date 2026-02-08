@@ -495,6 +495,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
         ref_struct = self.extract_substructure(ref_struct, rng=rng, **kwargs)
+        metadata = ref_struct.metadata  # update metadata after extraction
 
         # Populate apo structure (in-place)
         self.load_apo_structure(ref_struct, rng=rng)

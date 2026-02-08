@@ -26,7 +26,7 @@ class LangevinDynamicsConfig:
 
     @classmethod
     def from_config(cls, config: DictConfig | Self) -> Self:
-        """Create BioPriorConfig using omegaconf merge"""
+        """Create LangevinDynamicsConfig from DictConfig"""
         base_cfg = OmegaConf.structured(cls)
         merged_cfg = OmegaConf.merge(base_cfg, config)
         return OmegaConf.to_object(merged_cfg)

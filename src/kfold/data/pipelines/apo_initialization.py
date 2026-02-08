@@ -278,6 +278,7 @@ class ApoInitializer:
                         "Failed to load apo structure for entity "
                         f"{entity_id}: {e}. Sampling from prior instead."
                     )
+                    continue
                 # Store apo coordinates
                 apo_coords_dict[entity_id] = apo_coords
             else:
