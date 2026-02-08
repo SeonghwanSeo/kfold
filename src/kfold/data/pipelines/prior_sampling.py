@@ -509,7 +509,7 @@ class PriorSampler:
                 assert ref_chain.is_polymer, (
                     "Only polymer chains are supported for standard residues."
                 )
-                perms = get_ambiguous_atoms_in_residue(res_name)
+                perms = get_ambiguous_atoms_in_residue(res_name, extended=False)
             elif res_name in self.ccd:
                 ref_comp: Component = get_ref_comp(res_name)
                 atom_names: list[str] = all_atom_names[atom_st:atom_end]
@@ -528,7 +528,7 @@ class PriorSampler:
 
             best_perm = None
             min_rmsd = float("inf")
-            for perm in perms:
+            for perm in perms[:10]:
                 permuted_prior = res_prior[perm, :]
                 rmsd = compute_rmsd(
                     permuted_prior, res_label, res_mask, align=True, no_svd=True
