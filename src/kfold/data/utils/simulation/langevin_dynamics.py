@@ -6,7 +6,95 @@ NOTE (SeonghwanSeo): Since bond information is not constructed in current data p
 I modified the original algorithm to approximate bond forces using residue centers.
 ."""
 
+import dataclasses
+from typing import Self
+
 import numpy as np
+from omegaconf import DictConfig, OmegaConf
+
+
+@dataclasses.dataclass(kw_only=True)
+class LangevinDynamicsConfig:
+    """Configuration for Langevin dynamics simulator."""
+
+    num_steps: int = 64
+    dt: float = 0.25
+    bond_r: float = 2.0
+    res_r: float = 4.0
+    ent_r: float = 10.0
+    sphere_r: float = 10.0
+
+    @classmethod
+    def from_config(cls, config: DictConfig | Self) -> Self:
+        """Create BioPriorConfig using omegaconf merge"""
+        base_cfg = OmegaConf.structured(cls)
+        merged_cfg = OmegaConf.merge(base_cfg, config)
+        return OmegaConf.to_object(merged_cfg)
+
+
+class LangevinDynamicsSimulator:
+    def __init__(self, config: LangevinDynamicsConfig) -> None:
+        """Initialize Langevin dynamics simulator."""
+        config: LangevinDynamicsConfig = LangevinDynamicsConfig.from_config(config)
+        self.num_steps: int = config.num_steps
+        self.dt: float = config.dt
+        self.bond_r: float = config.bond_r
+        self.res_r: float = config.res_r
+        self.ent_r: float = config.ent_r
+        self.sphere_r: float = config.sphere_r
+
+    def __call__(
+        self,
+        x_init: np.ndarray,
+        residue_index: np.ndarray,
+        is_constraint: np.ndarray | None = None,
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
+        return self.simulate(
+            x_init,
+            residue_index,
+            is_constraint=is_constraint,
+            rng=rng,
+        )
+
+    def simulate(
+        self,
+        x_init: np.ndarray,
+        residue_index: np.ndarray,
+        is_constraint: np.ndarray | None = None,
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
+        """Run Langevin dynamics simulation.
+
+        Parameters
+        ----------
+        x_init : np.ndarray
+            Initial coordinates of shape [Natoms, 3].
+        residue_index : np.ndarray
+            Residue membership for each atom, shape [Natoms].
+            Assumes 0-indexed, contiguous integers (0 to L-1).
+        is_constraint : np.ndarray
+            Constraint mask of shape [Natoms], indicating fixed atoms.
+        rng : np.random.Generator, optional
+            Random number generator for stochastic operations.
+
+        Return
+        ------
+        sampled_coords : np.ndarray
+            Sampled coordinates after Langevin dynamics of shape [Natoms, 3].
+        """
+        return run_langevin_dynamics(
+            x_init,
+            residue_index,
+            num_steps=self.num_steps,
+            dt=self.dt,
+            bond_r=self.bond_r,
+            res_r=self.res_r,
+            ent_r=self.ent_r,
+            sphere_r=self.sphere_r,
+            is_constraint=is_constraint,
+            rng=rng,
+        )
 
 
 def scatter_mean(
