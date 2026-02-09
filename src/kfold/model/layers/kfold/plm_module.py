@@ -149,11 +149,6 @@ class PLMModule(nn.Module):
         intra_mask = pair_mask & is_same_chain
         inter_mask = pair_mask & (~is_same_chain)
 
-        mask = mask
-        pair_mask = pair_mask
-        intra_mask = intra_mask
-        inter_mask = inter_mask
-
         # Initial linear projection
         s_plm = self.proj_s_plm(s_plm)
         s_plm = s_plm + self.proj_s_input(s_input)
