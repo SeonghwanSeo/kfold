@@ -2,7 +2,8 @@ model:
   _yaml_: "model/kfold-edm.yaml"
   trunk:
     plm_module:
-      channel_plm: 2560
+      channel_plm_input: 2560
+      num_blocks: 4
     pairformer:
       num_blocks: 16
   score_model:

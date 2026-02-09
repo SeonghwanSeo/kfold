@@ -16,8 +16,15 @@ from .base import BaseTrunk
 
 @dataclasses.dataclass(kw_only=True)
 class PLMModuleConfig:
-    channel_plm: int = 2560
+    channel_plm_input: int = 2560
+    channel_plm: int = 512
+    num_heads_attn: int = 16
+    num_heads_tri_attn: int = 4
+    num_blocks: int = 4
+    dropout_plm: float = 0.15
+    dropout_z: float = 0.25
     use_separate_projections: bool = True
+    use_qk_norm: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -77,9 +84,18 @@ class KFoldTrunk(BaseTrunk):
         self.use_plm_module: bool = cfg.use_plm_module
         if self.use_plm_module:
             self.plm_module: PLMModule = PLMModule(
-                channel_plm=cfg.plm_module.channel_plm,
+                channel_s=cfg.channel_s,
                 channel_z=cfg.channel_z,
+                channel_plm_input=cfg.plm_module.channel_plm_input,
+                channel_plm=cfg.plm_module.channel_plm,
+                num_heads_attn=cfg.plm_module.num_heads_attn,
+                num_heads_tri_attn=cfg.plm_module.num_heads_tri_attn,
+                num_blocks=cfg.plm_module.num_blocks,
+                dropout_plm=cfg.plm_module.dropout_plm,
+                dropout_z=cfg.plm_module.dropout_z,
                 use_separate_projections=cfg.plm_module.use_separate_projections,
+                use_qk_norm=cfg.plm_module.use_qk_norm,
+                blocks_per_ckpt=cfg.blocks_per_ckpt,
             )
 
         # Pairformer module
@@ -125,6 +141,12 @@ class KFoldTrunk(BaseTrunk):
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
+        self.plm_module = torch.compile(
+            self.plm_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
+        )  # type: ignore
         self.pairformer_module = torch.compile(
             self.pairformer_module,
             mode=mode,
@@ -182,10 +204,13 @@ class KFoldTrunk(BaseTrunk):
 
         # Revert to uncompiled version for validation
         pairformer_module: PairformerStack
+        plm_module: PLMModule
         if self.is_compiled and not self.training:
             pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
+            plm_module = self.plm_module._orig_mod  # noqa: SLF001
         else:
             pairformer_module = self.pairformer_module
+            plm_module = self.plm_module
 
         # z_hat, s_hat = 0, 0
         s_hat = torch.zeros_like(s_init)
@@ -202,7 +227,15 @@ class KFoldTrunk(BaseTrunk):
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
 
                 if self.use_plm_module:
-                    z = self.plm_module(z, s_plm, asym_id, mask)
+                    z = plm_module(
+                        z,
+                        s_inputs,
+                        s_plm,
+                        asym_id,
+                        mask,
+                        chunk_size_tri_attn=chunk_size_tri_attn,
+                        use_cuequiv_kernels=self.kernel_config.cuequivariance,
+                    )
 
                 s, z = pairformer_module(
                     s,
