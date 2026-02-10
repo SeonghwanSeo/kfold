@@ -243,7 +243,7 @@ class MultiHeadAttention(nn.Module):
             if mask.dtype == torch.bool:
                 mask_bias = -self.inf * (~mask).to(q.dtype)
             else:
-                mask_bias = self.inf * (mask - 1)
+                mask_bias = self.inf * (mask - 1).to(q.dtype)
             biases = [mask_bias, tri_bias]
             o = _attention(q, k, v, biases)
             o = o.transpose(-2, -3)

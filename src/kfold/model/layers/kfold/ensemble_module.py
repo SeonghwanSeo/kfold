@@ -391,6 +391,8 @@ class EnsembleModule(torch.nn.Module):
             The input single embeddings
         chunk_size_tri_attn : int | None, optional
             The chunk size for triangle attention, by default None.
+        use_cuequiv_kernels : bool, optional
+            Whether to use cuEQUIV kernels, by default False.
 
         Returns
         -------

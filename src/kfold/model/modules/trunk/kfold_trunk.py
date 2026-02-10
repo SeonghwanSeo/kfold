@@ -7,7 +7,7 @@ import torch.nn as nn
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
-from kfold.model.layers.kfold.plm_module import PLMModule
+from kfold.model.layers.kfold.plm_module import PairwiseProdDiff, PLMModule
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
@@ -16,8 +16,15 @@ from .base import BaseTrunk
 
 @dataclasses.dataclass(kw_only=True)
 class PLMModuleConfig:
-    channel_plm: int = 2560
+    channel_plm_input: int = 2560
+    channel_plm: int = 512
+    num_heads_attn: int = 16
+    num_heads_tri_attn: int = 4
+    num_blocks: int = 4
+    dropout_plm: float = 0.15
+    dropout_z: float = 0.25
     use_separate_projections: bool = True
+    use_qk_norm: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -65,6 +72,8 @@ class KFoldTrunk(BaseTrunk):
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
+        version: int = 0
+
         # Proteina-style register tokens.
         # These tokens are prepended to representations and removed after trunk.
         num_register_tokens: int = 0
@@ -77,9 +86,18 @@ class KFoldTrunk(BaseTrunk):
         self.use_plm_module: bool = cfg.use_plm_module
         if self.use_plm_module:
             self.plm_module: PLMModule = PLMModule(
-                channel_plm=cfg.plm_module.channel_plm,
+                channel_s=cfg.channel_s,
                 channel_z=cfg.channel_z,
+                channel_plm_input=cfg.plm_module.channel_plm_input,
+                channel_plm=cfg.plm_module.channel_plm,
+                num_heads_attn=cfg.plm_module.num_heads_attn,
+                num_heads_tri_attn=cfg.plm_module.num_heads_tri_attn,
+                num_blocks=cfg.plm_module.num_blocks,
+                dropout_plm=cfg.plm_module.dropout_plm,
+                dropout_z=cfg.plm_module.dropout_z,
                 use_separate_projections=cfg.plm_module.use_separate_projections,
+                use_qk_norm=cfg.plm_module.use_qk_norm,
+                blocks_per_ckpt=cfg.blocks_per_ckpt,
             )
 
         # Pairformer module
@@ -103,6 +121,30 @@ class KFoldTrunk(BaseTrunk):
         # Other options
         self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
+        self.version: int = cfg.version
+
+        if self.version == 0:
+            pass
+        elif self.version == 1:
+            self.proj_plm_to_s_init = nn.Sequential(
+                LayerNorm(cfg.plm_module.channel_plm_input, create_offset=False),
+                LinearNoBias(
+                    cfg.plm_module.channel_plm_input, cfg.channel_s, init="final"
+                ),
+            )
+            self.proj_plm_to_z_init = PairwiseProdDiff(
+                cfg.plm_module.channel_plm_input, cfg.channel_z
+            )
+        elif self.version == 2:
+            self.proj_plm_to_s_trunk = nn.Sequential(
+                LayerNorm(cfg.plm_module.channel_plm_input, create_offset=False),
+                LinearNoBias(
+                    cfg.plm_module.channel_plm_input, cfg.channel_s, init="final"
+                ),
+            )
+        else:
+            raise ValueError(f"Unknown KFoldTrunk version: {self.version}")
+
         # Proteina-style register tokens (learnable sequence-level registers).
         self.num_register_tokens: int = int(cfg.num_register_tokens)
         if self.num_register_tokens < 0:
@@ -125,6 +167,12 @@ class KFoldTrunk(BaseTrunk):
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
+        self.plm_module = torch.compile(
+            self.plm_module,
+            mode=mode,
+            dynamic=False,
+            fullgraph=False,
+        )  # type: ignore
         self.pairformer_module = torch.compile(
             self.pairformer_module,
             mode=mode,
@@ -173,19 +221,31 @@ class KFoldTrunk(BaseTrunk):
 
         s_plm = f_input.pretrained.sequence_embedding  # [B, L, c_plm]
 
+        if self.version == 1:
+            s_init = s_init + self.proj_plm_to_s_init(s_plm)
+            z_init = z_init + self.proj_plm_to_z_init(s_plm)
+
         # === Proteina-style register tokens (optional) ===
         mask = f_input.token.pad_mask
         asym_id = f_input.token.asym_id
-        s_init, z_init, s_plm, asym_id, mask = self._extend_registers(
-            s_init, z_init, s_plm, asym_id, mask
+        s_inputs, s_init, s_plm, z_init, asym_id, mask = self._extend_registers(
+            s_inputs,
+            s_init,
+            s_plm,
+            z_init,
+            asym_id,
+            mask,
         )
 
         # Revert to uncompiled version for validation
         pairformer_module: PairformerStack
+        plm_module: PLMModule
         if self.is_compiled and not self.training:
             pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
+            plm_module = self.plm_module._orig_mod  # noqa: SLF001
         else:
             pairformer_module = self.pairformer_module
+            plm_module = self.plm_module
 
         # z_hat, s_hat = 0, 0
         s_hat = torch.zeros_like(s_init)
@@ -202,7 +262,15 @@ class KFoldTrunk(BaseTrunk):
                 z = z_init + self.linear_z(self.layernorm_z(z_hat))
 
                 if self.use_plm_module:
-                    z = self.plm_module(z, s_plm, asym_id, mask)
+                    z = plm_module(
+                        z,
+                        s_inputs,
+                        s_plm,
+                        asym_id,
+                        mask,
+                        chunk_size_tri_attn=chunk_size_tri_attn,
+                        use_cuequiv_kernels=self.kernel_config.cuequivariance,
+                    )
 
                 s, z = pairformer_module(
                     s,
@@ -214,40 +282,49 @@ class KFoldTrunk(BaseTrunk):
 
                 s_hat, z_hat = s, z
 
+        if self.version == 2:
+            s_hat = s_hat + self.proj_plm_to_s_trunk(s_plm)
+
         # Remove register tokens before returning.
         return self._undo_registers(s_hat, z_hat)
 
     def _extend_registers(
         self,
+        s_inputs: torch.Tensor,
         s_init: torch.Tensor,
-        z_init: torch.Tensor,
         s_plm: torch.Tensor,
+        z_init: torch.Tensor,
         asym_id: torch.Tensor,
         mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, ...]:
         """Prepend register tokens (Proteina-style)."""
         R = self.num_register_tokens
         if R <= 0:
-            return s_init, z_init, s_plm, asym_id, mask
+            return s_inputs, s_init, s_plm, z_init, asym_id, mask
 
         device = s_init.device
 
         assert self.register_tokens is not None
         B, L, _ = s_init.shape
-        reg = self.register_tokens.to(device=device, dtype=s_init.dtype)
-        reg = reg.unsqueeze(0).expand(B, -1, -1)  # [B, R, C_s]
-        s_init = torch.cat([reg, s_init], dim=1)  # [B, R+L, C_s]
 
-        z_pad = torch.zeros(
-            (B, L + R, L + R, z_init.shape[-1]), device=device, dtype=z_init.dtype
+        s_inputs_pad = torch.zeros(
+            (B, L + R, s_inputs.shape[-1]), device=device, dtype=s_inputs.dtype
         )
-        z_pad[:, R:, R:] = z_init
-        z_init = z_pad
+        s_inputs_pad[:, R:] = s_inputs
 
         s_plm_pad = torch.zeros(
             (B, L + R, s_plm.shape[-1]), device=device, dtype=s_plm.dtype
         )
         s_plm_pad[:, R:] = s_plm
+
+        reg = self.register_tokens.to(device=device, dtype=s_init.dtype)
+        reg = reg.unsqueeze(0).expand(B, -1, -1)  # [B, R, C_s]
+        s_init_pad = torch.cat([reg, s_init], dim=1)  # [B, R+L, C_s]
+
+        z_pad = torch.zeros(
+            (B, L + R, L + R, z_init.shape[-1]), device=device, dtype=z_init.dtype
+        )
+        z_pad[:, R:, R:] = z_init
 
         asym_id_pad = torch.zeros((B, L + R), device=device, dtype=asym_id.dtype)
         asym_id_pad[:, R:] = asym_id
@@ -255,7 +332,7 @@ class KFoldTrunk(BaseTrunk):
         mask_pad = torch.ones((B, L + R), device=device, dtype=mask.dtype)
         mask_pad[:, R:] = mask
 
-        return s_init, z_init, s_plm_pad, asym_id_pad, mask_pad
+        return s_inputs_pad, s_init_pad, s_plm_pad, z_pad, asym_id_pad, mask_pad
 
     def _undo_registers(
         self,
