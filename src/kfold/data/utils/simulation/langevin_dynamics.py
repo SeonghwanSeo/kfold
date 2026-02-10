@@ -97,70 +97,6 @@ class LangevinDynamicsSimulator:
         )
 
 
-def scatter_mean(
-    src: np.ndarray,
-    index: np.ndarray,
-    dim: int = 0,
-    dim_size: int | None = None,
-    fill_value: float = 0.0,
-) -> np.ndarray:
-    """
-    Computes the mean of values in `src` array into `out` array at indices specified by
-    `index`.
-
-    Equivalent to:
-        out[index[i]] = mean(src[i])
-
-    Args:
-        src: The source array of values.
-        index: The indices of elements to scatter. Must be broadcastable to src.shape.
-        dim: The axis along which to index.
-        dim_size: The size of the output along `dim`. If None, inferred from max(index).
-        fill_value: Value to fill in output where no index points (empty bins).
-
-    Returns:
-        The output array with averaged values.
-    """
-    # 1. Handle dimensionality and broadcasting
-    # Move the target dimension to the front (axis 0) for consistent handling
-    src = np.moveaxis(src, dim, 0)
-    index = np.moveaxis(index, dim, 0)
-
-    # If index is 1D (common case), broadcast it to match src shape for the scatter
-    if index.ndim < src.ndim:
-        index = np.expand_dims(index, axis=tuple(range(1, src.ndim)))
-        index = np.broadcast_to(index, src.shape)
-
-    # 2. Determine Output Size
-    if dim_size is None:
-        dim_size = int(index.max()) + 1
-
-    # Output shape: [dim_size, ...other_dims...]
-    out_shape = list(src.shape)
-    out_shape[0] = dim_size
-
-    # 3. Scatter Sum (Numerator)
-    # using np.zeros_like to preserve dtype
-    out_sum = np.zeros(out_shape, dtype=src.dtype)
-    np.add.at(out_sum, index, src)
-
-    # 4. Scatter Count (Denominator)
-    # We scatter '1's into the same indices to count occurrences
-    out_count = np.zeros(out_shape, dtype=src.dtype)
-    np.add.at(out_count, index, 1)
-
-    # 5. Compute Mean (Sum / Count)
-    # Handle division by zero safely (where count is 0)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out = out_sum / out_count
-
-    # Replace NaNs (from 0/0 division) with the fill_value
-    out[np.isnan(out)] = fill_value
-
-    # 6. Restore original dimensionality
-    return np.moveaxis(out, 0, dim)
-
-
 def run_langevin_dynamics(
     x_init: np.ndarray,
     residue_index: np.ndarray,
@@ -212,18 +148,19 @@ def run_langevin_dynamics(
     if is_constraint is not None:
         if not is_constraint.any():
             is_constraint = None
-        else:
-            is_constraint = is_constraint[..., None]
 
     rng = rng or np.random.default_rng()
     dtype = x_init.dtype
 
-    # Determine number of residues (L)
-    L = int(residue_index.max()) + 1
+    # Assert the residue_index is ascending ordered
+    if not np.all(residue_index[:-1] <= residue_index[1:]):
+        raise ValueError("residue_index must be sorted in ascending order.")
+    unique_res_ids, start_indices = np.unique(residue_index, return_index=True)
+    L = len(unique_res_ids)
 
     # Pre-calculate counts per residue for mean computation
     # shape: [L, 1]
-    res_counts = np.bincount(residue_index, minlength=L).astype(dtype)
+    res_counts = np.diff(np.append(start_indices, len(residue_index))).astype(dtype)
     res_counts = np.maximum(res_counts, 1.0)[..., None]  # Avoid div/0
 
     # Pre-calculate scaling factors
@@ -233,7 +170,13 @@ def run_langevin_dynamics(
     sphere_r2 = sphere_r**2
     noise_scale = float(2.0 * np.sqrt(dt))
 
-    x = x_init
+    # Pre-allocate
+    center_of_res = np.zeros((L, 3), dtype=dtype)
+    d_bond_res = np.zeros((L, 3), dtype=dtype)
+
+    x = x_init.copy()
+    if is_constraint is not None:
+        x_fixed = x_init[is_constraint]
     for _ in range(num_steps):
         # --- 1. Calculate Centers ---
 
@@ -244,23 +187,19 @@ def run_langevin_dynamics(
 
         # B. Residue Centers
         # Scatter sum: Sum atom coords into residue bins
-        res_sum = np.zeros((L, 3), dtype=dtype)
-        np.add.at(res_sum, residue_index, x)
-
-        # [L, 3]
-        center_of_res = res_sum / res_counts
+        res_sum = np.add.reduceat(x, start_indices, axis=0)
+        np.divide(res_sum, res_counts, out=center_of_res)
 
         # --- 2. Calculate Chain Bond Drift (Residue Level) ---
         # Logic: Residues are connected linearly (0-1-2-...)
         # Force = (Neighbor_Center - Current_Center)
-        d_bond_res = np.zeros_like(center_of_res)
+        d_bond_res.fill(0.0)
 
-        # Pull towards Next (i -> i+1)
         if L > 1:
+            # Pull towards Next (i -> i+1)
             d_bond_res[:-1] += center_of_res[1:] - center_of_res[:-1]
 
-        # Pull towards Prev (i -> i-1)
-        if L > 1:
+            # Pull towards Prev (i -> i-1)
             d_bond_res[1:] += center_of_res[:-1] - center_of_res[1:]
 
         # Broadcast residue forces back to atoms
@@ -277,16 +216,15 @@ def run_langevin_dynamics(
 
         # --- 5. Update ---
         eps = rng.standard_normal(size=x.shape, dtype=dtype)
-        x = x + (dt * drift) + (noise_scale * eps)
+        x += (dt * drift) + (noise_scale * eps)
 
         # --- 6. Apply Constraints ---
         if is_constraint is not None:
-            x = np.where(is_constraint, x_init, x)
+            x[is_constraint] = x_fixed
 
     if is_constraint is None:
         # Final Centering if no constraints
-        final_center = x.mean(axis=0)
-        return x - final_center
+        x -= x.mean(axis=0)
     return x
 
 

@@ -103,13 +103,12 @@ def compute_rmsd_numpy(
     original_dtype = coords.dtype
     # 1. Masking & Centering
     if mask is None:
-        mask = np.ones(coords.shape[:-1], dtype=bool)
+        return compute_rmsd_small_fast(coords, target, align)
 
     mask = mask.astype(bool, copy=False)  # [*, N]
     mask_expanded = mask[..., np.newaxis]  # [*, N, 1]
     mask_weights = mask_expanded.astype(np.float64)  # [*, N, 1]
     n_points = mask.sum(axis=-1).clip(1)  # [*,]
-
     # Sanitize inputs: If there are NaNs in masked regions, they will propagate
     p = np.where(mask_expanded, coords, 0.0).astype(np.float64)  # [*, N, 3]
     q = np.where(mask_expanded, target, 0.0).astype(np.float64)  # [*, N, 3]
@@ -117,8 +116,9 @@ def compute_rmsd_numpy(
 
     if not align:
         # Direct RMSD computation without alignment
-        rmsd = np.sqrt((((q - p) ** 2).sum(axis=(-2, -1)) / n_points).clip(0.0))
-        return rmsd.astype(original_dtype)
+        return np.sqrt(
+            (((q - p) ** 2).sum(axis=(-2, -1)) / n_points).clip(0.0), dtype=original_dtype
+        )
 
     # Center coordinates
     p_center = p.sum(-2, keepdims=True) / n_points[..., None, None]
@@ -130,7 +130,7 @@ def compute_rmsd_numpy(
     e0 = (p_centered**2).sum(axis=(-1, -2)) + (q_centered**2).sum(axis=(-1, -2))  # [*,]
 
     # 3. Compute Covariance Matrix H (P^T @ Q)
-    h = np.einsum("...ni, ...nj -> ...ij", p_centered, q_centered)  # [*, 3, 3]
+    h = np.matmul(p_centered.swapaxes(-1, -2), q_centered)
 
     # 4. Compute eigenvalues of H^T @ H
     s_sq_matrix = np.matmul(h.swapaxes(-1, -2), h)
@@ -146,8 +146,79 @@ def compute_rmsd_numpy(
     # Trace of Sigma (sum of singular values)
     trace_max = np.sum(singular_values, axis=-1)
     rmsd_sq = (e0 - 2 * trace_max) / n_points
-    rmsd = np.sqrt(rmsd_sq.clip(0.0))
-    return rmsd.astype(original_dtype)
+    rmsd = np.sqrt(rmsd_sq.clip(0.0), dtype=original_dtype)
+    return rmsd
+
+
+def compute_rmsd_small_fast(
+    coords: np.ndarray,
+    target: np.ndarray,
+    align: bool = True,
+) -> np.ndarray:
+    """
+    Highly optimized RMSD for small matrices/batches.
+    Assumes:
+      1. No Mask (Inputs are dense or pre-masked).
+      2. coords/target shape: [..., N, 3]
+    """
+    # 1. Direct Centering (Faster than expansion for small N due to cache locality)
+    # keepdims=True avoids reshaping overhead
+    original_dtype = coords.dtype
+    p = coords.astype(np.float64, copy=False)
+    q = target.astype(np.float64, copy=False)
+    del coords, target
+
+    if not align:
+        # Direct RMSD without alignment
+        diff = p - q
+        rmsd_sq = (diff**2).sum(axis=(-2, -1)) / p.shape[-2]
+        return np.sqrt(np.maximum(rmsd_sq, 0.0), dtype=original_dtype)
+
+    p_centered = p - p.mean(axis=-2, keepdims=True)
+    q_centered = q - q.mean(axis=-2, keepdims=True)
+
+    # 2. Compute Covariance Matrix H (3x3)
+    # Matmul is heavily optimized for batched small matrices
+    # [..., 3, N] @ [..., N, 3] -> [..., 3, 3]
+    h = np.matmul(p_centered.swapaxes(-1, -2), q_centered)
+
+    # 3. Compute Eigenvalues of H^T @ H
+    # This is the unavoidable bottleneck in NumPy.
+    # For small batches, CPU overhead of calling LAPACK dominates.
+    s_sq_matrix = np.matmul(h.swapaxes(-1, -2), h)
+
+    # 3x3 Hermitian eigenvalues (Use eigvalsh for speed/stability)
+    eigenvalues = np.linalg.eigvalsh(s_sq_matrix)
+
+    # 4. Compute Singular Values (Sqrt of eigenvalues)
+    # Clip to avoid negative zero or float error
+    singular_values = np.sqrt(np.maximum(eigenvalues, 0.0))
+
+    # 5. Reflection Check (Determinant)
+    # [..., 3] vs [..., 3, 3]
+    # Small optimization: We only need the sign of Det(H), not the value.
+    # But np.linalg.det is the fastest way in NumPy.
+    det_h = np.linalg.det(h)
+
+    # Sign correction for the smallest singular value (index 0)
+    # In-place update is faster
+    mask_neg = det_h < 0
+    if mask_neg.any():
+        singular_values[mask_neg, 0] *= -1.0
+
+    # 6. RMSD Calculation
+    # E0 = Sum(P_c^2) + Sum(Q_c^2)
+    # For small N, calculating norms directly is faster than statistical expansion
+    e0 = (p_centered**2).sum(axis=(-2, -1)) + (q_centered**2).sum(axis=(-2, -1))
+
+    # Trace Sum
+    trace_sigma = singular_values.sum(axis=-1)
+
+    # N for division
+    rmsd_sq = (e0 - 2.0 * trace_sigma) / p.shape[-2]
+
+    # Final Sqrt
+    return np.sqrt(np.maximum(rmsd_sq, 0.0), dtype=original_dtype)
 
 
 def compute_rmsd_torch(

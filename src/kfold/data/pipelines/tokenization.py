@@ -375,11 +375,11 @@ def tokenize_structure(
                 # Match residue permutation to label structure
                 if ref_pos_permutation:
                     label_pos = chain.atom.coords[atom_slices]
-                    align_mask = np.isfinite(label_pos).all(axis=-1) & ref_mask
                     perm = find_best_residue_permutation(
-                        ref_pos, label_pos, ref_comp, atom_names, align_mask, is_standard
+                        ref_pos, label_pos, ref_comp, atom_names, is_standard
                     )
-                    ref_pos, ref_mask = ref_pos[perm], ref_mask[perm]
+                    if perm is not None:
+                        ref_pos, ref_mask = ref_pos[perm], ref_mask[perm]
 
                 # Apply random augmentation to reference positions
                 ref_pos = center_random_augmentation(ref_pos, ref_mask, rng=rng)
@@ -514,9 +514,8 @@ def find_best_residue_permutation(
     label_pos: np.ndarray,
     ref_comp: Component,
     atom_names: list[str],
-    mask: np.ndarray,
     is_standard: bool,
-) -> np.ndarray:
+) -> list[int] | None:
     """Find the best permutation of reference positions to match label positions.
 
     Parameters
@@ -529,37 +528,43 @@ def find_best_residue_permutation(
         Reference component from CCD.
     atom_names : list[str]
         List of atom names in the residue.
-    mask : np.ndarray
-        Boolean mask indicating valid atoms. Shape: (N,)
     is_standard : bool
         Whether the residue is standard.
 
     Returns
     -------
-    np.ndarray
+    list[int] | None
         The best permutation of reference positions. Shape: (N,)
     """
-    if not mask.any():
-        return np.arange(ref_pos.shape[0])
-
     if is_standard:
         # Standard residue: use predefined ambiguous atom groups
-        perms = get_ambiguous_atoms_in_residue(ref_comp.code)
+        perms = get_ambiguous_atoms_in_residue(ref_comp.code, extended=True)
     else:
         # Non-standard residue: use molecular symmetries from CCD
         perms = get_molecule_symmetries(ref_comp, atom_names)
 
-    if perms is None or len(perms) == 0:
-        return np.arange(ref_pos.shape[0])
+    if perms is None or len(perms) <= 1:
+        return None
+
+    ref_mask = np.isfinite(ref_pos).all(axis=-1)
+    if not ref_mask.any():
+        return None
+
+    label_mask = np.isfinite(label_pos).all(axis=-1)
+    if not label_mask.any():
+        return None
 
     best_rmsd = np.inf
-    best_perm = list(range(ref_pos.shape[0]))
-    for perm in perms:
-        permuted_pos = ref_pos[perm, :]
-        rmsd = compute_rmsd(
-            permuted_pos[mask], label_pos[mask], mask=None, align=True, no_svd=True
-        )
+    best_perm = None
+    for perm in perms[:20]:
+        x = ref_pos[perm]
+        m = label_mask & ref_mask[perm]
+        if not m.any():
+            continue
+        rmsd = compute_rmsd(x[m], label_pos[m], mask=None, align=True, no_svd=True)
         if rmsd < best_rmsd:
             best_rmsd = rmsd
             best_perm = perm
-    return np.array(best_perm)
+    if best_perm is not None and best_perm == list(range(len(ref_pos))):
+        best_perm = None
+    return best_perm
