@@ -26,3 +26,5 @@ score_model:
 
 distogram_head:
   _yaml_: "module/distogram_head/af3.yaml"
+
+interaction_head: null

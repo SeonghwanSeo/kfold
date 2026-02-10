@@ -47,6 +47,7 @@ from collections import defaultdict
 
 import numpy as np
 
+from kfold.data.types.metadata import Metadata
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.registry import DATA_CROPPER
 
@@ -111,6 +112,7 @@ class MultiAnchorCropper(BaseCropper):
     def get_token_indices(  # noqa: PLR0915
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
@@ -121,6 +123,8 @@ class MultiAnchorCropper(BaseCropper):
         ----------
         struct : TokenizedStructure
             The tokenized structure.
+        metadata : Metadata
+            The structure metadata.
         max_tokens : int
             The maximum number of tokens to crop.
         bias_asym_id : int | tuple[int, int] | None
@@ -137,13 +141,15 @@ class MultiAnchorCropper(BaseCropper):
         v = rng.random()
         if v < self.w_contiguous:
             # Contiguous cropping
-            crop_indices = self.crop_contiguous(struct, max_tokens, rng=rng)
+            crop_indices = self.crop_contiguous(struct, metadata, max_tokens, rng=rng)
         elif v < self.w_contiguous + self.w_spatial:
             # Spatial cropping
-            crop_indices = self.crop_spatial(struct, max_tokens, bias_asym_id, rng=rng)
+            crop_indices = self.crop_spatial(
+                struct, metadata, max_tokens, bias_asym_id, rng=rng
+            )
         else:  # Spatial interface cropping
             crop_indices = self.crop_spatial_interface(
-                struct, max_tokens, bias_asym_id, rng=rng
+                struct, metadata, max_tokens, bias_asym_id, rng=rng
             )
 
         # Ensure sorted order and limit to max_tokens
@@ -156,6 +162,7 @@ class MultiAnchorCropper(BaseCropper):
     def crop_contiguous(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         rng: np.random.Generator,
     ) -> np.ndarray:
@@ -166,6 +173,8 @@ class MultiAnchorCropper(BaseCropper):
         ----------
         struct : TokenizedStructure
             The tokenized structure.
+        metadata : Metadata
+            The structure metadata.
         max_tokens : int
             The maximum number of tokens to crop.
         rng : np.random.Generator
@@ -237,6 +246,7 @@ class MultiAnchorCropper(BaseCropper):
     def crop_spatial(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
@@ -247,6 +257,8 @@ class MultiAnchorCropper(BaseCropper):
         ----------
         struct : TokenizedStructure
             The tokenized structure.
+        metadata : Metadata
+            The structure metadata.
         max_tokens : int
             The maximum number of tokens to crop.
         bias_asym_id : int | tuple[int, int] | None
@@ -309,6 +321,7 @@ class MultiAnchorCropper(BaseCropper):
     def crop_spatial_interface(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         max_tokens: int,
         bias_asym_id: int | tuple[int, int] | None,
         rng: np.random.Generator,
@@ -329,6 +342,12 @@ class MultiAnchorCropper(BaseCropper):
         token_indices : np.ndarray
             The selected token indices.
         """
+        # Get all valid interfaces
+        all_interfaces = self.get_valid_interfaces(metadata)
+        if len(all_interfaces) == 0:
+            # No valid interfaces, fall back to regular spatial cropping
+            return self.crop_spatial(struct, metadata, max_tokens, bias_asym_id, rng=rng)
+
         # For spatial cropping, get the token center coordinates
         tokens = struct.token.token_index  # =np.arange(n_tokens)
         center_idx = struct.token.center_index  # (n_tokens, 3)
@@ -341,12 +360,12 @@ class MultiAnchorCropper(BaseCropper):
             # If all resolved tokens fit in the budget, return all
             return np.where(resolved_mask)[0]
 
-        # Get all valid interfaces
-        all_interfaces = self.get_valid_interfaces(struct)
-
-        if len(all_interfaces) == 0:
-            # No valid interfaces, fall back to regular spatial cropping
-            return self.crop_spatial(struct, max_tokens, bias_asym_id, rng=rng)
+        assert np.isfinite(center_coords[resolved_mask]).all(), (
+            "Non-finite coordinates found."
+        )
+        assert np.isnan(center_coords[~resolved_mask]).all(), (
+            "Resolved coordinates expected to be NaN."
+        )
 
         # Collect neighboring chains for each chain
         chain_to_neighbors: dict[int, list[int]] = defaultdict(list)
@@ -542,24 +561,20 @@ class MultiAnchorCropper(BaseCropper):
         return budgets
 
     @staticmethod
-    def get_valid_interfaces(struct: TokenizedStructure) -> list[tuple[int, int]]:
+    def get_valid_interfaces(metadata: Metadata) -> list[tuple[int, int]]:
         """Get all valid interfaces in the structure.
 
         Parameters
         ----------
-        struct : TokenizedStructure
-            The tokenized structure.
+        metadata : Metadata
+            The structure metadata.
 
         Returns
         -------
         interface_ids : list[tuple[int, int]]
             The valid interfaces in the structure.
         """
-        metadata = struct.metadata
-        assert metadata is not None, "Structure metadata is required"
-        all_chains: set[int] = set(struct.chain.asym_id.tolist())
         all_interfaces: list[tuple[int, int]] = [
             tuple(interface.asym_ids) for interface in metadata.interfaces
         ]
-        all_interfaces = [v for v in all_interfaces if set(v).issubset(all_chains)]
         return sorted(set(all_interfaces))

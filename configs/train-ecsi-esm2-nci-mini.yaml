@@ -30,6 +30,8 @@ train:
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-train/
+        prior_sampler:
+          num_samples: 8
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-val/

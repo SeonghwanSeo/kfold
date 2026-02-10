@@ -36,7 +36,6 @@ ode_time_duration: 0.5
 
 # Other settings
 coordinate_augmentation: True
-synchronize_sigmas: False
 normalize_data_end: True
 use_prior_coords: true
 
@@ -50,9 +49,3 @@ s_trans: 0.0
 
 # ECSI-specific inference settings
 inference_align_x0_hat_to_x_apo: true
-chain_wise_perturbation: true   # CWP
-# NOTE: independent diffusion apo sampling
-# if true, CWP samples translation from gaussian or uniform sphere
-#   based on dataset.apo_init config (translation_scale & chain_com_sampling_radius)
-# if false, CWP uses s_trans for chain-wise translation and randomly rotate each chain
-inference_independent_diffusion_apo_sampling: true

@@ -12,18 +12,18 @@ ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
 
 
 @dataclasses.dataclass(kw_only=True)
-class ApoPerturbationConfig:
+class ProteinPerturbationConfig:
     prob_rieprody: float = 1.0
     rieprody: RieProdyConfig | None = None
     bioprior: BioPriorConfig = dataclasses.field(default_factory=BioPriorConfig)
 
 
-class ApoPerturbation:
-    """Class to handle apo structure perturbation with RieProDy."""
+class ProteinPerturbation:
+    """Class to handle protein apo structure perturbation"""
 
-    def __init__(self, config: ApoPerturbationConfig) -> None:
-        """Initialize ApoPerturbation."""
-        self.config: ApoPerturbationConfig = config
+    def __init__(self, config: ProteinPerturbationConfig) -> None:
+        """Initialize ProteinPerturbation."""
+        self.config: ProteinPerturbationConfig = config
         self.prob_rieprody: float = config.prob_rieprody
         if config.rieprody is not None:
             self.rieprody = RieProdyPerturbation(config.rieprody)

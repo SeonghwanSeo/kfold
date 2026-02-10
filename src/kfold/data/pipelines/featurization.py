@@ -238,6 +238,7 @@ def featurize_structure(
         k: v[atom_to_token, atom_in_token_idx]  # Fancy indexing - no loop!
         for k, v in atom_data.to_dict().items()
     }
+    atom_dict["label_coords"] = np.nan_to_num(atom_dict["label_coords"], nan=0.0)
     atom_dict["apo_coords"] = np.nan_to_num(atom_dict["apo_coords"], nan=0.0)
     atom_dict["ref_pos"] = np.nan_to_num(atom_dict["ref_pos"], nan=0.0)
     atom_dict["token_index"] = atom_to_token

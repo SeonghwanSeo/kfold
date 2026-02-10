@@ -3,11 +3,14 @@ from pathlib import Path
 
 import numpy as np
 
-from kfold.data.pipelines._apo_perturbation import ApoPerturbation, ApoPerturbationConfig
+from kfold.data.pipelines._protein_perturbation import (
+    ProteinPerturbation,
+    ProteinPerturbationConfig,
+)
 from kfold.data.utils.io.structure import read_protein_structure, write_protein_structure
 from kfold.data.utils.simulation.rieprody import RieProdyConfig
 
-ROOT_DIR = Path("/cache/wykim_lab/kfold_data/v260121/")
+ROOT_DIR = Path("/cache/wykim_lab/kfold_data/v260130/")
 
 if __name__ == "__main__":
     data_dir = ROOT_DIR / "dataset" / "rcsb-train"
@@ -17,14 +20,14 @@ if __name__ == "__main__":
     metric_path = data_dir / "rieprody_metric.lmdb"
     assert metric_path.exists(), f"RiePrody metric not found at {metric_path}"
 
-    # create rieprody config
-    rieprody_config = RieProdyConfig(
-        metric_lmdb_path=metric_path,
-        rmsd_threshold=100.0,  # disable rmsd filtering for testing
-        disable_log=False,
+    module = ProteinPerturbation(
+        ProteinPerturbationConfig(
+            rieprody=RieProdyConfig(
+                metric_lmdb_path=metric_path,
+                rmsd_threshold=100.0,  # disable rmsd filtering for testing
+            ),
+        )
     )
-
-    module = ApoPerturbation(ApoPerturbationConfig(rieprody=rieprody_config))
 
     # Example usage
     source = "esmfold"
