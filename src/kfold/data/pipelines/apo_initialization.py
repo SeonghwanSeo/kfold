@@ -16,11 +16,18 @@ from ._small_mol_perturbation import SmallMolPerturbation, SmallMolPerturbationC
 
 
 # === Helper functions === #
-@lru_cache(32)
-def get_ambiguous_atoms_in_residue(res_name: str) -> list[list[int]] | None:
+@lru_cache(64)
+def get_ambiguous_atoms_in_residue(
+    res_name: str,
+    extended: bool = False,
+) -> list[list[int]] | None:
     """Get the indices of ambiguous atoms for a given residue type."""
     res_name: C.ResidueName = C.ResidueName[res_name]
-    if res_name not in C.atom.RESIDUE_AMBIGUOUS_ATOMS_EXTENDED:
+    if extended:
+        ambiguous_atoms_dict = C.atom.RESIDUE_AMBIGUOUS_ATOMS_EXTENDED
+    else:
+        ambiguous_atoms_dict = C.atom.RESIDUE_AMBIGUOUS_ATOMS
+    if res_name not in ambiguous_atoms_dict:
         # If there is no ambiguous atoms, return empty list
         return None
     residue_atoms = C.atom.RESIDUE_ATOMS[res_name]
@@ -584,7 +591,7 @@ class ApoInitializer:
                 if chain.residue.is_standard[res_i]:
                     # Get ambiguous atom permutations for this standard residue
                     assert ctype.is_polymer, "Only polymer chains have standard residues."
-                    perms = get_ambiguous_atoms_in_residue(res_name)
+                    perms = get_ambiguous_atoms_in_residue(res_name, extended=False)
                 elif res_name in self.ccd:
                     ref_mol = get_ref_comp(res_name)
                     atom_names: list[str] = all_atom_names[atom_st:atom_end]
@@ -608,12 +615,12 @@ class ApoInitializer:
 
                 best_perm = None
                 min_rmsd = float("inf")
-                for perm in perms:
+                for perm in perms[:100]:
                     permuted_apo = res_apo[perm, :]
                     permuted_apo_mask = res_apo_mask[perm]
-                    align_mask = res_holo_mask & permuted_apo_mask
+                    m = res_holo_mask & permuted_apo_mask
                     rmsd = compute_rmsd(
-                        permuted_apo, res_holo, align_mask, align=True, no_svd=True
+                        permuted_apo[m], res_holo[m], mask=None, align=True, no_svd=True
                     )
                     if rmsd < min_rmsd:
                         min_rmsd, best_perm = rmsd, perm
