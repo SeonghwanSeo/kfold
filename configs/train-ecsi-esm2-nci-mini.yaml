@@ -35,6 +35,8 @@ train:
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-val/
+        prior_sampler:
+          num_samples: 5
     pretrained_embedding:
       seq: esm2-3b
       seq_dim: 2560

@@ -17,7 +17,7 @@ apo_init:
   small_mol_perturbation: null
 
 prior_sampler:
-  num_samples: 1
+  num_samples: 0
   use_random_augmentation: true
   use_chain_com_sampling: false
   use_ot_permutation: false

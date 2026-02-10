@@ -72,7 +72,7 @@ class KFoldTrunk(BaseTrunk):
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
-        version: int = 0
+        version: int = 2
 
         # Proteina-style register tokens.
         # These tokens are prepended to representations and removed after trunk.
