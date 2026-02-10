@@ -11,5 +11,5 @@ apo_init:
 
 prior_sampler:
   # Skip ot permutation during validation
-  num_samples: 5
+  num_samples: 0
   use_ot_permutation: false
