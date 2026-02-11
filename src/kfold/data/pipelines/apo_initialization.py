@@ -527,7 +527,10 @@ class ApoInitializer:
         augmented_coords : np.ndarray
             Augmented structure coordinates of shape [L, Natom, 3].
         """
-        return self.protein_perturbation.run(sequence, apo_coords, rng=rng, key=key)
+        apo_mask = np.isfinite(apo_coords).all(axis=-1)
+        aug_coords = self.protein_perturbation.run(sequence, apo_coords, rng=rng, key=key)
+        aug_coords[~apo_mask] = np.nan
+        return aug_coords
 
     def apply_random_augmentation(
         self,

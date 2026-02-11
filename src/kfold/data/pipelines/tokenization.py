@@ -419,12 +419,7 @@ def tokenize_structure(
         struct.atom.ref_charge[pad_mask], nan=0.0
     )
 
-    # Update apo/holo coordinates (centering & NaN to zero)
-    struct.atom.apo_coords[:] = do_centering(
-        struct.atom.apo_coords.reshape(-1, 3),
-        struct.atom.apo_mask.reshape(-1),
-        mask_to_zero=False,
-    ).reshape(struct.atom.apo_coords.shape)
+    # Update holo coordinates (centering & NaN to zero)
     struct.atom.label_coords[:] = do_centering(
         struct.atom.label_coords.reshape(-1, 3),
         struct.atom.resolved_mask.reshape(-1),

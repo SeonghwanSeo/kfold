@@ -478,6 +478,7 @@ class MultiAnchorCropper(BaseCropper):
 
         # Compute distances to all tokens
         anchor_coord = center_coords[anchor_token]  # (3,)
+        assert np.isfinite(anchor_coord).all(), "Anchor token has non-finite coordinates."
         dists = np.linalg.norm(center_coords - anchor_coord, axis=1)  # (num_tokens,)
         dists[~mask] = np.inf
         # Get tokens within budget (this includes the anchor token itself)

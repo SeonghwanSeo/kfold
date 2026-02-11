@@ -231,6 +231,8 @@ def pick_interface_token(
     holo_coords = struct.atom.label_coords  # (num_tokens, 24, 3)
     tokens_1_coords = holo_coords[tokens_1, center_index[tokens_1]]
     tokens_2_coords = holo_coords[tokens_2, center_index[tokens_2]]
+    assert np.isfinite(tokens_1_coords).all()
+    assert np.isfinite(tokens_2_coords).all()
 
     dists = cdist(tokens_1_coords, tokens_2_coords)
     cutoff = dists < C.INTERFACE_CUTOFF
