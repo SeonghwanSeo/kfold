@@ -753,21 +753,6 @@ class TrainingDataset(LMDBDataset):
         return ref_struct
 
     @override
-    def tokenize(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator | None = None,
-    ) -> TokenizedStructure:
-        """Tokenize the given structure."""
-        # Enable ref conformer permutation for training
-        return self.tokenizer(
-            ref_struct,
-            rng,
-            use_only_cached_conformers=True,
-            ref_pos_permutation=True,
-        )
-
-    @override
     def crop_structure(
         self,
         struct: TokenizedStructure,
@@ -926,4 +911,4 @@ class ValidationDataset(LMDBDataset):
 
     def setup(self) -> None:
         """Additional setup for subclasses."""
-        self.metadatas.sort(key=lambda m: m.num_residues)
+        self.metadatas.sort(key=lambda m: m.num_tokens)
