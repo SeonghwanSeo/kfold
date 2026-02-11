@@ -183,7 +183,8 @@ class BaseFoldingModel(torch.nn.Module):
             num_recycles,
             *extra_embed_args,
         )
-        s_trunk, z_trunk = trunk_out[:2]
+        s_trunk = trunk_out["s_trunk"]
+        z_trunk = trunk_out["z_trunk"]
 
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.

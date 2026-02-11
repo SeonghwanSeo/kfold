@@ -14,14 +14,4 @@ class KFoldConfig(BaseFoldingModelConfig):
 
 
 @MAIN_MODULE.register()
-class KFold(BaseFoldingModel):
-    def __init__(self, config: KFoldConfig):
-        super().__init__(config)
-        self.channel_seq_encoder: int = config.input_embedder.channel_seq_encoder
-        self.channel_struct_encoder: int = config.input_embedder.channel_struct_encoder
-        # self.sequence_encoder: submodules.sequence_encoder.BaseSequenceEncoder = (
-        #     Registry.instantiate(model_config.sequence_encoder)
-        # )
-        # self.structure_encoder: submodules.struct_encoder.BaseStructureEncoder = (
-        #     Registry.instantiate(model_config.structure_encoder)
-        # )
+class KFold(BaseFoldingModel): ...
