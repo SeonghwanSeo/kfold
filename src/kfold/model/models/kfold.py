@@ -126,7 +126,6 @@ class KFold(BaseFoldingModel):
         )
         s_trunk = trunk_out["s_trunk"]
         z_trunk = trunk_out["z_trunk"]
-        print("trunk out keys", trunk_out.keys())
 
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.

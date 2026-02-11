@@ -250,30 +250,25 @@ class KFoldTrunkPrime(BaseTrunk):
         )
 
         # === Priming pass before recycling === #
-        s_hat, z_hat = self._run_trunk(
-            plm_module=self.plm_module_prime,
-            pairformer_module=self.pairformer_module_prime,
-            s=s_init,
-            z=z_init,
-            s_inputs=s_inputs,
-            s_plm=s_plm,
-            asym_id=asym_id,
-            mask=mask,
-            chunk_size_tri_attn=chunk_size_tri_attn,
-        )
-        # Store the outputs from the prime module for training
-        s_prime, z_prime = s_hat, z_hat
+        enable_grad = self.training and num_recycles == 0
+        with torch.set_grad_enabled(enable_grad):
+            if enable_grad and torch.is_autocast_enabled():
+                torch.clear_autocast_cache()
+            s_hat, z_hat = self._run_trunk(
+                plm_module=self.plm_module_prime,
+                pairformer_module=self.pairformer_module_prime,
+                s=s_init,
+                z=z_init,
+                s_inputs=s_inputs,
+                s_plm=s_plm,
+                asym_id=asym_id,
+                mask=mask,
+                chunk_size_tri_attn=chunk_size_tri_attn,
+            )
 
         # === Refining loop with recycling === #
-        if self.training:
-            # To avoid ddp_unused_parameters, we make some trick:
-            # pass the refine trunk and compute gradient using distogram head
-            num_refine = max(1, num_recycles)
-        else:
-            num_refine = num_recycles
-
-        for i in range(0, num_refine):
-            enable_grad = self.training and i == num_refine - 1
+        for i in range(0, num_recycles):
+            enable_grad = self.training and i == num_recycles - 1
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
@@ -292,27 +287,14 @@ class KFoldTrunkPrime(BaseTrunk):
                     mask=mask,
                     chunk_size_tri_attn=chunk_size_tri_attn,
                 )
-            # Store the outputs from refine loop for training
-            s_refine, z_refine = s_hat, z_hat
-
-        if self.training:
-            # Determine what representations we pass to structure module,
-            # or only pass to distogram head.
-            if num_recycles == 0:
-                s_hat, z_hat, z_aug = s_prime, z_prime, z_refine
-            else:
-                s_hat, z_hat, z_aug = s_refine, z_refine, z_prime
-        else:
-            # For validation, set z_aug to z_hat as placeholder
-            s_hat, z_hat, z_aug = s_hat, z_hat, z_hat
 
         # Skip connection to s_trunk
         s_hat = s_hat + self.proj_plm_to_s_trunk(s_plm)
 
         # Remove register tokens before returning.
-        s_hat, z_hat, z_aug = self._undo_registers(s_hat, z_hat, z_aug)
+        s_hat, z_hat = self._undo_registers(s_hat, z_hat)
 
-        return {"s_trunk": s_hat, "z_trunk": z_hat, "z_aug": z_aug}
+        return {"s_trunk": s_hat, "z_trunk": z_hat}
 
     def _run_trunk(
         self,
@@ -394,13 +376,10 @@ class KFoldTrunkPrime(BaseTrunk):
         return s_inputs_pad, s_init_pad, s_plm_pad, z_pad, asym_id_pad, mask_pad
 
     def _undo_registers(
-        self,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
-        z_aug: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self, s_trunk: torch.Tensor, z_trunk: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Remove register tokens from s/z outputs."""
         R = self.num_register_tokens
         if R <= 0:
-            return s_trunk, z_trunk, z_aug
-        return (s_trunk[:, R:], z_trunk[:, R:, R:], z_aug[:, R:, R:])
+            return s_trunk, z_trunk
+        return s_trunk[:, R:], z_trunk[:, R:, R:]

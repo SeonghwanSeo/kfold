@@ -1,0 +1,27 @@
+_registry_: "trunk"
+_class_: "KFoldTrunkPrime"
+channel_s: 384
+channel_z: 128
+
+plm_module:
+  channel_plm_input: ???
+  channel_plm: 512
+  num_heads_attn: 16
+  num_heads_tri_attn: 4
+  num_blocks: 4
+  dropout_plm: 0.15
+  dropout_z: 0.25
+  use_separate_projections: true
+  use_qk_norm: false
+
+pairformer:
+  num_heads_attn: 16
+  num_heads_tri_attn: 4
+  num_blocks: 48
+  dropout: 0.25
+  use_qk_norm: false
+
+blocks_per_ckpt: 1
+tri_attn_chunk_threshold: 384
+num_register_tokens: 0
+register_token_init_std: 0.05
