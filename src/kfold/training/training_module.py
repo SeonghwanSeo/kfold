@@ -433,6 +433,7 @@ class KFoldTrainingModule(pl.LightningModule):
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute losses of given the model output."""
         f_input, _ = batch
+
         with torch.autocast("cuda", dtype=torch.float32):
             # NOTE: Compute the losses in float32 for better numerical stability
             # Compute losses
@@ -441,6 +442,16 @@ class KFoldTrainingModule(pl.LightningModule):
                     logits=model_output["distogram"]["logits"],
                     f_input=f_input,
                 )
+                if "logits_aug" in model_output["distogram"]:
+                    # Augmented distogram loss
+                    distogram_loss_aug, _ = self.compute_distogram_loss(
+                        logits=model_output["distogram"]["logits_aug"],
+                        f_input=f_input,
+                    )
+                    # TODO (Seonghwan): This is hard-coded weight for augmented loss...
+                    # Do we want to make it configurable?
+                    distogram_loss = 0.8 * distogram_loss + 0.2 * distogram_loss_aug
+
                 diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
                     x_pred=model_output["diffusion"]["denoised_atom_coords"],
                     x_true=model_output["diffusion"]["true_atom_coords"],
@@ -472,10 +483,10 @@ class KFoldTrainingModule(pl.LightningModule):
         # See Section 5.3 Equation 15
         loss_weights = self.loss_weights
         loss = (
-            loss_weights["confidence"] * confidence_loss
-            + loss_weights["diffusion"] * diffusion_loss
+            loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
             + loss_weights["interaction"] * interaction_loss
+            + loss_weights["confidence"] * confidence_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 

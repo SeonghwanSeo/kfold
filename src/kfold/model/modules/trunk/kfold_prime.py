@@ -329,7 +329,6 @@ class KFoldTrunkPrime(BaseTrunk):
         if self.is_compiled and not self.training:
             pairformer_module = pairformer_module._orig_mod  # noqa: SLF001
             plm_module = plm_module._orig_mod  # noqa: SLF001
-
         z = plm_module(
             z,
             s_inputs,
@@ -404,8 +403,4 @@ class KFoldTrunkPrime(BaseTrunk):
         R = self.num_register_tokens
         if R <= 0:
             return s_trunk, z_trunk, z_aug
-        return (
-            s_trunk[:, R:],
-            z_trunk[:, R:, R:],
-            z_aug[:, R:, R:],
-        )
+        return (s_trunk[:, R:], z_trunk[:, R:, R:], z_aug[:, R:, R:])
