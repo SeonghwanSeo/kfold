@@ -82,7 +82,12 @@ from omegaconf import OmegaConf
 from typing_extensions import override
 
 import kfold.constants as C
-from kfold.data.pipelines import apo_initialization, featurization, tokenization
+from kfold.data.pipelines import (
+    apo_initialization,
+    featurization,
+    prior_sampling,
+    tokenization,
+)
 from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import Metadata
 from kfold.data.types.model_input import FoldingInput
@@ -123,6 +128,9 @@ class DatasetConfig:
     seed: int | None = None
     apo_init: apo_initialization.ApoInitializerConfig = dataclasses.field(
         default_factory=apo_initialization.ApoInitializerConfig
+    )
+    prior_sampler: prior_sampling.PriorSamplerConfig = dataclasses.field(
+        default_factory=prior_sampling.PriorSamplerConfig
     )
 
     @classmethod
@@ -172,7 +180,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         config: DatasetConfig,
         ccd: CCD,
         pretrained_embedding: dict,
-        featurization_args: dict,
         return_symmetry: bool = False,
         return_structure: bool = False,
         safe_load: bool = True,
@@ -186,8 +193,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             CCD database
         pretrained_embedding : dict
             Pretrained embedding configuration.
-        featurization_args : dict
-            Additional arguments for featurization.
         return_symmetry : bool
             Whether to return symmetry information.
         return_structure : bool
@@ -205,7 +210,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.safe_load: bool = safe_load
 
         pretrained_embedding: dict = pretrained_embedding.copy()
-        featurization_args: dict = featurization_args.copy()
 
         for k in ["seq", "seq_dim", "struct", "struct_dim", "max_struct_ensembles"]:
             if k not in pretrained_embedding:
@@ -247,19 +251,19 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             if config.apo_init.use_perturbation is False:
                 # Skip warning if perturbation is disabled
                 pass
-            elif config.apo_init.apo_perturbation is None:
-                logger.error("RieProDy LMDB path found but apo_perturbation is None.")
-            elif config.apo_init.apo_perturbation.rieprody is None:
+            elif config.apo_init.protein_perturbation is None:
+                logger.error("RieProDy LMDB path found but protein_perturbation is None.")
+            elif config.apo_init.protein_perturbation.rieprody is None:
                 logger.error("RieProDy LMDB path found but rieprody is disabled.")
             else:
-                config.apo_init.apo_perturbation.rieprody.metric_lmdb_path = (
+                config.apo_init.protein_perturbation.rieprody.metric_lmdb_path = (
                     rieprody_lmdb_path
                 )
         else:
             assert (
                 config.apo_init.use_perturbation is False
-                or config.apo_init.apo_perturbation is None
-                or config.apo_init.apo_perturbation.rieprody is None
+                or config.apo_init.protein_perturbation is None
+                or config.apo_init.protein_perturbation.rieprody is None
             ), "RieProDy LMDB path not found but rieprody perturbation is enabled."
 
         # === Load dataset components === #
@@ -278,9 +282,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.apo_initializer = apo_initialization.ApoInitializer(
             config.apo_init, self.ccd
         )
-        self.tokenizer = tokenization.Tokenizer(self.ccd)
+        self.prior_sampler = prior_sampling.PriorSampler(config.prior_sampler, self.ccd)
+        self.tokenizer = tokenization.Tokenizer(self.prior_sampler, self.ccd)
         self.featurizer = featurization.InputFeaturizer(
-            **featurization_args,
             seq_embedding_dim=self.seq_embedding_dim,
             struct_embedding_dim=self.struct_embedding_dim,
             max_struct_ensembles=self.max_struct_ensembles,
@@ -394,12 +398,17 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng: np.random.Generator | None = None,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        return self.tokenizer(ref_struct, rng, use_only_cached_conformers=True)
+        return self.tokenizer(
+            ref_struct,
+            rng,
+            use_only_cached_conformers=True,
+            ref_pos_permutation=False,
+        )
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
         self,
-        struct: RefStructure,
+        ref_struct: RefStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
     ) -> RefStructure:
@@ -410,11 +419,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         sampling sub-complexes from the original structure before applying
         the main cropping strategy.
         """
-        return struct
+        return ref_struct
 
     def crop_structure(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         rng: np.random.Generator | None = None,
         **kwargs,
     ) -> TokenizedStructure:
@@ -485,6 +495,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
         ref_struct = self.extract_substructure(ref_struct, rng=rng, **kwargs)
+        metadata = ref_struct.metadata  # update metadata after extraction
 
         # Populate apo structure (in-place)
         self.load_apo_structure(ref_struct, rng=rng)
@@ -493,7 +504,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         struct: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
 
         # Cropping
-        cropped_struct = self.crop_structure(struct, rng=rng, **kwargs)
+        cropped_struct = self.crop_structure(struct, metadata, rng=rng, **kwargs)
 
         # Featurization
         f_input = self.featurize(cropped_struct, metadata, rng=rng)
@@ -662,7 +673,6 @@ class TrainingDataset(LMDBDataset):
         config: TrainingDatasetConfig,
         ccd: CCD,
         pretrained_embedding: dict,
-        featurization_args: dict,
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
@@ -676,8 +686,6 @@ class TrainingDataset(LMDBDataset):
             CCD database
         pretrained_embedding : dict
             Pretrained embedding configuration.
-        featurization_args : dict
-            Additional arguments for featurization.
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
@@ -695,7 +703,6 @@ class TrainingDataset(LMDBDataset):
             config,
             ccd,
             pretrained_embedding,
-            featurization_args,
             return_symmetry=False,
             return_structure=False,
             safe_load=safe_load,
@@ -729,26 +736,27 @@ class TrainingDataset(LMDBDataset):
     @override
     def extract_substructure(
         self,
-        struct: RefStructure,
+        ref_struct: RefStructure,
         rng: np.random.Generator | None = None,
         **kwargs,
     ) -> RefStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
-        if self.max_chains < struct.num_chains:
+        if self.max_chains < ref_struct.num_chains:
             # Get sub-complex with limited number of chains
-            struct = pre_crop.extract_substructure(
-                struct,
+            ref_struct = pre_crop.extract_substructure(
+                ref_struct,
                 max_chains=self.max_chains,
                 bias_asym_id=asym_ids,
                 rng=rng,
             )
-        return struct
+        return ref_struct
 
     @override
     def crop_structure(
         self,
         struct: TokenizedStructure,
+        metadata: Metadata,
         rng: np.random.Generator | None = None,
         **kwargs,
     ) -> TokenizedStructure:
@@ -758,7 +766,8 @@ class TrainingDataset(LMDBDataset):
             # Crop the tokenized structure
             struct = self.cropper.crop(
                 struct,
-                self.max_tokens,
+                metadata,
+                max_tokens=self.max_tokens,
                 bias_asym_id=asym_ids,
                 rng=rng,
             )
@@ -810,7 +819,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         configs: list[TrainingDatasetConfig],
         ccd: CCD,
         pretrained_embedding: dict,
-        featurization_args: dict,
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
@@ -824,8 +832,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             CCD database
         pretrained_embedding : dict
             Pretrained embedding configuration.
-        featurization_args : dict
-            Additional arguments for featurization.
         safe_load : bool
             Whether to retry loading on failure.
         max_chains : int
@@ -846,7 +852,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
                 config,
                 ccd,
                 pretrained_embedding,
-                featurization_args,
                 safe_load,
                 max_chains,
                 max_tokens,
@@ -883,7 +888,6 @@ class ValidationDataset(LMDBDataset):
         config: ValidationDatasetConfig,
         ccd: CCD,
         pretrained_embedding: dict,
-        featurization_args: dict,
         safe_load: bool = True,
     ) -> None:
         """
@@ -895,14 +899,11 @@ class ValidationDataset(LMDBDataset):
             CCD database
         pretrained_embedding : dict
             Pretrained embedding configuration.
-        featurization_args : dict
-            Additional arguments for featurization.
         """
         super().__init__(
             config,
             ccd,
             pretrained_embedding,
-            featurization_args,
             return_symmetry=True,
             return_structure=True,
             safe_load=safe_load,
@@ -910,4 +911,4 @@ class ValidationDataset(LMDBDataset):
 
     def setup(self) -> None:
         """Additional setup for subclasses."""
-        self.metadatas.sort(key=lambda m: m.num_residues)
+        self.metadatas.sort(key=lambda m: m.num_tokens)

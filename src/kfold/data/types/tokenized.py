@@ -7,7 +7,6 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.layout import PlainLayout
-from kfold.data.types.metadata import Metadata
 from kfold.utils.misc import check_array
 
 __all__ = [
@@ -144,7 +143,7 @@ class ChainArray(PlainLayout[np.ndarray]):
             num_atoms=full_minus_one((num_chains,)),
         )
 
-    def sanity_check(self) -> None:
+    def validate(self) -> None:
         """Perform sanity checks on the ChainArray."""
         for field in dataclasses.fields(self):
             array = getattr(self, field.name)
@@ -303,11 +302,11 @@ class ResidueArray(PlainLayout[np.ndarray]):
             is_standard=full_false((num_residues,)),
         )
 
-    def sanity_check(self) -> None:
+    def validate(self) -> None:
         """Perform sanity checks on the ResidueArray."""
         for field in dataclasses.fields(self):
             array = getattr(self, field.name)
-            if np.any(array < 0) and field.name not in ["name", "is_standard"]:
+            if field.name not in ["name", "is_standard"] and np.any(array < 0):
                 raise ValueError(
                     f"ResidueArray field '{field.name}' contains negative values."
                 )
@@ -434,7 +433,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             interaction_type=full_false((num_tokens, C.NUM_INTERACTION_TYPES)),
         )
 
-    def sanity_check(self) -> None:
+    def validate(self) -> None:
         """Perform sanity checks on the ResidueArray."""
         for field in dataclasses.fields(self):
             array = getattr(self, field.name)
@@ -461,15 +460,17 @@ class AtomArray(PlainLayout[np.ndarray]):
     ref_pos: np.ndarray (float32)
         Reference coordinates of shape [Ntoken, 24, 3].
         Generated from ETKDG or ccd
-        (TODO (seonghwan): I think we can replace this to apo_coords)
     ref_mask: np.ndarray (bool)
         Boolean mask of shape [Ntoken, 24] indicating valid reference atoms.
+    apo_coords: np.ndarray (float32)
+        Apo (unbound) state coordinates of shape [Ntoken, 24, 3],
+    prior_coords: np.ndarray (float32)
+        Prior state coordinates of shape [Ntoken, 24, Nprior, 3],
+        NOTE All values must be finite, NaN is not allowed.
     label_coords: np.ndarray (float32)
         Holo (bound) state coordinates of shape [Ntoken, 24, 3],
         This is used as the ground truth for training, and may be set to 0
         for inference.
-    apo_coords: np.ndarray (float32)
-        Apo (unbound) state coordinates of shape [Ntoken, 24, 3],
     resolved_mask: np.ndarray (bool)
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
     apo_mask: np.ndarray (bool)
@@ -483,9 +484,10 @@ class AtomArray(PlainLayout[np.ndarray]):
     ref_charge: np.ndarray  # [Ntoken, 24], float
     ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
     ref_mask: np.ndarray  # [Ntoken, 24], bool
+    apo_coords: np.ndarray  # [Ntoken, 24, 3], float32
+    prior_coords: np.ndarray  # [Ntoken, 24, Nprior, 3], float32
     label_coords: np.ndarray  # [Ntoken, 24, 3], float32
     resolved_mask: np.ndarray  # [Ntoken, 24], bool
-    apo_coords: np.ndarray  # [Ntoken, 24, 3], float32
     apo_mask: np.ndarray  # [Ntoken, 24], bool
     pad_mask: np.ndarray  # [Ntoken, 24], bool
 
@@ -508,15 +510,25 @@ class AtomArray(PlainLayout[np.ndarray]):
         check_array(
             self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, 3)
         )
-        check_array(self.apo_mask, name="apo_mask", dtype=np.bool_, shape=shape)
-        check_array(self.pad_mask, name="pad_mask", dtype=np.bool_, shape=shape)
+        check_array(
+            self.prior_coords,
+            name="prior_coords",
+            dtype=np.floating,
+            shape=(*shape, -1, 3),
+        )
         check_array(
             self.label_coords, name="label_coords", dtype=np.floating, shape=(*shape, 3)
         )
+        check_array(self.apo_mask, name="apo_mask", dtype=np.bool_, shape=shape)
+        check_array(self.pad_mask, name="pad_mask", dtype=np.bool_, shape=shape)
         check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
 
     @classmethod
-    def get_empty(cls, num_tokens: int) -> Self:
+    def get_empty(
+        cls,
+        num_tokens: int,
+        num_priors: int = 0,
+    ) -> Self:
         """Get an empty AtomArray with the specified number of tokens."""
         num_atoms = C.MAX_NUM_ATOMS_PER_TOKEN
         shape = (num_tokens, num_atoms)
@@ -526,6 +538,7 @@ class AtomArray(PlainLayout[np.ndarray]):
             ref_charge=full_nan(shape),
             ref_pos=full_nan((*shape, 3)),
             apo_coords=full_nan((*shape, 3)),
+            prior_coords=full_nan((*shape, num_priors, 3)),
             ref_mask=full_false(shape),
             apo_mask=full_false(shape),
             pad_mask=full_false(shape),
@@ -533,25 +546,44 @@ class AtomArray(PlainLayout[np.ndarray]):
             resolved_mask=full_false(shape),
         )
 
-    def sanity_check(self) -> None:
+    def validate(self) -> None:
         """Perform sanity checks on the ResidueArray."""
+        pad_mask = self.pad_mask
         for field in dataclasses.fields(self):
             array = getattr(self, field.name)
-            if np.any(array < 0) and field.name not in [
+            if field.name not in [
                 "ref_charge",
                 "ref_pos",
                 "apo_coords",
+                "prior_coords",
+                "label_coords",
                 "ref_mask",
                 "apo_mask",
                 "pad_mask",
-                "label_coords",
                 "resolved_mask",
             ]:
-                raise ValueError(
-                    f"AtomArray field '{field.name}' contains negative values."
-                )
-            elif field.name == "ref_charge" and np.any(np.isnan(array)):
-                raise ValueError(f"AtomArray field '{field.name}' contains NaN values.")
+                if np.any(array[pad_mask] < 0):
+                    raise ValueError(
+                        f"AtomArray field '{field.name}' contains negative values."
+                    )
+                if not np.any(array[~pad_mask] < 0):
+                    raise ValueError(
+                        f"AtomArray field '{field.name}' contains no negative values "
+                        f"in the padded region."
+                    )
+            elif field.name in (
+                "ref_charge",
+                "prior_coords",
+            ):
+                if not np.all(np.isfinite(array[pad_mask])):
+                    raise ValueError(
+                        f"AtomArray field '{field.name}' contains NaN or Inf values."
+                    )
+                if np.any(np.isfinite(array[~pad_mask])):
+                    raise ValueError(
+                        f"AtomArray field '{field.name}' contains finite values in "
+                        f"the padded region."
+                    )
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -602,7 +634,7 @@ class BondArray(PlainLayout[np.ndarray]):
             bond_type=full_minus_one((num_bonds,)),
         )
 
-    def sanity_check(self) -> None:
+    def validate(self) -> None:
         """Perform sanity checks on the BondArray."""
         for field in dataclasses.fields(self):
             array = getattr(self, field.name)
@@ -626,8 +658,6 @@ class TokenizedStructure:
         Atom information.
     bond: BondArray
         Bond information.
-    metadata: Metadata
-        Metadata information.
     """
 
     chain: ChainArray
@@ -635,7 +665,6 @@ class TokenizedStructure:
     token: TokenArray
     atom: AtomArray
     bond: BondArray
-    metadata: Metadata | None = None
 
     @property
     def num_chains(self) -> int:
@@ -685,17 +714,24 @@ class TokenizedStructure:
         num_residues: int,
         num_tokens: int,
         num_bonds: int,
-        metadata: Metadata | None = None,
+        num_priors: int = 0,
     ) -> Self:
         """Get an empty TokenizedStructure with the specified sizes."""
         return cls(
             chain=ChainArray.get_empty(num_chains),
             residue=ResidueArray.get_empty(num_residues),
             token=TokenArray.get_empty(num_tokens),
-            atom=AtomArray.get_empty(num_tokens),
+            atom=AtomArray.get_empty(num_tokens, num_priors=num_priors),
             bond=BondArray.get_empty(num_bonds),
-            metadata=metadata,
         )
+
+    def validate(self) -> None:
+        """Perform sanity checks on the TokenizedStructure."""
+        self.chain.validate()
+        self.residue.validate()
+        self.token.validate()
+        self.atom.validate()
+        self.bond.validate()
 
     # === Utility functions === #
     def to(self, *args, **kwargs) -> Self:
@@ -713,7 +749,6 @@ class TokenizedStructure:
                 token=self.token,
                 atom=self.atom,
                 bond=self.bond,
-                metadata=self.metadata,
             )
 
     def copy_with(self, **kwargs) -> Self:
@@ -810,7 +845,6 @@ class TokenizedStructure:
             token=cropped_token,
             atom=cropped_atom,
             bond=cropped_bond,
-            metadata=self.metadata,
         )
 
     def reassign_token_indices(self) -> Self:

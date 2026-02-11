@@ -199,6 +199,10 @@ class Metadata:
     def num_residues(self) -> int:
         return sum(chain.num_residues for chain in self.chains)
 
+    @property
+    def num_tokens(self) -> int:
+        return sum(chain.num_tokens for chain in self.chains)
+
     def to_dict(self) -> dict:
         data = {
             "id": self.id,

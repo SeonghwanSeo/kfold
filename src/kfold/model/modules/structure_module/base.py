@@ -141,6 +141,7 @@ class BaseStructureModule(ABC):
 
         return holo_coords
 
+    @abstractmethod
     def sample_prior(
         self,
         f_input: FoldingInput,
@@ -163,17 +164,9 @@ class BaseStructureModule(ABC):
 
         Returns
         -------
-        apo_coords: torch.Tensor
-            Apo coordinates. Shape: [B, N, La, 3]
+        prior_coords: torch.Tensor
+            Prior coordinates. Shape: [B, N, La, 3]
         """
-        # if the model is equivariance, skip augment
-        random_augment = True
-
-        # Sample apo coordinates
-        apo_coords = self.sample_apo(f_input, num_diffusion_samples, random_augment)
-
-        # If required, align to label coordinates
-        return apo_coords
 
     @abstractmethod
     def interpolate(
@@ -298,46 +291,6 @@ class BaseStructureModule(ABC):
             holo_coords = self.apply_random_augmentation(holo_coords, atom_mask)
 
         return holo_coords  # [B, N, L, 3]
-
-    def sample_apo(
-        self,
-        f_input: FoldingInput,
-        num_diffusion_samples: int = 1,
-        random_augment: bool = False,
-    ) -> torch.Tensor:
-        """Sample apo structures from input for model training/inference.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            FoldingInput object containing model inputs.
-        num_diffusion_samples : int, optional
-            Number of diffusion samples to generate, by default 1.
-        random_augment:
-            Whether to apply random augmentation to apo coordinates.
-            NOTE: the apo coordinates should be already randomly augmented per
-            each chain during featurization. (See `do_augment_apo_structure`)
-
-        Returns
-        -------
-        apo_coords : torch.Tensor
-            Sampled apo coordinates. Shape (B, N, L, 3),
-            where N is number of diffusion samples and L is the number of atoms.
-        """
-
-        apo_coords = f_input.atom.apo_coords  # [B, L, 3]
-        apo_mask = f_input.atom.apo_mask  # [B, L]
-
-        # TODO(SeonghwanSeo): Currently only supports a single apo structure (Napo == 1).
-        # Update this code to support multiple apo structures in the future.
-        apo_coords = repeat_dim(apo_coords, num_diffusion_samples, dim=-3)  # [B, N, L, 3]
-        apo_mask = apo_mask.unsqueeze(-2)  # [B, 1, L]
-
-        # Apply coordinate augmentation or centering
-        if random_augment:
-            apo_coords = self.apply_random_augmentation(apo_coords, apo_mask)
-
-        return apo_coords  # [B, N, L, 3]
 
 
 @STRUCTURE_MODULE.register()

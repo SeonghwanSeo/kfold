@@ -233,8 +233,6 @@ class KFoldECSI(BaseECSI):
             \eta=0 gives deterministic ODE, \eta=1 gives full SDE sampling.
         coordinate_augmentation : bool, optional
             Whether to use coordinate augmentation, by default True.
-        synchronize_sigmas : bool, optional
-            Whether to synchronize sigmas across diffusion samples, by default False.
         normalize_data_end : bool, optional
             Whether to normalize the source (apo) input, by default False.
         normalize_coordinate : bool, optional
@@ -260,7 +258,6 @@ class KFoldECSI(BaseECSI):
         P_std: float = 1.5
         eta: float = 1.0
         coordinate_augmentation: bool = True
-        synchronize_sigmas: bool = False
         normalize_data_end: bool = False
         normalize_coordinate: bool = False
         logit_normal_sampling: bool = False
@@ -271,10 +268,6 @@ class KFoldECSI(BaseECSI):
         alignment_level: str = "chain"
         s_trans: float = 1.0
         inference_align_x0_hat_to_x_apo: bool = True
-        chain_wise_perturbation: bool = True
-        inference_independent_diffusion_apo_sampling: bool = False
-        inference_apo_translation_scale: float = 0.0
-        inference_apo_chain_com_sampling_radius: float | None = None
         ode_time_duration: float = 0.5
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
@@ -296,7 +289,6 @@ class KFoldECSI(BaseECSI):
         self.eta: float = cfg.eta
         self.num_steps: int = cfg.num_steps
         self.coordinate_augmentation: bool = cfg.coordinate_augmentation
-        self.synchronize_sigmas: bool = cfg.synchronize_sigmas
         self.normalize_data_end: bool = cfg.normalize_data_end
         self.normalize_coordinate: bool = cfg.normalize_coordinate
         self.logit_normal_sampling: bool = cfg.logit_normal_sampling
@@ -306,14 +298,6 @@ class KFoldECSI(BaseECSI):
         self.s_trans: float = cfg.s_trans
         self.alignment_level: str = cfg.alignment_level
         self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
-        self.chain_wise_perturbation: bool = cfg.chain_wise_perturbation
-        self.inference_independent_diffusion_apo_sampling: bool = (
-            cfg.inference_independent_diffusion_apo_sampling
-        )
-        self.inference_apo_translation_scale: float = cfg.inference_apo_translation_scale
-        self.inference_apo_chain_com_sampling_radius: float | None = (
-            cfg.inference_apo_chain_com_sampling_radius
-        )
         self.ode_time_duration: float = cfg.ode_time_duration
 
         self._route: _Route
@@ -344,238 +328,6 @@ class KFoldECSI(BaseECSI):
     ) -> torch.Tensor:
         """Apply random augmentation to coordinates."""
         return self.random_augmentation(coords, mask=mask)
-
-    def apply_chain_random_augmentation(
-        self,
-        coords: torch.Tensor,
-        mask: torch.Tensor,
-        f_input: FoldingInput,
-    ) -> torch.Tensor:
-        """Apply chain-wise random augmentation to coordinates."""
-        if not self.coordinate_augmentation:
-            return coords
-
-        added_sample_dim = False
-        if coords.dim() == 3:
-            coords = coords.unsqueeze(1)
-            added_sample_dim = True
-
-        if mask.dim() == 2:
-            mask = mask.unsqueeze(1)
-        if mask.shape[1] == 1 and coords.shape[1] > 1:
-            mask = mask.expand(-1, coords.shape[1], -1)
-
-        if coords.dim() != 4 or mask.dim() != 3:
-            raise ValueError(
-                "Expected coords shape (B, N, L, 3) and mask shape (B, N, L), "
-                f"got coords {coords.shape} and mask {mask.shape}."
-            )
-
-        token_asym_id = f_input.token.asym_id
-        atom_token_index = f_input.atom.token_index
-
-        if token_asym_id.dim() == 1:
-            token_asym_id = token_asym_id.unsqueeze(0)
-        if atom_token_index.dim() == 1:
-            atom_token_index = atom_token_index.unsqueeze(0)
-
-        if token_asym_id.shape[0] == 1 and coords.shape[0] > 1:
-            token_asym_id = token_asym_id.expand(coords.shape[0], -1)
-        if atom_token_index.shape[0] == 1 and coords.shape[0] > 1:
-            atom_token_index = atom_token_index.expand(coords.shape[0], -1)
-
-        atom_chain_id = token_asym_id.gather(-1, atom_token_index.clamp(min=0))
-
-        mask_bool = mask.bool()
-        valid_mask = mask_bool.any(dim=1) & (atom_chain_id >= 0)
-        if not valid_mask.any():
-            return coords.squeeze(1) if added_sample_dim else coords
-
-        max_chain_id = atom_chain_id.masked_select(valid_mask).max()
-        chain_id_stride = max_chain_id + 1
-        batch_idx = torch.arange(coords.shape[0], device=coords.device).unsqueeze(-1)
-        global_chain_id = atom_chain_id + batch_idx * chain_id_stride
-
-        _, chain_index = torch.unique(global_chain_id[valid_mask], return_inverse=True)
-        num_chains = int(chain_index.max().item() + 1)
-        chain_index_full = torch.full_like(atom_chain_id, -1)
-        chain_index_full[valid_mask] = chain_index
-
-        chain_mask = F.one_hot(
-            chain_index_full.clamp(min=0), num_classes=num_chains
-        ).bool()
-        chain_mask = chain_mask & valid_mask[..., None]
-        chain_mask = chain_mask.permute(0, 2, 1)
-        chain_mask = chain_mask.unsqueeze(1) & mask_bool.unsqueeze(2)
-
-        chain_coords = coords.unsqueeze(2).masked_fill(~chain_mask[..., None], 0.0)
-        chain_counts = chain_mask.sum(dim=-1, keepdim=True).clamp(min=1)
-        chain_centers = chain_coords.sum(dim=-2) / chain_counts.to(coords.dtype)
-        chain_centers = chain_centers.unsqueeze(-2)
-        batch_size, num_samples, num_chains, num_atoms = chain_mask.shape
-        flat_coords = chain_coords.reshape(
-            batch_size * num_samples * num_chains, num_atoms, 3
-        )
-        flat_mask = chain_mask.reshape(batch_size * num_samples * num_chains, num_atoms)
-        flat_coords = self.random_augmentation(flat_coords, mask=flat_mask)
-        chain_coords = flat_coords.reshape(
-            batch_size, num_samples, num_chains, num_atoms, 3
-        )
-        chain_coords = chain_coords + chain_centers * chain_mask[..., None].to(
-            chain_coords.dtype
-        )
-        coords = chain_coords.sum(dim=2)
-
-        if added_sample_dim:
-            coords = coords.squeeze(1)
-
-        return coords
-
-    def _sample_uniform_sphere_surface_torch(
-        self,
-        radius: float,
-        shape: tuple[int, ...],
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """Sample points uniformly from a sphere surface (torch).
-
-        Returns tensor of shape (*shape, 3).
-        """
-        # Sample direction ~ N(0, I), then normalize -> uniform on sphere.
-        vec = torch.randn((*shape, 3), dtype=dtype, device=device)
-        vec = vec / (vec.norm(dim=-1, keepdim=True) + 1e-8)
-        return vec * float(radius)
-
-    def _independent_apo_chain_sampling(
-        self,
-        coords: torch.Tensor,
-        mask: torch.Tensor,
-        token_asym_id: torch.Tensor,
-        atom_token_index: torch.Tensor,
-        translation_scale: float,
-        chain_com_sampling_radius: float | None,
-    ) -> torch.Tensor:
-        """Independently sample apo coordinates per (sample, chain).
-
-        This reproduces dataset-side apo initialization behavior for validation/inference:
-        - If chain_com_sampling_radius is set: apply chain-wise random rotation (no random
-          translation) and then translate each chain so its COM lies on a sphere surface.
-        - Else: apply chain-wise random rotation + random translation
-          (scale=translation_scale).
-
-        Parameters
-        ----------
-        coords : torch.Tensor
-            Apo coordinates. Shape (B, N, L, 3).
-        mask : torch.Tensor
-            Apo mask. Shape (B, N, L) or (B, L).
-        token_asym_id : torch.Tensor
-            Token chain IDs. Shape (B, Lt) or (Lt,).
-        atom_token_index : torch.Tensor
-            Atom-to-token mapping indices. Shape (B, L) or (L,).
-        translation_scale : float
-            Random translation scale (Angstrom).
-        chain_com_sampling_radius : float | None
-            If set, place chain COM on sphere surface of this radius.
-
-        Returns
-        -------
-        torch.Tensor
-            Independently sampled apo coordinates. Shape (B, N, L, 3).
-        """
-        if not self.coordinate_augmentation:
-            return coords
-
-        if coords.dim() != 4:
-            raise ValueError(f"Expected coords shape (B, N, L, 3), got {coords.shape}.")
-
-        if mask.dim() == 2:
-            mask = mask.unsqueeze(1)
-        if mask.dim() != 3:
-            raise ValueError(
-                f"Expected mask shape (B, N, L) or (B, L), got {mask.shape}."
-            )
-        if mask.shape[1] == 1 and coords.shape[1] > 1:
-            mask = mask.expand(-1, coords.shape[1], -1)
-
-        # Normalize token/atom mapping shapes
-        if token_asym_id.dim() == 1:
-            token_asym_id = token_asym_id.unsqueeze(0)
-        if atom_token_index.dim() == 1:
-            atom_token_index = atom_token_index.unsqueeze(0)
-        if token_asym_id.shape[0] == 1 and coords.shape[0] > 1:
-            token_asym_id = token_asym_id.expand(coords.shape[0], -1)
-        if atom_token_index.shape[0] == 1 and coords.shape[0] > 1:
-            atom_token_index = atom_token_index.expand(coords.shape[0], -1)
-
-        atom_chain_id = token_asym_id.gather(-1, atom_token_index.clamp(min=0))
-
-        mask_bool = mask.bool()
-        valid_mask = mask_bool.any(dim=1) & (atom_chain_id >= 0)
-        if not valid_mask.any():
-            return coords
-
-        max_chain_id = atom_chain_id.masked_select(valid_mask).max()
-        chain_id_stride = max_chain_id + 1
-        batch_idx = torch.arange(coords.shape[0], device=coords.device).unsqueeze(-1)
-        global_chain_id = atom_chain_id + batch_idx * chain_id_stride
-
-        _, chain_index = torch.unique(global_chain_id[valid_mask], return_inverse=True)
-        num_chains = int(chain_index.max().item() + 1)
-        chain_index_full = torch.full_like(atom_chain_id, -1)
-        chain_index_full[valid_mask] = chain_index
-
-        # (B, L, C) -> (B, C, L) -> (B, N, C, L)
-        chain_mask = F.one_hot(
-            chain_index_full.clamp(min=0), num_classes=num_chains
-        ).bool()
-        chain_mask = chain_mask & valid_mask[..., None]
-        chain_mask = chain_mask.permute(0, 2, 1)
-        chain_mask = chain_mask.unsqueeze(1) & mask_bool.unsqueeze(2)
-
-        chain_coords = coords.unsqueeze(2).masked_fill(~chain_mask[..., None], 0.0)
-        batch_size, num_samples, num_chains, num_atoms = chain_mask.shape
-
-        flat_coords = chain_coords.reshape(
-            batch_size * num_samples * num_chains, num_atoms, 3
-        )
-        flat_mask = chain_mask.reshape(batch_size * num_samples * num_chains, num_atoms)
-
-        # Dataset behavior:
-        # - If chain_com_sampling_radius is set: force random translation scale to 0.0
-        # - Else: use translation_scale
-        if chain_com_sampling_radius is not None:
-            translation_scale = 0.0
-
-        augment = CenterRandomAugmentation(
-            centering=True,
-            augmentation=True,
-            s_trans=float(translation_scale),
-        )
-        flat_coords = augment(flat_coords, mask=flat_mask)
-        chain_coords = flat_coords.reshape(
-            batch_size, num_samples, num_chains, num_atoms, 3
-        )
-
-        if chain_com_sampling_radius is not None:
-            # Translate each chain so its COM lies on the sphere surface.
-            chain_counts = chain_mask.sum(dim=-1, keepdim=True).clamp(min=1)
-            chain_centers = chain_coords.sum(dim=-2) / chain_counts.to(chain_coords.dtype)
-            target_centers = self._sample_uniform_sphere_surface_torch(
-                radius=float(chain_com_sampling_radius),
-                shape=(batch_size, num_samples, num_chains),
-                dtype=chain_coords.dtype,
-                device=chain_coords.device,
-            )
-            shift = target_centers - chain_centers  # (B, N, C, 3)
-            chain_coords = chain_coords + shift.unsqueeze(-2) * chain_mask[..., None].to(
-                chain_coords.dtype
-            )
-
-        # Combine chains back: (B, N, C, L, 3) -> (B, N, L, 3)
-        coords = chain_coords.sum(dim=2)
-        return coords
 
     def _configure_route_functions(self, cfg: Config) -> None:
         route = (cfg.route_type or "linear").lower().replace("-", "_")
@@ -842,10 +594,7 @@ class KFoldECSI(BaseECSI):
         t : torch.Tensor
             Time values. Shape (B, N).
         """
-        if self.synchronize_sigmas:
-            shape = (batch_size, 1)
-        else:
-            shape = (batch_size, num_diffusion_samples)
+        shape = (batch_size, num_diffusion_samples)
 
         if self.logit_normal_sampling:
             # LogitNormal(0, 1) sampling
@@ -861,9 +610,6 @@ class KFoldECSI(BaseECSI):
                     torch.tensor(self.sampling_beta, device=device),
                 )
                 t = m.sample(shape)
-
-        if self.synchronize_sigmas:
-            t = t.repeat(1, num_diffusion_samples)
 
         # Scale to [sigma_min, sigma_max]
         t = self.sigma_min + (self.sigma_max - self.sigma_min) * t
@@ -927,45 +673,26 @@ class KFoldECSI(BaseECSI):
 
         Returns
         -------
-        apo_coords : torch.Tensor
-            Apo coordinates. Shape (B, N, La, 3).
+        prior_coords : torch.Tensor
+            prior coordinates. Shape (B, N, La, 3).
         """
-        if label_coords is None and self.inference_independent_diffusion_apo_sampling:
-            # Validation/Inference: independently sample x_T per diffusion sample
-            # using parameters from structure module config.
-            apo_coords = self.sample_apo(
-                f_input, num_diffusion_samples, random_augment=False
-            )
-            apo_mask = f_input.atom.apo_mask
-            apo_coords = self._independent_apo_chain_sampling(
-                coords=apo_coords,
-                mask=apo_mask,
-                token_asym_id=f_input.token.asym_id,
-                atom_token_index=f_input.atom.token_index,
-                translation_scale=float(self.inference_apo_translation_scale),
-                chain_com_sampling_radius=self.inference_apo_chain_com_sampling_radius,
-            )
-            return apo_coords
+        # Sample from prior coordinates
+        # If num_diffusion_samples > num_prior, cycle through prior coords
+        all_prior_coords = f_input.atom.prior_coords  # [B, Latom, Nprior, 3]
+        num_prior = all_prior_coords.shape[-2]
+        prior_index = [i % num_prior for i in range(num_diffusion_samples)]
+        prior_coords = all_prior_coords[:, :, prior_index, :]  # [B, Latom, N, 3]
+        prior_coords = prior_coords.permute(0, 2, 1, 3)  # [B, N, Latom, 3]
 
-        do_random_augment = label_coords is None
-        apo_coords = self.sample_apo(f_input, num_diffusion_samples, do_random_augment)
+        if label_coords is None:
+            # No label provided; apply random augmentation
+            prior_mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Latom]
+            prior_coords = self.apply_random_augmentation(prior_coords, mask=prior_mask)
+        else:
+            # Skip random augmentation since we will align to label
+            prior_coords = self.align_apo_to_label(prior_coords, label_coords, f_input)
 
-        if self.chain_wise_perturbation:
-            apo_mask = f_input.atom.apo_mask
-            apo_coords = self.apply_chain_random_augmentation(
-                apo_coords, apo_mask, f_input
-            )
-
-        if label_coords is not None:
-            # apo_mask = ~(apo_coords == 0.0).all(-1)
-            apo_coords = self.align_apo_to_label(
-                apo_coords,
-                label_coords,
-                f_input,
-            )
-            # apo_coords = do_centering(apo_coords, apo_mask, mask_to_zero=True)
-
-        return apo_coords
+        return prior_coords
 
     def interpolate(
         self,
@@ -1131,13 +858,13 @@ class KFoldECSI(BaseECSI):
         atom_mask = f_input.atom.pad_mask.unsqueeze(1)  # (B, 1, Latom)
 
         # Sample x_T from prior (apo structures)
-        x_apo = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
+        x_T = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
 
-        sample_out["init_coordinates"] = x_apo
+        sample_out["init_coordinates"] = x_T
         if self.normalize_coordinate:
-            x_apo = x_apo / self.sigma_data_end
+            x_T = x_T / self.sigma_data_end
 
-        x_t = x_apo.clone()
+        x_t = x_T.clone()
 
         if return_traj:
             traj.append(x_t.cpu())
@@ -1145,7 +872,7 @@ class KFoldECSI(BaseECSI):
         # Reverse time sampling from t=T toward t=0
         for step_idx in range(num_steps):
             # Apply random augmentation
-            x_t, x_apo = self.random_augmentation(x_t, x_apo, mask=atom_mask)
+            x_t, x_T = self.random_augmentation(x_t, x_T, mask=atom_mask)
 
             t_curr = times[step_idx]
             t_next = times[step_idx + 1]
@@ -1168,7 +895,7 @@ class KFoldECSI(BaseECSI):
                     s_trunk=s_trunk,
                     z_trunk=z_trunk,
                     model_cache=model_cache,
-                    prior_coords=x_apo[:, st:end],
+                    prior_coords=x_T[:, st:end],
                 )
 
                 # align x0_hat to x_apo
@@ -1176,7 +903,7 @@ class KFoldECSI(BaseECSI):
                     # Kabsch-align x0_hat into the x_apo frame.
                     x0_hat[:, st:end] = self.align_apo_to_label(
                         apo_coords=x0_hat[:, st:end],
-                        label_coords=x_apo[:, st:end],
+                        label_coords=x_T[:, st:end],
                         f_input=f_input,
                     )
 
@@ -1192,7 +919,7 @@ class KFoldECSI(BaseECSI):
             gamma_dot = self.gamma_deriv(t_exp)
 
             # Compute \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / \gamma_t
-            z_hat = (x_t - alpha_t * x0_hat - beta_t * x_apo) / (gamma_t + 1e-8)
+            z_hat = (x_t - alpha_t * x0_hat - beta_t * x_T) / (gamma_t + 1e-8)
 
             # Last 2 steps: use deterministic update (\epsilon_t = 0)
             # if step_idx >= num_steps - 2:
@@ -1212,11 +939,11 @@ class KFoldECSI(BaseECSI):
                     + 1
                 ) / 2
 
-                # x_t = alpha_next * x0_hat + beta_next * x_apo + gamma_next * z_hat
-                # x_t = alpha_next * x0_hat + beta_next * x_apo
+                # x_t = alpha_next * x0_hat + beta_next * x_T + gamma_next * z_hat
+                # x_t = alpha_next * x0_hat + beta_next * x_T
                 x_t = (
                     alpha_next * x0_hat
-                    + beta_next * x_apo
+                    + beta_next * x_T
                     + gamma_next * z_hat * weighting_factor
                 )
             else:
@@ -1230,7 +957,7 @@ class KFoldECSI(BaseECSI):
                 #                     + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
                 drift = (
                     alpha_dot * x0_hat
-                    + beta_dot * x_apo
+                    + beta_dot * x_T
                     + (gamma_dot + eps_t / (gamma_t + 1e-8)) * z_hat
                 )
 

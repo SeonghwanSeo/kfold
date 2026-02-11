@@ -9,33 +9,21 @@ seed: null # should be null for data augmentation
 apo_init:
   use_perturbation: false
   use_random_augmentation: true
+  use_residue_permutation: false
+  is_protein_monomer_distillation: false
+  prob_perturbation: 0.95
+  use_cached_conformer: true
+  protein_perturbation: null
+  small_mol_perturbation: null
+
+prior_sampler:
+  num_samples: 0
+  use_random_augmentation: true
+  use_chain_com_sampling: false
   use_ot_permutation: false
   translation_scale: 1.0 # Angstroms
-  chain_com_sampling_radius: null
-  prob_perturbation: 0.95
-  prob_replace_to_holo: 0.0 # enabled during training
-  training: true # If True, skip etkdg generation if there is no cached etkdg conformer. (use ideal/model conformer)
-  fill_missing_atom: true # Whether to fill missing atoms in apo structure using neighbors
-
-  small_mol_perturbation:
-    mode: "langevin"
-    gaussian_sigma: 0.3
-    langevin_num_steps: 200
-    langevin_dt: 0.005
-    langevin_k_bond: 50.0
-    langevin_k_angle: 10.0
-    langevin_temperature: 1.0
-    recenter: true
-
-  prior_sampler:
-    # polymer prior sampler if apo structure is unavailable
-    type: "globular" # 'null', 'zero', 'normal', 'globular'
-    # Langevin dynamics settings for globular prior
+  # missing atom filling settings
+  relaxation:
     num_steps: 64
-    dt: 0.25
-    bond_r: 4.0
     res_r: 4.0
-    ent_r: 10.0
-    sphere_r: 10.0 # This value is also used for normal prior sampling.
-
-  apo_perturbation: null
+    bond_r: 2.0

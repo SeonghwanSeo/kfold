@@ -49,7 +49,6 @@ class DataModuleConfig(BaseConfig):
 
     # === Featurization args === #
     pretrained_embedding: dict = dataclasses.field(default_factory=dict)
-    featurization: dict = dataclasses.field(default_factory=dict)
 
     # === Interaction annotation === #
     interaction_type: str = "auto"
@@ -84,7 +83,6 @@ class TrainingDataModule(pl.LightningDataModule):
             configs=self.config.train_datasets,
             ccd=self.ccd,
             pretrained_embedding=self.config.pretrained_embedding,
-            featurization_args=self.config.featurization,
             max_chains=self.config.max_chains,
             max_tokens=self.config.max_tokens,
             safe_load=self.config.safe_load,
@@ -109,7 +107,6 @@ class TrainingDataModule(pl.LightningDataModule):
             config=self.config.val_datasets[0],
             ccd=self.ccd,
             pretrained_embedding=self.config.pretrained_embedding,
-            featurization_args=self.config.featurization,
             safe_load=self.config.safe_load,
         )
         self.print_rank_zero(

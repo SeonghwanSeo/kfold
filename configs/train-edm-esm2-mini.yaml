@@ -2,7 +2,8 @@ model:
   _yaml_: "model/kfold-edm.yaml"
   trunk:
     plm_module:
-      channel_plm: 2560
+      channel_plm_input: 2560
+      num_blocks: 4
     pairformer:
       num_blocks: 16
   score_model:
@@ -26,17 +27,9 @@ train:
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-train/
-        apo_init:
-          fill_missing_atom: false
-          prior_sampler:
-            type: null
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-val/
-        apo_init:
-          fill_missing_atom: false
-          prior_sampler:
-            type: null
     pretrained_embedding:
       seq: esm2-3b
       seq_dim: 2560

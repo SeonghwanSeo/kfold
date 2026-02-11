@@ -8,7 +8,7 @@ model:
     atom_decoder_blocks: 1
 
 train:
-  _yaml_: "train/stage1.yaml"
+  _yaml_: "train/stage_1.yaml"
 
   name: debug-af3-tiny
   out_dir: ./experiments/
@@ -25,14 +25,9 @@ train:
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-train/
         apo_init:
           use_perturbation: false
-          prior_sampler:
-            type: null
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-val/
-        apo_init:
-          prior_sampler:
-            type: null
 
   wandb:
     use: false

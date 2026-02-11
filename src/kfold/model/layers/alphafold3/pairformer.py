@@ -102,8 +102,8 @@ class PairformerStack(nn.Module):
         blocks = [
             partial(
                 b,
-                single_mask=mask.float(),
-                pair_mask=pair_mask.float(),
+                single_mask=mask,
+                pair_mask=pair_mask,
                 chunk_size_tri_attn=chunk_size_tri_attn,
                 use_cuequiv_kernels=use_cuequiv_kernels,
             )

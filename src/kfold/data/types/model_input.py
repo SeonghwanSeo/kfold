@@ -359,6 +359,8 @@ class AtomTensor(TensorLayout):
         Token indices mapping atoms to their parent tokens of shape [Natom,].
     apo_coords: torch.Tensor (float32)
         Apo (unbound) state coordinates of shape [Natom, 3],
+    prior_coords: torch.Tensor (float32)
+        Prior coordinates of shape [Natom, Nprior, 3],
     apo_mask: torch.Tensor (bool)
         Boolean mask of shape [Natom,] indicating atoms with apo coordinates.
     pad_mask: torch.Tensor (bool)
@@ -381,6 +383,7 @@ class AtomTensor(TensorLayout):
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
     apo_coords: torch.Tensor  # [Natom, 3], float32
+    prior_coords: torch.Tensor  # [Natom, Nprior, 3], float32
     apo_mask: torch.Tensor  # [Natom,], bool
     pad_mask: torch.Tensor  # [Natom,], bool
 
@@ -418,6 +421,12 @@ class AtomTensor(TensorLayout):
         check_tensor(
             self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, 3)
         )
+        check_tensor(
+            self.prior_coords,
+            name="prior_coords",
+            dtype=torch.float32,
+            shape=(*shape, -1, 3),
+        )
         check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=shape)
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
         check_tensor(
@@ -450,6 +459,7 @@ class AtomTensor(TensorLayout):
             "ref_mask": False,
             "ref_space_uid": -1,
             "token_index": 0,
+            "prior_coords": 0.0,
             "apo_coords": 0.0,
             "apo_mask": False,
             "pad_mask": False,
