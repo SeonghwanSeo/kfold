@@ -279,15 +279,16 @@ class BaseFoldingModel(torch.nn.Module):
 
         # Trunk with recycling
         st = time.time()
-        trunk_out = self.trunk(
+        trunk_out: dict[str, torch.Tensor] = self.trunk(
             s_inputs,
             s_init,
             z_init,
             f_input,
             num_recycles,
         )
-        s_trunk, z_trunk = trunk_out[:2]
         et = time.time()
+        s_trunk = trunk_out["s_trunk"]
+        z_trunk = trunk_out["z_trunk"]
         time_logs["trunk"] = et - st
 
         dict_out = {
