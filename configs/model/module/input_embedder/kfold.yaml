@@ -18,6 +18,7 @@ apo_distmap_type: 'rbf'
 apo_min_dist: 2.0
 apo_max_dist: 22.0
 apo_num_bins: 64
+apo_add_last_bin: false
 
 # Pretrain embedding-specific configs
 channel_seq_encoder: null
