@@ -130,6 +130,8 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         # Apo-related parameters
         use_apo : bool
             Whether to embed apo structure.
+        use_c_beta_for_apo : bool
+            Whether to use C-beta coordinates for apo embedding (if False, use C-alpha).
         apo_distmap_type : str
             options: 'rbf', 'distogram'
         apo_min_dist : float
@@ -159,6 +161,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         channel_struct_encoder: int | None = None
         # Apo-related parameters
         use_apo: bool = True
+        use_c_beta_for_apo: bool = False
         apo_distmap_type: str = "rbf"
         apo_num_bins: int = 64
         apo_min_dist: float = 2.0
@@ -177,6 +180,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         self.channel_atom: int = cfg.channel_atom
         self.channel_atompair: int = cfg.channel_atompair
         self.use_apo: bool = cfg.use_apo
+        self.use_c_beta_for_apo: bool = cfg.use_c_beta_for_apo
 
         assert cfg.apo_distmap_type in ["rbf", "distogram"], (
             f"Invalid distmap_type: {cfg.apo_distmap_type}. "
@@ -349,7 +353,10 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             Pair representation containing apo information. Shape: (B, L, L, c_z)
         """
         batch_index = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
-        center_index = f_input.token.center_index
+        if self.use_c_beta_for_apo:
+            center_index = f_input.token.disto_index
+        else:
+            center_index = f_input.token.center_index
 
         # Extract apo C-alpha coordinates and mask
         apo_coords = f_input.atom.apo_coords[batch_index, center_index]  # [B, L, 3]
