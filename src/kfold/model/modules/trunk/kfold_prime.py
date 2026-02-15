@@ -134,11 +134,19 @@ class KFoldTrunkPrime(BaseTrunk):
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
         # For recycling
-        self.recycle_s = nn.Sequential(
+        self.linear_prime_s = nn.Sequential(
             LayerNorm(cfg.channel_s),
             LinearNoBias(cfg.channel_s, cfg.channel_s, init="final"),
         )
-        self.recycle_z = nn.Sequential(
+        self.linear_prime_z = nn.Sequential(
+            LayerNorm(cfg.channel_z),
+            LinearNoBias(cfg.channel_z, cfg.channel_z, init="final"),
+        )
+        self.linear_recycle_s = nn.Sequential(
+            LayerNorm(cfg.channel_s),
+            LinearNoBias(cfg.channel_s, cfg.channel_s, init="final"),
+        )
+        self.linear_recycle_z = nn.Sequential(
             LayerNorm(cfg.channel_z),
             LinearNoBias(cfg.channel_z, cfg.channel_z, init="final"),
         )
@@ -250,31 +258,33 @@ class KFoldTrunkPrime(BaseTrunk):
         )
 
         # === Priming pass before recycling === #
-        enable_grad = self.training and num_recycles == 0
-        with torch.set_grad_enabled(enable_grad):
-            if enable_grad and torch.is_autocast_enabled():
-                torch.clear_autocast_cache()
-            s_hat, z_hat = self._run_trunk(
-                plm_module=self.plm_module_prime,
-                pairformer_module=self.pairformer_module_prime,
-                s=s_init,
-                z=z_init,
-                s_inputs=s_inputs,
-                s_plm=s_plm,
-                asym_id=asym_id,
-                mask=mask,
-                chunk_size_tri_attn=chunk_size_tri_attn,
-            )
+        s_prime, z_prime = self._run_trunk(
+            plm_module=self.plm_module_prime,
+            pairformer_module=self.pairformer_module_prime,
+            s=s_init,
+            z=z_init,
+            s_inputs=s_inputs,
+            s_plm=s_plm,
+            asym_id=asym_id,
+            mask=mask,
+            chunk_size_tri_attn=chunk_size_tri_attn,
+        )
 
         # === Refining loop with recycling === #
-        for i in range(0, num_recycles):
-            enable_grad = self.training and i == num_recycles - 1
+        s_hat, z_hat = s_prime, z_prime
+
+        for i in range(0, num_recycles + 1):
+            enable_grad = self.training and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+
                 # Recycle linear pass
-                s = s_init + self.recycle_s(s_hat)
-                z = z_init + self.recycle_z(z_hat)
+                s = s_hat + self.linear_prime_s(s_prime)
+                z = z_hat + self.linear_prime_z(z_prime)
+                s = s_init + self.linear_recycle_s(s)
+                z = z_init + self.linear_recycle_z(z)
+
                 # Trunk
                 s_hat, z_hat = self._run_trunk(
                     plm_module=self.plm_module_refine,
@@ -292,9 +302,9 @@ class KFoldTrunkPrime(BaseTrunk):
         s_hat = s_hat + self.proj_plm_to_s_trunk(s_plm)
 
         # Remove register tokens before returning.
-        s_hat, z_hat = self._undo_registers(s_hat, z_hat)
+        s_hat, z_hat, z_prime = self._undo_registers(s_hat, z_hat, z_prime)
 
-        return {"s_trunk": s_hat, "z_trunk": z_hat}
+        return {"s_trunk": s_hat, "z_trunk": z_hat, "z_aug": z_prime}
 
     def _run_trunk(
         self,
@@ -376,10 +386,10 @@ class KFoldTrunkPrime(BaseTrunk):
         return s_inputs_pad, s_init_pad, s_plm_pad, z_pad, asym_id_pad, mask_pad
 
     def _undo_registers(
-        self, s_trunk: torch.Tensor, z_trunk: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self, s_trunk: torch.Tensor, z_trunk: torch.Tensor, z_prime: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Remove register tokens from s/z outputs."""
         R = self.num_register_tokens
         if R <= 0:
-            return s_trunk, z_trunk
-        return s_trunk[:, R:], z_trunk[:, R:, R:]
+            return s_trunk, z_trunk, z_prime
+        return s_trunk[:, R:], z_trunk[:, R:, R:], z_prime[:, R:, R:]

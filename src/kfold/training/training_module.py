@@ -444,13 +444,16 @@ class KFoldTrainingModule(pl.LightningModule):
                 )
                 if "logits_aug" in model_output["distogram"]:
                     # Augmented distogram loss
-                    distogram_loss_aug, _ = self.compute_distogram_loss(
-                        logits=model_output["distogram"]["logits_aug"],
-                        f_input=f_input,
+                    distogram_loss_aug, distogram_aug_metrics = (
+                        self.compute_distogram_loss(
+                            logits=model_output["distogram"]["logits_aug"],
+                            f_input=f_input,
+                        )
                     )
-                    # TODO (Seonghwan): This is hard-coded weight for augmented loss...
-                    # Do we want to make it configurable?
-                    distogram_loss = 0.8 * distogram_loss + 0.2 * distogram_loss_aug
+                    distogram_loss = distogram_loss + distogram_loss_aug
+                    distogram_metrics["distogram_loss_aug"] = distogram_aug_metrics[
+                        "distogram_loss"
+                    ]
 
                 diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
                     x_pred=model_output["diffusion"]["denoised_atom_coords"],
