@@ -164,60 +164,6 @@ class KFoldTrunkV0(BaseTrunk):
             fullgraph=False,
         )  # type: ignore
 
-    def _extend_registers(
-        self,
-        s_init: torch.Tensor,
-        z_init: torch.Tensor,
-        mask: torch.Tensor,
-        intra_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Prepend register tokens to s/z/mask/intra_mask (Proteina-style)."""
-        R = self.num_register_tokens
-        if R <= 0:
-            return s_init, z_init, mask, intra_mask
-
-        assert self.register_tokens is not None
-        B, L, _ = s_init.shape
-        reg = self.register_tokens.to(dtype=s_init.dtype, device=s_init.device)
-        reg = reg.unsqueeze(0).expand(B, -1, -1)  # [B, R, C_s]
-        s_init = torch.cat([reg, s_init], dim=1)  # [B, R+L, C_s]
-
-        z_pad = torch.zeros(
-            (B, L + R, L + R, z_init.shape[-1]),
-            device=z_init.device,
-            dtype=z_init.dtype,
-        )
-        z_pad[:, R:, R:] = z_init
-        z_init = z_pad
-
-        reg_mask = torch.ones((B, R), device=mask.device, dtype=mask.dtype)
-        mask = torch.cat([reg_mask, mask], dim=-1)  # [B, R+L]
-
-        intra_pad = torch.zeros(
-            (B, L + R, L + R),
-            device=intra_mask.device,
-            dtype=intra_mask.dtype,
-        )
-        intra_pad[:, R:, R:] = intra_mask
-        if self.register_token_intra_mode == "all":
-            intra_pad[:, :R, :] = True
-            intra_pad[:, :, :R] = True
-        else:
-            intra_pad[:, :R, :R] = True
-        intra_mask = intra_pad
-        return s_init, z_init, mask, intra_mask
-
-    def _undo_registers(
-        self,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Remove register tokens from s/z outputs."""
-        R = self.num_register_tokens
-        if R <= 0:
-            return s_trunk, z_trunk
-        return s_trunk[:, R:], z_trunk[:, R:, R:]
-
     def forward(
         self,
         s_inputs: torch.Tensor,
@@ -226,7 +172,7 @@ class KFoldTrunkV0(BaseTrunk):
         f_input: FoldingInput,
         num_recycles: int,
         **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Perform the forward pass.
 
         Parameters
@@ -302,4 +248,59 @@ class KFoldTrunkV0(BaseTrunk):
                 s_hat, z_hat = s, z
 
         # Remove register tokens before returning.
-        return self._undo_registers(s_hat, z_hat)
+        s_hat, z_hat = self._undo_registers(s_hat, z_hat)
+        return {"s_trunk": s_hat, "z_trunk": z_hat}
+
+    def _extend_registers(
+        self,
+        s_init: torch.Tensor,
+        z_init: torch.Tensor,
+        mask: torch.Tensor,
+        intra_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Prepend register tokens to s/z/mask/intra_mask (Proteina-style)."""
+        R = self.num_register_tokens
+        if R <= 0:
+            return s_init, z_init, mask, intra_mask
+
+        assert self.register_tokens is not None
+        B, L, _ = s_init.shape
+        reg = self.register_tokens.to(dtype=s_init.dtype, device=s_init.device)
+        reg = reg.unsqueeze(0).expand(B, -1, -1)  # [B, R, C_s]
+        s_init = torch.cat([reg, s_init], dim=1)  # [B, R+L, C_s]
+
+        z_pad = torch.zeros(
+            (B, L + R, L + R, z_init.shape[-1]),
+            device=z_init.device,
+            dtype=z_init.dtype,
+        )
+        z_pad[:, R:, R:] = z_init
+        z_init = z_pad
+
+        reg_mask = torch.ones((B, R), device=mask.device, dtype=mask.dtype)
+        mask = torch.cat([reg_mask, mask], dim=-1)  # [B, R+L]
+
+        intra_pad = torch.zeros(
+            (B, L + R, L + R),
+            device=intra_mask.device,
+            dtype=intra_mask.dtype,
+        )
+        intra_pad[:, R:, R:] = intra_mask
+        if self.register_token_intra_mode == "all":
+            intra_pad[:, :R, :] = True
+            intra_pad[:, :, :R] = True
+        else:
+            intra_pad[:, :R, :R] = True
+        intra_mask = intra_pad
+        return s_init, z_init, mask, intra_mask
+
+    def _undo_registers(
+        self,
+        s_trunk: torch.Tensor,
+        z_trunk: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Remove register tokens from s/z outputs."""
+        R = self.num_register_tokens
+        if R <= 0:
+            return s_trunk, z_trunk
+        return s_trunk[:, R:], z_trunk[:, R:, R:]

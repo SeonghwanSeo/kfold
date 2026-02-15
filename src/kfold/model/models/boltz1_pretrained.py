@@ -162,13 +162,15 @@ class Boltz1Pretrained(BaseFoldingModel):
         s_inputs, s_init, z_init = self.input_embedder(f_input)
 
         # Trunk with recycling
-        s_trunk, z_trunk = self.trunk(
+        trunk_out = self.trunk(
             s_inputs,
             s_init,
             z_init,
             f_input,
             num_recycles,
         )
+        s_trunk = trunk_out["s_trunk"]
+        z_trunk = trunk_out["z_trunk"]
 
         # ====================================================== #
         # NOTE: Only the difference is here: Project single features to match
@@ -226,9 +228,10 @@ class Boltz1Pretrained(BaseFoldingModel):
     def sample(
         self,
         f_input: FoldingInput,
-        num_recycles: int,
-        num_steps: int,
-        num_diffusion_samples: int,
+        num_recycles: int = 10,
+        num_steps: int = 200,
+        num_diffusion_samples: int = 5,
+        return_traj: bool = False,
     ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         """Forward pass of KFold model for model training.
 

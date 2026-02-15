@@ -1,5 +1,5 @@
 _registry_: "trunk"
-_class_: "KFoldTrunk"
+_class_: "KFoldTrunkPrime"
 channel_s: 384
 channel_z: 128
 
