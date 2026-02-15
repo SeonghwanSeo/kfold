@@ -249,7 +249,7 @@ class KFoldTrunkV0(BaseTrunk):
 
         # Remove register tokens before returning.
         s_hat, z_hat = self._undo_registers(s_hat, z_hat)
-        return {"s_hat": s_hat, "z_hat": z_hat}
+        return {"s_trunk": s_hat, "z_trunk": z_hat}
 
     def _extend_registers(
         self,

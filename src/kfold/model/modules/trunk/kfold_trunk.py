@@ -123,6 +123,7 @@ class KFoldTrunk(BaseTrunk):
 
         # Proteina-style register tokens (learnable sequence-level registers).
         self.num_register_tokens: int = cfg.num_register_tokens
+        assert self.num_register_tokens >= 0, "num_register_tokens must be non-negative"
         if self.num_register_tokens > 0:
             self.register_tokens = nn.Parameter(
                 torch.empty(self.num_register_tokens, cfg.channel_s)

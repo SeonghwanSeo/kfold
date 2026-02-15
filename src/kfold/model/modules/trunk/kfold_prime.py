@@ -77,7 +77,7 @@ class KFoldTrunkPrime(BaseTrunk):
         register_token_init_std: float = 0.05
 
     def __init__(self, cfg: Config, kernel_config=None):
-        """Initialize the MultiStateApoTrunk module."""
+        """Initialize the KFoldTrunkPrime module."""
         super().__init__(cfg, kernel_config)
         # === Priming pass before recycling === #
         self.plm_module_prime: PLMModule = PLMModule(

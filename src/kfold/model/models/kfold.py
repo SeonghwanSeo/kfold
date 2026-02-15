@@ -152,10 +152,7 @@ class KFold(BaseFoldingModel):
             distogram_dict = {}
             distogram_dict["logits"] = self.distogram_head(z_trunk)
             if "z_aug" in trunk_out:
-                # (SeonghwanSeo) Trick to avoid `ddp_unused_parameters` issues:
-                # When training only the priming trunk (recycle=0), the refining trunk
-                # is not used and its parameters are not updated. Instead, we use this
-                # auxiliary head to ensure gradients flow to the refining trunk.
+                # This is for distogram auxiliary loss with prime trunk output.
                 z_aug = trunk_out["z_aug"]
                 distogram_dict["logits_aug"] = self.distogram_head(z_aug)
             dict_out["distogram"] = distogram_dict
