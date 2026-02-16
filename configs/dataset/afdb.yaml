@@ -31,3 +31,5 @@ apo_init:
       max_steps: 30
   # no ligand
   ligand_perturbation: null
+
+prior_sampler: null

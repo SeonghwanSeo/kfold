@@ -44,5 +44,5 @@ train:
   wandb:
     use: false
     project: "KFold-Combined"
-    group: esm # set your group name
+    group: edm # set your group name
     entity: K-Fold # set your entity name

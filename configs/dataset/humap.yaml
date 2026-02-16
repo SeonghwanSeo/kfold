@@ -24,3 +24,5 @@ cropper:
 apo_init:
   # no ligand
   ligand_perturbation: null
+
+prior_sampler: null
