@@ -45,7 +45,6 @@ data:
     seq_dim: null
     struct: null
     struct_dim: null
-    max_struct_ensembles: 1
 
 # Lightning Trainer Configuration
 trainer:

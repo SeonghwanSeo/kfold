@@ -4,12 +4,3 @@ _yaml_: "default.yaml"
 # Data paths
 data_path: <DATA_PATH_PLACEHOLDER>
 seed: 42 # fixed seed for validation
-
-apo_init:
-  # Skip perturbation during validation
-  use_perturbation: false
-
-prior_sampler:
-  # Skip ot permutation during validation
-  num_samples: 0
-  use_ot_permutation: false

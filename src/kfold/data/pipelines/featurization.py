@@ -122,10 +122,7 @@ class InputFeaturizer:
 
         # Add pre-computed embeddings
         f_input_upd = self.add_precomputed_embedding(
-            f_input,
-            seq_embeddings,
-            struct_embeddings,
-            rng=rng,
+            f_input, seq_embeddings, struct_embeddings
         )
 
         return f_input_upd
@@ -143,7 +140,6 @@ class InputFeaturizer:
         f_input: FoldingInput,
         seq_embeddings: dict[int, dict] | None,
         struct_embeddings: dict[int, dict] | None,
-        rng: np.random.Generator | None,
     ) -> FoldingInput:
         """Add pre-trained embeddings to the model input from pre-computed files.
 

@@ -50,7 +50,7 @@ apo_init:
         kabsch_aligned_traj: false
       log_stats: false # Whether to log perturbation statistics periodically
       log_stats_interval: 1000 # Log statistics every N chain perturbations
-      log_level: "INFO" # Logging level
+      log_level: "CRITICAL" # Logging level
     bioprior:
       # Metric-free BioPrior perturbation settings (fallback if RieProDy is not used or fails)
       noise_scale: 1.0 # Perturbation scale

@@ -17,6 +17,10 @@ cropper:
   _registry_: "data_cropper"
   _class_: MultiAnchorCropper
   max_anchors: 2
-  w_contiguous: 0.25
-  w_spatial: 0.25
-  w_spatial_interface: 0.5
+  w_contiguous: 0.2
+  w_spatial: 0.2
+  w_spatial_interface: 0.6
+
+apo_init:
+  # no ligand
+  ligand_perturbation: null

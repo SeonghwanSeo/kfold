@@ -24,7 +24,8 @@ train:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-train/
         apo_init:
-          use_perturbation: false
+          protein_perturbation: null
+          small_molecule_perturbation: null
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260130/dataset/rcsb-val/
