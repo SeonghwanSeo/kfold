@@ -104,6 +104,7 @@ def parse_cif(
     name = cif_path.name.split(".")[0]
     model = "AlphaFold2"
     metadata = cif_factory.prepare_metadata_from_synthetic_data(name, block, model)
+    metadata.id = out_path.stem
 
     # Prepare gemmi structure
     raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(

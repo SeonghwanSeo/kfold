@@ -1,16 +1,4 @@
-"""Preprocess synthetic data mmCIF files.
-
-This script processes mmCIF files.
-
-## Usage:
-```
-python b1_process_cifs.py \
-    --cif_dir /path/to/cif/ \           # Path to mmCIF files
-    --ccd_path /path/to/ccd.pkl \       # Path to CCD pickled file
-    --out_dir /path/to/output_npz/ \    # Output Directory
-    --num_workers 8                     # Number of parallel workers
-```
-"""
+"""Preprocess synthetic data mmCIF files."""
 
 import argparse
 import functools
@@ -53,11 +41,10 @@ def parse_args():
         help="Path to output directory for processed .npz files.",
     )
     parser.add_argument(
-        "--handle_invalid_chains",
+        "--name",
         type=str,
-        choices=["allow", "disallow"],
-        default="disallow",
-        help="Whether to allow structures with invalid chains.",
+        required=True,
+        help="Dataset name for synthetic data (e.g., 'synthetic_v1').",
     )
     parser.add_argument(
         "--model",
@@ -66,10 +53,12 @@ def parse_args():
         help="Model name for predicted structures.",
     )
     parser.add_argument(
-        "--clash_distance_cutoff",
-        type=float,
-        default=1.7,
-        help="Distance cutoff to consider atom clashes.",
+        "--use_dir_name",
+        action="store_true",
+        help=(
+            "Whether to use the parent directory name as the entry ID "
+            "(instead of the file name)"
+        ),
     )
     parser.add_argument(
         "--num_workers",
@@ -95,8 +84,6 @@ def parse_cif(
     ccd: CCD,
     out_path: pathlib.Path,
     model: str,
-    clash_distance_cutoff: float = 1.7,
-    allow_invalid_chains: bool = False,
 ) -> int:
     """Parse a CIF file and return a gemmi.cif.Document object."""
     if out_path.exists():
@@ -110,11 +97,13 @@ def parse_cif(
     block: gemmi.cif.Block = doc[0]
 
     # Get metadata
-    name = cif_path.name.split(".")[0]
+    name = out_path.stem
     metadata = cif_factory.prepare_metadata_from_synthetic_data(name, block, model)
 
     # Prepare raw structure
-    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
+    raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
+        block, clean_up=True
+    )
 
     # Prepare reference structure
     ref_struct: RefStructure = cif_factory.prepare_ref_structure(
@@ -130,21 +119,9 @@ def parse_cif(
     cif_factory.validate_chain_geometry(ref_struct, invalid_chains)
 
     # Get interfaces and detect clashes
-    cif_factory.detect_interfaces_and_detect_clashes(
-        ref_struct, invalid_chains, clash_distance_cutoff
-    )
+    cif_factory.detect_interfaces_and_detect_clashes(ref_struct, invalid_chains)
 
-    if not allow_invalid_chains:
-        if len(invalid_chains) > 0:
-            return FILTERED
-
-    # Drop invalid chains
-    cif_factory.prune_invalid_chains(ref_struct, invalid_chains)
-
-    # Final checks
-    if ref_struct.num_chains == 0:
-        return FILTERED
-    elif ref_struct.num_polymer_chains == 0:
+    if len(invalid_chains) > 0:
         return FILTERED
 
     # Save output if path is given
@@ -156,25 +133,24 @@ def worker_fn(
     cif_path: pathlib.Path,
     output_dir: pathlib.Path,
     model: str,
-    clash_distance_cutoff: float = 1.7,
-    allow_invalid_chains: bool = False,
+    use_dir_name: bool = False,
 ):
     global _CCD_CACHE
     ccd = _CCD_CACHE
     assert ccd is not None, "CCD data not initialized in worker."
 
     # Output path
-    name = cif_path.name.split(".")[0]
+    if use_dir_name:
+        filename = cif_path.name.split(".")[0]
+        assert filename.startswith("structure_"), (
+            f"Expected file name to start with 'structure_', got {cif_path}"
+        )
+        name = f"{cif_path.parent.name}_{filename[len('structure_') :]}"
+    else:
+        name = cif_path.name.split(".")[0]
     out_path = output_dir / f"{name}.npz"
     try:
-        return parse_cif(
-            cif_path,
-            ccd,
-            out_path,
-            model,
-            clash_distance_cutoff=clash_distance_cutoff,
-            allow_invalid_chains=allow_invalid_chains,
-        )
+        return parse_cif(cif_path, ccd, out_path, model)
     except Exception as e:
         print(f"Failed to process ({name}): {e}")
         # raise e
@@ -185,20 +161,22 @@ def main():
     """Main function to process mmCIF files in parallel."""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    out_dir: pathlib.Path = args.out_dir / "npz"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    data_dir: pathlib.Path = args.out_dir / args.name
+    data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Prepare partial function for multiprocessing
+    print(f"Scanning for mmCIF files in {cif_dir}...")
+    cif_paths = sorted(cif_dir.rglob("*.cif*"))
+    print(f"Found {len(cif_paths)} mmCIF files to process.")
+
+    # Run cif processing in parallel
+    out_dir: pathlib.Path = data_dir / "npz"
+    out_dir.mkdir(parents=True, exist_ok=True)
     parse_cif_partial = functools.partial(
         worker_fn,
         output_dir=out_dir,
         model=args.model,
-        clash_distance_cutoff=args.clash_distance_cutoff,
-        allow_invalid_chains=args.handle_invalid_chains == "allow",
+        use_dir_name=args.use_dir_name,
     )
-
-    cif_paths = sorted(cif_dir.rglob("*.cif*"))
-    print(f"Found {len(cif_paths)} mmCIF files to process.")
     with multiprocessing.Pool(
         args.num_workers,
         initializer=init_worker,
