@@ -126,7 +126,7 @@ def main():
     }
 
     # Load metadata
-    manifest_path: pathlib.Path = data_dir / "manifest.msgpack"
+    manifest_path: pathlib.Path = data_dir / "manifest_all.msgpack"
     with open(manifest_path, "rb") as f:
         manifest = msgpack.unpack(f, raw=False)
 

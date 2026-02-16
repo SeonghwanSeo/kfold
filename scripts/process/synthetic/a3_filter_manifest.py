@@ -39,11 +39,8 @@ def main():
         df = df[df["criterion_1"] >= 0.3476]
     elif args.name.startswith("huMAP_v1"):
         df = df[
-            (df["criterion_boltz_plddt"] >= 0.8)
-            & (df["criterion_boltz_iplddt"] >= 0.7)
-            & (df["criterion_boltz_iptm"] >= 0.8)
-            & (df["criterion_boltz_pde"] <= 5.0)
-            & (df["criterion_boltz_ipde"] <= 5.0)
+            (df["criterion_boltz_confidence"] > 0.8)
+            | (df["criterion_aiupred_plddt"] > 0.8)
         ]
     constraint_count = len(df)
     print(
