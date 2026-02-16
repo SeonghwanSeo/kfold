@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create apo->holo trajectories as multi-model PDBs for training samples."""
+"""Create before/after PDBs for chain-wise perturbation of apo inputs."""
 
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ from string import Template
 
 import numpy as np
 import torch
-from kfold.data.utils.writer.pdb import to_pdbstring
 from omegaconf import DictConfig
 
 import kfold.model.modules as submodules  # noqa: F401
 from kfold.config import load_config
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.tokenized import TokenizedStructure
-from kfold.model.modules.structure_module.base import BaseEDM, BaseStructureModule
+from kfold.data.utils.writer.pdb import to_pdbstring
+from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.training.dataset.dataset import MultiTrainingDataset, TrainingDataset
 from kfold.training.dataset.sampler.base import Sample
@@ -31,8 +31,8 @@ _ASSIGN_RE = re.compile(r"^(?:export\s+)?([A-Z0-9_]+)=(.*)$")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create apo->holo trajectories using a training config or "
-            "multinode_new.sh settings."
+            "Create multi-model PDBs comparing original apo coordinates to "
+            "chain-wise perturbed coordinates."
         )
     )
     parser.add_argument(
@@ -57,8 +57,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out_dir",
         type=Path,
-        default=Path("./tmp/apo_trajectories"),
-        help="Directory to write multi-model PDB trajectories.",
+        default=Path("./tmp/apo_chain_perturbation"),
+        help="Directory to write multi-model PDB comparisons.",
     )
     parser.add_argument(
         "--num_samples",
@@ -67,24 +67,22 @@ def parse_args() -> argparse.Namespace:
         help="Number of dataset samples to export.",
     )
     parser.add_argument(
-        "--num_frames",
+        "--batch_size",
         type=int,
-        default=None,
-        help=(
-            "Number of frames in each trajectory. Defaults to structure_module.num_steps."
-        ),
+        default=1,
+        help="Number of samples to process per batch.",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Seed for sample selection and interpolation noise.",
+        help="Seed for sample selection and perturbation randomness.",
     )
     parser.add_argument(
         "--device",
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Torch device for interpolation.",
+        help="Torch device for perturbation.",
     )
     parser.add_argument(
         "--keep_temp_config",
@@ -296,25 +294,6 @@ def remap_asym_ids(struct: TokenizedStructure) -> TokenizedStructure:
     return struct.copy_with(chain=chain, residue=residue, token=token, bond=bond)
 
 
-def build_time_values(
-    structure_module: BaseStructureModule,
-    num_frames: int,
-    device: torch.device,
-) -> torch.Tensor:
-    if num_frames == 2:
-        schedule = structure_module.get_sampling_schedule(num_steps=2, device=device)
-        return schedule[[0, -1]]
-    return structure_module.get_sampling_schedule(num_steps=num_frames - 1, device=device)
-
-
-def infer_trajectory_tag(structure_module: BaseStructureModule) -> str:
-    if getattr(structure_module, "use_prior_coords", False):
-        return "ecsi"
-    if isinstance(structure_module, BaseEDM):
-        return "edm"
-    return "trajectory"
-
-
 def write_multimodel_pdb(
     struct: TokenizedStructure,
     traj_coords: np.ndarray,
@@ -324,7 +303,6 @@ def write_multimodel_pdb(
     with open(out_path, "w") as handle:
         for frame_idx, coords in enumerate(traj_coords):
             handle.write(f"MODEL     {frame_idx + 1}\n")
-            # TokenizedStructure lacks atom.coords, so reuse apo_coords for output.
             trajectory_struct = struct.replace_atom_coords(
                 atom_coords=coords, is_apo=True
             )
@@ -342,6 +320,15 @@ def write_multimodel_pdb(
         handle.write("END\n")
 
 
+def ensure_chain_augment(structure_module: KFoldECSI) -> KFoldECSI:
+    if not hasattr(structure_module, "apply_chain_random_augmentation"):
+        raise AttributeError(
+            "Structure module does not support chain-wise augmentation. "
+            "Expected apply_chain_random_augmentation()."
+        )
+    return structure_module
+
+
 def main() -> None:
     args = parse_args()
     if args.config is not None:
@@ -349,19 +336,17 @@ def main() -> None:
             raise ValueError("Use either --config or --multinode_script, not both.")
         if not args.config.exists():
             raise FileNotFoundError(f"Config not found: {args.config}")
-        cfg, values = build_config_from_path(args.config)
+        cfg, _values = build_config_from_path(args.config)
     else:
         multinode_script = args.multinode_script or Path("./multinode_new.sh")
         if not multinode_script.exists():
             raise FileNotFoundError(f"Multinode script not found: {multinode_script}")
-        cfg, values = build_config_from_multinode(multinode_script, args.keep_temp_config)
+        cfg, _values = build_config_from_multinode(
+            multinode_script, args.keep_temp_config
+        )
 
     data_module = TrainingDataModule(cfg.train.data)
     train_dataset = data_module.construct_train_dataset()
-
-    num_frames = args.num_frames or int(cfg.model.structure_module.num_steps)
-    if num_frames < 2:
-        raise ValueError("num_frames must be >= 2 to include apo and holo endpoints.")
 
     rng = np.random.default_rng(args.seed)
     total_samples = len(train_dataset)
@@ -372,7 +357,10 @@ def main() -> None:
             f"Using {target_samples}."
         )
 
-    indices = rng.permutation(total_samples).tolist()
+    if args.batch_size < 1:
+        raise ValueError("--batch_size must be >= 1.")
+
+    indices = rng.permutation(total_samples).tolist()[:target_samples]
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     score_model = Registry.instantiate(
@@ -381,79 +369,84 @@ def main() -> None:
     structure_module = Registry.instantiate(
         cfg.model.structure_module, score_model=score_model
     )
+    structure_module: KFoldECSI = ensure_chain_augment(structure_module)
+
+    if hasattr(structure_module, "coordinate_augmentation") and not getattr(
+        structure_module, "coordinate_augmentation", False
+    ):
+        print("Warning: coordinate_augmentation is disabled; before/after may match.")
 
     device = torch.device(args.device)
-    use_prior_coords = bool(getattr(structure_module, "use_prior_coords", False))
-    traj_tag = infer_trajectory_tag(structure_module)
-    t_values = build_time_values(structure_module, num_frames, device)[None, :]
-
     torch.set_grad_enabled(False)
 
     written = 0
-    for idx in indices:
-        if written >= target_samples:
-            break
+    for batch_start in range(0, target_samples, args.batch_size):
+        batch_indices = indices[batch_start : batch_start + args.batch_size]
+        batch_inputs: list[FoldingInput] = []
+        batch_structs: list[TokenizedStructure] = []
+        batch_ids: list[str] = []
+        batch_asym_ids: list[str] = []
+        batch_sample_indices: list[int] = []
 
-        try:
-            dataset, sample = resolve_sample(train_dataset, idx)
-            f_input, struct, sample_id = build_cropped_sample(dataset, sample)
-        except Exception as exc:
-            print(f"Skipping index {idx} due to load error: {exc}")
+        for idx in batch_indices:
+            try:
+                dataset, sample = resolve_sample(train_dataset, idx)
+                f_input, struct, sample_id = build_cropped_sample(dataset, sample)
+            except Exception as exc:
+                print(f"Skipping index {idx} due to load error: {exc}")
+                continue
+
+            batch_inputs.append(f_input)
+            batch_structs.append(struct)
+            batch_ids.append(sample_id)
+            batch_asym_ids.append(format_asym_id(sample.asym_id))
+            batch_sample_indices.append(idx)
+
+        if not batch_inputs:
             continue
 
-        f_input = FoldingInput.from_list([f_input]).to(device)
+        f_input = FoldingInput.from_list(batch_inputs, pad_to_max=True).to(device)
 
         if args.seed is not None:
-            torch.manual_seed(args.seed + written)
+            torch.manual_seed(args.seed + batch_start)
 
-        mask = f_input.atom.pad_mask
-        label_coords = structure_module.sample_holo(f_input, 1)
-        apo_coords = structure_module.sample_prior(f_input, 1, label_coords)
-        label_coords = label_coords * mask[:, None, :, None]
-        apo_coords = apo_coords * mask[:, None, :, None]
-
-        apo_expanded = apo_coords.expand(-1, num_frames, -1, -1)
-        label_expanded = label_coords.expand(-1, num_frames, -1, -1)
-
-        traj = structure_module.interpolate(
-            apo_expanded,
-            label_expanded,
-            t_values,
-            mask,
+        apo_coords = f_input.atom.apo_coords
+        apo_mask = f_input.atom.apo_mask
+        before_coords = apo_coords.clone()
+        after_coords = structure_module.apply_chain_random_augmentation(
+            apo_coords, apo_mask, f_input
         )
-        if use_prior_coords:
-            traj[:, 0] = apo_coords[:, 0]
-        traj[:, -1] = label_coords[:, 0]
 
-        traj_np = traj[0].cpu().numpy()
-        valid_mask = f_input.atom.pad_mask & f_input.atom.resolved_mask
-        if use_prior_coords:
-            valid_mask = valid_mask & f_input.atom.apo_mask
-        invalid_mask = ~valid_mask[0].cpu().numpy()
-        traj_np[:, invalid_mask] = np.nan
+        valid_mask = f_input.atom.pad_mask & f_input.atom.apo_mask
+        batch_items = zip(
+            batch_structs,
+            batch_ids,
+            batch_asym_ids,
+            batch_sample_indices,
+            strict=True,
+        )
+        for batch_idx, (struct, sample_id, asym_id, sample_idx) in enumerate(batch_items):
+            before_np = before_coords[batch_idx].cpu().numpy()
+            after_np = after_coords[batch_idx].cpu().numpy()
+            traj_np = np.stack([before_np, after_np], axis=0)
 
-        asym_id = format_asym_id(sample.asym_id)
-        out_name = f"{sample_id}_idx{idx}_asym{asym_id}-{traj_tag}-trajectory.pdb"
-        out_path = args.out_dir / out_name
+            invalid_mask = ~valid_mask[batch_idx].cpu().numpy()
+            traj_np[:, invalid_mask] = np.nan
 
-        try:
-            write_multimodel_pdb(struct, traj_np, out_path)
-        except errors.PDBWriterMaxChainError as exc:
-            print(f"Skipping {sample_id} (too many chains for PDB): {exc}")
-            continue
+            out_name = f"{sample_id}_idx{sample_idx}_asym{asym_id}-chain-perturb.pdb"
+            out_path = args.out_dir / out_name
 
-        written += 1
-        if written % 10 == 0 or written == target_samples:
-            print(f"Wrote {written}/{target_samples} trajectories.")
+            try:
+                write_multimodel_pdb(struct, traj_np, out_path)
+            except errors.PDBWriterMaxChainError as exc:
+                print(f"Skipping {sample_id} (too many chains for PDB): {exc}")
+                continue
 
-    gamma_max = values.get("GAMMA_MAX")
-    if gamma_max is None:
-        gamma_max = getattr(cfg.model.structure_module, "gamma_max", None)
-    gamma_label = gamma_max if gamma_max is not None else "unknown"
-    print(
-        f"Done. Generated {written} trajectories in {args.out_dir} "
-        f"(gamma_max={gamma_label})."
-    )
+            written += 1
+            if written % 10 == 0 or written == target_samples:
+                print(f"Wrote {written}/{target_samples} comparisons.")
+
+    print(f"Done. Generated {written} comparison PDBs in {args.out_dir}.")
 
 
 if __name__ == "__main__":

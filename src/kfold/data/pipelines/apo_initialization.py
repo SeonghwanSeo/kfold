@@ -6,7 +6,7 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.types.ccd import CCD, Component
-from kfold.data.types.structure import Chain, RefStructure
+from kfold.data.types.structure import RefStructure
 from kfold.data.utils.io.structure import read_protein_structure
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import compute_rmsd
@@ -130,7 +130,6 @@ class ApoInitializerConfig:
     is_protein_monomer_distillation: bool = False
     prob_perturbation: float = 1.0
     use_cached_conformer: bool = True
-    use_holo_if_apo_unavailable: bool = True
     protein_perturbation: ProteinPerturbationConfig | None = dataclasses.field(
         default_factory=ProteinPerturbationConfig
     )
@@ -145,21 +144,18 @@ class ApoInitializer:
     def __init__(
         self,
         config: ApoInitializerConfig,
-        is_protein_monomer_distillation: bool = False,
         ccd: CCD | None = None,
     ):
         self.config: ApoInitializerConfig = config
         self.use_perturbation: bool = config.use_perturbation
         self.use_random_augmentation: bool = config.use_random_augmentation
         self.use_residue_permutation: bool = config.use_residue_permutation
-        self.use_holo_if_apo_unavailable: bool = config.use_holo_if_apo_unavailable
+        self.is_protein_monomer_distillation: bool = (
+            config.is_protein_monomer_distillation
+        )
 
         self.prob_perturbation: float = config.prob_perturbation
         self.ccd: CCD = ccd
-
-        # Protein monomer distillation mode: directly copy holo coordinates to apo.
-        # This is for protein monomer synthetic data, such as AFDB or ESM Atlas.
-        self.is_protein_monomer_distillation: bool = is_protein_monomer_distillation
 
         # Apo perturbation module
         if self.use_perturbation:
@@ -240,10 +236,7 @@ class ApoInitializer:
 
         # Insert apo coordinates
         if self.is_protein_monomer_distillation:
-            assert struct.num_chains == 1, (
-                "Protein monomer distillation only supports single-chain structures."
-            )
-            self.copy_chain_holo_coords_to_apo(struct.chains[0], rng)
+            self.insert_apo_coordinates_from_holo(struct, rng)
         else:
             self.insert_apo_coordinates(struct, lookup, rng)
 
@@ -286,19 +279,12 @@ class ApoInitializer:
                         ccd_sequence, lookup[entity_id], rng
                     )
                 except Exception as e:
-                    # NOTE: Apo structure loading can fail for various reasons, such as
-                    # too large sequence length, mismatched residue mapping, or file
-                    # reading errors.
+                    # NOTE: There are some errors in rcsb-to-uniprot mapping file.
+                    # For robustness, we fall back to prior sampling if loading fails.
                     self.logger.error(
                         "Failed to load apo structure for entity "
-                        f"{entity_id} from {lookup[entity_id]['path']}: {e}."
+                        f"{entity_id}: {e}. Sampling from prior instead."
                     )
-                    if self.use_holo_if_apo_unavailable:
-                        # Falling back to holo coordinates.
-                        # We also try to apply perturbation, but most case
-                        # the perturbation will be failed due to missing
-                        # residues/atoms in holo structure.
-                        self.copy_chain_holo_coords_to_apo(chain, rng)
                     continue
                 # Store apo coordinates
                 apo_coords_dict[entity_id] = apo_coords
@@ -333,7 +319,6 @@ class ApoInitializer:
             chain.atom.apo_coords[dst_atom_indices] = apo_coords[
                 src_res_indices, src_atom_indices
             ]
-        del apo_coords_dict  # free memory
 
         # === 2. Insert apo coordinates for non-polymer chains === #
         # Use CCD reference conformers or ETKDG-generated.
@@ -391,32 +376,43 @@ class ApoInitializer:
             # Feed apo coordinates
             chain.atom.apo_coords[:, :] = apo_coords
 
-    def copy_chain_holo_coords_to_apo(
+    def insert_apo_coordinates_from_holo(
         self,
-        chain: Chain,
+        struct: RefStructure,
         rng: np.random.Generator,
     ):
-        """Get apo structure coordinates from label monomer structure.
+        """Get apo structure coordinates from holo structure.
         This is for protein monomer synthetic data, such as AFDB or ESM Atlas.
 
         Parameters
         ----------
         struct : RefStructure
-            Reference structure containing label coordinates.
-        perturb : bool
-            Whether to apply perturbation to the copied coordinates.
+            Reference structure containing holo coordinates.
         rng : np.random.Generator
             Random number generator for stochastic operations.
         """
+
         # Cache atom order mapping
         protein_atom_order = C.atom.protein_atom37_order
 
-        assert chain.ctype.is_protein, (
-            "copy_chain_holo_coords_to_apo only supports protein chains."
+        assert struct.num_chains == 1, (
+            "get_protein_apo_structure_from_holo only supports single-chain structures."
         )
+        chain = struct.chains[0]
+        assert chain.ctype.is_protein, (
+            "get_protein_apo_structure_from_holo only supports protein chains."
+        )
+
+        # For debugging
+        assert chain.residue.is_standard.all(), (
+            "get_protein_apo_structure_from_holo only supports standard residues."
+        )
+
         apo_coords = np.full((chain.num_residues, 37, 3), np.nan, dtype=np.float32)
+
         atom_names: list[str] = chain.atom.name.tolist()  # pre-converted to list
         atom_coords = chain.atom.coords  # [Nallatoms, 3]
+
         res_indices: list[int] = []
         atom_indices: list[int] = []
         for res_i in range(chain.num_residues):
@@ -433,15 +429,9 @@ class ApoInitializer:
         apo_coords[res_indices, atom_indices] = atom_coords
 
         # Apply perturbation
-        if self.use_perturbation and rng.random() < self.prob_perturbation:
-            sequence: str = chain.get_sequence()
-            apo_coords = self.apply_perturbation(sequence, apo_coords, rng)
+        sequence: str = chain.get_sequence()
+        apo_coords = self.apply_perturbation(sequence, apo_coords, rng)
 
-        # Apply random augmentation
-        if self.use_random_augmentation:
-            apo_coords = self.apply_random_augmentation(apo_coords, rng)
-
-        # Feed apo coordinates
         chain.atom.apo_coords[:, :] = apo_coords
 
     def get_protein_apo_structure(

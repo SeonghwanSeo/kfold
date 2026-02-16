@@ -23,11 +23,13 @@ Validation/Test set: Consider only the most preferred apo structure.
   "6oim": {
     "1": {
       "type": "protein",
+      "seq_id": "rcsb_protein_000020",
       "seq_emb": {
-        "path": "rcsb_protein_000020.npy",
+        "path": "rcsb_protein_000020.pt",
+        "residue_map": "1:250->1:250"
       },
       "struct_emb": {
-        "path": "AF-P01116-F1-model_v6.npy",
+        "path": "AF-P01116-F1-model_v6.pt",
         "residue_map": "1:235->11:245"
       },
       "apo": [
@@ -45,6 +47,7 @@ Validation/Test set: Consider only the most preferred apo structure.
         },
         {
           "source": "pdb"
+          "name": "51d6-A",
           "path": "51d6-A.pdb.gz",
           "residue_map": "5:250->5:250",
         }
@@ -168,11 +171,19 @@ def load_sequence_map(
                 # ligand
                 continue
 
+        # Construct residue mapping
+        # Since apo structures are predicted from full sequences,
+        # we assume full-length mapping here.
+        seq_res = f"1:{seqlen}"
+        apo_res = f"1:{seqlen}"
+        res_map = f"{seq_res}->{apo_res}"
+
         seq_id_map[(pdb_id, entity_id)] = {
             "ctype": ctype,
             "sequence": seq,
             "seq_len": seqlen,
             "seq_id": seq_id,
+            "res_map": res_map,
         }
     return seq_id_map
 
@@ -364,13 +375,18 @@ def _prepare_nucleic_acid_lookup(
 
     # Get sequence ID and residue mapping
     seq_id: str = seq_info["seq_id"]
+    seq_len: int = seq_info["seq_len"]
+    seq_res_map: str = seq_info["res_map"]
 
     # === 2. Prepare sequence embedding info === #
     seq_emb: dict[str, str] = {
-        "path": f"{seq_id}.npy",
+        "path": f"{seq_id}.pt",
+        "residue_map": seq_res_map,
     }
     return {
         "type": ctype.name.lower(),
+        "seq_id": seq_id,
+        "seq_len": seq_len,
         "seq_emb": seq_emb,
     }
 
@@ -400,10 +416,12 @@ def _prepare_protein_lookup(
     # Get sequence ID and residue mapping
     seq_id: str = seq_info["seq_id"]
     seq_len: int = seq_info["seq_len"]
+    seq_res_map: str = seq_info["res_map"]
 
     # === 2. Prepare sequence embedding info === #
     seq_emb: dict[str, str] = {
-        "path": f"{seq_id}.npy",
+        "path": f"{seq_id}.pt",
+        "residue_map": seq_res_map,
     }
 
     # === 3. Prepare apo structure info === #
@@ -430,8 +448,6 @@ def _prepare_protein_lookup(
     seqlen = seq_info["seq_len"]
     esmfold_path = apo_dir / "esmfold" / f"{seqlen}/{seq_id}.pdb.gz"
     if esmfold_path.exists():
-        # ESMFold models are full-length and have a 1-to-1 residue mapping.
-        seq_res_map = f"1:{seq_len}->1:{seq_len}"
         esmfold_apo: dict[str, str] = {
             "source": "esmfold",
             "name": seq_id,
@@ -450,12 +466,14 @@ def _prepare_protein_lookup(
         # Use the most preferred apo structure for structure embedding
         ref_apo_info = apo_infos[0]
         struct_emb = {
-            "path": f"{ref_apo_info['name']}.npy",
+            "path": f"{ref_apo_info['name']}.pt",
             "residue_map": ref_apo_info["residue_map"],
         }
 
     return {
         "type": ctype.name.lower(),
+        "seq_id": seq_id,
+        "seq_len": seq_len,
         "seq_emb": seq_emb,
         "struct_emb": struct_emb,
         "apo": apo_infos,
@@ -463,7 +481,7 @@ def _prepare_protein_lookup(
 
 
 def main():
-    """Main function to process RCSB PDB entries and create lookup JSON."""
+    """Main function to extract sequences from npz files using multiprocessing."""
     args = parse_args()
     data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
     lmdb_path = data_dir / "structure.lmdb"

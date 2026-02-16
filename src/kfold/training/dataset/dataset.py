@@ -118,11 +118,6 @@ class DatasetConfig:
         Optional path to the custom manifest file.
     seed : int | None
         Random seed for data loading.
-    is_protein_monomer_distillation : bool
-        Whether this is large-scale protein monomer synthetic data,
-        such as AFDB or ESMAtlas. This flag can be used to enable
-        specific handling for monomer distillation data, such as
-        feeding apo structures from labeled monomer structures.
     apo_init : ApoInitializerConfig
         Configuration for apo structure initialization.
     """
@@ -131,7 +126,6 @@ class DatasetConfig:
     data_path: str | Path
     manifest_path: str | Path | None = None
     seed: int | None = None
-    is_protein_monomer_distillation: bool = False
     apo_init: apo_initialization.ApoInitializerConfig = dataclasses.field(
         default_factory=apo_initialization.ApoInitializerConfig
     )
@@ -214,10 +208,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.return_symmetry: bool = return_symmetry
         self.return_structure: bool = return_structure
         self.safe_load: bool = safe_load
-
-        self.is_protein_monomer_distillation: bool = (
-            config.is_protein_monomer_distillation
-        )
 
         pretrained_embedding: dict = pretrained_embedding.copy()
 
@@ -330,6 +320,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         lookup_path = self.data_root / "lookup.msgpack"
         with open(lookup_path, "rb") as f:
             lookup_table: dict = msgpack.unpack(f)
+        for m in self.metadatas:
+            if m.id not in lookup_table:
+                raise KeyError(f"Metadata ID {m.id} not found in lookup table.")
         return lookup_table
 
     def setup(self) -> None:
@@ -355,51 +348,46 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         apo_dir = self.data_root / "apo"
         apo_lookup_map: dict[int, dict] = {}
-        if not self.is_protein_monomer_distillation:
-            # Match apo structure for each protein chain.
-            for c in ref_struct.chains:
-                entity_id = c.entity_id
-                entity_info = entry_info[str(entity_id)]
-                if c.ctype.is_protein:
-                    apo_list: list = entity_info.get("apo", [])
+        for c in ref_struct.chains:
+            entity_id = c.entity_id
+            entity_info = entry_info[str(entity_id)]
+            if c.ctype.is_protein:
+                apo_list: list = entity_info.get("apo", [])
 
-                    # Select apo structure (randomly if multiple)
-                    if len(apo_list) == 0:
-                        logger.warning(
-                            "No available apo structure found "
-                            f"for entity {entity_id} in entry {entry_id}."
-                        )
-                        continue
-                    elif len(apo_list) == 1:
-                        apo_info = apo_list[0]
-                    else:
-                        apo_info = rng.choice(apo_list)
+                # Select apo structure (randomly if multiple)
+                if len(apo_list) == 0:
+                    logger.warning(
+                        "No available apo structure found "
+                        f"for entity {entity_id} in entry {entry_id}."
+                    )
+                    continue
+                elif len(apo_list) == 1:
+                    apo_info = apo_list[0]
+                else:
+                    apo_info = rng.choice(apo_list)
 
-                    source = apo_info["source"]
-                    name = apo_info["name"]
-                    path = apo_info["path"]
-                    residue_map = apo_info["residue_map"]
+                source = apo_info["source"]
+                name = apo_info["name"]
+                path = apo_info["path"]
+                residue_map = apo_info["residue_map"]
 
-                    # Check apo structure file existence
-                    apo_path = apo_dir / source / path
-                    if not apo_path.exists():
-                        logger.error(f"Apo structure file not found: {apo_path}.")
-                        continue
+                # Check apo structure file existence
+                apo_path = apo_dir / source / path
+                if not apo_path.exists():
+                    logger.error(f"Apo structure file not found: {apo_path}.")
+                    continue
 
-                    # Get lmdb key
-                    lmdb_key = f"{source}:{name}"
+                # Get lmdb key
+                lmdb_key = f"{source}:{name}"
 
-                    # Add to apo lookup map
-                    apo_lookup_map[entity_id] = {
-                        "source": source,
-                        "name": name,
-                        "path": apo_path,
-                        "residue_map": residue_map,
-                        "rieprody_key": lmdb_key,
-                    }
-        else:
-            # no additional information is needed.
-            pass
+                # Add to apo lookup map
+                apo_lookup_map[entity_id] = {
+                    "source": source,
+                    "name": name,
+                    "path": apo_path,
+                    "residue_map": residue_map,
+                    "rieprody_key": lmdb_key,
+                }
 
         # Populate apo structure
         self.apo_initializer(ref_struct, apo_lookup_map, rng)
