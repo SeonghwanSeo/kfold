@@ -25,16 +25,26 @@ class RBF(torch.nn.Module):
         The maximum distance for RBF encoding.
     num_bins : int
         The number of bins for RBF encoding.
+    add_last_bin : bool
+        Whether to add an additional bin for distances greater than d_max.
     """
 
     def __init__(
-        self, d_min: float = 2.0, d_max: float = 22.0, num_bins: int = 64
+        self,
+        d_min: float = 2.0,
+        d_max: float = 22.0,
+        num_bins: int = 64,
+        add_last_bin: bool = False,
     ) -> None:
         super().__init__()
+        self.d_min: float = d_min
+        self.d_max: float = d_max
         self.d_sigma: float = (d_max - d_min) / num_bins
+        self.add_last_bin = add_last_bin
         self.register_buffer(
             "d_mu", torch.linspace(d_min, d_max, num_bins), persistent=False
         )
+        self.num_bins: int = num_bins + 1 if add_last_bin else num_bins
 
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         """Forward pass of RBF encoding.
@@ -50,6 +60,9 @@ class RBF(torch.nn.Module):
         """
         d_mu: torch.Tensor = self.d_mu
         rbf = torch.exp(-((dist.unsqueeze(-1) - d_mu) ** 2) / (2 * self.d_sigma**2))
+        if self.add_last_bin:
+            last_bin = (dist > self.d_max).float().unsqueeze(-1)
+            rbf = torch.cat([rbf, last_bin], dim=-1)
         return rbf
 
 
@@ -67,7 +80,10 @@ class Distogram(torch.nn.Module):
     """
 
     def __init__(
-        self, d_min: float = 2.0, d_max: float = 22.0, num_bins: int = 64
+        self,
+        d_min: float = 2.0,
+        d_max: float = 22.0,
+        num_bins: int = 64,
     ) -> None:
         super().__init__()
         bin_size = (d_max - d_min) / num_bins
@@ -130,6 +146,8 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         # Apo-related parameters
         use_apo : bool
             Whether to embed apo structure.
+        use_c_beta_for_apo : bool
+            Whether to use C-beta coordinates for apo embedding (if False, use C-alpha).
         apo_distmap_type : str
             options: 'rbf', 'distogram'
         apo_min_dist : float
@@ -138,6 +156,9 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             The maximum distance for apo distance map encoding.
         apo_num_bins : int
             The number of bins for apo distance map encoding.
+        apo_add_last_bin : bool
+            Whether to add an additional bin for distances greater than apo_max_dist
+            in RBF encoding.
 
         # Pre-trained embedding-related parameters
         channel_seq_encoder : int | None
@@ -159,10 +180,12 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         channel_struct_encoder: int | None = None
         # Apo-related parameters
         use_apo: bool = True
+        use_c_beta_for_apo: bool = False
         apo_distmap_type: str = "rbf"
         apo_num_bins: int = 64
         apo_min_dist: float = 2.0
         apo_max_dist: float = 22.0
+        apo_add_last_bin: bool = False
         # Interaction-related parameters
         use_interaction: bool = True
         num_interaction_types: int = 8
@@ -177,6 +200,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         self.channel_atom: int = cfg.channel_atom
         self.channel_atompair: int = cfg.channel_atompair
         self.use_apo: bool = cfg.use_apo
+        self.use_c_beta_for_apo: bool = cfg.use_c_beta_for_apo
 
         assert cfg.apo_distmap_type in ["rbf", "distogram"], (
             f"Invalid distmap_type: {cfg.apo_distmap_type}. "
@@ -230,7 +254,12 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         if cfg.use_apo:
             if cfg.apo_distmap_type == "rbf":
                 # rbf
-                self.distmap = RBF(cfg.apo_min_dist, cfg.apo_max_dist, cfg.apo_num_bins)
+                self.distmap = RBF(
+                    cfg.apo_min_dist,
+                    cfg.apo_max_dist,
+                    cfg.apo_num_bins,
+                    add_last_bin=cfg.apo_add_last_bin,
+                )
             else:
                 # distogram
                 self.distmap = Distogram(
@@ -238,7 +267,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
                 )
 
             # Pair representation
-            self.linear_apo_pdist = LinearNoBias(cfg.apo_num_bins, cfg.channel_z)
+            self.linear_apo_pdist = LinearNoBias(self.distmap.num_bins, cfg.channel_z)
 
         # Interaction-related
         self.use_interaction = cfg.use_interaction
@@ -349,9 +378,12 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             Pair representation containing apo information. Shape: (B, L, L, c_z)
         """
         batch_index = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
-        center_index = f_input.token.center_index
+        if self.use_c_beta_for_apo:
+            center_index = f_input.token.disto_index
+        else:
+            center_index = f_input.token.center_index
 
-        # Extract apo C-alpha coordinates and mask
+        # Extract apo C-alpha/C-beta coordinates and mask
         apo_coords = f_input.atom.apo_coords[batch_index, center_index]  # [B, L, 3]
         mask = f_input.atom.apo_mask[batch_index, center_index]  # [B, L]
         pair_mask = mask[:, :, None] & mask[:, None, :]
