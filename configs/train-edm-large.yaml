@@ -9,6 +9,9 @@ model:
     pairformer:
       use_qk_norm: true
     num_register_tokens: 10
+    blocks_per_ckpt: 16
+  score_model:
+    blocks_per_ckpt: 24
 
 train:
   _yaml_: "train/stage_1.yaml"
