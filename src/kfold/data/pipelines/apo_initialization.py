@@ -436,7 +436,7 @@ class ApoInitializer:
             apo_coords = self.apply_random_augmentation(apo_coords, rng)
 
         # Feed apo coordinates
-        chain.atom.apo_coords[:, :] = apo_coords
+        chain.atom.apo_coords[:] = apo_coords[res_indices, atom_indices]
 
     def get_protein_apo_structure(
         self,

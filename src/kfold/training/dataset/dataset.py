@@ -131,12 +131,8 @@ class DatasetConfig:
     manifest_path: str | Path | None = None
     seed: int | None = None
     is_protein_monomer_distillation: bool = False
-    apo_init: apo_initialization.ApoInitializerConfig = dataclasses.field(
-        default_factory=apo_initialization.ApoInitializerConfig
-    )
-    prior_sampler: prior_sampling.PriorSamplerConfig = dataclasses.field(
-        default_factory=prior_sampling.PriorSamplerConfig
-    )
+    apo_init: apo_initialization.ApoInitializerConfig
+    prior_sampler: prior_sampling.PriorSamplerConfig | None
 
     @classmethod
     def from_dict(cls, config) -> "DatasetConfig":
@@ -286,8 +282,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.apo_initializer = apo_initialization.ApoInitializer(
             config.apo_init, self.ccd, self.is_protein_monomer_distillation
         )
-        self.prior_sampler = prior_sampling.PriorSampler(config.prior_sampler, self.ccd)
-        self.tokenizer = tokenization.Tokenizer(self.prior_sampler, self.ccd)
+        if config.prior_sampler is not None:
+            prior_sampler = prior_sampling.PriorSampler(config.prior_sampler, self.ccd)
+        else:
+            prior_sampler = None
+        self.tokenizer = tokenization.Tokenizer(prior_sampler, self.ccd)
         self.featurizer = featurization.InputFeaturizer(
             seq_embedding_dim=self.seq_embedding_dim,
             struct_embedding_dim=self.struct_embedding_dim,
@@ -464,7 +463,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 raise e
             except Exception as e:
                 sample_id = sample.id
-                logger.error(
+                self.logger.error(
                     f"Error loading index {sample_id}({index}): {e}. Retrying..."
                 )
                 if not self.safe_load:
@@ -599,14 +598,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 emb_id_info = entity_info["seq_emb"]
                 embedding_paths[entity_id] = {
                     "path": root_dir / emb_id_info["path"],
-                    "residue_map": emb_id_info["residue_map"],
                 }
             elif emb_type == "struct" and ctype.is_protein:
                 emb_id_info = entity_info["struct_emb"]
                 embedding_paths[entity_id] = {
                     "path": root_dir / emb_id_info["path"],
-                    "residue_map": emb_id_info["residue_map"],
                 }
+                if "residue_map" in emb_id_info:
+                    embedding_paths[entity_id]["residue_map"] = emb_id_info["residue_map"]
         return embedding_paths
 
 
