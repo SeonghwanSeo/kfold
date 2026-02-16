@@ -568,7 +568,13 @@ def load_pretrained_structure_embedding(
         # Residue mapping string
         # e.g., "1:24->10:33"
         #    -> fill residues 1 to 24 with embeddings from residues 10 to 33
-        res_st, res_end, emb_st, emb_end = parse_residue_map(entity_info["residue_map"])
+        if "residue_map" in entity_info:
+            res_st, res_end, emb_st, emb_end = parse_residue_map(
+                entity_info["residue_map"]
+            )
+        else:
+            # If no residue map provided, we assume all residues are mapped in order.
+            res_st, res_end, emb_st, emb_end = 0, 1000000, 0, 1000000
 
         if not emb_path.exists():
             warnings.warn(

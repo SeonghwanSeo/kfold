@@ -714,7 +714,7 @@ def insert_chain_coordinates(
                 atom: gemmi.Atom = name_to_atom[n]
                 coords: gemmi.Position = atom.pos
                 ref_chain.atom.coords[atom_i, :] = (coords.x, coords.y, coords.z)
-                ref_chain.atom.bfactor[atom_i] = min(atom.b_iso, 99.9)  # cap bfactor
+                ref_chain.atom.bfactor[atom_i] = min(atom.b_iso, 100.0)  # cap bfactor
                 name_to_atom.pop(n)
             else:
                 # Leave as NaN if atom not found
