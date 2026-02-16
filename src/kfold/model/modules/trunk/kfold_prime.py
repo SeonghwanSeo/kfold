@@ -12,29 +12,7 @@ from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
 from .base import BaseTrunk
-
-
-@dataclasses.dataclass(kw_only=True)
-class PLMModuleConfig:
-    channel_plm_input: int = 2560
-    channel_plm: int = 512
-    num_heads_attn: int = 16
-    num_heads_tri_attn: int = 4
-    num_blocks: int = 4
-    dropout_plm: float = 0.15
-    dropout_z: float = 0.25
-    use_separate_projections: bool = True
-    use_qk_norm: bool = False
-
-
-@dataclasses.dataclass(kw_only=True)
-class PairformerConfig:
-    num_heads_attn: int = 16
-    num_heads_tri_attn: int = 4
-    num_blocks: int = 48
-    dropout: float = 0.25
-    # Proteina-style QK normalization (LayerNorm on Q and K before head split)
-    use_qk_norm: bool = False
+from .kfold_trunk import PairformerConfig, PLMModuleConfig
 
 
 @TRUNK.register()
@@ -61,24 +39,34 @@ class KFoldTrunkPrime(BaseTrunk):
         channel_s: int = 384
         channel_z: int = 128
 
+        # Pre-trained language model options
+        use_seq_embedding: bool = True
+        use_struct_embedding: bool = False
+
         # plm module
         plm_module: PLMModuleConfig = dataclasses.field(default_factory=PLMModuleConfig)
 
         # pairformer
         pairformer: PairformerConfig = dataclasses.field(default_factory=PairformerConfig)
 
+        # Proteina-style register tokens.
+        num_register_tokens: int = 0
+        register_token_init_std: float = 0.05
+
         # other options
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
-        # Proteina-style register tokens.
-        # These tokens are prepended to representations and removed after trunk.
-        num_register_tokens: int = 0
-        register_token_init_std: float = 0.05
-
     def __init__(self, cfg: Config, kernel_config=None):
         """Initialize the KFoldTrunkPrime module."""
         super().__init__(cfg, kernel_config)
+
+        self.use_seq_embedding: bool = cfg.use_seq_embedding
+        self.use_struct_embedding: bool = cfg.use_struct_embedding
+        assert self.use_seq_embedding or self.use_struct_embedding, (
+            "At least one of use_seq_embedding or use_struct_embedding must be True"
+        )
+
         # === Priming pass before recycling === #
         self.plm_module_prime: PLMModule = PLMModule(
             channel_s=cfg.channel_s,
@@ -248,7 +236,19 @@ class KFoldTrunkPrime(BaseTrunk):
         else:
             chunk_size_tri_attn = None
 
-        s_plm = f_input.pretrained.sequence_embedding  # [B, L, c_plm]
+        # Get PLM embeddings.
+        seq_emb = f_input.pretrained.sequence_embedding
+        struct_emb = f_input.pretrained.structure_embedding
+        if self.use_seq_embedding and self.use_struct_embedding:
+            s_plm = torch.cat([seq_emb, struct_emb], dim=-1)
+        elif self.use_seq_embedding:
+            s_plm = seq_emb
+        elif self.use_struct_embedding:
+            s_plm = struct_emb
+        else:
+            raise ValueError(
+                "At least one of use_seq_embedding or use_struct_embedding must be True"
+            )
 
         # === Proteina-style register tokens (optional) ===
         mask = f_input.token.pad_mask

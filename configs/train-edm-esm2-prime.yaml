@@ -4,8 +4,11 @@ model:
     plm_module:
       channel_plm_input: 2560
       num_blocks: 4
+      use_qk_norm: true
     pairformer:
-      num_blocks: 16
+      num_blocks: 12
+      use_qk_norm: true
+    num_register_tokens: 10
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -14,11 +17,8 @@ model:
 train:
   _yaml_: "train/stage_1.yaml"
 
-  name: edm-mini-esm2
+  name: edm-mini-esm2-prime
   out_dir: ./experiments/
-
-  trainer:
-    strategy: "ddp_find_unused_parameters_true"
 
   global_hparams:
     batch_size: 4

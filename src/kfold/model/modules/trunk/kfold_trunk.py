@@ -61,20 +61,23 @@ class KFoldTrunk(BaseTrunk):
         channel_s: int = 384
         channel_z: int = 128
 
+        # Pre-trained language model options
+        use_seq_embedding: bool = True
+        use_struct_embedding: bool = False
+
         # plm module
         plm_module: PLMModuleConfig = dataclasses.field(default_factory=PLMModuleConfig)
 
         # pairformer
         pairformer: PairformerConfig = dataclasses.field(default_factory=PairformerConfig)
 
+        # Proteina-style register tokens.
+        num_register_tokens: int = 0
+        register_token_init_std: float = 0.05
+
         # other options
         blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
-
-        # Proteina-style register tokens.
-        # These tokens are prepended to representations and removed after trunk.
-        num_register_tokens: int = 0
-        register_token_init_std: float = 0.05
 
     def __init__(self, cfg: Config, kernel_config=None):
         """Initialize the KFoldTrunk module."""
@@ -205,6 +208,20 @@ class KFoldTrunk(BaseTrunk):
             asym_id,
             mask,
         )
+
+        # Get PLM embeddings.
+        seq_emb = f_input.pretrained.sequence_embedding
+        struct_emb = f_input.pretrained.structure_embedding
+        if self.use_seq_embedding and self.use_struct_embedding:
+            s_plm = torch.cat([seq_emb, struct_emb], dim=-1)
+        elif self.use_seq_embedding:
+            s_plm = seq_emb
+        elif self.use_struct_embedding:
+            s_plm = struct_emb
+        else:
+            raise ValueError(
+                "At least one of use_seq_embedding or use_struct_embedding must be True"
+            )
 
         # z_hat, s_hat = 0, 0
         s_hat = torch.zeros_like(s_init)

@@ -14,9 +14,6 @@ compile_mode: "default"
 # Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/kfold.yaml"
-  channel_seq_encoder: null # Should be overriden
-  use_apo: true
-  use_interaction: false
 
 trunk:
   _yaml_: "module/trunk/kfold-prime.yaml"

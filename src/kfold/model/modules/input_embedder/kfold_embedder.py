@@ -1,13 +1,9 @@
-import os
-
 import torch
-import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
-from kfold.model.layers.alphafold3.input_encoder import InputFeatureEmbedder
 from kfold.model.layers.kfold.encoder import InputEmbedderWithApo
-from kfold.model.layers.primitives import LayerNorm, LinearNoBias
+from kfold.model.layers.primitives import LinearNoBias
 from kfold.utils.interaction_utils import compute_pair_interactions
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 
@@ -25,26 +21,19 @@ class RBF(torch.nn.Module):
         The maximum distance for RBF encoding.
     num_bins : int
         The number of bins for RBF encoding.
-    add_last_bin : bool
-        Whether to add an additional bin for distances greater than d_max.
     """
 
     def __init__(
-        self,
-        d_min: float = 2.0,
-        d_max: float = 22.0,
-        num_bins: int = 64,
-        add_last_bin: bool = False,
+        self, d_min: float = 2.0, d_max: float = 49.0, num_bins: int = 48
     ) -> None:
         super().__init__()
         self.d_min: float = d_min
         self.d_max: float = d_max
         self.d_sigma: float = (d_max - d_min) / num_bins
-        self.add_last_bin = add_last_bin
         self.register_buffer(
             "d_mu", torch.linspace(d_min, d_max, num_bins), persistent=False
         )
-        self.num_bins: int = num_bins + 1 if add_last_bin else num_bins
+        self.num_bins: int = num_bins + 1
 
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         """Forward pass of RBF encoding.
@@ -57,60 +46,13 @@ class RBF(torch.nn.Module):
         -------
         rbf : torch.Tensor
             Tensor of shape (..., num_bins) containing RBF encoded distances.
+            last bin is for distances greater than d_max.
         """
         d_mu: torch.Tensor = self.d_mu
         rbf = torch.exp(-((dist.unsqueeze(-1) - d_mu) ** 2) / (2 * self.d_sigma**2))
-        if self.add_last_bin:
-            last_bin = (dist > self.d_max).float().unsqueeze(-1)
-            rbf = torch.cat([rbf, last_bin], dim=-1)
+        last_bin = (dist > self.d_max).float().unsqueeze(-1)
+        rbf = torch.cat([rbf, last_bin], dim=-1)
         return rbf
-
-
-class Distogram(torch.nn.Module):
-    """One-hot contact map encoding for distances.
-
-    Parameters
-    ----------
-    d_min : float
-        The minimum distance for RBF encoding.
-    d_max : float
-        The maximum distance for RBF encoding.
-    num_bins : int
-        The number of bins for RBF encoding.
-    """
-
-    def __init__(
-        self,
-        d_min: float = 2.0,
-        d_max: float = 22.0,
-        num_bins: int = 64,
-    ) -> None:
-        super().__init__()
-        bin_size = (d_max - d_min) / num_bins
-        first_bin = d_min + bin_size  # =2.3125
-        last_bin = d_max - bin_size  # =21.6875
-
-        boundaries = torch.linspace(first_bin, last_bin, num_bins - 1)  # [num_bins - 1]
-        self.register_buffer("boundaries", boundaries, persistent=False)
-        self.num_bins: int = num_bins
-
-    def forward(self, dist: torch.Tensor) -> torch.Tensor:
-        """Forward pass of distogram encoding.
-
-        Parameters
-        ----------
-        dist : torch.Tensor
-            Tensor of shape (...,) containing distances.
-        Returns
-        -------
-        distogram : torch.Tensor
-            Tensor of shape (..., num_bins) containing one-hot distance map
-        """
-        boundaries: torch.Tensor = self.boundaries  # type: ignore
-        distogram = (dist.unsqueeze(-1) > boundaries).sum(dim=-1).long()
-
-        # One-hot encoding
-        return F.one_hot(distogram, num_classes=self.num_bins).float()
 
 
 @INPUT_EMBEDDER.register()
@@ -144,25 +86,12 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             The maximum relative chain distance for relative position encoding.
 
         # Apo-related parameters
-        use_apo : bool
-            Whether to embed apo structure.
-        use_c_beta_for_apo : bool
-            Whether to use C-beta coordinates for apo embedding (if False, use C-alpha).
-        apo_distmap_type : str
-            options: 'rbf', 'distogram'
         apo_min_dist : float
             The minimum distance for apo distance map encoding.
         apo_max_dist : float
             The maximum distance for apo distance map encoding.
         apo_num_bins : int
             The number of bins for apo distance map encoding.
-        apo_add_last_bin : bool
-            Whether to add an additional bin for distances greater than apo_max_dist
-            in RBF encoding.
-
-        # Pre-trained embedding-related parameters
-        channel_seq_encoder : int | None
-            The pre-trained sequence encoder output channel size.
         """
 
         channel_s: int = 384
@@ -179,19 +108,13 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         channel_seq_encoder: int | None = None
         channel_struct_encoder: int | None = None
         # Apo-related parameters
-        use_apo: bool = True
-        use_c_beta_for_apo: bool = False
-        apo_distmap_type: str = "rbf"
-        apo_num_bins: int = 64
+        apo_num_bins: int = 48
         apo_min_dist: float = 2.0
-        apo_max_dist: float = 22.0
-        apo_add_last_bin: bool = False
+        apo_max_dist: float = 49.0
         # Interaction-related parameters
         use_interaction: bool = True
         num_interaction_types: int = 8
         num_pair_interaction_types: int = 5
-        debug_interaction: bool = False
-        debug_interaction_max_logs: int = 1
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
@@ -199,34 +122,16 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         self.channel_z: int = cfg.channel_z
         self.channel_atom: int = cfg.channel_atom
         self.channel_atompair: int = cfg.channel_atompair
-        self.use_apo: bool = cfg.use_apo
-        self.use_c_beta_for_apo: bool = cfg.use_c_beta_for_apo
 
-        assert cfg.apo_distmap_type in ["rbf", "distogram"], (
-            f"Invalid distmap_type: {cfg.apo_distmap_type}. "
-            "Choose from 'rbf' or 'distogram'."
+        self.encoder = InputEmbedderWithApo(
+            channel_s=cfg.channel_s,
+            channel_atom=cfg.channel_atom,
+            channel_atompair=cfg.channel_atompair,
+            atoms_per_window_queries=cfg.atoms_per_window_queries,
+            atoms_per_window_keys=cfg.atoms_per_window_keys,
+            atom_encoder_blocks=cfg.atom_encoder_blocks,
+            atom_encoder_heads=cfg.atom_encoder_heads,
         )
-
-        if self.use_apo:
-            self.encoder = InputEmbedderWithApo(
-                channel_s=cfg.channel_s,
-                channel_atom=cfg.channel_atom,
-                channel_atompair=cfg.channel_atompair,
-                atoms_per_window_queries=cfg.atoms_per_window_queries,
-                atoms_per_window_keys=cfg.atoms_per_window_keys,
-                atom_encoder_blocks=cfg.atom_encoder_blocks,
-                atom_encoder_heads=cfg.atom_encoder_heads,
-            )
-        else:
-            self.encoder = InputFeatureEmbedder(
-                channel_s=cfg.channel_s,
-                channel_atom=cfg.channel_atom,
-                channel_atompair=cfg.channel_atompair,
-                atoms_per_window_queries=cfg.atoms_per_window_queries,
-                atoms_per_window_keys=cfg.atoms_per_window_keys,
-                atom_encoder_blocks=cfg.atom_encoder_blocks,
-                atom_encoder_heads=cfg.atom_encoder_heads,
-            )
 
         # Initial linear layers for single and pair representations
         self.linear_s_init = LinearNoBias(cfg.channel_s, cfg.channel_s)
@@ -240,34 +145,10 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         )
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
 
-        # Pre-trained embedding-related
-        self.use_seq_enc: bool = cfg.channel_seq_encoder is not None
-        if cfg.channel_seq_encoder is not None:
-            self.proj_seq_emb = torch.nn.Sequential(
-                LayerNorm(cfg.channel_seq_encoder, create_offset=False),
-                LinearNoBias(cfg.channel_seq_encoder, cfg.channel_s, init="relu"),
-                torch.nn.ReLU(),
-                LinearNoBias(cfg.channel_s, cfg.channel_s, init="zero"),
-            )
-
         # Apo-related
-        if cfg.use_apo:
-            if cfg.apo_distmap_type == "rbf":
-                # rbf
-                self.distmap = RBF(
-                    cfg.apo_min_dist,
-                    cfg.apo_max_dist,
-                    cfg.apo_num_bins,
-                    add_last_bin=cfg.apo_add_last_bin,
-                )
-            else:
-                # distogram
-                self.distmap = Distogram(
-                    cfg.apo_min_dist, cfg.apo_max_dist, cfg.apo_num_bins
-                )
-
-            # Pair representation
-            self.linear_apo_pdist = LinearNoBias(self.distmap.num_bins, cfg.channel_z)
+        self.distmap = RBF(cfg.apo_min_dist, cfg.apo_max_dist, cfg.apo_num_bins)
+        # Pair representation
+        self.linear_apo_pdist = LinearNoBias(self.distmap.num_bins, cfg.channel_z)
 
         # Interaction-related
         self.use_interaction = cfg.use_interaction
@@ -278,13 +159,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             self.linear_z_interaction = LinearNoBias(
                 cfg.num_pair_interaction_types, cfg.channel_z, init="zero"
             )
-
-        # TODO: remove debug
-        self.debug_interaction = cfg.debug_interaction or (
-            os.getenv("KFOLD_DEBUG_INTERACTION") == "1"
-        )
-        self.debug_interaction_max_logs = cfg.debug_interaction_max_logs
-        self._interaction_debug_logs = 0
 
     def forward(
         self,
@@ -315,13 +189,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         # Get input single representation
         s_inputs = self.encoder(f_input)  # [B, L, c_s]
 
-        # Add pre-trained sequence/structure embedding if available
-        if self.use_seq_enc:
-            assert f_input.pretrained.has_sequence_embedding
-            seq_emb = f_input.pretrained.sequence_embedding  # [B, Lt, c_seq_enc]
-            s_seq = self.proj_seq_emb(seq_emb)  # [B, Lt, c_s]
-            s_inputs = s_inputs + s_seq
-
         if self.use_interaction:
             # Add token interaction embedding
             s_inputs = s_inputs + self.linear_s_interaction(
@@ -349,8 +216,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         )  # [B, L, L, c_z]
 
         # Add apo distance embedding
-        if self.use_apo:
-            z_init = z_init + self.get_apo_embedding(f_input)  # [B, L, L, c_z]
+        z_init = z_init + self.get_apo_embedding(f_input)  # [B, L, L, c_z]
 
         if self.use_interaction:
             # Add token interaction embedding
@@ -359,8 +225,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
                 pair_interactions.to(z_init.dtype)
             )  # [B, L, L, c_z]
             z_init = z_init + z_interaction
-            # TODO: remove debug
-            self._log_interaction_stats(f_input, pair_interactions, z_interaction, z_init)
 
         return s_inputs, s_init, z_init
 
@@ -378,12 +242,8 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             Pair representation containing apo information. Shape: (B, L, L, c_z)
         """
         batch_index = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
-        if self.use_c_beta_for_apo:
-            center_index = f_input.token.disto_index
-        else:
-            center_index = f_input.token.center_index
-
-        # Extract apo C-alpha/C-beta coordinates and mask
+        # Extract apo C-beta coordinates and mask
+        center_index = f_input.token.disto_index
         apo_coords = f_input.atom.apo_coords[batch_index, center_index]  # [B, L, 3]
         mask = f_input.atom.apo_mask[batch_index, center_index]  # [B, L]
         pair_mask = mask[:, :, None] & mask[:, None, :]
@@ -434,69 +294,3 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         # Padding is always located at index (0,)
         adj[:, 0, 0] = 0
         return adj
-
-    # TODO: remove.
-    def _log_interaction_stats(
-        self,
-        f_input: FoldingInput,
-        pair_interactions: torch.Tensor,
-        z_interaction: torch.Tensor,
-        z_init: torch.Tensor,
-    ) -> None:
-        """Log lightweight interaction statistics for debugging on rank 0."""
-        if not self.debug_interaction:
-            return
-        if self._interaction_debug_logs >= self.debug_interaction_max_logs:
-            return
-
-        import torch.distributed as dist
-
-        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
-            return
-
-        interaction_type = f_input.token.interaction_type
-
-        with torch.no_grad():
-            pad_mask = f_input.token.pad_mask
-            valid_tokens = int(pad_mask.sum().item())
-            if valid_tokens == 0:
-                return
-
-            raw_min = int(interaction_type.min().item())
-            raw_max = int(interaction_type.max().item())
-
-            interaction_type_clean = interaction_type.float().clamp(min=0.0, max=1.0)
-            per_token = interaction_type_clean.sum(-1)
-            active_tokens = int((per_token > 0).masked_select(pad_mask).sum().item())
-
-            pair_mask = pad_mask[:, :, None] & pad_mask[:, None, :]
-            valid_pairs = int(pair_mask.sum().item())
-            pair_any = pair_interactions.sum(-1) > 0
-            active_pairs = int((pair_any & pair_mask).sum().item())
-
-            pair_counts = (pair_interactions * pair_mask.unsqueeze(-1)).sum(dim=(0, 1, 2))
-            pair_density = (pair_counts / max(valid_pairs, 1)).tolist()
-            pair_density_str = ",".join(f"{v:.3e}" for v in pair_density)
-
-            z_abs_mean = float(z_interaction.abs().mean().item())
-            z_abs_max = float(z_interaction.abs().max().item())
-            z_init_abs_mean = float(z_init.abs().mean().item())
-            z_ratio = z_abs_mean / (z_init_abs_mean + 1e-8)
-
-            token_density = active_tokens / max(valid_tokens, 1)
-            pair_density_any = active_pairs / max(valid_pairs, 1)
-
-            print(
-                "[DEBUG][interaction] "
-                f"tokens={valid_tokens}, tokens_with_type={active_tokens} "
-                f"(density={token_density:.3e}), "
-                f"pairs={valid_pairs}, pairs_with_type={active_pairs} "
-                f"(density={pair_density_any:.3e}), "
-                f"interaction_type_min={raw_min}, interaction_type_max={raw_max}, "
-                f"pair_type_density=[{pair_density_str}], "
-                f"z_interaction_abs_mean={z_abs_mean:.3e}, "
-                f"z_interaction_abs_max={z_abs_max:.3e}, "
-                f"z_interaction_to_z_init_ratio={z_ratio:.3e}"
-            )
-
-        self._interaction_debug_logs += 1

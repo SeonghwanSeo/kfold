@@ -4,8 +4,11 @@ model:
     plm_module:
       channel_plm_input: 2560
       num_blocks: 4
+      use_qk_norm: true
     pairformer:
       num_blocks: 16
+      use_qk_norm: true
+    num_register_tokens: 10
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
