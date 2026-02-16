@@ -99,8 +99,6 @@ from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
 
-logger = logging.getLogger(__name__)
-
 
 # === Dataset Classes === #
 @dataclasses.dataclass(kw_only=True)
@@ -214,11 +212,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             config.is_protein_monomer_distillation
         )
 
+        self.logger = logging.getLogger(f"[Dataset:{self.name}]")
+
         pretrained_embedding: dict = pretrained_embedding.copy()
 
         for k in ["seq", "seq_dim", "struct", "struct_dim"]:
             if k not in pretrained_embedding:
-                logger.warning(
+                self.logger.warning(
                     f"Pretrained embedding key '{k}' not found. Setting to None."
                 )
                 pretrained_embedding[k] = None
@@ -253,9 +253,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
         if rieprody_lmdb_path.exists():
             if config.apo_init.protein_perturbation is None:
-                logger.error("RieProDy LMDB path found but protein_perturbation is None.")
+                self.logger.error(
+                    "RieProDy LMDB path found but protein_perturbation is None."
+                )
             elif config.apo_init.protein_perturbation.rieprody is None:
-                logger.error("RieProDy LMDB path found but rieprody is disabled.")
+                self.logger.error("RieProDy LMDB path found but rieprody is disabled.")
             else:
                 config.apo_init.protein_perturbation.rieprody.metric_lmdb_path = (
                     rieprody_lmdb_path
@@ -360,7 +362,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
                     # Select apo structure (randomly if multiple)
                     if len(apo_list) == 0:
-                        logger.warning(
+                        self.logger.warning(
                             "No available apo structure found "
                             f"for entity {entity_id} in entry {entry_id}."
                         )
@@ -377,7 +379,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                     path = apo_info["path"]
                     apo_path = apo_dir / source / path
                     if not apo_path.exists():
-                        logger.error(f"Apo structure file not found: {apo_path}.")
+                        self.logger.error(f"Apo structure file not found: {apo_path}.")
                         continue
                     entity_lookup["path"] = apo_path
 
@@ -709,7 +711,7 @@ class TrainingDataset(LMDBDataset):
         )
         if self.seed is not None:
             # Warn about fixed seed affecting randomness
-            logger.warning(
+            self.logger.warning(
                 "Seed is set for TrainingDataset, which may affect randomness."
             )
         self.max_tokens: int = max_tokens
@@ -799,7 +801,7 @@ class TrainingDataset(LMDBDataset):
                 raise e
             except Exception as e:
                 sample_id = sample.metadata.id
-                logger.error(
+                self.logger.error(
                     f"Error loading index {sample_id}({index}): {e}. Retrying..."
                 )
                 if not self.safe_load:
