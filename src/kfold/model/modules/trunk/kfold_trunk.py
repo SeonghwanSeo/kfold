@@ -82,6 +82,9 @@ class KFoldTrunk(BaseTrunk):
     def __init__(self, cfg: Config, kernel_config=None):
         """Initialize the KFoldTrunk module."""
         super().__init__(cfg, kernel_config)
+        self.use_seq_embedding: bool = cfg.use_seq_embedding
+        self.use_struct_embedding: bool = cfg.use_struct_embedding
+
         # PLM module
         self.plm_module: PLMModule = PLMModule(
             channel_s=cfg.channel_s,
