@@ -756,7 +756,9 @@ class KFoldTrainingModule(pl.LightningModule):
         if L_bond_weighted is not None:
             L_diffusion_per_sample = L_diffusion_per_sample + alpha_bond * L_bond_weighted
         if L_smooth_lddt is not None:
-            L_diffusion_per_sample = L_diffusion_per_sample + L_smooth_lddt
+            L_diffusion_per_sample = (
+                L_diffusion_per_sample + alpha_smooth_lddt * L_smooth_lddt
+            )
 
         # Mean over diffusion samples
         L_diffusion = L_diffusion_per_sample.mean(-1)  # [B, Nsample] -> [B,]

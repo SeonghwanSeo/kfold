@@ -211,28 +211,27 @@ class BondLoss(torch.nn.Module):
         )  # [B, Nbond]
 
         # Get bond distances
-        src_pred = x_pred[batch_indices, :, src, :]  # [B, N, Nbond, 3]
-        dst_pred = x_pred[batch_indices, :, dst, :]  # [B, N, Nbond, 3]
+        src_pred = x_pred[batch_indices, :, src, :].transpose(1, 2)  # [B, N, Nbond, 3]
+        dst_pred = x_pred[batch_indices, :, dst, :].transpose(1, 2)  # [B, N, Nbond, 3]
         d_pred = torch.norm(src_pred - dst_pred, dim=-1)  # [B, N, Nbond]
 
-        src_true = x_true[batch_indices, :, src, :]  # [B, N, Nbond, 3]
-        dst_true = x_true[batch_indices, :, dst, :]  # [B, N, Nbond, 3]
+        src_true = x_true[batch_indices, :, src, :].transpose(1, 2)  # [B, N, Nbond, 3]
+        dst_true = x_true[batch_indices, :, dst, :].transpose(1, 2)  # [B, N, Nbond, 3]
         d_true = torch.norm(src_true - dst_true, dim=-1)  # [B, N, Nbond]
 
-        d_diff = (d_pred - d_true) ** 2  # [B, N, Nbond]
+        diff = (d_pred - d_true) ** 2  # [B, N, Nbond]
 
         # Mask non-polymer-ligand bonds and invalid bonds
-        bond_mask = f_input.bond.pad_mask  # [B, Nbond]
+        mask = is_polymer_ligand_bond  # [B, Nbond]
         # Mask padding
-        mask = is_polymer_ligand_bond & bond_mask  # [B, Nbond]
+        mask = mask & f_input.bond.pad_mask
         # Mask invalid atom pairs
         atom_mask = f_input.atom.resolved_mask  # [B, Latom]
-        mask &= (
-            atom_mask[batch_indices, src] & atom_mask[batch_indices, dst]
-        )  # [B, Nbond]
-        num_bonds = mask.sum(dim=-1, keepdim=True).clamp(min=1)  # [B, 1]
+        mask &= atom_mask[batch_indices, src] & atom_mask[batch_indices, dst]
 
-        bond_loss = (d_diff * mask[:, None, :]).sum(dim=-1) / num_bonds  # [B, N]
+        diff = diff.masked_fill(~mask[:, None, :], 0.0)  # [B, N, Nbond]
+        num_bonds = mask.sum(dim=-1, keepdim=True, dtype=torch.float32)  # [B, 1]
+        bond_loss = diff.sum(dim=-1) / num_bonds.clamp(min=1)  # [B, N]
         return bond_loss
 
 
