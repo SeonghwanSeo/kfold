@@ -9,9 +9,9 @@ model:
     pairformer:
       use_qk_norm: true
     num_register_tokens: 10
-    blocks_per_ckpt: 16
+    blocks_per_ckpt: 12
   score_model:
-    blocks_per_ckpt: 24
+    blocks_per_ckpt: null
 
 train:
   _yaml_: "train/stage_1.yaml"
@@ -20,7 +20,8 @@ train:
   out_dir: ./experiments/
 
   global_hparams:
-    batch_size: 4
+    batch_size: 1
+    max_tokens: 384
     global_batch_size: 256
     num_global_steps_per_epoch: 1000
 
@@ -32,25 +33,20 @@ train:
         data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-train/
         prior_sampler: null
 
-      - _yaml_: "dataset/afdb.yaml"
-        weight: 0.95
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/afdb-long/
-
-      - _yaml_: "dataset/afdb.yaml"
-        weight: 0.05
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/afdb-short/
-
       - _yaml_: "dataset/humap.yaml"
         weight: 0.04
         data_path: /cache/wykim_lab/kfold_data/v260216/dataset/huMAP_v1_ext/
+        prior_sampler: null
 
       - _yaml_: "dataset/humap.yaml"
         weight: 0.04
         data_path: /cache/wykim_lab/kfold_data/v260216/dataset/huMAP_v1_partial/
+        prior_sampler: null
 
       - _yaml_: "dataset/natural_ab.yaml"
         weight: 0.04
         data_path: /cache/wykim_lab/kfold_data/v260216/dataset/NatAb/
+        prior_sampler: null
 
       - _yaml_: "dataset/encore.yaml"
         weight: 0.02

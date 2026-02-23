@@ -36,5 +36,5 @@ train:
   wandb:
     use: false
     project: "AF3"
-    group: structure-only # set your group name
+    group: af3 # set your group name
     entity: K-Fold # set your entity name
