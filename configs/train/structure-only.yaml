@@ -1,0 +1,164 @@
+# Configuration for K-Fold structure module training
+
+name: structure-only
+out_dir: ./experiments/
+
+# Reproducibility
+# NOTE: you may have to set different seeds for different stages
+seed: 1
+
+# Training parameters for multi-gpu setup.
+global_hparams:
+  max_chains: 20
+  max_tokens: 384
+  batch_size: 1
+  diffusion_batch_size: 48
+  global_batch_size: 256
+  num_global_steps_per_epoch: 1000
+
+data:
+  _registry_: "datamodule"
+  _class_: TrainingDataModule
+
+  # Training hyperparameters
+  max_chains: 20
+  max_tokens: 384
+
+  # DataLoader
+  train_batch_size: 1 # NOTE: overridden by global_hparam
+  val_batch_size: 1
+  num_workers: 4
+  persistent_workers: true
+  pin_memory: true
+  safe_load: true
+
+  # CCD path
+  ccd_path: <CCD_PATH_PLACEHOLDER>
+
+  # Datasets
+  train_datasets: []
+  val_datasets: []
+
+  # Featurization
+  pretrained_embedding:
+    seq: null
+    seq_dim: null
+    struct: null
+    struct_dim: null
+
+# Lightning Trainer Configuration
+trainer:
+  accelerator: "auto"
+  strategy: "auto"
+  devices: "auto"
+  num_nodes: 1
+  precision: bf16-mixed
+  max_epochs: -1
+  limit_train_batches: 1 # NOTE: overridden by global_hparam
+  limit_val_batches: null
+  log_every_n_steps: 10
+  enable_checkpointing: true
+  accumulate_grad_batches: 1 # NOTE: overridden by global_hparam
+  gradient_clip_val: 10.0
+
+# Exponential Moving Average (EMA)
+training:
+  # Training step hyperparameters
+  train_trunk: true
+  train_distogram_head: true
+  train_interaction_head: false
+  train_structure_module: true
+  train_confidence_head: false
+
+  num_recycles: 3
+
+  # For structure module training
+  diffusion_batch_size: 48 # NOTE: overridden by global_hparam
+
+  # For confidence module training
+  num_steps: 20 # Mini-diffusion rollout
+  num_diffusion_samples: 1 # Number of diffusion samples for confidence training
+
+  # Train loss binned logging
+  log_time_binned_losses: false
+  time_bin_width: 0.1
+  log_entity_binned_losses: false
+
+validation:
+  # Validation step hyperparameters
+  num_recycles: 3
+  num_steps: 200
+  num_diffusion_samples: 5
+  symmetry_correction: true
+  save_predictions: false
+  return_traj: false
+  traj_format: "pdb"
+
+optimizer:
+  opt: "adam"
+  beta_1: 0.9
+  beta_2: 0.95
+  eps: 1e-8
+  lr_scheduler: af3
+  base_lr: 0.0
+  max_lr: 0.0018
+  lr_warmup_no_steps: 1000
+  lr_start_decay_after_n_steps: 50000
+  lr_decay_every_n_steps: 50000
+  lr_decay_factor: 0.95
+  use_ema: true
+  ema_decay: 0.999
+
+loss:
+  weights:
+    # global loss weights
+    distogram: 3e-2
+    interaction: 3e-2
+    diffusion: 4.0
+    confidence: 1e-4
+    # diffusion loss weights
+    smooth_lddt: 1. # 0 for fine-tuning (See Section 5.2 for the AF3 paper)
+    bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
+    # confidence loss weights
+    pae: 0.0 # 1 for final stage training
+
+  # Distogram loss
+  distogram_loss:
+    num_bins: 64
+    min_dist: 2.0
+    max_dist: 22.0
+
+  # Diffusion loss
+  diffusion_loss:
+    # Weighted MSE Loss
+    mse_loss:
+      # NOTE: these are same to AlphaFold3:
+      # w = 1 + 5 * is_dna + 5 * is_rna + 10 * is_ligand
+      upweight_protein: 0.0
+      upweight_dna: 5.0
+      upweight_rna: 5.0
+      upweight_ligand: 10.0
+      align_true_to_pred: true
+
+    # Bond Loss
+    bond_loss: {}
+
+    # Smooth LDDT Loss
+    smooth_lddt_loss:
+      chunk_size: 2  # in number of samples.
+
+  # Confidence loss
+  # TODO
+  confidence_loss: {}
+
+  # Interaction loss
+  interaction_loss:
+    distance_threshold: 7.5
+    inter_chain_only: true
+
+wandb:
+  use: false
+  project: "KFold"
+  group: null # set your group name
+  entity: null # set your entity name
+  tags: [] # add your tags

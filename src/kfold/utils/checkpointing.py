@@ -55,7 +55,7 @@ def checkpoint_blocks(
     blocks: list[Callable],
     args: BLOCK_ARGS,
     blocks_per_ckpt: int | None,
-    use_reentrant: bool | None = None,
+    use_reentrant: bool | None = False,
 ) -> BLOCK_ARGS:
     """
     Chunk a list of blocks and run each chunk with activation
@@ -97,10 +97,14 @@ def checkpoint_blocks(
     # Avoids mishaps when the blocks take just one argument
     args = wrap(args)
 
-    if blocks_per_ckpt is None or not torch.is_grad_enabled():
+    if (
+        not torch.is_grad_enabled()
+        or blocks_per_ckpt is None
+        or blocks_per_ckpt > len(blocks)
+    ):
         return exec(blocks, args)
-    elif blocks_per_ckpt < 1 or blocks_per_ckpt > len(blocks):
-        raise ValueError("blocks_per_ckpt must be between 1 and len(blocks)")
+    elif blocks_per_ckpt < 1:
+        raise ValueError("blocks_per_ckpt must be at least 1")
 
     checkpoint = get_checkpoint_fn(use_reentrant=use_reentrant)
 

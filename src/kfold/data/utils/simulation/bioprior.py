@@ -150,11 +150,15 @@ class BioPriorPerturbation:
             seed=seed,
             kabsch_align=True,
         )
+        mask = np.isfinite(perturbed_coords).all(axis=-1)
+        if not np.any(mask):
+            self.logger.warning("All perturbed coordinates are invalid (NaN/Inf)")
+            return None
         if self.config.max_rmsd is not None:
             rmsd = compute_rmsd(
                 coords.reshape(-1, 3),
                 perturbed_coords.reshape(-1, 3),
-                mask=np.isfinite(perturbed_coords).all(axis=-1).reshape(-1),
+                mask=mask.reshape(-1),
             )
             if rmsd > self.config.max_rmsd:
                 # Perturbation failed, return None

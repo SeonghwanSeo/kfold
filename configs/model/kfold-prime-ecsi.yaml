@@ -14,12 +14,9 @@ compile_mode: "default"
 # Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/kfold.yaml"
-  channel_seq_encoder: null # Should be overriden
-  use_apo: true
-  use_interaction: true
 
 trunk:
-  _yaml_: "module/trunk/kfold.yaml"
+  _yaml_: "module/trunk/kfold-prime.yaml"
 
 structure_module:
   _yaml_: "module/structure_module/ecsi.yaml"
@@ -31,5 +28,4 @@ score_model:
 distogram_head:
   _yaml_: "module/distogram_head/af3.yaml"
 
-interaction_head:
-  _yaml_: "module/interaction_head/linear.yaml"
+interaction_head: null

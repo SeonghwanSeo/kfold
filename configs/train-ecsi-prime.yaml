@@ -1,0 +1,63 @@
+model:
+  _yaml_: "model/kfold-prime-ecsi.yaml"
+  trunk:
+    use_seq_embedding: true
+    use_struct_embedding: false
+    plm_module:
+      channel_plm_input: 1152
+      use_qk_norm: true
+    pairformer:
+      num_blocks: 12
+      use_qk_norm: true
+    num_register_tokens: 8
+    blocks_per_ckpt: 4
+  score_model:
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 8
+    atom_decoder_blocks: 1
+    blocks_per_ckpt: null
+  compile_trunk: true
+  compile_score_model: true
+
+train:
+  _yaml_: "train/stage_1.yaml"
+
+  name: ecsi-prime-mini
+  out_dir: ./experiments/
+
+  global_hparams:
+    batch_size: 4
+    max_tokens: 376
+    global_batch_size: 128
+    num_global_steps_per_epoch: 1000
+
+  data:
+    ccd_path: /cache/wykim_lab/kfold_data/v260216/ccd-train.pkl
+    train_datasets:
+      - _yaml_: "dataset/rcsb-train.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-train/
+        prior_sampler:
+          num_samples: 4
+        apo_init:
+          protein_perturbation:
+            rieprody:
+              rmsd_threshold: 10.0
+            bioprior:
+              max_steps: 20
+    val_datasets:
+      - _yaml_: "dataset/rcsb-val.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-val/
+        prior_sampler:
+          num_samples: 5
+
+    pretrained_embedding:
+      seq: esm-seo-v1
+      seq_dim: 1152
+      struct: null
+      struct_dim: null
+
+  wandb:
+    use: false
+    project: "KFold"
+    group: ecsi # set your group name
+    entity: K-Fold # set your entity name

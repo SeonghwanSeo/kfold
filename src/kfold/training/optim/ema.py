@@ -127,7 +127,6 @@ class ExponentialMovingAverage:
             decay=self.decay,
             num_updates=self.num_updates,
             shadow_params=self.shadow_params,
-            version="20251223",
         )
 
     def load_state_dict(
