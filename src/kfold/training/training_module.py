@@ -386,11 +386,7 @@ class KFoldTrainingModule(pl.LightningModule):
             diffusion_batch_size=training_config.diffusion_batch_size,
             mode="train",
         )
-        try:
-            loss, metrics = self.compute_losses(batch, out)
-        except Exception as e:
-            print(f"Skipping batch {batch_idx} due to error: {e}")
-            return torch.tensor(0.0, device=self.device, requires_grad=True)
+        loss, metrics = self.compute_losses(batch, out)
 
         if self._binned_cache_enabled and self.train_structure_module:
             t_hat = out.get("diffusion", {}).get("t_hat", None)
@@ -890,16 +886,57 @@ class KFoldTrainingModule(pl.LightningModule):
     def on_validation_end(self) -> None:
         self.prepare_train()
 
+    def _remove_orig_mod_from_state_dict(
+        self, state_dict: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Remove '._orig_mod.' from state dict keys if present."""
+        return {
+            k.replace("._orig_mod.", ".") if "._orig_mod." in k else k: v
+            for k, v in state_dict.items()
+        }
+
+    def _add_orig_mod_to_state_dict(
+        self, state_dict: dict[str, Any], model_state_dict: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Add '._orig_mod.' to state dict keys if required"""
+        model_keys = set(model_state_dict.keys())
+        state_keys = set(state_dict.keys())
+
+        # Keys expected by the compiled model but missing in the checkpoint
+        remaining_keys = model_keys - state_keys
+        if len(remaining_keys) == 0:
+            return state_dict  # No modification needed
+
+        new_state_dict = dict(state_dict)
+        for rk in remaining_keys:
+            k = rk.replace("._orig_mod.", ".")
+            if k in state_dict:
+                new_state_dict[rk] = new_state_dict.pop(k)
+        return new_state_dict
+
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        checkpoint["state_dict"] = self._remove_orig_mod_from_state_dict(
+            checkpoint["state_dict"]
+        )
         if self.use_ema:
-            checkpoint["ema"] = self.ema.state_dict()
+            checkpoint["ema"] = self._remove_orig_mod_from_state_dict(
+                self.ema.state_dict()
+            )
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        checkpoint["state_dict"] = self._add_orig_mod_to_state_dict(
+            checkpoint["state_dict"], self.state_dict()
+        )
+        # === Handle EMA state === #
         if self.use_ema and "ema" in checkpoint:
+            ema_state_dict = checkpoint["ema"]
             ema_decay = self.optimizer_config.ema_decay
             self.ema = ExponentialMovingAverage(self, decay=ema_decay)
-            if self.ema.compatible(checkpoint["ema"]):
-                self.ema.load_state_dict(checkpoint["ema"], device=torch.device("cpu"))
+            ema_state_dict = self._add_orig_mod_to_state_dict(
+                ema_state_dict, self.ema.state_dict()
+            )
+            if self.ema.compatible(ema_state_dict):
+                self.ema.load_state_dict(ema_state_dict, device=torch.device("cpu"))
                 self.ema.to(self.device)
             else:
                 print(
