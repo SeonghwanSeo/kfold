@@ -145,7 +145,7 @@ loss:
 
     # Smooth LDDT Loss
     smooth_lddt_loss:
-      chunk_size: 16  # in number of samples.
+      chunk_size: 2  # in number of samples.
 
   # Confidence loss
   # TODO

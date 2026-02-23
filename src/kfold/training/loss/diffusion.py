@@ -1,9 +1,14 @@
 import torch
-import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.utils.checkpointing import checkpoint_section
 from kfold.utils.geometry.rigid_align import weighted_rigid_align
+
+
+def safe_cdist(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Compute pairwise distances between two sets of points."""
+    d = x[..., None, :] - y[..., None, :, :]  # [*, Lx, Ly, 3]
+    return torch.sqrt(d.pow(2).sum(-1) + eps)
 
 
 def compute_modality_weights(
@@ -169,6 +174,7 @@ class BondLoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
+        eps: float = 1e-8,
     ) -> torch.Tensor:
         """Compute the bond loss.
         See Section 3.7.1 Equation 5
@@ -213,11 +219,11 @@ class BondLoss(torch.nn.Module):
         # Get bond distances
         src_pred = x_pred[batch_indices, :, src, :].transpose(1, 2)  # [B, N, Nbond, 3]
         dst_pred = x_pred[batch_indices, :, dst, :].transpose(1, 2)  # [B, N, Nbond, 3]
-        d_pred = torch.norm(src_pred - dst_pred, dim=-1)  # [B, N, Nbond]
+        d_pred = torch.sqrt((src_pred - dst_pred).pow(2).sum(-1) + eps)  # [B, N, Nbond]
 
         src_true = x_true[batch_indices, :, src, :].transpose(1, 2)  # [B, N, Nbond, 3]
         dst_true = x_true[batch_indices, :, dst, :].transpose(1, 2)  # [B, N, Nbond, 3]
-        d_true = torch.norm(src_true - dst_true, dim=-1)  # [B, N, Nbond]
+        d_true = torch.sqrt((src_true - dst_true).pow(2).sum(-1) + eps)  # [B, N, Nbond]
 
         diff = (d_pred - d_true) ** 2  # [B, N, Nbond]
 
@@ -243,6 +249,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         self,
         cutoff: float = 15.0,
         cutoff_nucleic_acid: float = 30.0,
+        chunk_size: int = 1,
     ):
         """Initialize SmoothLDDTLoss.
 
@@ -257,61 +264,88 @@ class SmoothLDDTLoss(torch.nn.Module):
         super().__init__()
         self.cutoff: float = cutoff
         self.cutoff_nucleic_acid: float = cutoff_nucleic_acid
+        self.chunk_size: int = chunk_size
 
     def _chunk_forward(
         self,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
-        is_nucleotide: torch.Tensor,
+        d_true: torch.Tensor,
         pair_mask: torch.Tensor,
     ) -> torch.Tensor:
         # Line 1
-        d_pred = torch.norm(
-            x_pred[..., :, None, :] - x_pred[..., None, :, :], dim=-1
-        )  # [B, L, L]
+        d_pred = safe_cdist(x_pred, x_pred)  # [N, L, L]
 
         # Line 2
-        with torch.no_grad():
-            d_true = torch.norm(
-                x_true[..., :, None, :] - x_true[..., None, :, :], dim=-1
-            )  # [B, L, L]
+        d_true = d_true
 
         # Line 3
-        d_diff = torch.abs(d_true - d_pred)  # [B, L, L]
+        d_diff = torch.abs(d_true - d_pred)  # [N, L, L]
 
         # Line 4
         eps = (1 / 4) * (
-            F.sigmoid(0.5 - d_diff)
-            + F.sigmoid(1.0 - d_diff)
-            + F.sigmoid(2.0 - d_diff)
-            + F.sigmoid(4.0 - d_diff)
+            torch.sigmoid(0.5 - d_diff)
+            + torch.sigmoid(1.0 - d_diff)
+            + torch.sigmoid(2.0 - d_diff)
+            + torch.sigmoid(4.0 - d_diff)
         )  # [B, L, L]
 
         # Line 5: outside function (is_nucleotide = is_dna | is_rna)
 
-        # Line 6
-        with torch.no_grad():
-            c = ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
-                (d_true < self.cutoff) & (~is_nucleotide[..., None])
-            )  # [B, L, L]
-            # Mask out invalid distances and self-term (see Line 7)
-            c &= pair_mask  # [B, L, L]
-        c = c.to(dtype=x_pred.dtype)
+        # Line 6: outside function (pair_mask = ...)
 
         # Line 7
-        lddt = (eps * c).sum((-1, -2)) / c.sum((-1, -2)).clamp(1)  # [B,]
+        n_pair = pair_mask.sum((-1, -2)).clamp(1)  # [N,]
+        lddt = (eps * pair_mask).sum((-1, -2)) / n_pair  # [N,]
 
         # Line 8
-        lddt_loss = 1.0 - lddt  # [B,]
+        lddt_loss = 1.0 - lddt  # [N,]
         return lddt_loss
+
+    def _forward_single(
+        self,
+        x_pred: torch.Tensor,
+        x_true: torch.Tensor,
+        mask: torch.Tensor,
+        is_nucleotide: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        N, L, _ = x_pred.shape
+        # Compute true pairwise distances
+        # NOTE: this is shared across all samples in the batch.
+        d_true = safe_cdist(x_true[0], x_true[0])  # [L, L]
+
+        # Create pair mask
+        pair_mask = mask[None, :] & mask[:, None]  # [L, L]
+
+        # Mask out self-term
+        pair_mask.diagonal(dim1=-2, dim2=-1).fill_(0)
+
+        # Mask out invalid distances
+        dist_mask = ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
+            (d_true < self.cutoff) & (~is_nucleotide[..., None])
+        )  # [L, L]
+        pair_mask &= dist_mask
+
+        losses = []
+        for i in range(0, N, self.chunk_size):
+            st, end = i, i + self.chunk_size
+            loss_chunk = checkpoint_section(
+                self._chunk_forward,
+                (
+                    x_pred[st:end],
+                    d_true,
+                    pair_mask,
+                ),
+                apply_ckpt=True,
+                use_reentrant=False,
+            )
+            losses.append(loss_chunk)
+        return losses
 
     def forward(
         self,
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         f_input: FoldingInput,
-        chunk_size: int = 1,
-        memory_efficient: bool = True,
     ) -> torch.Tensor:
         """Compute weighted alignment.
 
@@ -323,17 +357,12 @@ class SmoothLDDTLoss(torch.nn.Module):
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
-        chunk_size : int
-            The chunk size for memory efficient implementation.
-        memory_efficient : bool
-            Whether to use memory efficient implementation.
 
         Returns
         -------
         lddt_loss: torch.Tensor
             Computed LDDT loss. Shape (B, N).
         """
-
         # NOTE: Due to the memory constraint, we change the order of operations
         # from the original paper implementation.
 
@@ -351,41 +380,14 @@ class SmoothLDDTLoss(torch.nn.Module):
 
         losses = []
         for b_i in range(B):
-            x_pred_i = x_pred[b_i]  # [N, L, 3]
-            x_true_i = x_true[b_i]  # [N, L, 3]
-            mask_i = mask[b_i]  # [L]
-            is_nucleotide_i = is_nucleotide[b_i]  # [L]
-
-            if memory_efficient:
-                # Minimize the padding to save memory
-                pad_mask_i = f_input.atom.pad_mask[b_i]  # [Ltoken]
-                num_atoms_i = int(pad_mask_i.sum().clamp(min=1))
-                x_pred_i = x_pred_i[:, :num_atoms_i, :]  # [N, L', 3]
-                x_true_i = x_true_i[:, :num_atoms_i, :]  # [N, L', 3]
-                mask_i = mask_i[:num_atoms_i]  # [L']
-                is_nucleotide_i = is_nucleotide_i[:num_atoms_i]  # [L']
-
-            # Create pair mask
-            pair_mask_i = mask_i[None, :] & mask_i[:, None]  # [L, L]
-            # mask self-distances
-            pair_mask_i.diagonal(dim1=-2, dim2=-1).fill_(0)
-
-            for i in range(0, N, chunk_size):
-                st, end = i, i + chunk_size
-                loss_chunk = checkpoint_section(
-                    self._chunk_forward,
-                    (
-                        x_pred_i[st:end],
-                        x_true_i[st:end],
-                        is_nucleotide_i,
-                        pair_mask_i,
-                    ),
-                    apply_ckpt=True,
-                    use_reentrant=False,
+            losses.extend(
+                self._forward_single(
+                    x_pred[b_i],  # [N, L, 3]
+                    x_true[b_i],  # [N, L, 3]
+                    mask[b_i],  # [L]
+                    is_nucleotide[b_i],  # [L]
                 )
-                losses.append(loss_chunk)
+            )
         lddt_loss = torch.cat(losses, dim=0)  # [B*N]
-
         lddt_loss = lddt_loss.view(B, N)  # [B, N]
-
         return lddt_loss
