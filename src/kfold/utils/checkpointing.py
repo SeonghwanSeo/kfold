@@ -100,7 +100,7 @@ def checkpoint_blocks(
     if (
         not torch.is_grad_enabled()
         or blocks_per_ckpt is None
-        or blocks_per_ckpt >= len(blocks)
+        or blocks_per_ckpt > len(blocks)
     ):
         return exec(blocks, args)
     elif blocks_per_ckpt < 1:
