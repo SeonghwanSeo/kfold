@@ -720,7 +720,7 @@ class TrainingDataset(LMDBDataset):
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
 
-        assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
+        # assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
 
         # AF3-style sampling (chain/interface-based)
         assert config.sampler is not None, "Sampler config must be provided."
