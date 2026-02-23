@@ -3,9 +3,9 @@ _yaml_: "structure-only.yaml"
 # Training parameters for multi-gpu setup.
 global_hparams:
   max_chains: 20
-  max_tokens: 384
+  max_tokens: 640
   batch_size: 1
-  diffusion_batch_size: 48
+  diffusion_batch_size: 32
   global_batch_size: 256
   num_global_steps_per_epoch: 1000
 
@@ -17,7 +17,7 @@ loss:
     diffusion: 4.0
     confidence: 1e-4
     # diffusion loss weights
-    smooth_lddt: 1. # 0 for fine-tuning (See Section 5.2 for the AF3 paper)
-    bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
+    smooth_lddt: 0.0 # 0 for fine-tuning (See Section 5.2 for the AF3 paper)
+    bond: 1.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     # confidence loss weights
     pae: 0.0 # 1 for final stage training
