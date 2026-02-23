@@ -1,0 +1,71 @@
+model:
+  _yaml_: "model/kfold-prime-edm.yaml"
+  trunk:
+    use_seq_embedding: true
+    use_struct_embedding: true
+    plm_module:
+      channel_plm_input: 2688
+      use_qk_norm: true
+    pairformer:
+      use_qk_norm: true
+    num_register_tokens: 10
+    blocks_per_ckpt: 12
+  score_model:
+    blocks_per_ckpt: null
+
+train:
+  _yaml_: "train/stage_1.yaml"
+
+  name: edm-large-prime
+  out_dir: ./experiments/
+
+  global_hparams:
+    batch_size: 1
+    max_tokens: 384
+    global_batch_size: 256
+    num_global_steps_per_epoch: 1000
+
+  data:
+    ccd_path: /cache/wykim_lab/kfold_data/v260216/ccd-train.pkl
+    train_datasets:
+      - _yaml_: "dataset/rcsb-train.yaml"
+        weight: 1.0
+        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-train/
+        prior_sampler: null
+
+      - _yaml_: "dataset/humap.yaml"
+        weight: 0.04
+        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/huMAP_v1_ext/
+        prior_sampler: null
+
+      - _yaml_: "dataset/humap.yaml"
+        weight: 0.04
+        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/huMAP_v1_partial/
+        prior_sampler: null
+
+      - _yaml_: "dataset/natural_ab.yaml"
+        weight: 0.04
+        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/NatAb/
+        prior_sampler: null
+
+      - _yaml_: "dataset/encore.yaml"
+        weight: 0.02
+        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/ENCORE/
+        prior_sampler: null
+
+    val_datasets:
+      - _yaml_: "dataset/rcsb-val.yaml"
+        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-val/
+        prior_sampler: null
+
+    pretrained_embedding:
+      seq: esm-seo-v1
+      seq_dim: 1152
+      struct: dips
+      struct_dim: 1536
+
+  wandb:
+    use: false
+    project: "KFold-Combined"
+    group: edm
+    entity: K-Fold # set your entity name

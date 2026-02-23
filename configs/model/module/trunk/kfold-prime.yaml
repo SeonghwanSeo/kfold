@@ -1,5 +1,5 @@
 _registry_: "trunk"
-_class_: "KFoldTrunk"
+_class_: "KFoldTrunkPrime"
 channel_s: 384
 channel_z: 128
 
@@ -20,7 +20,7 @@ plm_module:
 pairformer:
   num_heads_attn: 16
   num_heads_tri_attn: 4
-  num_blocks: 48
+  num_blocks: 24
   dropout: 0.25
   use_qk_norm: false
 

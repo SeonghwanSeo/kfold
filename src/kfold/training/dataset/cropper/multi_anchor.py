@@ -89,7 +89,7 @@ class MultiAnchorCropper(BaseCropper):
         anchor_distribution: str = "exponential"
         min_anchors: int = 1
         max_anchors: int = 1
-        max_anchor_distance: float = 100.0
+        max_anchor_distance: float = 50.0
 
     def __init__(self, config: Config):
         self.config = config

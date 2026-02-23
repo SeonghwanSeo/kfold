@@ -103,8 +103,6 @@ class ApoInitializerConfig:
 
     Attributes
     ----------
-    use_perturbation : bool
-        Whether to apply perturbation to protein apo structures.
     use_random_augmentation : bool
         Whether to apply random rotation/translation augmentation
         to apo structures.
@@ -113,28 +111,23 @@ class ApoInitializerConfig:
         NOTE: Training only.
     prob_perturbation : float
         Probability of applying perturbation to apo structures.
-    is_protein_monomer_distillation : bool
-        Whether the data is for protein monomer distillation.
-        NOTE: Training only.
     use_cached_conformer : bool
         Whether to use cached conformers only for small molecules.
     protein_perturbation : ProteinPerturbationConfig | None
         Configuration for protein apo perturbation.
-    small_mol_perturbation : SmallMolPerturbationConfig
-        Configuration for small molecule perturbation.
+    ligand_perturbation : SmallMolPerturbationConfig
+        Configuration for ligand perturbation.
     """
 
-    use_perturbation: bool = False
     use_random_augmentation: bool = True
     use_residue_permutation: bool = False
-    is_protein_monomer_distillation: bool = False
     prob_perturbation: float = 1.0
     use_cached_conformer: bool = True
     use_holo_if_apo_unavailable: bool = True
     protein_perturbation: ProteinPerturbationConfig | None = dataclasses.field(
         default_factory=ProteinPerturbationConfig
     )
-    small_mol_perturbation: SmallMolPerturbationConfig = dataclasses.field(
+    ligand_perturbation: SmallMolPerturbationConfig | None = dataclasses.field(
         default_factory=SmallMolPerturbationConfig
     )
 
@@ -145,11 +138,10 @@ class ApoInitializer:
     def __init__(
         self,
         config: ApoInitializerConfig,
-        is_protein_monomer_distillation: bool = False,
         ccd: CCD | None = None,
+        is_protein_monomer_distillation: bool = False,
     ):
         self.config: ApoInitializerConfig = config
-        self.use_perturbation: bool = config.use_perturbation
         self.use_random_augmentation: bool = config.use_random_augmentation
         self.use_residue_permutation: bool = config.use_residue_permutation
         self.use_holo_if_apo_unavailable: bool = config.use_holo_if_apo_unavailable
@@ -162,19 +154,15 @@ class ApoInitializer:
         self.is_protein_monomer_distillation: bool = is_protein_monomer_distillation
 
         # Apo perturbation module
-        if self.use_perturbation:
-            assert config.protein_perturbation is not None, (
-                "ProteinPerturbation must be provided when use_perturbation is True."
-            )
-            assert config.small_mol_perturbation is not None, (
-                "SmallMolPerturbation must be provided when use_perturbation is True."
-            )
-            self.protein_perturbation: ProteinPerturbation = ProteinPerturbation(
-                config.protein_perturbation
-            )
-            self.small_mol_perturbation = SmallMolPerturbation(
-                config.small_mol_perturbation
-            )
+        if config.protein_perturbation is not None:
+            self.protein_perturbation = ProteinPerturbation(config.protein_perturbation)
+        else:
+            self.protein_perturbation = None
+
+        if config.ligand_perturbation is not None:
+            self.ligand_perturbation = SmallMolPerturbation(config.ligand_perturbation)
+        else:
+            self.ligand_perturbation = None
 
         # Training mode
         # During train/val, disable ETKDG generation for efficiency,
@@ -381,8 +369,11 @@ class ApoInitializer:
                         dst_atom_indices.append(atom_i)
                 apo_coords[dst_atom_indices] = ref_pos[src_atom_indices]
 
-            if self.use_perturbation and rng.random() < self.prob_perturbation:
-                apo_coords = self.small_mol_perturbation(apo_coords, chain, rng)
+            if (
+                self.ligand_perturbation is not None
+                and rng.random() < self.prob_perturbation
+            ):
+                apo_coords = self.ligand_perturbation(apo_coords, chain, rng)
 
             if self.use_random_augmentation:
                 # Apply random rotation augmentation
@@ -433,7 +424,10 @@ class ApoInitializer:
         apo_coords[res_indices, atom_indices] = atom_coords
 
         # Apply perturbation
-        if self.use_perturbation and rng.random() < self.prob_perturbation:
+        if (
+            self.protein_perturbation is not None
+            and rng.random() < self.prob_perturbation
+        ):
             sequence: str = chain.get_sequence()
             apo_coords = self.apply_perturbation(sequence, apo_coords, rng)
 
@@ -442,7 +436,7 @@ class ApoInitializer:
             apo_coords = self.apply_random_augmentation(apo_coords, rng)
 
         # Feed apo coordinates
-        chain.atom.apo_coords[:, :] = apo_coords
+        chain.atom.apo_coords[:] = apo_coords[res_indices, atom_indices]
 
     def get_protein_apo_structure(
         self,
@@ -456,14 +450,12 @@ class ApoInitializer:
         ----------
         apo_info : dict
             Information about the apo structure file and residue indices.
-            - name: str
-                e.g., "AF-P012345-F1-model_v1"
+            - source: str
+                e.g., "AF2", "PDB"
             - path: Path
                 e.g., "AF-P012345-F1-model_v1.cif.gz"
             - residue_map: str
                 e.g., "11:100->66:155"
-            - source: str
-                e.g., "AF2", "PDB"
         rng : np.random.Generator
             Random number generator for stochastic operations.
 
@@ -479,38 +471,52 @@ class ApoInitializer:
                 "1:100->5:104" -> (0, 100, 4, 104)
             """
             res_range, apo_range = residue_map.split("->")
-            st, end = map(int, res_range.split(":"))
+            res_st, res_end = map(int, res_range.split(":"))
             apo_st, apo_end = map(int, apo_range.split(":"))
-            if (end - st) != (apo_end - apo_st):
+            if (res_end - res_st) != (apo_end - apo_st):
                 raise ValueError(f"Residue range length mismatch: {residue_map}")
             # Convert to 0-based indexing
             # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
-            return st - 1, end, apo_st - 1, apo_end
+            return res_st - 1, res_end, apo_st - 1, apo_end
 
         path = apo_info["path"]
-        residue_map = apo_info["residue_map"]
-        lmdb_key = apo_info["rieprody_key"]
 
         # Load apo structure
         sequence, apo_coords = read_protein_structure(path)
 
         # Apply perturbation if enabled
-        if self.use_perturbation and rng.random() < self.prob_perturbation:
-            apo_coords = self.apply_perturbation(sequence, apo_coords, rng, key=lmdb_key)
+        if (
+            self.protein_perturbation is not None
+            and rng.random() < self.prob_perturbation
+        ):
+            # get optional key for pre-computed perturbation with rieprody
+            rieprody_key = apo_info.get("rieprody_key", None)
+            apo_coords = self.apply_perturbation(
+                sequence, apo_coords, rng=rng, key=rieprody_key
+            )
 
         # Crop apo_coords based on residue_map
         length = len(ccd_sequence)
-        st, end, apo_st, apo_end = parse_residue_map(residue_map)
-
-        if st == 0 and end == length:
-            # Use full apo_coords
-            return apo_coords[apo_st:apo_end].copy()
+        if "residue_map" in apo_info:
+            residue_map = apo_info["residue_map"]
+            res_st, res_end, apo_st, apo_end = parse_residue_map(residue_map)
+            if res_st == 0 and res_end == length:
+                # Simply crop apo_coords without padding
+                apo_coords = apo_coords[apo_st:apo_end]
+            else:
+                # Need to pad apo_coords to match the full sequence length
+                padded_apo_coords = np.full(
+                    (length, apo_coords.shape[1], 3), np.nan, dtype=np.float32
+                )
+                padded_apo_coords[res_st:res_end] = apo_coords[apo_st:apo_end]
+                apo_coords = padded_apo_coords
         else:
-            padded_apo_coords = np.full(
-                (length, apo_coords.shape[1], 3), np.nan, dtype=np.float32
+            # No residue map provided, assume apo_coords is already aligned.
+            assert apo_coords.shape[0] == length, (
+                f"Apo coordinates length {apo_coords.shape[0]} does not match "
+                f"sequence length {length} and no residue_map provided."
             )
-            padded_apo_coords[st:end] = apo_coords[apo_st:apo_end]
-            return padded_apo_coords
+        return apo_coords
 
     def apply_perturbation(
         self,
@@ -537,6 +543,9 @@ class ApoInitializer:
         augmented_coords : np.ndarray
             Augmented structure coordinates of shape [L, Natom, 3].
         """
+        assert self.protein_perturbation is not None, (
+            "Protein perturbation module not initialized."
+        )
         apo_mask = np.isfinite(apo_coords).all(axis=-1)
         aug_coords = self.protein_perturbation.run(sequence, apo_coords, rng=rng, key=key)
         aug_coords[~apo_mask] = np.nan

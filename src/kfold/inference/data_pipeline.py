@@ -8,6 +8,7 @@ import kfold.constants as C
 from kfold.data.pipelines import (
     apo_initialization,
     featurization,
+    prior_sampling,
     structure_preparation,
     tokenization,
 )
@@ -22,18 +23,12 @@ from . import query
 logger = logging.getLogger(__name__)
 
 
-def get_identity_residue_map(num_residues: int) -> str:
-    """Get identity residue map string for num_residues residues."""
-    return f"1:{num_residues}->1:{num_residues}"
-
-
 class InputDataPipeline:
     def __init__(
         self,
         ccd: CCD,
         seq_embedding_dim: int | None,
         struct_embedding_dim: int | None,
-        max_struct_ensembles: int = 1,
         seed: int = 1,
     ) -> None:
         self.ccd: CCD = ccd
@@ -41,25 +36,23 @@ class InputDataPipeline:
 
         # Initialize apo initializer
         self.apo_initializer = apo_initialization.ApoInitializer(
-            apo_initialization.ApoInitializerConfig(
-                use_perturbation=False,
-                use_random_augmentation=True,
-                use_ot_permutation=False,
-                training=False,
-                # TODO: configure this parameter.
-                translation_scale=10.0,
+            apo_initialization.ApoInitializerConfig(), self.ccd
+        )
+        self.prior_sampler = prior_sampling.PriorSampler(
+            prior_sampling.PriorSamplerConfig(
+                # FIXME: this is hard-coded for now.
+                num_samples=0,
             ),
             self.ccd,
         )
 
         # Initialize tokenizer
-        self.tokenizer = tokenization.Tokenizer(self.ccd)
+        self.tokenizer = tokenization.Tokenizer(self.prior_sampler, self.ccd)
 
         # Initialize featurizer
         self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer(
             seq_embedding_dim=seq_embedding_dim,
             struct_embedding_dim=struct_embedding_dim,
-            max_struct_ensembles=max_struct_ensembles,
         )
 
     def process_query(
@@ -162,6 +155,8 @@ class InputDataPipeline:
                     asym_id=asym_id,
                     sym_id=sym_id,
                     num_residues=num_residues,
+                    num_tokens=chain.num_tokens,
+                    num_atoms=chain.num_atoms,
                     description=seq.description,
                 )
                 chain_metas.append(chain_meta)
@@ -210,8 +205,6 @@ class InputDataPipeline:
             apo_path = pathlib.Path(seq.apo)
             lookup[entity_id] = {
                 "path": apo_path,
-                "name": apo_path.name.split(".")[0],  # dummy name
-                "residue_map": get_identity_residue_map(len(seq)),  # identity map
                 "source": "query",  # dummy
             }
         # Populate apo structure
@@ -246,10 +239,7 @@ class InputDataPipeline:
             assert path.exists(), (
                 f"Precomputed embedding file not found: {path} for entity_id {entity_id}"
             )
-            embedding_paths[entity_id] = {
-                "path": path,
-                "residue_map": get_identity_residue_map(len(seq)),
-            }
+            embedding_paths[entity_id] = {"path": path}
         return embedding_paths
 
     # ================================================================================
@@ -327,7 +317,6 @@ class InputDataPipeline:
                 chain_type=ctype,
                 ccd_sequences=seq.ccd_ids,
                 ccd=self.ccd,
-                drop_leaving_atoms=is_covalent,
             )
         else:
             assert seq.smiles is not None, "Either CCD code or SMILES must be provided."

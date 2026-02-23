@@ -115,7 +115,7 @@ class Boltz1PairformerTrunk(BaseTrunk):
         f_input: FoldingInput,
         num_recycles: int,
         **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Perform the forward pass.
         See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
 
@@ -148,7 +148,6 @@ class Boltz1PairformerTrunk(BaseTrunk):
 
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
-
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
@@ -164,5 +163,4 @@ class Boltz1PairformerTrunk(BaseTrunk):
                 s, z = self.pairformer_module(
                     s, z, mask, pair_mask, use_kernels=self.use_kernels
                 )
-
-        return s, z
+        return {"s_trunk": s, "z_trunk": z}

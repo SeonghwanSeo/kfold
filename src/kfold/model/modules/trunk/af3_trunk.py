@@ -102,7 +102,7 @@ class AF3PairformerTrunk(BaseTrunk):
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Perform the forward pass.
         See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
 
@@ -177,4 +177,4 @@ class AF3PairformerTrunk(BaseTrunk):
 
                 # Line 13
                 s_hat, z_hat = s, z
-        return s_hat, z_hat
+        return {"s_trunk": s_hat, "z_trunk": z_hat}

@@ -33,7 +33,6 @@ rcsb-validation/ ...
       "type": "protein",
       "seq_emb": {
         "path": "uniq_protein_000020.pt",
-        "residue_map": "1:250->1:250"
       },
       "struct_emb": {
         "path": "AF-P01116-F1-model_v6.pt",
@@ -41,22 +40,22 @@ rcsb-validation/ ...
       },
       "apo": [
         {
+          "source": "esmfold"
           "name": "uniq_protein_000020-esmfold",
           "path": "uniq_protein_000020-esmfold.pdb.gz",
           "residue_map": "1:250->1:250",
-          "source": "esmfold"
         },
         {
+          "source": "afdb"
           "name": "AF-P01116-F1-model_v6",
           "path": "AF-P01116-F1-model_v6.cif.gz",
           "residue_map": "1:235->11:245",
-          "source": "afdb"
         },
         {
+          "source": "pdb"
           "name": "51d6-A",
           "path": "51d6-A.pdb.gz",
           "residue_map": "5:250->5:250",
-          "source": "pdb"
         }
       ]
     },
@@ -100,8 +99,6 @@ from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
 
-logger = logging.getLogger(__name__)
-
 
 # === Dataset Classes === #
 @dataclasses.dataclass(kw_only=True)
@@ -132,12 +129,8 @@ class DatasetConfig:
     manifest_path: str | Path | None = None
     seed: int | None = None
     is_protein_monomer_distillation: bool = False
-    apo_init: apo_initialization.ApoInitializerConfig = dataclasses.field(
-        default_factory=apo_initialization.ApoInitializerConfig
-    )
-    prior_sampler: prior_sampling.PriorSamplerConfig = dataclasses.field(
-        default_factory=prior_sampling.PriorSamplerConfig
-    )
+    apo_init: apo_initialization.ApoInitializerConfig
+    prior_sampler: prior_sampling.PriorSamplerConfig | None
 
     @classmethod
     def from_dict(cls, config) -> "DatasetConfig":
@@ -219,11 +212,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             config.is_protein_monomer_distillation
         )
 
+        self.logger = logging.getLogger(f"[Dataset:{self.name}]")
+
         pretrained_embedding: dict = pretrained_embedding.copy()
 
-        for k in ["seq", "seq_dim", "struct", "struct_dim", "max_struct_ensembles"]:
+        for k in ["seq", "seq_dim", "struct", "struct_dim"]:
             if k not in pretrained_embedding:
-                logger.warning(
+                self.logger.warning(
                     f"Pretrained embedding key '{k}' not found. Setting to None."
                 )
                 pretrained_embedding[k] = None
@@ -232,7 +227,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.seq_embedding_dim: int | None = pretrained_embedding["seq_dim"]
         self.struct_embedding: str | None = pretrained_embedding["struct"]
         self.struct_embedding_dim: int | None = pretrained_embedding["struct_dim"]
-        self.max_struct_ensembles: int = pretrained_embedding["max_struct_ensembles"]
 
         # === Validate parameters === #
         assert self.data_root.exists(), f"Dataset path {self.data_root} does not exist."
@@ -258,21 +252,19 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         # Update apo initializer config
         rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
         if rieprody_lmdb_path.exists():
-            if config.apo_init.use_perturbation is False:
-                # Skip warning if perturbation is disabled
-                pass
-            elif config.apo_init.protein_perturbation is None:
-                logger.error("RieProDy LMDB path found but protein_perturbation is None.")
+            if config.apo_init.protein_perturbation is None:
+                self.logger.error(
+                    "RieProDy LMDB path found but protein_perturbation is None."
+                )
             elif config.apo_init.protein_perturbation.rieprody is None:
-                logger.error("RieProDy LMDB path found but rieprody is disabled.")
+                self.logger.error("RieProDy LMDB path found but rieprody is disabled.")
             else:
                 config.apo_init.protein_perturbation.rieprody.metric_lmdb_path = (
                     rieprody_lmdb_path
                 )
         else:
             assert (
-                config.apo_init.use_perturbation is False
-                or config.apo_init.protein_perturbation is None
+                config.apo_init.protein_perturbation is None
                 or config.apo_init.protein_perturbation.rieprody is None
             ), "RieProDy LMDB path not found but rieprody perturbation is enabled."
 
@@ -290,14 +282,16 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         # === Initialize modules === #
         self.apo_initializer = apo_initialization.ApoInitializer(
-            config.apo_init, self.ccd
+            config.apo_init, self.ccd, self.is_protein_monomer_distillation
         )
-        self.prior_sampler = prior_sampling.PriorSampler(config.prior_sampler, self.ccd)
-        self.tokenizer = tokenization.Tokenizer(self.prior_sampler, self.ccd)
+        if config.prior_sampler is not None:
+            prior_sampler = prior_sampling.PriorSampler(config.prior_sampler, self.ccd)
+        else:
+            prior_sampler = None
+        self.tokenizer = tokenization.Tokenizer(prior_sampler, self.ccd)
         self.featurizer = featurization.InputFeaturizer(
             seq_embedding_dim=self.seq_embedding_dim,
             struct_embedding_dim=self.struct_embedding_dim,
-            max_struct_ensembles=self.max_struct_ensembles,
         )
 
         # Additional setup can be done in subclasses
@@ -355,7 +349,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
         apo_dir = self.data_root / "apo"
         apo_lookup_map: dict[int, dict] = {}
-        if not self.is_protein_monomer_distillation:
+        if self.is_protein_monomer_distillation:
+            # Directly feed apo structures from labeled
+            pass
+        else:
             # Match apo structure for each protein chain.
             for c in ref_struct.chains:
                 entity_id = c.entity_id
@@ -365,7 +362,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
 
                     # Select apo structure (randomly if multiple)
                     if len(apo_list) == 0:
-                        logger.warning(
+                        self.logger.warning(
                             "No available apo structure found "
                             f"for entity {entity_id} in entry {entry_id}."
                         )
@@ -375,31 +372,24 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                     else:
                         apo_info = rng.choice(apo_list)
 
-                    source = apo_info["source"]
-                    name = apo_info["name"]
-                    path = apo_info["path"]
-                    residue_map = apo_info["residue_map"]
+                    entity_lookup = apo_info.copy()
 
                     # Check apo structure file existence
+                    source = apo_info["source"]
+                    path = apo_info["path"]
                     apo_path = apo_dir / source / path
                     if not apo_path.exists():
-                        logger.error(f"Apo structure file not found: {apo_path}.")
+                        self.logger.error(f"Apo structure file not found: {apo_path}.")
                         continue
+                    entity_lookup["path"] = apo_path
 
-                    # Get lmdb key
-                    lmdb_key = f"{source}:{name}"
+                    # Add rieprody key if available
+                    if "name" in apo_info:
+                        rieprody_key = f"{source}:{apo_info['name']}"
+                        entity_lookup["rieprody_key"] = rieprody_key
 
                     # Add to apo lookup map
-                    apo_lookup_map[entity_id] = {
-                        "source": source,
-                        "name": name,
-                        "path": apo_path,
-                        "residue_map": residue_map,
-                        "rieprody_key": lmdb_key,
-                    }
-        else:
-            # no additional information is needed.
-            pass
+                    apo_lookup_map[entity_id] = entity_lookup
 
         # Populate apo structure
         self.apo_initializer(ref_struct, apo_lookup_map, rng)
@@ -475,7 +465,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 raise e
             except Exception as e:
                 sample_id = sample.id
-                logger.error(
+                self.logger.error(
                     f"Error loading index {sample_id}({index}): {e}. Retrying..."
                 )
                 if not self.safe_load:
@@ -610,14 +600,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 emb_id_info = entity_info["seq_emb"]
                 embedding_paths[entity_id] = {
                     "path": root_dir / emb_id_info["path"],
-                    "residue_map": emb_id_info["residue_map"],
                 }
             elif emb_type == "struct" and ctype.is_protein:
                 emb_id_info = entity_info["struct_emb"]
                 embedding_paths[entity_id] = {
                     "path": root_dir / emb_id_info["path"],
-                    "residue_map": emb_id_info["residue_map"],
                 }
+                if "residue_map" in emb_id_info:
+                    embedding_paths[entity_id]["residue_map"] = emb_id_info["residue_map"]
         return embedding_paths
 
 
@@ -721,7 +711,7 @@ class TrainingDataset(LMDBDataset):
         )
         if self.seed is not None:
             # Warn about fixed seed affecting randomness
-            logger.warning(
+            self.logger.warning(
                 "Seed is set for TrainingDataset, which may affect randomness."
             )
         self.max_tokens: int = max_tokens
@@ -730,7 +720,7 @@ class TrainingDataset(LMDBDataset):
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
 
-        assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
+        # assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
 
         # AF3-style sampling (chain/interface-based)
         assert config.sampler is not None, "Sampler config must be provided."
@@ -811,7 +801,7 @@ class TrainingDataset(LMDBDataset):
                 raise e
             except Exception as e:
                 sample_id = sample.metadata.id
-                logger.error(
+                self.logger.error(
                     f"Error loading index {sample_id}({index}): {e}. Retrying..."
                 )
                 if not self.safe_load:

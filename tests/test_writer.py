@@ -20,16 +20,11 @@ if __name__ == "__main__":
         config=ValidationDatasetConfig(
             name="rcsb-val",
             data_path=DATASET_DIR,
-            apo_init=ApoInitializerConfig(
-                use_perturbation=False,
-                use_random_augmentation=True,
-                use_ot_permutation=False,
-            ),
+            apo_init=ApoInitializerConfig(),
             seed=42,
         ),
         ccd=ccd,
         pretrained_embedding={},
-        featurization_args={},
         safe_load=False,
     )
 

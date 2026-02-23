@@ -21,17 +21,17 @@ from .prior_sampling import PriorSampler
 
 
 class Tokenizer:
-    def __init__(self, prior_sampler: PriorSampler, ccd: CCD):
+    def __init__(self, prior_sampler: PriorSampler | None, ccd: CCD):
         """Tokenizer for structures.
 
         Parameters
         ----------
-        prior_sampler : PriorSampler
+        prior_sampler : PriorSampler | None
             The prior sampler.
         ccd : CCD
             The chemical component dictionary.
         """
-        self.prior_sampler: PriorSampler = prior_sampler
+        self.prior_sampler: PriorSampler | None = prior_sampler
         self.ccd: CCD = ccd
 
     def __call__(
@@ -98,7 +98,7 @@ class Tokenizer:
 
 def tokenize_structure(
     input: RefStructure,
-    prior_sampler: PriorSampler,
+    prior_sampler: PriorSampler | None,
     ccd: CCD,
     rng: np.random.Generator | None = None,
     use_only_cached_conformers: bool = False,
@@ -161,12 +161,13 @@ def tokenize_structure(
     # ==================================================
     # Create empty tokenized structure
     # ==================================================
+    num_priors = prior_sampler.num_samples if prior_sampler is not None else 0
     struct = TokenizedStructure.get_empty(
         num_chains=len(input.chains),
         num_residues=input.num_residues,
         num_tokens=input.num_tokens,
         num_bonds=input.num_bonds + input.num_connections,
-        num_priors=prior_sampler.num_samples,
+        num_priors=num_priors,
     )
 
     # ==================================================
@@ -405,7 +406,7 @@ def tokenize_structure(
 
     # Sample prior coordinates (xT)
     pad_mask = struct.atom.pad_mask
-    if prior_sampler.num_samples > 0:
+    if prior_sampler is not None and prior_sampler.num_samples > 0:
         prior_coords = prior_sampler(input, rng=rng)  # (num_samples, num_atoms, 3)
         struct.atom.prior_coords[pad_mask] = prior_coords.transpose(1, 0, 2)
 

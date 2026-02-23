@@ -1,7 +1,7 @@
 # RCSB training dataset configuration.
 _yaml_: "default-train.yaml"
 
-name: humap
+name: encore
 weight: 0.02
 
 # Data paths
@@ -16,13 +16,11 @@ sampler:
 cropper:
   _registry_: "data_cropper"
   _class_: MultiAnchorCropper
-  max_anchors: 2
-  w_contiguous: 0.2
-  w_spatial: 0.2
-  w_spatial_interface: 0.6
+  max_anchors: 1
+  w_contiguous: 0.0
+  w_spatial: 0.0
+  w_spatial_interface: 1.0
 
 apo_init:
   # no ligand
   ligand_perturbation: null
-
-prior_sampler: null

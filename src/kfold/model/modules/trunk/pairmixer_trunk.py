@@ -252,7 +252,7 @@ class PairmixerformerTrunk(BaseTrunk):
         num_recycles: int,
         use_cuequiv_kernels: bool = False,
         **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> dict[str, torch.Tensor]:
         """Perform the forward pass."""
         if not self.training:
             if z_init.shape[1] > self.chunk_threshold:
@@ -319,4 +319,4 @@ class PairmixerformerTrunk(BaseTrunk):
                 s_hat, z_hat = s, z
 
         s_trunk, z_trunk = s_hat, z_hat
-        return s_trunk, z_trunk
+        return {"s_trunk": s_trunk, "z_trunk": z_trunk}
