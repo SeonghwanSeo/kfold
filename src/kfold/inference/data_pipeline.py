@@ -29,6 +29,7 @@ class InputDataPipeline:
         ccd: CCD,
         seq_embedding_dim: int | None,
         struct_embedding_dim: int | None,
+        num_samples: int = 5,
         seed: int = 1,
     ) -> None:
         self.ccd: CCD = ccd
@@ -39,10 +40,7 @@ class InputDataPipeline:
             apo_initialization.ApoInitializerConfig(), self.ccd
         )
         self.prior_sampler = prior_sampling.PriorSampler(
-            prior_sampling.PriorSamplerConfig(
-                # FIXME: this is hard-coded for now.
-                num_samples=0,
-            ),
+            prior_sampling.PriorSamplerConfig(num_samples=num_samples),
             self.ccd,
         )
 

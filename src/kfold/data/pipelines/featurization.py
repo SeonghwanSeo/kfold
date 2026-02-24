@@ -472,15 +472,18 @@ class InputFeaturizer:
                 continue
 
             # Get embedding info for this entity_id
-            assert entity_id in embedding_info, (
-                f"No embedding info found for entity_id {entity_id}."
-            )
+            if entity_id not in embedding_info:
+                self.logger.warning(
+                    f"No sequence embedding info found for entity_id {entity_id}. "
+                    f"Zero tensor is used instead for entity {entity_id} ({ctype})."
+                )
+                continue
             emb_path = Path(embedding_info[entity_id]["path"])
             if not emb_path.exists():
                 if ctype.is_protein:
                     self.logger.warning(
                         f"Precomputed sequence embedding file not found: {emb_path}."
-                        f" Zero tensor is used instead.",
+                        f" Zero tensor is used instead for entity {entity_id} ({ctype})."
                     )
                 continue
             if emb_path not in cached_embeddings:
@@ -561,9 +564,12 @@ class InputFeaturizer:
                 # Apo structure embeddings are only supported for protein chains.
                 continue
 
-            assert entity_id in embedding_info, (
-                f"No embedding info found for entity_id {entity_id}."
-            )
+            if entity_id not in embedding_info:
+                self.logger.warning(
+                    f"No structure embedding info found for entity_id {entity_id}. "
+                    f"Zero tensor is used instead for entity {entity_id} ({ctype})."
+                )
+                continue
             entity_info = embedding_info[entity_id]
 
             # Get embedding info for this entity_id
@@ -571,7 +577,7 @@ class InputFeaturizer:
             if not emb_path.exists():
                 self.logger.warning(
                     f"Precomputed structure embedding file not found: {emb_path}."
-                    f" Zero tensor is used instead.",
+                    f" Zero tensor is used instead for entity {entity_id} ({ctype})."
                 )
                 continue
             if emb_path not in cached_embeddings:

@@ -79,7 +79,7 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-v0106.pkl",
+        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-train.pkl",
         help="Path to the CCD data file.",
     )
     parser.add_argument(
@@ -92,6 +92,11 @@ def parse_args():
         type=int,
         default=4,
         help="Number of worker threads for data loading.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Whether to resume from previous inference results if available.",
     )
 
     return parser.parse_args()
@@ -127,13 +132,20 @@ def main():
         ccd=ccd,
         skip_invalid=True,
     )
+    print(f"Parsed {len(input_queries)} valid input queries from {args.input}")
+
+    if args.resume:
+        # Filter out queries that already have results saved
+        input_queries = [q for q in input_queries if not (args.out_dir / q.name).exists()]
+        print(f"{len(input_queries)} queries remaining after filtering existing results")
 
     # Create data loader
     dataloader = prepare_inference_dataloader(
         queries=input_queries,
         ccd=ccd,
-        seq_embedding_dim=model.channel_seq_encoder,
-        struct_embedding_dim=model.channel_struct_encoder,
+        seq_embedding_dim=1152,
+        struct_embedding_dim=1536,
+        num_samples=args.num_samples,
         seed=args.seed,
         num_workers=args.num_workers,
     )
