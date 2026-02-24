@@ -296,7 +296,7 @@ CCD_NAMES: set[str] = set(CCD_NAME_TO_ONE_LETTER.keys())
 del _BIOPYTHON_SCOP_RAW
 
 # AlphaFold3 SI Tabel 9
-CRYSTALLIZATION_AIDS = {
+CRYSTALLIZATION_AIDS: set[str] = {
     "SO4", "GOL", "EDO", "PO4", "ACT", "PEG", "DMS", "TRS", "PGE", "PG4",
     "FMT", "EPE", "MPD", "MES", "CD", "IOD",
 }  # fmt: skip
