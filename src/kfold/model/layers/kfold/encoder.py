@@ -15,8 +15,6 @@ class InputEmbedderWithApo(torch.nn.Module):
         channel_s: int = 384,
         channel_atom: int = 128,
         channel_atompair: int = 16,
-        channel_seq_encoder: int | None = None,
-        channel_struct_encoder: int | None = None,
         atoms_per_window_queries: int = 32,
         atoms_per_window_keys: int = 128,
         atom_encoder_blocks: int = 3,
@@ -33,10 +31,6 @@ class InputEmbedderWithApo(torch.nn.Module):
             The atom single embedding size.
         channel_atompair : int
             The atom pairwise embedding size.
-        channel_seq_encoder : int | None
-            The pre-trained sequence encoder output channel size.
-        channel_struct_encoder : int | None
-            The pre-trained structure encoder output channel size.
         atoms_per_window_queries: int,
             The number of atoms per window for queries.
         atoms_per_window_keys: int,

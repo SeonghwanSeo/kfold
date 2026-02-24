@@ -70,7 +70,6 @@ class ECSIDiffusionModule(BaseScoreModel):
     def __init__(self, cfg: Config, kernel_config):
         super().__init__(cfg, kernel_config)
 
-        diffusion_stack_class = DiffusionModule
         # NOTE:
         # - If use_prior_coords=True, score model expects r_noisy[..., 6]
         #   (x_t concat x_apo).
@@ -78,7 +77,7 @@ class ECSIDiffusionModule(BaseScoreModel):
         #   (x_t only).
         effective_channel_coords = 6 if cfg.use_prior_coords else 3
 
-        self.diffusion_stack = diffusion_stack_class(
+        self.diffusion_stack = DiffusionModule(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,
