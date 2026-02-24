@@ -50,12 +50,6 @@ train:
         prior_sampler:
           num_samples: 5
 
-    pretrained_embedding:
-      seq: esm-seo-v1
-      seq_dim: 1152
-      struct: null
-      struct_dim: null
-
   wandb:
     use: false
     project: "KFold"

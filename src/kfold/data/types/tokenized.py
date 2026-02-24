@@ -161,9 +161,13 @@ class TokenArray(PlainLayout[np.ndarray]):
     ----------
     token_index: np.ndarray (int)
         Token indices of shape [L,], used for token-level operations,
+        starting from 0.
     residue_index: np.ndarray (int)
         Residue indices of shape [L,], used for residue-level operations,
         starting from 1.
+    seq_token_index: np.ndarray (int)
+        Sequence token indices of shape [L,], used for sequence embedding,
+        starting from 0.
     res_type: np.ndarray (int)
         Sequence tokens of shape [L,] (aatype, base, atom, ...)
     chain_type: np.ndarray (int)
@@ -199,6 +203,7 @@ class TokenArray(PlainLayout[np.ndarray]):
 
     token_index: np.ndarray  # [L,], int
     residue_index: np.ndarray  # [L,], int
+    seq_token_index: np.ndarray  # [L,], int
     res_type: np.ndarray  # [L,], int
     chain_type: np.ndarray  # [L,], int
     entity_id: np.ndarray  # [L,], int
@@ -262,6 +267,7 @@ class TokenArray(PlainLayout[np.ndarray]):
         return cls(
             token_index=full_minus_one((num_tokens,)),
             residue_index=full_minus_one((num_tokens,)),
+            seq_token_index=full_minus_one((num_tokens,)),
             res_type=full_minus_one((num_tokens,)),
             chain_type=full_minus_one((num_tokens,)),
             entity_id=full_minus_one((num_tokens,)),
@@ -485,6 +491,94 @@ class BondArray(PlainLayout[np.ndarray]):
                 )
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class SequenceArray(PlainLayout[np.ndarray]):
+    """Full sequence information for sequence embedding.
+
+    Attributes
+    ----------
+    input_id: np.ndarray (int)
+        Sequence tokens of shape [L,] (aatype, base, atom, ...)
+        NOTE: this may differ from the res_type in TokenArray,
+        since vocab is different for sequence embedding and co-folding.
+    residue_index: np.ndarray (int)
+        Residue indices of shape [L,], used for residue-level operations,
+        starting from 0. (BOS token has residue_index 0)
+    entity_id: np.ndarray (int)
+        Entity IDs of shape [L,], starting from 1.
+    chain_type: np.ndarray (int)
+        Chain types of shape [L,], indicating the type of each chain.
+
+    Cached Properties
+    -----------------
+    is_protein: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is protein.
+    is_dna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is dna.
+    is_rna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is rna.
+    is_ligand: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is ligand.
+    """
+
+    input_id: np.ndarray  # [L,], int
+    residue_index: np.ndarray  # [L,], int
+    chain_type: np.ndarray  # [L,], int
+    entity_id: np.ndarray  # [L,], int
+
+    @cached_property
+    def layout_shape(self) -> tuple[int, ...]:
+        return self.input_id.shape  # [Nresidue,]
+
+    def __post_init__(self):
+        shape = self.layout_shape
+        check_array(self.input_id, name="res_type", dtype=np.integer, shape=shape)
+        check_array(
+            self.residue_index, name="residue_index", dtype=np.integer, shape=shape
+        )
+        check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
+        check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
+
+    @cached_property
+    def is_protein(self) -> np.ndarray:
+        """Boolean tensor of shape [L,], indicating whether the token is protein."""
+        return self.chain_type == C.chain.ChainType.PROTEIN.value
+
+    @cached_property
+    def is_dna(self) -> np.ndarray:
+        """Boolean tensor of shape [L,], indicating whether the token is dna."""
+        return self.chain_type == C.chain.ChainType.DNA.value
+
+    @cached_property
+    def is_rna(self) -> np.ndarray:
+        """Boolean tensor of shape [L,], indicating whether the token is rna."""
+        return self.chain_type == C.chain.ChainType.RNA.value
+
+    @cached_property
+    def is_ligand(self) -> np.ndarray:
+        """Boolean tensor of shape [L,], indicating whether the token is ligand."""
+        return self.chain_type == C.chain.ChainType.LIGAND.value
+
+    @classmethod
+    def get_empty(cls, num_residues: int) -> Self:
+        """Get an empty ResidueArray with the specified number of residues."""
+        return cls(
+            input_id=full_minus_one((num_residues,)),
+            chain_type=full_minus_one((num_residues,)),
+            entity_id=full_minus_one((num_residues,)),
+            residue_index=full_minus_one((num_residues,)),
+        )
+
+    def validate(self) -> None:
+        """Perform sanity checks on the ResidueArray."""
+        for field in dataclasses.fields(self):
+            array = getattr(self, field.name)
+            if np.any(array < 0):
+                raise ValueError(
+                    f"TokenArray field '{field.name}' contains negative values."
+                )
+
+
 @dataclasses.dataclass(kw_only=True)
 class TokenizedStructure:
     """Tokenized representation of a molecular structure.
@@ -499,12 +593,15 @@ class TokenizedStructure:
         Atom information.
     bond: BondArray
         Bond information.
+    sequence: SequenceArray
+        Sequence information for sequence embedding.
     """
 
     chain: ChainArray
     token: TokenArray
     atom: AtomArray
     bond: BondArray
+    sequence: SequenceArray
 
     @property
     def num_chains(self) -> int:
@@ -546,6 +643,7 @@ class TokenizedStructure:
         num_chains: int,
         num_tokens: int,
         num_bonds: int,
+        num_sequence_tokens: int,
         num_priors: int = 0,
     ) -> Self:
         """Get an empty TokenizedStructure with the specified sizes."""
@@ -554,6 +652,7 @@ class TokenizedStructure:
             token=TokenArray.get_empty(num_tokens),
             atom=AtomArray.get_empty(num_tokens, num_priors=num_priors),
             bond=BondArray.get_empty(num_bonds),
+            sequence=SequenceArray.get_empty(num_sequence_tokens),
         )
 
     def validate(self) -> None:
@@ -562,6 +661,7 @@ class TokenizedStructure:
         self.token.validate()
         self.atom.validate()
         self.bond.validate()
+        self.sequence.validate()
 
     # === Utility functions === #
     def to(self, *args, **kwargs) -> Self:
@@ -578,6 +678,7 @@ class TokenizedStructure:
                 token=self.token,
                 atom=self.atom,
                 bond=self.bond,
+                sequence=self.sequence,
             )
 
     def copy_with(self, **kwargs) -> Self:
@@ -586,7 +687,7 @@ class TokenizedStructure:
         Parameters
         ----------
         **kwargs
-            Fields to update. Can include 'chain', 'token', 'atom', 'bond', 'metadata'.
+            Fields to update.
 
         Returns
         -------
@@ -621,10 +722,7 @@ class TokenizedStructure:
         # Remove excluding chains
         token_asym_ids = np.unique(cropped_token.asym_id)
         chain_mask = np.isin(self.chain.asym_id, token_asym_ids)
-        cropped_chain = self.chain[chain_mask]
-
-        # safe update
-        cropped_chain = cropped_chain.copy(deepcopy=True)
+        cropped_chain = self.chain[chain_mask].copy(deepcopy=True)
         for cidx in range(len(cropped_chain)):
             asym_id = cropped_chain.asym_id[cidx]
             mask = cropped_token.asym_id == asym_id
@@ -637,11 +735,16 @@ class TokenizedStructure:
             cropped_chain.num_residues[cidx] = num_residues
             cropped_chain.num_atoms[cidx] = num_atoms
 
+        # Remove excluding sequence
+        entity_ids = np.unique(cropped_token.entity_id)
+        cropped_sequence = self.sequence[np.isin(self.sequence.entity_id, entity_ids)]
+
         return self.__class__(
             chain=cropped_chain,
             token=cropped_token,
             atom=cropped_atom,
             bond=cropped_bond,
+            sequence=cropped_sequence,
         )
 
     def reassign_token_indices(self) -> Self:

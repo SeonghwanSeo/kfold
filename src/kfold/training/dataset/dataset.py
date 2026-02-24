@@ -9,11 +9,6 @@ rcsb-train/
     manifest.json
     structure.lmdb
     lookup.json  # mapping from each chain to seq-id and apo structure(s).
-    seq_embedding/
-        esm2/
-        esmc/
-    struct_embedding/
-        saprot/
     apo/
         esmfold/
             uniq_prot1-esmfold.pdb
@@ -31,13 +26,6 @@ rcsb-validation/ ...
   "6oim": {
     "1": {
       "type": "protein",
-      "seq_emb": {
-        "path": "uniq_protein_000020.pt",
-      },
-      "struct_emb": {
-        "path": "AF-P01116-F1-model_v6.pt",
-        "residue_map": "1:235->11:245"
-      },
       "apo": [
         {
           "source": "esmfold"
@@ -80,7 +68,6 @@ import torch
 from omegaconf import OmegaConf
 from typing_extensions import override
 
-import kfold.constants as C
 from kfold.data.pipelines import (
     apo_initialization,
     featurization,
@@ -178,7 +165,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         config: DatasetConfig,
         ccd: CCD,
-        pretrained_embedding: dict,
         return_symmetry: bool = False,
         return_structure: bool = False,
         safe_load: bool = True,
@@ -190,8 +176,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             Dataset configuration.
         ccd: CCD
             CCD database
-        pretrained_embedding : dict
-            Pretrained embedding configuration.
         return_symmetry : bool
             Whether to return symmetry information.
         return_structure : bool
@@ -213,41 +197,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         )
 
         self.logger = logging.getLogger(f"[Dataset:{self.name}]")
-
-        pretrained_embedding: dict = pretrained_embedding.copy()
-
-        for k in ["seq", "seq_dim", "struct", "struct_dim"]:
-            if k not in pretrained_embedding:
-                self.logger.warning(
-                    f"Pretrained embedding key '{k}' not found. Setting to None."
-                )
-                pretrained_embedding[k] = None
-
-        self.seq_embedding: str | None = pretrained_embedding["seq"]
-        self.seq_embedding_dim: int | None = pretrained_embedding["seq_dim"]
-        self.struct_embedding: str | None = pretrained_embedding["struct"]
-        self.struct_embedding_dim: int | None = pretrained_embedding["struct_dim"]
-
-        # === Validate parameters === #
-        assert self.data_root.exists(), f"Dataset path {self.data_root} does not exist."
-        emb_root = self.data_root / "embedding"
-        if self.seq_embedding is not None:
-            self.seq_emb_root = emb_root / "sequence" / self.seq_embedding
-            assert self.seq_emb_root.exists(), (
-                f"Sequence embedding root {self.seq_emb_root} does not exist."
-            )
-            assert self.seq_embedding_dim is not None, (
-                "seq_embedding_dim must be provided when seq_embedding is set."
-            )
-
-        if self.struct_embedding is not None:
-            self.struct_emb_root = emb_root / "structure" / self.struct_embedding
-            assert self.struct_emb_root.exists(), (
-                f"Structure embedding root {self.struct_emb_root} does not exist."
-            )
-            assert self.struct_embedding_dim is not None, (
-                "struct_embedding_dim must be provided when struct_embedding is set."
-            )
 
         # Update apo initializer config
         rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
@@ -289,10 +238,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         else:
             prior_sampler = None
         self.tokenizer = tokenization.Tokenizer(prior_sampler, self.ccd)
-        self.featurizer = featurization.InputFeaturizer(
-            seq_embedding_dim=self.seq_embedding_dim,
-            struct_embedding_dim=self.struct_embedding_dim,
-        )
+        self.featurizer = featurization.InputFeaturizer()
 
         # Additional setup can be done in subclasses
         self.setup()
@@ -404,7 +350,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             ref_struct,
             rng,
             use_only_cached_conformers=True,
-            ref_pos_permutation=False,
         )
 
     # === Optional to-override in subclasses === #
@@ -536,79 +481,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng: np.random.Generator | None = None,
     ) -> FoldingInput:
         """Featurize the given tokenized structure."""
-        if self.seq_embedding is not None:
-            # sequence embeddings
-            seq_embeddings = self.find_precomputed_embeddings(struct, metadata.id, "seq")
-        else:
-            seq_embeddings = None
-
-        if self.struct_embedding is not None:
-            # structure embeddings
-            struct_embeddings = self.find_precomputed_embeddings(
-                struct, metadata.id, "struct"
-            )
-        else:
-            struct_embeddings = None
-
         # Featurization
-        f_input = self.featurizer(
-            struct,
-            seq_embeddings=seq_embeddings,
-            struct_embeddings=struct_embeddings,
-            rng=rng,
-        )
+        f_input = self.featurizer(struct, rng=rng)
         return f_input
-
-    def find_precomputed_embeddings(
-        self, struct: TokenizedStructure, name: str, emb_type: str
-    ) -> dict[int, dict]:
-        """Find precomputed embeddings for the given structure.
-
-        Parameters
-        ----------
-        struct : TokenizedStructure
-            The tokenized structure.
-        name : str
-            The name/ID of the structure.
-        emb_type : str
-            The type of embedding ("seq" or "struct").
-
-        Returns
-        -------
-        dict[int, dict]
-            A dictionary mapping entity IDs to embedding file paths,
-            e.g., {entity_id: {"path": Path, "residue_map": str}, ...}
-        """
-        if emb_type == "seq":
-            root_dir = self.seq_emb_root
-        elif emb_type == "struct":
-            root_dir = self.struct_emb_root
-
-        # Fetch entry info from lookup table
-        entry_info = self.lookup_table[name]
-
-        # Get sequence id
-        embedding_paths: dict[int, dict] = {}
-        for chain_i in range(struct.num_chains):
-            entity_id = int(struct.chain.entity_id[chain_i])
-            if entity_id in embedding_paths:
-                continue  # already found
-            ctype = C.ChainType(struct.chain.chain_type[chain_i].item())
-            entity_info = entry_info[str(entity_id)]
-            # Get embedding info
-            if emb_type == "seq" and ctype.is_polymer:
-                emb_id_info = entity_info["seq_emb"]
-                embedding_paths[entity_id] = {
-                    "path": root_dir / emb_id_info["path"],
-                }
-            elif emb_type == "struct" and ctype.is_protein:
-                emb_id_info = entity_info["struct_emb"]
-                embedding_paths[entity_id] = {
-                    "path": root_dir / emb_id_info["path"],
-                }
-                if "residue_map" in emb_id_info:
-                    embedding_paths[entity_id]["residue_map"] = emb_id_info["residue_map"]
-        return embedding_paths
 
 
 class LMDBDataset(SafeLoadingDataset):
@@ -674,7 +549,6 @@ class TrainingDataset(LMDBDataset):
         self,
         config: TrainingDatasetConfig,
         ccd: CCD,
-        pretrained_embedding: dict,
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
@@ -686,8 +560,6 @@ class TrainingDataset(LMDBDataset):
             Dataset configuration.
         ccd: CCD
             CCD database
-        pretrained_embedding : dict
-            Pretrained embedding configuration.
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
@@ -704,7 +576,6 @@ class TrainingDataset(LMDBDataset):
         super().__init__(
             config,
             ccd,
-            pretrained_embedding,
             return_symmetry=False,
             return_structure=False,
             safe_load=safe_load,
@@ -820,7 +691,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         self,
         configs: list[TrainingDatasetConfig],
         ccd: CCD,
-        pretrained_embedding: dict,
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
@@ -832,8 +702,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             List of dataset configurations.
         ccd: CCD
             CCD database
-        pretrained_embedding : dict
-            Pretrained embedding configuration.
         safe_load : bool
             Whether to retry loading on failure.
         max_chains : int
@@ -853,7 +721,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             TrainingDataset(
                 config,
                 ccd,
-                pretrained_embedding,
                 safe_load,
                 max_chains,
                 max_tokens,
@@ -889,7 +756,6 @@ class ValidationDataset(LMDBDataset):
         self,
         config: ValidationDatasetConfig,
         ccd: CCD,
-        pretrained_embedding: dict,
         safe_load: bool = True,
     ) -> None:
         """
@@ -899,13 +765,10 @@ class ValidationDataset(LMDBDataset):
             Dataset configuration.
         ccd: CCD
             CCD database
-        pretrained_embedding : dict
-            Pretrained embedding configuration.
         """
         super().__init__(
             config,
             ccd,
-            pretrained_embedding,
             return_symmetry=True,
             return_structure=True,
             safe_load=safe_load,

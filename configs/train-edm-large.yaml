@@ -58,12 +58,6 @@ train:
         data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-val/
         prior_sampler: null
 
-    pretrained_embedding:
-      seq: esm-seo-v1
-      seq_dim: 1152
-      struct: dips
-      struct_dim: 1536
-
   wandb:
     use: false
     project: "KFold-Combined"

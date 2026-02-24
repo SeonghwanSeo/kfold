@@ -155,14 +155,25 @@ def tokenize_structure(
         chain_atom_st[chain.asym_id] = atom_offset
         atom_offset += chain.num_atoms
 
+    entity_sequence_st: dict[int, int] = {}
+    seq_offset = 0
+    for chain in input.chains:
+        entity_id = chain.entity_id
+        if entity_id not in entity_sequence_st:
+            entity_sequence_st[entity_id] = seq_offset
+            seq_offset += chain.num_residues
+
     # ==================================================
     # Create empty tokenized structure
     # ==================================================
+    num_bonds = input.num_bonds + input.num_connections
+    num_seq_tokens = seq_offset
     num_priors = prior_sampler.num_samples if prior_sampler is not None else 0
     struct = TokenizedStructure.get_empty(
         num_chains=len(input.chains),
         num_tokens=input.num_tokens,
-        num_bonds=input.num_bonds + input.num_connections,
+        num_bonds=num_bonds,
+        num_sequence_tokens=num_seq_tokens,
         num_priors=num_priors,
     )
 

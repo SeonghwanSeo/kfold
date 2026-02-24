@@ -39,13 +39,6 @@ data:
   train_datasets: []
   val_datasets: []
 
-  # Featurization
-  pretrained_embedding:
-    seq: null
-    seq_dim: null
-    struct: null
-    struct_dim: null
-
 # Lightning Trainer Configuration
 trainer:
   accelerator: "auto"

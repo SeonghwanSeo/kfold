@@ -50,10 +50,7 @@ class InputDataPipeline:
         self.tokenizer = tokenization.Tokenizer(self.prior_sampler, self.ccd)
 
         # Initialize featurizer
-        self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer(
-            seq_embedding_dim=seq_embedding_dim,
-            struct_embedding_dim=struct_embedding_dim,
-        )
+        self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer()
 
     def process_query(
         self, input: query.Query
