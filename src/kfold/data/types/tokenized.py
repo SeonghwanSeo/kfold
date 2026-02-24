@@ -154,165 +154,6 @@ class ChainArray(PlainLayout[np.ndarray]):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class ResidueArray(PlainLayout[np.ndarray]):
-    """Residue information.
-
-    Attributes
-    ----------
-    name: np.ndarray (str)
-        Residue names of shape [L,], indicating the name of each residue.
-    res_type: np.ndarray (int)
-        Sequence tokens of shape [L,] (aatype, base, atom, ...)
-    residue_index: np.ndarray (int)
-        Residue indices of shape [L,], used for residue-level operations,
-        starting from 1.
-    chain_type: np.ndarray (int)
-        Chain types of shape [L,], indicating the type of each token.
-    entity_id: np.ndarray (int)
-        Entity IDs of shape [L,], starting from 1.
-    asym_id: np.ndarray (int)
-        Asymmetric unit IDs of shape [L,], starting from 1.
-    sym_id: np.ndarray (int)
-        Symmetry IDs of shape [L,], starting from 1.
-    num_tokens: np.ndarray (int)
-        Number of tokens per residue of shape [L,].
-    num_atoms: np.ndarray (int)
-        Number of atoms per residue of shape [L,].
-    is_standard: np.ndarray (bool)
-        Boolean tensor of shape [L,], indicating whether the residue is standard.
-
-    Cached Properties
-    -----------------
-    is_protein: np.ndarray (bool)
-        Boolean tensor indicating whether the chain is protein.
-    is_dna: np.ndarray (bool)
-        Boolean tensor indicating whether the chain is dna.
-    is_rna: np.ndarray (bool)
-        Boolean tensor indicating whether the chain is rna.
-    is_ligand: np.ndarray (bool)
-        Boolean tensor indicating whether the chain is ligand.
-    token_start: np.ndarray (int)
-        Starting indices of tokens for each chain.
-    """
-
-    name: np.ndarray  # [L,], object(str)
-    res_type: np.ndarray  # [L,], int
-    residue_index: np.ndarray  # [L,], int
-    chain_type: np.ndarray  # [L,], int
-    entity_id: np.ndarray  # [L,], int
-    asym_id: np.ndarray  # [L,], int, same to sequence_id
-    sym_id: np.ndarray  # [L,], int
-    num_tokens: np.ndarray  # [L,], int
-    num_atoms: np.ndarray  # [L,], int
-    is_standard: np.ndarray  # [L,], bool
-
-    @cached_property
-    def layout_shape(self) -> tuple[int, ...]:
-        return self.res_type.shape  # [Nresidue,]
-
-    def __post_init__(self):
-        shape = self.layout_shape
-        check_array(self.name, name="name", dtype=np.dtype("<U6"), shape=shape)
-        check_array(self.res_type, name="res_type", dtype=np.integer, shape=shape)
-        check_array(
-            self.residue_index, name="residue_index", dtype=np.integer, shape=shape
-        )
-        check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
-        check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
-        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=shape)
-        check_array(self.sym_id, name="sym_id", dtype=np.integer, shape=shape)
-        check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=shape)
-        check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
-        check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
-
-    @cached_property
-    def is_protein(self) -> np.ndarray:
-        """Boolean tensor of shape [L,], indicating whether the token is protein."""
-        return self.chain_type == C.chain.ChainType.PROTEIN.value
-
-    @cached_property
-    def is_dna(self) -> np.ndarray:
-        """Boolean tensor of shape [L,], indicating whether the token is dna."""
-        return self.chain_type == C.chain.ChainType.DNA.value
-
-    @cached_property
-    def is_rna(self) -> np.ndarray:
-        """Boolean tensor of shape [L,], indicating whether the token is rna."""
-        return self.chain_type == C.chain.ChainType.RNA.value
-
-    @cached_property
-    def is_ligand(self) -> np.ndarray:
-        """Boolean tensor of shape [L,], indicating whether the token is ligand."""
-        return self.chain_type == C.chain.ChainType.LIGAND.value
-
-    @cached_property
-    def token_start(self) -> np.ndarray:
-        """Starting indices of tokens for each chain."""
-        return np.cumsum(self.num_tokens, dtype=np.int64) - self.num_tokens
-
-    # === Utility functions === #
-    @cached_property
-    def _get_residue_uid_to_index(self) -> dict[tuple[int, int], int]:
-        """Get a mapping from (asym_id, residue_index) to global residue index."""
-        uid_to_index: dict[tuple[int, int], int] = {
-            (int(asym_id), int(res_idx)): res_i
-            for res_i, (asym_id, res_idx) in enumerate(
-                zip(self.asym_id, self.residue_index, strict=True)
-            )
-        }
-        return uid_to_index
-
-    def get_global_residue_idx(self, asym_id: int, residue_index: int) -> int:
-        """Get the global residue idx from asym_id and residue_index.
-
-        Parameters
-        ----------
-        asym_id: int
-            Asymmetric unit ID of the chain which the residue belongs to. (1-based)
-        residue_index: int
-            Residue index within the chain. (1-based)
-
-        Returns
-        -------
-        global_residue_index: int
-            Global residue index in the structure. (0-based)
-        """
-        uid_to_index = self._get_residue_uid_to_index
-        res_uid = (asym_id, residue_index)
-        if res_uid not in uid_to_index:
-            raise KeyError(
-                f"Residue with asym_id={asym_id} and residue_index={residue_index} "
-                f"not found."
-            )
-        return uid_to_index[res_uid]
-
-    @classmethod
-    def get_empty(cls, num_residues: int) -> Self:
-        """Get an empty ResidueArray with the specified number of residues."""
-        return cls(
-            name=np.array([""] * num_residues, dtype=np.dtype("<U6")),
-            res_type=full_minus_one((num_residues,)),
-            chain_type=full_minus_one((num_residues,)),
-            entity_id=full_minus_one((num_residues,)),
-            asym_id=full_minus_one((num_residues,)),
-            sym_id=full_minus_one((num_residues,)),
-            residue_index=full_minus_one((num_residues,)),
-            num_tokens=full_minus_one((num_residues,)),
-            num_atoms=full_minus_one((num_residues,)),
-            is_standard=full_false((num_residues,)),
-        )
-
-    def validate(self) -> None:
-        """Perform sanity checks on the ResidueArray."""
-        for field in dataclasses.fields(self):
-            array = getattr(self, field.name)
-            if field.name not in ["name", "is_standard"] and np.any(array < 0):
-                raise ValueError(
-                    f"ResidueArray field '{field.name}' contains negative values."
-                )
-
-
-@dataclasses.dataclass(frozen=True, kw_only=True)
 class TokenArray(PlainLayout[np.ndarray]):
     """Token information.
 
@@ -661,7 +502,6 @@ class TokenizedStructure:
     """
 
     chain: ChainArray
-    residue: ResidueArray
     token: TokenArray
     atom: AtomArray
     bond: BondArray
@@ -670,11 +510,6 @@ class TokenizedStructure:
     def num_chains(self) -> int:
         """Number of chains in the structure."""
         return len(self.chain)
-
-    @property
-    def num_residues(self) -> int:
-        """Number of residues in the structure."""
-        return len(self.residue)
 
     @property
     def num_tokens(self) -> int:
@@ -695,13 +530,11 @@ class TokenizedStructure:
         """FoldingInput summary representation."""
         # Summary statistics
         num_chains = self.num_chains
-        num_residues = self.num_residues
         num_tokens = self.num_tokens
         num_bonds = len(self.bond)
         return (
             f"TokenizedStructure(\n"
             f"  num_chains: {num_chains}\n"
-            f"  num_residues: {num_residues}\n"
             f"  num_tokens: {num_tokens}\n"
             f"  num_bonds: {num_bonds}\n"
             f")"
@@ -711,7 +544,6 @@ class TokenizedStructure:
     def get_empty(
         cls,
         num_chains: int,
-        num_residues: int,
         num_tokens: int,
         num_bonds: int,
         num_priors: int = 0,
@@ -719,7 +551,6 @@ class TokenizedStructure:
         """Get an empty TokenizedStructure with the specified sizes."""
         return cls(
             chain=ChainArray.get_empty(num_chains),
-            residue=ResidueArray.get_empty(num_residues),
             token=TokenArray.get_empty(num_tokens),
             atom=AtomArray.get_empty(num_tokens, num_priors=num_priors),
             bond=BondArray.get_empty(num_bonds),
@@ -728,7 +559,6 @@ class TokenizedStructure:
     def validate(self) -> None:
         """Perform sanity checks on the TokenizedStructure."""
         self.chain.validate()
-        self.residue.validate()
         self.token.validate()
         self.atom.validate()
         self.bond.validate()
@@ -745,7 +575,6 @@ class TokenizedStructure:
         else:
             return self.__class__(
                 chain=self.chain,
-                residue=self.residue,
                 token=self.token,
                 atom=self.atom,
                 bond=self.bond,
@@ -789,51 +618,20 @@ class TokenizedStructure:
         bond_mask = np.isin(token_bonds, token_indices).all(axis=1)
         cropped_bond = self.bond[bond_mask]  # type: ignore
 
-        # Remove excluding residues
-        # NOTE: (SeonghwanSeo) Since residue_index is defined per chain, we
-        # use (2**32 * asym_id + res_idx) to uniquely identify residues.
-        assert cropped_token.residue_index.max() < 2**31, (
-            "residue_index should be less than 2**31"
-        )
-        assert cropped_token.asym_id.max() < 2**31, "asym_id should be less than 2**31"
-        residue_uids = (
-            self.residue.asym_id.astype(np.int64) << 32
-        ) + self.residue.residue_index
-        cropped_token_residue_uids = (
-            cropped_token.asym_id.astype(np.int64) << 32
-        ) + cropped_token.residue_index
-        residue_mask = np.isin(residue_uids, cropped_token_residue_uids)
-        cropped_residue = self.residue[residue_mask]
-
-        # safe update
-        cropped_residue = cropped_residue.copy(deepcopy=True)
-        cropped_residue_uids = residue_uids[residue_mask]
-        for cidx in range(len(cropped_residue)):
-            res_uid = cropped_residue_uids[cidx]
-            # Compute num_tokens, num_atoms
-            token_mask = cropped_token_residue_uids == res_uid
-            num_tokens = np.sum(token_mask).item()
-            num_atoms = np.sum(cropped_token.num_atoms[token_mask]).item()
-            cropped_residue.num_tokens[cidx] = num_tokens
-            cropped_residue.num_atoms[cidx] = num_atoms
-
         # Remove excluding chains
         token_asym_ids = np.unique(cropped_token.asym_id)
         chain_mask = np.isin(self.chain.asym_id, token_asym_ids)
-        cropped_chain = self.chain[chain_mask]  # type: ignore
+        cropped_chain = self.chain[chain_mask]
 
         # safe update
         cropped_chain = cropped_chain.copy(deepcopy=True)
         for cidx in range(len(cropped_chain)):
             asym_id = cropped_chain.asym_id[cidx]
+            mask = cropped_token.asym_id == asym_id
 
-            # Compute num_residues, num_tokens, num_atoms
-            residue_mask = cropped_residue.asym_id == asym_id
-            num_residues = np.sum(residue_mask).item()
-
-            token_mask = cropped_token.asym_id == asym_id
-            num_tokens = np.sum(token_mask).item()
-            num_atoms = np.sum(cropped_token.num_atoms[token_mask]).item()
+            num_tokens = np.sum(mask).item()
+            num_residues = len(np.unique(cropped_token.residue_index[mask]))
+            num_atoms = np.sum(cropped_token.num_atoms[mask]).item()
 
             cropped_chain.num_tokens[cidx] = num_tokens
             cropped_chain.num_residues[cidx] = num_residues
@@ -841,7 +639,6 @@ class TokenizedStructure:
 
         return self.__class__(
             chain=cropped_chain,
-            residue=cropped_residue,
             token=cropped_token,
             atom=cropped_atom,
             bond=cropped_bond,

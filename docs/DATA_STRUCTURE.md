@@ -66,7 +66,6 @@ from kfold.data.types import tokenized
 
 struct: tokenized.TokenizedStructure = ...
 chain_arr: tokenized.ChainArray = struct.chain
-residue_arr: tokenized.ResidueArray = struct.residue
 token_arr: tokenized.TokenArray = struct.token
 atom_arr: tokenized.AtomArray = struct.atom
 bond_arr: tokenized.BondArray = struct.bond
@@ -87,21 +86,6 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `num_residues`| `(Nchain,)` | Number of residues in each chain |
 | `num_tokens`  | `(Nchain,)` | Number of tokens in each chain |
 | `num_atoms`   | `(Nchain,)` | Number of atoms in each chain |
-
-### Residue-level layout
-
-| Field           | Shape         | Description |
-| :---            | :---          | :--- |
-| `name`          | `(Nresidue,)` | Residue name (<U6) |
-| `res_type`      | `(Nresidue,)` | Residue type |
-| `residue_index` | `(Nresidue,)` | Residue index (1-indexed) |
-| `chain_type`    | `(Nresidue,)` | Chain Type (protein, dna, rna, ligand, ion) |
-| `entity_id`     | `(Nresidue,)` | Entity ID (1-indexed) |
-| `asym_id`       | `(Nresidue,)` | Asym ID (1-indexed) |
-| `sym_id`        | `(Nresidue,)` | Sym ID (1-indexed) |
-| `num_tokens`    | `(Nresidue,)` | Number of tokens in each residue |
-| `num_atoms`     | `(Nresidue,)` | Number of atoms in each residue |
-| `is_standard`   | `(Nresidue,)` | Whether the residue is standard |
 
 ### Token-level layout
 

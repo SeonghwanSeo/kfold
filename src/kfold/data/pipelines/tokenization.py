@@ -13,10 +13,7 @@ from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
-from .apo_initialization import (
-    get_ambiguous_atoms_in_residue,
-    get_molecule_symmetries,
-)
+from .apo_initialization import get_ambiguous_atoms_in_residue, get_molecule_symmetries
 from .prior_sampling import PriorSampler
 
 
@@ -164,7 +161,6 @@ def tokenize_structure(
     num_priors = prior_sampler.num_samples if prior_sampler is not None else 0
     struct = TokenizedStructure.get_empty(
         num_chains=len(input.chains),
-        num_residues=input.num_residues,
         num_tokens=input.num_tokens,
         num_bonds=input.num_bonds + input.num_connections,
         num_priors=num_priors,
@@ -211,7 +207,6 @@ def tokenize_structure(
     # ==================================================
     # Fill residue and token structures
     # ==================================================
-    g_res_i = 0
     g_tok_i = 0
     g_atom_i = 0
     # Map from global atom index to (token_index, local_atom_index)
@@ -238,21 +233,12 @@ def tokenize_structure(
             atom_names = all_atom_names[chain.residue.get_atom_slice(res_idx)]
             natoms = len(atom_names)
 
-            # Determine number of tokens
-            ntokens = 1 if is_res_standard else natoms
-
-            # Insert additional residue info
-            struct.residue.residue_index[g_res_i] = res_idx
-            struct.residue.name[g_res_i] = ccd_name
-            struct.residue.res_type[g_res_i] = restype
-            struct.residue.num_atoms[g_res_i] = natoms
-            struct.residue.num_tokens[g_res_i] = ntokens
-            struct.residue.is_standard[g_res_i] = is_res_standard
-
             if is_res_standard:
                 # Standard protein/dna/rna residues (including ambiguous residues)
                 ref_atom_idx: int = C.atom.REF_ATOM_INDEX[res_name]
                 disto_atom_idx: int = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
+                struct.token.res_type[g_tok_i] = restype
+                struct.token.residue_index[g_tok_i] = res_idx
                 struct.token.num_atoms[g_tok_i] = natoms
                 struct.token.center_index[g_tok_i] = ref_atom_idx
                 struct.token.disto_index[g_tok_i] = disto_atom_idx
@@ -277,6 +263,8 @@ def tokenize_structure(
                 # Ligands, Modifications, Covalent inhibitors
                 st = g_tok_i
                 end = g_tok_i + natoms
+                struct.token.res_type[st:end] = restype
+                struct.token.residue_index[st:end] = res_idx
                 struct.token.num_atoms[st:end] = 1
                 struct.token.center_index[st:end] = 0
                 struct.token.disto_index[st:end] = 0
@@ -297,26 +285,14 @@ def tokenize_structure(
                     g_atom_i += 1
                     g_tok_i += 1
 
-            # Update global residue index
-            g_res_i += 1
-
-    assert g_res_i == input.num_residues, "Global residue index does not match."
     assert g_tok_i == input.num_tokens, "Global token index does not match."
     assert g_atom_i == input.num_atoms, "Global atom index does not match."
 
-    # Propagate chain features to residue and token levels
+    # Propagate chain features to token levels
     for k in ["chain_type", "entity_id", "asym_id", "sym_id"]:
         chain_feat = getattr(struct.chain, k)
-        residue_feat = getattr(struct.residue, k)
         token_feat = getattr(struct.token, k)
-        residue_feat[:] = np.repeat(chain_feat, struct.chain.num_residues, axis=0)
         token_feat[:] = np.repeat(chain_feat, struct.chain.num_tokens, axis=0)
-
-    # Propagate residue features to token levels
-    for k in ["res_type", "residue_index"]:
-        residue_feat = getattr(struct.residue, k)
-        token_feat = getattr(struct.token, k)
-        token_feat[:] = np.repeat(residue_feat, struct.residue.num_tokens, axis=0)
 
     # Set default token index
     struct.token.token_index[:] = np.arange(input.num_tokens, dtype=np.int64)
