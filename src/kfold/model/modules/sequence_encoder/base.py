@@ -14,28 +14,25 @@ class BaseSequenceEncoder(torch.nn.Module, ABC):
     @abstractmethod
     def forward(
         self,
-        sequence_tokens: torch.Tensor,
-        sequence_id: torch.Tensor,
-        chain_id: torch.Tensor,
-        return_attention: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        input_ids: torch.Tensor,
+        attn_mask: torch.Tensor,
+        pos_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of sequence representation module.
 
         Parameters
         ----------
-        sequence_tokens : torch.Tensor
+        input_ids : torch.Tensor
             Tensor of shape (B, L) containing sequence tokens.
-        sequence_ids : torch.Tensor
-            Tensor of shape (B, L) containing sequence id.
-        chain_ids : torch.Tensor
-            Tensor of shape (B, L) containing chain ids.
-        return_attention : bool, optional
-            Whether to return attention weights. Default is False.
+        attn_mask: torch.Tensor
+            Attention mask of shape (B, L), where True indicates valid tokens.
+        pos_id: torch.Tensor
+            Position ids of shape (B, L) for rotary positional embeddings.
 
         Returns
         -------
-        x: torch.Tensor
-            Tensor of shape (B, L, D) containing sequence feature.
+        x_token: torch.Tensor
+            Tensor of shape (B, L, D) containing sequence representations.
         attention: torch.Tensor | None
             Tensor of shape (B, N, H, L, L) containing attention weights,
             where N is number of layers and H is number of heads.

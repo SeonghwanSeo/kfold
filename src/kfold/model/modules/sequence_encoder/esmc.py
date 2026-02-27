@@ -1,109 +1,129 @@
-"""ESMC model, copyright: evolutionary-scale."""
-
 from __future__ import annotations
-
-from functools import lru_cache
 
 import torch
 import torch.nn as nn
 
+from kfold.model.layers.esm.esmc import RegressionHead, TransformerStack
 from kfold.utils.registry import SEQUENCE_ENCODER, BaseConfig
 
 from .base import BaseSequenceEncoder
 
-try:
-    from flash_attn.bert_padding import pad_input, unpad_input  # type:ignore
-
-    is_flash_attn_available = True
-except ImportError:
-    pad_input = None
-    unpad_input = None
-    is_flash_attn_available = False
-
 ESM_PARAMS = {
-    "esmc_300m": {
-        "d_model": 960,
-        "n_heads": 15,
-        "n_layers": 30,
-    },
     "esmc_600m": {
         "d_model": 1152,
         "n_heads": 18,
         "n_layers": 36,
     },
+    "esmc_3b": {
+        "d_model": 2048,
+        "n_heads": 32,
+        "n_layers": 60,
+    },
 }
+
+# fmt: off
+AMINO_ACIDS = [
+    'L', 'A', 'G', 'V', 'S', 'E', 'R', 'T', 'I', 'D',
+    'P', 'K', 'Q', 'N', 'F', 'Y', 'M', 'H', 'W', 'C',
+    'X', 'B', 'U', 'Z', 'O', '.', '-', '|',
+]
+VOCAB = [
+    "<cls>", "<pad>", "<eos>", "<unk>",
+    *AMINO_ACIDS,
+    "<mask>",
+]
+# fmt: on
+
+
+class Alphabet:
+    def __init__(self):
+        self.tokens: list[str] = list(VOCAB)
+        self.tok_to_idx: dict[str, int] = {tok: i for i, tok in enumerate(self.tokens)}
+        self.unk_idx: int = self.tok_to_idx["<unk>"]
+        self.bos_idx: int = self.tok_to_idx["<cls>"]
+        self.eos_idx: int = self.tok_to_idx["<eos>"]
+        self.pad_idx: int = self.tok_to_idx["<pad>"]
+        self.mask_idx: int = self.tok_to_idx["<mask>"]
+        self.aa_idxs: list[int] = [
+            self.tok_to_idx[tok] for tok in AMINO_ACIDS if tok in self.tok_to_idx
+        ]
+
+    def __len__(self):
+        return len(self.tokens)
+
+    def encode(self, sequence: str, add_special_tokens: bool = True) -> list[int]:
+        tok_to_idx_get = self.tok_to_idx.get
+        unk = self.unk_idx
+        encoded = [tok_to_idx_get(tok, unk) for tok in sequence]
+        if add_special_tokens:
+            encoded = [self.bos_idx] + encoded + [self.eos_idx]
+        return encoded
+
+    def encode_batch(
+        self, sequences: list[str], add_special_tokens: bool = True
+    ) -> list[list[int]]:
+        return [self.encode(seq, add_special_tokens) for seq in sequences]
+
+    def get_idx(self, tok):
+        return self.tok_to_idx.get(tok, self.unk_idx)
 
 
 class ESMCConfig(BaseConfig):
-    model_name: str = "esmc_300m"  # or "esmc_600m"
-    d_model: int = 960
-    n_heads: int = 15
-    n_layers: int = 30
-    use_flash_attn: bool = False
+    path: str  # Path to pretrained weights.
+    model_name: str = "esmc_600m"
+    d_model: int = 1152
+    n_heads: int = 18
+    n_layers: int = 36
 
     @classmethod
-    def from_model_name(cls, model_name: str, **kwargs) -> ESMCConfig:
+    def from_model_name(cls, path: str, model_name: str, **kwargs) -> ESMCConfig:
         if model_name not in ESM_PARAMS:
             raise ValueError(f"Unknown model_name: {model_name}")
         params = ESM_PARAMS[model_name]
-        return cls(model_name=model_name, **params, **kwargs)
+        return cls(path=path, model_name=model_name, **params, **kwargs)
 
 
 @SEQUENCE_ENCODER.register(config_cls=ESMCConfig)
 class ESMC(BaseSequenceEncoder):
     def __init__(self, cfg: ESMCConfig):
         super().__init__(cfg)
-
-        # Lazy import to avoid unnecessary dependency if not used.
-        from esm.layers.transformer_stack import TransformerStack
-        from esm.pretrained import load_local_model
-
-        self.use_flash_attn: bool = is_flash_attn_available and cfg.use_flash_attn
-
+        # Create model components
+        self.alphabet = Alphabet()
         self.embed = nn.Embedding(64, cfg.d_model)
-        self.transformer = TransformerStack(
-            cfg.d_model,
-            cfg.n_heads,
-            None,
-            cfg.n_layers,
-            n_layers_geom=0,
-        )
+        self.transformer = TransformerStack(cfg.d_model, cfg.n_heads, cfg.n_layers)
+        self.sequence_head = RegressionHead(cfg.d_model, 64)
 
         # Load pretrained weights
-        model = load_local_model(cfg.model_name, device=torch.device("cpu"))
-        del model.sequence_head  # remove the head to avoid size mismatch
-        self.load_state_dict(model.state_dict(), strict=True)
+        state_dict = torch.load(cfg.path, map_location="cpu")
+        self.load_state_dict(state_dict)
+        del state_dict
 
-        # Convert to bfloat16 (ESMC default)
+        # Remove sequence head since we only need sequence representations.
+        del self.sequence_head
+
+        # Convert to bfloat16
         self.embed = self.embed.to(torch.bfloat16)
         self.transformer = self.transformer.to(torch.bfloat16)
 
         # Set to eval mode
         self.eval()
 
-    @property
-    def device(self) -> torch.device:
-        return next(self.parameters()).device
-
     def forward(
         self,
-        sequence_tokens: torch.Tensor,
-        sequence_id: torch.Tensor,
-        chain_id: torch.Tensor,
-        return_attention: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        input_ids: torch.Tensor,
+        attn_mask: torch.Tensor,
+        pos_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of sequence representation module.
 
         Parameters
         ----------
-        sequence_tokens : torch.Tensor
+        input_ids : torch.Tensor
             Tensor of shape (B, L) containing sequence tokens.
-        sequence_id : torch.Tensor
-            Tensor of shape (B, L) containing sequence idx.
-        chain_id : torch.Tensor
-            Tensor of shape (B, L) containing chain ids.
-        return_attention : bool, optional
-            Whether to return attention weights. Default is False.
+        attn_mask: torch.Tensor
+            Attention mask of shape (B, L), where True indicates valid tokens.
+        pos_id: torch.Tensor
+            Position ids of shape (B, L) for rotary positional embeddings.
 
         Returns
         -------
@@ -113,117 +133,12 @@ class ESMC(BaseSequenceEncoder):
             Tensor of shape (B, N, H, L, L) containing attention weights,
             where N is number of layers and H is number of heads.
         """
-        if return_attention:
-            raise NotImplementedError(
-                "Attention weights are not implemented in this module."
-            )
-
         # NOTE: ESMC uses bfloat16 for inference.
         with (
             torch.no_grad(),
             torch.autocast(enabled=True, device_type="cuda", dtype=torch.bfloat16),
         ):
-            x = self.embed(sequence_tokens)
-
-            # If sequence_id looks like a mask.
-            B, L = x.shape[:2]
-            if self.use_flash_attn:
-                assert sequence_id.dtype == torch.bool, (
-                    "sequence_id must be a boolean mask if Flash Attention is used"
-                )
-                assert sequence_id.shape == (B, L)
-                assert unpad_input is not None
-                x, indices, *_ = unpad_input(  # type: ignore
-                    x, sequence_id
-                )
-            else:
-                indices = None
-
-            x, pre_norm, _ = self.transformer(x, sequence_id=sequence_id)
-
-            if self.use_flash_attn:
-                assert indices is not None
-                assert pad_input is not None
-                pre_norm = pad_input(pre_norm, indices, B, L)  # Back to [B, L, D]
-
-        # Return pre-norm representations since further layernorm is applied later.
-        return pre_norm, None
-
-    @staticmethod
-    @lru_cache
-    def _get_token_to_id() -> dict[str, int]:
-        # fmt: off
-        SEQUENCE_VOCAB = [
-            "<cls>", "<pad>", "<eos>", "<unk>",
-            "L", "A", "G", "V", "S", "E", "R", "T", "I", "D", "P", "K",
-            "Q", "N", "F", "Y", "M", "H", "W", "C", "X", "B", "U", "Z",
-            "O", ".", "-", "|",
-            "<mask>",
-        ]
-        # fmt: on
-        return {v: i for i, v in enumerate(SEQUENCE_VOCAB)}
-
-    @classmethod
-    def _encode_sequence(cls, seq: str) -> list[int]:
-        token_to_id = cls._get_token_to_id()
-        unk_token = token_to_id["X"]  # Unknown amino acid
-        ids = [token_to_id.get(residue, unk_token) for residue in seq]
-        return ids
-
-    def encode(
-        self,
-        sequences: list[str],
-        add_special_tokens: bool = True,
-        include_special_tokens: bool = False,
-    ) -> list[torch.Tensor]:
-        """Encode a batch of sequences.
-
-        Parameters
-        ----------
-        sequences : list[str]
-            The sequences to encode.
-        add_special_tokens : bool, optional
-            Whether to add special tokens (<cls> and <eos>) to the sequences.
-        include_special_tokens : bool, optional
-            Whether to include special tokens in the output. Default is False.
-
-        Returns
-        -------
-        torch.Tensor
-            Tensor of shape (B, L, D) containing sequence representations.
-        """
-        token_to_id = self._get_token_to_id()
-        cls_token = token_to_id["<cls>"]
-        eos_token = token_to_id["<eos>"]
-        pad_token = token_to_id["<pad>"]
-        unk_token = token_to_id["X"]  # Unknown amino acid
-
-        # Prepare model input
-        batch_ids = []
-        for seq in sequences:
-            ids = [token_to_id.get(residue, unk_token) for residue in seq]
-            if add_special_tokens:
-                ids = [cls_token] + ids + [eos_token]
-            batch_ids.append(ids)
-        max_len = max(len(ids) for ids in batch_ids)
-
-        batch_tensor = torch.full((len(batch_ids), max_len), pad_token, dtype=torch.long)
-        for i, ids in enumerate(batch_ids):
-            batch_tensor[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
-        batch_tensor = batch_tensor.to(self.device)
-
-        attention_mask = batch_tensor != pad_token
-        sequence_id = chain_id = attention_mask
-
-        sequence_embedding, _ = self(batch_tensor, sequence_id, chain_id)
-
-        outs: list[torch.Tensor] = []
-        for i, ids in enumerate(batch_ids):
-            length = len(ids)
-            if include_special_tokens:
-                outs.append(sequence_embedding[i, :length, :])
-            else:
-                start = 1 if add_special_tokens else 0
-                end = length - 1 if add_special_tokens else length
-                outs.append(sequence_embedding[i, start:end, :])
-        return outs
+            x = self.embed(input_ids)
+            x, attn_list = self.transformer(x, attn_mask, pos_id)
+        attn = torch.stack(attn_list, dim=1)  # [B, N, H, L, L]
+        return x, attn
