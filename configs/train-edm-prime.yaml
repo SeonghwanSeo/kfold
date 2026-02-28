@@ -23,18 +23,17 @@ train:
     batch_size: 4
     max_tokens: 376
     global_batch_size: 128
-    num_global_steps_per_epoch: 1000
 
   data:
-    ccd_path: /cache/wykim_lab/kfold_data/v260216/ccd-train.pkl
+    ccd_path: /cache/wykim_lab/kfold_data/v260227/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-train/
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-train/
         prior_sampler: null
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-val/
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-val/
         prior_sampler: null
 
   wandb:

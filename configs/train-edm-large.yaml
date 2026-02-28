@@ -20,36 +20,41 @@ train:
     global_batch_size: 256
 
   data:
-    ccd_path: /cache/wykim_lab/kfold_data/v260216/ccd-train.pkl
+    ccd_path: /cache/wykim_lab/kfold_data/v260227/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
-        weight: 1.0
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-train/
+        weight: 0.5
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-train/
+        prior_sampler: null
+
+      - _yaml_: "dataset/afdb.yaml"
+        weight: 0.35
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/afdb-long/
+        prior_sampler: null
+
+      - _yaml_: "dataset/afdb.yaml"
+        weight: 0.05
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/afdb-short/
         prior_sampler: null
 
       - _yaml_: "dataset/humap.yaml"
-        weight: 0.04
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/huMAP_v1_ext/
-        prior_sampler: null
-
-      - _yaml_: "dataset/humap.yaml"
-        weight: 0.04
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/huMAP_v1_partial/
+        weight: 0.06
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/huMAP/
         prior_sampler: null
 
       - _yaml_: "dataset/natural_ab.yaml"
-        weight: 0.04
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/NatAb/
+        weight: 0.03
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/NatAb/
         prior_sampler: null
 
       - _yaml_: "dataset/encore.yaml"
-        weight: 0.02
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/ENCORE/
+        weight: 0.01
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/ENCORE/
         prior_sampler: null
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-val/
+        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-val/
         prior_sampler: null
 
   wandb:
