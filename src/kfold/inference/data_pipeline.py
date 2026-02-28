@@ -40,7 +40,7 @@ class InputDataPipeline:
         self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd, num_samples)
 
         # Initialize tokenizer
-        self.tokenizer = tokenization.Tokenizer(self.prior_sampler, self.ccd)
+        self.tokenizer = tokenization.Tokenizer(self.ccd, self.prior_sampler)
 
         # Initialize featurizer
         self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer()

@@ -233,11 +233,19 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.apo_initializer = apo_initialization.ApoInitializer(
             config.apo_init, self.ccd, self.is_protein_monomer_distillation
         )
+
         if config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(config.prior_sampler, self.ccd)
+            # For diffusion bridge model, we may want to sample prior structures
+            # from apo structures with ot-permutation.
+            self.prior_sampler = prior_sampling.PriorSampler(
+                config.prior_sampler, self.ccd
+            )
         else:
-            prior_sampler = None
-        self.tokenizer = tokenization.Tokenizer(prior_sampler, self.ccd)
+            # For regular edm, we don't need to sample prior structures since
+            # the prior distribution is gaussian.
+            self.prior_sampler = None
+
+        self.tokenizer = tokenization.Tokenizer(self.ccd, self.prior_sampler)
         self.featurizer = featurization.InputFeaturizer()
 
         # Additional setup can be done in subclasses

@@ -16,24 +16,28 @@ from .prior_sampling import PriorSampler
 
 
 class Tokenizer:
-    def __init__(self, prior_sampler: PriorSampler | None, ccd: CCD):
+    def __init__(
+        self,
+        ccd: CCD,
+        prior_sampler: PriorSampler | None,
+    ):
         """Tokenizer for structures.
 
         Parameters
         ----------
-        prior_sampler : PriorSampler | None
-            The prior sampler.
         ccd : CCD
             The chemical component dictionary.
+        prior_sampler : PriorSampler | None
+            The prior sampler.
         """
-        self.prior_sampler: PriorSampler | None = prior_sampler
         self.ccd: CCD = ccd
+        self.prior_sampler: PriorSampler | None = prior_sampler
 
     def __call__(
         self,
         input: RefStructure,
         rng: np.random.Generator | None = None,
-        use_only_cached_conformers: bool = False,
+        use_cached_conformer_only: bool = False,
         ref_pos_permutation: bool = False,
     ) -> TokenizedStructure:
         """Tokenize structure.
@@ -44,7 +48,7 @@ class Tokenizer:
             The input structure.
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
-        use_only_cached_conformers : bool, optional
+        use_cached_conformer_only : bool, optional
             if True, only the cached conformers in the CCD will be used.
         ref_pos_permutation : bool, optional
             If True, apply permutation to reference positions to match label structure.
@@ -54,13 +58,13 @@ class Tokenizer:
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return self.tokenize(input, rng, use_only_cached_conformers, ref_pos_permutation)
+        return self.tokenize(input, rng, use_cached_conformer_only, ref_pos_permutation)
 
     def tokenize(
         self,
         input: RefStructure,
         rng: np.random.Generator | None = None,
-        use_only_cached_conformers: bool = False,
+        use_cached_conformer_only: bool = False,
         ref_pos_permutation: bool = False,
     ) -> TokenizedStructure:
         """Tokenize structure.
@@ -71,7 +75,7 @@ class Tokenizer:
             The input structure.
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
-        use_only_cached_conformers : bool, optional
+        use_cached_conformer_only : bool, optional
             if True, only the cached conformers in the CCD will be used.
         ref_pos_permutation : bool, optional
             If True, apply permutation to reference positions to match label structure.
@@ -86,7 +90,7 @@ class Tokenizer:
             self.prior_sampler,
             self.ccd,
             rng,
-            use_only_cached_conformers,
+            use_cached_conformer_only,
             ref_pos_permutation=ref_pos_permutation,
         )
 
@@ -96,7 +100,7 @@ def tokenize_structure(
     prior_sampler: PriorSampler | None,
     ccd: CCD,
     rng: np.random.Generator | None = None,
-    use_only_cached_conformers: bool = False,
+    use_cached_conformer_only: bool = False,
     ref_pos_permutation: bool = False,
 ) -> TokenizedStructure:
     """Tokenize structure.
@@ -109,7 +113,7 @@ def tokenize_structure(
         The chemical component dictionary.
     rng : np.random.Generator, optional
         Random number generator for stochastic processes, by default None.
-    use_only_cached_conformers : bool, optional
+    use_cached_conformer_only : bool, optional
         if True, only the cached conformers in the CCD will be used.
           - EKTDG-cached (up to 10 conformers by default with `ccd-train.pkl`)
           - Ideal
@@ -139,7 +143,7 @@ def tokenize_structure(
     rng = rng or np.random.default_rng()
 
     conformer_mode = "auto"
-    if use_only_cached_conformers:
+    if use_cached_conformer_only:
         conformer_mode = "train"
 
     # ==================================================
