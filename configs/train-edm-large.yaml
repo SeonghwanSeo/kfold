@@ -1,29 +1,23 @@
 model:
   _yaml_: "model/kfold-prime-edm.yaml"
+  sequence_encoder:
+    path: <path-to-esm-model>
   trunk:
-    use_seq_embedding: true
-    use_struct_embedding: true
     plm_module:
-      channel_plm_input: 2688
-      use_qk_norm: true
-    pairformer:
-      use_qk_norm: true
-    num_register_tokens: 10
-    blocks_per_ckpt: 12
+      channel_plm_input: 1152
+    blocks_per_ckpt: 16
   score_model:
     blocks_per_ckpt: null
 
 train:
   _yaml_: "train/stage_1.yaml"
-
-  name: edm-large-prime
+  name: edm-prime-large
   out_dir: ./experiments/
 
   global_hparams:
     batch_size: 1
-    max_tokens: 384
+    max_tokens: 376
     global_batch_size: 256
-    num_global_steps_per_epoch: 1000
 
   data:
     ccd_path: /cache/wykim_lab/kfold_data/v260216/ccd-train.pkl

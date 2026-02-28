@@ -1,8 +1,8 @@
 model:
   _yaml_: "model/kfold-edm.yaml"
+  sequence_encoder:
+    path: <path-to-esm-model>
   trunk:
-    use_seq_embedding: true
-    use_struct_embedding: false
     plm_module:
       channel_plm_input: 1152
     pairformer:
@@ -16,14 +16,13 @@ model:
 
 train:
   _yaml_: "train/stage_1.yaml"
-
   name: edm-mini
   out_dir: ./experiments/
 
   global_hparams:
     batch_size: 4
+    max_tokens: 376
     global_batch_size: 128
-    num_global_steps_per_epoch: 1000
 
   data:
     ccd_path: /cache/wykim_lab/kfold_data/v260216/ccd-train.pkl

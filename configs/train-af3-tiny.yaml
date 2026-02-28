@@ -2,21 +2,21 @@ model:
   _yaml_: "model/af3.yaml"
   trunk:
     num_blocks: 8
+    blocks_per_ckpt: 4
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
     atom_decoder_blocks: 1
+    blocks_per_ckpt: null
 
 train:
   _yaml_: "train/stage_1.yaml"
-
-  name: debug-af3-tiny
+  name: af3-tiny
   out_dir: ./experiments/
 
   global_hparams:
     batch_size: 4
     global_batch_size: 128
-    num_global_steps_per_epoch: 1000
 
   data:
     ccd_path: /cache/wykim_lab/kfold_data/v260216/ccd-train.pkl
