@@ -8,7 +8,6 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
-from kfold.data.types.tokenized import TokenizedStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.model.models.kfold import KFold
 
@@ -75,14 +74,14 @@ class KFoldInferenceClient(pl.LightningModule):
 
     def predict_step(
         self,
-        batch: tuple[Query, RefStructure, TokenizedStructure, FoldingInput],
+        batch: tuple[Query, RefStructure, FoldingInput],
     ) -> None:
         if batch is None:
             # Skip empty batch (occured by processing error)
             return
 
         # Unpack batch and validate
-        query, ref_struct, struct, f_input = batch
+        query, ref_struct, f_input = batch
         assert f_input.batch_size == 1, "Inference batch size should be 1"
 
         cfg = self.inference_config
@@ -137,7 +136,6 @@ class KFoldInferenceClient(pl.LightningModule):
         try:
             for i in range(num_diffusion_samples):
                 save_path = save_dir / f"sample-{i}.cif"
-                new_struct = ref_struct.copy_with_new_coords(sample_coords_arr[i])
-                self.writer.write_mmcif(new_struct, save_path, save_apo=False)
+                self.writer.write_new_coords(ref_struct, sample_coords_arr[i], save_path)
         except Exception as e:
             logger.error(f"Error saving structure for {name}: {e}")

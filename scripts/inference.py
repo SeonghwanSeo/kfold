@@ -10,7 +10,6 @@ from kfold.config import load_config
 from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
-from kfold.data.types.tokenized import TokenizedStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.query import Query, parse_input_files
@@ -77,6 +76,14 @@ def parse_args():
         help="Number of samples to generate per input.",
     )
     parser.add_argument(
+        "--use_sequence_masking",
+        action="store_true",
+        help=(
+            "Whether to mask sequence to increase sampling diversity."
+            "This is only meaningful when using multiple seeds"
+        ),
+    )
+    parser.add_argument(
         "--ccd",
         type=pathlib.Path,
         default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-train.pkl",
@@ -117,9 +124,8 @@ def main():
     # Load model
     config = load_config(args.config)
     if "model" in config:
-        # Get model config if wrapped in a higher-level config
         config = config.model
-    model: KFold = KFold.from_checkpoint(config, args.checkpoint)
+    model: KFold = KFold.from_checkpoint(config, args.checkpoint, strict=False)
     model = model.eval().cuda()
 
     # Load CCD data
@@ -143,9 +149,8 @@ def main():
     dataloader = prepare_inference_dataloader(
         queries=input_queries,
         ccd=ccd,
-        seq_embedding_dim=1152,
-        struct_embedding_dim=1536,
         num_samples=args.num_samples,
+        use_sequence_masking=args.use_sequence_masking,
         seed=args.seed,
         num_workers=args.num_workers,
     )
@@ -162,8 +167,7 @@ def main():
         # Unpack batch
         query: Query = batch[0]
         ref_struct: RefStructure = batch[1]  # noqa
-        struct: TokenizedStructure = batch[2]  # noqa
-        f_input: FoldingInput = batch[3]
+        f_input: FoldingInput = batch[2]
 
         if not f_input.is_batched:
             f_input = FoldingInput.from_list([f_input])
@@ -221,8 +225,7 @@ def main():
             save_path = save_dir / f"sample-{i}.cif"
             coords_i = sample_coords_arr[i]
             try:
-                new_struct = ref_struct.copy_with_new_coords(coords_i)
-                writer.write(new_struct, save_path, save_apo=False)
+                writer.write_new_coords(ref_struct, coords_i, save_path)
             except Exception as e:
                 tqdm.write(f"Warning: Failed to save sample {i} for {name}: {e}")
 

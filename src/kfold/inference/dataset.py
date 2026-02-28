@@ -7,7 +7,6 @@ import torch
 from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
-from kfold.data.types.tokenized import TokenizedStructure
 
 from .data_pipeline import InputDataPipeline
 from .query import Query
@@ -26,18 +25,16 @@ def collate_fn_single(batch: list[Any]) -> Any:
 def prepare_inference_dataloader(
     queries: list[Query],
     ccd: CCD,
-    seq_embedding_dim: int | None,
-    struct_embedding_dim: int | None,
+    num_samples: int = 5,
+    use_sequence_masking: bool = False,
     seed: int = 1,
-    num_samples: int = 1,
     num_workers: int = 0,
 ) -> torch.utils.data.DataLoader:
     dataset = InferenceDataset(
         queries=queries,
         ccd=ccd,
-        seq_embedding_dim=seq_embedding_dim,
-        struct_embedding_dim=struct_embedding_dim,
         num_samples=num_samples,
+        use_sequence_masking=use_sequence_masking,
         seed=seed,
     )
     return torch.utils.data.DataLoader(
@@ -56,9 +53,8 @@ class InferenceDataset(torch.utils.data.Dataset):
         self,
         queries: list[Query],
         ccd: CCD,
-        seq_embedding_dim: int | None,
-        struct_embedding_dim: int | None,
-        num_samples: int = 1,
+        num_samples: int = 5,
+        use_sequence_masking: bool = False,
         seed: int = 1,
     ) -> None:
         """
@@ -68,10 +64,10 @@ class InferenceDataset(torch.utils.data.Dataset):
             List of queries.
         ccd : CCD
             Component for handling common chemical components.
-        seq_embedding_dim : int | None
-            Dimension of sequence embeddings.
-        struct_embedding_dim : int | None
-            Dimension of structure embeddings.
+        num_samples : int
+            Number of diffusion samples to generate for each query.
+        use_sequence_masking : bool
+            Whether to use sequence masking for sampling diversity
         seed : int | None
             Random seed for reproducibility.
         """
@@ -81,18 +77,15 @@ class InferenceDataset(torch.utils.data.Dataset):
         # Data pipeline components
         self.data_pipeline = InputDataPipeline(
             ccd=ccd,
-            seq_embedding_dim=seq_embedding_dim,
-            struct_embedding_dim=struct_embedding_dim,
             num_samples=num_samples,
+            use_sequence_masking=use_sequence_masking,
             seed=seed,
         )
 
     def __len__(self) -> int:
         return len(self.queries)
 
-    def __getitem__(
-        self, index: int
-    ) -> tuple[Query, RefStructure, TokenizedStructure, FoldingInput] | None:
+    def __getitem__(self, index: int) -> tuple[Query, RefStructure, FoldingInput] | None:
         """Get the folding input for the given input."""
         query: Query = self.queries[index]
 
@@ -105,12 +98,18 @@ class InferenceDataset(torch.utils.data.Dataset):
         # Add batch dimension
         f_input = FoldingInput.from_list([f_input])
 
-        return query, ref_struct, tok_struct, f_input
+        return query, ref_struct, f_input
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 32 for LocalAtomAttention."""
         # Pad num_tokens for CUDA efficiency.
         num_tokens = next_multiple(f_input.num_tokens, 16)
+        # Pad max_sequence length for CUDA efficiency.
+        num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 128)
         # Pad num_atoms for local attention.
         num_atoms = next_multiple(f_input.num_atoms, 32)
-        return f_input.pad(max_tokens=num_tokens, max_atoms=num_atoms)
+        return f_input.pad(
+            max_tokens=num_tokens,
+            max_atoms=num_atoms,
+            max_sequence=num_sequence_tokens,
+        )

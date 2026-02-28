@@ -75,6 +75,14 @@ def parse_args():
         help="Number of samples to generate per input.",
     )
     parser.add_argument(
+        "--use_sequence_masking",
+        action="store_true",
+        help=(
+            "Whether to mask sequence to increase sampling diversity."
+            "This is only meaningful when using multiple seeds"
+        ),
+    )
+    parser.add_argument(
         "--ccd",
         type=pathlib.Path,
         default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl",
@@ -126,7 +134,7 @@ def main():
     if "model" in config:
         # Get model config if wrapped in a higher-level config
         config = config.model
-    model: KFold = KFold.from_checkpoint(config, args.checkpoint)
+    model: KFold = KFold.from_checkpoint(config, args.checkpoint, strict=False)
 
     # Inference configuration
     inference_config = InferenceConfig(
@@ -164,9 +172,8 @@ def main():
     dataloader = prepare_inference_dataloader(
         queries=input_queries,
         ccd=ccd,
-        seq_embedding_dim=1152,
-        struct_embedding_dim=1536,
         num_samples=args.num_samples,
+        use_sequence_masking=args.use_sequence_masking,
         seed=args.seed,
         num_workers=args.num_workers,
     )
