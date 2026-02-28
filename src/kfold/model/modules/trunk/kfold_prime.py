@@ -39,10 +39,6 @@ class KFoldTrunkPrime(BaseTrunk):
         channel_s: int = 384
         channel_z: int = 128
 
-        # Pre-trained language model options
-        use_seq_embedding: bool = True
-        use_struct_embedding: bool = False
-
         # plm module
         plm_module: PLMModuleConfig = dataclasses.field(default_factory=PLMModuleConfig)
 
@@ -60,12 +56,6 @@ class KFoldTrunkPrime(BaseTrunk):
     def __init__(self, cfg: Config, kernel_config=None):
         """Initialize the KFoldTrunkPrime module."""
         super().__init__(cfg, kernel_config)
-
-        self.use_seq_embedding: bool = cfg.use_seq_embedding
-        self.use_struct_embedding: bool = cfg.use_struct_embedding
-        assert self.use_seq_embedding or self.use_struct_embedding, (
-            "At least one of use_seq_embedding or use_struct_embedding must be True"
-        )
 
         # === Priming pass before recycling === #
         self.plm_module_prime: PLMModule = PLMModule(
@@ -218,6 +208,8 @@ class KFoldTrunkPrime(BaseTrunk):
             The input features.
         num_recycles : int
             The number of recycling steps.
+        s_plm : torch.Tensor
+            Tensor of shape (B, L, C_plm) containing PLM features for each token.
 
         Returns
         -------
@@ -236,19 +228,9 @@ class KFoldTrunkPrime(BaseTrunk):
         else:
             chunk_size_tri_attn = None
 
-        # Get PLM embeddings.
-        seq_emb = f_input.pretrained.sequence_embedding
-        struct_emb = f_input.pretrained.structure_embedding
-        if self.use_seq_embedding and self.use_struct_embedding:
-            s_plm = torch.cat([seq_emb, struct_emb], dim=-1)
-        elif self.use_seq_embedding:
-            s_plm = seq_emb
-        elif self.use_struct_embedding:
-            s_plm = struct_emb
-        else:
-            raise ValueError(
-                "At least one of use_seq_embedding or use_struct_embedding must be True"
-            )
+        # Get PLM features
+        assert "s_plm" in kwargs, "PLM features s_plm must be provided in kwargs"
+        s_plm: torch.Tensor = kwargs["s_plm"]
 
         # === Proteina-style register tokens (optional) ===
         mask = f_input.token.pad_mask

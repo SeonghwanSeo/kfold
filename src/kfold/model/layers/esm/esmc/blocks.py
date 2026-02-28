@@ -37,9 +37,10 @@ class TransformerBlock(nn.Module):
         n_heads: int,
         expansion_ratio: float = 4.0,
         residue_scaling_factor: float = 1,
+        return_attn: bool = False,
     ):
         super().__init__()
-        self.attn = MultiHeadAttention(d_model, n_heads)
+        self.attn = MultiHeadAttention(d_model, n_heads, return_attn=return_attn)
         d_ffn = swiglu_correction_fn(expansion_ratio, d_model)
         self.ffn = nn.Sequential(
             nn.LayerNorm(d_model),
@@ -50,8 +51,11 @@ class TransformerBlock(nn.Module):
         self.scaling_factor: float = residue_scaling_factor
 
     def forward(
-        self, x: torch.Tensor, seq_id: torch.Tensor, pos_id: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self,
+        x: torch.Tensor,
+        seq_id: torch.Tensor,
+        pos_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         r1, attn = self.attn(x, seq_id, pos_id)
         x = x + r1 / self.scaling_factor
         r2 = self.ffn(x)

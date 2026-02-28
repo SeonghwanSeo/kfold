@@ -73,12 +73,12 @@ class RotaryEmbedding(torch.nn.Module):
         pos_id: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        q: (batch, seqlen, nheads, headdim)
-        k: (batch, seqlen, nheads, headdim)
-        pos_id: (batch, seqlen)
+        q: (*, seqlen, nheads, headdim)
+        k: (*, seqlen, nheads, headdim)
+        pos_id: (*, seqlen)
         """
-        cos = self._cos_cached[pos_id].to(q.dtype)  # [batch, seqlen, headdim]
-        sin = self._sin_cached[pos_id].to(q.dtype)  # [batch, seqlen, headdim]
+        cos = self._cos_cached[pos_id].to(q.dtype)  # [*, seqlen, headdim]
+        sin = self._sin_cached[pos_id].to(q.dtype)  # [*, seqlen, headdim]
         q_ = self.apply_rotary_emb(q, cos, sin)
         k_ = self.apply_rotary_emb(k, cos, sin)
         return q_, k_
@@ -88,8 +88,8 @@ class RotaryEmbedding(torch.nn.Module):
         x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     ) -> torch.Tensor:
         """
-        x: (batch_size, seqlen, nheads, headdim)
-        cos, sin: (batch_size, seqlen, headdim)
+        x: (*, seqlen, nheads, headdim)
+        cos, sin: (*, seqlen, headdim)
         """
         cos = cos[..., None, :]
         sin = sin[..., None, :]
