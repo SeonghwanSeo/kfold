@@ -138,15 +138,15 @@ class TokenTensor(TensorLayout):
 
     Attributes
     ----------
+    chain_type: torch.Tensor (long)
+        Chain types of shape [Ntoken,], indicating the type of each token.
+    res_type: torch.Tensor (float32)
+        Sequence tokens of shape [Ntoken, 32] (aatype, atom, ...)
+        One-hot vector
     token_index: torch.Tensor (long)
         Token indices of shape [Ntoken,], mapping each token to its position.
     org_token_index: torch.Tensor (long)
         Original token indices of shape [Ntoken,], before cropping.
-    res_type: torch.Tensor (float32)
-        Sequence tokens of shape [Ntoken, 32] (aatype, atom, ...)
-        One-hot vector
-    chain_type: torch.Tensor (long)
-        Chain types of shape [Ntoken,], indicating the type of each token.
     residue_index: torch.Tensor (long)
         Residue indices of shape [Ntoken,], used for residue-level operations.
         Starting from 1 for each chain.
@@ -184,15 +184,15 @@ class TokenTensor(TensorLayout):
         Mask tensor of shape [Ntoken,], indicating disto atom of tokens to be resolved.
     """
 
-    token_index: torch.Tensor  # [Ntoken,], long
-    org_token_index: torch.Tensor  # [Ntoken,], long
-    residue_index: torch.Tensor  # [Ntoken,], long
-    seq_token_index: torch.Tensor  # [Ntoken,], long
-    res_type: torch.Tensor  # [Ntoken, 32], float32
     chain_type: torch.Tensor  # [Ntoken,], long
     entity_id: torch.Tensor  # [Ntoken,], long
     asym_id: torch.Tensor  # [Ntoken,], long, same to sequence_id
     sym_id: torch.Tensor  # [Ntoken,], long
+    res_type: torch.Tensor  # [Ntoken, 32], float32
+    token_index: torch.Tensor  # [Ntoken,], long
+    org_token_index: torch.Tensor  # [Ntoken,], long
+    residue_index: torch.Tensor  # [Ntoken,], long
+    seq_token_index: torch.Tensor  # [Ntoken,], long
     center_index: torch.Tensor  # [Ntoken,], long
     disto_index: torch.Tensor  # [Ntoken,], long
     frames_index: torch.Tensor  # [Ntoken, 3], long
@@ -218,6 +218,13 @@ class TokenTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
+        check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
+        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
+        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=shape)
+        check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=shape)
+        check_tensor(
+            self.res_type, name="res_type", dtype=torch.float32, shape=(*shape, 32)
+        )
         check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
         check_tensor(
             self.org_token_index, name="org_token_index", dtype=torch.long, shape=shape
@@ -225,13 +232,6 @@ class TokenTensor(TensorLayout):
         check_tensor(
             self.seq_token_index, name="seq_token_index", dtype=torch.long, shape=shape
         )
-        check_tensor(
-            self.res_type, name="res_type", dtype=torch.float32, shape=(*shape, 32)
-        )
-        check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
-        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
-        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=shape)
-        check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=shape)
         check_tensor(
             self.residue_index, name="residue_index", dtype=torch.long, shape=shape
         )
@@ -598,7 +598,7 @@ class SequenceTensor(TensorLayout):
         Sequence tokens of shape [L,] (aatype, base, atom, ...)
         NOTE: this may differ from the res_type in TokenArray,
         since vocab is different for sequence embedding and co-folding.
-    residue_index: np.ndarray (int)
+    pos_id: np.ndarray (int)
         Residue indices of shape [L,], used for residue-level operations,
         starting from 0 (BOS).
     entity_id: np.ndarray (int)
@@ -618,24 +618,27 @@ class SequenceTensor(TensorLayout):
         Boolean tensor indicating whether the chain is ligand.
     """
 
-    input_id: torch.Tensor  # [L,], int
-    residue_index: torch.Tensor  # [L,], int
     chain_type: torch.Tensor  # [L,], int
     entity_id: torch.Tensor  # [L,], int
+    input_id: torch.Tensor  # [L,], int
+    pos_id: torch.Tensor  # [L,], int
     pad_mask: torch.Tensor  # [L,], bool
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
         return self.input_id.shape  # [L,]
 
+    @property
+    def ndim_unbatched(self) -> int:
+        """[ClassVar] The number of dimensions of the layout."""
+        return 1
+
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(self.input_id, name="res_type", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.residue_index, name="residue_index", dtype=torch.long, shape=shape
-        )
         check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
         check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
+        check_tensor(self.input_id, name="res_type", dtype=torch.long, shape=shape)
+        check_tensor(self.pos_id, name="pos_id", dtype=torch.long, shape=shape)
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
 
     @cached_property
@@ -657,6 +660,37 @@ class SequenceTensor(TensorLayout):
     def is_ligand(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is ligand."""
         return self.chain_type == C.chain.ChainType.LIGAND.value
+
+    def pad(self, *pad_shape: int) -> Self:
+        """Pad the layout to the total length."""
+        assert not self.is_batched, "Padding batched layout is not supported."
+        self._check_pad_input(pad_shape)
+
+        if pad_shape == self.layout_shape:
+            return self
+
+        total_length = pad_shape[0]  # single dimension
+        L = len(self)
+
+        # value: PAD_IDX means padding
+        pad_values = {
+            "chain_type": -1,
+            "entity_id": -1,
+            "input_id": C.sequence.PAD_TOKEN_INDEX,
+            "pos_id": -1,
+            "pad_mask": False,
+        }
+
+        fields = {}
+        for name, tensor in self.to_dict().items():
+            pad_value = pad_values[name]
+            to_shape = (total_length,) + tensor.shape[1:]
+            padded_tensor = torch.full(
+                to_shape, pad_value, dtype=tensor.dtype, device=tensor.device
+            )
+            padded_tensor[:L] = tensor
+            fields[name] = padded_tensor
+        return self.from_dict(fields)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -743,6 +777,14 @@ class FoldingInput:
     @property
     def num_atoms(self) -> int:
         return len(self.atom)
+
+    @property
+    def num_bonds(self) -> int:
+        return len(self.bond)
+
+    @property
+    def num_sequence_tokens(self) -> int:
+        return len(self.sequence)
 
     @classmethod
     def from_list(cls, data_list: list[Self], pad_to_max: bool = False) -> Self:

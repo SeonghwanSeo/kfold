@@ -159,6 +159,20 @@ class TokenArray(PlainLayout[np.ndarray]):
 
     Attributes
     ----------
+    chain_type: np.ndarray (int)
+        Chain types of shape [L,], indicating the type of each token.
+    entity_id: np.ndarray (int)
+        Entity IDs of shape [L,], starting from 1.
+    asym_id: np.ndarray (int)
+        Asymmetric unit IDs of shape [L,], starting from 1.
+    sym_id: np.ndarray (int)
+        Symmetry IDs of shape [L,], starting from 1.
+    res_type: np.ndarray (int)
+        Sequence tokens of shape [L,] (aatype, base, atom, ...)
+    num_atoms: np.ndarray (int)
+        Number of atoms per token of shape [L,].
+    is_standard: np.ndarray (bool)
+        Boolean tensor of shape [L,], indicating whether the token is standard.
     token_index: np.ndarray (int)
         Token indices of shape [L,], used for token-level operations,
         starting from 0.
@@ -168,24 +182,10 @@ class TokenArray(PlainLayout[np.ndarray]):
     seq_token_index: np.ndarray (int)
         Sequence token indices of shape [L,], used for sequence embedding,
         starting from 0.
-    res_type: np.ndarray (int)
-        Sequence tokens of shape [L,] (aatype, base, atom, ...)
-    chain_type: np.ndarray (int)
-        Chain types of shape [L,], indicating the type of each token.
-    entity_id: np.ndarray (int)
-        Entity IDs of shape [L,], starting from 1.
-    asym_id: np.ndarray (int)
-        Asymmetric unit IDs of shape [L,], starting from 1.
-    sym_id: np.ndarray (int)
-        Symmetry IDs of shape [L,], starting from 1.
-    num_atoms: np.ndarray (int)
-        Number of atoms per token of shape [L,].
     center_index: np.ndarray (int)
         Center atom index of shape [L,], used for center calculations.
     disto_index: np.ndarray (int)
         Distogram atom index of shape [L,], used for distogram calculations.
-    is_standard: np.ndarray (bool)
-        Boolean tensor of shape [L,], indicating whether the token is standard.
     interaction_type: np.ndarray (bool)
         Multi-hot interaction types of shape [L, NUM_INTERACTION_TYPES].
 
@@ -201,18 +201,18 @@ class TokenArray(PlainLayout[np.ndarray]):
         Boolean tensor indicating whether the chain is ligand.
     """
 
-    token_index: np.ndarray  # [L,], int
-    residue_index: np.ndarray  # [L,], int
-    seq_token_index: np.ndarray  # [L,], int
-    res_type: np.ndarray  # [L,], int
     chain_type: np.ndarray  # [L,], int
     entity_id: np.ndarray  # [L,], int
     asym_id: np.ndarray  # [L,], int, same to sequence_id
     sym_id: np.ndarray  # [L,], int
+    res_type: np.ndarray  # [L,], int
     num_atoms: np.ndarray  # [L,], int
+    is_standard: np.ndarray  # [L,], bool
+    token_index: np.ndarray  # [L,], int
+    residue_index: np.ndarray  # [L,], int
+    seq_token_index: np.ndarray  # [L,], int
     center_index: np.ndarray  # [L,], int
     disto_index: np.ndarray  # [L,], int
-    is_standard: np.ndarray  # [L,], bool
     interaction_type: np.ndarray  # [L, NUM_INTERACTION_TYPES], bool
 
     @cached_property
@@ -221,19 +221,19 @@ class TokenArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.token_index, name="token_index", dtype=np.integer, shape=shape)
-        check_array(
-            self.residue_index, name="residue_index", dtype=np.integer, shape=shape
-        )
-        check_array(self.res_type, name="res_type", dtype=np.integer, shape=shape)
         check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
         check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
         check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=shape)
         check_array(self.sym_id, name="sym_id", dtype=np.integer, shape=shape)
+        check_array(self.res_type, name="res_type", dtype=np.integer, shape=shape)
+        check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
         check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
+        check_array(self.token_index, name="token_index", dtype=np.integer, shape=shape)
+        check_array(
+            self.residue_index, name="residue_index", dtype=np.integer, shape=shape
+        )
         check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
         check_array(self.disto_index, name="disto_index", dtype=np.integer, shape=shape)
-        check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
         check_array(
             self.interaction_type,
             name="interaction_type",
@@ -497,17 +497,16 @@ class SequenceArray(PlainLayout[np.ndarray]):
 
     Attributes
     ----------
+    chain_type: np.ndarray (int)
+        Chain types of shape [L,], indicating the type of each chain.
+    entity_id: np.ndarray (int)
+        Entity IDs of shape [L,], starting from 1.
     input_id: np.ndarray (int)
         Sequence tokens of shape [L,] (aatype, base, atom, ...)
         NOTE: this may differ from the res_type in TokenArray,
         since vocab is different for sequence embedding and co-folding.
-    residue_index: np.ndarray (int)
-        Residue indices of shape [L,], used for residue-level operations,
-        starting from 0. (BOS token has residue_index 0)
-    entity_id: np.ndarray (int)
-        Entity IDs of shape [L,], starting from 1.
-    chain_type: np.ndarray (int)
-        Chain types of shape [L,], indicating the type of each chain.
+    pos_id: np.ndarray (int)
+        Position indices of shape [L,], starting from 0.
 
     Cached Properties
     -----------------
@@ -522,7 +521,7 @@ class SequenceArray(PlainLayout[np.ndarray]):
     """
 
     input_id: np.ndarray  # [L,], int
-    residue_index: np.ndarray  # [L,], int
+    pos_id: np.ndarray  # [L,], int
     chain_type: np.ndarray  # [L,], int
     entity_id: np.ndarray  # [L,], int
 
@@ -532,12 +531,10 @@ class SequenceArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.input_id, name="res_type", dtype=np.integer, shape=shape)
-        check_array(
-            self.residue_index, name="residue_index", dtype=np.integer, shape=shape
-        )
         check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
         check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
+        check_array(self.input_id, name="res_type", dtype=np.integer, shape=shape)
+        check_array(self.pos_id, name="pos_id", dtype=np.integer, shape=shape)
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -560,13 +557,13 @@ class SequenceArray(PlainLayout[np.ndarray]):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
     @classmethod
-    def get_empty(cls, num_residues: int) -> Self:
-        """Get an empty ResidueArray with the specified number of residues."""
+    def get_empty(cls, sequence_length: int) -> Self:
+        """Get an empty SequenceArray with the specified sequence length."""
         return cls(
-            input_id=full_minus_one((num_residues,)),
-            chain_type=full_minus_one((num_residues,)),
-            entity_id=full_minus_one((num_residues,)),
-            residue_index=full_minus_one((num_residues,)),
+            chain_type=full_minus_one((sequence_length,)),
+            entity_id=full_minus_one((sequence_length,)),
+            input_id=full_minus_one((sequence_length,)),
+            pos_id=full_minus_one((sequence_length,)),
         )
 
     def validate(self) -> None:
