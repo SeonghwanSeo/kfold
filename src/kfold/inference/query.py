@@ -296,6 +296,7 @@ def parse_directory(
                     raise e
             else:
                 queries.append(query)
+    queries.sort(key=lambda q: q.name)
     return queries
 
 
@@ -345,6 +346,7 @@ def validate_input_dicts(
         if "modifications" in chain_info:
             mods = chain_info["modifications"]
             for key in mods.keys():
+                key = str(key)
                 if not key.isdigit():
                     raise ValueError(
                         f"Modification keys must be 1-based index, got: {key}"
@@ -362,13 +364,13 @@ def validate_input_dicts(
                     )
 
         # Check the id(s) are unique
-        for ids in entry[chain_type]["id"]:
-            if isinstance(ids, str):
-                ids = [ids]
-            for asym_id in ids:
-                if asym_id in asym_ids:
-                    raise ValueError(f"Duplicate asym_id found: {asym_id}")
-                asym_ids.add(asym_id)
+        ids = entry[chain_type]["id"]
+        if isinstance(ids, str):
+            ids = [ids]
+        for i in ids:
+            if i in asym_ids:
+                raise ValueError(f"Duplicate asym_id found: {i}")
+            asym_ids.add(i)
 
 
 def validate_input_sequences(
