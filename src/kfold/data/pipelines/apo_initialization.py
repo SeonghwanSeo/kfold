@@ -1,6 +1,7 @@
 import dataclasses
 import logging
 from functools import lru_cache
+from typing import Self
 
 import numpy as np
 
@@ -103,15 +104,12 @@ class ApoInitializerConfig:
 
     Attributes
     ----------
-    use_random_augmentation : bool
-        Whether to apply random rotation/translation augmentation
-        to apo structures.
     use_residue_permutation : bool
         Whether to find optimal residue permutation for symmetry correction.
         NOTE: Training only.
     prob_perturbation : float
         Probability of applying perturbation to apo structures.
-    use_cached_conformer : bool
+    use_cached_conformer_only : bool
         Whether to use cached conformers only for small molecules.
     protein_perturbation : ProteinPerturbationConfig | None
         Configuration for protein apo perturbation.
@@ -119,10 +117,9 @@ class ApoInitializerConfig:
         Configuration for ligand perturbation.
     """
 
-    use_random_augmentation: bool = True
     use_residue_permutation: bool = False
     prob_perturbation: float = 1.0
-    use_cached_conformer: bool = True
+    use_cached_conformer_only: bool = False
     use_holo_if_apo_unavailable: bool = True
     protein_perturbation: ProteinPerturbationConfig | None = dataclasses.field(
         default_factory=ProteinPerturbationConfig
@@ -138,11 +135,10 @@ class ApoInitializer:
     def __init__(
         self,
         config: ApoInitializerConfig,
-        ccd: CCD | None = None,
+        ccd: CCD,
         is_protein_monomer_distillation: bool = False,
     ):
         self.config: ApoInitializerConfig = config
-        self.use_random_augmentation: bool = config.use_random_augmentation
         self.use_residue_permutation: bool = config.use_residue_permutation
         self.use_holo_if_apo_unavailable: bool = config.use_holo_if_apo_unavailable
 
@@ -167,10 +163,23 @@ class ApoInitializer:
         # Training mode
         # During train/val, disable ETKDG generation for efficiency,
         # i.e., only the cached ETKDG and CCD conformers (ideal, mode) are used.
-        self.conformer_mode: str = "train" if config.use_cached_conformer else "auto"
+        self.conformer_mode: str = "train" if config.use_cached_conformer_only else "auto"
 
         # Logger
         self.logger = logging.getLogger("ApoInitializer")
+
+    @classmethod
+    def inference_mode(cls, ccd: CCD) -> Self:
+        """Get ApoInitializer instance for inference mode."""
+        return cls(
+            config=ApoInitializerConfig(
+                use_residue_permutation=False,
+                use_cached_conformer_only=False,
+                protein_perturbation=None,
+                ligand_perturbation=None,
+            ),
+            ccd=ccd,
+        )
 
     def __call__(
         self,
@@ -299,9 +308,8 @@ class ApoInitializer:
                 f"expected ({chain.num_residues}, {Natom}, 3), got {apo_coords.shape}"
             )
 
-            if self.use_random_augmentation:
-                # Apply random rotation/translation augmentation
-                apo_coords = self.apply_random_augmentation(apo_coords, rng)
+            # Apply random rotation/translation augmentation
+            apo_coords = self.apply_random_augmentation(apo_coords, rng)
 
             # Insert apo coordinates into chain according to atom order
             # [L, Natom, 3] -> [Nallatoms, 3]
@@ -375,9 +383,8 @@ class ApoInitializer:
             ):
                 apo_coords = self.ligand_perturbation(apo_coords, chain, rng)
 
-            if self.use_random_augmentation:
-                # Apply random rotation augmentation
-                apo_coords = self.apply_random_augmentation(apo_coords[None, ...], rng)[0]
+            # Apply random rotation augmentation
+            apo_coords = self.apply_random_augmentation(apo_coords[None, ...], rng)[0]
 
             # Feed apo coordinates
             chain.atom.apo_coords[:, :] = apo_coords
@@ -432,8 +439,7 @@ class ApoInitializer:
             apo_coords = self.apply_perturbation(sequence, apo_coords, rng)
 
         # Apply random augmentation
-        if self.use_random_augmentation:
-            apo_coords = self.apply_random_augmentation(apo_coords, rng)
+        apo_coords = self.apply_random_augmentation(apo_coords, rng)
 
         # Feed apo coordinates
         chain.atom.apo_coords[:] = apo_coords[res_indices, atom_indices]
