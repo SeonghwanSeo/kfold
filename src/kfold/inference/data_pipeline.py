@@ -37,7 +37,12 @@ class InputDataPipeline:
 
         # Initialize apo initializer
         self.apo_initializer = apo_initialization.ApoInitializer(
-            apo_initialization.ApoInitializerConfig(), self.ccd
+            apo_initialization.ApoInitializerConfig(
+                protein_perturbation=None,
+                ligand_perturbation=None,
+                use_cached_conformer_only=False,
+            ),
+            self.ccd,
         )
         self.prior_sampler = prior_sampling.PriorSampler(
             prior_sampling.PriorSamplerConfig(num_samples=num_samples),

@@ -111,7 +111,7 @@ class ApoInitializerConfig:
         NOTE: Training only.
     prob_perturbation : float
         Probability of applying perturbation to apo structures.
-    use_cached_conformer : bool
+    use_cached_conformer_only : bool
         Whether to use cached conformers only for small molecules.
     protein_perturbation : ProteinPerturbationConfig | None
         Configuration for protein apo perturbation.
@@ -122,7 +122,7 @@ class ApoInitializerConfig:
     use_random_augmentation: bool = True
     use_residue_permutation: bool = False
     prob_perturbation: float = 1.0
-    use_cached_conformer: bool = True
+    use_cached_conformer_only: bool = False
     use_holo_if_apo_unavailable: bool = True
     protein_perturbation: ProteinPerturbationConfig | None = dataclasses.field(
         default_factory=ProteinPerturbationConfig
@@ -138,7 +138,7 @@ class ApoInitializer:
     def __init__(
         self,
         config: ApoInitializerConfig,
-        ccd: CCD | None = None,
+        ccd: CCD,
         is_protein_monomer_distillation: bool = False,
     ):
         self.config: ApoInitializerConfig = config
@@ -167,7 +167,7 @@ class ApoInitializer:
         # Training mode
         # During train/val, disable ETKDG generation for efficiency,
         # i.e., only the cached ETKDG and CCD conformers (ideal, mode) are used.
-        self.conformer_mode: str = "train" if config.use_cached_conformer else "auto"
+        self.conformer_mode: str = "train" if config.use_cached_conformer_only else "auto"
 
         # Logger
         self.logger = logging.getLogger("ApoInitializer")

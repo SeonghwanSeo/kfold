@@ -11,7 +11,7 @@ apo_init:
   use_random_augmentation: true
   use_residue_permutation: false
   prob_perturbation: 0.95
-  use_cached_conformer: true
+  use_cached_conformer_only: true
   use_holo_if_apo_unavailable: false
   protein_perturbation: null
   ligand_perturbation: null
