@@ -1,7 +1,5 @@
 """Tokenization pipeline for structures."""
 
-from functools import lru_cache
-
 import numpy as np
 from rdkit import Chem
 
@@ -125,7 +123,8 @@ def tokenize_structure(
         The parsed tokenized structure.
     """
 
-    @lru_cache  # No cache limit within a single function call
+    ccd_dict: dict[str, Component] = {}
+
     def get_ccd_component(ccd_name: str) -> Component:
         """Get CCD component with caching.
 
@@ -133,7 +132,9 @@ def tokenize_structure(
         which is time-consuming. Therefore, we cache the Component objects here.
         The cache is removed when the function is terminated.
         """
-        return ccd[ccd_name]
+        if ccd_name not in ccd_dict:
+            ccd_dict[ccd_name] = ccd[ccd_name]
+        return ccd_dict[ccd_name]
 
     rng = rng or np.random.default_rng()
 
@@ -155,19 +156,19 @@ def tokenize_structure(
         chain_atom_st[chain.asym_id] = atom_offset
         atom_offset += chain.num_atoms
 
-    entity_sequence_st: dict[int, int] = {}
-    seq_offset = 0
+    visited_entity_ids = set()
+    num_seq_tokens = 0
     for chain in input.chains:
         entity_id = chain.entity_id
-        if entity_id not in entity_sequence_st:
-            entity_sequence_st[entity_id] = seq_offset
-            seq_offset += chain.num_residues
+        if entity_id not in visited_entity_ids:
+            visited_entity_ids.add(entity_id)
+            num_seq_tokens += chain.num_residues + 2  # add start and end tokens
+    del visited_entity_ids
 
     # ==================================================
     # Create empty tokenized structure
     # ==================================================
     num_bonds = input.num_bonds + input.num_connections
-    num_seq_tokens = seq_offset
     num_priors = prior_sampler.num_samples if prior_sampler is not None else 0
     struct = TokenizedStructure.get_empty(
         num_chains=len(input.chains),
@@ -180,11 +181,15 @@ def tokenize_structure(
     # ==================================================
     # Collect all component in the structure
     # ==================================================
-    # (asym_id, residue_index) -> Component
-    ccd_components: dict[tuple[int, int], Component] = {}
+    ccd_components: dict[tuple[int, int], Component] = {}  # key: (asym_id, res_idx)
+    ccd_sequence_dict: dict[int, list[str]] = {}
+    all_atom_dict: dict[int, list[str]] = {}
     for chain in input.chains:
         asym_id = chain.asym_id
         ccd_sequence: list[str] = chain.get_ccd_sequence()
+        ccd_sequence_dict[asym_id] = ccd_sequence
+        all_atom_dict[asym_id] = chain.atom.name.tolist()
+
         for res_idx, ccd_name in enumerate(ccd_sequence, start=1):
             if ccd_name.startswith("LIG"):
                 # This residue is from a smiles string, load smiles from metadata
@@ -216,7 +221,50 @@ def tokenize_structure(
         struct.chain.num_tokens[chain_i] = chain.num_tokens
 
     # ==================================================
-    # Fill residue and token structures
+    # Fill sequence structures
+    # ==================================================
+    bos_token = C.sequence.BOS_TOKEN_INDEX
+    eos_token = C.sequence.EOS_TOKEN_INDEX
+    unk_token = C.sequence.UNK_TOKEN_INDEX
+    entity_sequence_start: dict[int, int] = {}
+    g_seq_i = 0
+    for chain in input.chains:
+        ctype = chain.ctype
+        entity_id = chain.entity_id
+        if entity_id in entity_sequence_start:
+            continue
+        entity_sequence_start[entity_id] = g_seq_i
+
+        # Insert sequence info
+        n_res = chain.num_residues
+        st = g_seq_i
+        end = g_seq_i + n_res + 2  # +2 for start and
+        g_seq_i = end
+
+        struct.sequence.pos_id[st:end] = np.arange(n_res + 2)
+        struct.sequence.entity_id[st:end] = entity_id
+        struct.sequence.chain_type[st:end] = chain.chain_type
+
+        # Add bos/eos tokens
+        struct.sequence.input_id[st] = bos_token
+        struct.sequence.input_id[end - 1] = eos_token
+
+        # Insert sequence tokens
+        if ctype.is_polymer:
+            if ctype.is_protein:
+                encode_fn = C.sequence.encode_protein_sequence
+            elif ctype.is_dna:
+                encode_fn = C.sequence.encode_dna_sequence
+            elif ctype.is_rna:
+                encode_fn = C.sequence.encode_rna_sequence
+            seq = chain.get_sequence(map_to_standard=True)
+            struct.sequence.input_id[st + 1 : end - 1] = encode_fn(seq)
+        else:
+            # For non-polymer chains, set sequence tokens to UNK
+            struct.sequence.input_id[st + 1 : end - 1] = unk_token
+
+    # ==================================================
+    # Fill token structures
     # ==================================================
     g_tok_i = 0
     g_atom_i = 0
@@ -225,13 +273,19 @@ def tokenize_structure(
 
     for chain in input.chains:
         ctype = chain.ctype
+        chain_type_i = chain.chain_type
+        entity_id = chain.entity_id
         asym_id = chain.asym_id
-        ccd_sequence: list[str] = chain.get_ccd_sequence()
-        all_atom_names: list[str] = chain.atom.name.tolist()
+        sym_id = chain.sym_id
+        ccd_sequence: list[str] = ccd_sequence_dict[asym_id]
+        all_atom_names: list[str] = all_atom_dict[asym_id]
+
+        seq_token_st: int = entity_sequence_start[chain.entity_id]
 
         # Iterate residues in the chain and fill token and some atom info
         for res_i in range(chain.num_residues):
             res_idx = res_i + 1  # 1-based index
+            seq_token_idx = seq_token_st + 1 + res_i  # +1 for start token
 
             # Get residue info
             ccd_name: str = ccd_sequence[res_i]
@@ -248,12 +302,17 @@ def tokenize_structure(
                 # Standard protein/dna/rna residues (including ambiguous residues)
                 ref_atom_idx: int = C.atom.REF_ATOM_INDEX[res_name]
                 disto_atom_idx: int = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
+                struct.token.chain_type[g_tok_i] = chain_type_i
+                struct.token.entity_id[g_tok_i] = entity_id
+                struct.token.asym_id[g_tok_i] = asym_id
+                struct.token.sym_id[g_tok_i] = sym_id
                 struct.token.res_type[g_tok_i] = restype
+                struct.token.is_standard[g_tok_i] = True
                 struct.token.residue_index[g_tok_i] = res_idx
+                struct.token.seq_token_index[g_tok_i] = seq_token_idx
                 struct.token.num_atoms[g_tok_i] = natoms
                 struct.token.center_index[g_tok_i] = ref_atom_idx
                 struct.token.disto_index[g_tok_i] = disto_atom_idx
-                struct.token.is_standard[g_tok_i] = True
 
                 # Insert pre-defined non-covalent interaction types
                 nci_indices = get_residue_interaction_type(res_name)
@@ -274,12 +333,17 @@ def tokenize_structure(
                 # Ligands, Modifications, Covalent inhibitors
                 st = g_tok_i
                 end = g_tok_i + natoms
+                struct.token.chain_type[st:end] = chain_type_i
+                struct.token.entity_id[st:end] = entity_id
+                struct.token.asym_id[st:end] = asym_id
+                struct.token.sym_id[st:end] = sym_id
                 struct.token.res_type[st:end] = restype
+                struct.token.is_standard[st:end] = False
                 struct.token.residue_index[st:end] = res_idx
+                struct.token.seq_token_index[st:end] = seq_token_idx
                 struct.token.num_atoms[st:end] = 1
                 struct.token.center_index[st:end] = 0
                 struct.token.disto_index[st:end] = 0
-                struct.token.is_standard[st:end] = False
 
                 # Insert interaction types from CCD component
                 atom_indices = comp.get_atom_indices(atom_names)
@@ -299,12 +363,6 @@ def tokenize_structure(
     assert g_tok_i == input.num_tokens, "Global token index does not match."
     assert g_atom_i == input.num_atoms, "Global atom index does not match."
 
-    # Propagate chain features to token levels
-    for k in ["chain_type", "entity_id", "asym_id", "sym_id"]:
-        chain_feat = getattr(struct.chain, k)
-        token_feat = getattr(struct.token, k)
-        token_feat[:] = np.repeat(chain_feat, struct.chain.num_tokens, axis=0)
-
     # Set default token index
     struct.token.token_index[:] = np.arange(input.num_tokens, dtype=np.int64)
 
@@ -315,8 +373,8 @@ def tokenize_structure(
     for chain in input.chains:
         ctype = chain.ctype
         asym_id = chain.asym_id
-        ccd_sequence: list[str] = chain.get_ccd_sequence()
-        all_atom_names: list[str] = chain.atom.name.tolist()
+        ccd_sequence: list[str] = ccd_sequence_dict[asym_id]
+        all_atom_names: list[str] = all_atom_dict[asym_id]
 
         token_st: int = chain_token_st[asym_id]
         token_end: int = token_st + chain.num_tokens
