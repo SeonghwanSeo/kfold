@@ -30,15 +30,23 @@ _VOCAB: list[str] = [
     *_DNA_BASE,
     *_RNA_BASE,
 ]
-BOS_TOKEN_INDEX = _VOCAB.index("<cls>")
-EOS_TOKEN_INDEX = _VOCAB.index("<eos>")
-PAD_TOKEN_INDEX = _VOCAB.index("<pad>")
-UNK_TOKEN_INDEX = _VOCAB.index("<unk>")
-MASK_TOKEN_INDEX = _VOCAB.index("<mask>")
 # fmt: on
+BOS_TOKEN_INDEX: int = _VOCAB.index("<cls>")
+EOS_TOKEN_INDEX: int = _VOCAB.index("<eos>")
+PAD_TOKEN_INDEX: int = _VOCAB.index("<pad>")
+UNK_TOKEN_INDEX: int = _VOCAB.index("<unk>")
+MASK_TOKEN_INDEX: int = _VOCAB.index("<mask>")
 
+# Token index ranges for different residue types
+_st = 4
+PROTEIN_TOKEN_INDICES: list[int] = list(range(_st, _st + len(_AMINO_ACIDS)))
+_st += len(_AMINO_ACIDS) + 1  # Move past amino acids and mask token
+DNA_TOKEN_INDICES: list[int] = list(range(_st, _st + len(_DNA_BASE)))
+_st += len(_DNA_BASE)  # Move past DNA bases
+RNA_TOKEN_INDICES: list[int] = list(range(_st, _st + len(_RNA_BASE)))
+del _st
 
-# prepare residue name to index mapping for one-hot encoding
+# Prepare residue name to index mapping for one-hot encoding
 RESIDUE_NAME_TO_SEQ_INDEX: dict[residue.ResidueName, int] = {}
 RESIDUE_NAME_TO_SEQ_INDEX[residue.ResidueName.PAD] = _VOCAB.index("<pad>")
 for res in residue.PROTEIN_RESIDUES:
