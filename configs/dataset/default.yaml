@@ -8,7 +8,6 @@ seed: null # should be null for data augmentation
 is_protein_monomer_distillation: false # whether this dataset is for protein monomer distillation
 
 apo_init:
-  use_random_augmentation: true
   use_residue_permutation: false
   prob_perturbation: 0.95
   use_cached_conformer_only: true
@@ -18,7 +17,6 @@ apo_init:
 
 prior_sampler:
   num_samples: 0
-  use_random_augmentation: true
   use_chain_com_sampling: false
   use_ot_permutation: false
   translation_scale: 1.0 # Angstroms

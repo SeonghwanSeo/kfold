@@ -36,18 +36,8 @@ class InputDataPipeline:
         self.seed: int = seed
 
         # Initialize apo initializer
-        self.apo_initializer = apo_initialization.ApoInitializer(
-            apo_initialization.ApoInitializerConfig(
-                protein_perturbation=None,
-                ligand_perturbation=None,
-                use_cached_conformer_only=False,
-            ),
-            self.ccd,
-        )
-        self.prior_sampler = prior_sampling.PriorSampler(
-            prior_sampling.PriorSamplerConfig(num_samples=num_samples),
-            self.ccd,
-        )
+        self.apo_initializer = apo_initialization.ApoInitializer.inference_mode(ccd)
+        self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd, num_samples)
 
         # Initialize tokenizer
         self.tokenizer = tokenization.Tokenizer(self.prior_sampler, self.ccd)

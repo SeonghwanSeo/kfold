@@ -3,6 +3,7 @@ import itertools
 import logging
 from collections import defaultdict
 from functools import lru_cache
+from typing import Self
 
 import numpy as np
 
@@ -39,9 +40,6 @@ class PriorSamplerConfig:
     ----------
     num_samples : int
         Number of prior coordinates to sample.
-    use_random_augmentation : bool
-        Whether to apply random rotation/translation augmentation
-        to apo structures.
     use_chain_com_sampling : bool
         If set, place each chain's center of mass on a sphere surface with
         this radius (uniformly sampled).
@@ -52,16 +50,13 @@ class PriorSamplerConfig:
     """
 
     num_samples: int = 1
-    use_random_augmentation: bool = True
     use_chain_com_sampling: bool = False
     use_ot_permutation: bool = False
     translation_scale: float = 1.0  # Angstrom
     # Langevin dynamics parameters for relaxing missing atoms
     relaxation: LangevinDynamicsConfig = dataclasses.field(
         default_factory=lambda: LangevinDynamicsConfig(
-            num_steps=200,
-            res_r=4.0,
-            bond_r=2.0,
+            num_steps=64, res_r=4.0, bond_r=2.0
         )
     )
 
@@ -83,6 +78,18 @@ class PriorSampler:
 
         # Logger
         self.logger = logging.getLogger("PriorSampler")
+
+    @classmethod
+    def inference_mode(cls, ccd: CCD, num_samples: int) -> Self:
+        """Get a PriorSampler instance configured for inference"""
+        return cls(
+            config=PriorSamplerConfig(
+                num_samples=num_samples,
+                use_chain_com_sampling=False,
+                use_ot_permutation=False,
+            ),
+            ccd=ccd,
+        )
 
     def __call__(self, struct: RefStructure, rng: np.random.Generator) -> np.ndarray:
         """Sample prior coordinates for the given structure.
@@ -158,9 +165,7 @@ class PriorSampler:
                 )
 
             # Apply random rotation/translation augmentation
-            augmented_coords = chain_coords
-            if self.config.use_random_augmentation:
-                augmented_coords = self.apply_random_augmentation(chain_coords, rng)
+            augmented_coords = self.apply_random_augmentation(chain_coords, rng)
             prior_coords_list.append(augmented_coords)
 
         if self.use_ot_permutation:
