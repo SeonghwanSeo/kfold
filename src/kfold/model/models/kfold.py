@@ -1,4 +1,5 @@
 import time
+from collections.abc import Mapping
 
 import torch
 
@@ -11,7 +12,6 @@ from .base import BaseFoldingModel, BaseFoldingModelConfig
 
 class KFoldConfig(BaseFoldingModelConfig):
     _class_: str = "KFold"
-    # TODO: define encoders
     sequence_encoder: BaseConfig
     # structure_encoder: BaseConfig
 
@@ -20,7 +20,6 @@ class KFoldConfig(BaseFoldingModelConfig):
 class KFold(BaseFoldingModel):
     def __init__(self, config: KFoldConfig):
         super().__init__(config)
-
         self.sequence_encoder: submodules.sequence_encoder.BaseSequenceEncoder = (
             Registry.instantiate(config.sequence_encoder)
         )
@@ -296,3 +295,29 @@ class KFold(BaseFoldingModel):
             for key in dict_out:
                 dict_out[key] = dict_out[key].squeeze(0)
         return dict_out, time_logs
+
+    def load_state_dict(
+        self,
+        state_dict: Mapping[str, torch.Tensor],
+        strict: bool = True,
+        assign: bool = False,
+    ):
+        """Load state dict without pretrained sequence encoder"""
+        # Add '._orig_mod.' to state dict keys if required for compiled models
+        state_dict = self._add_orig_mod_to_state_dict(state_dict)
+
+        # If strict is False, it is fine to have missing keys (e.g., pretrained model)
+        incompatible_keys = super().load_state_dict(state_dict, strict=False)
+        if strict:
+            missing_keys = incompatible_keys.missing_keys
+            unexpected_keys = incompatible_keys.unexpected_keys
+            # If the sequence encoder is pretrained and not included in the state dict,
+            # we allow missing keys that start with "sequence_encoder.".
+            if missing_keys:
+                missing_keys = {
+                    key for key in missing_keys if not key.startswith("sequence_encoder.")
+                }
+            if missing_keys:
+                raise KeyError(f"Missing keys in state_dict: {missing_keys}")
+            if unexpected_keys:
+                raise KeyError(f"Unexpected keys in state_dict: {unexpected_keys}")

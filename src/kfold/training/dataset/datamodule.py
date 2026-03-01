@@ -47,9 +47,6 @@ class DataModuleConfig(BaseConfig):
     train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
     val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
 
-    # === Featurization args === #
-    pretrained_embedding: dict = dataclasses.field(default_factory=dict)
-
     # === Interaction annotation === #
     interaction_type: str = "auto"
 
@@ -82,7 +79,6 @@ class TrainingDataModule(pl.LightningDataModule):
         multi_ds = MultiTrainingDataset(
             configs=self.config.train_datasets,
             ccd=self.ccd,
-            pretrained_embedding=self.config.pretrained_embedding,
             max_chains=self.config.max_chains,
             max_tokens=self.config.max_tokens,
             safe_load=self.config.safe_load,
@@ -106,7 +102,6 @@ class TrainingDataModule(pl.LightningDataModule):
         ds = ValidationDataset(
             config=self.config.val_datasets[0],
             ccd=self.ccd,
-            pretrained_embedding=self.config.pretrained_embedding,
             safe_load=self.config.safe_load,
         )
         self.print_rank_zero(

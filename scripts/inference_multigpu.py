@@ -134,7 +134,7 @@ def main():
     if "model" in config:
         # Get model config if wrapped in a higher-level config
         config = config.model
-    model: KFold = KFold.from_checkpoint(config, args.checkpoint, strict=False)
+    model: KFold = KFold.from_checkpoint(config, args.checkpoint)
 
     # Inference configuration
     inference_config = InferenceConfig(

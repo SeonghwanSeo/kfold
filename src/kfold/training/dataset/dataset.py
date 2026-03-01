@@ -293,57 +293,56 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         rng: np.random.Generator,
     ) -> None:
         """Populate the apo structure for the given reference structure."""
-        # Fetch apo info from lookup table
         if self.is_protein_monomer_distillation:
             # Directly feed apo structures from labeled
             self.apo_initializer(ref_struct, {}, rng)
             return
 
-        entry_id = ref_struct.id
-        entry_info = self.lookup_table[entry_id]
+        # Fetch apo lookup for the current entry
         apo_dir = self.data_root / "apo"
+        entry_id: str = ref_struct.id
+        entry_lookup: dict[str, list[dict[str, str]]] = self.lookup_table[entry_id]
 
-        # Match apo structure for each protein chain.
-        apo_lookup_map: dict[int, dict] = {}
+        # Match apo structure for each protein entries.
+        apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
+        visited_entity_ids: set[int] = set()
         for c in ref_struct.chains:
+            if not c.ctype.is_protein:
+                continue
+            if c.entity_id in visited_entity_ids:
+                continue  # already populated from another chain with same entity_id
             entity_id = c.entity_id
-            entity_info = entry_info[str(entity_id)]
-            if c.ctype.is_protein:
-                apo_list: list = entity_info.get("apo", [])
+            visited_entity_ids.add(entity_id)
 
-                # Select apo structure (randomly if multiple)
-                if len(apo_list) == 0:
-                    self.logger.warning(
-                        "No available apo structure found "
-                        f"for entity {entity_id} in entry {entry_id}."
-                    )
-                    continue
-                elif len(apo_list) == 1:
-                    apo_info = apo_list[0]
-                else:
-                    apo_info = rng.choice(apo_list)
+            entity_apos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
+            num_apos = len(entity_apos)
+            # Select apo structure (randomly if multiple)
+            if num_apos == 0:
+                self.logger.warning(
+                    f"No apo info found for entity {entry_id}:{entity_id}"
+                )
+                continue
+            apo_info = entity_apos[rng.integers(0, num_apos)].copy()
 
-                entity_lookup = apo_info.copy()
+            # Check apo file existence
+            source = apo_info["source"]
+            path = apo_info["path"]
+            apo_path = apo_dir / source / path
+            if not apo_path.exists():
+                self.logger.error(
+                    f"Apo file not found for entity {entry_id}:{entity_id}: {apo_path}"
+                )
+                continue
+            apo_info["path"] = apo_path
 
-                # Check apo structure file existence
-                source = apo_info["source"]
-                path = apo_info["path"]
-                apo_path = apo_dir / source / path
-                if not apo_path.exists():
-                    self.logger.error(f"Apo structure file not found: {apo_path}.")
-                    continue
-                entity_lookup["path"] = apo_path
+            # Add rieprody key if available
+            if "name" in apo_info:
+                apo_info["rieprody_key"] = f"{source}:{apo_info['name']}"
 
-                # Add rieprody key if available
-                if "name" in apo_info:
-                    rieprody_key = f"{source}:{apo_info['name']}"
-                    entity_lookup["rieprody_key"] = rieprody_key
-
-                # Add to apo lookup map
-                apo_lookup_map[entity_id] = entity_lookup
+            apo_lookup[entity_id] = apo_info
 
         # Populate apo structure
-        self.apo_initializer(ref_struct, apo_lookup_map, rng)
+        self.apo_initializer(ref_struct, apo_lookup, rng)
 
     def tokenize(
         self,

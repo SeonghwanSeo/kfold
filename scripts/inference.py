@@ -125,7 +125,7 @@ def main():
     config = load_config(args.config)
     if "model" in config:
         config = config.model
-    model: KFold = KFold.from_checkpoint(config, args.checkpoint, strict=False)
+    model: KFold = KFold.from_checkpoint(config, args.checkpoint)
     model = model.eval().cuda()
 
     # Load CCD data

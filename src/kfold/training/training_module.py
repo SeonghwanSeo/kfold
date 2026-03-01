@@ -915,35 +915,67 @@ class KFoldTrainingModule(pl.LightningModule):
         return new_state_dict
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        # remove pretrained model keys
+        checkpoint["state_dict"] = {
+            k: v
+            for k, v in checkpoint["state_dict"].items()
+            if "sequence_encoder" not in k
+        }
+
+        # Remove '._orig_mod.' from checkpoint keys
         checkpoint["state_dict"] = self._remove_orig_mod_from_state_dict(
             checkpoint["state_dict"]
         )
+
+        # Add EMA state dict if EMA is used
         if self.use_ema:
-            checkpoint["ema"] = self._remove_orig_mod_from_state_dict(
-                self.ema.state_dict()
+            ema_state_dict = self.ema.state_dict()
+            # Remove '._orig_mod.' from EMA state dict keys
+            ema_state_dict["shadow_params"] = self._remove_orig_mod_from_state_dict(
+                ema_state_dict["shadow_params"]
             )
+            checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        checkpoint["state_dict"] = self._add_orig_mod_to_state_dict(
-            checkpoint["state_dict"], self.state_dict()
-        )
-        # === Handle EMA state === #
+        """Load EMA state dict if EMA is used and present in the checkpoint."""
         if self.use_ema and "ema" in checkpoint:
-            ema_state_dict = checkpoint["ema"]
+            # Create EMA object if not exists
             ema_decay = self.optimizer_config.ema_decay
             self.ema = ExponentialMovingAverage(self, decay=ema_decay)
-            ema_state_dict = self._add_orig_mod_to_state_dict(
-                ema_state_dict, self.ema.state_dict()
-            )
-            if self.ema.compatible(ema_state_dict):
-                self.ema.load_state_dict(ema_state_dict, device=torch.device("cpu"))
-                self.ema.to(self.device)
-            else:
-                print(
-                    "Warning: EMA state not loaded due to incompatible model parameters."
-                )
-                self.use_ema = False  # Disable EMA if not compatible
-                del self._ema
+            self.load_ema_state_dict(checkpoint["ema"])
+
+    def load_state_dict(
+        self,
+        state_dict: dict[str, Any],
+        strict: bool = True,
+        assign: bool = False,
+    ):  # type: ignore[override]
+        """Override load_state_dict to handle EMA state dict."""
+        # Remove '._orig_mod.' from state dict keys if present
+        state_dict = self._remove_orig_mod_from_state_dict(state_dict)
+        # Then, add '._orig_mod.' to state dict keys if required by the model
+        state_dict = self._add_orig_mod_to_state_dict(state_dict, self.state_dict())
+        # Remove 'model.' prefix from state dict keys if present
+        state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
+        return self.model.load_state_dict(state_dict, strict=strict)
+
+    def load_ema_state_dict(self, state_dict: dict[str, Any]):
+        """Load EMA state dict."""
+        # Remove '._orig_mod.' from EMA state dict keys if present.
+        state_dict["shadow_params"] = self._remove_orig_mod_from_state_dict(
+            state_dict["shadow_params"]
+        )
+        # Add '._orig_mod.' to EMA state dict keys if required by the model.
+        state_dict["shadow_params"] = self._add_orig_mod_to_state_dict(
+            state_dict["shadow_params"], self.ema.state_dict()
+        )
+        if self.ema.compatible(state_dict):
+            self.ema.load_state_dict(state_dict, device=torch.device("cpu"))
+            self.ema.to(self.device)
+        else:
+            print("Warning: EMA state not loaded due to incompatible model parameters.")
+            self.use_ema = False  # Disable EMA if not compatible
+            del self._ema
 
     # === Helper functions === #
     def save_structure_and_metrics(

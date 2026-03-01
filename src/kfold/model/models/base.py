@@ -2,6 +2,7 @@ import dataclasses
 import pathlib
 import time
 import warnings
+from collections.abc import Mapping
 from typing import Self
 
 import torch
@@ -402,3 +403,47 @@ class BaseFoldingModel(torch.nn.Module):
         model.load_state_dict(state_dict, strict=strict)
 
         return model
+
+    def load_state_dict(
+        self,
+        state_dict: Mapping[str, torch.Tensor],
+        strict: bool = True,
+        assign: bool = False,
+    ):
+        """Load state dict without pretrained sequence encoder"""
+        # Add '._orig_mod.' to state dict keys if required for compiled models
+        state_dict = self._add_orig_mod_to_state_dict(state_dict)
+
+        # If strict is False, it is fine to have missing keys (e.g., pretrained model)
+        incompatible_keys = super().load_state_dict(state_dict, strict=False)
+        if strict:
+            missing_keys = incompatible_keys.missing_keys
+            unexpected_keys = incompatible_keys.unexpected_keys
+            if missing_keys:
+                raise KeyError(f"Missing keys in state_dict: {missing_keys}")
+            if unexpected_keys:
+                raise KeyError(f"Unexpected keys in state_dict: {unexpected_keys}")
+        return incompatible_keys
+
+    def _add_orig_mod_to_state_dict(
+        self, state_dict: Mapping[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        """Add '._orig_mod.' to state dict keys if required"""
+        state_keys = set(state_dict.keys())
+
+        new_state_dict = dict(state_dict)
+        if self.config.compile_trunk:
+            prefix = "trunk."
+            to_prefix = "trunk._orig_mod."
+            for k in state_keys:
+                if k.startswith(prefix) and not k.startswith(to_prefix):
+                    new_key = k.replace(prefix, to_prefix, 1)
+                    new_state_dict[new_key] = new_state_dict.pop(k)
+        if self.config.compile_score_model:
+            prefix = "score_model."
+            to_prefix = "score_model._orig_mod."
+            for k in state_keys:
+                if k.startswith(prefix) and not k.startswith(to_prefix):
+                    new_key = k.replace(prefix, to_prefix, 1)
+                    new_state_dict[new_key] = new_state_dict.pop(k)
+        return new_state_dict
