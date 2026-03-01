@@ -128,6 +128,16 @@ class ApoInitializerConfig:
         default_factory=SmallMolPerturbationConfig
     )
 
+    @classmethod
+    def inference_mode(cls) -> Self:
+        """Get ApoInitializer instance for inference mode."""
+        return cls(
+            use_residue_permutation=False,
+            use_cached_conformer_only=False,
+            protein_perturbation=None,
+            ligand_perturbation=None,
+        )
+
 
 class ApoInitializer:
     """Class to populate and augment apo structures."""
@@ -171,15 +181,7 @@ class ApoInitializer:
     @classmethod
     def inference_mode(cls, ccd: CCD) -> Self:
         """Get ApoInitializer instance for inference mode."""
-        return cls(
-            config=ApoInitializerConfig(
-                use_residue_permutation=False,
-                use_cached_conformer_only=False,
-                protein_perturbation=None,
-                ligand_perturbation=None,
-            ),
-            ccd=ccd,
-        )
+        return cls(ApoInitializerConfig.inference_mode(), ccd)
 
     def __call__(
         self,

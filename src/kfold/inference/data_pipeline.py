@@ -9,6 +9,7 @@ from kfold.data.pipelines import (
     apo_initialization,
     featurization,
     prior_sampling,
+    sequence_masking,
     structure_preparation,
     tokenization,
 )
@@ -27,11 +28,25 @@ class InputDataPipeline:
     def __init__(
         self,
         ccd: CCD,
-        seq_embedding_dim: int | None,
-        struct_embedding_dim: int | None,
         num_samples: int = 5,
+        use_sequence_masking: bool = False,
         seed: int = 1,
     ) -> None:
+        """Initialize the input data pipeline.
+
+        Parameters
+        ----------
+        ccd : CCD
+            The chemical component dictionary for residue information.
+        num_samples : int, optional
+            The number of samples to generate for prior sampling.
+            Default is 5.
+        use_sequence_masking : bool, optional
+            Whether to apply sequence masking for sample diversity. Default is False.
+        seed : int, optional
+            The random seed for reproducibility. Default is 1.
+        """
+
         self.ccd: CCD = ccd
         self.seed: int = seed
 
@@ -40,13 +55,14 @@ class InputDataPipeline:
         self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd, num_samples)
 
         # Initialize tokenizer
-        self.tokenizer = tokenization.Tokenizer(self.prior_sampler, self.ccd)
+        self.tokenizer = tokenization.Tokenizer(self.ccd, self.prior_sampler)
+
+        # Initialize sequence masking (0.0-0.15 masking ratio if enabled)
+        mask_prob = 1.0 if use_sequence_masking else 0.0
+        self.sequence_masking = sequence_masking.SequenceMasking(mask_prob)
 
         # Initialize featurizer
-        self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer(
-            seq_embedding_dim=seq_embedding_dim,
-            struct_embedding_dim=struct_embedding_dim,
-        )
+        self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer()
 
     def process_query(
         self, input: query.Query
@@ -78,16 +94,14 @@ class InputDataPipeline:
         # Tokenize structure
         tok_struct = self.tokenizer.tokenize(ref_struct)
 
+        # Apply sequence masking for sample diversity (only if enabled)
+        self.sequence_masking(tok_struct, rng)
+
         # Featurize input
-        seq_emb_paths = self.collect_precomputed_embeddings(input, "seq")
-        struct_emb_paths = self.collect_precomputed_embeddings(input, "struct")
-        f_input = self.featurizer(tok_struct, seq_emb_paths, struct_emb_paths, rng=rng)
+        f_input = self.featurizer(tok_struct, rng)
         return ref_struct, tok_struct, f_input
 
-    def prepare_structure_from_query(
-        self,
-        input: query.Query,
-    ) -> RefStructure:
+    def prepare_structure_from_query(self, input: query.Query) -> RefStructure:
         """Prepare the reference structure from the input file.
 
         Parameters
@@ -172,7 +186,7 @@ class InputDataPipeline:
         self,
         ref_struct: RefStructure,
         input: query.Query,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> None:
         """Populate apo structure in-place.
 
@@ -202,38 +216,6 @@ class InputDataPipeline:
             }
         # Populate apo structure
         self.apo_initializer(ref_struct, lookup=lookup, rng=rng)
-
-    def collect_precomputed_embeddings(
-        self, input: query.Query, key: str = "seq"
-    ) -> dict[int, dict]:
-        """Collect precomputed embeddings from the input file.
-
-        Parameters
-        ----------
-        input : Query
-            The input query file.
-
-        Returns
-        -------
-        embedding_paths : dict[int, dict]
-            A dictionary mapping entity ids to embedding file paths.
-        """
-        assert key in {"seq", "struct"}, (
-            f"Unsupported embedding key: {key}. Supported keys are 'seq' and 'struct'."
-        )
-        embedding_paths: dict[int, dict] = {}
-        for entity_id, seq in enumerate(input.sequences, start=1):
-            if key == "seq" and seq.seq_emb is not None:
-                path = pathlib.Path(seq.seq_emb)
-            elif key == "struct" and seq.struct_emb is not None:
-                path = pathlib.Path(seq.struct_emb)
-            else:
-                continue
-            assert path.exists(), (
-                f"Precomputed embedding file not found: {path} for entity_id {entity_id}"
-            )
-            embedding_paths[entity_id] = {"path": path}
-        return embedding_paths
 
     # ================================================================================
     # Chain Parsing Functions

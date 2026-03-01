@@ -138,15 +138,15 @@ class TokenTensor(TensorLayout):
 
     Attributes
     ----------
+    chain_type: torch.Tensor (long)
+        Chain types of shape [Ntoken,], indicating the type of each token.
+    res_type: torch.Tensor (float32)
+        Sequence tokens of shape [Ntoken, 32] (aatype, atom, ...)
+        One-hot vector
     token_index: torch.Tensor (long)
         Token indices of shape [Ntoken,], mapping each token to its position.
     org_token_index: torch.Tensor (long)
         Original token indices of shape [Ntoken,], before cropping.
-    res_type: torch.Tensor (float32)
-        Sequence tokens of shape [Ntoken, 32] (aatype, atom, ...)
-        One-hot vector
-    chain_type: torch.Tensor (long)
-        Chain types of shape [Ntoken,], indicating the type of each token.
     residue_index: torch.Tensor (long)
         Residue indices of shape [Ntoken,], used for residue-level operations.
         Starting from 1 for each chain.
@@ -155,6 +155,9 @@ class TokenTensor(TensorLayout):
                 residue_index: [1, 2, 3, 4]
             6-sized ligand:
                 residue_index: [1, 1, 1, 1, 1, 1]
+    seq_token_index: torch.Tensor  # [Ntoken,], long
+        Sequence token indices of shape [Ntoken,], mapping each token to its position
+        in the SequenceTensor.
     center_index: torch.Tensor (long)
         Center indices of shape [Ntoken,], Cα
     disto_index: torch.Tensor (long)
@@ -181,14 +184,15 @@ class TokenTensor(TensorLayout):
         Mask tensor of shape [Ntoken,], indicating disto atom of tokens to be resolved.
     """
 
-    token_index: torch.Tensor  # [Ntoken,], long
-    org_token_index: torch.Tensor  # [Ntoken,], long
-    residue_index: torch.Tensor  # [Ntoken,], long
-    res_type: torch.Tensor  # [Ntoken, 32], float32
     chain_type: torch.Tensor  # [Ntoken,], long
     entity_id: torch.Tensor  # [Ntoken,], long
     asym_id: torch.Tensor  # [Ntoken,], long, same to sequence_id
     sym_id: torch.Tensor  # [Ntoken,], long
+    res_type: torch.Tensor  # [Ntoken, 32], float32
+    token_index: torch.Tensor  # [Ntoken,], long
+    org_token_index: torch.Tensor  # [Ntoken,], long
+    residue_index: torch.Tensor  # [Ntoken,], long
+    seq_token_index: torch.Tensor  # [Ntoken,], long
     center_index: torch.Tensor  # [Ntoken,], long
     disto_index: torch.Tensor  # [Ntoken,], long
     frames_index: torch.Tensor  # [Ntoken, 3], long
@@ -214,20 +218,20 @@ class TokenTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.org_token_index,
-            name="org_token_index",
-            dtype=torch.long,
-            shape=shape,
-        )
-        check_tensor(
-            self.res_type, name="res_type", dtype=torch.float32, shape=(*shape, 32)
-        )
         check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
         check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
         check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=shape)
         check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=shape)
+        check_tensor(
+            self.res_type, name="res_type", dtype=torch.float32, shape=(*shape, 32)
+        )
+        check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
+        check_tensor(
+            self.org_token_index, name="org_token_index", dtype=torch.long, shape=shape
+        )
+        check_tensor(
+            self.seq_token_index, name="seq_token_index", dtype=torch.long, shape=shape
+        )
         check_tensor(
             self.residue_index, name="residue_index", dtype=torch.long, shape=shape
         )
@@ -301,6 +305,7 @@ class TokenTensor(TensorLayout):
         pad_values = {
             "token_index": -1,
             "org_token_index": -1,
+            "seq_token_index": -1,
             "res_type": 0,  # 0 = pad
             "chain_type": -1,
             "entity_id": -1,
@@ -584,63 +589,77 @@ class BondTensor(TensorLayout):
 
 
 @dataclasses.dataclass(frozen=True)
-class PretrainedTensor(TensorLayout):
-    """Token-level layout including pretrained embedding information.
+class SequenceTensor(TensorLayout):
+    """Sequence information for sequence embedding.
 
     Attributes
     ----------
-    sequence_embedding: torch.Tensor (float32)
-        Pretrained sequence embedding of shape [L, c_seq_enc].
-    structure_embedding: torch.Tensor (float32)
-        Pretrained structure embedding of shape [L, c_struct_enc].
+    input_id: np.ndarray (int)
+        Sequence tokens of shape [L,] (aatype, base, atom, ...)
+        NOTE: this may differ from the res_type in TokenArray,
+        since vocab is different for sequence embedding and co-folding.
+    pos_id: np.ndarray (int)
+        Residue indices of shape [L,], used for residue-level operations,
+        starting from 0 (BOS).
+    entity_id: np.ndarray (int)
+        Entity IDs of shape [L,], starting from 1.
+    chain_type: np.ndarray (int)
+        Chain types of shape [L,], indicating the type of each chain.
+
+    Cached Properties
+    -----------------
+    is_protein: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is protein.
+    is_dna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is dna.
+    is_rna: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is rna.
+    is_ligand: np.ndarray (bool)
+        Boolean tensor indicating whether the chain is ligand.
     """
 
-    # TODO (SeonghwanSeo): we may want to add raw input format for
-    # on-the-fly embedding extraction.
-
-    # Requirements for pretrained embedding extraction:
-    #   1. original full sequence (token_ids + seq_ids)
-    #   2. original full structure (coords + atom_types)
-    #   3. crop indices to map cropped tokens to original full sequence/structure
-    #   4. We may have to introduce mini-batch dimension for memory efficiency.
-
-    sequence_embedding: torch.Tensor  # [L, c_seq_enc], float32
-    structure_embedding: torch.Tensor  # [L, c_struct_enc], float32
+    chain_type: torch.Tensor  # [L,], int
+    entity_id: torch.Tensor  # [L,], int
+    input_id: torch.Tensor  # [L,], int
+    pos_id: torch.Tensor  # [L,], int
     pad_mask: torch.Tensor  # [L,], bool
 
-    @property
+    @cached_property
     def layout_shape(self) -> tuple[int, ...]:
-        return self.pad_mask.shape
+        return self.input_id.shape  # [L,]
 
     @property
     def ndim_unbatched(self) -> int:
         """[ClassVar] The number of dimensions of the layout."""
         return 1
 
-    @property
-    def has_sequence_embedding(self) -> bool:
-        """Whether the layout has sequence embedding."""
-        return self.sequence_embedding.shape[-1] > 0
-
-    @property
-    def has_structure_embedding(self) -> bool:
-        """Whether the layout has structure embedding."""
-        return self.structure_embedding.shape[-1] > 0
-
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(
-            self.sequence_embedding,
-            name="sequence_embedding",
-            dtype=(torch.float32, torch.bfloat16, torch.float16),
-            shape=(*shape, -1),
-        )
-        check_tensor(
-            self.structure_embedding,
-            name="structure_embedding",
-            dtype=(torch.float32, torch.bfloat16, torch.float16),
-            shape=(*shape, -1),
-        )
+        check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
+        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
+        check_tensor(self.input_id, name="res_type", dtype=torch.long, shape=shape)
+        check_tensor(self.pos_id, name="pos_id", dtype=torch.long, shape=shape)
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
+
+    @cached_property
+    def is_protein(self) -> torch.Tensor:
+        """Boolean tensor indicating whether the chain is protein."""
+        return self.chain_type == C.chain.ChainType.PROTEIN.value
+
+    @cached_property
+    def is_dna(self) -> torch.Tensor:
+        """Boolean tensor indicating whether the chain is dna."""
+        return self.chain_type == C.chain.ChainType.DNA.value
+
+    @cached_property
+    def is_rna(self) -> torch.Tensor:
+        """Boolean tensor indicating whether the chain is rna."""
+        return self.chain_type == C.chain.ChainType.RNA.value
+
+    @cached_property
+    def is_ligand(self) -> torch.Tensor:
+        """Boolean tensor indicating whether the chain is ligand."""
+        return self.chain_type == C.chain.ChainType.LIGAND.value
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -653,11 +672,15 @@ class PretrainedTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
+        # value: PAD_IDX means padding
         pad_values = {
-            "sequence_embedding": 0.0,
-            "structure_embedding": 0.0,
+            "chain_type": -1,
+            "entity_id": -1,
+            "input_id": C.sequence.PAD_TOKEN_INDEX,
+            "pos_id": -1,
             "pad_mask": False,
         }
+
         fields = {}
         for name, tensor in self.to_dict().items():
             pad_value = pad_values[name]
@@ -678,7 +701,7 @@ class FoldingInput:
     token: TokenTensor
     atom: AtomTensor
     bond: BondTensor
-    pretrained: PretrainedTensor
+    sequence: SequenceTensor
 
     def __post_init__(self):
         # check all layouts are on the same device
@@ -686,8 +709,8 @@ class FoldingInput:
         assert self.token.device == device, "token layout must be on the same device."
         assert self.atom.device == device, "atom layout must be on the same device."
         assert self.bond.device == device, "bond layout must be on the same device."
-        assert self.pretrained.device == device, (
-            "pretrained layout must be on the same device."
+        assert self.sequence.device == device, (
+            "sequence layout must be on the same device."
         )
 
         # check all layouts are non-batched or batched
@@ -701,13 +724,8 @@ class FoldingInput:
         assert self.bond.is_batched == is_batched, (
             "bond layout must be batched or non-batched as same as chain layout."
         )
-        assert self.pretrained.is_batched == is_batched, (
-            "pretrained layout must be batched or non-batched as same as chain layout."
-        )
-
-        # check the pretrained layout length matches token layout length
-        assert self.token.layout_shape == self.pretrained.layout_shape, (
-            "pretrained layout must have the same length as token layout."
+        assert self.sequence.is_batched == is_batched, (
+            "sequence layout must be batched or non-batched as same as chain layout."
         )
 
         # check the batch size if batched
@@ -722,8 +740,8 @@ class FoldingInput:
             assert self.bond.batch_size == batch_size, (
                 "bond layout must have the same batch size as chain layout."
             )
-            assert self.pretrained.batch_size == batch_size, (
-                "pretrained layout must have the same batch size as chain layout."
+            assert self.sequence.batch_size == batch_size, (
+                "sequence layout must have the same batch size as chain layout."
             )
 
     def to(self, device: str | torch.device) -> Self:
@@ -732,7 +750,7 @@ class FoldingInput:
             token=self.token.to(device),
             atom=self.atom.to(device),
             bond=self.bond.to(device),
-            pretrained=self.pretrained.to(device),
+            sequence=self.sequence.to(device),
         )
 
     @property
@@ -759,6 +777,14 @@ class FoldingInput:
     @property
     def num_atoms(self) -> int:
         return len(self.atom)
+
+    @property
+    def num_bonds(self) -> int:
+        return len(self.bond)
+
+    @property
+    def num_sequence_tokens(self) -> int:
+        return len(self.sequence)
 
     @classmethod
     def from_list(cls, data_list: list[Self], pad_to_max: bool = False) -> Self:
@@ -806,6 +832,7 @@ class FoldingInput:
             ref_num_tokens = len(data_list[0].token)
             ref_num_atoms = len(data_list[0].atom)
             ref_num_bonds = len(data_list[0].bond)
+            ref_num_sequence = len(data_list[0].sequence)
             for data in data_list:
                 assert len(data.chain) == ref_num_chains, (
                     "All chain layouts must have the same length."
@@ -819,21 +846,22 @@ class FoldingInput:
                 assert len(data.bond) == ref_num_bonds, (
                     "All bond layouts must have the same length."
                 )
+                assert len(data.sequence) == ref_num_sequence, (
+                    "All sequence layouts must have the same length."
+                )
 
         batched_chain = ChainTensor.from_list([data.chain for data in data_list])
         batched_token = TokenTensor.from_list([data.token for data in data_list])
         batched_atom = AtomTensor.from_list([data.atom for data in data_list])
         batched_bond = BondTensor.from_list([data.bond for data in data_list])
-        batched_pretrained = PretrainedTensor.from_list(
-            [data.pretrained for data in data_list]
-        )
+        batched_sequence = SequenceTensor.from_list([data.sequence for data in data_list])
 
         return cls(
             chain=batched_chain,
             token=batched_token,
             atom=batched_atom,
             bond=batched_bond,
-            pretrained=batched_pretrained,
+            sequence=batched_sequence,
         )
 
     def to_list(self, deepcopy: bool = False) -> list[Self]:
@@ -841,7 +869,7 @@ class FoldingInput:
         token_list = self.token.to_list(deepcopy)
         atom_list = self.atom.to_list(deepcopy)
         bond_list = self.bond.to_list(deepcopy)
-        pretrained_list = self.pretrained.to_list(deepcopy)
+        sequence_list = self.sequence.to_list(deepcopy)
 
         data_list: list[Self] = []
         batch_size = self.batch_size
@@ -852,7 +880,7 @@ class FoldingInput:
                     token=token_list[b],
                     atom=atom_list[b],
                     bond=bond_list[b],
-                    pretrained=pretrained_list[b],
+                    sequence=sequence_list[b],
                 )
             )
         return data_list
@@ -973,17 +1001,21 @@ class FoldingInput:
         max_chains: int | None = None,
         max_atoms: int | None = None,
         max_bonds: int | None = None,
+        max_sequence_tokens: int | None = None,
     ) -> Self:
         """Pad all layouts to the specified maximum sizes."""
         max_tokens = max_tokens if max_tokens is not None else len(self.token)
         max_chains = max_chains if max_chains is not None else len(self.chain)
         max_atoms = max_atoms if max_atoms is not None else len(self.atom)
         max_bonds = max_bonds if max_bonds is not None else len(self.bond)
+        max_sequence_tokens = (
+            max_sequence_tokens if max_sequence_tokens is not None else len(self.sequence)
+        )
 
         return self.__class__(
             chain=self.chain.pad(max_chains),
             token=self.token.pad(max_tokens),
             atom=self.atom.pad(max_atoms),
             bond=self.bond.pad(max_bonds),
-            pretrained=self.pretrained.pad(max_tokens),
+            sequence=self.sequence.pad(max_sequence_tokens),
         )

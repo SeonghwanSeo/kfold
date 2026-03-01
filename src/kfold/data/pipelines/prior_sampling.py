@@ -60,6 +60,15 @@ class PriorSamplerConfig:
         )
     )
 
+    @classmethod
+    def inference_mode(cls, num_samples: int) -> Self:
+        """Get a PriorSampler instance configured for inference"""
+        return cls(
+            num_samples=num_samples,
+            use_chain_com_sampling=False,
+            use_ot_permutation=False,
+        )
+
 
 class PriorSampler:
     """Class to populate and augment apo structures."""
@@ -82,14 +91,7 @@ class PriorSampler:
     @classmethod
     def inference_mode(cls, ccd: CCD, num_samples: int) -> Self:
         """Get a PriorSampler instance configured for inference"""
-        return cls(
-            config=PriorSamplerConfig(
-                num_samples=num_samples,
-                use_chain_com_sampling=False,
-                use_ot_permutation=False,
-            ),
-            ccd=ccd,
-        )
+        return cls(PriorSamplerConfig.inference_mode(num_samples), ccd)
 
     def __call__(self, struct: RefStructure, rng: np.random.Generator) -> np.ndarray:
         """Sample prior coordinates for the given structure.

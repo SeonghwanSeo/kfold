@@ -2,41 +2,39 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.utils.registry import SEQUENCE_ENCODER
+from kfold.data.types.model_input import FoldingInput
+from kfold.utils.registry import SEQUENCE_ENCODER, BaseConfig
 
 
 @SEQUENCE_ENCODER.register()
 class BaseSequenceEncoder(torch.nn.Module, ABC):
-    def __init__(self, cfg):
+    class Config(BaseConfig):
+        return_attn: bool = False
+
+    def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
+        self.return_attn: bool = cfg.return_attn
+
+    @property
+    def d_attn(self) -> int:
+        """Dimension of attention weights returned by the sequence encoder."""
+        raise NotImplementedError("Subclasses must implement d_attn property.")
 
     @abstractmethod
-    def forward(
-        self,
-        sequence_tokens: torch.Tensor,
-        sequence_id: torch.Tensor,
-        chain_id: torch.Tensor,
-        return_attention: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Forward pass of sequence representation module.
 
         Parameters
         ----------
-        sequence_tokens : torch.Tensor
-            Tensor of shape (B, L) containing sequence tokens.
-        sequence_ids : torch.Tensor
-            Tensor of shape (B, L) containing sequence id.
-        chain_ids : torch.Tensor
-            Tensor of shape (B, L) containing chain ids.
-        return_attention : bool, optional
-            Whether to return attention weights. Default is False.
+        f_input: FoldingInput
+            The input features
 
         Returns
         -------
-        x: torch.Tensor
-            Tensor of shape (B, L, D) containing sequence feature.
+        x_token: torch.Tensor
+            Tensor of shape (B, Ntoken, D) containing sequence representations.
         attention: torch.Tensor | None
-            Tensor of shape (B, N, H, L, L) containing attention weights,
+            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
             where N is number of layers and H is number of heads.
         """

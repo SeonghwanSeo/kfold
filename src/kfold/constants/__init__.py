@@ -6,6 +6,7 @@ from . import (  # noqa: F401
     constraint,
     interaction,
     residue,
+    sequence,
     training,
 )
 

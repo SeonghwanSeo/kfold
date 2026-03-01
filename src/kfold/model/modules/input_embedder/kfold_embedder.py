@@ -104,9 +104,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         atom_encoder_heads: int = 4
         max_relative_token: int = 32
         max_relative_chain: int = 2
-        # Pre-trained embedding-related parameters
-        channel_seq_encoder: int | None = None
-        channel_struct_encoder: int | None = None
         # Apo-related parameters
         apo_num_bins: int = 48
         apo_min_dist: float = 2.0

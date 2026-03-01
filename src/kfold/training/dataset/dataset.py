@@ -8,12 +8,7 @@ ccd-train.pkl
 rcsb-train/
     manifest.json
     structure.lmdb
-    lookup.json  # mapping from each chain to seq-id and apo structure(s).
-    seq_embedding/
-        esm2/
-        esmc/
-    struct_embedding/
-        saprot/
+    apo_lookup.json  # mapping from each chain to apo structure(s).
     apo/
         esmfold/
             uniq_prot1-esmfold.pdb
@@ -25,41 +20,31 @@ afdb-distillation/ ...
 rcsb-validation/ ...
 
 
-* lookup.json format
+* apo_lookup.json format
 ```json
 {
   "6oim": {
-    "1": {
-      "type": "protein",
-      "seq_emb": {
-        "path": "uniq_protein_000020.pt",
+    "1": [
+      {
+        "source": "esmfold"
+        "name": "uniq_protein_000020-esmfold",
+        "path": "uniq_protein_000020-esmfold.pdb.gz",
+        "residue_map": "1:250->1:250",
       },
-      "struct_emb": {
-        "path": "AF-P01116-F1-model_v6.pt",
-        "residue_map": "1:235->11:245"
+      {
+        "source": "afdb"
+        "name": "AF-P01116-F1-model_v6",
+        "path": "AF-P01116-F1-model_v6.cif.gz",
+        "residue_map": "1:235->11:245",
       },
-      "apo": [
-        {
-          "source": "esmfold"
-          "name": "uniq_protein_000020-esmfold",
-          "path": "uniq_protein_000020-esmfold.pdb.gz",
-          "residue_map": "1:250->1:250",
-        },
-        {
-          "source": "afdb"
-          "name": "AF-P01116-F1-model_v6",
-          "path": "AF-P01116-F1-model_v6.cif.gz",
-          "residue_map": "1:235->11:245",
-        },
-        {
-          "source": "pdb"
-          "name": "51d6-A",
-          "path": "51d6-A.pdb.gz",
-          "residue_map": "5:250->5:250",
-        }
-      ]
-    },
-    "2": {...}
+      {
+        "source": "pdb"
+        "name": "51d6-A",
+        "path": "51d6-A.pdb.gz",
+        "residue_map": "5:250->5:250",
+      }
+    ],
+    "2": [...]
   },
   "1a2c": {...}
 }
@@ -80,11 +65,11 @@ import torch
 from omegaconf import OmegaConf
 from typing_extensions import override
 
-import kfold.constants as C
 from kfold.data.pipelines import (
     apo_initialization,
     featurization,
     prior_sampling,
+    sequence_masking,
     tokenization,
 )
 from kfold.data.types.ccd import CCD
@@ -178,10 +163,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         config: DatasetConfig,
         ccd: CCD,
-        pretrained_embedding: dict,
         return_symmetry: bool = False,
         return_structure: bool = False,
         safe_load: bool = True,
+        train: bool = True,
     ) -> None:
         """
         Parameters
@@ -190,8 +175,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
             Dataset configuration.
         ccd: CCD
             CCD database
-        pretrained_embedding : dict
-            Pretrained embedding configuration.
         return_symmetry : bool
             Whether to return symmetry information.
         return_structure : bool
@@ -208,71 +191,24 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.return_structure: bool = return_structure
         self.safe_load: bool = safe_load
 
+        if train:
+            self.logger = logging.getLogger(f"[Training Dataset:{self.name}]")
+        else:
+            self.logger = logging.getLogger(f"[Validation Dataset:{self.name}]")
+
+        # Sanity check on dataset files and configurations
+        self.sanity_check()
+
+        # Flag for specific handling of protein monomer distillation datasets
         self.is_protein_monomer_distillation: bool = (
             config.is_protein_monomer_distillation
         )
-
-        self.logger = logging.getLogger(f"[Dataset:{self.name}]")
-
-        pretrained_embedding: dict = pretrained_embedding.copy()
-
-        for k in ["seq", "seq_dim", "struct", "struct_dim"]:
-            if k not in pretrained_embedding:
-                self.logger.warning(
-                    f"Pretrained embedding key '{k}' not found. Setting to None."
-                )
-                pretrained_embedding[k] = None
-
-        self.seq_embedding: str | None = pretrained_embedding["seq"]
-        self.seq_embedding_dim: int | None = pretrained_embedding["seq_dim"]
-        self.struct_embedding: str | None = pretrained_embedding["struct"]
-        self.struct_embedding_dim: int | None = pretrained_embedding["struct_dim"]
-
-        # === Validate parameters === #
-        assert self.data_root.exists(), f"Dataset path {self.data_root} does not exist."
-        emb_root = self.data_root / "embedding"
-        if self.seq_embedding is not None:
-            self.seq_emb_root = emb_root / "sequence" / self.seq_embedding
-            assert self.seq_emb_root.exists(), (
-                f"Sequence embedding root {self.seq_emb_root} does not exist."
-            )
-            assert self.seq_embedding_dim is not None, (
-                "seq_embedding_dim must be provided when seq_embedding is set."
-            )
-
-        if self.struct_embedding is not None:
-            self.struct_emb_root = emb_root / "structure" / self.struct_embedding
-            assert self.struct_emb_root.exists(), (
-                f"Structure embedding root {self.struct_emb_root} does not exist."
-            )
-            assert self.struct_embedding_dim is not None, (
-                "struct_embedding_dim must be provided when struct_embedding is set."
-            )
-
-        # Update apo initializer config
-        rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
-        if rieprody_lmdb_path.exists():
-            if config.apo_init.protein_perturbation is None:
-                self.logger.error(
-                    "RieProDy LMDB path found but protein_perturbation is None."
-                )
-            elif config.apo_init.protein_perturbation.rieprody is None:
-                self.logger.error("RieProDy LMDB path found but rieprody is disabled.")
-            else:
-                config.apo_init.protein_perturbation.rieprody.metric_lmdb_path = (
-                    rieprody_lmdb_path
-                )
-        else:
-            assert (
-                config.apo_init.protein_perturbation is None
-                or config.apo_init.protein_perturbation.rieprody is None
-            ), "RieProDy LMDB path not found but rieprody perturbation is enabled."
 
         # === Load dataset components === #
         # CCD (shared across datasets)
         self.ccd: CCD = ccd
 
-        # Metadata
+        # Metadata list
         self.metadatas: list[Metadata] = self.load_manifest(
             custom_manifest=config.manifest_path  # optional custom manifest path
         )
@@ -284,15 +220,20 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self.apo_initializer = apo_initialization.ApoInitializer(
             config.apo_init, self.ccd, self.is_protein_monomer_distillation
         )
+
         if config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(config.prior_sampler, self.ccd)
+            # For diffusion bridge model, we may want to sample prior structures
+            # from apo structures with ot-permutation.
+            self.prior_sampler = prior_sampling.PriorSampler(
+                config.prior_sampler, self.ccd
+            )
         else:
-            prior_sampler = None
-        self.tokenizer = tokenization.Tokenizer(prior_sampler, self.ccd)
-        self.featurizer = featurization.InputFeaturizer(
-            seq_embedding_dim=self.seq_embedding_dim,
-            struct_embedding_dim=self.struct_embedding_dim,
-        )
+            # For regular edm, we don't need to sample prior structures since
+            # the prior distribution is gaussian.
+            self.prior_sampler = None
+
+        self.tokenizer = tokenization.Tokenizer(self.ccd, self.prior_sampler)
+        self.featurizer = featurization.InputFeaturizer()
 
         # Additional setup can be done in subclasses
         self.setup()
@@ -321,10 +262,21 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         return metadatas
 
     def load_lookup_table(self) -> dict:
-        lookup_path = self.data_root / "lookup.msgpack"
+        lookup_path = self.data_root / "apo_lookup.msgpack"
+        if not lookup_path.exists():
+            # NOTE: For protein monomer distillation datasets,
+            # we can directly feed apo structures from labeled monomer structures.
+            if self.is_protein_monomer_distillation:
+                return {}
+            else:
+                raise FileNotFoundError(f"Apo lookup file {lookup_path} not found.")
         with open(lookup_path, "rb") as f:
             lookup_table: dict = msgpack.unpack(f)
         return lookup_table
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the dataset."""
+        pass
 
     def setup(self) -> None:
         """Additional setup for subclasses."""
@@ -338,80 +290,77 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
     def load_apo_structure(
         self,
         ref_struct: RefStructure,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> None:
         """Populate the apo structure for the given reference structure."""
-        rng = rng or np.random.default_rng()
-
-        # Fetch apo info from lookup table
-        entry_id = ref_struct.id
-        entry_info = self.lookup_table[entry_id]
-
-        apo_dir = self.data_root / "apo"
-        apo_lookup_map: dict[int, dict] = {}
         if self.is_protein_monomer_distillation:
             # Directly feed apo structures from labeled
-            pass
-        else:
-            # Match apo structure for each protein chain.
-            for c in ref_struct.chains:
-                entity_id = c.entity_id
-                entity_info = entry_info[str(entity_id)]
-                if c.ctype.is_protein:
-                    apo_list: list = entity_info.get("apo", [])
+            self.apo_initializer(ref_struct, {}, rng)
+            return
 
-                    # Select apo structure (randomly if multiple)
-                    if len(apo_list) == 0:
-                        self.logger.warning(
-                            "No available apo structure found "
-                            f"for entity {entity_id} in entry {entry_id}."
-                        )
-                        continue
-                    elif len(apo_list) == 1:
-                        apo_info = apo_list[0]
-                    else:
-                        apo_info = rng.choice(apo_list)
+        # Fetch apo lookup for the current entry
+        apo_dir = self.data_root / "apo"
+        entry_id: str = ref_struct.id
+        entry_lookup: dict[str, list[dict[str, str]]] = self.lookup_table[entry_id]
 
-                    entity_lookup = apo_info.copy()
+        # Match apo structure for each protein entries.
+        apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
+        visited_entity_ids: set[int] = set()
+        for c in ref_struct.chains:
+            if not c.ctype.is_protein:
+                continue
+            if c.entity_id in visited_entity_ids:
+                continue  # already populated from another chain with same entity_id
+            entity_id = c.entity_id
+            visited_entity_ids.add(entity_id)
 
-                    # Check apo structure file existence
-                    source = apo_info["source"]
-                    path = apo_info["path"]
-                    apo_path = apo_dir / source / path
-                    if not apo_path.exists():
-                        self.logger.error(f"Apo structure file not found: {apo_path}.")
-                        continue
-                    entity_lookup["path"] = apo_path
+            entity_apos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
+            num_apos = len(entity_apos)
+            # Select apo structure (randomly if multiple)
+            if num_apos == 0:
+                self.logger.warning(
+                    f"No apo info found for entity {entry_id}:{entity_id}"
+                )
+                continue
+            apo_info = entity_apos[rng.integers(0, num_apos)].copy()
 
-                    # Add rieprody key if available
-                    if "name" in apo_info:
-                        rieprody_key = f"{source}:{apo_info['name']}"
-                        entity_lookup["rieprody_key"] = rieprody_key
+            # Check apo file existence
+            source = apo_info["source"]
+            path = apo_info["path"]
+            apo_path = apo_dir / source / path
+            if not apo_path.exists():
+                self.logger.error(
+                    f"Apo file not found for entity {entry_id}:{entity_id}: {apo_path}"
+                )
+                continue
+            apo_info["path"] = apo_path
 
-                    # Add to apo lookup map
-                    apo_lookup_map[entity_id] = entity_lookup
+            # Add rieprody key if available
+            if "name" in apo_info:
+                apo_info["rieprody_key"] = f"{source}:{apo_info['name']}"
+
+            apo_lookup[entity_id] = apo_info
 
         # Populate apo structure
-        self.apo_initializer(ref_struct, apo_lookup_map, rng)
+        self.apo_initializer(ref_struct, apo_lookup, rng)
 
     def tokenize(
         self,
         ref_struct: RefStructure,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
         return self.tokenizer(
             ref_struct,
             rng,
-            use_only_cached_conformers=True,
-            ref_pos_permutation=False,
+            use_cached_conformer_only=True,  # for training/validation loops
         )
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
         self,
         ref_struct: RefStructure,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
         **kwargs,
     ) -> RefStructure:
         """Pre-crop the folding input structure as needed.
@@ -427,7 +376,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         struct: TokenizedStructure,
         metadata: Metadata,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
         **kwargs,
     ) -> TokenizedStructure:
         """Crop the folding input structure as needed."""
@@ -437,9 +386,15 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Pad the folding input to multiple of 32 for LocalAtomAttention."""
         # Pad num_tokens for CUDA efficiency.
         num_tokens = next_multiple(f_input.num_tokens, 16)
+        # Pad num_seq_tokens for CUDA efficiency.
+        num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 64)
         # Pad num_atoms for local attention.
         num_atoms = next_multiple(f_input.num_atoms, 32)
-        return f_input.pad(max_tokens=num_tokens, max_atoms=num_atoms)
+        return f_input.pad(
+            max_tokens=num_tokens,
+            max_atoms=num_atoms,
+            max_sequence_tokens=num_sequence_tokens,
+        )
 
     def __getitem__(self, index: int) -> tuple[FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
@@ -533,82 +488,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         struct: TokenizedStructure,
         metadata: Metadata,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
     ) -> FoldingInput:
         """Featurize the given tokenized structure."""
-        if self.seq_embedding is not None:
-            # sequence embeddings
-            seq_embeddings = self.find_precomputed_embeddings(struct, metadata.id, "seq")
-        else:
-            seq_embeddings = None
-
-        if self.struct_embedding is not None:
-            # structure embeddings
-            struct_embeddings = self.find_precomputed_embeddings(
-                struct, metadata.id, "struct"
-            )
-        else:
-            struct_embeddings = None
-
         # Featurization
-        f_input = self.featurizer(
-            struct,
-            seq_embeddings=seq_embeddings,
-            struct_embeddings=struct_embeddings,
-            rng=rng,
-        )
+        f_input = self.featurizer(struct, rng=rng)
         return f_input
-
-    def find_precomputed_embeddings(
-        self, struct: TokenizedStructure, name: str, emb_type: str
-    ) -> dict[int, dict]:
-        """Find precomputed embeddings for the given structure.
-
-        Parameters
-        ----------
-        struct : TokenizedStructure
-            The tokenized structure.
-        name : str
-            The name/ID of the structure.
-        emb_type : str
-            The type of embedding ("seq" or "struct").
-
-        Returns
-        -------
-        dict[int, dict]
-            A dictionary mapping entity IDs to embedding file paths,
-            e.g., {entity_id: {"path": Path, "residue_map": str}, ...}
-        """
-        if emb_type == "seq":
-            root_dir = self.seq_emb_root
-        elif emb_type == "struct":
-            root_dir = self.struct_emb_root
-
-        # Fetch entry info from lookup table
-        entry_info = self.lookup_table[name]
-
-        # Get sequence id
-        embedding_paths: dict[int, dict] = {}
-        for chain_i in range(struct.num_chains):
-            entity_id = int(struct.chain.entity_id[chain_i])
-            if entity_id in embedding_paths:
-                continue  # already found
-            ctype = C.ChainType(struct.chain.chain_type[chain_i].item())
-            entity_info = entry_info[str(entity_id)]
-            # Get embedding info
-            if emb_type == "seq" and ctype.is_polymer:
-                emb_id_info = entity_info["seq_emb"]
-                embedding_paths[entity_id] = {
-                    "path": root_dir / emb_id_info["path"],
-                }
-            elif emb_type == "struct" and ctype.is_protein:
-                emb_id_info = entity_info["struct_emb"]
-                embedding_paths[entity_id] = {
-                    "path": root_dir / emb_id_info["path"],
-                }
-                if "residue_map" in emb_id_info:
-                    embedding_paths[entity_id]["residue_map"] = emb_id_info["residue_map"]
-        return embedding_paths
 
 
 class LMDBDataset(SafeLoadingDataset):
@@ -674,10 +559,10 @@ class TrainingDataset(LMDBDataset):
         self,
         config: TrainingDatasetConfig,
         ccd: CCD,
-        pretrained_embedding: dict,
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
+        max_sequence_tokens: int = 1024,
     ) -> None:
         """
         Parameters
@@ -686,14 +571,13 @@ class TrainingDataset(LMDBDataset):
             Dataset configuration.
         ccd: CCD
             CCD database
-        pretrained_embedding : dict
-            Pretrained embedding configuration.
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
-            Maximum number of tokens per sample. Must be a multiple of 64 for
-            LocalAtomAttention.
-
+            Maximum number of tokens per sample.
+        max_sequence_tokens : int
+            Maximum number of sequence tokens per sample,
+            limiting the entire input size of PLM module.
         Notes
         -----
         This dataset implements AF3-style sampling (chain/interface-based).
@@ -704,23 +588,30 @@ class TrainingDataset(LMDBDataset):
         super().__init__(
             config,
             ccd,
-            pretrained_embedding,
             return_symmetry=False,
             return_structure=False,
             safe_load=safe_load,
+            train=True,
         )
         if self.seed is not None:
             # Warn about fixed seed affecting randomness
             self.logger.warning(
                 "Seed is set for TrainingDataset, which may affect randomness."
             )
-        self.max_tokens: int = max_tokens
+
+        # For pre-cropping (RefStructure)
         self.max_chains: int = max_chains
+        # For main cropping (TokenizedStructure)
+        self.max_tokens: int = max_tokens
+        self.max_sequence_tokens: int = max_sequence_tokens
+
+        assert max_sequence_tokens >= max_tokens + (max_chains * 2), (
+            "max_sequence_tokens should be greater than max_tokens to accommodate "
+            "additional sequence tokens for PLM input."
+        )  # +2 tokens per chain for [CLS] and [SEP]
 
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
-
-        # assert self.max_tokens % 64 == 0, f"max_tokens must be a multiple of {64}."
 
         # AF3-style sampling (chain/interface-based)
         assert config.sampler is not None, "Sampler config must be provided."
@@ -729,17 +620,54 @@ class TrainingDataset(LMDBDataset):
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights
 
+        # Sequence masking for training
+        # TODO: do we have to configurize this?
+        self.seq_masking = sequence_masking.SequenceMasking(
+            mask_prob=0.9, mask_ratio=0.15
+        )
+
         self.setup()
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the dataset."""
+        cfg = self.config
+        # Check if perturbation is enabled for training set, and validate files.
+        if cfg.apo_init.protein_perturbation is None:
+            self.logger.warning("Protein perturbation is disabled for training set.")
+        elif cfg.apo_init.protein_perturbation.rieprody is not None:
+            rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
+            if not rieprody_lmdb_path.exists():
+                raise FileNotFoundError(
+                    f"RieProDy LMDB path {rieprody_lmdb_path} not found "
+                    f"while rieprody is enabled."
+                )
+            # If rieprody perturbation is enabled, we need to provide the LMDB path
+            cfg.apo_init.protein_perturbation.rieprody.metric_lmdb_path = (
+                rieprody_lmdb_path
+            )
+        if cfg.apo_init.ligand_perturbation is None:
+            self.logger.warning("Ligand perturbation is disabled for training set.")
 
     @override
     def __len__(self) -> int:
         return len(self.samples)
 
+    def tokenize(
+        self,
+        ref_struct: RefStructure,
+        rng: np.random.Generator,
+    ) -> TokenizedStructure:
+        """Tokenize the given structure."""
+        tok_struct = super().tokenize(ref_struct, rng)
+        # Apply sequence masking for training
+        self.seq_masking(tok_struct, rng)
+        return tok_struct
+
     @override
     def extract_substructure(
         self,
         ref_struct: RefStructure,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
         **kwargs,
     ) -> RefStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
@@ -759,7 +687,7 @@ class TrainingDataset(LMDBDataset):
         self,
         struct: TokenizedStructure,
         metadata: Metadata,
-        rng: np.random.Generator | None = None,
+        rng: np.random.Generator,
         **kwargs,
     ) -> TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
@@ -770,6 +698,7 @@ class TrainingDataset(LMDBDataset):
                 struct,
                 metadata,
                 max_tokens=self.max_tokens,
+                max_sequence_tokens=self.max_sequence_tokens,
                 bias_asym_id=asym_ids,
                 rng=rng,
             )
@@ -777,11 +706,18 @@ class TrainingDataset(LMDBDataset):
 
     @override
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
+        max_chains = self.max_chains
         max_tokens = self.max_tokens
-        max_chains = max_tokens // 4  # min 4 tokens per chain
+        max_sequence_tokens = self.max_sequence_tokens
         max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
-        return f_input.pad(max_tokens, max_chains, max_atoms, max_bonds)
+        return f_input.pad(
+            max_tokens=max_tokens,
+            max_chains=max_chains,
+            max_atoms=max_atoms,
+            max_bonds=max_bonds,
+            max_sequence_tokens=max_sequence_tokens,
+        )
 
     @override
     def get_item_safe(
@@ -820,10 +756,10 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         self,
         configs: list[TrainingDatasetConfig],
         ccd: CCD,
-        pretrained_embedding: dict,
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
+        max_sequence_tokens: int = 1024,
     ) -> None:
         """
         Parameters
@@ -832,15 +768,15 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             List of dataset configurations.
         ccd: CCD
             CCD database
-        pretrained_embedding : dict
-            Pretrained embedding configuration.
         safe_load : bool
             Whether to retry loading on failure.
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
-            Maximum number of tokens per sample. Must be a multiple of 64 for
-            LocalAtomAttention.
+            Maximum number of tokens per sample.
+        max_sequence_tokens : int
+            Maximum number of sequence tokens per sample,
+            limiting the entire input size of PLM module.
 
         Notes
         -----
@@ -853,10 +789,10 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             TrainingDataset(
                 config,
                 ccd,
-                pretrained_embedding,
                 safe_load,
                 max_chains,
                 max_tokens,
+                max_sequence_tokens,
             )
             for config in configs
         ]
@@ -889,7 +825,6 @@ class ValidationDataset(LMDBDataset):
         self,
         config: ValidationDatasetConfig,
         ccd: CCD,
-        pretrained_embedding: dict,
         safe_load: bool = True,
     ) -> None:
         """
@@ -899,17 +834,28 @@ class ValidationDataset(LMDBDataset):
             Dataset configuration.
         ccd: CCD
             CCD database
-        pretrained_embedding : dict
-            Pretrained embedding configuration.
         """
         super().__init__(
             config,
             ccd,
-            pretrained_embedding,
             return_symmetry=True,
             return_structure=True,
             safe_load=safe_load,
+            train=False,
         )
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the dataset."""
+        cfg = self.config
+        if cfg.is_protein_monomer_distillation:
+            raise ValueError(
+                "Protein monomer distillation dataset should be training dataset"
+            )
+        # Check if perturbation is enabled for validation set, which is not expected.
+        if cfg.apo_init.protein_perturbation is not None:
+            self.logger.warning("Protein perturbation is enabled for validation set.")
+        if cfg.apo_init.ligand_perturbation is not None:
+            self.logger.warning("Ligand perturbation is provided for valid set.")
 
     def setup(self) -> None:
         """Additional setup for subclasses."""

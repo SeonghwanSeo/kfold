@@ -4,6 +4,7 @@ _yaml_: "structure-only.yaml"
 global_hparams:
   max_chains: 20
   max_tokens: 384
+  max_sequence_tokens: 768
   batch_size: 1
   diffusion_batch_size: 48
   global_batch_size: 256

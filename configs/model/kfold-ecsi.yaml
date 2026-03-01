@@ -15,6 +15,9 @@ compile_mode: "default"
 input_embedder:
   _yaml_: "module/input_embedder/kfold.yaml"
 
+sequence_encoder:
+  _yaml_: "module/sequence_encoder/esmc_600m.yaml"
+
 trunk:
   _yaml_: "module/trunk/kfold.yaml"
 

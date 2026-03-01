@@ -1,229 +1,210 @@
-"""ESMC model, copyright: evolutionary-scale."""
-
 from __future__ import annotations
-
-from functools import lru_cache
 
 import torch
 import torch.nn as nn
 
-from kfold.utils.registry import SEQUENCE_ENCODER, BaseConfig
+from kfold.data.types.model_input import FoldingInput
+from kfold.model.layers.esm.esmc import RegressionHead, TransformerStack
+from kfold.utils.registry import SEQUENCE_ENCODER
 
 from .base import BaseSequenceEncoder
 
-try:
-    from flash_attn.bert_padding import pad_input, unpad_input  # type:ignore
 
-    is_flash_attn_available = True
-except ImportError:
-    pad_input = None
-    unpad_input = None
-    is_flash_attn_available = False
-
-ESM_PARAMS = {
-    "esmc_300m": {
-        "d_model": 960,
-        "n_heads": 15,
-        "n_layers": 30,
-    },
-    "esmc_600m": {
-        "d_model": 1152,
-        "n_heads": 18,
-        "n_layers": 36,
-    },
-}
-
-
-class ESMCConfig(BaseConfig):
-    model_name: str = "esmc_300m"  # or "esmc_600m"
-    d_model: int = 960
-    n_heads: int = 15
-    n_layers: int = 30
-    use_flash_attn: bool = False
-
-    @classmethod
-    def from_model_name(cls, model_name: str, **kwargs) -> ESMCConfig:
-        if model_name not in ESM_PARAMS:
-            raise ValueError(f"Unknown model_name: {model_name}")
-        params = ESM_PARAMS[model_name]
-        return cls(model_name=model_name, **params, **kwargs)
-
-
-@SEQUENCE_ENCODER.register(config_cls=ESMCConfig)
+@SEQUENCE_ENCODER.register()
 class ESMC(BaseSequenceEncoder):
-    def __init__(self, cfg: ESMCConfig):
+    class Config(BaseSequenceEncoder.Config):
+        """Configuration for ESMC sequence encoder.
+
+        Attributes
+        ----------
+        path: str
+            Path to pretrained weights.
+        d_model: int
+            Dimension of token embeddings and transformer hidden states.
+        n_heads: int
+            Number of attention heads in the transformer.
+        n_layers: int
+            Number of transformer layers.
+        return_attn: bool
+            Whether to return attention weights from the transformer.
+
+        """
+
+        path: str  # Path to pretrained weights.
+        d_model: int = 1152
+        n_heads: int = 18
+        n_layers: int = 36
+        return_attn: bool = False
+
+    def __init__(self, cfg: Config):
         super().__init__(cfg)
+        self.cfg: ESMC.Config = cfg
+        self.return_attn: bool = cfg.return_attn
 
-        # Lazy import to avoid unnecessary dependency if not used.
-        from esm.layers.transformer_stack import TransformerStack
-        from esm.pretrained import load_local_model
-
-        self.use_flash_attn: bool = is_flash_attn_available and cfg.use_flash_attn
-
+        # Create model components
         self.embed = nn.Embedding(64, cfg.d_model)
         self.transformer = TransformerStack(
-            cfg.d_model,
-            cfg.n_heads,
-            None,
-            cfg.n_layers,
-            n_layers_geom=0,
+            cfg.d_model, cfg.n_heads, cfg.n_layers, return_attn=cfg.return_attn
         )
+        self.sequence_head = RegressionHead(cfg.d_model, 64)
 
         # Load pretrained weights
-        model = load_local_model(cfg.model_name, device=torch.device("cpu"))
-        del model.sequence_head  # remove the head to avoid size mismatch
-        self.load_state_dict(model.state_dict(), strict=True)
+        state_dict = torch.load(cfg.path, map_location="cpu")
+        self.load_state_dict(state_dict)
+        del state_dict
 
-        # Convert to bfloat16 (ESMC default)
+        # Remove sequence head since we only need sequence representations.
+        del self.sequence_head
+
+        # Convert to bfloat16
         self.embed = self.embed.to(torch.bfloat16)
         self.transformer = self.transformer.to(torch.bfloat16)
 
         # Set to eval mode
         self.eval()
 
-    @property
-    def device(self) -> torch.device:
-        return next(self.parameters()).device
+        # Freeze parameters since we are only doing inference.
+        for param in self.parameters():
+            param.requires_grad = False
 
-    def forward(
-        self,
-        sequence_tokens: torch.Tensor,
-        sequence_id: torch.Tensor,
-        chain_id: torch.Tensor,
-        return_attention: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    @property
+    def d_attn(self) -> int:
+        cfg = self.cfg
+        if not cfg.return_attn:
+            return 0
+        else:
+            return self.cfg.n_heads * self.cfg.n_layers
+
+    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Forward pass of sequence representation module.
 
         Parameters
         ----------
-        sequence_tokens : torch.Tensor
-            Tensor of shape (B, L) containing sequence tokens.
-        sequence_id : torch.Tensor
-            Tensor of shape (B, L) containing sequence idx.
-        chain_id : torch.Tensor
-            Tensor of shape (B, L) containing chain ids.
-        return_attention : bool, optional
-            Whether to return attention weights. Default is False.
+        f_input: FoldingInput
+            The input features
 
         Returns
         -------
         x_token: torch.Tensor
-            Tensor of shape (B, L, D) containing sequence representations.
+            Tensor of shape (B, Ntoken, D) containing sequence representations,
+            where Ntoken is the number of tokens and D is the model dimension.
         attention: torch.Tensor | None
-            Tensor of shape (B, N, H, L, L) containing attention weights,
+            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
             where N is number of layers and H is number of heads.
         """
-        if return_attention:
-            raise NotImplementedError(
-                "Attention weights are not implemented in this module."
-            )
-
         # NOTE: ESMC uses bfloat16 for inference.
         with (
-            torch.no_grad(),
             torch.autocast(enabled=True, device_type="cuda", dtype=torch.bfloat16),
+            torch.no_grad(),
         ):
-            x = self.embed(sequence_tokens)
-
-            # If sequence_id looks like a mask.
-            B, L = x.shape[:2]
-            if self.use_flash_attn:
-                assert sequence_id.dtype == torch.bool, (
-                    "sequence_id must be a boolean mask if Flash Attention is used"
-                )
-                assert sequence_id.shape == (B, L)
-                assert unpad_input is not None
-                x, indices, *_ = unpad_input(  # type: ignore
-                    x, sequence_id
-                )
+            if self.return_attn:
+                return self.forward_attn(f_input)
             else:
-                indices = None
+                return self.forward_no_attn(f_input), None
 
-            x, pre_norm, _ = self.transformer(x, sequence_id=sequence_id)
-
-            if self.use_flash_attn:
-                assert indices is not None
-                assert pad_input is not None
-                pre_norm = pad_input(pre_norm, indices, B, L)  # Back to [B, L, D]
-
-        # Return pre-norm representations since further layernorm is applied later.
-        return pre_norm, None
-
-    @staticmethod
-    @lru_cache
-    def _get_token_to_id() -> dict[str, int]:
-        # fmt: off
-        SEQUENCE_VOCAB = [
-            "<cls>", "<pad>", "<eos>", "<unk>",
-            "L", "A", "G", "V", "S", "E", "R", "T", "I", "D", "P", "K",
-            "Q", "N", "F", "Y", "M", "H", "W", "C", "X", "B", "U", "Z",
-            "O", ".", "-", "|",
-            "<mask>",
-        ]
-        # fmt: on
-        return {v: i for i, v in enumerate(SEQUENCE_VOCAB)}
-
-    @classmethod
-    def _encode_sequence(cls, seq: str) -> list[int]:
-        token_to_id = cls._get_token_to_id()
-        unk_token = token_to_id["X"]  # Unknown amino acid
-        ids = [token_to_id.get(residue, unk_token) for residue in seq]
-        return ids
-
-    def encode(
-        self,
-        sequences: list[str],
-        add_special_tokens: bool = True,
-        include_special_tokens: bool = False,
-    ) -> list[torch.Tensor]:
-        """Encode a batch of sequences.
+    def forward_no_attn(self, f_input: FoldingInput) -> torch.Tensor:
+        """Forward pass of sequence representation module.
 
         Parameters
         ----------
-        sequences : list[str]
-            The sequences to encode.
-        add_special_tokens : bool, optional
-            Whether to add special tokens (<cls> and <eos>) to the sequences.
-        include_special_tokens : bool, optional
-            Whether to include special tokens in the output. Default is False.
+        f_input: FoldingInput
+            The input features
 
         Returns
         -------
-        torch.Tensor
-            Tensor of shape (B, L, D) containing sequence representations.
+        x_token: torch.Tensor
+            Tensor of shape (B, Ntoken, D) containing sequence representations.
         """
-        token_to_id = self._get_token_to_id()
-        cls_token = token_to_id["<cls>"]
-        eos_token = token_to_id["<eos>"]
-        pad_token = token_to_id["<pad>"]
-        unk_token = token_to_id["X"]  # Unknown amino acid
+        input_ids = f_input.sequence.input_id
+        seq_id = f_input.sequence.entity_id
+        pos_id = f_input.sequence.pos_id
+        # sequence -> token index mapping
+        seq_token_idx = f_input.token.seq_token_index
 
-        # Prepare model input
-        batch_ids = []
-        for seq in sequences:
-            ids = [token_to_id.get(residue, unk_token) for residue in seq]
-            if add_special_tokens:
-                ids = [cls_token] + ids + [eos_token]
-            batch_ids.append(ids)
-        max_len = max(len(ids) for ids in batch_ids)
+        with torch.no_grad():
+            x = self.embed(input_ids)
 
-        batch_tensor = torch.full((len(batch_ids), max_len), pad_token, dtype=torch.long)
-        for i, ids in enumerate(batch_ids):
-            batch_tensor[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
-        batch_tensor = batch_tensor.to(self.device)
+            x_list: list[torch.Tensor] = []
+            for i in range(f_input.batch_size):
+                _x = x[i]  # [seq_len, d_model]
+                _seq_id = seq_id[i]  # [seq_len]
+                _pos_id = pos_id[i]  # [seq_len]
+                _seq_token_idx = seq_token_idx[i]  # [n_tokens]
+                for block in self.transformer.blocks:
+                    _x, _ = block(_x, _seq_id, _pos_id)  # [seq_len, d_model]
+                x_list.append(_x[_seq_token_idx, :])
 
-        attention_mask = batch_tensor != pad_token
-        sequence_id = chain_id = attention_mask
+            # Stack and unpad
+            x = torch.stack(x_list, dim=0)
 
-        sequence_embedding, _ = self(batch_tensor, sequence_id, chain_id)
+            # normalize
+            x = self.transformer.norm(x)
 
-        outs: list[torch.Tensor] = []
-        for i, ids in enumerate(batch_ids):
-            length = len(ids)
-            if include_special_tokens:
-                outs.append(sequence_embedding[i, :length, :])
-            else:
-                start = 1 if add_special_tokens else 0
-                end = length - 1 if add_special_tokens else length
-                outs.append(sequence_embedding[i, start:end, :])
-        return outs
+        # mask out invalid tokens
+        pad_mask = f_input.token.pad_mask
+        # mask out non-protein tokens
+        token_mask = pad_mask & f_input.token.is_protein
+        x = x * token_mask[..., None]
+        return x
+
+    def forward_attn(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass of sequence representation module.
+
+        Parameters
+        ----------
+        f_input: FoldingInput
+            The input features
+
+        Returns
+        -------
+        x_token: torch.Tensor
+            Tensor of shape (B, Ntoken, D) containing sequence representations.
+        attention: torch.Tensor
+            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
+            where N is number of layers and H is number of heads.
+        """
+        input_ids = f_input.sequence.input_id
+        seq_id = f_input.sequence.entity_id
+        pos_id = f_input.sequence.pos_id
+
+        # sequence -> token index mapping
+        seq_token_i = f_input.token.seq_token_index
+        B, L = seq_token_i.shape
+
+        # Initialize output
+        x_list: list[torch.Tensor] = []
+        attn_list: list[torch.Tensor] = []
+
+        x = self.embed(input_ids)
+        for i in range(B):
+            _x = x[i]  # [seq_len, d_model]
+            _seq_id = seq_id[i]  # [seq_len]
+            _pos_id = pos_id[i]  # [seq_len]
+            _seq_token_i = seq_token_i[i]  # [n_tokens]
+
+            _attn_list: list[torch.Tensor] = []
+            for block in self.transformer.blocks:
+                _x, _attn_i = block(_x, _seq_id, _pos_id)
+                # [n_heads, seq_len, seq_len] -> [n_heads, n_tokens, n_tokens]
+                _attn_i = _attn_i.to(torch.bfloat16)
+                _attn_i = _attn_i[:, _seq_token_i, :][:, :, _seq_token_i]
+                _attn_list.append(_attn_i.permute(1, 2, 0))
+
+            x_list.append(_x[_seq_token_i, :])
+            attn_list.append(torch.cat(_attn_list, dim=-1))
+
+        x = torch.stack(x_list, dim=0)
+        attn = torch.stack(attn_list, dim=0)
+
+        # normalize
+        x = self.transformer.norm(x).to(torch.bfloat16)
+
+        # mask out invalid tokens
+        token_mask = f_input.token.pad_mask
+        # mask out non-protein tokens
+        token_mask = token_mask & f_input.token.is_protein
+        attn_mask = token_mask.unsqueeze(-1) & token_mask.unsqueeze(-2)
+
+        x = x * token_mask[..., None]
+        attn = attn * attn_mask[..., None]
+        return x, attn

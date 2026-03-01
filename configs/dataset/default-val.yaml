@@ -4,3 +4,10 @@ _yaml_: "default.yaml"
 # Data paths
 data_path: <DATA_PATH_PLACEHOLDER>
 seed: 42 # fixed seed for validation
+
+apo_init:
+  use_cached_conformer_only: true
+
+prior_sampler:
+  num_samples: 5
+  use_ot_permutation: false

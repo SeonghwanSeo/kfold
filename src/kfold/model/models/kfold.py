@@ -1,23 +1,29 @@
-import dataclasses
+import time
+from collections.abc import Mapping
 
 import torch
 
+import kfold.model.modules as submodules
 from kfold.data.types.model_input import FoldingInput
-from kfold.utils.registry import MAIN_MODULE
+from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
 
 from .base import BaseFoldingModel, BaseFoldingModelConfig
 
 
-@dataclasses.dataclass(kw_only=True)
 class KFoldConfig(BaseFoldingModelConfig):
     _class_: str = "KFold"
-    # TODO: define encoders
-    # sequence_encoder: BaseConfig
+    sequence_encoder: BaseConfig
     # structure_encoder: BaseConfig
 
 
 @MAIN_MODULE.register()
 class KFold(BaseFoldingModel):
+    def __init__(self, config: KFoldConfig):
+        super().__init__(config)
+        self.sequence_encoder: submodules.sequence_encoder.BaseSequenceEncoder = (
+            Registry.instantiate(config.sequence_encoder)
+        )
+
     def forward(
         self,
         f_input: FoldingInput,
@@ -111,9 +117,9 @@ class KFold(BaseFoldingModel):
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
-        embed_out = self.input_embedder(f_input)
-        s_inputs, s_init, z_init = embed_out[:3]
-        extra_embed_args = embed_out[3:]
+        s_inputs, s_init, z_init = self.input_embedder(f_input)
+
+        s_plm, attn_plm = self.sequence_encoder(f_input)
 
         # Trunk with recycling
         trunk_out = self.trunk(
@@ -122,7 +128,8 @@ class KFold(BaseFoldingModel):
             z_init,
             f_input,
             num_recycles,
-            *extra_embed_args,
+            s_plm=s_plm,
+            attn_plm=attn_plm,
         )
         s_trunk = trunk_out["s_trunk"]
         z_trunk = trunk_out["z_trunk"]
@@ -184,3 +191,133 @@ class KFold(BaseFoldingModel):
             raise NotImplementedError("Confidence module is not implemented yet.")
 
         return dict_out
+
+    def sample(
+        self,
+        f_input: FoldingInput,
+        num_recycles: int = 10,
+        num_steps: int = 200,
+        num_diffusion_samples: int = 5,
+        return_traj: bool = False,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+        """Forward pass of KFold model for model training.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            Input data for folding model.
+        num_recycles : int
+            Number of recycling cycles in trunk.
+        num_steps : int
+            Number of diffusion steps for training.
+        num_diffusion_samples : int
+            Number of diffusion samples for training.
+        return_traj : bool, optional
+            Whether to return sampling trajectories.
+        """
+        dict_out: dict[str, torch.Tensor] = {}
+        time_logs: dict[str, float] = {}
+
+        # Indicate whether to return batched output
+        return_batched_output = f_input.is_batched
+
+        # Ensure batched input
+        f_input = self.ensure_batched_input(f_input)
+
+        # Embed inputs
+        st = time.time()
+        s_inputs, s_init, z_init = self.input_embedder(f_input)
+        et = time.time()
+        time_logs["input_embedder"] = et - st
+
+        # Sequence encoder
+        st = time.time()
+        s_plm, attn_plm = self.sequence_encoder(f_input)
+        et = time.time()
+        time_logs["sequence_encoder"] = et - st
+
+        # Trunk with recycling
+        st = time.time()
+        trunk_out: dict[str, torch.Tensor] = self.trunk(
+            s_inputs,
+            s_init,
+            z_init,
+            f_input,
+            num_recycles,
+            s_plm=s_plm,
+            attn_plm=attn_plm,
+        )
+        et = time.time()
+        s_trunk = trunk_out["s_trunk"]
+        z_trunk = trunk_out["z_trunk"]
+        time_logs["trunk"] = et - st
+
+        dict_out = {
+            "s_plm": s_plm,
+            "s_trunk": s_trunk,
+            "z_trunk": z_trunk,
+        }
+
+        # Distogram head
+        st = time.time()
+        dict_out["distogram_logits"] = self.distogram_head(z_trunk)
+        et = time.time()
+        time_logs["distogram_head"] = et - st
+
+        if self.interaction_head is not None:
+            st = time.time()
+            dict_out["interaction_logits"] = self.interaction_head(z_trunk)
+            et = time.time()
+            time_logs["interaction_head"] = et - st
+
+        # Diffusion head
+        # pred_atom_coords: [B, Nsample, La, 3]
+        st = time.time()
+        with torch.autocast("cuda", dtype=torch.float32):
+            dict_out.update(
+                self.structure_module.sample_structure(
+                    f_input,
+                    s_inputs,
+                    s_trunk,
+                    z_trunk,
+                    num_steps,
+                    num_diffusion_samples,
+                    return_traj=return_traj,
+                )
+            )
+        et = time.time()
+        time_logs["diffusion_head"] = et - st
+
+        # TODO: Confidence head
+
+        # If the input was not batched, remove the batch dimension
+        if not return_batched_output:
+            for key in dict_out:
+                dict_out[key] = dict_out[key].squeeze(0)
+        return dict_out, time_logs
+
+    def load_state_dict(
+        self,
+        state_dict: Mapping[str, torch.Tensor],
+        strict: bool = True,
+        assign: bool = False,
+    ):
+        """Load state dict without pretrained sequence encoder"""
+        # Add '._orig_mod.' to state dict keys if required for compiled models
+        state_dict = self._add_orig_mod_to_state_dict(state_dict)
+
+        # If strict is False, it is fine to have missing keys (e.g., pretrained model)
+        incompatible_keys = super().load_state_dict(state_dict, strict=False)
+        if strict:
+            missing_keys = incompatible_keys.missing_keys
+            unexpected_keys = incompatible_keys.unexpected_keys
+            # If the sequence encoder is pretrained and not included in the state dict,
+            # we allow missing keys that start with "sequence_encoder.".
+            if missing_keys:
+                missing_keys = {
+                    key for key in missing_keys if not key.startswith("sequence_encoder.")
+                }
+            if missing_keys:
+                raise KeyError(f"Missing keys in state_dict: {missing_keys}")
+            if unexpected_keys:
+                raise KeyError(f"Unexpected keys in state_dict: {unexpected_keys}")
