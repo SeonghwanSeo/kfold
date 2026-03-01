@@ -1,7 +1,7 @@
 model:
   _yaml_: "model/kfold-ecsi.yaml"
   sequence_encoder:
-    path: <path-to-esm-model>
+    path: /mnt/parallel_storage/share/plm_weights/esm/esm-seo-v2.pt
   trunk:
     plm_module:
       channel_plm_input: 1152
