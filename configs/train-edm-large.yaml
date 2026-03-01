@@ -27,12 +27,12 @@ train:
         data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-train/
         prior_sampler: null
 
-      - _yaml_: "dataset/afdb.yaml"
+      - _yaml_: "dataset/afdb-long.yaml"
         weight: 0.35
         data_path: /cache/wykim_lab/kfold_data/v260227/dataset/afdb-long/
         prior_sampler: null
 
-      - _yaml_: "dataset/afdb.yaml"
+      - _yaml_: "dataset/afdb-short.yaml"
         weight: 0.05
         data_path: /cache/wykim_lab/kfold_data/v260227/dataset/afdb-short/
         prior_sampler: null

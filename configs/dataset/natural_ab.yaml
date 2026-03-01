@@ -1,4 +1,4 @@
-# RCSB training dataset configuration.
+# Synthetic dataset configuration from NaturalAb.
 _yaml_: "default-train.yaml"
 
 name: natural-ab
