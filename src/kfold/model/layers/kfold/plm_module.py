@@ -69,8 +69,7 @@ class PLMModule(nn.Module):
         self,
         channel_s: int = 384,
         channel_z: int = 128,
-        channel_plm_input: int = 2560,
-        channel_plm: int = 512,
+        channel_s_plm: int = 1152,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         num_blocks: int = 4,
@@ -83,21 +82,16 @@ class PLMModule(nn.Module):
         super().__init__()
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
-        self.channel_plm_input: int = channel_plm_input
-        self.channel_plm: int = channel_plm
-        self.blocks_per_ckpt: int | None = blocks_per_ckpt
+        self.channel_s_plm: int = channel_s_plm
 
-        self.proj_s_plm = nn.Sequential(
-            LayerNorm(channel_plm_input, create_offset=False),
-            LinearNoBias(channel_plm_input, channel_plm, init="default"),
-        )
-        self.proj_s_input = LinearNoBias(channel_s, channel_plm, init="default")
+        self.proj_s_input = LinearNoBias(channel_s, channel_s * 2, init="default")
+        self.proj_s_plm = LinearNoBias(channel_s_plm, channel_s * 2, init="default")
 
         self.blocks = torch.nn.ModuleList()
         for i in range(num_blocks):
             self.blocks.append(
                 PLMBlock(
-                    channel_plm=channel_plm,
+                    channel_s=channel_s * 2,
                     channel_z=channel_z,
                     num_heads_attn=num_heads_attn,
                     num_heads_tri_attn=num_heads_tri_attn,
@@ -108,6 +102,7 @@ class PLMModule(nn.Module):
                     is_last_block=(i == num_blocks - 1),
                 )
             )
+        self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
     def forward(
         self,
@@ -124,11 +119,11 @@ class PLMModule(nn.Module):
         Parameters
         ----------
         z : torch.Tensor
-            The pair representations
+            The pair representations of shape (B, L, L, C_z)
         s_input : torch.Tensor
-            The input single representations
+            The input single representations of shape (B, L, C_s)
         s_plm : torch.Tensor
-            The sequence embeddings
+            The sequence embeddings from PLM of shape (B, L, C_s_plm)
         asym_id : torch.Tensor
             The asymmetry IDs of shape (B, L)
         mask : torch.Tensor
@@ -150,8 +145,7 @@ class PLMModule(nn.Module):
         inter_mask = pair_mask & (~is_same_chain)
 
         # Initial linear projection
-        s_plm = self.proj_s_plm(s_plm)
-        s_plm = s_plm + self.proj_s_input(s_input)
+        s = self.proj_s_plm(s_plm) + self.proj_s_input(s_input)
 
         # PLM Blocks
         blocks = [
@@ -167,15 +161,15 @@ class PLMModule(nn.Module):
             for b in self.blocks
         ]
         if self.training and torch.is_grad_enabled():
-            s_plm, z = checkpoint_blocks(
+            s, z = checkpoint_blocks(
                 blocks,
-                (s_plm, z),
+                (s, z),
                 self.blocks_per_ckpt,
                 use_reentrant=False,
             )
         else:
             for b in blocks:
-                s_plm, z = b(s_plm, z)
+                s, z = b(s, z)
 
         return z
 
@@ -183,7 +177,7 @@ class PLMModule(nn.Module):
 class PLMBlock(nn.Module):
     def __init__(
         self,
-        channel_plm: int = 512,
+        channel_s: int = 1536,
         channel_z: int = 128,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
@@ -194,15 +188,15 @@ class PLMBlock(nn.Module):
         is_last_block: bool = False,
     ) -> None:
         super().__init__()
-        self.channel_plm: int = channel_plm
+        self.channel_s: int = channel_s
         self.channel_z: int = channel_z
         self.use_separate_projections: bool = use_separate_projections
 
         if self.use_separate_projections:
-            self.pairwise_proj_intra = PairwiseProdDiff(channel_plm, channel_z)
-            self.pairwise_proj_inter = PairwiseProdDiff(channel_plm, channel_z)
+            self.pairwise_proj_intra = PairwiseProdDiff(channel_s, channel_z)
+            self.pairwise_proj_inter = PairwiseProdDiff(channel_s, channel_z)
         else:
-            self.pairwise_proj = PairwiseProdDiff(channel_plm, channel_z)
+            self.pairwise_proj = PairwiseProdDiff(channel_s, channel_z)
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
@@ -222,14 +216,14 @@ class PLMBlock(nn.Module):
         self.is_last_block: bool = is_last_block
         if not self.is_last_block:
             self.attention = AttentionPairBias(
-                channel_a=channel_plm,
+                channel_a=channel_s,
                 channel_z=channel_z,
                 channel_s=None,
                 num_heads=num_heads_attn,
                 use_single_cond=False,
                 qk_norm=use_qk_norm,
             )
-            self.transition_plm = Transition(channel_plm, expansion_factor=4)
+            self.transition_plm = Transition(channel_s, expansion_factor=4)
 
     def forward(
         self,
@@ -246,10 +240,10 @@ class PLMBlock(nn.Module):
 
         Parameters
         ----------
-        z : torch.Tensor
-            The pair representations
         s_plm : torch.Tensor
             The sequence embeddings
+        z : torch.Tensor
+            The pair representations
         mask : torch.Tensor
             The token mask of shape (B, L)
         pair_mask : torch.Tensor

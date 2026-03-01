@@ -16,8 +16,6 @@ from .base import BaseTrunk
 
 @dataclasses.dataclass(kw_only=True)
 class PLMModuleConfig:
-    channel_plm_input: int = 2560
-    channel_plm: int = 512
     num_heads_attn: int = 16
     num_heads_tri_attn: int = 4
     num_blocks: int = 4
@@ -25,6 +23,7 @@ class PLMModuleConfig:
     dropout_z: float = 0.25
     use_separate_projections: bool = True
     use_qk_norm: bool = False
+    blocks_per_ckpt: int | None = None
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -35,6 +34,7 @@ class PairformerConfig:
     dropout: float = 0.25
     # Proteina-style QK normalization (LayerNorm on Q and K before head split)
     use_qk_norm: bool = False
+    blocks_per_ckpt: int | None = None
 
 
 @TRUNK.register()
@@ -48,6 +48,10 @@ class KFoldTrunk(BaseTrunk):
             The token single embedding size.
         channel_z : int
             The token pairwise embedding size.
+        channel_s_plm : int
+            The token single embedding size for the PLM module.
+        channel_z_plm : int
+            The token attention map size for the PLM module.
         num_heads_attn : int, optional
             The number of attention heads, by default 16
         num_heads_tri_attn : int, optional
@@ -61,9 +65,9 @@ class KFoldTrunk(BaseTrunk):
         channel_s: int = 384
         channel_z: int = 128
 
-        # Pre-trained language model options
-        use_seq_embedding: bool = True
-        use_struct_embedding: bool = False
+        # PLM dimensions.
+        channel_s_plm: int = 1152
+        channel_z_plm: int = 648
 
         # plm module
         plm_module: PLMModuleConfig = dataclasses.field(default_factory=PLMModuleConfig)
@@ -76,21 +80,17 @@ class KFoldTrunk(BaseTrunk):
         register_token_init_std: float = 0.05
 
         # other options
-        blocks_per_ckpt: int | None = None
         tri_attn_chunk_threshold: int = 384
 
     def __init__(self, cfg: Config, kernel_config=None):
         """Initialize the KFoldTrunk module."""
         super().__init__(cfg, kernel_config)
-        self.use_seq_embedding: bool = cfg.use_seq_embedding
-        self.use_struct_embedding: bool = cfg.use_struct_embedding
 
         # PLM module
         self.plm_module: PLMModule = PLMModule(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
-            channel_plm_input=cfg.plm_module.channel_plm_input,
-            channel_plm=cfg.plm_module.channel_plm,
+            channel_s_plm=cfg.channel_s_plm,
             num_heads_attn=cfg.plm_module.num_heads_attn,
             num_heads_tri_attn=cfg.plm_module.num_heads_tri_attn,
             num_blocks=cfg.plm_module.num_blocks,
@@ -98,7 +98,7 @@ class KFoldTrunk(BaseTrunk):
             dropout_z=cfg.plm_module.dropout_z,
             use_separate_projections=cfg.plm_module.use_separate_projections,
             use_qk_norm=cfg.plm_module.use_qk_norm,
-            blocks_per_ckpt=cfg.blocks_per_ckpt,
+            blocks_per_ckpt=cfg.plm_module.blocks_per_ckpt,
         )
 
         # Pairformer module
@@ -110,7 +110,7 @@ class KFoldTrunk(BaseTrunk):
             num_blocks=cfg.pairformer.num_blocks,
             dropout=cfg.pairformer.dropout,
             use_qk_norm=cfg.pairformer.use_qk_norm,
-            blocks_per_ckpt=cfg.blocks_per_ckpt,
+            blocks_per_ckpt=cfg.pairformer.blocks_per_ckpt,
         )
 
         # For recycling
@@ -119,12 +119,16 @@ class KFoldTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-        # Other options
-        self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
+        # Projections from PLM features to trunk features.
+        self.proj_plm_to_z_init = nn.Sequential(
+            LinearNoBias(cfg.channel_z_plm, cfg.channel_z, init="relu"),
+            nn.ReLU(),
+            LinearNoBias(cfg.channel_z, cfg.channel_z, init="default"),
+        )
 
-        self.proj_plm_to_s_trunk = nn.Sequential(
-            LayerNorm(cfg.plm_module.channel_plm_input, create_offset=False),
-            LinearNoBias(cfg.plm_module.channel_plm_input, cfg.channel_s, init="final"),
+        # For the skip connection from PLM features to s_trunk output.
+        self.proj_plm_to_s_trunk = LinearNoBias(
+            cfg.channel_s_plm, cfg.channel_s, init="final"
         )
 
         # Proteina-style register tokens (learnable sequence-level registers).
@@ -139,6 +143,9 @@ class KFoldTrunk(BaseTrunk):
             )
         else:
             self.register_tokens = None
+
+        # Other options
+        self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
     def do_compile(self, mode: str = "default"):
         """Compile the trunk module."""
@@ -200,7 +207,12 @@ class KFoldTrunk(BaseTrunk):
 
         # Get PLM features
         assert "s_plm" in kwargs, "PLM features s_plm must be provided in kwargs"
+        assert "z_plm" in kwargs, "PLM features z_plm must be provided in kwargs"
         s_plm: torch.Tensor = kwargs["s_plm"]
+        z_plm: torch.Tensor = kwargs["z_plm"]
+
+        # Add z_plm to z_init before trunk.
+        z_init = z_init + self.proj_plm_to_z_init(z_plm)
 
         # === Proteina-style register tokens (optional) ===
         mask = f_input.token.pad_mask

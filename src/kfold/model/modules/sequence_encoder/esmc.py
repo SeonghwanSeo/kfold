@@ -34,7 +34,7 @@ class ESMC(BaseSequenceEncoder):
         d_model: int = 1152
         n_heads: int = 18
         n_layers: int = 36
-        return_attn: bool = False
+        return_attn: bool = True
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
@@ -203,7 +203,11 @@ class ESMC(BaseSequenceEncoder):
         token_mask = f_input.token.pad_mask
         # mask out non-protein tokens
         token_mask = token_mask & f_input.token.is_protein
+        # attention mask: [B, Ntoken, Ntoken]
         attn_mask = token_mask.unsqueeze(-1) & token_mask.unsqueeze(-2)
+        # mask out attention between different chains
+        asym_id = f_input.token.asym_id
+        attn_mask &= asym_id.unsqueeze(-1) == asym_id.unsqueeze(-2)
 
         x = x * token_mask[..., None]
         attn = attn * attn_mask[..., None]

@@ -3,26 +3,28 @@ _class_: "KFoldTrunk"
 channel_s: 384
 channel_z: 128
 
+channel_s_plm: 1152
+channel_z_plm: 648
+
 plm_module:
-  channel_plm_input: ???
-  channel_plm: 512
   num_heads_attn: 16
   num_heads_tri_attn: 4
   num_blocks: 4
   dropout_plm: 0.15
   dropout_z: 0.25
   use_separate_projections: true
-  use_qk_norm: true
+  use_qk_norm: false
+  blocks_per_ckpt: 1
 
 pairformer:
   num_heads_attn: 16
   num_heads_tri_attn: 4
   num_blocks: 48
   dropout: 0.25
-  use_qk_norm: true
+  use_qk_norm: false
+  blocks_per_ckpt: 1
 
-num_register_tokens: 8
+num_register_tokens: 0
 register_token_init_std: 0.05
 
-blocks_per_ckpt: 1
 tri_attn_chunk_threshold: 384

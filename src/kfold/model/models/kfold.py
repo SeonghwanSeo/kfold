@@ -129,7 +129,7 @@ class KFold(BaseFoldingModel):
             f_input,
             num_recycles,
             s_plm=s_plm,
-            attn_plm=attn_plm,
+            z_plm=attn_plm,
         )
         s_trunk = trunk_out["s_trunk"]
         z_trunk = trunk_out["z_trunk"]
@@ -245,7 +245,7 @@ class KFold(BaseFoldingModel):
             f_input,
             num_recycles,
             s_plm=s_plm,
-            attn_plm=attn_plm,
+            z_plm=attn_plm,
         )
         et = time.time()
         s_trunk = trunk_out["s_trunk"]
