@@ -121,12 +121,8 @@ class ApoInitializerConfig:
     prob_perturbation: float = 1.0
     use_cached_conformer_only: bool = False
     use_holo_if_apo_unavailable: bool = True
-    protein_perturbation: ProteinPerturbationConfig | None = dataclasses.field(
-        default_factory=ProteinPerturbationConfig
-    )
-    ligand_perturbation: SmallMolPerturbationConfig | None = dataclasses.field(
-        default_factory=SmallMolPerturbationConfig
-    )
+    protein_perturbation: ProteinPerturbationConfig | None
+    ligand_perturbation: SmallMolPerturbationConfig | None
 
     @classmethod
     def inference_mode(cls) -> Self:

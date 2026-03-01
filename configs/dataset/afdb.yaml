@@ -27,7 +27,7 @@ apo_init:
   # Use harsh perturbation for AFDB to improve robustness.
   protein_perturbation:
     bioprior:
-      min_steps: 10
-      max_steps: 30
+      min_steps: 5
+      max_steps: 20
   # no ligand
   ligand_perturbation: null

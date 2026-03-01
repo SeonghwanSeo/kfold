@@ -31,7 +31,7 @@ class NanInfInOutputError(RieProdyPerturbationError): ...
 class MetricCompConfig:
     # Metric computation parameters
     apo_internal_coord_metric_calculation_device: str = "cpu"
-    apo_internal_coord_metric_calculation_precision: str = "float32"
+    apo_internal_coord_metric_calculation_precision: str = "float64"
     apo_internal_coord_metric_save_precision: str = "float32"
     # RieProDy's __init__ accesses this path (we don't call preprocess()).
     apo_internal_coord_metric_information_path: str = str(Path("."))
