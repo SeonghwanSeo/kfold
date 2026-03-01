@@ -120,7 +120,7 @@ class ApoInitializerConfig:
     use_residue_permutation: bool = False
     prob_perturbation: float = 1.0
     use_cached_conformer_only: bool = False
-    use_holo_if_apo_unavailable: bool = True
+    use_holo_if_apo_unavailable: bool = False
     protein_perturbation: ProteinPerturbationConfig | None
     ligand_perturbation: SmallMolPerturbationConfig | None
 
@@ -128,8 +128,10 @@ class ApoInitializerConfig:
     def inference_mode(cls) -> Self:
         """Get ApoInitializer instance for inference mode."""
         return cls(
+            prob_perturbation=0.0,
             use_residue_permutation=False,
             use_cached_conformer_only=False,
+            use_holo_if_apo_unavailable=False,
             protein_perturbation=None,
             ligand_perturbation=None,
         )
