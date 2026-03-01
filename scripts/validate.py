@@ -69,6 +69,7 @@ def validate(args) -> None:
         cfg.train.trainer.devices = "auto"
     cfg.train.validation.num_steps = args.num_steps
     cfg.train.validation.num_recycles = args.num_recycles
+    cfg.train.validation.save_predictions = True
     cfg.train.validation.return_traj = args.return_traj
     cfg.train.validation.traj_format = args.traj_format
 
