@@ -3,11 +3,12 @@ import pathlib
 import numpy as np
 
 from kfold.data.pipelines.apo_initialization import ApoInitializerConfig
+from kfold.data.pipelines.prior_sampling import PriorSamplerConfig
 from kfold.data.types.ccd import CCD
 from kfold.data.utils.writer.writer import KFoldWriter
 from kfold.training.dataset.dataset import ValidationDataset, ValidationDatasetConfig
 
-ROOT_DIR = pathlib.Path("/cache/wykim_lab/kfold_data/v260109/")
+ROOT_DIR = pathlib.Path("/cache/wykim_lab/kfold_data/v260227/")
 
 if __name__ == "__main__":
     writer = KFoldWriter()
@@ -20,11 +21,11 @@ if __name__ == "__main__":
         config=ValidationDatasetConfig(
             name="rcsb-val",
             data_path=DATASET_DIR,
-            apo_init=ApoInitializerConfig(),
+            apo_init=ApoInitializerConfig.inference_mode(),
+            prior_sampler=PriorSamplerConfig.inference_mode(5),
             seed=42,
         ),
         ccd=ccd,
-        pretrained_embedding={},
         safe_load=False,
     )
 
