@@ -4,12 +4,12 @@ import gc
 import json
 import pathlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 import lightning.pytorch as pl
 import numpy as np
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torchmetrics import MeanMetric, MetricCollection
 
 from kfold.config import to_dict
@@ -40,6 +40,12 @@ class TrainConfig:
     validation: "ValidationConfig"
     optimizer: "OptimizerConfig"
     loss: "LossConfig"
+
+    @classmethod
+    def from_dict(cls, config) -> Self:
+        default_config = OmegaConf.create(cls)
+        merged_config = OmegaConf.merge(default_config, OmegaConf.create(config))
+        return OmegaConf.to_object(merged_config)
 
 
 @dataclass(kw_only=True)
@@ -115,9 +121,7 @@ class ValidationConfig:
 
 @dataclass(kw_only=True)
 class LossConfig:
-    """Training step configuration."""
-
-    # TODO: better configuration
+    """Loss configuration."""
 
     weights: dict[str, float]
     distogram_loss: Any

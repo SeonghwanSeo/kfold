@@ -23,6 +23,7 @@ data:
   # Training hyperparameters
   max_chains: 20
   max_tokens: 384
+  max_sequence_tokens: 1024
 
   # DataLoader
   train_batch_size: 1 # NOTE: overridden by global_hparam
@@ -138,7 +139,7 @@ loss:
 
     # Smooth LDDT Loss
     smooth_lddt_loss:
-      chunk_size: 2  # in number of samples.
+      chunk_size: 2 # in number of samples.
 
   # Confidence loss
   # TODO

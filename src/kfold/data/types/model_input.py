@@ -1001,19 +1001,21 @@ class FoldingInput:
         max_chains: int | None = None,
         max_atoms: int | None = None,
         max_bonds: int | None = None,
-        max_sequence: int | None = None,
+        max_sequence_tokens: int | None = None,
     ) -> Self:
         """Pad all layouts to the specified maximum sizes."""
         max_tokens = max_tokens if max_tokens is not None else len(self.token)
         max_chains = max_chains if max_chains is not None else len(self.chain)
         max_atoms = max_atoms if max_atoms is not None else len(self.atom)
         max_bonds = max_bonds if max_bonds is not None else len(self.bond)
-        max_sequence = max_sequence if max_sequence is not None else len(self.sequence)
+        max_sequence_tokens = (
+            max_sequence_tokens if max_sequence_tokens is not None else len(self.sequence)
+        )
 
         return self.__class__(
             chain=self.chain.pad(max_chains),
             token=self.token.pad(max_tokens),
             atom=self.atom.pad(max_atoms),
             bond=self.bond.pad(max_bonds),
-            sequence=self.sequence.pad(max_sequence),
+            sequence=self.sequence.pad(max_sequence_tokens),
         )

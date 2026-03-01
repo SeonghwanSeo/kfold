@@ -693,7 +693,11 @@ class TokenizedStructure:
         """
         return dataclasses.replace(self, **kwargs)
 
-    def crop(self, token_indices: np.ndarray) -> Self:
+    def crop(
+        self,
+        token_indices: np.ndarray,
+        sequence_token_indices: np.ndarray | None = None,
+    ) -> Self:
         """Crop the structure to the specified token indices.
 
         Parameters
@@ -701,6 +705,10 @@ class TokenizedStructure:
         token_indices: np.ndarray (int)
             Token indices to keep of shape [K,], where K is the number of tokens
             to keep.
+        sequence_token_indices: np.ndarray (int) | None
+            Sequence token indices to keep of shape [M,], where M is the number of
+            sequence tokens to keep. If None, include all sequence tokens corresponding
+            to the remaining chains.
 
         Returns
         -------
@@ -732,9 +740,34 @@ class TokenizedStructure:
             cropped_chain.num_residues[cidx] = num_residues
             cropped_chain.num_atoms[cidx] = num_atoms
 
-        # Remove excluding sequence
-        entity_ids = np.unique(cropped_token.entity_id)
-        cropped_sequence = self.sequence[np.isin(self.sequence.entity_id, entity_ids)]
+        if sequence_token_indices is None:
+            # Retain all sequence tokens corresponding to the remaining chains
+            entity_ids = np.unique(cropped_token.entity_id)
+            sequence_token_indices = np.where(
+                np.isin(self.sequence.entity_id, entity_ids)
+            )[0]
+
+        if len(sequence_token_indices) == len(self.sequence):
+            # keep all sequence tokens, no need to index
+            cropped_sequence = self.sequence
+        else:
+            # Keep only the specified sequence tokens
+            cropped_sequence = self.sequence[sequence_token_indices]
+            # Create a map from original sequence indices to new sequence indices
+            # The map must be the size of the ORIGINAL sequence
+            seq_token_idx_map = np.full(len(self.sequence), fill_value=-1, dtype=np.int64)
+
+            # sequence_token_indices could be a boolean mask or an integer array.
+            # This assignment works for both in NumPy.
+            seq_token_idx_map[sequence_token_indices] = np.arange(len(cropped_sequence))
+
+            org_seq_token_idx = cropped_token.seq_token_index
+            new_seq_token_idx = seq_token_idx_map[org_seq_token_idx]
+            assert np.all(new_seq_token_idx[org_seq_token_idx >= 0] >= 0), (
+                "Some tokens are mapped to invalid sequence token indices."
+                "Please check the input sequence_token_indices."
+            )
+            cropped_token = cropped_token.copy_with(seq_token_index=new_seq_token_idx)
 
         return self.__class__(
             chain=cropped_chain,
@@ -743,91 +776,3 @@ class TokenizedStructure:
             bond=cropped_bond,
             sequence=cropped_sequence,
         )
-
-    def reassign_token_indices(self) -> Self:
-        """Reassign token indices to be consecutive from 0 to Ntoken-1.
-
-        Returns
-        -------
-        new_struct: TokenizedStructure
-            Structure with reassigned token indices.
-        """
-        Ntoken = self.num_tokens
-        old_token_indices = self.token.token_index
-        new_token_indices = np.arange(Ntoken, dtype=old_token_indices.dtype)
-
-        # Update token structure
-        new_token = self.token.copy_with(token_index=new_token_indices)
-
-        # Update token indices in bond
-        bond = self.bond
-        token_index_mapping = {
-            old_idx: new_idx for new_idx, old_idx in enumerate(old_token_indices)
-        }
-        old_bond_token_indices = bond.token_index
-        new_bond_token_indices = np.array(
-            [
-                [token_index_mapping[int(idx)] for idx in bond_pair]
-                for bond_pair in old_bond_token_indices
-            ],
-            dtype=old_bond_token_indices.dtype,
-        ).reshape(-1, 2)
-        new_bond = bond.copy_with(token_index=new_bond_token_indices)
-
-        # Create new structure
-        new_struct = self.copy_with(token=new_token, bond=new_bond)
-        return new_struct
-
-    def replace_atom_coords(
-        self,
-        atom_coords: np.ndarray,
-        is_apo: bool = False,
-    ) -> Self:
-        """Replace coordinates in structure
-
-        Parameters
-        ----------
-        atom_coords: np.ndarray
-            Shape: [Natom, 3] or [Ntoken, 24, 3]
-
-        Returns
-        -------
-        new_struct: TokenizedStructure
-            Structure with replaced coordinates
-
-        """
-        num_tokens = self.num_tokens
-        num_atoms = self.num_atoms
-        max_atoms_per_token = 24
-
-        if atom_coords.ndim == 2:
-            assert num_atoms <= atom_coords.shape[0], (
-                f"Coordinate atom count ({atom_coords.shape[0]}) should be same or "
-                f"larger than total atoms ({num_atoms})"
-            )
-            # Create new coords array [num_tokens, 24, 3]
-            new_coords = np.zeros(
-                (num_tokens, max_atoms_per_token, 3), dtype=atom_coords.dtype
-            )
-            coords_to_assign = atom_coords[:num_atoms]
-            new_coords[self.atom.pad_mask] = coords_to_assign
-        else:
-            assert atom_coords.shape[0] <= num_tokens, (
-                f"Coordinate token count ({atom_coords.shape[0]}) should be same or "
-                f"smaller than total tokens ({num_tokens})"
-            )
-            assert atom_coords.shape[1] == max_atoms_per_token, (
-                f"Coordinate atom per token count ({atom_coords.shape[2]}) should be "
-                f"same to max atoms per token (24)"
-            )
-            # [Ntoken_with_pad, 24, 3] -> [Ntoken, 24, 3]
-            new_coords = atom_coords[:num_tokens].copy()
-
-        # Update structure
-        atom_struct = self.atom
-        if is_apo:
-            new_atom_struct = atom_struct.copy_with(apo_coords=new_coords)
-        else:
-            new_atom_struct = atom_struct.copy_with(coords=new_coords)
-        new_struct = self.copy_with(atom=new_atom_struct)
-        return new_struct

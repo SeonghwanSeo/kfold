@@ -198,33 +198,16 @@ class KFoldTrunk(BaseTrunk):
         else:
             chunk_size_tri_attn = None
 
-        s_plm = f_input.pretrained.sequence_embedding  # [B, L, c_plm]
+        # Get PLM features
+        assert "s_plm" in kwargs, "PLM features s_plm must be provided in kwargs"
+        s_plm: torch.Tensor = kwargs["s_plm"]
 
         # === Proteina-style register tokens (optional) ===
         mask = f_input.token.pad_mask
         asym_id = f_input.token.asym_id
         s_inputs, s_init, s_plm, z_init, asym_id, mask = self._extend_registers(
-            s_inputs,
-            s_init,
-            s_plm,
-            z_init,
-            asym_id,
-            mask,
+            s_inputs, s_init, s_plm, z_init, asym_id, mask
         )
-
-        # Get PLM embeddings.
-        seq_emb = f_input.pretrained.sequence_embedding
-        struct_emb = f_input.pretrained.structure_embedding
-        if self.use_seq_embedding and self.use_struct_embedding:
-            s_plm = torch.cat([seq_emb, struct_emb], dim=-1)
-        elif self.use_seq_embedding:
-            s_plm = seq_emb
-        elif self.use_struct_embedding:
-            s_plm = struct_emb
-        else:
-            raise ValueError(
-                "At least one of use_seq_embedding or use_struct_embedding must be True"
-            )
 
         # z_hat, s_hat = 0, 0
         s_hat = torch.zeros_like(s_init)

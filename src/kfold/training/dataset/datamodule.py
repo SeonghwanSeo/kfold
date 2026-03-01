@@ -39,6 +39,7 @@ class DataModuleConfig(BaseConfig):
     # === Training hyperparameters === #
     max_chains: int = 20
     max_tokens: int = 384
+    max_sequence_tokens: int = 1024
 
     # === CCD path === #
     ccd_path: Path
@@ -46,9 +47,6 @@ class DataModuleConfig(BaseConfig):
     # === Dataset configs === #
     train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
     val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
-
-    # === Interaction annotation === #
-    interaction_type: str = "auto"
 
 
 @DATAMODULE.register(config_cls=DataModuleConfig)

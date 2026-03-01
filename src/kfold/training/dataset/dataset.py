@@ -386,9 +386,15 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Pad the folding input to multiple of 32 for LocalAtomAttention."""
         # Pad num_tokens for CUDA efficiency.
         num_tokens = next_multiple(f_input.num_tokens, 16)
+        # Pad num_seq_tokens for CUDA efficiency.
+        num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 64)
         # Pad num_atoms for local attention.
         num_atoms = next_multiple(f_input.num_atoms, 32)
-        return f_input.pad(max_tokens=num_tokens, max_atoms=num_atoms)
+        return f_input.pad(
+            max_tokens=num_tokens,
+            max_atoms=num_atoms,
+            max_sequence_tokens=num_sequence_tokens,
+        )
 
     def __getitem__(self, index: int) -> tuple[FoldingInput, SymmetryInfo]:
         """Get the folding input for the given index, with retry on failure."""
@@ -556,6 +562,7 @@ class TrainingDataset(LMDBDataset):
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
+        max_sequence_tokens: int = 1024,
     ) -> None:
         """
         Parameters
@@ -567,9 +574,10 @@ class TrainingDataset(LMDBDataset):
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
-            Maximum number of tokens per sample. Must be a multiple of 64 for
-            LocalAtomAttention.
-
+            Maximum number of tokens per sample.
+        max_sequence_tokens : int
+            Maximum number of sequence tokens per sample,
+            limiting the entire input size of PLM module.
         Notes
         -----
         This dataset implements AF3-style sampling (chain/interface-based).
@@ -590,8 +598,17 @@ class TrainingDataset(LMDBDataset):
             self.logger.warning(
                 "Seed is set for TrainingDataset, which may affect randomness."
             )
-        self.max_tokens: int = max_tokens
+
+        # For pre-cropping (RefStructure)
         self.max_chains: int = max_chains
+        # For main cropping (TokenizedStructure)
+        self.max_tokens: int = max_tokens
+        self.max_sequence_tokens: int = max_sequence_tokens
+
+        assert max_sequence_tokens >= max_tokens + (max_chains * 2), (
+            "max_sequence_tokens should be greater than max_tokens to accommodate "
+            "additional sequence tokens for PLM input."
+        )  # +2 tokens per chain for [CLS] and [SEP]
 
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
@@ -624,6 +641,10 @@ class TrainingDataset(LMDBDataset):
                     f"RieProDy LMDB path {rieprody_lmdb_path} not found "
                     f"while rieprody is enabled."
                 )
+            # If rieprody perturbation is enabled, we need to provide the LMDB path
+            cfg.apo_init.protein_perturbation.rieprody.metric_lmdb_path = (
+                rieprody_lmdb_path
+            )
         if cfg.apo_init.ligand_perturbation is None:
             self.logger.warning("Ligand perturbation is disabled for training set.")
 
@@ -677,6 +698,7 @@ class TrainingDataset(LMDBDataset):
                 struct,
                 metadata,
                 max_tokens=self.max_tokens,
+                max_sequence_tokens=self.max_sequence_tokens,
                 bias_asym_id=asym_ids,
                 rng=rng,
             )
@@ -684,11 +706,18 @@ class TrainingDataset(LMDBDataset):
 
     @override
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
+        max_chains = self.max_chains
         max_tokens = self.max_tokens
-        max_chains = max_tokens // 4  # min 4 tokens per chain
+        max_sequence_tokens = self.max_sequence_tokens
         max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
-        return f_input.pad(max_tokens, max_chains, max_atoms, max_bonds)
+        return f_input.pad(
+            max_tokens=max_tokens,
+            max_chains=max_chains,
+            max_atoms=max_atoms,
+            max_bonds=max_bonds,
+            max_sequence_tokens=max_sequence_tokens,
+        )
 
     @override
     def get_item_safe(
@@ -730,6 +759,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
+        max_sequence_tokens: int = 1024,
     ) -> None:
         """
         Parameters
@@ -743,8 +773,10 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
-            Maximum number of tokens per sample. Must be a multiple of 64 for
-            LocalAtomAttention.
+            Maximum number of tokens per sample.
+        max_sequence_tokens : int
+            Maximum number of sequence tokens per sample,
+            limiting the entire input size of PLM module.
 
         Notes
         -----
@@ -760,6 +792,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
                 safe_load,
                 max_chains,
                 max_tokens,
+                max_sequence_tokens,
             )
             for config in configs
         ]
