@@ -120,7 +120,10 @@ class KFoldTrunk(BaseTrunk):
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
         # Projections from PLM features to trunk features.
+        # TODO: if we consider two separate plms for intra- and inter-chain attentions,
+        # we may want to have separate projections for s_plm and z_plm.
         self.proj_plm_to_z_init = nn.Sequential(
+            LayerNorm(cfg.channel_z_plm, create_offset=False),
             LinearNoBias(cfg.channel_z_plm, cfg.channel_z, init="relu"),
             nn.ReLU(),
             LinearNoBias(cfg.channel_z, cfg.channel_z, init="default"),

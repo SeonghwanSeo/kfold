@@ -138,7 +138,7 @@ class ESMC(BaseSequenceEncoder):
             x = torch.stack(x_list, dim=0)
 
             # normalize
-            x = self.transformer.norm(x)
+            x = self.transformer.norm(x).to(torch.bfloat16)
 
         # mask out invalid tokens
         pad_mask = f_input.token.pad_mask
@@ -186,9 +186,9 @@ class ESMC(BaseSequenceEncoder):
             for block in self.transformer.blocks:
                 _x, _attn_i = block(_x, _seq_id, _pos_id)
                 # [n_heads, seq_len, seq_len] -> [n_heads, n_tokens, n_tokens]
-                _attn_i = _attn_i.to(torch.bfloat16)
-                _attn_i = _attn_i[:, _seq_token_i, :][:, :, _seq_token_i]
-                _attn_list.append(_attn_i.permute(1, 2, 0))
+                _attn_i = _attn_i[:, _seq_token_i[:, None], _seq_token_i[None, :]]
+                _attn_i = _attn_i.permute(1, 2, 0)  # [n_tokens, n_tokens, n_heads]
+                _attn_list.append(_attn_i.to(torch.bfloat16))
 
             x_list.append(_x[_seq_token_i, :])
             attn_list.append(torch.cat(_attn_list, dim=-1))
