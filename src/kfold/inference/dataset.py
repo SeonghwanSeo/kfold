@@ -111,5 +111,5 @@ class InferenceDataset(torch.utils.data.Dataset):
         return f_input.pad(
             max_tokens=num_tokens,
             max_atoms=num_atoms,
-            max_sequence=num_sequence_tokens,
+            max_sequence_tokens=num_sequence_tokens,
         )

@@ -119,7 +119,7 @@ class KFold(BaseFoldingModel):
 
         s_inputs, s_init, z_init = self.input_embedder(f_input)
 
-        s_plm, attn_plm = self.sequence_encoder.forward(f_input)
+        s_plm, attn_plm = self.sequence_encoder(f_input)
 
         # Trunk with recycling
         trunk_out = self.trunk(
@@ -232,7 +232,7 @@ class KFold(BaseFoldingModel):
 
         # Sequence encoder
         st = time.time()
-        s_plm, attn_plm = self.sequence_encoder.forward(f_input)
+        s_plm, attn_plm = self.sequence_encoder(f_input)
         et = time.time()
         time_logs["sequence_encoder"] = et - st
 
