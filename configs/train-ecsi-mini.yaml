@@ -29,12 +29,6 @@ train:
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-train/
-        apo_init:
-          protein_perturbation:
-            rieprody:
-              rmsd_threshold: 10.0
-            bioprior:
-              max_steps: 20
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"

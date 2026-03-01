@@ -1,4 +1,4 @@
-# RCSB training dataset configuration.
+# Synthetic dataset configuration from ENCORE.
 _yaml_: "default-train.yaml"
 
 name: encore

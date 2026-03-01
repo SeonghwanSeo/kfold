@@ -18,8 +18,6 @@ from .dataset import (
 )
 from .dl_sampler import DistributedWeightedSampler
 
-logger = logging.getLogger(__name__)
-
 
 def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
     f_input_batched = FoldingInput.from_list([b[0] for b in batches], pad_to_max=False)
@@ -39,7 +37,7 @@ class DataModuleConfig(BaseConfig):
     # === Training hyperparameters === #
     max_chains: int = 20
     max_tokens: int = 384
-    max_sequence_tokens: int = 1024
+    max_sequence_tokens: int = 768
 
     # === CCD path === #
     ccd_path: Path
@@ -62,6 +60,7 @@ class TrainingDataModule(pl.LightningDataModule):
 
         # Load CCD
         self.ccd: CCD = CCD.load(config.ccd_path)
+        self.logger = logging.getLogger("[DataModule]")
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -85,6 +84,7 @@ class TrainingDataModule(pl.LightningDataModule):
         for d in multi_ds.datasets:
             self.print_rank_zero(
                 f"Constructed training dataset '{d.name}':\n"
+                f"  Weights: {d.config.weight}\n"
                 f"  Num complexes: {len(d.metadatas)}\n"
                 f"  Num samples: {len(d)}"
             )
@@ -105,7 +105,6 @@ class TrainingDataModule(pl.LightningDataModule):
         self.print_rank_zero(
             f"Constructed validation dataset '{ds.name}':\n"
             f"  Num complexes: {len(ds.metadatas)}\n"
-            f"  Num samples: {len(ds)}"
         )
         return ds
 
@@ -160,6 +159,6 @@ class TrainingDataModule(pl.LightningDataModule):
             persistent_workers=False,
         )
 
-    def print_rank_zero(self, msg: str, prefix: str = "[DataModule] ") -> None:
+    def print_rank_zero(self, msg: str) -> None:
         if self.trainer is None or self.trainer.global_rank == 0:
-            logger.info(f"{prefix}{msg}")
+            self.logger.info(f"{msg}")

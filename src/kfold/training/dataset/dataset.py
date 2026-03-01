@@ -163,10 +163,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         self,
         config: DatasetConfig,
         ccd: CCD,
-        return_symmetry: bool = False,
-        return_structure: bool = False,
-        safe_load: bool = True,
-        train: bool = True,
+        return_symmetry: bool,
+        return_structure: bool,
+        safe_load: bool,
+        train: bool,
     ) -> None:
         """
         Parameters
@@ -262,14 +262,20 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         return metadatas
 
     def load_lookup_table(self) -> dict:
+        if self.is_protein_monomer_distillation:
+            # For protein monomer distillation datasets, we directly
+            # feed apo structures from labeled monomer structures.
+            self.logger.info(
+                "Protein monomer distillation dataset detected. "
+                "Skipping apo lookup table loading."
+            )
+            return {}
+
         lookup_path = self.data_root / "apo_lookup.msgpack"
         if not lookup_path.exists():
             # NOTE: For protein monomer distillation datasets,
             # we can directly feed apo structures from labeled monomer structures.
-            if self.is_protein_monomer_distillation:
-                return {}
-            else:
-                raise FileNotFoundError(f"Apo lookup file {lookup_path} not found.")
+            raise FileNotFoundError(f"Apo lookup file {lookup_path} not found.")
         with open(lookup_path, "rb") as f:
             lookup_table: dict = msgpack.unpack(f)
         return lookup_table
@@ -559,10 +565,10 @@ class TrainingDataset(LMDBDataset):
         self,
         config: TrainingDatasetConfig,
         ccd: CCD,
-        safe_load: bool = True,
-        max_chains: int = 20,
-        max_tokens: int = 384,
-        max_sequence_tokens: int = 1024,
+        safe_load: bool,
+        max_chains: int,
+        max_tokens: int,
+        max_sequence_tokens: int,
     ) -> None:
         """
         Parameters
@@ -593,6 +599,7 @@ class TrainingDataset(LMDBDataset):
             safe_load=safe_load,
             train=True,
         )
+        self.config: TrainingDatasetConfig = config
         if self.seed is not None:
             # Warn about fixed seed affecting randomness
             self.logger.warning(
@@ -658,8 +665,9 @@ class TrainingDataset(LMDBDataset):
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
+        # Tokenize the structure
         tok_struct = super().tokenize(ref_struct, rng)
-        # Apply sequence masking for training
+        # Then apply sequence masking for training
         self.seq_masking(tok_struct, rng)
         return tok_struct
 
@@ -759,7 +767,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         safe_load: bool = True,
         max_chains: int = 20,
         max_tokens: int = 384,
-        max_sequence_tokens: int = 1024,
+        max_sequence_tokens: int = 768,
     ) -> None:
         """
         Parameters
@@ -843,6 +851,7 @@ class ValidationDataset(LMDBDataset):
             safe_load=safe_load,
             train=False,
         )
+        self.config: ValidationDatasetConfig = config
 
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""

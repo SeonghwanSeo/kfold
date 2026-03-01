@@ -30,13 +30,11 @@ apo_init:
     rieprody:
       # Metric-based RieProDy perturbation settings
       metric_lmdb_path: null # NOTE: This is automatically set in the dataset.
-      rmsd_threshold: 15.0 # RMSD threshold for fallback
+      rmsd_threshold: 10.0 # RMSD threshold for fallback
       metric_comp:
-        apo_internal_coord_metric_calculation_precision: "float64"
         apo_internal_coord_metric_save_precision: "float16"
       random_walk:
         # Riemannian random walk settings
-        apo_internal_coord_random_walk_precision: "float32"
         consider_side_chain_in_metric: false
         num_steps: 1 # Number of random walk steps per perturbation
         total_time: 15.0 # Maximum total simulation time (sampled uniformly in [total_time_min, total_time) per call)
@@ -45,9 +43,6 @@ apo_init:
         total_time_uniform_ratio: 0.3 # Probability of sampling uniformly (mixture with power law)
         metric_calculation_period: 100
         metric: "lagrangian"
-        use_precomputed_metric: true # Use pre-computed metric from LMDB
-        with_christoffel_term: false
-        kabsch_aligned_traj: false
       log_stats: false # Whether to log perturbation statistics periodically
       log_stats_interval: 1000 # Log statistics every N chain perturbations
       log_level: "CRITICAL" # Logging level
@@ -55,7 +50,7 @@ apo_init:
       # Metric-free BioPrior perturbation settings (fallback if RieProDy is not used or fails)
       noise_scale: 1.0 # Perturbation scale
       min_steps: 1 # Minimum random walk steps
-      max_steps: 30 # Maximum random walk steps
+      max_steps: 15 # Maximum random walk steps
       scale_length: false # Whether to scale noise based on protein length
       max_rmsd: null # Maximum RMSD (null means no limit)
       log_level: "INFO" # Logging level
