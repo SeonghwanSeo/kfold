@@ -3,8 +3,10 @@ _class_: "KFoldTrunk"
 channel_s: 384
 channel_z: 128
 
-channel_s_plm: 1152
-channel_z_plm: 648
+channel_plm: 1152
+channel_seq_emb: 1152
+channel_seq_attn: 648
+use_attn: true
 
 plm_module:
   num_heads_attn: 16

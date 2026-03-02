@@ -3,8 +3,8 @@ model:
   sequence_encoder:
     path: /mnt/parallel_storage/share/plm_weights/esm/esm-seo-v2.pt
   trunk:
-    channel_s_plm: 1152
-    channel_z_plm: 648
+    channel_seq_emb: 1152
+    channel_seq_attn: 648
     plm_module:
       use_qk_norm: true
       blocks_per_ckpt: null

@@ -61,12 +61,51 @@ class PairwiseProdDiff(nn.Module):
         return z
 
 
+class PLMEmbedder(nn.Module):
+    """
+    Separated embedder of PLMModule to avoid redundant computation across recyling steps.
+    """
+
+    def __init__(
+        self,
+        channel_s_input: int = 384,
+        channel_seq_emb: int = 1152,
+        channel_plm: int = 768,
+    ) -> None:
+        super().__init__()
+        self.linear_s_input = LinearNoBias(channel_s_input, channel_plm, init="default")
+        self.linear_seq_emb = LinearNoBias(channel_seq_emb, channel_plm, init="default")
+
+    def forward(
+        self,
+        s_input: torch.Tensor,
+        s_plm: torch.Tensor,
+    ) -> torch.Tensor:
+        """Perform the forward pass.
+
+        Parameters
+        ----------
+        s_input : torch.Tensor
+            The input single representations of shape (B, L, C_s)
+        s_plm : torch.Tensor
+            The sequence embeddings from PLM of shape (B, L, C_s_plm)
+
+        Returns
+        -------
+        torch.Tensor
+            The fused single representations of shape (B, L, C_s * 2)
+        """
+        s_input_proj = self.linear_s_input(s_input)  # (B, L, C_s_plm)
+        s_seq_emb_proj = self.linear_seq_emb(s_plm)  # (B, L, C_s_plm)
+        s_fused = s_input_proj + s_seq_emb_proj  # (B, L, C_s_plm)
+        return s_fused
+
+
 class PLMModule(nn.Module):
     def __init__(
         self,
-        channel_s: int = 384,
         channel_z: int = 128,
-        channel_s_plm: int = 1152,
+        channel_plm: int = 768,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         num_blocks: int = 4,
@@ -77,20 +116,12 @@ class PLMModule(nn.Module):
         blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
-        self.channel_s: int = channel_s
-        self.channel_z: int = channel_z
-        self.channel_s_plm: int = channel_s_plm
-
-        self.linear_s_input = LinearNoBias(channel_s, channel_s * 2, init="default")
-        # Assume the plm embedding is post-norm output.
-        self.linear_s_plm = LinearNoBias(channel_s_plm, channel_s * 2, init="default")
-
         self.blocks = torch.nn.ModuleList()
         for i in range(num_blocks):
             self.blocks.append(
                 PLMBlock(
-                    channel_s=channel_s * 2,
                     channel_z=channel_z,
+                    channel_plm=channel_plm,
                     num_heads_attn=num_heads_attn,
                     num_heads_tri_attn=num_heads_tri_attn,
                     dropout_plm=dropout_plm,
@@ -105,7 +136,6 @@ class PLMModule(nn.Module):
     def forward(
         self,
         z: torch.Tensor,
-        s_input: torch.Tensor,
         s_plm: torch.Tensor,
         asym_id: torch.Tensor,
         mask: torch.Tensor,
@@ -118,8 +148,6 @@ class PLMModule(nn.Module):
         ----------
         z : torch.Tensor
             The pair representations of shape (B, L, L, C_z)
-        s_input : torch.Tensor
-            The input single representations of shape (B, L, C_s)
         s_plm : torch.Tensor
             The sequence embeddings from PLM of shape (B, L, C_s_plm)
         asym_id : torch.Tensor
@@ -142,9 +170,6 @@ class PLMModule(nn.Module):
         intra_mask = pair_mask & is_same_chain
         inter_mask = pair_mask & (~is_same_chain)
 
-        # Initial linear projection
-        s = self.linear_s_plm(s_plm) + self.linear_s_input(s_input)
-
         # PLM Blocks
         blocks = [
             partial(
@@ -159,15 +184,15 @@ class PLMModule(nn.Module):
             for b in self.blocks
         ]
         if self.training and torch.is_grad_enabled():
-            s, z = checkpoint_blocks(
+            s_plm, z = checkpoint_blocks(
                 blocks,
-                (s, z),
+                (s_plm, z),
                 self.blocks_per_ckpt,
                 use_reentrant=False,
             )
         else:
             for b in blocks:
-                s, z = b(s, z)
+                s_plm, z = b(s_plm, z)
 
         return z
 
@@ -175,8 +200,8 @@ class PLMModule(nn.Module):
 class PLMBlock(nn.Module):
     def __init__(
         self,
-        channel_s: int = 1536,
         channel_z: int = 128,
+        channel_plm: int = 768,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         dropout_plm: float = 0.15,
@@ -186,15 +211,15 @@ class PLMBlock(nn.Module):
         is_last_block: bool = False,
     ) -> None:
         super().__init__()
-        self.channel_s: int = channel_s
         self.channel_z: int = channel_z
+        self.channel_plm: int = channel_plm
         self.use_separate_projections: bool = use_separate_projections
 
         if self.use_separate_projections:
-            self.pairwise_proj_intra = PairwiseProdDiff(channel_s, channel_z)
-            self.pairwise_proj_inter = PairwiseProdDiff(channel_s, channel_z)
+            self.pairwise_proj_intra = PairwiseProdDiff(channel_plm, channel_z)
+            self.pairwise_proj_inter = PairwiseProdDiff(channel_plm, channel_z)
         else:
-            self.pairwise_proj = PairwiseProdDiff(channel_s, channel_z)
+            self.pairwise_proj = PairwiseProdDiff(channel_plm, channel_z)
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
@@ -214,14 +239,14 @@ class PLMBlock(nn.Module):
         self.is_last_block: bool = is_last_block
         if not self.is_last_block:
             self.attention = AttentionPairBias(
-                channel_a=channel_s,
+                channel_a=channel_plm,
                 channel_z=channel_z,
                 channel_s=None,
                 num_heads=num_heads_attn,
                 use_single_cond=False,
                 qk_norm=use_qk_norm,
             )
-            self.transition_plm = Transition(channel_s, expansion_factor=4)
+            self.transition_plm = Transition(channel_plm, expansion_factor=4)
 
     def forward(
         self,
