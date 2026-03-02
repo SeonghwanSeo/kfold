@@ -47,10 +47,7 @@ class PairwiseProdDiff(nn.Module):
             The output tensor (*, L, L, c_out).
         """
         s = self.layernorm(s)  # (*, L, c_in)
-        s_i, s_j = torch.chunk(
-            self.linear_in(s), 2, dim=-1
-        )  # (*, L, c_hid), (*, L, c_hid)
-
+        s_i, s_j = self.linear_in(s).chunk(2, dim=-1)  # 2 * (*, L, c_hid)
         s_i = s_i.unsqueeze(-2)  # (*, L, 1, c_hidden)
         s_j = s_j.unsqueeze(-3)  # (*, 1, L, c_hidden)
 
@@ -84,8 +81,9 @@ class PLMModule(nn.Module):
         self.channel_z: int = channel_z
         self.channel_s_plm: int = channel_s_plm
 
-        self.proj_s_input = LinearNoBias(channel_s, channel_s * 2, init="default")
-        self.proj_s_plm = LinearNoBias(channel_s_plm, channel_s * 2, init="default")
+        self.linear_s_input = LinearNoBias(channel_s, channel_s * 2, init="default")
+        # Assume the plm embedding is post-norm output.
+        self.linear_s_plm = LinearNoBias(channel_s_plm, channel_s * 2, init="default")
 
         self.blocks = torch.nn.ModuleList()
         for i in range(num_blocks):
@@ -145,7 +143,7 @@ class PLMModule(nn.Module):
         inter_mask = pair_mask & (~is_same_chain)
 
         # Initial linear projection
-        s = self.proj_s_plm(s_plm) + self.proj_s_input(s_input)
+        s = self.linear_s_plm(s_plm) + self.linear_s_input(s_input)
 
         # PLM Blocks
         blocks = [

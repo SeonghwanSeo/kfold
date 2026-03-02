@@ -130,13 +130,15 @@ class KFoldTrunk(BaseTrunk):
         )
 
         # For the skip connection from PLM features to s_trunk output.
+        # Assume the plm embedding is post-norm output.
         self.proj_plm_to_s_trunk = LinearNoBias(
             cfg.channel_s_plm, cfg.channel_s, init="final"
         )
 
         # Proteina-style register tokens (learnable sequence-level registers).
         self.num_register_tokens: int = cfg.num_register_tokens
-        assert self.num_register_tokens >= 0, "num_register_tokens must be non-negative"
+        if self.num_register_tokens < 0:
+            raise ValueError("num_register_tokens must be >= 0")
         if self.num_register_tokens > 0:
             self.register_tokens = nn.Parameter(
                 torch.empty(self.num_register_tokens, cfg.channel_s)

@@ -116,38 +116,35 @@ class KFoldTrunkPrime(BaseTrunk):
             use_qk_norm=cfg.pairformer.use_qk_norm,
             blocks_per_ckpt=cfg.pairformer.blocks_per_ckpt,
         )
+
         # For recycling
-        self.linear_prime_s = nn.Sequential(
-            LayerNorm(cfg.channel_s),
-            LinearNoBias(cfg.channel_s, cfg.channel_s, init="final"),
-        )
-        self.linear_prime_z = nn.Sequential(
-            LayerNorm(cfg.channel_z),
-            LinearNoBias(cfg.channel_z, cfg.channel_z, init="final"),
-        )
-        self.linear_recycle_s = nn.Sequential(
-            LayerNorm(cfg.channel_s),
-            LinearNoBias(cfg.channel_s, cfg.channel_s, init="final"),
-        )
-        self.linear_recycle_z = nn.Sequential(
-            LayerNorm(cfg.channel_z),
-            LinearNoBias(cfg.channel_z, cfg.channel_z, init="final"),
-        )
+        self.layernorm_s_prime = LayerNorm(cfg.channel_s)
+        self.layernorm_z_prime = LayerNorm(cfg.channel_z)
+        self.linear_s_prime = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
+        self.linear_z_prime = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
+        self.layernorm_s = LayerNorm(cfg.channel_s)
+        self.layernorm_z = LayerNorm(cfg.channel_z)
+        self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
+        self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
         # Projections from PLM features to trunk features.
+        # TODO: if we consider two separate plms for intra- and inter-chain attentions,
+        # we may want to have separate projections for s_plm and z_plm.
         self.proj_plm_to_z_init = nn.Sequential(
+            LayerNorm(cfg.channel_z_plm, create_offset=False),
             LinearNoBias(cfg.channel_z_plm, cfg.channel_z, init="relu"),
             nn.ReLU(),
             LinearNoBias(cfg.channel_z, cfg.channel_z, init="default"),
         )
 
         # For the skip connection from PLM features to s_trunk output.
+        # Assume the plm embedding is post-norm output.
         self.proj_plm_to_s_trunk = LinearNoBias(
             cfg.channel_s_plm, cfg.channel_s, init="final"
         )
 
         # Proteina-style register tokens (learnable sequence-level registers).
-        self.num_register_tokens: int = int(cfg.num_register_tokens)
+        self.num_register_tokens: int = cfg.num_register_tokens
         if self.num_register_tokens < 0:
             raise ValueError("num_register_tokens must be >= 0")
         if self.num_register_tokens > 0:
@@ -155,9 +152,7 @@ class KFoldTrunkPrime(BaseTrunk):
                 torch.empty(self.num_register_tokens, cfg.channel_s)
             )
             nn.init.normal_(
-                self.register_tokens,
-                mean=0.0,
-                std=float(cfg.register_token_init_std),
+                self.register_tokens, mean=0.0, std=float(cfg.register_token_init_std)
             )
         else:
             self.register_tokens = None
@@ -270,6 +265,8 @@ class KFoldTrunkPrime(BaseTrunk):
 
         # === Refining loop with recycling === #
         s_hat, z_hat = s_prime, z_prime
+        s_bias = self.linear_s_prime(self.layernorm_s_prime(s_prime))
+        z_bias = self.linear_z_prime(self.layernorm_z_prime(z_prime))
 
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
@@ -278,10 +275,10 @@ class KFoldTrunkPrime(BaseTrunk):
                     torch.clear_autocast_cache()
 
                 # Recycle linear pass
-                s = s_hat + self.linear_prime_s(s_prime)
-                z = z_hat + self.linear_prime_z(z_prime)
-                s = s_init + self.linear_recycle_s(s)
-                z = z_init + self.linear_recycle_z(z)
+                s = s_hat + s_bias
+                z = z_hat + z_bias
+                s = s_init + self.linear_s(self.layernorm_s(s))
+                z = z_init + self.linear_z(self.layernorm_z(z))
 
                 # Trunk
                 s_hat, z_hat = self._run_trunk(
