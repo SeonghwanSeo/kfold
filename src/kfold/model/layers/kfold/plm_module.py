@@ -79,7 +79,7 @@ class PLMEmbedder(nn.Module):
     def forward(
         self,
         s_input: torch.Tensor,
-        s_plm: torch.Tensor,
+        seq_emb: torch.Tensor,
     ) -> torch.Tensor:
         """Perform the forward pass.
 
@@ -87,7 +87,7 @@ class PLMEmbedder(nn.Module):
         ----------
         s_input : torch.Tensor
             The input single representations of shape (B, L, C_s)
-        s_plm : torch.Tensor
+        seq_emb : torch.Tensor
             The sequence embeddings from PLM of shape (B, L, C_s_plm)
 
         Returns
@@ -96,7 +96,7 @@ class PLMEmbedder(nn.Module):
             The fused single representations of shape (B, L, C_s * 2)
         """
         s_input_proj = self.linear_s_input(s_input)  # (B, L, C_s_plm)
-        s_seq_emb_proj = self.linear_seq_emb(s_plm)  # (B, L, C_s_plm)
+        s_seq_emb_proj = self.linear_seq_emb(seq_emb)  # (B, L, C_s_plm)
         s_fused = s_input_proj + s_seq_emb_proj  # (B, L, C_s_plm)
         return s_fused
 

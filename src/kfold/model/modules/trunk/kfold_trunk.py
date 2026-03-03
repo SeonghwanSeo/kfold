@@ -100,11 +100,13 @@ class KFoldTrunk(BaseTrunk):
         # we may want to have separate projections for s_plm and z_plm.
         self.use_attn = cfg.use_attn
         if self.use_attn:
+            # (Seonghwan) LayerNorm is applied for scalability to sequence length,
+            # as the scale of attention maps is reduced by sequence length.
             self.proj_seq_attn_to_z_init = nn.Sequential(
                 LayerNorm(cfg.channel_seq_attn, create_offset=False),
                 LinearNoBias(cfg.channel_seq_attn, cfg.channel_z, init="relu"),
                 nn.ReLU(),
-                LinearNoBias(cfg.channel_z, cfg.channel_z, init="default"),
+                LinearNoBias(cfg.channel_z, cfg.channel_z, init="final"),
             )
 
         # For the skip connection from PLM features to s_trunk output.
