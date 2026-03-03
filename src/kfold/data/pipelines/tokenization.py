@@ -608,8 +608,7 @@ def find_best_residue_permutation(
             continue
         rmsd = compute_rmsd(x[m], label_pos[m], mask=None, align=True, no_svd=True)
         if rmsd < best_rmsd:
-            best_rmsd = rmsd
-            best_perm = perm
+            best_rmsd, best_perm = rmsd, perm
     if best_perm is not None and best_perm == list(range(len(ref_pos))):
         best_perm = None
     return best_perm

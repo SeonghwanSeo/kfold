@@ -47,10 +47,7 @@ class PairwiseProdDiff(nn.Module):
             The output tensor (*, L, L, c_out).
         """
         s = self.layernorm(s)  # (*, L, c_in)
-        s_i, s_j = torch.chunk(
-            self.linear_in(s), 2, dim=-1
-        )  # (*, L, c_hid), (*, L, c_hid)
-
+        s_i, s_j = self.linear_in(s).chunk(2, dim=-1)  # 2 * (*, L, c_hid)
         s_i = s_i.unsqueeze(-2)  # (*, L, 1, c_hidden)
         s_j = s_j.unsqueeze(-3)  # (*, 1, L, c_hidden)
 
@@ -64,13 +61,51 @@ class PairwiseProdDiff(nn.Module):
         return z
 
 
+class PLMEmbedder(nn.Module):
+    """
+    Separated embedder of PLMModule to avoid redundant computation across recyling steps.
+    """
+
+    def __init__(
+        self,
+        channel_s_input: int = 384,
+        channel_seq_emb: int = 1152,
+        channel_plm: int = 768,
+    ) -> None:
+        super().__init__()
+        self.linear_s_input = LinearNoBias(channel_s_input, channel_plm, init="default")
+        self.linear_seq_emb = LinearNoBias(channel_seq_emb, channel_plm, init="default")
+
+    def forward(
+        self,
+        s_input: torch.Tensor,
+        seq_emb: torch.Tensor,
+    ) -> torch.Tensor:
+        """Perform the forward pass.
+
+        Parameters
+        ----------
+        s_input : torch.Tensor
+            The input single representations of shape (B, L, C_s)
+        seq_emb : torch.Tensor
+            The sequence embeddings from PLM of shape (B, L, C_s_plm)
+
+        Returns
+        -------
+        torch.Tensor
+            The fused single representations of shape (B, L, C_s * 2)
+        """
+        s_input_proj = self.linear_s_input(s_input)  # (B, L, C_s_plm)
+        s_seq_emb_proj = self.linear_seq_emb(seq_emb)  # (B, L, C_s_plm)
+        s_fused = s_input_proj + s_seq_emb_proj  # (B, L, C_s_plm)
+        return s_fused
+
+
 class PLMModule(nn.Module):
     def __init__(
         self,
-        channel_s: int = 384,
         channel_z: int = 128,
-        channel_plm_input: int = 2560,
-        channel_plm: int = 512,
+        channel_plm: int = 768,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         num_blocks: int = 4,
@@ -81,24 +116,12 @@ class PLMModule(nn.Module):
         blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
-        self.channel_s: int = channel_s
-        self.channel_z: int = channel_z
-        self.channel_plm_input: int = channel_plm_input
-        self.channel_plm: int = channel_plm
-        self.blocks_per_ckpt: int | None = blocks_per_ckpt
-
-        self.proj_s_plm = nn.Sequential(
-            LayerNorm(channel_plm_input, create_offset=False),
-            LinearNoBias(channel_plm_input, channel_plm, init="default"),
-        )
-        self.proj_s_input = LinearNoBias(channel_s, channel_plm, init="default")
-
         self.blocks = torch.nn.ModuleList()
         for i in range(num_blocks):
             self.blocks.append(
                 PLMBlock(
-                    channel_plm=channel_plm,
                     channel_z=channel_z,
+                    channel_plm=channel_plm,
                     num_heads_attn=num_heads_attn,
                     num_heads_tri_attn=num_heads_tri_attn,
                     dropout_plm=dropout_plm,
@@ -108,11 +131,11 @@ class PLMModule(nn.Module):
                     is_last_block=(i == num_blocks - 1),
                 )
             )
+        self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
     def forward(
         self,
         z: torch.Tensor,
-        s_input: torch.Tensor,
         s_plm: torch.Tensor,
         asym_id: torch.Tensor,
         mask: torch.Tensor,
@@ -124,11 +147,9 @@ class PLMModule(nn.Module):
         Parameters
         ----------
         z : torch.Tensor
-            The pair representations
-        s_input : torch.Tensor
-            The input single representations
+            The pair representations of shape (B, L, L, C_z)
         s_plm : torch.Tensor
-            The sequence embeddings
+            The sequence embeddings from PLM of shape (B, L, C_s_plm)
         asym_id : torch.Tensor
             The asymmetry IDs of shape (B, L)
         mask : torch.Tensor
@@ -148,10 +169,6 @@ class PLMModule(nn.Module):
         is_same_chain = asym_id[..., None] == asym_id[..., None, :]
         intra_mask = pair_mask & is_same_chain
         inter_mask = pair_mask & (~is_same_chain)
-
-        # Initial linear projection
-        s_plm = self.proj_s_plm(s_plm)
-        s_plm = s_plm + self.proj_s_input(s_input)
 
         # PLM Blocks
         blocks = [
@@ -183,8 +200,8 @@ class PLMModule(nn.Module):
 class PLMBlock(nn.Module):
     def __init__(
         self,
-        channel_plm: int = 512,
         channel_z: int = 128,
+        channel_plm: int = 768,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         dropout_plm: float = 0.15,
@@ -194,8 +211,8 @@ class PLMBlock(nn.Module):
         is_last_block: bool = False,
     ) -> None:
         super().__init__()
-        self.channel_plm: int = channel_plm
         self.channel_z: int = channel_z
+        self.channel_plm: int = channel_plm
         self.use_separate_projections: bool = use_separate_projections
 
         if self.use_separate_projections:
@@ -246,10 +263,10 @@ class PLMBlock(nn.Module):
 
         Parameters
         ----------
-        z : torch.Tensor
-            The pair representations
         s_plm : torch.Tensor
             The sequence embeddings
+        z : torch.Tensor
+            The pair representations
         mask : torch.Tensor
             The token mask of shape (B, L)
         pair_mask : torch.Tensor

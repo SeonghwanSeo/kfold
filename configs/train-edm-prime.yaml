@@ -3,11 +3,16 @@ model:
   sequence_encoder:
     path: /mnt/parallel_storage/share/plm_weights/esm/esm-seo-v2.pt
   trunk:
+    channel_seq_emb: 1152
+    channel_seq_attn: 648
     plm_module:
-      channel_plm_input: 1152
+      use_qk_norm: false
+      blocks_per_ckpt: 4
     pairformer:
       num_blocks: 12
-    blocks_per_ckpt: 4
+      use_qk_norm: false
+      blocks_per_ckpt: 12
+    num_register_tokens: 0
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
@@ -20,8 +25,8 @@ train:
   out_dir: ./experiments/
 
   global_hparams:
-    batch_size: 4
-    max_tokens: 376
+    batch_size: 2
+    max_tokens: 384
     global_batch_size: 128
 
   data:
@@ -30,11 +35,18 @@ train:
       - _yaml_: "dataset/rcsb-train.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-train/
         prior_sampler: null
+        apo_init:
+          use_residue_permutation: false
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
         data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-val/
         prior_sampler: null
+
+  loss:
+    diffusion_loss:
+      smooth_lddt_loss:
+        chunk_size: 12
 
   wandb:
     use: false

@@ -3,16 +3,21 @@ model:
   sequence_encoder:
     path: /mnt/parallel_storage/share/plm_weights/esm/esm-seo-v2.pt
   trunk:
+    channel_seq_emb: 1152
+    channel_seq_attn: 648
     plm_module:
-      channel_plm_input: 1152
+      use_qk_norm: true
+      blocks_per_ckpt: 4
     pairformer:
       num_blocks: 16
-    blocks_per_ckpt: 4
+      use_qk_norm: true
+      blocks_per_ckpt: 16
+    num_register_tokens: 8
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
     atom_decoder_blocks: 1
-    blocks_per_ckpt: null
+    blocks_per_ckpt: 8
 
 train:
   _yaml_: "train/stage_1.yaml"

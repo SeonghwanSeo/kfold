@@ -119,7 +119,7 @@ class KFold(BaseFoldingModel):
 
         s_inputs, s_init, z_init = self.input_embedder(f_input)
 
-        s_plm, attn_plm = self.sequence_encoder(f_input)
+        seq_emb, seq_attn = self.sequence_encoder(f_input)
 
         # Trunk with recycling
         trunk_out = self.trunk(
@@ -128,8 +128,8 @@ class KFold(BaseFoldingModel):
             z_init,
             f_input,
             num_recycles,
-            s_plm=s_plm,
-            attn_plm=attn_plm,
+            seq_emb=seq_emb,
+            seq_attn=seq_attn,
         )
         s_trunk = trunk_out["s_trunk"]
         z_trunk = trunk_out["z_trunk"]
@@ -232,7 +232,7 @@ class KFold(BaseFoldingModel):
 
         # Sequence encoder
         st = time.time()
-        s_plm, attn_plm = self.sequence_encoder(f_input)
+        seq_emb, seq_attn = self.sequence_encoder(f_input)
         et = time.time()
         time_logs["sequence_encoder"] = et - st
 
@@ -244,8 +244,8 @@ class KFold(BaseFoldingModel):
             z_init,
             f_input,
             num_recycles,
-            s_plm=s_plm,
-            attn_plm=attn_plm,
+            seq_emb=seq_emb,
+            seq_attn=seq_attn,
         )
         et = time.time()
         s_trunk = trunk_out["s_trunk"]
@@ -253,7 +253,7 @@ class KFold(BaseFoldingModel):
         time_logs["trunk"] = et - st
 
         dict_out = {
-            "s_plm": s_plm,
+            "seq_emb": seq_emb,
             "s_trunk": s_trunk,
             "z_trunk": z_trunk,
         }
