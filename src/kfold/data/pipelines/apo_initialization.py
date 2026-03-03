@@ -619,7 +619,7 @@ class ApoInitializer:
                 if chain.residue.is_standard[res_i]:
                     # Get ambiguous atom permutations for this standard residue
                     assert ctype.is_polymer, "Only polymer chains have standard residues."
-                    perms = get_ambiguous_atoms_in_residue(res_name, extended=True)
+                    perms = get_ambiguous_atoms_in_residue(res_name, extended=False)
                 elif res_name in self.ccd:
                     ref_mol = get_ref_comp(res_name)
                     atom_names: list[str] = all_atom_names[atom_st:atom_end]
@@ -645,8 +645,9 @@ class ApoInitializer:
                 min_rmsd = float("inf")
                 for perm in perms[:100]:
                     permuted_apo = res_apo[perm, :]
-                    permuted_apo_mask = res_apo_mask[perm]
-                    m = res_holo_mask & permuted_apo_mask
+                    m = res_holo_mask & res_apo_mask[perm]
+                    if not m.any():
+                        continue
                     rmsd = compute_rmsd(
                         permuted_apo[m], res_holo[m], mask=None, align=True, no_svd=True
                     )
@@ -656,5 +657,3 @@ class ApoInitializer:
                 if best_perm is not None:
                     # Apply best permutation
                     res_apo[:, :] = res_apo[best_perm, :]
-                else:
-                    pass
