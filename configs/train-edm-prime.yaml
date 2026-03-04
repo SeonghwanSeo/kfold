@@ -26,7 +26,6 @@ train:
 
   global_hparams:
     batch_size: 2
-    max_tokens: 384
     global_batch_size: 128
 
   data:

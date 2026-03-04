@@ -24,6 +24,8 @@ cropper:
 
 apo_init:
   prob_perturbation: 1.0
+  # We use the same structure to label as the apo; no perturbation required.
+  use_residue_permutation: false
   # Use harsh perturbation for AFDB to improve robustness.
   protein_perturbation:
     bioprior:

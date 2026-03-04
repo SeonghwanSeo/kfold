@@ -9,8 +9,6 @@ seed: 1
 
 # Training parameters for multi-gpu setup.
 global_hparams:
-  max_chains: 20
-  max_tokens: 384
   batch_size: 1
   diffusion_batch_size: 48
   global_batch_size: 256

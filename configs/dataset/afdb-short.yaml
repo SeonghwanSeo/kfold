@@ -25,6 +25,8 @@ cropper:
 
 apo_init:
   prob_perturbation: 1.0
+  # We use the same structure to label as the apo; no perturbation required.
+  use_residue_permutation: false
   # Use harsher perturbation than longer one.
   protein_perturbation:
     bioprior:
