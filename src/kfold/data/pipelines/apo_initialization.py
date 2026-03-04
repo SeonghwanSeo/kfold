@@ -195,14 +195,17 @@ class ApoInitializer:
             Reference structure containing apo coordinates and masks.
         lookup : dict[int, dict]
             Mapping from entity_id to structure file paths and residue indices
-            - name: str
-                e.g., "AF-P012345-F1-model_v1"
-            - path: Path
-                e.g., "AF-P012345-F1-model_v1.cif"
-            - residue_map: str
-                e.g., "11:100->66:155"
-            - source: str
-                e.g., "AFDB", "PDB"
+            - input types:
+                - case1: apo structure file path
+                    - path: PathLike
+                - case2: sequence and atom37 coordinates
+                    - sequence: str
+                    - coordinates: np.ndarray (L, 37, 3)
+            - optional keys:
+                - key: str
+                    Optional key for using pre-computed perturbation with rieprody.
+                - residue_map: residue index mapping between holo and apo
+                    e.g., "11:100->66:155"
         rng : np.random.Generator
             Random number generator for stochastic operations.
         """
@@ -222,14 +225,17 @@ class ApoInitializer:
             Reference structure containing apo coordinates and masks.
         lookup : dict[int, dict]
             Mapping from entity_id to structure file paths and residue indices
-            - name: str
-                e.g., "AF-P012345-F1-model_v1"
-            - path: Path
-                e.g., "AF-P012345-F1-model_v1.cif"
-            - residue_map: str
-                e.g., "11:100->66:155"
-            - source: str
-                e.g., "AFDB", "PDB"
+            - input types:
+                - case1: apo structure file path
+                    - path: PathLike
+                - case2: sequence and atom37 coordinates
+                    - sequence: str
+                    - coordinates: np.ndarray (L, 37, 3)
+            - optional keys:
+                - key: str
+                    Optional key for using pre-computed perturbation with rieprody.
+                - residue_map: residue index mapping between holo and apo
+                    e.g., "11:100->66:155"
         rng : np.random.Generator
             Random number generator for stochastic operations.
         """
@@ -292,9 +298,6 @@ class ApoInitializer:
                     )
                     if self.use_holo_if_apo_unavailable:
                         # Falling back to holo coordinates.
-                        # We also try to apply perturbation, but most case
-                        # the perturbation will be failed due to missing
-                        # residues/atoms in holo structure.
                         self.copy_chain_holo_coords_to_apo(chain, rng)
                     continue
                 # Store apo coordinates
@@ -456,12 +459,17 @@ class ApoInitializer:
         ----------
         apo_info : dict
             Information about the apo structure file and residue indices.
-            - source: str
-                e.g., "AF2", "PDB"
-            - path: Path
-                e.g., "AF-P012345-F1-model_v1.cif.gz"
-            - residue_map: str
-                e.g., "11:100->66:155"
+            - input types:
+                - case1: apo structure file path
+                    - path: PathLike
+                - case2: sequence and atom37 coordinates
+                    - sequence: str
+                    - coordinates: np.ndarray (L, 37, 3)
+            - optional keys:
+                - key: str
+                    Optional key for using pre-computed perturbation with rieprody.
+                - residue_map: residue index mapping between holo and apo
+                    e.g., "11:100->66:155"
         rng : np.random.Generator
             Random number generator for stochastic operations.
 
@@ -485,10 +493,24 @@ class ApoInitializer:
             # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
             return res_st - 1, res_end, apo_st - 1, apo_end
 
-        path = apo_info["path"]
-
         # Load apo structure
-        sequence, apo_coords = read_protein_structure(path)
+        if "seq" in apo_info and "coords" in apo_info:
+            # Apo info includes pre-loaded sequence and coordinates.
+            sequence: str = apo_info["seq"]
+            apo_coords: np.ndarray = apo_info["coords"]
+            assert apo_coords.shape == (len(sequence), 37, 3), (
+                f"Apo coordinates shape mismatch: expected ({len(sequence)}, 37, 3), "
+                f"got {apo_coords.shape}"
+            )
+        elif "path" in apo_info:
+            # Load sequence and apo coordinates from structure file.
+            path = apo_info["path"]
+            sequence, apo_coords = read_protein_structure(path)
+        else:
+            raise ValueError(
+                "Apo info must contain either 'sequence' and 'coords', "
+                "or 'path' to the structure file."
+            )
 
         # Apply perturbation if enabled
         if (
@@ -496,7 +518,7 @@ class ApoInitializer:
             and rng.random() < self.prob_perturbation
         ):
             # get optional key for pre-computed perturbation with rieprody
-            rieprody_key = apo_info.get("rieprody_key", None)
+            rieprody_key = apo_info.get("key", None)
             apo_coords = self.apply_perturbation(
                 sequence, apo_coords, rng=rng, key=rieprody_key
             )

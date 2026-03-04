@@ -203,18 +203,10 @@ class InputDataPipeline:
         # Prepare lookup (apo initializer input)
         lookup: dict[int, dict] = {}
         for entity_id, seq in enumerate(input.sequences, start=1):
-            if isinstance(seq, query.LigandSequence):
-                # Ligands do not have apo structures
+            if not isinstance(seq, query.ProteinSequence):
                 continue
-            if seq.apo is None:
-                # No apo structure provided
-                continue
-            # Use provided apo structure
             apo_path = pathlib.Path(seq.apo)
-            lookup[entity_id] = {
-                "path": apo_path,
-                "source": "query",  # dummy
-            }
+            lookup[entity_id] = {"path": apo_path}
         # Populate apo structure
         self.apo_initializer(ref_struct, lookup=lookup, rng=rng)
 

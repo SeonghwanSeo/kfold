@@ -8,16 +8,16 @@ ccd-train.pkl
 rcsb-train/
     manifest.json
     structure.lmdb
-    apo_lookup.json  # mapping from each chain to apo structure(s).
-    apo/
-        esmfold/
-            uniq_prot1-esmfold.pdb
-            ...
-        afdb/
-            F-P01116-F1-model_v6.cif.gz
-            ...
-afdb-distillation/ ...
-rcsb-validation/ ...
+    apo.lmdb            # apo structures for each chain.
+      - seq: np.ndarray of shape (L,), dtype S1
+      - coords: np.ndarray of shape (L, 37, 3), dtype float32
+    apo_unitok.lmdb     # pre-computed structure tokens for apo structures.
+    apo_lookup.json     # mapping from each chain to apo structure(s).
+afdb-distillation/ ...  # no apo.lmdb or apo_lookup.json (label=apo)
+    manifest.json
+    structure.lmdb/
+    apo_unitok.lmdb     # pre-computed structure tokens for apo structures.
+rcsb-val/ ...
 
 
 * apo_lookup.json format
@@ -28,19 +28,16 @@ rcsb-validation/ ...
       {
         "source": "esmfold"
         "name": "uniq_protein_000020-esmfold",
-        "path": "uniq_protein_000020-esmfold.pdb.gz",
         "residue_map": "1:250->1:250",
       },
       {
         "source": "afdb"
         "name": "AF-P01116-F1-model_v6",
-        "path": "AF-P01116-F1-model_v6.cif.gz",
         "residue_map": "1:235->11:245",
       },
       {
         "source": "pdb"
         "name": "51d6-A",
-        "path": "51d6-A.pdb.gz",
         "residue_map": "5:250->5:250",
       }
     ],
@@ -55,7 +52,6 @@ import dataclasses
 import io
 import json
 import logging
-from abc import ABC, abstractmethod
 from pathlib import Path
 
 import lmdb
@@ -156,7 +152,7 @@ def next_multiple(n: int, divisor: int) -> int:
     return ((n + divisor - 1) // divisor) * divisor
 
 
-class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
+class SafeLoadingDataset(torch.utils.data.Dataset):
     """A dataset that safely retries loading data on failure."""
 
     def __init__(
@@ -288,24 +284,55 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Additional setup for subclasses."""
         pass
 
-    # === Core dataset methods === #
-    @abstractmethod
-    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
-        """Get the structure for the given index."""
+    @property
+    def lmdb_env(self) -> lmdb.Environment:
+        if not hasattr(self, "_lmdb_env"):
+            lmdb_path = self.data_root / "structure.lmdb"
+            if not lmdb_path.exists():
+                raise FileNotFoundError(f"Structure LMDB file {lmdb_path} not found.")
+            self._lmdb_env = lmdb.open(str(lmdb_path), readonly=True, lock=False)
+        return self._lmdb_env
 
-    def load_apo_structure(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator,
-    ) -> None:
-        """Populate the apo structure for the given reference structure."""
+    @property
+    def apo_lmdb_env(self) -> lmdb.Environment:
+        """Get the LMDB environment for apo structures."""
+        if not hasattr(self, "_apo_lmdb_env"):
+            lmdb_path = self.data_root / "apo.lmdb"
+            if not lmdb_path.exists():
+                raise FileNotFoundError(f"Apo LMDB file {lmdb_path} not found.")
+            self._apo_lmdb_env = lmdb.open(str(lmdb_path), readonly=True, lock=False)
+        return self._apo_lmdb_env
+
+    @property
+    def apo_unitok_lmdb_env(self) -> lmdb.Environment:
+        """Get the LMDB environment for structure tokens of apo structures."""
+        if not hasattr(self, "_apo_unitok_lmdb_env"):
+            lmdb_path = self.data_root / "apo_unitok.lmdb"
+            if not lmdb_path.exists():
+                raise FileNotFoundError(f"Apo unitok LMDB file {lmdb_path} not found.")
+            self._apo_unitok_lmdb_env = lmdb.open(
+                str(lmdb_path), readonly=True, lock=False
+            )
+        return self._apo_unitok_lmdb_env
+
+    def __del__(self):
+        if hasattr(self, "_apo_lmdb_env"):
+            self._apo_lmdb_env.close()
+        if hasattr(self, "_apo_unitok_lmdb_env"):
+            self._apo_unitok_lmdb_env.close()
+        if hasattr(self, "_lmdb_env"):
+            self._lmdb_env.close()
+
+    def get_apo_lookup(
+        self, ref_struct: RefStructure, rng: np.random.Generator
+    ) -> dict[int, dict]:
+        """Get the apo lookup for the given reference structure."""
         if self.is_protein_monomer_distillation:
-            # Directly feed apo structures from labeled
-            self.apo_initializer(ref_struct, {}, rng)
-            return
+            # For protein monomer distillation datasets, we directly
+            # feed apo structures from labeled monomer structures, so
+            # we can return an empty lookup.
+            return {}
 
-        # Fetch apo lookup for the current entry
-        apo_dir = self.data_root / "apo"
         entry_id: str = ref_struct.id
         entry_lookup: dict[str, list[dict[str, str]]] = self.lookup_table[entry_id]
 
@@ -330,39 +357,83 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
                 continue
             apo_info = entity_apos[rng.integers(0, num_apos)].copy()
 
-            # Check apo file existence
+            name = apo_info["name"]
             source = apo_info["source"]
-            path = apo_info["path"]
-            apo_path = apo_dir / source / path
-            if not apo_path.exists():
-                self.logger.error(
-                    f"Apo file not found for entity {entry_id}:{entity_id}: {apo_path}"
-                )
-                continue
-            apo_info["path"] = apo_path
+            key = f"{source}:{name}"
+            apo_info["key"] = key
 
-            # Add rieprody key if available
-            if "name" in apo_info:
-                apo_info["rieprody_key"] = f"{source}:{apo_info['name']}"
+            # Load apo coordinates from LMDB
+            with self.apo_lmdb_env.begin(write=False) as txn:
+                value_bytes = txn.get(key.encode("utf-8"))
+                if value_bytes is None:
+                    self.logger.warning(
+                        f"Apo structure {key} not found in LMDB for entity "
+                        f"{entry_id}:{entity_id}"
+                    )
+                    continue
+                with io.BytesIO(value_bytes) as byte_stream:
+                    with np.load(byte_stream) as data:
+                        apo_info["seq"] = "".join(data["seq"].astype(str).tolist())
+                        apo_info["coords"] = data["coords"].copy()
 
             apo_lookup[entity_id] = apo_info
+        return apo_lookup
 
-        # Populate apo structure
+    # === Core dataset methods === #
+    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
+        """Get the structure for the given index."""
+        name = metadata.id
+        key_bytes = name.encode("utf-8")
+        with self.lmdb_env.begin(write=False) as txn:
+            value_bytes = txn.get(key_bytes)
+            if value_bytes is None:
+                raise KeyError(f"Record {name} not found in LMDB.")
+
+        # Use io.BytesIO to wrap the raw bytes
+        with io.BytesIO(value_bytes) as byte_stream:
+            ref_struct = RefStructure.load_npz(byte_stream)
+
+        # NOTE: Validate loaded record matches requested metadata
+        # If there is no problem, the cluster ID (for training) and
+        # low_homology flag (for validation) will be missing in npz
+        ref_metadata = ref_struct.metadata
+        assert ref_metadata.id == name, (
+            f"Loaded ID {ref_metadata.id} does not match requested ID {name}."
+        )
+        assert ref_metadata.num_chains == metadata.num_chains, (
+            f"Loaded num_chains {ref_metadata.num_chains} does not match "
+            f"requested num_chains {metadata.num_chains}."
+        )
+        assert ref_metadata.num_residues == metadata.num_residues, (
+            f"Loaded num_residues {ref_metadata.num_residues} does not match "
+            f"requested num_residues {metadata.num_residues}."
+        )
+        assert ref_metadata.num_interfaces == metadata.num_interfaces, (
+            f"Loaded num_interfaces {ref_metadata.num_interfaces} does not match "
+            f"requested num_interfaces {metadata.num_interfaces}."
+        )
+        # Copy metadata (to update cluster_id if needed)
+        ref_struct.metadata = metadata.copy()
+        return ref_struct
+
+    def load_apo_structure(
+        self,
+        ref_struct: RefStructure,
+        apo_lookup: dict[int, dict],
+        rng: np.random.Generator,
+    ) -> None:
+        """Populate the apo structure for the given reference structure."""
         self.apo_initializer(ref_struct, apo_lookup, rng)
 
     def tokenize(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator,
+        self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        return self.tokenizer(
-            ref_struct,
-            # FIXME: we may need to pass structure tokens.
-            {},
-            rng,
-            use_cached_conformer_only=True,  # for training/validation loops
-        )
+        # only use cached conformer tokens to avoid
+        # ETKDG conformer generation during training/validation.
+        use_cached_conformer_only = True
+        # TODO: add apo info
+        return self.tokenizer(ref_struct, {}, rng, use_cached_conformer_only)
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
@@ -462,8 +533,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         ref_struct = self.extract_substructure(ref_struct, rng=rng, **kwargs)
         metadata = ref_struct.metadata  # update metadata after extraction
 
+        # Get apo lookup for the structure
+        apo_lookup = self.get_apo_lookup(ref_struct, rng)
+
         # Populate apo structure (in-place)
-        self.load_apo_structure(ref_struct, rng=rng)
+        self.load_apo_structure(ref_struct, apo_lookup, rng)
 
         # Tokenization
         struct: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
@@ -504,63 +578,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         return f_input
 
 
-class LMDBDataset(SafeLoadingDataset):
-    @property
-    def lmdb_env(self) -> lmdb.Environment:
-        if not hasattr(self, "_lmdb_env"):
-            self.lmdb_path = self.data_root / "structure.lmdb"
-            self._lmdb_env = lmdb.open(
-                str(self.lmdb_path),
-                map_size=1024**4,  # 1 TB
-                readonly=True,
-                lock=False,
-                readahead=False,
-                meminit=False,
-            )
-        return self._lmdb_env
-
-    def __del__(self):
-        if hasattr(self, "_lmdb_env"):
-            self._lmdb_env.close()
-
-    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
-        """Get the structure for the given index."""
-        name = metadata.id
-        key_bytes = name.encode("utf-8")
-        with self.lmdb_env.begin(write=False) as txn:
-            value_bytes = txn.get(key_bytes)
-            if value_bytes is None:
-                raise KeyError(f"Record {name} not found in LMDB.")
-
-        # Use io.BytesIO to wrap the raw bytes
-        with io.BytesIO(value_bytes) as byte_stream:
-            ref_struct = RefStructure.load_npz(byte_stream)
-
-        # NOTE: Validate loaded record matches requested metadata
-        # If there is no problem, the cluster ID (for training) and
-        # low_homology flag (for validation) will be missing in npz
-        ref_metadata = ref_struct.metadata
-        assert ref_metadata.id == name, (
-            f"Loaded ID {ref_metadata.id} does not match requested ID {name}."
-        )
-        assert ref_metadata.num_chains == metadata.num_chains, (
-            f"Loaded num_chains {ref_metadata.num_chains} does not match "
-            f"requested num_chains {metadata.num_chains}."
-        )
-        assert ref_metadata.num_residues == metadata.num_residues, (
-            f"Loaded num_residues {ref_metadata.num_residues} does not match "
-            f"requested num_residues {metadata.num_residues}."
-        )
-        assert ref_metadata.num_interfaces == metadata.num_interfaces, (
-            f"Loaded num_interfaces {ref_metadata.num_interfaces} does not match "
-            f"requested num_interfaces {metadata.num_interfaces}."
-        )
-        # Copy metadata (to update cluster_id if needed)
-        ref_struct.metadata = metadata.copy()
-        return ref_struct
-
-
-class TrainingDataset(LMDBDataset):
+class TrainingDataset(SafeLoadingDataset):
     """Training dataset with AF3-style sampling and cropping."""
 
     def __init__(
@@ -828,7 +846,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         return self.datasets[dataset_idx][sample_idx]
 
 
-class ValidationDataset(LMDBDataset):
+class ValidationDataset(SafeLoadingDataset):
     """Validation dataset without sampling and cropping."""
 
     def __init__(
