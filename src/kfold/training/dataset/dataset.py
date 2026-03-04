@@ -358,6 +358,8 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Tokenize the given structure."""
         return self.tokenizer(
             ref_struct,
+            # FIXME: we may need to pass structure tokens.
+            {},
             rng,
             use_cached_conformer_only=True,  # for training/validation loops
         )

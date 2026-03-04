@@ -92,7 +92,8 @@ class InputDataPipeline:
         self.populate_apo_structure(ref_struct, input, rng=rng)
 
         # Tokenize structure
-        tok_struct = self.tokenizer.tokenize(ref_struct)
+        # FIXME: add structure tokens dict
+        tok_struct = self.tokenizer.tokenize(ref_struct, structure_tokens={})
 
         # Apply sequence masking for sample diversity (only if enabled)
         self.sequence_masking(tok_struct, rng)

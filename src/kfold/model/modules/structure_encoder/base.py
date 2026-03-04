@@ -2,56 +2,39 @@ from abc import ABC, abstractmethod
 
 import torch
 
-from kfold.utils.registry import STRUCTURE_ENCODER
+from kfold.data.types.model_input import FoldingInput
+from kfold.utils.registry import STRUCTURE_ENCODER, BaseConfig
 
 
 @STRUCTURE_ENCODER.register()
 class BaseStructureEncoder(torch.nn.Module, ABC):
-    def __init__(self, cfg):
+    class Config(BaseConfig):
+        return_attn: bool = False
+
+    def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
+        self.return_attn: bool = cfg.return_attn
+
+    @property
+    def d_attn(self) -> int:
+        """Dimension of attention weights returned by the sequence encoder."""
+        raise NotImplementedError("Subclasses must implement d_attn property.")
 
     @abstractmethod
-    def forward(
-        self,
-        coords: torch.Tensor,
-        atom_type: torch.Tensor,
-        token_type: torch.Tensor,
-        token_id: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Forward pass of structure representation module.
 
         Parameters
         ----------
-        coords : torch.Tensor (float)
-            Tensor of shape (B, Nsample, Latom, 3) containing atomic structure.
-        atom_type : torch.Tensor (int)
-            Tensor of shape (B, Latom) containing atom types.
-        token_type : torch.Tensor (int)
-            Tensor of shape (B, Latom) containing token types.
-        token_id : torch.Tensor (int)
-            Tensor of shape (B, Latom) containing token IDs.
-        mask : torch.Tensor (bool)
-            Tensor of shape (B, Latom) containing mask for valid atoms.
+        f_input: FoldingInput
+            The input features
 
         Returns
         -------
-        s: torch.Tensor
-            Tensor of shape (B, Ltoken, c_s) containing single feature
-        z: torch.Tensor
-            Tensor of shape (B, Ltoken, Ltoken, c_z) containing pair feature
-
-        # NOTE (seonghwanseo):
-        1. If you want to use more features, you can consider to use
-            `kfold.data.types.model_input.FoldingInput` or
-            `kfold.data.types.model_input.ChainInput`,
-            like `kfold.model.modules.transformer.BaseTransformer`.
-
-        2. You don't have to match c_s and c_z with transformer module. We will
-            use projection layers to match the dimensions.
-
-        # TODO (seonghwanseo):
-        1. Do we have to return both atom-level and token-level
-            embedding? We may want to discuss more.
+        x_token: torch.Tensor
+            Tensor of shape (B, Ntoken, D) containing sequence representations.
+        attention: torch.Tensor | None
+            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
+            where N is number of layers and H is number of heads.
         """

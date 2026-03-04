@@ -84,7 +84,7 @@ class SequenceMasking:
         # Determine the masking ratio
         mask_ratio = rng.uniform(0.0, self.mask_ratio)
 
-        sequence_input = input.sequence.input_id
+        sequence_input = input.sequence.seq_token_id
 
         # Determine which positions to mask
         mask_positions = rng.random(size=sequence_input.shape) < mask_ratio

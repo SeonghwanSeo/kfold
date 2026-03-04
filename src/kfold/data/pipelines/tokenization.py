@@ -36,6 +36,7 @@ class Tokenizer:
     def __call__(
         self,
         input: RefStructure,
+        structure_tokens: dict[int, tuple[np.ndarray, np.ndarray]],
         rng: np.random.Generator | None = None,
         use_cached_conformer_only: bool = False,
         ref_pos_permutation: bool = False,
@@ -46,6 +47,10 @@ class Tokenizer:
         ----------
         input : RefStructure
             The input structure.
+        structure_tokens : dict[int, tuple[np.ndarray, np.ndarray]]
+            Pre-tokenized structure tokens for each chain, keyed by entity id.
+            - bb_token: (L,) array of backbone token (or -1 for missing residues)
+            - fa_token: (L,) array of full-atom token (or -1 for missing residues)
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
         use_cached_conformer_only : bool, optional
@@ -58,11 +63,18 @@ class Tokenizer:
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return self.tokenize(input, rng, use_cached_conformer_only, ref_pos_permutation)
+        return self.tokenize(
+            input,
+            structure_tokens,
+            rng,
+            use_cached_conformer_only,
+            ref_pos_permutation,
+        )
 
     def tokenize(
         self,
         input: RefStructure,
+        structure_tokens: dict[int, tuple[np.ndarray, np.ndarray]],
         rng: np.random.Generator | None = None,
         use_cached_conformer_only: bool = False,
         ref_pos_permutation: bool = False,
@@ -73,6 +85,10 @@ class Tokenizer:
         ----------
         input : RefStructure
             The input structure.
+        structure_tokens : dict[int, tuple[np.ndarray, np.ndarray]]
+            Pre-tokenized structure tokens for each chain, keyed by entity id.
+            - bb_token: (L,) array of backbone token (or -1 for missing residues)
+            - fa_token: (L,) array of full-atom token (or -1 for missing residues)
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
         use_cached_conformer_only : bool, optional
@@ -87,6 +103,7 @@ class Tokenizer:
         """
         return tokenize_structure(
             input,
+            structure_tokens,
             self.prior_sampler,
             self.ccd,
             rng,
@@ -97,6 +114,7 @@ class Tokenizer:
 
 def tokenize_structure(
     input: RefStructure,
+    structure_tokens: dict[int, tuple[np.ndarray, np.ndarray]],
     prior_sampler: PriorSampler | None,
     ccd: CCD,
     rng: np.random.Generator | None = None,
@@ -109,6 +127,10 @@ def tokenize_structure(
     ----------
     input : RefStructure
         The input structure.
+    structure_tokens : dict[int, tuple[np.ndarray, np.ndarray]]
+        Pre-tokenized structure tokens for each chain, keyed by entity id.
+        - bb_token: (L,) array of backbone token (or -1 for missing residues)
+        - fa_token: (L,) array of full-atom token (or -1 for missing residues)
     ccd : CCD
         The chemical component dictionary.
     rng : np.random.Generator, optional
@@ -250,8 +272,8 @@ def tokenize_structure(
         struct.sequence.chain_type[st:end] = chain.chain_type
 
         # Add bos/eos tokens
-        struct.sequence.input_id[st] = bos_token
-        struct.sequence.input_id[end - 1] = eos_token
+        struct.sequence.seq_token_id[st] = bos_token
+        struct.sequence.seq_token_id[end - 1] = eos_token
 
         # Insert sequence tokens
         if ctype.is_polymer:
@@ -262,10 +284,19 @@ def tokenize_structure(
             elif ctype.is_rna:
                 encode_fn = C.sequence.encode_rna_sequence
             seq = chain.get_sequence(map_to_standard=True)
-            struct.sequence.input_id[st + 1 : end - 1] = encode_fn(seq)
+            struct.sequence.seq_token_id[st + 1 : end - 1] = encode_fn(seq)
         else:
             # For non-polymer chains, set sequence tokens to UNK
-            struct.sequence.input_id[st + 1 : end - 1] = unk_token
+            struct.sequence.seq_token_id[st + 1 : end - 1] = unk_token
+
+        # Insert structure tokens
+        if entity_id in structure_tokens:
+            assert ctype.is_protein, (
+                "Structure tokens are only supported for protein chains."
+            )
+            bb_tok, fa_tok = structure_tokens[entity_id]
+            struct.sequence.bb_struct_token_id[st + 1 : end - 1] = bb_tok
+            struct.sequence.fa_struct_token_id[st + 1 : end - 1] = fa_tok
 
     # ==================================================
     # Fill token structures
