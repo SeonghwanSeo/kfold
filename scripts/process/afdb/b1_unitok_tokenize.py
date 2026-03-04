@@ -99,7 +99,7 @@ class Dataset(torch.utils.data.Dataset):
 
         atom37_coords = np.full((len(seq), 37, 3), np.nan, dtype=np.float32)
         for res_i in range(len(seq)):
-            atom_slice = chain.residue.get_atom_slice(res_i)
+            atom_slice = chain.residue.get_atom_slice(res_i + 1)
             atom_names_i = atom_names[atom_slice]
             coords_i = coords[atom_slice]
             # Pad or truncate to 37 atoms per residue
@@ -215,7 +215,7 @@ def main():
                 combined_i = np.stack([bb_tokens_i, fa_tokens_i], axis=-2)
                 txn.put(keys[i].encode("utf-8"), combined_i.tobytes())
 
-        if (b_i + 1) % 100 == 0:
+        if (b_i + 1) % 1000 == 0:
             print(f"Processed {b_i + 1} batches, committing transaction...")
             txn.commit()
             txn = out_env.begin(write=True)
