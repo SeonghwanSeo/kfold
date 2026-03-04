@@ -971,7 +971,7 @@ class KFoldTrainingModule(pl.LightningModule):
         )
         # Add '._orig_mod.' to EMA state dict keys if required by the model.
         state_dict["shadow_params"] = self._add_orig_mod_to_state_dict(
-            state_dict["shadow_params"], self.ema.state_dict()
+            state_dict["shadow_params"], self.ema.shadow_params
         )
         if self.ema.compatible(state_dict):
             self.ema.load_state_dict(state_dict, device=torch.device("cpu"))

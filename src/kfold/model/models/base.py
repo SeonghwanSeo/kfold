@@ -429,21 +429,17 @@ class BaseFoldingModel(torch.nn.Module):
         self, state_dict: Mapping[str, torch.Tensor]
     ) -> dict[str, torch.Tensor]:
         """Add '._orig_mod.' to state dict keys if required"""
+        model_keys = set(self.state_dict().keys())
         state_keys = set(state_dict.keys())
 
+        # Keys expected by the compiled model but missing in the checkpoint
+        remaining_keys = model_keys - state_keys
+        if len(remaining_keys) == 0:
+            return dict(state_dict)  # No modification needed
+
         new_state_dict = dict(state_dict)
-        if self.config.compile_trunk:
-            prefix = "trunk."
-            to_prefix = "trunk._orig_mod."
-            for k in state_keys:
-                if k.startswith(prefix) and not k.startswith(to_prefix):
-                    new_key = k.replace(prefix, to_prefix, 1)
-                    new_state_dict[new_key] = new_state_dict.pop(k)
-        if self.config.compile_score_model:
-            prefix = "score_model."
-            to_prefix = "score_model._orig_mod."
-            for k in state_keys:
-                if k.startswith(prefix) and not k.startswith(to_prefix):
-                    new_key = k.replace(prefix, to_prefix, 1)
-                    new_state_dict[new_key] = new_state_dict.pop(k)
+        for rk in remaining_keys:
+            k = rk.replace("._orig_mod.", ".")
+            if k in state_dict:
+                new_state_dict[rk] = new_state_dict.pop(k)
         return new_state_dict
