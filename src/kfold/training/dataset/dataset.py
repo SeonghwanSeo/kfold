@@ -640,9 +640,12 @@ class TrainingDataset(SafeLoadingDataset):
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
 
-        # AF3-style sampling (chain/interface-based)
-        assert config.sampler is not None, "Sampler config must be provided."
-        self.sampler: BaseSampler = Registry.instantiate(config.sampler)
+        if config.sampler is None:
+            # Uniform sampling (complex-level)
+            self.sampler: BaseSampler = BaseSampler()
+        else:
+            # AF3-style sampling (chain/interface-based)
+            self.sampler: BaseSampler = Registry.instantiate(config.sampler)
         samples, weights = self.sampler.get_samples(self.metadatas)
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights

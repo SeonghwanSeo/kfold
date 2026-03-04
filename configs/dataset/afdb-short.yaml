@@ -9,10 +9,7 @@ data_path: <DATA_PATH_PLACEHOLDER>
 seed: null # should be null for data augmentation
 is_protein_monomer_distillation: true
 
-sampler:
-  _registry_: "data_sampler"
-  _class_: UniformSampler
-  level: "complex"
+sampler: null
 
 # No cropping for short proteins.
 cropper:
