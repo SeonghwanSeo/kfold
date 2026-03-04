@@ -283,18 +283,21 @@ class ApoInitializer:
                 apo_coords = apo_coords_dict[entity_id]
             elif entity_id in lookup:
                 assert chain.is_protein, "Only protein chains have apo structures."
+                apo_info = lookup[entity_id]
                 ccd_sequence = chain.get_ccd_sequence()
                 try:
                     apo_coords = self.get_protein_apo_structure(
-                        ccd_sequence, lookup[entity_id], rng
+                        ccd_sequence, apo_info, rng
                     )
                 except Exception as e:
                     # NOTE: Apo structure loading can fail for various reasons, such as
                     # too large sequence length, mismatched residue mapping, or file
                     # reading errors.
+                    apo_info.pop("seq", None)
+                    apo_info.pop("coords", None)
                     self.logger.error(
                         "Failed to load apo structure for entity "
-                        f"{entity_id} from {lookup[entity_id]['path']}: {e}."
+                        f"{entity_id} from {apo_info}: {e}."
                     )
                     if self.use_holo_if_apo_unavailable:
                         # Falling back to holo coordinates.

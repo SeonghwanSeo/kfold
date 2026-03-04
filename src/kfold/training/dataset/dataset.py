@@ -347,15 +347,15 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             entity_id = c.entity_id
             visited_entity_ids.add(entity_id)
 
-            entity_apos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
-            num_apos = len(entity_apos)
+            entity_apo_infos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
+            num_apos = len(entity_apo_infos)
             # Select apo structure (randomly if multiple)
             if num_apos == 0:
                 self.logger.warning(
                     f"No apo info found for entity {entry_id}:{entity_id}"
                 )
                 continue
-            apo_info = entity_apos[rng.integers(0, num_apos)].copy()
+            apo_info = entity_apo_infos[rng.integers(0, num_apos)].copy()
 
             name = apo_info["name"]
             source = apo_info["source"]
@@ -884,7 +884,7 @@ class ValidationDataset(SafeLoadingDataset):
         if cfg.apo_init.protein_perturbation is not None:
             self.logger.warning("Protein perturbation is enabled for validation set.")
         if cfg.apo_init.ligand_perturbation is not None:
-            self.logger.warning("Ligand perturbation is provided for valid set.")
+            self.logger.warning("Ligand perturbation is enabled for validation set.")
 
     def setup(self) -> None:
         """Additional setup for subclasses."""

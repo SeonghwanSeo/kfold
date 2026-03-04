@@ -64,7 +64,7 @@ class BioPriorPerturbation:
             )
         )
 
-        self.logger = logging.getLogger("BioPriorPerturbation")
+        self.logger = logging.getLogger("[BioPriorPerturbation]")
         self.logger.setLevel(config.log_level)
 
     # === Main perturbation methods === #
