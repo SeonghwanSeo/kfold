@@ -12,9 +12,9 @@ from .base import BaseSequenceEncoder
 
 
 @SEQUENCE_ENCODER.register()
-class ESMC(BaseSequenceEncoder):
+class ESMO(BaseSequenceEncoder):
     class Config(BaseSequenceEncoder.Config):
-        """Configuration for ESMC sequence encoder.
+        """Configuration for ESM-O sequence encoder.
 
         Attributes
         ----------
@@ -32,6 +32,7 @@ class ESMC(BaseSequenceEncoder):
         """
 
         path: str  # Path to pretrained weights.
+        vocab_size: int = 64
         d_model: int = 1152
         n_heads: int = 18
         n_layers: int = 36
@@ -39,15 +40,15 @@ class ESMC(BaseSequenceEncoder):
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
-        self.cfg: ESMC.Config = cfg
+        self.cfg: ESMO.Config = cfg
         self.return_attn: bool = cfg.return_attn
 
         # Create model components
-        self.embed = nn.Embedding(64, cfg.d_model)
+        self.embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
         self.transformer = TransformerStack(
             cfg.d_model, cfg.n_heads, cfg.n_layers, return_attn=cfg.return_attn
         )
-        self.sequence_head = RegressionHead(cfg.d_model, 64)
+        self.sequence_head = RegressionHead(cfg.d_model, cfg.vocab_size)
 
         # Load pretrained weights
         state_dict = torch.load(cfg.path, map_location="cpu")

@@ -1,7 +1,7 @@
 model:
   _yaml_: "model/kfold-prime-ecsi.yaml"
   sequence_encoder:
-    path: /mnt/parallel_storage/share/plm_weights/esm/esm-seo-v2.pt
+    path: /mnt/parallel_storage/share/plm_weights/esm-multimodal/esm-multimodal-v1.pt
   structure_encoder:
     path: /mnt/parallel_storage/share/plm_weights/unitok/unitok-dips.pt
   trunk:
