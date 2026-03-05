@@ -10,7 +10,7 @@ from .quantizer import Quantizer
 class QuantizerConfig:
     codebook_size: int = 512
     codebook_embed_size: int = 1024
-    use_linear_project: bool = False
+    use_linear_project: bool = True
 
 
 @dataclasses.dataclass
