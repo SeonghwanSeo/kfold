@@ -679,6 +679,9 @@ class ApoInitializer:
                     # Get ambiguous atom permutations for this standard residue
                     assert ctype.is_polymer, "Only polymer chains have standard residues."
                     perms = get_ambiguous_atoms_in_residue(res_name, extended=False)
+                elif res_name.startswith("LIG"):
+                    # For custom ligands, skip.
+                    perms = None
                 elif res_name in self.ccd:
                     ref_mol = get_ref_comp(res_name, self.ccd, _ref_comp_cache)
                     atom_names: list[str] = all_atom_names[atom_st:atom_end]

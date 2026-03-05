@@ -28,7 +28,7 @@ data:
   val_batch_size: 1
   num_workers: 4
   persistent_workers: true
-  pin_memory: true
+  pin_memory: false
   safe_load: true
 
   # CCD path
