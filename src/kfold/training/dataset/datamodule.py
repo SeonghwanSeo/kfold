@@ -1,4 +1,5 @@
 import dataclasses
+import gc
 import logging
 from pathlib import Path
 
@@ -70,6 +71,7 @@ class TrainingDataModule(pl.LightningDataModule):
             self._val_ds = self.construct_val_dataset()
         else:
             raise NotImplementedError("Not implemented yet.")
+        gc.collect()
 
     def construct_train_dataset(self) -> MultiTrainingDataset:
         """Construct training dataset."""

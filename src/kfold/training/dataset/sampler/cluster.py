@@ -2,23 +2,23 @@ from collections import defaultdict
 
 import numpy as np
 
-from kfold.data.types.metadata import ChainInfo, InterfaceInfo, Metadata
+import kfold.constants as C
 from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample
 
 
 # === Helpers to compute weights === #
-def get_chain_cluster_id(chain_m: ChainInfo) -> str:
+def get_chain_cluster_id(chain_m: dict) -> str:
     """Get the cluster ID of a chain."""
-    assert chain_m.cluster_id is not None
-    return chain_m.cluster_id
+    assert chain_m.get("cluster_id") is not None
+    return chain_m["cluster_id"]
 
 
-def get_interface_cluster_id(iface_m: InterfaceInfo) -> str:
+def get_interface_cluster_id(iface_m: dict) -> str:
     """Get the cluster ID of an interface."""
-    assert iface_m.cluster_id is not None
-    return iface_m.cluster_id
+    assert iface_m.get("cluster_id") is not None
+    return iface_m["cluster_id"]
 
 
 @DATA_SAMPLER.register()
@@ -95,7 +95,7 @@ class ClusterSampler(BaseSampler):
         self.interface_cluster_sizes: dict[str, int] = defaultdict(int)
         self.num_clusters_in_complex: dict[str, dict[str, int]] = {}
 
-    def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
+    def get_samples(self, metadatas: list[dict]) -> tuple[list[Sample], np.ndarray]:
         assert self.is_initialized is False, "ClusterSampler can be used only once."
         self.is_initialized = True
 
@@ -107,38 +107,38 @@ class ClusterSampler(BaseSampler):
         weights: list[float] = []
 
         for m in metadatas:
-            chain_dict: dict[int, ChainInfo] = {
-                chain.asym_id: chain for chain in m.chains
+            chain_dict: dict[int, dict] = {
+                chain["asym_id"]: chain for chain in m["chains"]
             }
-            num_clusters_in_complex = self.num_clusters_in_complex[m.id]
-            for chain in m.chains:
+            num_clusters_in_complex = self.num_clusters_in_complex[m["id"]]
+            for chain in m["chains"]:
                 weight = self._get_chain_weight(chain)
                 if not self.allow_redundant:
                     # Adjust weight by number of clusters in the metadata
                     weight /= num_clusters_in_complex[get_chain_cluster_id(chain)]
-                samples.append(Sample(m, chain.asym_id))
+                samples.append(Sample(m, chain["asym_id"]))
                 weights.append(weight)
 
-            for interface in m.interfaces:
+            for interface in m["interfaces"]:
                 weight = self._get_interface_weight(interface, chain_dict)
                 if not self.allow_redundant:
                     # Adjust weight by number of clusters in the metadata
                     weight /= num_clusters_in_complex[get_interface_cluster_id(interface)]
-                samples.append(Sample(m, interface.asym_ids))
+                samples.append(Sample(m, tuple(interface["asym_ids"])))
                 weights.append(weight)
 
         # Normalize weights
         weights_arr = np.array(weights) / np.sum(weights)
         return samples, weights_arr
 
-    def estimate_cluster_sizes(self, metadatas: list[Metadata]):
+    def estimate_cluster_sizes(self, metadatas: list[dict]):
         """Estimate cluster sizes of chains and interfaces"""
         for m in metadatas:
             chain_clusters_in_entry: list[str] = [
-                get_chain_cluster_id(chain) for chain in m.chains
+                get_chain_cluster_id(chain) for chain in m["chains"]
             ]
             interface_clusters_in_entry: list[str] = [
-                get_interface_cluster_id(interface) for interface in m.interfaces
+                get_interface_cluster_id(interface) for interface in m["interfaces"]
             ]
 
             if not self.allow_redundant:
@@ -148,7 +148,7 @@ class ClusterSampler(BaseSampler):
                     num_clusters[cluster_id] += 1
                 for cluster_id in interface_clusters_in_entry:
                     num_clusters[cluster_id] += 1
-                self.num_clusters_in_complex[m.id] = dict(num_clusters)
+                self.num_clusters_in_complex[m["id"]] = dict(num_clusters)
 
                 # Remove redundant clusters in the metadata
                 chain_clusters_in_entry = list(set(chain_clusters_in_entry))
@@ -159,21 +159,10 @@ class ClusterSampler(BaseSampler):
             for cluster_id in interface_clusters_in_entry:
                 self.interface_cluster_sizes[cluster_id] += 1
 
-    def _get_chain_weight(self, chain_m: ChainInfo) -> float:
-        """Get the weight of a chain.
-
-        Parameters
-        ----------
-        chain_m : ChainInfo
-            The chain to get the weight for.
-
-        Returns
-        -------
-        float
-            The weight of the chain.
-        """
+    def _get_chain_weight(self, chain_m: dict) -> float:
+        """Get the weight of a chain."""
         n_prot, n_nuc, n_ligand = 0, 0, 0
-        ctype = chain_m.ctype
+        ctype = C.ChainType(chain_m["type"])
         if ctype.is_protein:
             n_prot += 1
         elif ctype.is_nucleic_acid:
@@ -193,26 +182,13 @@ class ClusterSampler(BaseSampler):
         return weight
 
     def _get_interface_weight(
-        self, interface: InterfaceInfo, chain_dict: dict[int, ChainInfo]
+        self, interface: dict, chain_dict: dict[int, dict]
     ) -> float:
-        """Get the weight of an interface.
-
-        Parameters
-        ----------
-        interface : InterfaceInfo
-            The interface to get the weight for.
-        chain_dict : dict[int, ChainInfo]
-            The dictionary of chains in the complex. {asym_id: ChainInfo}
-
-        Returns
-        -------
-        float
-            The weight of the interface.
-        """
+        """Get the weight of an interface."""
         n_prot, n_nuc, n_ligand = 0, 0, 0
-        for asym_id in interface.asym_ids:
+        for asym_id in interface["asym_ids"]:
             chain = chain_dict[asym_id]
-            ctype = chain.ctype
+            ctype = C.ChainType(chain["type"])
             if ctype.is_protein:
                 n_prot += 1
             elif ctype.is_nucleic_acid:

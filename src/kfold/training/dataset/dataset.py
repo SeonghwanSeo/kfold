@@ -229,7 +229,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.ccd: CCD = ccd
 
         # Metadata list
-        self.metadatas: list[Metadata] = self.load_manifest(
+        # NOTE: For AFDB distillation, which includes a lot of samples,
+        # we keep a dict instead of Metadata obj to save memory.
+        self.metadatas: list[dict] = self.load_manifest(
             custom_manifest=config.manifest_path  # optional custom manifest path
         )
 
@@ -262,7 +264,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         return len(self.metadatas)
 
     # === Setup === #
-    def load_manifest(self, custom_manifest: str | Path | None = None) -> list[Metadata]:
+    def load_manifest(self, custom_manifest: str | Path | None = None) -> list[dict]:
         if custom_manifest is not None:
             manifest_path = Path(custom_manifest)
         else:
@@ -276,10 +278,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         else:
             with open(manifest_path) as f:
                 metadata_dicts: list[dict] = json.load(f)
-
-        metadatas: list[Metadata] = [Metadata.from_dict(d) for d in metadata_dicts]
-        del metadata_dicts
-        return metadatas
+        return metadata_dicts
 
     def load_lookup_table(self) -> dict:
         if self.is_protein_monomer_distillation:
@@ -449,7 +448,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
         trials = []
         for _ in range(num_trials):
-            sample: Metadata = self.metadatas[index]
+            sample: Metadata = Metadata.from_dict(self.metadatas[index])
             try:
                 return self.get_item(sample)
             except (KeyboardInterrupt, SystemExit) as e:
@@ -746,6 +745,7 @@ class TrainingDataset(SafeLoadingDataset):
         else:
             # AF3-style sampling (chain/interface-based)
             self.sampler: BaseSampler = Registry.instantiate(config.sampler)
+
         samples, weights = self.sampler.get_samples(self.metadatas)
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights
@@ -862,12 +862,13 @@ class TrainingDataset(SafeLoadingDataset):
         trials = []
         for _ in range(num_trials):
             sample = self.samples[index]
+            metadata = Metadata.from_dict(sample.metadata)
             try:
-                return self.get_item(sample.metadata, asym_ids=sample.asym_id)
+                return self.get_item(metadata, asym_ids=sample.asym_id)
             except (KeyboardInterrupt, SystemExit) as e:
                 raise e
             except Exception as e:
-                sample_id = sample.metadata.id
+                sample_id = sample.metadata["id"]
                 self.logger.error(
                     f"Error loading index {sample_id}({index}): {e}. Retrying..."
                 )
@@ -991,4 +992,4 @@ class ValidationDataset(SafeLoadingDataset):
 
     def setup(self) -> None:
         """Additional setup for subclasses."""
-        self.metadatas.sort(key=lambda m: m.num_tokens)
+        self.metadatas.sort(key=lambda m: Metadata.from_dict(m).num_tokens)
