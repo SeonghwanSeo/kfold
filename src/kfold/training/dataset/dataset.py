@@ -61,6 +61,7 @@ import torch
 from omegaconf import OmegaConf
 from typing_extensions import override
 
+import kfold.constants as C
 from kfold.data.pipelines import (
     apo_initialization,
     featurization,
@@ -304,7 +305,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         return self._apo_lmdb_env
 
     @property
-    def apo_unitok_lmdb_env(self) -> lmdb.Environment:
+    def unitok_lmdb_env(self) -> lmdb.Environment:
         """Get the LMDB environment for structure tokens of apo structures."""
         if not hasattr(self, "_apo_unitok_lmdb_env"):
             lmdb_path = self.data_root / "apo_unitok.lmdb"
@@ -322,62 +323,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             self._apo_unitok_lmdb_env.close()
         if hasattr(self, "_lmdb_env"):
             self._lmdb_env.close()
-
-    def get_apo_lookup(
-        self, ref_struct: RefStructure, rng: np.random.Generator
-    ) -> dict[int, dict]:
-        """Get the apo lookup for the given reference structure."""
-        if self.is_protein_monomer_distillation:
-            # For protein monomer distillation datasets, we directly
-            # feed apo structures from labeled monomer structures, so
-            # we can return an empty lookup.
-            return {}
-
-        entry_id: str = ref_struct.id
-        entry_lookup: dict[str, list[dict[str, str]]] = self.lookup_table[entry_id]
-
-        # Match apo structure for each protein entries.
-        apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
-        visited_entity_ids: set[int] = set()
-        for c in ref_struct.chains:
-            if not c.ctype.is_protein:
-                continue
-            if c.entity_id in visited_entity_ids:
-                continue  # already populated from another chain with same entity_id
-            entity_id = c.entity_id
-            visited_entity_ids.add(entity_id)
-
-            entity_apo_infos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
-            num_apos = len(entity_apo_infos)
-            # Select apo structure (randomly if multiple)
-            if num_apos == 0:
-                self.logger.warning(
-                    f"No apo info found for entity {entry_id}:{entity_id}"
-                )
-                continue
-            apo_info = entity_apo_infos[rng.integers(0, num_apos)].copy()
-
-            name = apo_info["name"]
-            source = apo_info["source"]
-            key = f"{source}:{name}"
-            apo_info["key"] = key
-
-            # Load apo coordinates from LMDB
-            with self.apo_lmdb_env.begin(write=False) as txn:
-                value_bytes = txn.get(key.encode("utf-8"))
-                if value_bytes is None:
-                    self.logger.warning(
-                        f"Apo structure {key} not found in LMDB for entity "
-                        f"{entry_id}:{entity_id}"
-                    )
-                    continue
-                with io.BytesIO(value_bytes) as byte_stream:
-                    with np.load(byte_stream) as data:
-                        apo_info["seq"] = "".join(data["seq"].astype(str).tolist())
-                        apo_info["coords"] = data["coords"].copy()
-
-            apo_lookup[entity_id] = apo_info
-        return apo_lookup
 
     # === Core dataset methods === #
     def load_ref_structure(self, metadata: Metadata) -> RefStructure:
@@ -542,6 +487,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         # Tokenization
         struct: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
 
+        # Populate structure tokens for apo structure (in-place)
+        self.populate_structure_tokens(struct, apo_lookup, rng)
+
         # Cropping
         cropped_struct = self.crop_structure(struct, metadata, rng=rng, **kwargs)
 
@@ -576,6 +524,160 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         # Featurization
         f_input = self.featurizer(struct, rng=rng)
         return f_input
+
+    # === Helper methods for apo structure handling === #
+    def get_apo_lookup(
+        self, ref_struct: RefStructure, rng: np.random.Generator
+    ) -> dict[int, dict]:
+        """Get the apo lookup for the given reference structure."""
+        if self.is_protein_monomer_distillation:
+            # For protein monomer distillation datasets, we directly
+            # feed apo structures from labeled monomer structures, so
+            # we don't have to load apo structures.
+
+            # NOTE: we still need the lookup table to load structure
+            # tokens for apo structures.
+            # monomer: always have a chain with entity_id=1
+            return {1: {"key": ref_struct.id}}
+
+        entry_id: str = ref_struct.id
+        entry_lookup: dict[str, list[dict[str, str]]] = self.lookup_table[entry_id]
+
+        # Match apo structure for each protein entries.
+        apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
+        visited_entity_ids: set[int] = set()
+        for c in ref_struct.chains:
+            if not c.ctype.is_protein:
+                continue
+            if c.entity_id in visited_entity_ids:
+                continue  # already populated from another chain with same entity_id
+            entity_id = c.entity_id
+            visited_entity_ids.add(entity_id)
+
+            entity_apo_infos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
+            num_apos = len(entity_apo_infos)
+            # Select apo structure (randomly if multiple)
+            if num_apos == 0:
+                self.logger.warning(
+                    f"No apo info found for entity {entry_id}:{entity_id}"
+                )
+                continue
+            apo_info = entity_apo_infos[rng.integers(0, num_apos)].copy()
+
+            name = apo_info["name"]
+            source = apo_info["source"]
+            key = f"{source}:{name}"
+            apo_info["key"] = key
+
+            # Load apo coordinates from LMDB
+            with self.apo_lmdb_env.begin(write=False) as txn:
+                value_bytes = txn.get(key.encode("utf-8"))
+                if value_bytes is None:
+                    self.logger.warning(
+                        f"Apo structure {key} not found in LMDB for entity "
+                        f"{entry_id}:{entity_id}"
+                    )
+                    continue
+                with io.BytesIO(value_bytes) as byte_stream:
+                    with np.load(byte_stream) as data:
+                        apo_info["seq"] = "".join(data["seq"].astype(str).tolist())
+                        apo_info["coords"] = data["coords"].copy()
+
+            apo_lookup[entity_id] = apo_info
+        return apo_lookup
+
+    def populate_structure_tokens(
+        self,
+        struct: TokenizedStructure,
+        apo_lookup: dict[int, dict],
+        rng: np.random.Generator,
+    ) -> None:
+        """Populate the structure tokens for the given tokenized structure."""
+
+        def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
+            """Parse residue map string into start and end indices.
+            Example:
+                "1:100->5:104" -> (0, 100, 4, 104)
+            """
+            res_range, apo_range = residue_map.split("->")
+            res_st, res_end = map(int, res_range.split(":"))
+            apo_st, apo_end = map(int, apo_range.split(":"))
+            if (res_end - res_st) != (apo_end - apo_st):
+                return -1, -1, -1, -1  # invalid mapping
+            # Convert to 0-based indexing
+            # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
+            return res_st - 1, res_end, apo_st - 1, apo_end
+
+        bb_struct_token_id = struct.sequence.bb_struct_token_id
+        fa_struct_token_id = struct.sequence.fa_struct_token_id
+
+        visited_entity_ids: set[int] = set()
+        with self.unitok_lmdb_env.begin(write=False) as txn:
+            for c_i in range(struct.num_chains):
+                if struct.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
+                    continue  # only populate structure tokens for protein chains
+
+                eid = struct.chain.entity_id[c_i]
+                if eid in visited_entity_ids:
+                    continue  # already populated from another chain with same entity_id
+                visited_entity_ids.add(eid)
+
+                if eid not in apo_lookup:
+                    self.logger.warning(
+                        f"No apo info for entity_id {eid} in apo lookup."
+                        f"Skipping structure token population for this entity."
+                    )
+                    continue
+                apo_info = apo_lookup[eid]
+                key = apo_info["key"]
+                v = txn.get(key.encode("utf-8"))
+                if v is None:
+                    self.logger.warning(
+                        f"Apo structure tokens {key} not found in LMDB for "
+                        f"entity_id {eid}"
+                    )
+                    continue
+                # Load pre-computed structure tokens for apo structure from LMDB
+                apo_unitok = np.frombuffer(v, dtype=np.uint16).reshape(2, -1)
+                bb_tok, fa_tok = apo_unitok
+                toklen = len(bb_tok)
+
+                # Find the corresponding sequence token indices
+                seq_token_i = np.where(struct.sequence.entity_id == eid)[0]
+                # Remove bos/eos
+                seq_token_i = seq_token_i[1:-1]
+
+                if "residue_map" not in apo_info:
+                    # If residue map is not provided, we assume the entire
+                    # sequence can be aligned.
+                    if len(bb_tok) != len(seq_token_i):
+                        self.logger.warning(
+                            f"Apo tokens ({key}, len={toklen}) cannot be aligned "
+                            f"with sequence tokens (len={len(seq_token_i)}) for "
+                            f"entity_id {eid} without residue mapping."
+                        )
+                        continue
+                    # Populate the structure tokens for the aligned residues
+                    bb_struct_token_id[seq_token_i] = bb_tok
+                    fa_struct_token_id[seq_token_i] = fa_tok
+                else:
+                    residue_map = apo_info["residue_map"]
+                    res_st, res_end, apo_st, apo_end = parse_residue_map(residue_map)
+                    if res_st == -1:
+                        self.logger.warning(
+                            f"Invalid residue map {residue_map} for entity_id {eid}."
+                        )
+                        continue
+                    if toklen < (apo_end - apo_st) or (len(seq_token_i) < res_end):
+                        self.logger.warning(
+                            f"Apo tokens ({key}, len={toklen}) cannot cover the "
+                            f"residue mapping for entity_id {eid}: {residue_map}."
+                        )
+                        continue
+                    seq_token_i_mapped = seq_token_i[res_st:res_end]
+                    # Populate the structure tokens for the mapped residues
+                    bb_struct_token_id[seq_token_i_mapped] = bb_tok[apo_st:apo_end]
+                    fa_struct_token_id[seq_token_i_mapped] = fa_tok[apo_st:apo_end]
 
 
 class TrainingDataset(SafeLoadingDataset):

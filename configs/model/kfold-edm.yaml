@@ -18,6 +18,9 @@ input_embedder:
 sequence_encoder:
   _yaml_: "module/sequence_encoder/esmc_600m.yaml"
 
+structure_encoder:
+  _yaml_: "module/structure_encoder/unitok.yaml"
+
 trunk:
   _yaml_: "module/trunk/kfold.yaml"
 

@@ -69,12 +69,12 @@ class PLMEmbedder(nn.Module):
     def __init__(
         self,
         channel_s_input: int = 384,
-        channel_seq_emb: int = 1152,
+        channel_plm_input: int = 1152,
         channel_plm: int = 768,
     ) -> None:
         super().__init__()
         self.linear_s_input = LinearNoBias(channel_s_input, channel_plm, init="default")
-        self.linear_seq_emb = LinearNoBias(channel_seq_emb, channel_plm, init="default")
+        self.linear_seq_emb = LinearNoBias(channel_plm_input, channel_plm, init="default")
 
     def forward(
         self,

@@ -18,7 +18,7 @@ from .kfold_trunk import PairformerConfig, PLMModuleConfig
 @TRUNK.register()
 class KFoldTrunkPrime(BaseTrunk):
     class Config(BaseTrunk.Config):
-        """Configuration for the KFoldTrunkPrime module.
+        """Configuration for the KFoldTrunk module.
 
         Parameters
         ----------
@@ -30,6 +30,8 @@ class KFoldTrunkPrime(BaseTrunk):
             The hidden dimension for the PLMModule.
         channel_seq_emb : int
             The sequence embedding size for the PLM module.
+        channel_struct_emb : int
+            The structure embedding size for the PLM module.
         channel_seq_attn : int
             The number of attention maps for the PLM module.
         use_attn : bool
@@ -48,8 +50,9 @@ class KFoldTrunkPrime(BaseTrunk):
         channel_z: int = 128
 
         # PLM dimensions.
-        channel_plm: int = 1152
+        channel_plm: int = 768
         channel_seq_emb: int = 1152
+        channel_struct_emb: int = 1536
         channel_seq_attn: int = 648
         use_attn: bool = True
 
@@ -72,6 +75,8 @@ class KFoldTrunkPrime(BaseTrunk):
 
         # === PLM feature processing layers === #
         self.layernorm_seq_emb = LayerNorm(cfg.channel_seq_emb, create_offset=False)
+        self.layernorm_struct_emb = LayerNorm(cfg.channel_struct_emb, create_offset=False)
+        plm_input_dim = cfg.channel_seq_emb + cfg.channel_struct_emb
 
         # Projections from PLM features to trunk features.
         # TODO: if we consider two separate plms for intra- and inter-chain attentions,
@@ -88,14 +93,14 @@ class KFoldTrunkPrime(BaseTrunk):
             )
 
         # For the skip connection from PLM features to s_trunk output.
-        self.proj_seq_emb_to_s_trunk = LinearNoBias(
-            cfg.channel_seq_emb, cfg.channel_s, init="final"
+        self.proj_plm_to_s_trunk = LinearNoBias(
+            plm_input_dim, cfg.channel_s, init="final"
         )
 
         # === Priming pass before recycling === #
         self.plm_embedder_prime: PLMEmbedder = PLMEmbedder(
             channel_s_input=cfg.channel_s,
-            channel_seq_emb=cfg.channel_seq_emb,
+            channel_plm_input=plm_input_dim,
             channel_plm=cfg.channel_plm,
         )
         self.plm_module_prime: PLMModule = PLMModule(
@@ -126,7 +131,7 @@ class KFoldTrunkPrime(BaseTrunk):
         # PLM module
         self.plm_embedder_refine: PLMEmbedder = PLMEmbedder(
             channel_s_input=cfg.channel_s,
-            channel_seq_emb=cfg.channel_seq_emb,
+            channel_plm_input=plm_input_dim,
             channel_plm=cfg.channel_plm,
         )
         self.plm_module_refine: PLMModule = PLMModule(
@@ -234,8 +239,6 @@ class KFoldTrunkPrime(BaseTrunk):
             The input features.
         num_recycles : int
             The number of recycling steps.
-        s_plm : torch.Tensor
-            Tensor of shape (B, L, C_plm) containing PLM features for each token.
 
         Returns
         -------
@@ -249,13 +252,16 @@ class KFoldTrunkPrime(BaseTrunk):
         chunk_size_tri_attn = self._compute_chunk_size(s_inputs.shape[1])
 
         # Get PLM features
-        assert "seq_emb" in kwargs, "PLM features s_plm must be provided in kwargs"
-        assert "seq_attn" in kwargs, "PLM features z_plm must be provided in kwargs"
+        for k in ["seq_emb", "seq_attn", "struct_emb"]:
+            if k not in kwargs:
+                raise ValueError(f"Missing required PLM feature: {k}")
         seq_emb: torch.Tensor = kwargs["seq_emb"]
         seq_attn: torch.Tensor = kwargs["seq_attn"]
+        struct_emb: torch.Tensor = kwargs["struct_emb"]
 
-        # Layer norm on PLM features.
         seq_emb = self.layernorm_seq_emb(seq_emb)
+        struct_emb = self.layernorm_struct_emb(struct_emb)
+        plm_input = torch.cat([seq_emb, struct_emb], dim=-1)
 
         if self.use_attn:
             # Feed attention maps to initialize z_init.
@@ -265,12 +271,12 @@ class KFoldTrunkPrime(BaseTrunk):
         # === Proteina-style register tokens (optional) ===
         mask = f_input.token.pad_mask
         asym_id = f_input.token.asym_id
-        s_inputs, s_init, seq_emb, z_init, asym_id, mask = self._extend_registers(
-            s_inputs, s_init, seq_emb, z_init, asym_id, mask
+        s_inputs, s_init, plm_input, z_init, asym_id, mask = self._extend_registers(
+            s_inputs, s_init, plm_input, z_init, asym_id, mask
         )
 
         # === Priming pass before recycling === #
-        s_plm_prime = self.plm_embedder_prime(s_inputs, seq_emb)
+        s_plm_prime = self.plm_embedder_prime(s_inputs, plm_input)
         s_prime, z_prime = self._run_trunk(
             plm_module=self.plm_module_prime,
             pairformer_module=self.pairformer_module_prime,
@@ -284,7 +290,7 @@ class KFoldTrunkPrime(BaseTrunk):
 
         # === Refining loop with recycling === #
         s_hat, z_hat = s_prime, z_prime
-        s_plm = self.plm_embedder_refine(s_inputs, seq_emb)
+        s_plm = self.plm_embedder_refine(s_inputs, plm_input)
         s_bias = self.linear_s_prime(self.layernorm_s_prime(s_prime))
         z_bias = self.linear_z_prime(self.layernorm_z_prime(z_prime))
 
@@ -313,7 +319,7 @@ class KFoldTrunkPrime(BaseTrunk):
                 )
 
         # Skip connection to s_trunk
-        s_hat = s_hat + self.proj_seq_emb_to_s_trunk(seq_emb)
+        s_hat = s_hat + self.proj_plm_to_s_trunk(plm_input)
 
         # Remove register tokens before returning.
         s_hat, z_hat, z_prime = self._undo_registers(s_hat, z_hat, z_prime)

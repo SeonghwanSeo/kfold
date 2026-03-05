@@ -13,7 +13,7 @@ from .base import BaseFoldingModel, BaseFoldingModelConfig
 class KFoldConfig(BaseFoldingModelConfig):
     _class_: str = "KFold"
     sequence_encoder: BaseConfig
-    # structure_encoder: BaseConfig
+    structure_encoder: BaseConfig
 
 
 @MAIN_MODULE.register()
@@ -22,6 +22,9 @@ class KFold(BaseFoldingModel):
         super().__init__(config)
         self.sequence_encoder: submodules.sequence_encoder.BaseSequenceEncoder = (
             Registry.instantiate(config.sequence_encoder)
+        )
+        self.structure_encoder: submodules.structure_encoder.BaseStructureEncoder = (
+            Registry.instantiate(config.structure_encoder)
         )
 
     def forward(
@@ -120,6 +123,7 @@ class KFold(BaseFoldingModel):
         s_inputs, s_init, z_init = self.input_embedder(f_input)
 
         seq_emb, seq_attn = self.sequence_encoder(f_input)
+        struct_emb, _ = self.structure_encoder(f_input)
 
         # Trunk with recycling
         trunk_out = self.trunk(
@@ -130,6 +134,7 @@ class KFold(BaseFoldingModel):
             num_recycles,
             seq_emb=seq_emb,
             seq_attn=seq_attn,
+            struct_emb=struct_emb,
         )
         s_trunk = trunk_out["s_trunk"]
         z_trunk = trunk_out["z_trunk"]
@@ -236,6 +241,12 @@ class KFold(BaseFoldingModel):
         et = time.time()
         time_logs["sequence_encoder"] = et - st
 
+        # Structure encoder
+        st = time.time()
+        struct_emb, _ = self.structure_encoder(f_input)
+        et = time.time()
+        time_logs["structure_encoder"] = et - st
+
         # Trunk with recycling
         st = time.time()
         trunk_out: dict[str, torch.Tensor] = self.trunk(
@@ -246,6 +257,7 @@ class KFold(BaseFoldingModel):
             num_recycles,
             seq_emb=seq_emb,
             seq_attn=seq_attn,
+            struct_emb=struct_emb,
         )
         et = time.time()
         s_trunk = trunk_out["s_trunk"]
@@ -254,6 +266,7 @@ class KFold(BaseFoldingModel):
 
         dict_out = {
             "seq_emb": seq_emb,
+            "seq_attn": seq_attn,
             "s_trunk": s_trunk,
             "z_trunk": z_trunk,
         }
