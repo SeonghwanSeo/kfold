@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from kfold.constants.sequence import MASK_TOKEN_INDEX
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.esm.esmc import RegressionHead, TransformerStack
 from kfold.utils.registry import SEQUENCE_ENCODER
@@ -66,6 +67,11 @@ class ESMC(BaseSequenceEncoder):
         # Freeze parameters since we are only doing inference.
         for param in self.parameters():
             param.requires_grad = False
+
+        # NOTE: Inspired by AF3's MSA sampling, we can mask out some tokens to introduce
+        # stochasticity during inference. This can be used to generate multiple diverse
+        # predictions for the same input by adjusting the evolutionary signal.
+        self.mask_token_id: int = MASK_TOKEN_INDEX
 
     @property
     def d_attn(self) -> int:
@@ -133,6 +139,10 @@ class ESMC(BaseSequenceEncoder):
         input_ids = f_input.sequence.seq_token_id
         seq_id = f_input.sequence.entity_id
         pos_id = f_input.sequence.pos_id
+        mlm_mask = f_input.sequence.mlm_mask
+
+        # MLM masking
+        input_ids = input_ids.masked_fill(mlm_mask, self.mask_token_id)
 
         x = self.embed(input_ids)
         for b in self.transformer.blocks:
@@ -170,10 +180,14 @@ class ESMC(BaseSequenceEncoder):
         input_ids = f_input.sequence.seq_token_id
         seq_id = f_input.sequence.entity_id
         pos_id = f_input.sequence.pos_id
+        mlm_mask = f_input.sequence.mlm_mask
 
         # sequence -> token index mapping
         seq_token_i = f_input.token.seq_token_index
         B, L = seq_token_i.shape
+
+        # MLM masking
+        input_ids = input_ids.masked_fill(mlm_mask, self.mask_token_id)
 
         # Initialize output
         x_out = torch.empty(
@@ -188,6 +202,9 @@ class ESMC(BaseSequenceEncoder):
         )
 
         x = self.embed(input_ids)
+        # NOTE: While for loop is inefficient in PyTorch, it is fine since our batch size
+        # is very small (often 1)
+
         for i in range(B):
             _x = x[i]  # [seq_len, d_model]
             _seq_id = seq_id[i]  # [seq_len]

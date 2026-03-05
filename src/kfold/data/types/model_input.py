@@ -594,6 +594,10 @@ class SequenceTensor(TensorLayout):
 
     Attributes
     ----------
+    entity_id: np.ndarray (int)
+        Entity IDs of shape [L,], starting from 1.
+    chain_type: np.ndarray (int)
+        Chain types of shape [L,], indicating the type of each chain.
     seq_token_id: np.ndarray (int)
         Sequence tokens of shape [L,] (aatype, base, atom, ...)
     bb_struct_token_id: np.ndarray (int)
@@ -603,10 +607,9 @@ class SequenceTensor(TensorLayout):
     pos_id: np.ndarray (int)
         Residue indices of shape [L,], used for residue-level operations,
         starting from 0 (BOS).
-    entity_id: np.ndarray (int)
-        Entity IDs of shape [L,], starting from 1.
-    chain_type: np.ndarray (int)
-        Chain types of shape [L,], indicating the type of each chain.
+    mlm_mask: np.ndarray (bool)
+        Mask tensor of shape [L,], indicating to mask tokens for sequence
+        embedding. (see ESMFold stochastic sampling strategy)
 
     Cached Properties
     -----------------
@@ -626,6 +629,7 @@ class SequenceTensor(TensorLayout):
     bb_struct_token_id: torch.Tensor  # [L,], int
     fa_struct_token_id: torch.Tensor  # [L,], int
     pos_id: torch.Tensor  # [L,], int
+    mlm_mask: torch.Tensor  # [L,], bool
     pad_mask: torch.Tensor  # [L,], bool
 
     @cached_property
@@ -657,6 +661,7 @@ class SequenceTensor(TensorLayout):
             shape=shape,
         )
         check_tensor(self.pos_id, name="pos_id", dtype=torch.long, shape=shape)
+        check_tensor(self.mlm_mask, name="mlm_mask", dtype=torch.bool, shape=shape)
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
 
     @cached_property
@@ -699,6 +704,7 @@ class SequenceTensor(TensorLayout):
             "fa_struct_token_id": C.sequence.PAD_TOKEN_INDEX,
             "pos_id": -1,
             "pad_mask": False,
+            "mlm_mask": False,
         }
 
         fields = {}

@@ -91,5 +91,5 @@ class SequenceMasking:
         # Ensure special tokens are not masked
         mask_positions &= ~np.isin(sequence_input, self.special_token_indices)
 
-        # Apply masking
-        sequence_input[mask_positions] = self.mask_token_index
+        # Set masked positions to the mask token index
+        input.sequence.mlm_mask[mask_positions] = True
