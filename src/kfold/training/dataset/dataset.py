@@ -82,6 +82,29 @@ from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
 
 
+def _open_lmdb(lmdb_path: str | Path) -> lmdb.Environment:
+    if not Path(lmdb_path).exists():
+        raise FileNotFoundError(f"LMDB file {lmdb_path} not found.")
+    return lmdb.open(
+        str(lmdb_path), readonly=True, lock=False, readahead=False, meminit=False
+    )
+
+
+def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
+    """Parse residue map string into start and end indices.
+    Example:
+        "1:100->5:104" -> (0, 100, 4, 104)
+    """
+    res_range, apo_range = residue_map.split("->")
+    res_st, res_end = map(int, res_range.split(":"))
+    apo_st, apo_end = map(int, apo_range.split(":"))
+    if (res_end - res_st) != (apo_end - apo_st):
+        return -1, -1, -1, -1  # invalid mapping
+    # Convert to 0-based indexing
+    # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
+    return res_st - 1, res_end, apo_st - 1, apo_end
+
+
 # === Dataset Classes === #
 @dataclasses.dataclass(kw_only=True)
 class DatasetConfig:
@@ -288,39 +311,28 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
     @property
     def lmdb_env(self) -> lmdb.Environment:
         if not hasattr(self, "_lmdb_env"):
-            lmdb_path = self.data_root / "structure.lmdb"
-            if not lmdb_path.exists():
-                raise FileNotFoundError(f"Structure LMDB file {lmdb_path} not found.")
-            self._lmdb_env = lmdb.open(str(lmdb_path), readonly=True, lock=False)
+            self._lmdb_env = _open_lmdb(self.data_root / "structure.lmdb")
         return self._lmdb_env
 
     @property
     def apo_lmdb_env(self) -> lmdb.Environment:
         """Get the LMDB environment for apo structures."""
         if not hasattr(self, "_apo_lmdb_env"):
-            lmdb_path = self.data_root / "apo.lmdb"
-            if not lmdb_path.exists():
-                raise FileNotFoundError(f"Apo LMDB file {lmdb_path} not found.")
-            self._apo_lmdb_env = lmdb.open(str(lmdb_path), readonly=True, lock=False)
+            self._apo_lmdb_env = _open_lmdb(self.data_root / "apo.lmdb")
         return self._apo_lmdb_env
 
     @property
     def unitok_lmdb_env(self) -> lmdb.Environment:
         """Get the LMDB environment for structure tokens of apo structures."""
-        if not hasattr(self, "_apo_unitok_lmdb_env"):
-            lmdb_path = self.data_root / "apo_unitok.lmdb"
-            if not lmdb_path.exists():
-                raise FileNotFoundError(f"Apo unitok LMDB file {lmdb_path} not found.")
-            self._apo_unitok_lmdb_env = lmdb.open(
-                str(lmdb_path), readonly=True, lock=False
-            )
-        return self._apo_unitok_lmdb_env
+        if not hasattr(self, "_unitok_lmdb_env"):
+            self._unitok_lmdb_env = _open_lmdb(self.data_root / "apo_unitok.lmdb")
+        return self._unitok_lmdb_env
 
     def __del__(self):
         if hasattr(self, "_apo_lmdb_env"):
             self._apo_lmdb_env.close()
-        if hasattr(self, "_apo_unitok_lmdb_env"):
-            self._apo_unitok_lmdb_env.close()
+        if hasattr(self, "_unitok_lmdb_env"):
+            self._unitok_lmdb_env.close()
         if hasattr(self, "_lmdb_env"):
             self._lmdb_env.close()
 
@@ -593,20 +605,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         rng: np.random.Generator,
     ) -> None:
         """Populate the structure tokens for the given tokenized structure."""
-
-        def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
-            """Parse residue map string into start and end indices.
-            Example:
-                "1:100->5:104" -> (0, 100, 4, 104)
-            """
-            res_range, apo_range = residue_map.split("->")
-            res_st, res_end = map(int, res_range.split(":"))
-            apo_st, apo_end = map(int, apo_range.split(":"))
-            if (res_end - res_st) != (apo_end - apo_st):
-                return -1, -1, -1, -1  # invalid mapping
-            # Convert to 0-based indexing
-            # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
-            return res_st - 1, res_end, apo_st - 1, apo_end
 
         bb_struct_token_id = struct.sequence.bb_struct_token_id
         fa_struct_token_id = struct.sequence.fa_struct_token_id

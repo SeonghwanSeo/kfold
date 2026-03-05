@@ -18,7 +18,7 @@ from .kfold_trunk import PairformerConfig, PLMModuleConfig
 @TRUNK.register()
 class KFoldTrunkPrime(BaseTrunk):
     class Config(BaseTrunk.Config):
-        """Configuration for the KFoldTrunk module.
+        """Configuration for the KFoldTrunkPrime module.
 
         Parameters
         ----------

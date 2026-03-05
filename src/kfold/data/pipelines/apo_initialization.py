@@ -199,8 +199,8 @@ class ApoInitializer:
                 - case1: apo structure file path
                     - path: PathLike
                 - case2: sequence and atom37 coordinates
-                    - sequence: str
-                    - coordinates: np.ndarray (L, 37, 3)
+                    - seq: str
+                    - coords: np.ndarray (L, 37, 3)
             - optional keys:
                 - key: str
                     Optional key for using pre-computed perturbation with rieprody.
@@ -229,8 +229,8 @@ class ApoInitializer:
                 - case1: apo structure file path
                     - path: PathLike
                 - case2: sequence and atom37 coordinates
-                    - sequence: str
-                    - coordinates: np.ndarray (L, 37, 3)
+                    - seq: str
+                    - coords: np.ndarray (L, 37, 3)
             - optional keys:
                 - key: str
                     Optional key for using pre-computed perturbation with rieprody.
@@ -466,8 +466,8 @@ class ApoInitializer:
                 - case1: apo structure file path
                     - path: PathLike
                 - case2: sequence and atom37 coordinates
-                    - sequence: str
-                    - coordinates: np.ndarray (L, 37, 3)
+                    - seq: str
+                    - coords: np.ndarray (L, 37, 3)
             - optional keys:
                 - key: str
                     Optional key for using pre-computed perturbation with rieprody.
@@ -511,7 +511,7 @@ class ApoInitializer:
             sequence, apo_coords = read_protein_structure(path)
         else:
             raise ValueError(
-                "Apo info must contain either 'sequence' and 'coords', "
+                "Apo info must contain either 'seq' and 'coords', "
                 "or 'path' to the structure file."
             )
 
