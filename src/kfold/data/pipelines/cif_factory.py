@@ -23,11 +23,7 @@ from kfold.data.types.metadata import (
     Metadata,
     PredictionRecord,
 )
-from kfold.data.types.structure import (
-    Chain,
-    CovalentConnection,
-    RefStructure,
-)
+from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
 
 logger = logging.getLogger(__name__)
 
@@ -352,8 +348,10 @@ def prepare_ref_structure(
     raw_struct: gemmi.Structure,
     metadata: Metadata,
     ccd: CCD,
+    smiles_dict: dict[str, str] | None = None,
 ) -> RefStructure:
     """Prepare reference structure from gemmi CIF block and metadata."""
+    smiles_dict: dict[str, str] = smiles_dict or {}
 
     # Determine ligand CCDs to exclude
     excluded_ligands: set[str] = C.ccd.LIGAND_EXCLUSIONS
@@ -440,12 +438,11 @@ def prepare_ref_structure(
             is_valid_entity = True
             for res_name in ccd_sequences:
                 if res_name.startswith("LIG"):
-                    # TODO: for Boltz1, all custom ligands are stored as NonPolymer
-                    # with residue name "LIG". Handle them properly future.
-                    raise NotImplementedError(
-                        "Custom ligand entities with residue name 'LIG' not supported."
+                    # TODO: Boltz-1/2 use custom ligand names like LIG.
+                    assert len(ccd_sequences) == 1, (
+                        "Multi-residue custom ligands not supported in CIF parsing."
                     )
-                if res_name in excluded_ligands:
+                elif res_name in excluded_ligands:
                     # Exclude unwanted ligands
                     logging.debug(f"Excluding ligand {res_name} in entity {entity_id}.")
                     is_valid_entity = False
@@ -550,12 +547,14 @@ def prepare_ref_structure(
 
         # For ligand, identify smiles if available
         smiles: str | None = None
-        if ctype is C.ChainType.LIGAND:
-            if ccd_sequences[0].startswith("LIG"):
-                # TODO: Import smiles extraction from MMCIF...
-                raise NotImplementedError(
-                    "Custom ligand SMILES not supported in CIF parsing."
-                )
+        if ctype is C.ChainType.LIGAND and ccd_sequences[0].startswith("LIG"):
+            ref_label_id: LabelId = entity.subchains[0]
+            custom_id: str = ccd_sequences[0]
+            assert custom_id in smiles_dict, (
+                f"Custom ligand {custom_id} missing in given SMILES dict: {smiles_dict}"
+            )
+            smiles = smiles_dict[custom_id]
+            assert smiles is not None, "Failed to infer SMILES for ligand"
 
         # Parse reference chain once
         # Drop leaving atoms for polymers, and keep all atoms for ligands as default
@@ -680,6 +679,39 @@ def insert_chain_coordinates(
     """Insert Coordinates from raw gemmi ResidueSpan into reference chain."""
     ccd_sequence: list[str] = ref_chain.residue.name.tolist()
     atom_names: list[str] = ref_chain.atom.name.tolist()
+
+    if ref_chain.smiles is not None:
+        # For custom ligands, only the atom orders are guaranteed to be the same.
+        atom_names_in_cif: list[str] = []
+        atom_coords_in_cif: list[tuple[float, float, float]] = []
+        atom_bfactors_in_cif: list[float] = []
+        for res in raw_chain:
+            for atom in res:
+                coords: gemmi.Position = atom.pos
+                atom_names_in_cif.append(atom.name)
+                atom_coords_in_cif.append((coords.x, coords.y, coords.z))
+                atom_bfactors_in_cif.append(min(atom.b_iso, 100.0))
+
+        assert len(atom_names_in_cif) == len(atom_names), (
+            f"Number of atoms in CIF ({len(atom_names_in_cif)}) does not match "
+            f"reference chain ({len(atom_names)})."
+        )
+
+        for a1, a2 in zip(atom_names, atom_names_in_cif, strict=True):
+            # It is allowed that the atom uniq-numbering is different,
+            # but the atom types should be the same for custom ligands.
+            _a1 = "".join(filter(str.isalpha, a1)).lower()
+            _a2 = "".join(filter(str.isalpha, a2)).lower()
+            if _a1 != _a2:
+                raise ValueError(
+                    f"Atom name mismatch for custom ligand: {a1} vs {a2}. "
+                    f"After removing numbers: {_a1} vs {_a2}."
+                )
+        # Map atom names to coordinates for quick lookup
+        ref_chain.atom.coords[:, :] = atom_coords_in_cif
+        ref_chain.atom.bfactor[:] = atom_bfactors_in_cif
+        return
+
     for res_i, res in enumerate(raw_chain):
         res: gemmi.Residue
 

@@ -1,12 +1,49 @@
-"""Preprocess synthetic data mmCIF files."""
+"""Preprocess synthetic data mmCIF files.
+
+TODO: multi-ligand input is not yet supported.
+
+Input:
+<input_dir>/
+    apo/
+    holo/
+    metadata.csv
+
+WARN: (Seonghwan) I do not test this script on previous synthetic datasets
+(I update the code after processing those datasets) so there may be some bugs.
+I have to check it.
+
+metadata.csv format:
+I> python read.py
+    data_idx  structure_idx     protein_0     protein_1  ligand_1   ...
+0        0_0              0  STGSSGHDS...  SGPEESGPE...       NaN   ...
+1        0_0              1  STGSSGHDS...  SGPEESGPE...       NaN   ...
+2        0_0              2  STGSSGHDS...  SGPEESGPE...       NaN   ...
+3        0_0              3  STGSSGHDS...  SGPEESGPE...       NaN   ...
+4        0_0              4  STGSSGHDS...  SGPEESGPE...       NaN   ...
+...      ...            ...           ...           ...       ...   ...
+
+
+--use_dir_name=True:
+holo/
+    2/2_3/   (2: shard idx, 3: structure idx)
+        structure_0.cif  (structure_idx)
+        structure_1.cif
+        ...
+
+--use_dir_name=False:
+holo/
+    3/2_88/
+        3_2_88.cif  ({data_idx}_{structure_idx}.cif)
+        ...
+"""
 
 import argparse
-import functools
 import multiprocessing
 import os
 import pathlib
 
 import gemmi
+import pandas as pd
 from tqdm import tqdm
 
 from kfold.data.pipelines import cif_factory
@@ -23,7 +60,7 @@ def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Process synthetic mmCIF files.")
     parser.add_argument(
-        "--cif_dir",
+        "--input_dir",
         type=pathlib.Path,
         required=True,
         help="Path to the `.cif` files directory.",
@@ -81,13 +118,34 @@ def init_worker(ccd_path):
 
 def parse_cif(
     cif_path: pathlib.Path,
-    ccd: CCD,
     out_path: pathlib.Path,
+    entry_metadata: dict,
     model: str,
 ) -> int:
     """Parse a CIF file and return a gemmi.cif.Document object."""
     if out_path.exists():
         return SUCCESS
+
+    global _CCD_CACHE
+    ccd = _CCD_CACHE
+    assert ccd is not None, "CCD data not initialized in worker."
+
+    smiles_dict: dict[str, str] = {}
+    # HACK: this is hard-coded to our data-synthesis pipeline.
+    if model == "Boltz-1":
+        assert len([k for k in entry_metadata if k.startswith("ligand_")]) <= 1, (
+            "Expected at most one ligand in entry metadata for non-Boltz models."
+        )
+        smiles_dict["LIG"] = entry_metadata.get("ligand_0", None)
+    elif model == "Boltz-2":
+        for i in range(3):
+            ligand_key = f"ligand_{i}"
+            if ligand_key in entry_metadata:
+                smiles_dict[f"LIG{i + 1}"] = entry_metadata[ligand_key]
+    else:
+        raise NotImplementedError(f"Unsupported model: {model}")
+
+    assert len(smiles_dict) <= 1, "Multi-ligand input is not supported yet."
 
     # Read CIF file
     if cif_path.suffix == ".gz":
@@ -107,7 +165,7 @@ def parse_cif(
 
     # Prepare reference structure
     ref_struct: RefStructure = cif_factory.prepare_ref_structure(
-        raw_struct, metadata, ccd
+        raw_struct, metadata, ccd, smiles_dict
     )
     # Insert coordinates
     cif_factory.insert_coordinates(ref_struct, raw_struct, metadata)
@@ -129,30 +187,22 @@ def parse_cif(
     return SUCCESS
 
 
-def worker_fn(
-    cif_path: pathlib.Path,
-    output_dir: pathlib.Path,
-    model: str,
-    use_dir_name: bool = False,
-):
-    global _CCD_CACHE
-    ccd = _CCD_CACHE
-    assert ccd is not None, "CCD data not initialized in worker."
-
-    # Output path
-    if use_dir_name:
-        filename = cif_path.name.split(".")[0]
-        assert filename.startswith("structure_"), (
-            f"Expected file name to start with 'structure_', got {cif_path}"
-        )
-        name = f"{cif_path.parent.name}_{filename[len('structure_') :]}"
-    else:
-        name = cif_path.name.split(".")[0]
-    out_path = output_dir / f"{name}.npz"
+def worker_fn(task: dict):
+    # only retrain the required fields for metadata
+    entry_metadata = {
+        k: v
+        for k, v in task["entry_metadata"].items()
+        if k.startswith("ligand_") and pd.notna(v)
+    }
     try:
-        return parse_cif(cif_path, ccd, out_path, model)
+        return parse_cif(
+            cif_path=task["cif_path"],
+            out_path=task["out_path"],
+            entry_metadata=entry_metadata,
+            model=task["model"],
+        )
     except Exception as e:
-        print(f"Failed to process ({name}): {e}")
+        print(f"Failed to process ({task['cif_path']}): {e}")
         # raise e
         return FAILED
 
@@ -160,32 +210,68 @@ def worker_fn(
 def main():
     """Main function to process mmCIF files in parallel."""
     args = parse_args()
-    cif_dir: pathlib.Path = args.cif_dir
-    data_dir: pathlib.Path = args.out_dir / args.name
-    data_dir.mkdir(parents=True, exist_ok=True)
 
+    input_dir = args.input_dir
+    metadata_path = input_dir / "metadata.csv"
+    df = pd.read_csv(metadata_path)
+    print(f"Loaded metadata from {metadata_path}, total entries: {len(df)}")
+
+    cif_dir: pathlib.Path = input_dir / "holo"
     print(f"Scanning for mmCIF files in {cif_dir}...")
     cif_paths = sorted(cif_dir.rglob("*.cif*"))
     print(f"Found {len(cif_paths)} mmCIF files to process.")
 
-    # Run cif processing in parallel
+    # create data_idx/structure_idx -> cif path mapping
+    # this may depend on `--use_dir_name` flag
+    cif_mapping = {}
+    for cif_path in cif_paths:
+        if args.use_dir_name:
+            data_idx = cif_path.parent.name
+            structure_idx = int(cif_path.name.split(".")[0].split("_")[-1])
+            entry_id = f"{data_idx}_{structure_idx}"
+        else:
+            filename = cif_path.name.split(".")[0]
+            assert filename.count("_") >= 2, (
+                f"Expected file name to contain at least two underscores, got {cif_path}"
+            )
+            entry_id = "_".join(filename.split("_")[:2])
+        cif_mapping[entry_id] = cif_path
+
+    print(f"Created CIF mapping for {len(cif_mapping)} entries.")
+
+    data_dir: pathlib.Path = args.out_dir / args.name
+    data_dir.mkdir(parents=True, exist_ok=True)
     out_dir: pathlib.Path = data_dir / "npz"
     out_dir.mkdir(parents=True, exist_ok=True)
-    parse_cif_partial = functools.partial(
-        worker_fn,
-        output_dir=out_dir,
-        model=args.model,
-        use_dir_name=args.use_dir_name,
-    )
+
+    # Match each row and CIF file
+    tasks = []
+    for _, row in df.iterrows():
+        data_idx = row["data_idx"]
+        structure_idx = row["structure_idx"]
+        entry_id = f"{data_idx}_{structure_idx}"
+
+        if entry_id not in cif_mapping:
+            continue
+
+        tasks.append(
+            {
+                "entry_id": entry_id,
+                "cif_path": cif_mapping[entry_id],
+                "out_path": out_dir / f"{entry_id}.npz",
+                "entry_metadata": row.to_dict(),  # worker_fn의 키 이름과 일치시킴
+                "model": args.model,
+            }
+        )
     with multiprocessing.Pool(
-        args.num_workers,
+        processes=args.num_workers,
         initializer=init_worker,
         initargs=(args.ccd_path,),
     ) as pool:
         results = list(
             tqdm(
-                pool.imap_unordered(parse_cif_partial, cif_paths),
-                total=len(cif_paths),
+                pool.imap_unordered(worker_fn, tasks, chunksize=100),
+                total=len(tasks),
                 desc="Processing synthetic data",
             )
         )

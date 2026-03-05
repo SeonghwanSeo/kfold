@@ -122,15 +122,15 @@ def prepare_ref_chain(
 
     for res_idx, code in enumerate(ccd_sequences, start=1):
         is_standard_list.append(code in standard_residues)
-        if code in ccd:
-            # Common molecule from CCD
-            assert not code.startswith("LIG"), "LIG codes should be handled separately."
-            ref_mol = get_ref_mol(code)
-        elif code.startswith("LIG"):
+        if code.startswith("LIG"):
             # Ligand residue created from SMILES
             if smiles is None:
                 raise ValueError(f"SMILES must be provided for ligand residue {code}.")
             ref_mol = Component.from_smiles(code, smiles)
+        elif code in ccd:
+            # Common molecule from CCD
+            assert not code.startswith("LIG"), "LIG codes should be handled separately."
+            ref_mol = get_ref_mol(code)
         else:
             # Residue not found in CCD
             # NOTE: For polymers, this should not happen due to prior conversion to UNK.
