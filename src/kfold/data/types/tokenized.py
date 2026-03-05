@@ -9,9 +9,7 @@ import kfold.constants as C
 from kfold.data.layout import PlainLayout
 from kfold.utils.misc import check_array
 
-__all__ = [
-    "TokenizedStructure",
-]
+__all__ = ["TokenizedStructure"]
 
 
 def full_false(shape: tuple[int, ...]) -> np.ndarray:
@@ -501,12 +499,19 @@ class SequenceArray(PlainLayout[np.ndarray]):
         Chain types of shape [L,], indicating the type of each chain.
     entity_id: np.ndarray (int)
         Entity IDs of shape [L,], starting from 1.
-    input_id: np.ndarray (int)
+    seq_token_id: np.ndarray (int)
         Sequence tokens of shape [L,] (aatype, base, atom, ...)
         NOTE: this may differ from the res_type in TokenArray,
         since vocab is different for sequence embedding and co-folding.
+    bb_struct_token_id: np.ndarray (int)
+        Backbone structure tokens of shape [L,], used for backbone structure embedding.
+    fa_struct_token_id: np.ndarray (int)
+        Full-atom structure tokens of shape [L,], used for full-atom structure embedding
     pos_id: np.ndarray (int)
         Position indices of shape [L,], starting from 0.
+    mlm_mask: np.ndarray (bool)
+        Boolean tensor of shape [L,], indicating whether to mask the token for
+        sequence embedding (see ESMFold stochastic sampling strategy).
 
     Cached Properties
     -----------------
@@ -520,21 +525,37 @@ class SequenceArray(PlainLayout[np.ndarray]):
         Boolean tensor indicating whether the chain is ligand.
     """
 
-    input_id: np.ndarray  # [L,], int
-    pos_id: np.ndarray  # [L,], int
     chain_type: np.ndarray  # [L,], int
     entity_id: np.ndarray  # [L,], int
+    seq_token_id: np.ndarray  # [L,], int
+    bb_struct_token_id: np.ndarray  # [L,], int
+    fa_struct_token_id: np.ndarray  # [L,], int
+    pos_id: np.ndarray  # [L,], int
+    mlm_mask: np.ndarray  # [L,], bool
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
-        return self.input_id.shape  # [Nresidue,]
+        return self.seq_token_id.shape  # [L,]
 
     def __post_init__(self):
         shape = self.layout_shape
         check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
         check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
-        check_array(self.input_id, name="res_type", dtype=np.integer, shape=shape)
+        check_array(self.seq_token_id, name="seq_token_id", dtype=np.integer, shape=shape)
+        check_array(
+            self.bb_struct_token_id,
+            name="bb_struct_token_id",
+            dtype=np.integer,
+            shape=shape,
+        )
+        check_array(
+            self.fa_struct_token_id,
+            name="fa_struct_token_id",
+            dtype=np.integer,
+            shape=shape,
+        )
         check_array(self.pos_id, name="pos_id", dtype=np.integer, shape=shape)
+        check_array(self.mlm_mask, name="mlm_mask", dtype=np.bool_, shape=shape)
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -562,13 +583,22 @@ class SequenceArray(PlainLayout[np.ndarray]):
         return cls(
             chain_type=full_minus_one((sequence_length,)),
             entity_id=full_minus_one((sequence_length,)),
-            input_id=full_minus_one((sequence_length,)),
+            seq_token_id=full_minus_one((sequence_length,)),
+            bb_struct_token_id=full_minus_one((sequence_length,)),
+            fa_struct_token_id=full_minus_one((sequence_length,)),
             pos_id=full_minus_one((sequence_length,)),
+            mlm_mask=full_false((sequence_length,)),
         )
 
     def validate(self) -> None:
         """Perform sanity checks on the ResidueArray."""
         for field in dataclasses.fields(self):
+            if field.name in ["mlm_mask"]:
+                # This field is boolean, so negative values are not applicable.
+                continue
+            elif field.name in ["fa_struct_token_id", "bb_struct_token_id"]:
+                # These fields can be -1 for missing residues.
+                continue
             array = getattr(self, field.name)
             if np.any(array < 0):
                 raise ValueError(

@@ -119,7 +119,7 @@ class RieProdyPerturbation:
         self.log_stats_interval: int = config.log_stats_interval
 
         # Set up logging
-        self.logger: logging.Logger = logging.getLogger("RieProDyPerturbation")
+        self.logger: logging.Logger = logging.getLogger("[RieProDyPerturbation]")
         self.logger.setLevel(config.log_level)
 
         if os.environ.get("RIEPRODY_DISABLE_LOG", "0") == "1":

@@ -25,17 +25,15 @@ Validation/Test set: Consider only the most preferred apo structure.
       {
         "source": "afdb"
         "name": "AF-P01116-F1-model_v6",
-        "path": "AF-P01116-F1-model_v6.cif.gz",
         "residue_map": "1:235->11:245",
       },
       {
         "source": "esmfold"
         "name": "rcsb_protein_000020",
-        "path": "rcsb_protein_000020.pdb.gz",
       },
       {
         "source": "pdb"
-        "path": "51d6-A.pdb.gz",
+        "name": "6oim_A",
         "residue_map": "5:250->5:250",
       }
     ],
@@ -81,23 +79,20 @@ def parse_args():
 def load_sequence_map(
     all_sequence_fasta: pathlib.Path,
     protein_fasta: pathlib.Path,
-) -> dict[str, dict]:
+) -> dict[tuple[str, int], str]:
     """Load sequence ID mapping."""
     # Load all sequences
     prot_seq_to_id: dict[str, str] = {
         seq: seq_id for seq_id, seq in read_fasta(protein_fasta)
     }
-    protein_id_map: dict = {}
+    protein_id_map: dict[tuple[str, int], str] = {}
     # Load sequence to id mapping
     for key, seq in read_fasta(all_sequence_fasta):
         pdb_id, entity_id_str, ctype_str = key.split("|")
         entity_id = int(entity_id_str)
         if ctype_str.lower() == "protein":
             seq_id = prot_seq_to_id[seq]
-            protein_id_map[(pdb_id, entity_id)] = {
-                "seq_len": len(seq),
-                "seq_id": seq_id,
-            }
+            protein_id_map[(pdb_id, entity_id)] = seq_id
     return protein_id_map
 
 
@@ -136,7 +131,7 @@ def _prepare_protein_lookup(
     entry_name: str,
     entity_id: int,
     apo_dir: pathlib.Path,
-    seq_id_map: dict,
+    seq_id_map: dict[tuple[str, int], str],
     polymer_seq_id_map: dict,
     afdb_id_map: dict,
 ) -> list[dict[str, str]]:
@@ -145,38 +140,29 @@ def _prepare_protein_lookup(
     if (entry_name, entity_id) not in polymer_seq_id_map:
         raise ValueError(f"Sequence ID not found for {entry_name} entity {entity_id}")
 
-    seq_info = polymer_seq_id_map[(entry_name, entity_id)]
-    seq_id: str = seq_info["seq_id"]
-    seq_len: int = seq_info["seq_len"]
-
     apo_infos: list[dict[str, str]] = []
 
-    # First, check AFDB Apo Structure
+    # First, add AFDB Apo Structure
     if (entry_name, entity_id) in afdb_id_map:
         afdb_info = afdb_id_map[(entry_name, entity_id)]
         uniprot_id = afdb_info["uniprot_id"]
         uniprot_res_map = afdb_info["res_map"]
         afdb_id = f"AF-{uniprot_id}-F1-model_v6"
-        afdb_path = apo_dir / "afdb" / f"{afdb_id}.pdb.gz"
-        if afdb_path.exists():
-            afdb_apo = {
-                "source": "afdb",
-                "name": afdb_id,
-                "path": afdb_path.name,
-                "residue_map": uniprot_res_map,
-            }
-            apo_infos.append(afdb_apo)
-
-    # Then, check PDB Apo Structure
-    esmfold_path = apo_dir / "esmfold" / f"{seq_len}/{seq_id}.pdb.gz"
-    if esmfold_path.exists():
-        # ESMFold models are full-length and have a 1-to-1 residue mapping.
-        esmfold_apo: dict[str, str] = {
-            "source": "esmfold",
-            "name": seq_id,
-            "path": f"{seq_len}/{seq_id}.pdb.gz",
+        afdb_apo = {
+            "source": "afdb",
+            "name": afdb_id,
+            "residue_map": uniprot_res_map,
         }
-        apo_infos.append(esmfold_apo)
+        apo_infos.append(afdb_apo)
+
+    # Next, add ESMFold Apo Structure
+    # ESMFold models are full-length and have a 1-to-1 residue mapping.
+    seq_id = polymer_seq_id_map[(entry_name, entity_id)]
+    esmfold_apo: dict[str, str] = {
+        "source": "esmfold",
+        "name": seq_id,
+    }
+    apo_infos.append(esmfold_apo)
 
     return apo_infos
 

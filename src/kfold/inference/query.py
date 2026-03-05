@@ -86,7 +86,6 @@ class PolymerSequence(BaseSequence):
 
     sequence: str
     modifications: dict[str, str] = dataclasses.field(default_factory=dict)
-    apo: str | None = None
 
     def __len__(self) -> int:
         """Return the number of residues in the protein sequence."""
@@ -99,6 +98,7 @@ class ProteinSequence(PolymerSequence):
 
     # class variable
     ctype: ClassVar = C.ChainType.PROTEIN
+    apo: str
 
 
 @dataclasses.dataclass(kw_only=True)

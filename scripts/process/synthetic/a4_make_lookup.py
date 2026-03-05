@@ -6,7 +6,7 @@
     "1": [
       {
         "source": "boltz-2",
-        "path": "apo_1.cif.gz",
+        "name": "apo_1",
       },
     ]
     "2": [...]
@@ -77,22 +77,13 @@ def main():
             if seq in seq_to_apo_id:
                 if not seq_to_apo_id[seq] == apo_id:
                     pass
-                    # print(
-                    #     f"Sequence {seq} maps to multiple apo IDs: "
-                    #     f"{seq_to_apo_id[seq]} and {apo_id}"
-                    # )
             else:
                 seq_to_apo_id[seq] = apo_id
 
     print(f"Extracted {len(seq_to_apo_id)} unique protein sequences.")
 
     lmdb_path = data_dir / "structure.lmdb"
-    env = lmdb.open(
-        str(lmdb_path),
-        readonly=True,
-        lock=False,
-        readahead=True,
-    )
+    env = lmdb.open(str(lmdb_path), readonly=True, lock=False, readahead=True)
     all_lookup: dict[str, dict[str, list[dict[str, str]]]] = {}
     txn = env.begin()
 
@@ -122,7 +113,7 @@ def main():
             entry_lookup[entity_id] = [
                 {
                     "source": "boltz-2",
-                    "path": f"apo_{apo_id}.cif.gz",
+                    "name": f"apo_{apo_id}",
                 }
             ]
         all_lookup[entry_id] = {str(k): v for k, v in entry_lookup.items()}

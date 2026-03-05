@@ -1,10 +1,13 @@
 model:
   _yaml_: "model/kfold-prime-ecsi.yaml"
   sequence_encoder:
-    path: /mnt/parallel_storage/share/plm_weights/esm/esm-seo-v2.pt
+    path: /mnt/parallel_storage/share/plm_weights/esm-multimodal/esm-multimodal-v1.pt
+  structure_encoder:
+    path: /mnt/parallel_storage/share/plm_weights/unitok/unitok-dips.pt
   trunk:
     channel_seq_emb: 1152
     channel_seq_attn: 648
+    channel_struct_emb: 1536
     plm_module:
       use_qk_norm: true
       blocks_per_ckpt: null
@@ -22,39 +25,39 @@ train:
 
   global_hparams:
     batch_size: 1
-    max_tokens: 376
     global_batch_size: 128
 
   data:
-    ccd_path: /cache/wykim_lab/kfold_data/v260227/ccd-train.pkl
+    max_tokens: 376
+    ccd_path: /cache/wykim_lab/kfold_data/v260305/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
-        weight: 0.6
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-train/
+        weight: 0.5
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/rcsb-train/
 
       - _yaml_: "dataset/afdb-long.yaml"
-        weight: 0.345
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/afdb-long/
+        weight: 0.445
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/afdb-long/
 
       - _yaml_: "dataset/afdb-short.yaml"
         weight: 0.005
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/afdb-short/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/afdb-short/
 
       - _yaml_: "dataset/humap.yaml"
         weight: 0.03
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/huMAP/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/huMAP/
 
       - _yaml_: "dataset/natural_ab.yaml"
         weight: 0.01
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/NatAb/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/NatAb/
 
       - _yaml_: "dataset/encore.yaml"
         weight: 0.01
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/ENCORE/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/ENCORE/
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-val/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/rcsb-val/
 
   wandb:
     use: false

@@ -8,16 +8,16 @@ ccd-train.pkl
 rcsb-train/
     manifest.json
     structure.lmdb
-    apo_lookup.json  # mapping from each chain to apo structure(s).
-    apo/
-        esmfold/
-            uniq_prot1-esmfold.pdb
-            ...
-        afdb/
-            F-P01116-F1-model_v6.cif.gz
-            ...
-afdb-distillation/ ...
-rcsb-validation/ ...
+    apo.lmdb            # apo structures for each chain.
+      - seq: np.ndarray of shape (L,), dtype S1
+      - coords: np.ndarray of shape (L, 37, 3), dtype float32
+    apo_unitok.lmdb     # pre-computed structure tokens for apo structures.
+    apo_lookup.json     # mapping from each chain to apo structure(s).
+afdb-distillation/ ...  # no apo.lmdb or apo_lookup.json (label=apo)
+    manifest.json
+    structure.lmdb/
+    apo_unitok.lmdb     # pre-computed structure tokens for apo structures.
+rcsb-val/ ...
 
 
 * apo_lookup.json format
@@ -28,19 +28,16 @@ rcsb-validation/ ...
       {
         "source": "esmfold"
         "name": "uniq_protein_000020-esmfold",
-        "path": "uniq_protein_000020-esmfold.pdb.gz",
         "residue_map": "1:250->1:250",
       },
       {
         "source": "afdb"
         "name": "AF-P01116-F1-model_v6",
-        "path": "AF-P01116-F1-model_v6.cif.gz",
         "residue_map": "1:235->11:245",
       },
       {
         "source": "pdb"
         "name": "51d6-A",
-        "path": "51d6-A.pdb.gz",
         "residue_map": "5:250->5:250",
       }
     ],
@@ -55,7 +52,6 @@ import dataclasses
 import io
 import json
 import logging
-from abc import ABC, abstractmethod
 from pathlib import Path
 
 import lmdb
@@ -65,6 +61,7 @@ import torch
 from omegaconf import OmegaConf
 from typing_extensions import override
 
+import kfold.constants as C
 from kfold.data.pipelines import (
     apo_initialization,
     featurization,
@@ -83,6 +80,29 @@ from kfold.utils.registry import Registry
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
+
+
+def _open_lmdb(lmdb_path: str | Path) -> lmdb.Environment:
+    if not Path(lmdb_path).exists():
+        raise FileNotFoundError(f"LMDB file {lmdb_path} not found.")
+    return lmdb.open(
+        str(lmdb_path), readonly=True, lock=False, readahead=False, meminit=False
+    )
+
+
+def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
+    """Parse residue map string into start and end indices.
+    Example:
+        "1:100->5:104" -> (0, 100, 4, 104)
+    """
+    res_range, apo_range = residue_map.split("->")
+    res_st, res_end = map(int, res_range.split(":"))
+    apo_st, apo_end = map(int, apo_range.split(":"))
+    if (res_end - res_st) != (apo_end - apo_st):
+        return -1, -1, -1, -1  # invalid mapping
+    # Convert to 0-based indexing
+    # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
+    return res_st - 1, res_end, apo_st - 1, apo_end
 
 
 # === Dataset Classes === #
@@ -156,7 +176,7 @@ def next_multiple(n: int, divisor: int) -> int:
     return ((n + divisor - 1) // divisor) * divisor
 
 
-class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
+class SafeLoadingDataset(torch.utils.data.Dataset):
     """A dataset that safely retries loading data on failure."""
 
     def __init__(
@@ -288,79 +308,89 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         """Additional setup for subclasses."""
         pass
 
+    @property
+    def lmdb_env(self) -> lmdb.Environment:
+        if not hasattr(self, "_lmdb_env"):
+            self._lmdb_env = _open_lmdb(self.data_root / "structure.lmdb")
+        return self._lmdb_env
+
+    @property
+    def apo_lmdb_env(self) -> lmdb.Environment:
+        """Get the LMDB environment for apo structures."""
+        if not hasattr(self, "_apo_lmdb_env"):
+            self._apo_lmdb_env = _open_lmdb(self.data_root / "apo.lmdb")
+        return self._apo_lmdb_env
+
+    @property
+    def unitok_lmdb_env(self) -> lmdb.Environment:
+        """Get the LMDB environment for structure tokens of apo structures."""
+        if not hasattr(self, "_unitok_lmdb_env"):
+            self._unitok_lmdb_env = _open_lmdb(self.data_root / "apo_unitok.lmdb")
+        return self._unitok_lmdb_env
+
+    def __del__(self):
+        if hasattr(self, "_apo_lmdb_env"):
+            self._apo_lmdb_env.close()
+        if hasattr(self, "_unitok_lmdb_env"):
+            self._unitok_lmdb_env.close()
+        if hasattr(self, "_lmdb_env"):
+            self._lmdb_env.close()
+
     # === Core dataset methods === #
-    @abstractmethod
     def load_ref_structure(self, metadata: Metadata) -> RefStructure:
         """Get the structure for the given index."""
+        name = metadata.id
+        key_bytes = name.encode("utf-8")
+        with self.lmdb_env.begin(write=False) as txn:
+            value_bytes = txn.get(key_bytes)
+            if value_bytes is None:
+                raise KeyError(f"Record {name} not found in LMDB.")
+
+        # Use io.BytesIO to wrap the raw bytes
+        with io.BytesIO(value_bytes) as byte_stream:
+            ref_struct = RefStructure.load_npz(byte_stream)
+
+        # NOTE: Validate loaded record matches requested metadata
+        # If there is no problem, the cluster ID (for training) and
+        # low_homology flag (for validation) will be missing in npz
+        ref_metadata = ref_struct.metadata
+        assert ref_metadata.id == name, (
+            f"Loaded ID {ref_metadata.id} does not match requested ID {name}."
+        )
+        assert ref_metadata.num_chains == metadata.num_chains, (
+            f"Loaded num_chains {ref_metadata.num_chains} does not match "
+            f"requested num_chains {metadata.num_chains}."
+        )
+        assert ref_metadata.num_residues == metadata.num_residues, (
+            f"Loaded num_residues {ref_metadata.num_residues} does not match "
+            f"requested num_residues {metadata.num_residues}."
+        )
+        assert ref_metadata.num_interfaces == metadata.num_interfaces, (
+            f"Loaded num_interfaces {ref_metadata.num_interfaces} does not match "
+            f"requested num_interfaces {metadata.num_interfaces}."
+        )
+        # Copy metadata (to update cluster_id if needed)
+        ref_struct.metadata = metadata.copy()
+        return ref_struct
 
     def load_apo_structure(
         self,
         ref_struct: RefStructure,
+        apo_lookup: dict[int, dict],
         rng: np.random.Generator,
     ) -> None:
         """Populate the apo structure for the given reference structure."""
-        if self.is_protein_monomer_distillation:
-            # Directly feed apo structures from labeled
-            self.apo_initializer(ref_struct, {}, rng)
-            return
-
-        # Fetch apo lookup for the current entry
-        apo_dir = self.data_root / "apo"
-        entry_id: str = ref_struct.id
-        entry_lookup: dict[str, list[dict[str, str]]] = self.lookup_table[entry_id]
-
-        # Match apo structure for each protein entries.
-        apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
-        visited_entity_ids: set[int] = set()
-        for c in ref_struct.chains:
-            if not c.ctype.is_protein:
-                continue
-            if c.entity_id in visited_entity_ids:
-                continue  # already populated from another chain with same entity_id
-            entity_id = c.entity_id
-            visited_entity_ids.add(entity_id)
-
-            entity_apos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
-            num_apos = len(entity_apos)
-            # Select apo structure (randomly if multiple)
-            if num_apos == 0:
-                self.logger.warning(
-                    f"No apo info found for entity {entry_id}:{entity_id}"
-                )
-                continue
-            apo_info = entity_apos[rng.integers(0, num_apos)].copy()
-
-            # Check apo file existence
-            source = apo_info["source"]
-            path = apo_info["path"]
-            apo_path = apo_dir / source / path
-            if not apo_path.exists():
-                self.logger.error(
-                    f"Apo file not found for entity {entry_id}:{entity_id}: {apo_path}"
-                )
-                continue
-            apo_info["path"] = apo_path
-
-            # Add rieprody key if available
-            if "name" in apo_info:
-                apo_info["rieprody_key"] = f"{source}:{apo_info['name']}"
-
-            apo_lookup[entity_id] = apo_info
-
-        # Populate apo structure
         self.apo_initializer(ref_struct, apo_lookup, rng)
 
     def tokenize(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator,
+        self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        return self.tokenizer(
-            ref_struct,
-            rng,
-            use_cached_conformer_only=True,  # for training/validation loops
-        )
+        # only use cached conformer tokens to avoid
+        # ETKDG conformer generation during training/validation.
+        use_cached_conformer_only = True
+        # TODO: add apo info
+        return self.tokenizer(ref_struct, {}, rng, use_cached_conformer_only)
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
@@ -460,11 +490,17 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         ref_struct = self.extract_substructure(ref_struct, rng=rng, **kwargs)
         metadata = ref_struct.metadata  # update metadata after extraction
 
+        # Get apo lookup for the structure
+        apo_lookup = self.get_apo_lookup(ref_struct, rng)
+
         # Populate apo structure (in-place)
-        self.load_apo_structure(ref_struct, rng=rng)
+        self.load_apo_structure(ref_struct, apo_lookup, rng)
 
         # Tokenization
         struct: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
+
+        # Populate structure tokens for apo structure (in-place)
+        self.populate_structure_tokens(struct, apo_lookup, rng)
 
         # Cropping
         cropped_struct = self.crop_structure(struct, metadata, rng=rng, **kwargs)
@@ -501,64 +537,148 @@ class SafeLoadingDataset(torch.utils.data.Dataset, ABC):
         f_input = self.featurizer(struct, rng=rng)
         return f_input
 
+    # === Helper methods for apo structure handling === #
+    def get_apo_lookup(
+        self, ref_struct: RefStructure, rng: np.random.Generator
+    ) -> dict[int, dict]:
+        """Get the apo lookup for the given reference structure."""
+        if self.is_protein_monomer_distillation:
+            # For protein monomer distillation datasets, we directly
+            # feed apo structures from labeled monomer structures, so
+            # we don't have to load apo structures.
 
-class LMDBDataset(SafeLoadingDataset):
-    @property
-    def lmdb_env(self) -> lmdb.Environment:
-        if not hasattr(self, "_lmdb_env"):
-            self.lmdb_path = self.data_root / "structure.lmdb"
-            self._lmdb_env = lmdb.open(
-                str(self.lmdb_path),
-                map_size=1024**4,  # 1 TB
-                readonly=True,
-                lock=False,
-                readahead=False,
-                meminit=False,
-            )
-        return self._lmdb_env
+            # NOTE: we still need the lookup table to load structure
+            # tokens for apo structures.
+            # monomer: always have a chain with entity_id=1
+            return {1: {"key": ref_struct.id}}
 
-    def __del__(self):
-        if hasattr(self, "_lmdb_env"):
-            self._lmdb_env.close()
+        entry_id: str = ref_struct.id
+        entry_lookup: dict[str, list[dict[str, str]]] = self.lookup_table[entry_id]
 
-    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
-        """Get the structure for the given index."""
-        name = metadata.id
-        key_bytes = name.encode("utf-8")
-        with self.lmdb_env.begin(write=False) as txn:
-            value_bytes = txn.get(key_bytes)
-            if value_bytes is None:
-                raise KeyError(f"Record {name} not found in LMDB.")
+        # Match apo structure for each protein entries.
+        apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
+        visited_entity_ids: set[int] = set()
+        for c in ref_struct.chains:
+            if not c.ctype.is_protein:
+                continue
+            if c.entity_id in visited_entity_ids:
+                continue  # already populated from another chain with same entity_id
+            entity_id = c.entity_id
+            visited_entity_ids.add(entity_id)
 
-        # Use io.BytesIO to wrap the raw bytes
-        with io.BytesIO(value_bytes) as byte_stream:
-            ref_struct = RefStructure.load_npz(byte_stream)
+            entity_apo_infos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
+            num_apos = len(entity_apo_infos)
+            # Select apo structure (randomly if multiple)
+            if num_apos == 0:
+                self.logger.warning(
+                    f"No apo info found for entity {entry_id}:{entity_id}"
+                )
+                continue
+            apo_info = entity_apo_infos[rng.integers(0, num_apos)].copy()
 
-        # NOTE: Validate loaded record matches requested metadata
-        # If there is no problem, the cluster ID (for training) and
-        # low_homology flag (for validation) will be missing in npz
-        ref_metadata = ref_struct.metadata
-        assert ref_metadata.id == name, (
-            f"Loaded ID {ref_metadata.id} does not match requested ID {name}."
-        )
-        assert ref_metadata.num_chains == metadata.num_chains, (
-            f"Loaded num_chains {ref_metadata.num_chains} does not match "
-            f"requested num_chains {metadata.num_chains}."
-        )
-        assert ref_metadata.num_residues == metadata.num_residues, (
-            f"Loaded num_residues {ref_metadata.num_residues} does not match "
-            f"requested num_residues {metadata.num_residues}."
-        )
-        assert ref_metadata.num_interfaces == metadata.num_interfaces, (
-            f"Loaded num_interfaces {ref_metadata.num_interfaces} does not match "
-            f"requested num_interfaces {metadata.num_interfaces}."
-        )
-        # Copy metadata (to update cluster_id if needed)
-        ref_struct.metadata = metadata.copy()
-        return ref_struct
+            name = apo_info["name"]
+            source = apo_info["source"]
+            key = f"{source}:{name}"
+            apo_info["key"] = key
+
+            # Load apo coordinates from LMDB
+            with self.apo_lmdb_env.begin(write=False) as txn:
+                value_bytes = txn.get(key.encode("utf-8"))
+                if value_bytes is None:
+                    self.logger.warning(
+                        f"Apo structure {key} not found in LMDB for entity "
+                        f"{entry_id}:{entity_id}"
+                    )
+                    continue
+                with io.BytesIO(value_bytes) as byte_stream:
+                    with np.load(byte_stream) as data:
+                        apo_info["seq"] = "".join(data["seq"].astype(str).tolist())
+                        apo_info["coords"] = data["coords"].copy()
+
+            apo_lookup[entity_id] = apo_info
+        return apo_lookup
+
+    def populate_structure_tokens(
+        self,
+        struct: TokenizedStructure,
+        apo_lookup: dict[int, dict],
+        rng: np.random.Generator,
+    ) -> None:
+        """Populate the structure tokens for the given tokenized structure."""
+
+        bb_struct_token_id = struct.sequence.bb_struct_token_id
+        fa_struct_token_id = struct.sequence.fa_struct_token_id
+
+        visited_entity_ids: set[int] = set()
+        with self.unitok_lmdb_env.begin(write=False) as txn:
+            for c_i in range(struct.num_chains):
+                if struct.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
+                    continue  # only populate structure tokens for protein chains
+
+                eid = struct.chain.entity_id[c_i]
+                if eid in visited_entity_ids:
+                    continue  # already populated from another chain with same entity_id
+                visited_entity_ids.add(eid)
+
+                if eid not in apo_lookup:
+                    self.logger.warning(
+                        f"No apo info for entity_id {eid} in apo lookup."
+                        f"Skipping structure token population for this entity."
+                    )
+                    continue
+                apo_info = apo_lookup[eid]
+                key = apo_info["key"]
+                v = txn.get(key.encode("utf-8"))
+                if v is None:
+                    self.logger.warning(
+                        f"Apo structure tokens {key} not found in LMDB for "
+                        f"entity_id {eid}"
+                    )
+                    continue
+                # Load pre-computed structure tokens for apo structure from LMDB
+                apo_unitok = np.frombuffer(v, dtype=np.uint16).reshape(2, -1)
+                bb_tok, fa_tok = apo_unitok
+                toklen = len(bb_tok)
+
+                # Find the corresponding sequence token indices
+                seq_token_i = np.where(struct.sequence.entity_id == eid)[0]
+                # Remove bos/eos
+                seq_token_i = seq_token_i[1:-1]
+
+                if "residue_map" not in apo_info:
+                    # If residue map is not provided, we assume the entire
+                    # sequence can be aligned.
+                    if len(bb_tok) != len(seq_token_i):
+                        self.logger.warning(
+                            f"Apo tokens ({key}, len={toklen}) cannot be aligned "
+                            f"with sequence tokens (len={len(seq_token_i)}) for "
+                            f"entity_id {eid} without residue mapping."
+                        )
+                        continue
+                    # Populate the structure tokens for the aligned residues
+                    bb_struct_token_id[seq_token_i] = bb_tok
+                    fa_struct_token_id[seq_token_i] = fa_tok
+                else:
+                    residue_map = apo_info["residue_map"]
+                    res_st, res_end, apo_st, apo_end = parse_residue_map(residue_map)
+                    if res_st == -1:
+                        self.logger.warning(
+                            f"Invalid residue map {residue_map} for entity_id {eid}."
+                        )
+                        continue
+                    if toklen < (apo_end - apo_st) or (len(seq_token_i) < res_end):
+                        self.logger.warning(
+                            f"Apo tokens ({key}, len={toklen}) cannot cover the "
+                            f"residue mapping for entity_id {eid}: {residue_map}."
+                        )
+                        continue
+                    seq_token_i_mapped = seq_token_i[res_st:res_end]
+                    # Populate the structure tokens for the mapped residues
+                    bb_struct_token_id[seq_token_i_mapped] = bb_tok[apo_st:apo_end]
+                    fa_struct_token_id[seq_token_i_mapped] = fa_tok[apo_st:apo_end]
 
 
-class TrainingDataset(LMDBDataset):
+class TrainingDataset(SafeLoadingDataset):
     """Training dataset with AF3-style sampling and cropping."""
 
     def __init__(
@@ -620,9 +740,12 @@ class TrainingDataset(LMDBDataset):
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
 
-        # AF3-style sampling (chain/interface-based)
-        assert config.sampler is not None, "Sampler config must be provided."
-        self.sampler: BaseSampler = Registry.instantiate(config.sampler)
+        if config.sampler is None:
+            # Uniform sampling (complex-level)
+            self.sampler: BaseSampler = BaseSampler()
+        else:
+            # AF3-style sampling (chain/interface-based)
+            self.sampler: BaseSampler = Registry.instantiate(config.sampler)
         samples, weights = self.sampler.get_samples(self.metadatas)
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights
@@ -826,7 +949,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         return self.datasets[dataset_idx][sample_idx]
 
 
-class ValidationDataset(LMDBDataset):
+class ValidationDataset(SafeLoadingDataset):
     """Validation dataset without sampling and cropping."""
 
     def __init__(
@@ -864,7 +987,7 @@ class ValidationDataset(LMDBDataset):
         if cfg.apo_init.protein_perturbation is not None:
             self.logger.warning("Protein perturbation is enabled for validation set.")
         if cfg.apo_init.ligand_perturbation is not None:
-            self.logger.warning("Ligand perturbation is provided for valid set.")
+            self.logger.warning("Ligand perturbation is enabled for validation set.")
 
     def setup(self) -> None:
         """Additional setup for subclasses."""

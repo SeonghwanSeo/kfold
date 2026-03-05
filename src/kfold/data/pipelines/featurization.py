@@ -217,7 +217,7 @@ class InputFeaturizer:
 
         # === Sequence-level features ===
         seq_dict = struct.sequence.to_dict()
-        seq_dict["pad_mask"] = np.ones_like(seq_dict["input_id"], dtype=np.bool_)
+        seq_dict["pad_mask"] = np.ones(len(struct.sequence), dtype=np.bool_)
 
         # === Convert to tensors ===
         chain_layout = ChainTensor(

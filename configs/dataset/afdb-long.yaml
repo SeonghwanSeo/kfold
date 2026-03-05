@@ -9,10 +9,7 @@ data_path: <DATA_PATH_PLACEHOLDER>
 seed: null # should be null for data augmentation
 is_protein_monomer_distillation: true
 
-sampler:
-  _registry_: "data_sampler"
-  _class_: UniformSampler
-  level: "complex"
+sampler: null
 
 cropper:
   _registry_: "data_cropper"
@@ -24,6 +21,8 @@ cropper:
 
 apo_init:
   prob_perturbation: 1.0
+  # We use the same structure to label as the apo; no perturbation required.
+  use_residue_permutation: false
   # Use harsh perturbation for AFDB to improve robustness.
   protein_perturbation:
     bioprior:

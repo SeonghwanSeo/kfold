@@ -594,17 +594,22 @@ class SequenceTensor(TensorLayout):
 
     Attributes
     ----------
-    input_id: np.ndarray (int)
-        Sequence tokens of shape [L,] (aatype, base, atom, ...)
-        NOTE: this may differ from the res_type in TokenArray,
-        since vocab is different for sequence embedding and co-folding.
-    pos_id: np.ndarray (int)
-        Residue indices of shape [L,], used for residue-level operations,
-        starting from 0 (BOS).
     entity_id: np.ndarray (int)
         Entity IDs of shape [L,], starting from 1.
     chain_type: np.ndarray (int)
         Chain types of shape [L,], indicating the type of each chain.
+    seq_token_id: np.ndarray (int)
+        Sequence tokens of shape [L,] (aatype, base, atom, ...)
+    bb_struct_token_id: np.ndarray (int)
+        Backbone structure tokens of shape [L,].
+    fa_struct_token_id: np.ndarray (int)
+        Full-atom structure tokens of shape [L,].
+    pos_id: np.ndarray (int)
+        Residue indices of shape [L,], used for residue-level operations,
+        starting from 0 (BOS).
+    mlm_mask: np.ndarray (bool)
+        Mask tensor of shape [L,], indicating to mask tokens for sequence
+        embedding. (see ESMFold stochastic sampling strategy)
 
     Cached Properties
     -----------------
@@ -620,13 +625,16 @@ class SequenceTensor(TensorLayout):
 
     chain_type: torch.Tensor  # [L,], int
     entity_id: torch.Tensor  # [L,], int
-    input_id: torch.Tensor  # [L,], int
+    seq_token_id: torch.Tensor  # [L,], int
+    bb_struct_token_id: torch.Tensor  # [L,], int
+    fa_struct_token_id: torch.Tensor  # [L,], int
     pos_id: torch.Tensor  # [L,], int
+    mlm_mask: torch.Tensor  # [L,], bool
     pad_mask: torch.Tensor  # [L,], bool
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
-        return self.input_id.shape  # [L,]
+        return self.seq_token_id.shape  # [L,]
 
     @property
     def ndim_unbatched(self) -> int:
@@ -637,8 +645,23 @@ class SequenceTensor(TensorLayout):
         shape = self.layout_shape
         check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
         check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
-        check_tensor(self.input_id, name="res_type", dtype=torch.long, shape=shape)
+        check_tensor(
+            self.seq_token_id, name="seq_token_id", dtype=torch.long, shape=shape
+        )
+        check_tensor(
+            self.bb_struct_token_id,
+            name="bb_struct_token_id",
+            dtype=torch.long,
+            shape=shape,
+        )
+        check_tensor(
+            self.fa_struct_token_id,
+            name="fa_struct_token_id",
+            dtype=torch.long,
+            shape=shape,
+        )
         check_tensor(self.pos_id, name="pos_id", dtype=torch.long, shape=shape)
+        check_tensor(self.mlm_mask, name="mlm_mask", dtype=torch.bool, shape=shape)
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
 
     @cached_property
@@ -676,9 +699,12 @@ class SequenceTensor(TensorLayout):
         pad_values = {
             "chain_type": -1,
             "entity_id": -1,
-            "input_id": C.sequence.PAD_TOKEN_INDEX,
+            "seq_token_id": C.sequence.PAD_TOKEN_INDEX,
+            "bb_struct_token_id": C.sequence.PAD_TOKEN_INDEX,
+            "fa_struct_token_id": C.sequence.PAD_TOKEN_INDEX,
             "pos_id": -1,
             "pad_mask": False,
+            "mlm_mask": False,
         }
 
         fields = {}

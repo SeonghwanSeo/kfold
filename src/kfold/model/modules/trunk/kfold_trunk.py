@@ -52,6 +52,8 @@ class KFoldTrunk(BaseTrunk):
             The hidden dimension for the PLMModule.
         channel_seq_emb : int
             The sequence embedding size for the PLM module.
+        channel_struct_emb : int
+            The structure embedding size for the PLM module.
         channel_seq_attn : int
             The number of attention maps for the PLM module.
         use_attn : bool
@@ -70,8 +72,9 @@ class KFoldTrunk(BaseTrunk):
         channel_z: int = 128
 
         # PLM dimensions.
-        channel_plm: int = 1152
+        channel_plm: int = 768
         channel_seq_emb: int = 1152
+        channel_struct_emb: int = 1536
         channel_seq_attn: int = 648
         use_attn: bool = True
 
@@ -94,6 +97,8 @@ class KFoldTrunk(BaseTrunk):
 
         # === PLM feature processing layers === #
         self.layernorm_seq_emb = LayerNorm(cfg.channel_seq_emb, create_offset=False)
+        self.layernorm_struct_emb = LayerNorm(cfg.channel_struct_emb, create_offset=False)
+        plm_input_dim = cfg.channel_seq_emb + cfg.channel_struct_emb
 
         # Projections from PLM features to trunk features.
         # TODO: if we consider two separate plms for intra- and inter-chain attentions,
@@ -110,14 +115,14 @@ class KFoldTrunk(BaseTrunk):
             )
 
         # For the skip connection from PLM features to s_trunk output.
-        self.proj_seq_emb_to_s_trunk = LinearNoBias(
-            cfg.channel_seq_emb, cfg.channel_s, init="final"
+        self.proj_plm_to_s_trunk = LinearNoBias(
+            plm_input_dim, cfg.channel_s, init="final"
         )
 
         # === PLM Module === #
         self.plm_embedder_refine: PLMEmbedder = PLMEmbedder(
             channel_s_input=cfg.channel_s,
-            channel_seq_emb=cfg.channel_seq_emb,
+            channel_plm_input=plm_input_dim,
             channel_plm=cfg.channel_plm,
         )
         self.plm_module: PLMModule = PLMModule(
@@ -221,13 +226,16 @@ class KFoldTrunk(BaseTrunk):
         chunk_size_tri_attn = self._compute_chunk_size(s_inputs.shape[1])
 
         # Get PLM features
-        assert "seq_emb" in kwargs, "PLM features s_plm must be provided in kwargs"
-        assert "seq_attn" in kwargs, "PLM features z_plm must be provided in kwargs"
+        for k in ["seq_emb", "seq_attn", "struct_emb"]:
+            if k not in kwargs:
+                raise ValueError(f"Missing required PLM feature: {k}")
         seq_emb: torch.Tensor = kwargs["seq_emb"]
         seq_attn: torch.Tensor = kwargs["seq_attn"]
+        struct_emb: torch.Tensor = kwargs["struct_emb"]
 
-        # Layer norm on PLM features.
         seq_emb = self.layernorm_seq_emb(seq_emb)
+        struct_emb = self.layernorm_struct_emb(struct_emb)
+        plm_input = torch.cat([seq_emb, struct_emb], dim=-1)
 
         if self.use_attn:
             # Feed attention maps to initialize z_init.
@@ -237,14 +245,14 @@ class KFoldTrunk(BaseTrunk):
         # === Proteina-style register tokens (optional) ===
         mask = f_input.token.pad_mask
         asym_id = f_input.token.asym_id
-        s_inputs, s_init, seq_emb, z_init, asym_id, mask = self._extend_registers(
-            s_inputs, s_init, seq_emb, z_init, asym_id, mask
+        s_inputs, s_init, plm_input, z_init, asym_id, mask = self._extend_registers(
+            s_inputs, s_init, plm_input, z_init, asym_id, mask
         )
 
         # z_hat, s_hat = 0, 0
         s_hat = torch.zeros_like(s_init)
         z_hat = torch.zeros_like(z_init)
-        s_plm = self.plm_embedder_refine(s_inputs, seq_emb)
+        s_plm = self.plm_embedder_refine(s_inputs, plm_input)
 
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
@@ -265,7 +273,7 @@ class KFoldTrunk(BaseTrunk):
                 )
 
         # Skip connection to s_trunk
-        s_hat = s_hat + self.proj_seq_emb_to_s_trunk(seq_emb)
+        s_hat = s_hat + self.proj_plm_to_s_trunk(plm_input)
 
         # Remove register tokens before returning.
         s_hat, z_hat = self._undo_registers(s_hat, z_hat)

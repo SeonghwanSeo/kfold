@@ -249,7 +249,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         self,
         cutoff: float = 15.0,
         cutoff_nucleic_acid: float = 30.0,
-        chunk_size: int = 1,
+        chunk_size: int | None = 1,
     ):
         """Initialize SmoothLDDTLoss.
 
@@ -264,7 +264,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         super().__init__()
         self.cutoff: float = cutoff
         self.cutoff_nucleic_acid: float = cutoff_nucleic_acid
-        self.chunk_size: int = chunk_size
+        self.chunk_size: int | None = chunk_size
 
     def _chunk_forward(
         self,
@@ -326,19 +326,22 @@ class SmoothLDDTLoss(torch.nn.Module):
         pair_mask &= dist_mask
 
         losses = []
-        for i in range(0, N, self.chunk_size):
-            st, end = i, i + self.chunk_size
-            loss_chunk = checkpoint_section(
-                self._chunk_forward,
-                (
-                    x_pred[st:end],
-                    d_true,
-                    pair_mask,
-                ),
-                apply_ckpt=True,
-                use_reentrant=False,
-            )
-            losses.append(loss_chunk)
+        if self.chunk_size is None:
+            losses.append(self._chunk_forward(x_pred, d_true, pair_mask))
+        else:
+            for i in range(0, N, self.chunk_size):
+                st, end = i, i + self.chunk_size
+                loss_chunk = checkpoint_section(
+                    self._chunk_forward,
+                    (
+                        x_pred[st:end],
+                        d_true,
+                        pair_mask,
+                    ),
+                    apply_ckpt=True,
+                    use_reentrant=False,
+                )
+                losses.append(loss_chunk)
         return losses
 
     def forward(

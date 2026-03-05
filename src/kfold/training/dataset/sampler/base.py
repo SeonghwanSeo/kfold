@@ -47,5 +47,5 @@ class BaseSampler:
             The weights for each sampled item.
         """
         samples: list[Sample] = [Sample(record, None) for record in metadatas]
-        weights = np.ones(len(samples), dtype=np.float32)
+        weights = np.ones(len(samples), dtype=np.float64)
         return samples, weights

@@ -92,7 +92,8 @@ class InputDataPipeline:
         self.populate_apo_structure(ref_struct, input, rng=rng)
 
         # Tokenize structure
-        tok_struct = self.tokenizer.tokenize(ref_struct)
+        # FIXME: add structure tokens dict
+        tok_struct = self.tokenizer.tokenize(ref_struct, structure_tokens={})
 
         # Apply sequence masking for sample diversity (only if enabled)
         self.sequence_masking(tok_struct, rng)
@@ -202,18 +203,10 @@ class InputDataPipeline:
         # Prepare lookup (apo initializer input)
         lookup: dict[int, dict] = {}
         for entity_id, seq in enumerate(input.sequences, start=1):
-            if isinstance(seq, query.LigandSequence):
-                # Ligands do not have apo structures
+            if not isinstance(seq, query.ProteinSequence):
                 continue
-            if seq.apo is None:
-                # No apo structure provided
-                continue
-            # Use provided apo structure
             apo_path = pathlib.Path(seq.apo)
-            lookup[entity_id] = {
-                "path": apo_path,
-                "source": "query",  # dummy
-            }
+            lookup[entity_id] = {"path": apo_path}
         # Populate apo structure
         self.apo_initializer(ref_struct, lookup=lookup, rng=rng)
 

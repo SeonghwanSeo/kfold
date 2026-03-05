@@ -84,12 +84,12 @@ class SequenceMasking:
         # Determine the masking ratio
         mask_ratio = rng.uniform(0.0, self.mask_ratio)
 
-        sequence_input = input.sequence.input_id
+        sequence_input = input.sequence.seq_token_id
 
         # Determine which positions to mask
         mask_positions = rng.random(size=sequence_input.shape) < mask_ratio
         # Ensure special tokens are not masked
         mask_positions &= ~np.isin(sequence_input, self.special_token_indices)
 
-        # Apply masking
-        sequence_input[mask_positions] = self.mask_token_index
+        # Set masked positions to the mask token index
+        input.sequence.mlm_mask[mask_positions] = True

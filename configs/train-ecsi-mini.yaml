@@ -1,10 +1,13 @@
 model:
   _yaml_: "model/kfold-ecsi.yaml"
   sequence_encoder:
-    path: /mnt/parallel_storage/share/plm_weights/esm/esm-seo-v2.pt
+    path: /mnt/parallel_storage/share/plm_weights/esm-multimodal/esm-multimodal-v1.pt
+  structure_encoder:
+    path: /mnt/parallel_storage/share/plm_weights/unitok/unitok-dips.pt
   trunk:
     channel_seq_emb: 1152
     channel_seq_attn: 648
+    channel_struct_emb: 1536
     plm_module:
       use_qk_norm: true
       blocks_per_ckpt: 4
@@ -26,18 +29,18 @@ train:
 
   global_hparams:
     batch_size: 4
-    max_tokens: 376
     global_batch_size: 128
 
   data:
-    ccd_path: /cache/wykim_lab/kfold_data/v260227/ccd-train.pkl
+    max_tokens: 376
+    ccd_path: /cache/wykim_lab/kfold_data/v260305/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-train/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/rcsb-train/
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260227/dataset/rcsb-val/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/rcsb-val/
 
   wandb:
     use: false
