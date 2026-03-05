@@ -28,7 +28,7 @@ def get_periodic_table() -> Chem.PeriodicTable:
 def assign_atom_names(mol: Chem.Mol, max_name_length: int = 4) -> None:
     element_counts: dict[str, int] = defaultdict(int)
     for atom in mol.GetAtoms():
-        elem = atom.GetSymbol().upper()
+        elem = atom.GetSymbol()
         count = element_counts.get(elem, 0) + 1
         element_counts[elem] = count
         atom_name = f"{elem}{count}"
