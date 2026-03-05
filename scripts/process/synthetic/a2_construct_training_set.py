@@ -29,7 +29,7 @@ def parse_args():
     parser.add_argument(
         "--size_gb",
         type=int,
-        default=50,
+        default=100,
         help="LMDB map size in GB.",
     )
     parser.add_argument(

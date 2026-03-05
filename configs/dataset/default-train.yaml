@@ -28,7 +28,7 @@ apo_init:
       max_rmsd: null # Maximum RMSD (null means no limit)
       log_level: "INFO" # Logging level
   ligand_perturbation:
-    mode: "langevin"
+    mode: "gaussian" # Perturbation mode: "gaussian"
     gaussian_sigma: 0.3
     langevin_num_steps: 200
     langevin_dt: 0.005

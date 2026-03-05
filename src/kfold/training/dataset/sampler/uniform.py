@@ -1,6 +1,5 @@
 import numpy as np
 
-from kfold.data.types.metadata import Metadata
 from kfold.utils.registry import DATA_SAMPLER
 
 from .base import BaseSampler, Sample
@@ -34,15 +33,15 @@ class UniformSampler(BaseSampler):
             "interface",
         ], f"Unsupported sampling level: {self.level}"
 
-    def get_samples(self, metadatas: list[Metadata]) -> tuple[list[Sample], np.ndarray]:
+    def get_samples(self, metadatas: list[dict]) -> tuple[list[Sample], np.ndarray]:
         samples: list[Sample]
         if self.level == "chain":
-            samples = [Sample(m, c.asym_id) for m in metadatas for c in m.chains]
+            samples = [Sample(m, c["asym_id"]) for m in metadatas for c in m["chains"]]
         elif self.level == "interface":
             samples = [
-                Sample(m, tuple(iface.asym_ids))
+                Sample(m, tuple(iface["asym_ids"]))
                 for m in metadatas
-                for iface in m.interfaces
+                for iface in m["interfaces"]
             ]
         else:
             samples = [Sample(m, None) for m in metadatas]
