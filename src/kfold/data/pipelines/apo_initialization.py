@@ -18,6 +18,33 @@ from ._small_mol_perturbation import SmallMolPerturbation, SmallMolPerturbationC
 
 # === Helper functions === #
 @lru_cache(64)
+def get_atom_order_in_residue(res_name: str) -> tuple[int, ...]:
+    """Get the indices of ambiguous atoms for a given residue type."""
+    res_name: C.ResidueName = C.ResidueName[res_name]
+    # determine the chain type based on residue name
+    if res_name in C.residue.PROTEIN_RESIDUES:
+        atom_order = C.atom.protein_atom37_order
+    elif res_name in C.residue.DNA_RESIDUES:
+        atom_order = C.atom.nucleic_acid_atom29_order
+    elif res_name in C.residue.RNA_RESIDUES:
+        atom_order = C.atom.nucleic_acid_atom29_order
+    else:
+        raise ValueError(f"Unsupported residue name: {res_name}")
+    residue_atoms = C.atom.RESIDUE_ATOMS[res_name]
+    return tuple(atom_order[an.value] for an in residue_atoms)
+
+
+def get_ref_comp(
+    res_name: str, ccd: CCD, cache: dict[str, Component] | None
+) -> Component:
+    cache = cache if cache is not None else {}
+    if res_name not in cache:
+        assert res_name in ccd, f"Residue name {res_name} not found in CCD."
+        cache[res_name] = ccd[res_name]
+    return cache[res_name]
+
+
+@lru_cache(64)
 def get_ambiguous_atoms_in_residue(
     res_name: str,
     extended: bool = False,
@@ -261,6 +288,8 @@ class ApoInitializer:
         rng: np.random.Generator,
     ) -> None:
         """Insert apo structure coordinates for each chain in the structure."""
+        _ref_comp_cache: dict[str, Component] = {}
+
         # === 1. Insert apo coordinates for polymer chains === #
         # cache apo coordinates per entity to avoid redundant loading/sampling
         apo_coords_dict: dict[int, np.ndarray] = {}
@@ -269,6 +298,38 @@ class ApoInitializer:
             if not chain.ctype.is_polymer:
                 continue  # non-polymer chains handled later
 
+            entity_id = chain.entity_id
+            if entity_id in apo_coords_dict:
+                # Reuse cached apo coordinates
+                apo_coords = apo_coords_dict[entity_id]
+            else:
+                if entity_id in lookup:
+                    assert chain.is_protein, "Only protein chains have apo structures."
+                    apo_info = lookup[entity_id]
+                    ccd_sequence = chain.get_ccd_sequence()
+                    try:
+                        apo_coords = self.get_protein_apo_structure(
+                            ccd_sequence, apo_info, rng
+                        )
+                    except Exception as e:
+                        # NOTE: Apo structure loading can fail for various reasons,
+                        # such as too large sequence length, mismatched residue
+                        # mapping, or file reading errors.
+                        apo_info.pop("seq", None)
+                        apo_info.pop("coords", None)
+                        self.logger.error(
+                            "Failed to load apo structure for entity "
+                            f"{entity_id} from {apo_info}: {e}."
+                        )
+                        if self.use_holo_if_apo_unavailable:
+                            # Falling back to holo coordinates.
+                            self.copy_chain_holo_coords_to_apo(chain, rng)
+                        continue
+                    # Store apo coordinates
+                    apo_coords_dict[entity_id] = apo_coords
+                else:
+                    continue  # No apo structure available for this entity
+
             # Determine number of atoms and atom order
             if chain.ctype.is_protein:
                 Natom = 37
@@ -276,37 +337,6 @@ class ApoInitializer:
             else:
                 Natom = 29
                 atom_order = C.atom.nucleic_acid_atom29_order
-
-            entity_id = chain.entity_id
-            if entity_id in apo_coords_dict:
-                # Reuse cached apo coordinates
-                apo_coords = apo_coords_dict[entity_id]
-            elif entity_id in lookup:
-                assert chain.is_protein, "Only protein chains have apo structures."
-                apo_info = lookup[entity_id]
-                ccd_sequence = chain.get_ccd_sequence()
-                try:
-                    apo_coords = self.get_protein_apo_structure(
-                        ccd_sequence, apo_info, rng
-                    )
-                except Exception as e:
-                    # NOTE: Apo structure loading can fail for various reasons, such as
-                    # too large sequence length, mismatched residue mapping, or file
-                    # reading errors.
-                    apo_info.pop("seq", None)
-                    apo_info.pop("coords", None)
-                    self.logger.error(
-                        "Failed to load apo structure for entity "
-                        f"{entity_id} from {apo_info}: {e}."
-                    )
-                    if self.use_holo_if_apo_unavailable:
-                        # Falling back to holo coordinates.
-                        self.copy_chain_holo_coords_to_apo(chain, rng)
-                    continue
-                # Store apo coordinates
-                apo_coords_dict[entity_id] = apo_coords
-            else:
-                continue  # No apo structure available for this entity
 
             # Sanity check
             assert apo_coords.shape == (chain.num_residues, Natom, 3), (
@@ -323,14 +353,25 @@ class ApoInitializer:
             src_atom_indices: list[int] = []
             dst_atom_indices: list[int] = []
             atom_names: list[str] = chain.atom.name.tolist()  # pre-converted to list
+            ccd_sequence = chain.get_ccd_sequence()
             for res_i in range(chain.num_residues):
                 residue_index = res_i + 1  # 1-based residue index
-                for atom_i in chain.residue.iter_residue_atoms(residue_index):
-                    an = atom_names[atom_i]
-                    if an in atom_order:
-                        src_res_indices.append(res_i)
-                        src_atom_indices.append(atom_order[an])
-                        dst_atom_indices.append(atom_i)
+                if chain.residue.is_standard[res_i]:
+                    # Standard residues are assumed to have complete atom sets.
+                    atom_st = chain.residue.atom_starts[res_i]
+                    atom_orders = get_atom_order_in_residue(ccd_sequence[res_i])
+                    natoms = len(atom_orders)
+                    src_res_indices.extend([res_i] * natoms)
+                    src_atom_indices.extend(atom_orders)
+                    dst_atom_indices.extend(range(atom_st, atom_st + natoms))
+
+                else:
+                    for atom_i in chain.residue.iter_residue_atoms(residue_index):
+                        an = atom_names[atom_i]
+                        if an in atom_order:
+                            src_res_indices.append(res_i)
+                            src_atom_indices.append(atom_order[an])
+                            dst_atom_indices.append(atom_i)
 
             chain.atom.apo_coords[dst_atom_indices] = apo_coords[
                 src_res_indices, src_atom_indices
@@ -363,10 +404,7 @@ class ApoInitializer:
                         ccd_name, chain_meta.smiles, num_confs=1
                     )
                 else:
-                    assert ccd_name in self.ccd, (
-                        f"Residue name {ccd_name} not found in CCD."
-                    )
-                    ref_comp = self.ccd[ccd_name]
+                    ref_comp = get_ref_comp(ccd_name, self.ccd, _ref_comp_cache)
 
                 ref_atom_order: dict[str, int] = ref_comp.get_atom_index_map()
                 ref_pos = ref_comp.get_conformer(self.conformer_mode, rng=rng)
@@ -619,11 +657,7 @@ class ApoInitializer:
         """Find the best residue permutation for symmetry correction.
         Use intra-residue structure comparison to find the best permutation.
         """
-
-        @lru_cache
-        def get_ref_comp(res_name: str) -> Component:
-            assert res_name in self.ccd, f"Residue name {res_name} not found in CCD."
-            return self.ccd[res_name]
+        _ref_comp_cache: dict[str, Component] = {}
 
         for chain in struct.chains:
             ctype = chain.ctype
@@ -646,7 +680,7 @@ class ApoInitializer:
                     assert ctype.is_polymer, "Only polymer chains have standard residues."
                     perms = get_ambiguous_atoms_in_residue(res_name, extended=False)
                 elif res_name in self.ccd:
-                    ref_mol = get_ref_comp(res_name)
+                    ref_mol = get_ref_comp(res_name, self.ccd, _ref_comp_cache)
                     atom_names: list[str] = all_atom_names[atom_st:atom_end]
                     perms = get_molecule_symmetries(ref_mol, atom_names)
                 else:

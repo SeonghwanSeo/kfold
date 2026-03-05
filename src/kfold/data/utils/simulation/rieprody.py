@@ -60,6 +60,7 @@ class RandomWalkConfig:
 class RieProdyConfig:
     metric_comp: MetricCompConfig = dataclasses.field(default_factory=MetricCompConfig)
     random_walk: RandomWalkConfig = dataclasses.field(default_factory=RandomWalkConfig)
+    max_length: int = 800
     rmsd_threshold: float = 10.0
     metric_lmdb_path: Path | str | None = None
     log_stats: bool = False
@@ -114,6 +115,7 @@ class RieProdyPerturbation:
         # Initialize configuration
         config = RieProdyConfig.from_config(config)
         self.config: RieProdyConfig = config
+        self.max_length: int = config.max_length
         self.rmsd_threshold: float = config.rmsd_threshold
         self.log_stats: bool = config.log_stats
         self.log_stats_interval: int = config.log_stats_interval
@@ -220,6 +222,10 @@ class RieProdyPerturbation:
             raise ValueError(
                 f"Input coords must have shape [L, 37, 3], got {coords.shape}"
             )
+        if coords.shape[0] > self.max_length:
+            # Skip perturbation for very long sequences to avoid excessive
+            # computation time.
+            return None
         if mask is None:
             # Create mask based on finite coordinates
             # WARN: assumes that missing atoms are represented by NaN/Inf
