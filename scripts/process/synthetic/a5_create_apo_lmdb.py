@@ -38,7 +38,7 @@ def parse_args():
 
 def worker(task):
     """Worker function to parse a single PDB file."""
-    file_path, apo_type = task
+    apo_type, file_path = task
     raw_id = file_path.name.split(".")[0]
     key = f"{apo_type}:{raw_id}"
     try:
@@ -55,7 +55,6 @@ def worker(task):
 
 
 def main():
-    """Main function using multiprocessing pool for heavy parsing tasks."""
     args = parse_args()
     data_dir: pathlib.Path = args.data_dir / args.name
     assert data_dir.exists(), f"Data directory {data_dir} does not exist."
@@ -69,12 +68,14 @@ def main():
         if not apo_subdir.is_dir():
             continue
         apo_type = apo_subdir.name
+        subtasks = []
         print(f"Collecting files for apo type: {apo_type}")
         suffixes = ("*.pdb", "*.pdb.gz", "*.cif", "*.cif.gz")
         for suffix in suffixes:
-            files = sorted(apo_subdir.rglob(suffix))
-            for f in files:
-                tasks.append((f, apo_type))
+            for f in apo_subdir.rglob(suffix):
+                subtasks.append((apo_type, f))
+        print(f"Found {len(subtasks)} files for apo type: {apo_type}")
+        tasks.extend(subtasks)
 
     print(f"Total files to process: {len(tasks)}")
 
@@ -89,9 +90,9 @@ def main():
 
     # Use Multiprocessing Pool
     # chunksize controls how many tasks are sent to workers at once
-    with mp.Pool(processes=args.num_workers) as pool:
-        # Start transaction
-        with env.begin(write=True) as txn:
+    # Start transaction
+    with env.begin(write=True) as txn:
+        with mp.Pool(processes=args.num_workers) as pool:
             # imap_unordered yields results as soon as they are ready
             for k, v in tqdm(
                 pool.imap_unordered(worker, tasks, chunksize=10), total=len(tasks)
