@@ -624,6 +624,7 @@ class TokenizedStructure:
         Sequence information for sequence embedding.
     """
 
+    id: str
     chain: ChainArray
     token: TokenArray
     atom: AtomArray
@@ -667,6 +668,7 @@ class TokenizedStructure:
     @classmethod
     def get_empty(
         cls,
+        id: str,
         num_chains: int,
         num_tokens: int,
         num_bonds: int,
@@ -675,6 +677,7 @@ class TokenizedStructure:
     ) -> Self:
         """Get an empty TokenizedStructure with the specified sizes."""
         return cls(
+            id=id,
             chain=ChainArray.get_empty(num_chains),
             token=TokenArray.get_empty(num_tokens),
             atom=AtomArray.get_empty(num_tokens, num_priors=num_priors),
@@ -701,6 +704,7 @@ class TokenizedStructure:
             return copy.deepcopy(self)
         else:
             return self.__class__(
+                id=self.id,
                 chain=self.chain,
                 token=self.token,
                 atom=self.atom,
@@ -800,6 +804,7 @@ class TokenizedStructure:
             cropped_token = cropped_token.copy_with(seq_token_index=new_seq_token_idx)
 
         return self.__class__(
+            id=self.id,
             chain=cropped_chain,
             token=cropped_token,
             atom=cropped_atom,

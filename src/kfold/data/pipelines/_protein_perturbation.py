@@ -37,10 +37,10 @@ class ProteinPerturbation:
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-        key: str | None = None,
+        rieprody_key: str | None = None,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates."""
-        return self.run(sequence, coords, mask, rng, key)
+        return self.run(sequence, coords, mask, rng, rieprody_key)
 
     def run(
         self,
@@ -48,7 +48,7 @@ class ProteinPerturbation:
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-        key: str | None = None,
+        rieprody_key: str | None = None,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates.
 
@@ -80,9 +80,13 @@ class ProteinPerturbation:
             # HACK: assumes that missing atoms are represented by NaN/Inf
             mask: np.ndarray = np.isfinite(coords).all(axis=-1)
 
-        if self.rieprody is not None and rng.uniform() < self.prob_rieprody:
+        if (
+            self.rieprody is not None
+            and rieprody_key is not None
+            and rng.uniform() < self.prob_rieprody
+        ):
             # Apply RieProDy perturbation and fallback to bioPrior
-            perturbed_coords = self.rieprody_perturbation(coords, mask, rng, key)
+            perturbed_coords = self.rieprody_perturbation(coords, mask, rng, rieprody_key)
             if perturbed_coords is None:
                 perturbed_coords = self.bioprior_perturbation(sequence, coords, rng)
         else:

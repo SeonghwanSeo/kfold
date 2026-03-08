@@ -288,61 +288,75 @@ class ApoInitializer:
         rng: np.random.Generator,
     ) -> None:
         """Insert apo structure coordinates for each chain in the structure."""
-        _ref_comp_cache: dict[str, Component] = {}
+        self._insert_apo_coordinates_for_protein_chains(struct, lookup, rng)
+        self._insert_apo_coordinates_for_ligand_chains(struct, rng)
 
-        # === 1. Insert apo coordinates for polymer chains === #
+    def _insert_apo_coordinates_for_protein_chains(
+        self,
+        struct: RefStructure,
+        lookup: dict[int, dict],
+        rng: np.random.Generator,
+    ) -> None:
         # cache apo coordinates per entity to avoid redundant loading/sampling
         apo_coords_dict: dict[int, np.ndarray] = {}
         for i in range(struct.num_chains):
             chain = struct.chains[i]
-            if not chain.ctype.is_polymer:
-                continue  # non-polymer chains handled later
+            if not chain.ctype.is_protein:
+                # Only protein chains have apo structures in the current implementation.
+                continue
 
-            entity_id = chain.entity_id
-            if entity_id in apo_coords_dict:
+            eid: int = chain.entity_id
+            ek: str = f"{struct.id}:{eid}"  # For logging purposes
+            if eid in apo_coords_dict:
                 # Reuse cached apo coordinates
-                apo_coords = apo_coords_dict[entity_id]
+                apo_coords = apo_coords_dict[eid]
             else:
-                if entity_id in lookup:
-                    assert chain.is_protein, "Only protein chains have apo structures."
-                    apo_info = lookup[entity_id]
-                    ccd_sequence = chain.get_ccd_sequence()
-                    try:
-                        apo_coords = self.get_protein_apo_structure(
-                            ccd_sequence, apo_info, rng
+                if eid not in lookup:
+                    if self.use_holo_if_apo_unavailable:
+                        self.logger.warning(
+                            f"Apo structure not found for entity "
+                            f"{ek} in lookup. "
+                            "Falling back to holo coordinates."
                         )
-                    except Exception as e:
-                        # NOTE: Apo structure loading can fail for various reasons,
-                        # such as too large sequence length, mismatched residue
-                        # mapping, or file reading errors.
-                        apo_info.pop("seq", None)
-                        apo_info.pop("coords", None)
+                        self.copy_chain_holo_coords_to_apo(chain, rng)
+                    continue
+
+                apo_info = lookup[eid]
+                ccd_sequence = chain.get_ccd_sequence()
+                try:
+                    apo_coords = self.get_protein_apo_structure(
+                        ccd_sequence, apo_info, rng
+                    )
+                except Exception as e:
+                    # NOTE: Apo structure loading can fail for various reasons,
+                    # such as too large sequence length, mismatched residue
+                    # mapping, or file reading errors.
+                    apo_info.pop("seq", None)
+                    apo_info.pop("coords", None)
+                    if self.use_holo_if_apo_unavailable:
+                        # Falling back to holo coordinates.
+                        self.logger.warning(
+                            "Failed to load apo structure for entity "
+                            f"{ek} from {apo_info}: {e}. "
+                            "Falling back to holo coordinates."
+                        )
+                        self.copy_chain_holo_coords_to_apo(chain, rng)
+                    else:
                         self.logger.error(
                             "Failed to load apo structure for entity "
-                            f"{entity_id} from {apo_info}: {e}."
+                            f"{ek} from {apo_info}: {e}."
                         )
-                        if self.use_holo_if_apo_unavailable:
-                            # Falling back to holo coordinates.
-                            self.copy_chain_holo_coords_to_apo(chain, rng)
                         continue
-                    # Store apo coordinates
-                    apo_coords_dict[entity_id] = apo_coords
-                else:
-                    continue  # No apo structure available for this entity
-
-            # Determine number of atoms and atom order
-            if chain.ctype.is_protein:
-                Natom = 37
-                atom_order = C.atom.protein_atom37_order
-            else:
-                Natom = 29
-                atom_order = C.atom.nucleic_acid_atom29_order
+                # Store apo coordinates
+                apo_coords_dict[eid] = apo_coords
 
             # Sanity check
-            assert apo_coords.shape == (chain.num_residues, Natom, 3), (
-                f"Apo coordinates shape mismatch for entity {entity_id}: "
-                f"expected ({chain.num_residues}, {Natom}, 3), got {apo_coords.shape}"
+            assert apo_coords.shape == (chain.num_residues, 37, 3), (
+                f"Apo coordinates shape mismatch for entity {ek}: "
+                f"expected ({chain.num_residues}, {37}, 3), got {apo_coords.shape}"
             )
+
+            protein_atom_order = C.atom.protein_atom37_order
 
             # Apply random rotation/translation augmentation
             apo_coords = self.apply_random_augmentation(apo_coords, rng)
@@ -368,18 +382,23 @@ class ApoInitializer:
                 else:
                     for atom_i in chain.residue.iter_residue_atoms(residue_index):
                         an = atom_names[atom_i]
-                        if an in atom_order:
+                        if an in protein_atom_order:
                             src_res_indices.append(res_i)
-                            src_atom_indices.append(atom_order[an])
+                            src_atom_indices.append(protein_atom_order[an])
                             dst_atom_indices.append(atom_i)
 
             chain.atom.apo_coords[dst_atom_indices] = apo_coords[
                 src_res_indices, src_atom_indices
             ]
-        del apo_coords_dict  # free memory
 
-        # === 2. Insert apo coordinates for non-polymer chains === #
-        # Use CCD reference conformers or ETKDG-generated.
+    def _insert_apo_coordinates_for_ligand_chains(
+        self,
+        struct: RefStructure,
+        rng: np.random.Generator,
+    ) -> None:
+        """Use ETKDG conformers or CCD reference conformers as apo coordinates"""
+        _ref_comp_cache: dict[str, Component] = {}
+        _ref_comp_smi_cache: dict[str, Component] = {}
         for chain_i in range(struct.num_chains):
             chain = struct.chains[chain_i]
             if chain.ctype.is_polymer:
@@ -394,15 +413,23 @@ class ApoInitializer:
                 # Load reference molecule from CCD
                 if ccd_name.startswith("LIG"):
                     # This residue is from a smiles string, load smiles from metadata
-                    assert chain_meta.smiles is not None, (
+                    smiles = chain_meta.smiles
+                    assert smiles is not None, (
                         "Smiles string not found in metadata for LIG residue."
                     )
                     assert chain.num_residues == 1, (
                         "Residue with LIG found in chain with multiple residues."
                     )
-                    ref_comp = Component.from_smiles(
-                        ccd_name, chain_meta.smiles, num_confs=1
-                    )
+                    if smiles in _ref_comp_smi_cache:
+                        ref_comp = _ref_comp_smi_cache[smiles]
+                    else:
+                        # Use a shorter timeout (5.0s) for training,
+                        # and longer timeout (30.0s) for inference.
+                        timeout = 5 if self.conformer_mode == "train" else 30
+                        ref_comp: Component = Component.from_smiles(
+                            ccd_name, smiles, timeout=timeout, rng=rng
+                        )
+                        _ref_comp_smi_cache[smiles] = ref_comp
                 else:
                     ref_comp = get_ref_comp(ccd_name, self.ccd, _ref_comp_cache)
 
@@ -561,7 +588,7 @@ class ApoInitializer:
             # get optional key for pre-computed perturbation with rieprody
             rieprody_key = apo_info.get("key", None)
             apo_coords = self.apply_perturbation(
-                sequence, apo_coords, rng=rng, key=rieprody_key
+                sequence, apo_coords, rng=rng, rieprody_key=rieprody_key
             )
 
         # Crop apo_coords based on residue_map
@@ -592,7 +619,7 @@ class ApoInitializer:
         sequence: str,
         apo_coords: np.ndarray,
         rng: np.random.Generator,
-        key: str | None = None,
+        rieprody_key: str | None = None,
     ) -> np.ndarray:
         """Augment apo structure coordinates with perturbation.
 
@@ -604,7 +631,7 @@ class ApoInitializer:
             Apo structure coordinates of shape [L, Natom, 3].
         rng : np.random.Generator
             Random number generator for stochastic operations.
-        key : str | None
+        rieprody_key : str | None
             Optional key for using pre-computed perturbation metrics.
 
         Returns
@@ -616,7 +643,9 @@ class ApoInitializer:
             "Protein perturbation module not initialized."
         )
         apo_mask = np.isfinite(apo_coords).all(axis=-1)
-        aug_coords = self.protein_perturbation.run(sequence, apo_coords, rng=rng, key=key)
+        aug_coords = self.protein_perturbation(
+            sequence, apo_coords, rng=rng, rieprody_key=rieprody_key
+        )
         aug_coords[~apo_mask] = np.nan
         return aug_coords
 
