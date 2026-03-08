@@ -197,6 +197,7 @@ def tokenize_structure(
     num_bonds = input.num_bonds + input.num_connections
     num_priors = prior_sampler.num_samples if prior_sampler is not None else 0
     struct = TokenizedStructure.get_empty(
+        id=input.id,
         num_chains=len(input.chains),
         num_tokens=input.num_tokens,
         num_bonds=num_bonds,

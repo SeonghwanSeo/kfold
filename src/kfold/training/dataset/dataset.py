@@ -99,7 +99,7 @@ def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
     res_st, res_end = map(int, res_range.split(":"))
     apo_st, apo_end = map(int, apo_range.split(":"))
     if (res_end - res_st) != (apo_end - apo_st):
-        return -1, -1, -1, -1  # invalid mapping
+        raise ValueError(f"Length mismatch in residue map: {residue_map}")
     # Convert to 0-based indexing
     # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
     return res_st - 1, res_end, apo_st - 1, apo_end
@@ -297,6 +297,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             raise FileNotFoundError(f"Apo lookup file {lookup_path} not found.")
         with open(lookup_path, "rb") as f:
             lookup_table: dict = msgpack.unpack(f)
+        # Convert entity IDs from string to int for easier handling later
+        for entry_id, entry_lookup in lookup_table.items():
+            lookup_table[entry_id] = {
+                int(eid): infos for eid, infos in entry_lookup.items()
+            }
         return lookup_table
 
     def sanity_check(self) -> None:
@@ -461,7 +466,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
                 if not self.safe_load:
                     raise e
                 index = int(rng.integers(0, len(self)))
-                trials.append(sample)
+                trials.append(sample_id)
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
@@ -552,41 +557,48 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             return {1: {"key": ref_struct.id}}
 
         entry_id: str = ref_struct.id
-        entry_lookup: dict[str, list[dict[str, str]]] = self.lookup_table[entry_id]
+        entry_lookup: dict[int, list[dict[str, str]]] = self.lookup_table[entry_id]
 
         # Match apo structure for each protein entries.
         apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
         visited_entity_ids: set[int] = set()
         for c in ref_struct.chains:
             if not c.ctype.is_protein:
+                # Currently we only provide apo structures for protein chains.
+                # For ligand, we use ETKDG conformers as apo.
                 continue
-            if c.entity_id in visited_entity_ids:
-                continue  # already populated from another chain with same entity_id
-            entity_id = c.entity_id
-            visited_entity_ids.add(entity_id)
 
-            entity_apo_infos: list[dict[str, str]] = entry_lookup[str(c.entity_id)]
+            eid: int = c.entity_id
+            ek: str = f"{entry_id}:{eid}"  # For logging purpose
+
+            if eid in visited_entity_ids:
+                continue  # already populated from another chain with same entity_id
+            visited_entity_ids.add(eid)
+
+            if eid not in entry_lookup:
+                self.logger.warning(f"No apo info found for entity '{ek}' in lookup.")
+                print(entry_lookup)
+                continue
+
+            entity_apo_infos: list[dict[str, str]] = entry_lookup[eid]
             num_apos = len(entity_apo_infos)
             # Select apo structure (randomly if multiple)
             if num_apos == 0:
-                self.logger.warning(
-                    f"No apo info found for entity {entry_id}:{entity_id}"
-                )
+                self.logger.warning(f"Empty apo info found for entity '{ek}' in lookup.")
                 continue
             apo_info = entity_apo_infos[rng.integers(0, num_apos)].copy()
 
             name = apo_info["name"]
             source = apo_info["source"]
-            key = f"{source}:{name}"
-            apo_info["key"] = key
+            apo_key = f"{source}:{name}"
+            apo_info["key"] = apo_key
 
             # Load apo coordinates from LMDB
             with self.apo_lmdb_env.begin(write=False) as txn:
-                value_bytes = txn.get(key.encode("utf-8"))
+                value_bytes = txn.get(apo_key.encode("utf-8"))
                 if value_bytes is None:
                     self.logger.warning(
-                        f"Apo structure {key} not found in LMDB for entity "
-                        f"{entry_id}:{entity_id}"
+                        f"Apo '{apo_key}' not found in LMDB for entity {ek}"
                     )
                     continue
                 with io.BytesIO(value_bytes) as byte_stream:
@@ -594,7 +606,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
                         apo_info["seq"] = "".join(data["seq"].astype(str).tolist())
                         apo_info["coords"] = data["coords"].copy()
 
-            apo_lookup[entity_id] = apo_info
+            apo_lookup[eid] = apo_info
         return apo_lookup
 
     def populate_structure_tokens(
@@ -615,14 +627,16 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
                     continue  # only populate structure tokens for protein chains
 
                 eid = struct.chain.entity_id[c_i]
+                ek = f"{struct.id}:{eid}"  # For logging purpose
+
                 if eid in visited_entity_ids:
                     continue  # already populated from another chain with same entity_id
                 visited_entity_ids.add(eid)
 
                 if eid not in apo_lookup:
                     self.logger.warning(
-                        f"No apo info for entity_id {eid} in apo lookup."
-                        f"Skipping structure token population for this entity."
+                        f"No apo info for entity `{ek}` in apo lookup. "
+                        f"Skipping this entry"
                     )
                     continue
                 apo_info = apo_lookup[eid]
@@ -631,7 +645,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
                 if v is None:
                     self.logger.warning(
                         f"Apo structure tokens {key} not found in LMDB for "
-                        f"entity_id {eid}"
+                        f"entity `{ek}`. Skipping this entry"
                     )
                     continue
                 # Load pre-computed structure tokens for apo structure from LMDB
@@ -651,7 +665,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
                         self.logger.warning(
                             f"Apo tokens ({key}, len={toklen}) cannot be aligned "
                             f"with sequence tokens (len={len(seq_token_i)}) for "
-                            f"entity_id {eid} without residue mapping."
+                            f"entity `{ek}` without residue map. Skipping this entry."
                         )
                         continue
                     # Populate the structure tokens for the aligned residues
@@ -662,13 +676,15 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
                     res_st, res_end, apo_st, apo_end = parse_residue_map(residue_map)
                     if res_st == -1:
                         self.logger.warning(
-                            f"Invalid residue map {residue_map} for entity_id {eid}."
+                            f"Invalid residue map {residue_map} for entity {ek}. "
+                            f"Skipping this entry."
                         )
                         continue
                     if toklen < (apo_end - apo_st) or (len(seq_token_i) < res_end):
                         self.logger.warning(
                             f"Apo tokens ({key}, len={toklen}) cannot cover the "
-                            f"residue mapping for entity_id {eid}: {residue_map}."
+                            f"residue mapping for entity {ek}: {residue_map}."
+                            f" Skipping this entry."
                         )
                         continue
                     seq_token_i_mapped = seq_token_i[res_st:res_end]
