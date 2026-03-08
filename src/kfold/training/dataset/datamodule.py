@@ -72,6 +72,7 @@ class TrainingDataModule(pl.LightningDataModule):
         else:
             raise NotImplementedError("Not implemented yet.")
         gc.collect()
+        gc.freeze()
 
     def construct_train_dataset(self) -> MultiTrainingDataset:
         """Construct training dataset."""

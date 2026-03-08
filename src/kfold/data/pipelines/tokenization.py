@@ -226,7 +226,12 @@ def tokenize_structure(
                 assert chain.num_residues == 1, (
                     "Residue with LIG prefix found in chain with multiple residues."
                 )
-                comp: Component = Component.from_smiles(ccd_name, smiles, num_confs=1)
+                # Use a shorter timeout (10.0s) for training,
+                # and longer timeout (30.0s) for inference.
+                timeout = 10 if use_cached_conformer_only else 30
+                comp: Component = Component.from_smiles(
+                    ccd_name, smiles, num_confs=1, timeout=timeout
+                )
             else:
                 assert ccd_name in ccd, f"Residue name {ccd_name} not found in CCD."
                 comp = get_ccd_component(ccd_name)
