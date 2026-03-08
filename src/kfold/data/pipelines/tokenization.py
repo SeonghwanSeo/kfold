@@ -150,6 +150,7 @@ def tokenize_structure(
     """
 
     ccd_dict: dict[str, Component] = {}
+    ccd_smi_dict: dict[str, Component] = {}
 
     def get_ccd_component(ccd_name: str) -> Component:
         """Get CCD component with caching.
@@ -227,12 +228,16 @@ def tokenize_structure(
                 assert chain.num_residues == 1, (
                     "Residue with LIG prefix found in chain with multiple residues."
                 )
-                # Use a shorter timeout (10.0s) for training,
-                # and longer timeout (30.0s) for inference.
-                timeout = 10 if use_cached_conformer_only else 30
-                comp: Component = Component.from_smiles(
-                    ccd_name, smiles, num_confs=1, timeout=timeout
-                )
+                if smiles in ccd_smi_dict:
+                    comp = ccd_smi_dict[smiles]
+                else:
+                    # Use a shorter timeout (5.0s) for training,
+                    # and longer timeout (30.0s) for inference.
+                    timeout = 5 if use_cached_conformer_only else 30
+                    comp: Component = Component.from_smiles(
+                        ccd_name, smiles, num_confs=1, timeout=timeout
+                    )
+                    ccd_smi_dict[smiles] = comp
             else:
                 assert ccd_name in ccd, f"Residue name {ccd_name} not found in CCD."
                 comp = get_ccd_component(ccd_name)

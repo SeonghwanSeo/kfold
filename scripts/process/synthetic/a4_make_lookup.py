@@ -171,7 +171,8 @@ def main():
                             apo_infos.append({"source": source, "name": apo_id})
                         entry_lookup[entity_id] = apo_infos
                 all_lookup[entry_id] = {str(k): v for k, v in entry_lookup.items()}
-        txn.abort()  # Close the LMDB environment
+        txn.abort()
+        env.close()
     else:
         for row in tqdm(df.itertuples(), total=len(df)):
             entry_id = f"{row.data_idx}_{row.structure_idx}"

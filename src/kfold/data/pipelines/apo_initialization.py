@@ -398,6 +398,7 @@ class ApoInitializer:
     ) -> None:
         """Use ETKDG conformers or CCD reference conformers as apo coordinates"""
         _ref_comp_cache: dict[str, Component] = {}
+        _ref_comp_smi_cache: dict[str, Component] = {}
         for chain_i in range(struct.num_chains):
             chain = struct.chains[chain_i]
             if chain.ctype.is_polymer:
@@ -412,18 +413,23 @@ class ApoInitializer:
                 # Load reference molecule from CCD
                 if ccd_name.startswith("LIG"):
                     # This residue is from a smiles string, load smiles from metadata
-                    assert chain_meta.smiles is not None, (
+                    smiles = chain_meta.smiles
+                    assert smiles is not None, (
                         "Smiles string not found in metadata for LIG residue."
                     )
                     assert chain.num_residues == 1, (
                         "Residue with LIG found in chain with multiple residues."
                     )
-                    if chain_meta.smiles in _ref_comp_cache:
-                        ref_comp = _ref_comp_cache[chain_meta.smiles]
+                    if smiles in _ref_comp_smi_cache:
+                        ref_comp = _ref_comp_smi_cache[smiles]
                     else:
-                        ref_comp = Component.from_smiles(
-                            ccd_name, chain_meta.smiles, num_confs=1
+                        # Use a shorter timeout (5.0s) for training,
+                        # and longer timeout (30.0s) for inference.
+                        timeout = 5 if self.conformer_mode == "train" else 30
+                        ref_comp: Component = Component.from_smiles(
+                            ccd_name, smiles, timeout=timeout, rng=rng
                         )
+                        _ref_comp_smi_cache[smiles] = ref_comp
                 else:
                     ref_comp = get_ref_comp(ccd_name, self.ccd, _ref_comp_cache)
 

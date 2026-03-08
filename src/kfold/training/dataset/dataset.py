@@ -99,7 +99,7 @@ def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
     res_st, res_end = map(int, res_range.split(":"))
     apo_st, apo_end = map(int, apo_range.split(":"))
     if (res_end - res_st) != (apo_end - apo_st):
-        raise ValueError(f"Length mismatch in residue map: {residue_map}")
+        return -1, -1, -1, -1  # invalid mapping
     # Convert to 0-based indexing
     # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
     return res_st - 1, res_end, apo_st - 1, apo_end
@@ -577,7 +577,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
             if eid not in entry_lookup:
                 self.logger.warning(f"No apo info found for entity '{ek}' in lookup.")
-                print(entry_lookup)
                 continue
 
             entity_apo_infos: list[dict[str, str]] = entry_lookup[eid]
