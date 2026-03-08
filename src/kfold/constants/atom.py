@@ -284,7 +284,7 @@ RESIDUE_AMBIGUOUS_ATOMS_EXTENDED: dict[
 @lru_cache(1000)
 def encode_atom_name(atom_name: str) -> tuple[int, int, int, int]:
     """Encode atom name to 4-character integer tuple."""
-    name = atom_name.strip()
+    name = atom_name.strip().upper()
     name_int = [ord(c) - 32 for c in name]
     name_int = name_int + [0] * (4 - len(name_int))  # pad to 4 characters
     return tuple(name_int)  # type: ignore

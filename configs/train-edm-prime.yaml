@@ -1,52 +1,50 @@
 model:
   _yaml_: "model/kfold-prime-edm.yaml"
+  sequence_encoder:
+    path: /mnt/parallel_storage/share/plm_weights/esm-multimodal/esm-multimodal-v1.pt
+  structure_encoder:
+    path: /mnt/parallel_storage/share/plm_weights/unitok/unitok-dips.pt
   trunk:
-    use_seq_embedding: true
-    use_struct_embedding: false
+    channel_seq_emb: 1152
+    channel_seq_attn: 648
+    channel_struct_emb: 1536
     plm_module:
-      channel_plm_input: 1152
       use_qk_norm: true
+      blocks_per_ckpt: 4
     pairformer:
       num_blocks: 12
       use_qk_norm: true
+      blocks_per_ckpt: 12
     num_register_tokens: 8
-    blocks_per_ckpt: 4
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 8
     atom_decoder_blocks: 1
-    blocks_per_ckpt: null
-  compile_trunk: true
-  compile_score_model: true
+    blocks_per_ckpt: 8
 
 train:
   _yaml_: "train/stage_1.yaml"
-
-  name: edm-mini-esm2-prime
+  name: edm-mini-prime
   out_dir: ./experiments/
 
   global_hparams:
-    batch_size: 4
-    max_tokens: 376
+    batch_size: 2
     global_batch_size: 128
-    num_global_steps_per_epoch: 1000
 
   data:
-    ccd_path: /cache/wykim_lab/kfold_data/v260216/ccd-train.pkl
+    max_tokens: 376
+    ccd_path: /cache/wykim_lab/kfold_data/v260305/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-train/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/rcsb-train/
         prior_sampler: null
+        apo_init:
+          use_residue_permutation: false
+
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260216/dataset/rcsb-val/
+        data_path: /cache/wykim_lab/kfold_data/v260305/dataset/rcsb-val/
         prior_sampler: null
-
-    pretrained_embedding:
-      seq: esm-seo-v1
-      seq_dim: 1152
-      struct: null
-      struct_dim: null
 
   wandb:
     use: false

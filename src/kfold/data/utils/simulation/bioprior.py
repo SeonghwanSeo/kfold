@@ -34,7 +34,7 @@ class BioPriorConfig:
 
     noise_scale: float = 1.0
     min_steps: int = 1
-    max_steps: int = 30
+    max_steps: int = 15
     scale_length: bool = False
     max_rmsd: float | None = None
     log_level: int | str = "INFO"
@@ -64,7 +64,7 @@ class BioPriorPerturbation:
             )
         )
 
-        self.logger = logging.getLogger("BioPriorPerturbation")
+        self.logger = logging.getLogger("[BioPriorPerturbation]")
         self.logger.setLevel(config.log_level)
 
     # === Main perturbation methods === #

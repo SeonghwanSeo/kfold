@@ -9,8 +9,6 @@ seed: 1
 
 # Training parameters for multi-gpu setup.
 global_hparams:
-  max_chains: 20
-  max_tokens: 384
   batch_size: 1
   diffusion_batch_size: 48
   global_batch_size: 256
@@ -23,13 +21,14 @@ data:
   # Training hyperparameters
   max_chains: 20
   max_tokens: 384
+  max_sequence_tokens: 1024
 
   # DataLoader
   train_batch_size: 1 # NOTE: overridden by global_hparam
   val_batch_size: 1
   num_workers: 4
   persistent_workers: true
-  pin_memory: true
+  pin_memory: false
   safe_load: true
 
   # CCD path
@@ -38,13 +37,6 @@ data:
   # Datasets
   train_datasets: []
   val_datasets: []
-
-  # Featurization
-  pretrained_embedding:
-    seq: null
-    seq_dim: null
-    struct: null
-    struct_dim: null
 
 # Lightning Trainer Configuration
 trainer:
@@ -145,7 +137,7 @@ loss:
 
     # Smooth LDDT Loss
     smooth_lddt_loss:
-      chunk_size: 2  # in number of samples.
+      chunk_size: 8 # in number of samples.
 
   # Confidence loss
   # TODO

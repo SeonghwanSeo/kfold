@@ -1,4 +1,5 @@
 import dataclasses
+import gc
 import logging
 from pathlib import Path
 
@@ -17,8 +18,6 @@ from .dataset import (
     ValidationDatasetConfig,
 )
 from .dl_sampler import DistributedWeightedSampler
-
-logger = logging.getLogger(__name__)
 
 
 def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, list[dict]]:
@@ -39,6 +38,7 @@ class DataModuleConfig(BaseConfig):
     # === Training hyperparameters === #
     max_chains: int = 20
     max_tokens: int = 384
+    max_sequence_tokens: int = 768
 
     # === CCD path === #
     ccd_path: Path
@@ -46,12 +46,6 @@ class DataModuleConfig(BaseConfig):
     # === Dataset configs === #
     train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
     val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
-
-    # === Featurization args === #
-    pretrained_embedding: dict = dataclasses.field(default_factory=dict)
-
-    # === Interaction annotation === #
-    interaction_type: str = "auto"
 
 
 @DATAMODULE.register(config_cls=DataModuleConfig)
@@ -67,6 +61,7 @@ class TrainingDataModule(pl.LightningDataModule):
 
         # Load CCD
         self.ccd: CCD = CCD.load(config.ccd_path)
+        self.logger = logging.getLogger("[DataModule]")
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
@@ -76,13 +71,14 @@ class TrainingDataModule(pl.LightningDataModule):
             self._val_ds = self.construct_val_dataset()
         else:
             raise NotImplementedError("Not implemented yet.")
+        gc.collect()
+        gc.freeze()
 
     def construct_train_dataset(self) -> MultiTrainingDataset:
         """Construct training dataset."""
         multi_ds = MultiTrainingDataset(
             configs=self.config.train_datasets,
             ccd=self.ccd,
-            pretrained_embedding=self.config.pretrained_embedding,
             max_chains=self.config.max_chains,
             max_tokens=self.config.max_tokens,
             safe_load=self.config.safe_load,
@@ -91,6 +87,7 @@ class TrainingDataModule(pl.LightningDataModule):
         for d in multi_ds.datasets:
             self.print_rank_zero(
                 f"Constructed training dataset '{d.name}':\n"
+                f"  Weights: {d.config.weight}\n"
                 f"  Num complexes: {len(d.metadatas)}\n"
                 f"  Num samples: {len(d)}"
             )
@@ -106,13 +103,11 @@ class TrainingDataModule(pl.LightningDataModule):
         ds = ValidationDataset(
             config=self.config.val_datasets[0],
             ccd=self.ccd,
-            pretrained_embedding=self.config.pretrained_embedding,
             safe_load=self.config.safe_load,
         )
         self.print_rank_zero(
             f"Constructed validation dataset '{ds.name}':\n"
             f"  Num complexes: {len(ds.metadatas)}\n"
-            f"  Num samples: {len(ds)}"
         )
         return ds
 
@@ -167,6 +162,6 @@ class TrainingDataModule(pl.LightningDataModule):
             persistent_workers=False,
         )
 
-    def print_rank_zero(self, msg: str, prefix: str = "[DataModule] ") -> None:
+    def print_rank_zero(self, msg: str) -> None:
         if self.trainer is None or self.trainer.global_rank == 0:
-            logger.info(f"{prefix}{msg}")
+            self.logger.info(f"{msg}")

@@ -30,7 +30,6 @@ if __name__ == "__main__":
             seed=42,
         ),
         ccd=ccd,
-        pretrained_embedding={},
         safe_load=False,
     )
     writer = KFoldWriter()

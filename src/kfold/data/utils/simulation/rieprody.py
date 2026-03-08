@@ -31,7 +31,7 @@ class NanInfInOutputError(RieProdyPerturbationError): ...
 class MetricCompConfig:
     # Metric computation parameters
     apo_internal_coord_metric_calculation_device: str = "cpu"
-    apo_internal_coord_metric_calculation_precision: str = "float32"
+    apo_internal_coord_metric_calculation_precision: str = "float64"
     apo_internal_coord_metric_save_precision: str = "float32"
     # RieProDy's __init__ accesses this path (we don't call preprocess()).
     apo_internal_coord_metric_information_path: str = str(Path("."))
@@ -60,6 +60,7 @@ class RandomWalkConfig:
 class RieProdyConfig:
     metric_comp: MetricCompConfig = dataclasses.field(default_factory=MetricCompConfig)
     random_walk: RandomWalkConfig = dataclasses.field(default_factory=RandomWalkConfig)
+    max_length: int = 800
     rmsd_threshold: float = 10.0
     metric_lmdb_path: Path | str | None = None
     log_stats: bool = False
@@ -114,12 +115,13 @@ class RieProdyPerturbation:
         # Initialize configuration
         config = RieProdyConfig.from_config(config)
         self.config: RieProdyConfig = config
+        self.max_length: int = config.max_length
         self.rmsd_threshold: float = config.rmsd_threshold
         self.log_stats: bool = config.log_stats
         self.log_stats_interval: int = config.log_stats_interval
 
         # Set up logging
-        self.logger: logging.Logger = logging.getLogger("RieProDyPerturbation")
+        self.logger: logging.Logger = logging.getLogger("[RieProDyPerturbation]")
         self.logger.setLevel(config.log_level)
 
         if os.environ.get("RIEPRODY_DISABLE_LOG", "0") == "1":
@@ -220,6 +222,10 @@ class RieProdyPerturbation:
             raise ValueError(
                 f"Input coords must have shape [L, 37, 3], got {coords.shape}"
             )
+        if coords.shape[0] > self.max_length:
+            # Skip perturbation for very long sequences to avoid excessive
+            # computation time.
+            return None
         if mask is None:
             # Create mask based on finite coordinates
             # WARN: assumes that missing atoms are represented by NaN/Inf

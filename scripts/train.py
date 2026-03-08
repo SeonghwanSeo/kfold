@@ -154,8 +154,6 @@ def apply_global_hparams_overrides(cfg: DictConfig) -> None:
 
     # Compute parameters dependent on global_hparams
     global_hparams = train_cfg.global_hparams
-    max_chains: int = global_hparams.max_chains
-    max_tokens: int = global_hparams.max_tokens
     batch_size: int = global_hparams.batch_size
     diffusion_batch_size: int = global_hparams.diffusion_batch_size
     global_batch_size: int = global_hparams.global_batch_size
@@ -172,8 +170,6 @@ def apply_global_hparams_overrides(cfg: DictConfig) -> None:
         global_hparams.num_global_steps_per_epoch * accumulate_grad_batches
     )
 
-    train_cfg.data.max_chains = max_chains
-    train_cfg.data.max_tokens = max_tokens
     train_cfg.data.train_batch_size = batch_size
     train_cfg.training.diffusion_batch_size = diffusion_batch_size
     train_cfg.trainer.accumulate_grad_batches = accumulate_grad_batches

@@ -18,6 +18,33 @@ from ._small_mol_perturbation import SmallMolPerturbation, SmallMolPerturbationC
 
 # === Helper functions === #
 @lru_cache(64)
+def get_atom_order_in_residue(res_name: str) -> tuple[int, ...]:
+    """Get the indices of ambiguous atoms for a given residue type."""
+    res_name: C.ResidueName = C.ResidueName[res_name]
+    # determine the chain type based on residue name
+    if res_name in C.residue.PROTEIN_RESIDUES:
+        atom_order = C.atom.protein_atom37_order
+    elif res_name in C.residue.DNA_RESIDUES:
+        atom_order = C.atom.nucleic_acid_atom29_order
+    elif res_name in C.residue.RNA_RESIDUES:
+        atom_order = C.atom.nucleic_acid_atom29_order
+    else:
+        raise ValueError(f"Unsupported residue name: {res_name}")
+    residue_atoms = C.atom.RESIDUE_ATOMS[res_name]
+    return tuple(atom_order[an.value] for an in residue_atoms)
+
+
+def get_ref_comp(
+    res_name: str, ccd: CCD, cache: dict[str, Component] | None
+) -> Component:
+    cache = cache if cache is not None else {}
+    if res_name not in cache:
+        assert res_name in ccd, f"Residue name {res_name} not found in CCD."
+        cache[res_name] = ccd[res_name]
+    return cache[res_name]
+
+
+@lru_cache(64)
 def get_ambiguous_atoms_in_residue(
     res_name: str,
     extended: bool = False,
@@ -120,13 +147,21 @@ class ApoInitializerConfig:
     use_residue_permutation: bool = False
     prob_perturbation: float = 1.0
     use_cached_conformer_only: bool = False
-    use_holo_if_apo_unavailable: bool = True
-    protein_perturbation: ProteinPerturbationConfig | None = dataclasses.field(
-        default_factory=ProteinPerturbationConfig
-    )
-    ligand_perturbation: SmallMolPerturbationConfig | None = dataclasses.field(
-        default_factory=SmallMolPerturbationConfig
-    )
+    use_holo_if_apo_unavailable: bool = False
+    protein_perturbation: ProteinPerturbationConfig | None
+    ligand_perturbation: SmallMolPerturbationConfig | None
+
+    @classmethod
+    def inference_mode(cls) -> Self:
+        """Get ApoInitializer instance for inference mode."""
+        return cls(
+            prob_perturbation=0.0,
+            use_residue_permutation=False,
+            use_cached_conformer_only=False,
+            use_holo_if_apo_unavailable=False,
+            protein_perturbation=None,
+            ligand_perturbation=None,
+        )
 
 
 class ApoInitializer:
@@ -171,15 +206,7 @@ class ApoInitializer:
     @classmethod
     def inference_mode(cls, ccd: CCD) -> Self:
         """Get ApoInitializer instance for inference mode."""
-        return cls(
-            config=ApoInitializerConfig(
-                use_residue_permutation=False,
-                use_cached_conformer_only=False,
-                protein_perturbation=None,
-                ligand_perturbation=None,
-            ),
-            ccd=ccd,
-        )
+        return cls(ApoInitializerConfig.inference_mode(), ccd)
 
     def __call__(
         self,
@@ -195,14 +222,17 @@ class ApoInitializer:
             Reference structure containing apo coordinates and masks.
         lookup : dict[int, dict]
             Mapping from entity_id to structure file paths and residue indices
-            - name: str
-                e.g., "AF-P012345-F1-model_v1"
-            - path: Path
-                e.g., "AF-P012345-F1-model_v1.cif"
-            - residue_map: str
-                e.g., "11:100->66:155"
-            - source: str
-                e.g., "AFDB", "PDB"
+            - input types:
+                - case1: apo structure file path
+                    - path: PathLike
+                - case2: sequence and atom37 coordinates
+                    - seq: str
+                    - coords: np.ndarray (L, 37, 3)
+            - optional keys:
+                - key: str
+                    Optional key for using pre-computed perturbation with rieprody.
+                - residue_map: residue index mapping between holo and apo
+                    e.g., "11:100->66:155"
         rng : np.random.Generator
             Random number generator for stochastic operations.
         """
@@ -222,14 +252,17 @@ class ApoInitializer:
             Reference structure containing apo coordinates and masks.
         lookup : dict[int, dict]
             Mapping from entity_id to structure file paths and residue indices
-            - name: str
-                e.g., "AF-P012345-F1-model_v1"
-            - path: Path
-                e.g., "AF-P012345-F1-model_v1.cif"
-            - residue_map: str
-                e.g., "11:100->66:155"
-            - source: str
-                e.g., "AFDB", "PDB"
+            - input types:
+                - case1: apo structure file path
+                    - path: PathLike
+                - case2: sequence and atom37 coordinates
+                    - seq: str
+                    - coords: np.ndarray (L, 37, 3)
+            - optional keys:
+                - key: str
+                    Optional key for using pre-computed perturbation with rieprody.
+                - residue_map: residue index mapping between holo and apo
+                    e.g., "11:100->66:155"
         rng : np.random.Generator
             Random number generator for stochastic operations.
         """
@@ -255,6 +288,8 @@ class ApoInitializer:
         rng: np.random.Generator,
     ) -> None:
         """Insert apo structure coordinates for each chain in the structure."""
+        _ref_comp_cache: dict[str, Component] = {}
+
         # === 1. Insert apo coordinates for polymer chains === #
         # cache apo coordinates per entity to avoid redundant loading/sampling
         apo_coords_dict: dict[int, np.ndarray] = {}
@@ -263,6 +298,38 @@ class ApoInitializer:
             if not chain.ctype.is_polymer:
                 continue  # non-polymer chains handled later
 
+            entity_id = chain.entity_id
+            if entity_id in apo_coords_dict:
+                # Reuse cached apo coordinates
+                apo_coords = apo_coords_dict[entity_id]
+            else:
+                if entity_id in lookup:
+                    assert chain.is_protein, "Only protein chains have apo structures."
+                    apo_info = lookup[entity_id]
+                    ccd_sequence = chain.get_ccd_sequence()
+                    try:
+                        apo_coords = self.get_protein_apo_structure(
+                            ccd_sequence, apo_info, rng
+                        )
+                    except Exception as e:
+                        # NOTE: Apo structure loading can fail for various reasons,
+                        # such as too large sequence length, mismatched residue
+                        # mapping, or file reading errors.
+                        apo_info.pop("seq", None)
+                        apo_info.pop("coords", None)
+                        self.logger.error(
+                            "Failed to load apo structure for entity "
+                            f"{entity_id} from {apo_info}: {e}."
+                        )
+                        if self.use_holo_if_apo_unavailable:
+                            # Falling back to holo coordinates.
+                            self.copy_chain_holo_coords_to_apo(chain, rng)
+                        continue
+                    # Store apo coordinates
+                    apo_coords_dict[entity_id] = apo_coords
+                else:
+                    continue  # No apo structure available for this entity
+
             # Determine number of atoms and atom order
             if chain.ctype.is_protein:
                 Natom = 37
@@ -270,37 +337,6 @@ class ApoInitializer:
             else:
                 Natom = 29
                 atom_order = C.atom.nucleic_acid_atom29_order
-
-            entity_id = chain.entity_id
-            if entity_id in apo_coords_dict:
-                # Reuse cached apo coordinates
-                apo_coords = apo_coords_dict[entity_id]
-            elif entity_id in lookup:
-                assert chain.is_protein, "Only protein chains have apo structures."
-                ccd_sequence = chain.get_ccd_sequence()
-                try:
-                    apo_coords = self.get_protein_apo_structure(
-                        ccd_sequence, lookup[entity_id], rng
-                    )
-                except Exception as e:
-                    # NOTE: Apo structure loading can fail for various reasons, such as
-                    # too large sequence length, mismatched residue mapping, or file
-                    # reading errors.
-                    self.logger.error(
-                        "Failed to load apo structure for entity "
-                        f"{entity_id} from {lookup[entity_id]['path']}: {e}."
-                    )
-                    if self.use_holo_if_apo_unavailable:
-                        # Falling back to holo coordinates.
-                        # We also try to apply perturbation, but most case
-                        # the perturbation will be failed due to missing
-                        # residues/atoms in holo structure.
-                        self.copy_chain_holo_coords_to_apo(chain, rng)
-                    continue
-                # Store apo coordinates
-                apo_coords_dict[entity_id] = apo_coords
-            else:
-                continue  # No apo structure available for this entity
 
             # Sanity check
             assert apo_coords.shape == (chain.num_residues, Natom, 3), (
@@ -317,14 +353,25 @@ class ApoInitializer:
             src_atom_indices: list[int] = []
             dst_atom_indices: list[int] = []
             atom_names: list[str] = chain.atom.name.tolist()  # pre-converted to list
+            ccd_sequence = chain.get_ccd_sequence()
             for res_i in range(chain.num_residues):
                 residue_index = res_i + 1  # 1-based residue index
-                for atom_i in chain.residue.iter_residue_atoms(residue_index):
-                    an = atom_names[atom_i]
-                    if an in atom_order:
-                        src_res_indices.append(res_i)
-                        src_atom_indices.append(atom_order[an])
-                        dst_atom_indices.append(atom_i)
+                if chain.residue.is_standard[res_i]:
+                    # Standard residues are assumed to have complete atom sets.
+                    atom_st = chain.residue.atom_starts[res_i]
+                    atom_orders = get_atom_order_in_residue(ccd_sequence[res_i])
+                    natoms = len(atom_orders)
+                    src_res_indices.extend([res_i] * natoms)
+                    src_atom_indices.extend(atom_orders)
+                    dst_atom_indices.extend(range(atom_st, atom_st + natoms))
+
+                else:
+                    for atom_i in chain.residue.iter_residue_atoms(residue_index):
+                        an = atom_names[atom_i]
+                        if an in atom_order:
+                            src_res_indices.append(res_i)
+                            src_atom_indices.append(atom_order[an])
+                            dst_atom_indices.append(atom_i)
 
             chain.atom.apo_coords[dst_atom_indices] = apo_coords[
                 src_res_indices, src_atom_indices
@@ -357,10 +404,7 @@ class ApoInitializer:
                         ccd_name, chain_meta.smiles, num_confs=1
                     )
                 else:
-                    assert ccd_name in self.ccd, (
-                        f"Residue name {ccd_name} not found in CCD."
-                    )
-                    ref_comp = self.ccd[ccd_name]
+                    ref_comp = get_ref_comp(ccd_name, self.ccd, _ref_comp_cache)
 
                 ref_atom_order: dict[str, int] = ref_comp.get_atom_index_map()
                 ref_pos = ref_comp.get_conformer(self.conformer_mode, rng=rng)
@@ -456,12 +500,17 @@ class ApoInitializer:
         ----------
         apo_info : dict
             Information about the apo structure file and residue indices.
-            - source: str
-                e.g., "AF2", "PDB"
-            - path: Path
-                e.g., "AF-P012345-F1-model_v1.cif.gz"
-            - residue_map: str
-                e.g., "11:100->66:155"
+            - input types:
+                - case1: apo structure file path
+                    - path: PathLike
+                - case2: sequence and atom37 coordinates
+                    - seq: str
+                    - coords: np.ndarray (L, 37, 3)
+            - optional keys:
+                - key: str
+                    Optional key for using pre-computed perturbation with rieprody.
+                - residue_map: residue index mapping between holo and apo
+                    e.g., "11:100->66:155"
         rng : np.random.Generator
             Random number generator for stochastic operations.
 
@@ -485,10 +534,24 @@ class ApoInitializer:
             # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
             return res_st - 1, res_end, apo_st - 1, apo_end
 
-        path = apo_info["path"]
-
         # Load apo structure
-        sequence, apo_coords = read_protein_structure(path)
+        if "seq" in apo_info and "coords" in apo_info:
+            # Apo info includes pre-loaded sequence and coordinates.
+            sequence: str = apo_info["seq"]
+            apo_coords: np.ndarray = apo_info["coords"]
+            assert apo_coords.shape == (len(sequence), 37, 3), (
+                f"Apo coordinates shape mismatch: expected ({len(sequence)}, 37, 3), "
+                f"got {apo_coords.shape}"
+            )
+        elif "path" in apo_info:
+            # Load sequence and apo coordinates from structure file.
+            path = apo_info["path"]
+            sequence, apo_coords = read_protein_structure(path)
+        else:
+            raise ValueError(
+                "Apo info must contain either 'seq' and 'coords', "
+                "or 'path' to the structure file."
+            )
 
         # Apply perturbation if enabled
         if (
@@ -496,7 +559,7 @@ class ApoInitializer:
             and rng.random() < self.prob_perturbation
         ):
             # get optional key for pre-computed perturbation with rieprody
-            rieprody_key = apo_info.get("rieprody_key", None)
+            rieprody_key = apo_info.get("key", None)
             apo_coords = self.apply_perturbation(
                 sequence, apo_coords, rng=rng, key=rieprody_key
             )
@@ -594,11 +657,7 @@ class ApoInitializer:
         """Find the best residue permutation for symmetry correction.
         Use intra-residue structure comparison to find the best permutation.
         """
-
-        @lru_cache
-        def get_ref_comp(res_name: str) -> Component:
-            assert res_name in self.ccd, f"Residue name {res_name} not found in CCD."
-            return self.ccd[res_name]
+        _ref_comp_cache: dict[str, Component] = {}
 
         for chain in struct.chains:
             ctype = chain.ctype
@@ -619,9 +678,12 @@ class ApoInitializer:
                 if chain.residue.is_standard[res_i]:
                     # Get ambiguous atom permutations for this standard residue
                     assert ctype.is_polymer, "Only polymer chains have standard residues."
-                    perms = get_ambiguous_atoms_in_residue(res_name, extended=True)
+                    perms = get_ambiguous_atoms_in_residue(res_name, extended=False)
+                elif res_name.startswith("LIG"):
+                    # For custom ligands, skip.
+                    perms = None
                 elif res_name in self.ccd:
-                    ref_mol = get_ref_comp(res_name)
+                    ref_mol = get_ref_comp(res_name, self.ccd, _ref_comp_cache)
                     atom_names: list[str] = all_atom_names[atom_st:atom_end]
                     perms = get_molecule_symmetries(ref_mol, atom_names)
                 else:
@@ -645,8 +707,9 @@ class ApoInitializer:
                 min_rmsd = float("inf")
                 for perm in perms[:100]:
                     permuted_apo = res_apo[perm, :]
-                    permuted_apo_mask = res_apo_mask[perm]
-                    m = res_holo_mask & permuted_apo_mask
+                    m = res_holo_mask & res_apo_mask[perm]
+                    if not m.any():
+                        continue
                     rmsd = compute_rmsd(
                         permuted_apo[m], res_holo[m], mask=None, align=True, no_svd=True
                     )
@@ -656,5 +719,3 @@ class ApoInitializer:
                 if best_perm is not None:
                     # Apply best permutation
                     res_apo[:, :] = res_apo[best_perm, :]
-                else:
-                    pass

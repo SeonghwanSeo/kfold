@@ -62,10 +62,6 @@ class ExponentialMovingAverage:
         Args:
             state_dict: The state dictionary of EMA to check compatibility with.
         """
-        if state_dict.get("version", None) != "20251223":
-            warnings.warn("Incompatible version for EMA state dict.", UserWarning)
-            return False
-
         incoming_params = state_dict["shadow_params"]
         if len(incoming_params) != len(self.shadow_params):
             warnings.warn(

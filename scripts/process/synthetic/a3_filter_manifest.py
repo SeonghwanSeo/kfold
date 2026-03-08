@@ -33,15 +33,34 @@ def main():
     df: pd.DataFrame = pd.read_csv(metadata_csv_path)
     original_count = len(df)
 
-    if args.name == "RNA":
-        df = df[(df["criterion_iptm"] >= 0.7) & (df["criterion_ipde"] <= 5.0)]
-    elif args.name == "NatAb":
-        df = df[df["criterion_1"] >= 0.3476]
-    elif args.name.startswith("huMAP_v1"):
-        df = df[
-            (df["criterion_boltz_confidence"] > 0.8)
-            | (df["criterion_aiupred_plddt"] > 0.8)
-        ]
+    match args.name:
+        case "ENCORE":
+            df = df[(df["criterion_iptm"] >= 0.7) & (df["criterion_ipde"] <= 5.0)]
+        case "NatAb":
+            df = df[df["criterion_1"] >= 0.3476]
+        case "huMAP":
+            df = df[
+                (df["criterion_boltz_confidence"] > 0.8)
+                | (df["criterion_aiupred_plddt"] > 0.8)
+            ]
+        case "SAIR":
+            df = df  # pre-filtered
+        case "MolGlueDB":
+            df = df[
+                df["is_bridging"]
+                & (df["criterion_ptm"] >= 0.8)
+                & (df["criterion_complex_plddt"] >= 0.7)
+                & (df["criterion_iptm"] >= 0.6)
+            ]
+        case "PROTAC-DB":
+            df = df[
+                df["is_bridging"]
+                & (df["criterion_ptm"] >= 0.8)
+                & (df["criterion_complex_plddt"] >= 0.8)
+                & (df["criterion_iptm"] >= 0.6)
+            ]
+        case _:
+            raise ValueError(f"Unknown dataset name: {args.name}")
     constraint_count = len(df)
     print(
         f"Applied constraints to {args.name}: {constraint_count} entries out of "

@@ -13,8 +13,6 @@ sequences:
         "1": "6OG"
         "4": "SEP"
       apo: "/path/to/apo_structure.pdb",
-      seq_emb: "/path/to/sequence/embeddings.npy"
-      struct_emb: "/path/to/structure/embeddings.npy"
   - dna:
       id: "C"
       sequence: "ACGT..."
@@ -32,8 +30,6 @@ sequences:
         "id": "A",
         "sequence": "MKTS...",
         "apo": "/path/to/apo_structure.pdb",
-        "seq_emb": "/path/to/sequence/embeddings.npy",
-        "struct_emb": "/path/to/structure/embeddings.npy"
       }
     },
     {
@@ -90,9 +86,6 @@ class PolymerSequence(BaseSequence):
 
     sequence: str
     modifications: dict[str, str] = dataclasses.field(default_factory=dict)
-    apo: str | None = None
-    seq_emb: str | None = None
-    struct_emb: str | None = None
 
     def __len__(self) -> int:
         """Return the number of residues in the protein sequence."""
@@ -105,6 +98,7 @@ class ProteinSequence(PolymerSequence):
 
     # class variable
     ctype: ClassVar = C.ChainType.PROTEIN
+    apo: str
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -133,8 +127,6 @@ class LigandSequence(BaseSequence):
     id: str | list[str]
     smiles: str | None = None
     ccd: str | list[str] | None = None
-    seq_emb: str | None = None
-    struct_emb: str | None = None
 
     def __len__(self) -> int:
         """Return the number of residues in the Ligand sequence."""

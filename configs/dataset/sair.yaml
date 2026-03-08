@@ -1,0 +1,19 @@
+# Synthetic dataset configuration from huMAP.
+_yaml_: "default-train.yaml"
+
+name: sair
+weight: 0.03
+
+# Data paths
+data_path: <DATA_PATH_PLACEHOLDER>
+seed: null # should be null for data augmentation
+
+sampler: null
+
+cropper:
+  _registry_: "data_cropper"
+  _class_: MultiAnchorCropper
+  max_anchors: 2
+  w_contiguous: 0.0
+  w_spatial: 0.0
+  w_spatial_interface: 1.0

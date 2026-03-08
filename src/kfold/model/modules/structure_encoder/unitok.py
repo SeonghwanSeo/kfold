@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+import torch
+
+from kfold.data.types.model_input import FoldingInput
+from kfold.model.layers.unitok import BackboneTokenizer, FullAtomTokenizer, UniTokBackbone
+from kfold.utils.registry import STRUCTURE_ENCODER
+
+from .base import BaseStructureEncoder
+
+
+@STRUCTURE_ENCODER.register()
+class UniTok(BaseStructureEncoder):
+    class Config(BaseStructureEncoder.Config):
+        """Configuration for UniTok structure encoder.
+
+        Attributes
+        ----------
+        path: str
+            Path to pretrained weights.
+        d_model: int
+            Dimension of token embeddings and transformer hidden states.
+        n_heads: int
+            Number of attention heads in the transformer.
+        n_layers: int
+            Number of transformer layers.
+        return_attn: bool
+            Whether to return attention weights from the transformer.
+
+        """
+
+        path: str  # Path to pretrained weights.
+        d_model: int = 1536
+        n_heads: int = 24
+        n_layers: int = 30
+        return_attn: bool = False
+
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        self.cfg: UniTok.Config = cfg
+        self.return_attn: bool = cfg.return_attn
+
+        # Create model components
+        # NOTE: this is hard-coded
+        self.bb_tok: BackboneTokenizer = BackboneTokenizer()
+        self.fa_tok: FullAtomTokenizer = FullAtomTokenizer()
+        self.backbone: UniTokBackbone = UniTokBackbone(
+            embed_dim=cfg.d_model, encoder_depth=cfg.n_layers, encoder_heads=cfg.n_heads
+        )
+        state_dict = torch.load(cfg.path, map_location="cpu")
+        self.load_state_dict(state_dict)
+
+        # Set to eval mode
+        self.eval()
+
+        # Convert backbone to bfloat16
+        self.backbone = self.backbone.to(torch.bfloat16)
+
+        # Freeze parameters since we are only doing inference.
+        for param in self.parameters():
+            param.requires_grad = False
+
+    @property
+    def d_attn(self) -> int:
+        cfg = self.cfg
+        if not cfg.return_attn:
+            return 0
+        else:
+            return self.cfg.n_heads * self.cfg.n_layers
+
+    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Forward pass of sequence representation module.
+
+        Parameters
+        ----------
+        f_input: FoldingInput
+            The input features
+
+        Returns
+        -------
+        x_token: torch.Tensor
+            Tensor of shape (B, Ntoken, D) containing sequence representations,
+            where Ntoken is the number of tokens and D is the model dimension.
+        attention: torch.Tensor | None
+            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
+            where N is number of layers and H is number of heads.
+        """
+        with (
+            torch.autocast(enabled=True, device_type="cuda", dtype=torch.bfloat16),
+            torch.no_grad(),
+        ):
+            if self.return_attn:
+                return self.forward_attn(f_input)
+            else:
+                return self.forward_no_attn(f_input), None
+
+    def forward_no_attn(self, f_input: FoldingInput) -> torch.Tensor:
+        """Forward pass of sequence representation module.
+
+        Parameters
+        ----------
+        f_input: FoldingInput
+            The input features
+
+        Returns
+        -------
+        x_token: torch.Tensor
+            Tensor of shape (B, Ntoken, D) containing sequence representations.
+        """
+        # NOTE: padding tokens have bb_token_ids of -1, which will be masked out
+        # in the attention computation.
+        seq_token_ids = f_input.sequence.seq_token_id
+        bb_token_ids = f_input.sequence.bb_struct_token_id
+        fa_token_ids = f_input.sequence.fa_struct_token_id
+
+        # HACK: (Seonghwan) Since we use the shared sequence vocab for both sequence
+        # and structure encoder, structure encoder does not have vocab ids for
+        # dna and rna tokens. We set those to 0 to prevent out-of-vocab errors.
+        seq_token_ids = seq_token_ids.masked_fill(~f_input.sequence.is_protein, 0)
+
+        seq_id = f_input.sequence.entity_id
+        pos_id = f_input.sequence.pos_id
+
+        # Mask out unallowed tokens
+        allow_mask = bb_token_ids != -1  # we set bb_token_id to -1 for invalid tokens.
+        seq_id = seq_id.masked_fill(~allow_mask, -1)  # entity id >= 1 for valid tokens
+
+        # HACK: we skip masking out invalid tokens to 0 since UniTok backbone
+        # add 4 special tokens before nn.Embedding.
+
+        x = self.backbone(
+            seq_token_ids,
+            bb_token_ids,
+            fa_token_ids,
+            seq_id=seq_id,
+            pos_id=pos_id,
+        )
+
+        # sequence -> token index mapping
+        batch_index = torch.arange(x.shape[0], device=x.device)[:, None]
+        seq_token_index = f_input.token.seq_token_index
+        x = x[batch_index, seq_token_index]  # [B, Ntoken, D]
+
+        # mask out invalid tokens
+        pad_mask = f_input.token.pad_mask
+
+        # mask out non-protein tokens
+        token_mask = pad_mask & f_input.token.is_protein
+        x.masked_fill_(~token_mask[..., None], 0.0)
+        return x
+
+    def forward_attn(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass of sequence representation module.
+
+        Parameters
+        ----------
+        f_input: FoldingInput
+            The input features
+
+        Returns
+        -------
+        x_token: torch.Tensor
+            Tensor of shape (B, Ntoken, D) containing sequence representations.
+        attention: torch.Tensor
+            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
+            where N is number of layers and H is number of heads.
+        """
+        raise NotImplementedError("Attention weights not implemented for UniTok.")
