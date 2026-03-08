@@ -582,7 +582,7 @@ class ApoInitializer:
             # get optional key for pre-computed perturbation with rieprody
             rieprody_key = apo_info.get("key", None)
             apo_coords = self.apply_perturbation(
-                sequence, apo_coords, rng=rng, key=rieprody_key
+                sequence, apo_coords, rng=rng, rieprody_key=rieprody_key
             )
 
         # Crop apo_coords based on residue_map
@@ -613,7 +613,7 @@ class ApoInitializer:
         sequence: str,
         apo_coords: np.ndarray,
         rng: np.random.Generator,
-        key: str | None = None,
+        rieprody_key: str | None = None,
     ) -> np.ndarray:
         """Augment apo structure coordinates with perturbation.
 
@@ -625,7 +625,7 @@ class ApoInitializer:
             Apo structure coordinates of shape [L, Natom, 3].
         rng : np.random.Generator
             Random number generator for stochastic operations.
-        key : str | None
+        rieprody_key : str | None
             Optional key for using pre-computed perturbation metrics.
 
         Returns
@@ -637,7 +637,9 @@ class ApoInitializer:
             "Protein perturbation module not initialized."
         )
         apo_mask = np.isfinite(apo_coords).all(axis=-1)
-        aug_coords = self.protein_perturbation.run(sequence, apo_coords, rng=rng, key=key)
+        aug_coords = self.protein_perturbation(
+            sequence, apo_coords, rng=rng, rieprody_key=rieprody_key
+        )
         aug_coords[~apo_mask] = np.nan
         return aug_coords
 
