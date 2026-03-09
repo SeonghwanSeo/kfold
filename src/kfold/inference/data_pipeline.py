@@ -3,6 +3,7 @@ import logging
 import pathlib
 
 import numpy as np
+import torch
 
 import kfold.constants as C
 from kfold.data.pipelines import (
@@ -18,6 +19,7 @@ from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.utils.io.structure import read_protein_structure
 
 from . import query
 
@@ -66,7 +68,12 @@ class InputDataPipeline:
 
     def process_query(
         self, input: query.Query
-    ) -> tuple[RefStructure, TokenizedStructure, FoldingInput]:
+    ) -> tuple[
+        RefStructure,
+        TokenizedStructure,
+        FoldingInput,
+        dict[int, tuple[torch.Tensor, torch.Tensor]],
+    ]:
         """Process an Query into model-ready inputs.
 
         Parameters
@@ -82,6 +89,9 @@ class InputDataPipeline:
             The tokenized structure representation.
         f_input : FoldingInput
             The featurized model input.
+        struct_tok_input : dict[int, tuple[torch.Tensor, torch.Tensor]]
+            A dictionary mapping entity_id to a tuple of (aatypes, coords) for
+            apo structure tokenization.
         """
         rng = np.random.default_rng(self.seed)
 
@@ -89,10 +99,11 @@ class InputDataPipeline:
         ref_struct = self.prepare_structure_from_query(input)
 
         # Populate apo structure
-        self.populate_apo_structure(ref_struct, input, rng=rng)
+        apo_lookup = self.load_apo_structures(input)
+        self.apo_initializer(ref_struct, lookup=apo_lookup, rng=rng)
 
         # Tokenize structure
-        # FIXME: add structure tokens dict
+        # NOTE: We feed apo structure tokens during model forward pass (gpu required).
         tok_struct = self.tokenizer.tokenize(ref_struct, structure_tokens={})
 
         # Apply sequence masking for sample diversity (only if enabled)
@@ -100,7 +111,10 @@ class InputDataPipeline:
 
         # Featurize input
         f_input = self.featurizer(tok_struct, rng)
-        return ref_struct, tok_struct, f_input
+
+        # Prepare structure tokenization input for later use in model inference
+        struct_tok_input = self.prepare_struct_tok_input(f_input, apo_lookup)
+        return ref_struct, tok_struct, f_input, struct_tok_input
 
     def prepare_structure_from_query(self, input: query.Query) -> RefStructure:
         """Prepare the reference structure from the input file.
@@ -183,32 +197,94 @@ class InputDataPipeline:
             metadata=metadata,
         )
 
-    def populate_apo_structure(
-        self,
-        ref_struct: RefStructure,
-        input: query.Query,
-        rng: np.random.Generator,
-    ) -> None:
+    def load_apo_structures(self, input: query.Query) -> dict[int, dict]:
         """Populate apo structure in-place.
 
         Parameters
         ----------
-        ref_struct : RefStructure
-            The reference structure to populate.
         input : Query
             The input query file.
-        rng : np.random.Generator | None, optional
-            Random number generator for any stochastic processes. Default is None.
+
+        Returns
+        -------
         """
         # Prepare lookup (apo initializer input)
         lookup: dict[int, dict] = {}
         for entity_id, seq in enumerate(input.sequences, start=1):
             if not isinstance(seq, query.ProteinSequence):
                 continue
-            apo_path = pathlib.Path(seq.apo)
-            lookup[entity_id] = {"path": apo_path}
-        # Populate apo structure
-        self.apo_initializer(ref_struct, lookup=lookup, rng=rng)
+            path = pathlib.Path(seq.apo)
+            sequence, coords = read_protein_structure(path)
+            lookup[entity_id] = {"path": path, "seq": sequence, "coords": coords}
+            if seq.apo_range is not None:
+                lookup[entity_id]["residue_map"] = seq.apo_range
+        return lookup
+
+    def prepare_struct_tok_input(
+        self, f_input: FoldingInput, apo_lookup: dict[int, dict]
+    ) -> dict[int, dict]:
+        """Prepare the structure tokenization input for apo structures.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            The featurized model input containing sequence and entity information.
+        apo_lookup : dict[int, dict]
+            The lookup dictionary containing apo structure information.
+
+        Returns
+        dict[int, dict]
+            A dictionary mapping entity_id to a tuple of (aatypes, coords) for
+            structure tokenization.
+        """
+
+        def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
+            """Parse residue map string into start and end indices.
+            Example:
+                "1:100->5:104" -> (0, 100, 4, 104)
+            """
+            res_range, apo_range = residue_map.split("->")
+            res_st, res_end = map(int, res_range.split(":"))
+            apo_st, apo_end = map(int, apo_range.split(":"))
+            if (res_end - res_st) != (apo_end - apo_st):
+                raise ValueError(f"Residue range length mismatch: {residue_map}")
+            # Convert to 0-based indexing
+            # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
+            return res_st - 1, res_end, apo_st - 1, apo_end
+
+        struct_tok_input: dict[int, dict] = {}
+        for entity_id, info in apo_lookup.items():
+            length = len(info["seq"])
+            aatypes = C.sequence.encode_protein_sequence(info["seq"])
+            aatypes = torch.tensor(aatypes, dtype=torch.long)
+            coords = torch.from_numpy(info["coords"]).float()
+
+            # Find the corresponding indices in the featurized input.
+            indices = torch.where(f_input.sequence.entity_id == entity_id)[0]
+            if len(indices) == 0:
+                raise ValueError(f"No sequence indices found for entity_id {entity_id}.")
+            seq_base = indices[0].item() + 1  # Account for bos token at the start
+
+            if "residue_map" in info:
+                # If residue_map is provided, find the corresponding residue ranges
+                res_st, res_end, apo_st, apo_end = parse_residue_map(info["residue_map"])
+                seq_st, seq_end = seq_base + res_st, seq_base + res_end
+            else:
+                apo_st, apo_end = 0, length
+                seq_st, seq_end = seq_base, seq_base + length
+
+            if (seq_end - seq_st) != (apo_end - apo_st):
+                raise ValueError(
+                    f"Sequence range does not match apo range for entity {entity_id}: "
+                    f"seq range ({seq_st}:{seq_end}) vs apo range ({apo_st}:{apo_end})"
+                )
+
+            struct_tok_input[entity_id] = {
+                "aatypes": aatypes,
+                "coords": coords,
+                "mapping": (seq_st, seq_end, apo_st, apo_end),
+            }
+        return struct_tok_input
 
     # ================================================================================
     # Chain Parsing Functions

@@ -12,7 +12,7 @@ sequences:
       modifications:
         "1": "6OG"
         "4": "SEP"
-      apo: "/path/to/apo_structure.pdb",
+      apo: "/path/to/apo.pdb",
   - dna:
       id: "C"
       sequence: "ACGT..."
@@ -29,13 +29,20 @@ sequences:
       "protein": {
         "id": "A",
         "sequence": "MKTS...",
-        "apo": "/path/to/apo_structure.pdb",
+        "apo": "/path/to/apo.pdb",
+        "apo_range": "6:10->1:5" # 6-10 residues in sequence maps to 1-5 in input apo
       }
     },
     {
       "ligand": {
         "id": "B",
-        "ccd": "ATP" # or "smiles": "c1ccccc1"
+        "ccd": "ATP"
+      }
+    },
+    {
+      "ligand": {
+        "id": "C",
+        "smiles": "c1ccccc1"
       }
     }
   ]
@@ -99,6 +106,33 @@ class ProteinSequence(PolymerSequence):
     # class variable
     ctype: ClassVar = C.ChainType.PROTEIN
     apo: str
+    apo_range: str | None = None  # format: "seq_st:seq_end->apo_st:apo_end"
+
+    def __post_init__(self):
+        length = len(self)
+        if self.apo_range is not None:
+            try:
+                seq_part, apo_part = self.apo_range.split("->")
+                seq_start, seq_end = map(int, seq_part.split(":"))
+                apo_start, apo_end = map(int, apo_part.split(":"))
+                if seq_start < 1 or seq_end < seq_start:
+                    raise ValueError(
+                        f"Invalid sequence range in apo_range: {self.apo_range}"
+                    )
+                if apo_start < 1 or apo_end < apo_start:
+                    raise ValueError(f"Invalid apo range in apo_range: {self.apo_range}")
+                if seq_end > length:
+                    raise ValueError(
+                        f"Sequence end index in apo_range exceeds sequence length "
+                        f"({length}): {self.apo_range}"
+                    )
+                if apo_end - apo_start != seq_end - seq_start:
+                    raise ValueError(
+                        f"Sequence range and apo range must have the same length: "
+                        f"{self.apo_range}"
+                    )
+            except Exception as e:
+                raise ValueError(f"Invalid format for apo_range: {self.apo_range}") from e
 
 
 @dataclasses.dataclass(kw_only=True)

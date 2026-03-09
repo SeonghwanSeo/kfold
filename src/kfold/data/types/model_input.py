@@ -8,9 +8,7 @@ import kfold.constants as C
 from kfold.data.layout import TensorLayout
 from kfold.utils.misc import check_tensor
 
-__all__ = [
-    "FoldingInput",
-]
+__all__ = ["FoldingInput"]
 
 
 # === Layout dataclasses (chain-level, token-level, atom-level, bond-level) === #

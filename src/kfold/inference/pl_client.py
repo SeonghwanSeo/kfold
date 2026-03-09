@@ -74,15 +74,34 @@ class KFoldInferenceClient(pl.LightningModule):
 
     def predict_step(
         self,
-        batch: tuple[Query, RefStructure, FoldingInput],
+        batch: tuple[Query, RefStructure, FoldingInput, dict[int, dict]],
     ) -> None:
+        """Predict step for inference.
+
+        Parameters
+        ----------
+        batch :
+            - Query: the input query.
+            - RefStructure: the reference structure for the query.
+            - FoldingInput: the input features for the model.
+            - dict: a dictionary for apo structure tokenization.
+        """
         if batch is None:
-            # Skip empty batch (occured by processing error)
-            return
+            return  # Skip empty batch (occured by processing error)
 
         # Unpack batch and validate
-        query, ref_struct, f_input = batch
+        query, ref_struct, f_input, apo_dict = batch
         assert f_input.batch_size == 1, "Inference batch size should be 1"
+
+        # === Tokenize apo structure === #
+        tokenize_apo = self.model.structure_encoder.tokenize
+        for entity_id, apo_info in apo_dict.items():  # noqa
+            aatypes, coords = apo_info["aatypes"], apo_info["coords"]
+            seq_st, seq_ed, apo_st, apo_ed = apo_info["mapping"]
+            seq_slc, apo_slc = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
+            bb_tok_ids, fa_tok_ids = tokenize_apo(aatypes, coords)
+            f_input.sequence.bb_struct_token_id[0, seq_slc] = bb_tok_ids[apo_slc]
+            f_input.sequence.fa_struct_token_id[0, seq_slc] = fa_tok_ids[apo_slc]
 
         cfg = self.inference_config
         num_trunk_recycles = cfg.num_recycles
@@ -96,7 +115,7 @@ class KFoldInferenceClient(pl.LightningModule):
 
         # === Run model inference === #
         try:
-            model_out = self.forward(
+            model_out = self(
                 f_input=f_input,
                 num_recycles=num_trunk_recycles,
                 num_steps=num_diffusion_steps,
