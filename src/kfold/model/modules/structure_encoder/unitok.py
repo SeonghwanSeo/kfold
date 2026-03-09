@@ -68,6 +68,56 @@ class UniTok(BaseStructureEncoder):
         else:
             return self.cfg.n_heads * self.cfg.n_layers
 
+    def tokenize(
+        self, aatypes: torch.Tensor, coords: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Tokenize apo structure with the structure encoder's tokenizer.
+
+        Parameters
+        ----------
+        aatypes: torch.Tensor
+            Amino acid type indices of shape (L,).
+            These should be indices corresponding to the ESM sequence vocabulary.
+        coords: torch.Tensor
+            Full-atom coordinates of shape (L, 37, 3), where L is the number of residues
+            and 37 is the number of atoms per residue.
+
+        Returns
+        -------
+        bb_struct_id: torch.Tensor
+            Backbone structure token IDs for each residue, of shape (L,).
+        fa_struct_id: torch.Tensor
+            Full-atom structure token IDs for each residue, of shape (L,).
+        """
+        bb_struct_id = self.bb_tok.tokenize(coords)
+        fa_struct_id = self.fa_tok.tokenize(aatypes, coords)
+        return bb_struct_id, fa_struct_id
+
+    def tokenize_batch(
+        self, aatypes: torch.Tensor, coords: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Tokenize apo structure with the structure encoder's tokenizer.
+
+        Parameters
+        ----------
+        aatypes: torch.Tensor
+            Amino acid type indices of shape (B, L,).
+            These should be indices corresponding to the ESM sequence vocabulary.
+        coords: torch.Tensor
+            Full-atom coordinates of shape (B, L, 37, 3), where B is the batch size,
+            L is the number of residues and 37 is the number of atoms per residue.
+
+        Returns
+        -------
+        bb_struct_id: torch.Tensor
+            Backbone structure token IDs for each residue, of shape (B, L,).
+        fa_struct_id: torch.Tensor
+            Full-atom structure token IDs for each residue, of shape (B, L,).
+        """
+        bb_struct_id = self.bb_tok.tokenize_batch(coords)
+        fa_struct_id = self.fa_tok.tokenize_batch(aatypes, coords)
+        return bb_struct_id, fa_struct_id
+
     def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Forward pass of sequence representation module.
 

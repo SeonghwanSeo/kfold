@@ -8,7 +8,6 @@ import numpy as np
 import kfold.constants as C
 from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import Chain, RefStructure
-from kfold.data.utils.io.structure import read_protein_structure
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
@@ -223,11 +222,8 @@ class ApoInitializer:
         lookup : dict[int, dict]
             Mapping from entity_id to structure file paths and residue indices
             - input types:
-                - case1: apo structure file path
-                    - path: PathLike
-                - case2: sequence and atom37 coordinates
-                    - seq: str
-                    - coords: np.ndarray (L, 37, 3)
+                - seq: str
+                - coords: np.ndarray (L, 37, 3)
             - optional keys:
                 - key: str
                     Optional key for using pre-computed perturbation with rieprody.
@@ -253,11 +249,8 @@ class ApoInitializer:
         lookup : dict[int, dict]
             Mapping from entity_id to structure file paths and residue indices
             - input types:
-                - case1: apo structure file path
-                    - path: PathLike
-                - case2: sequence and atom37 coordinates
-                    - seq: str
-                    - coords: np.ndarray (L, 37, 3)
+                - seq: str
+                - coords: np.ndarray (L, 37, 3)
             - optional keys:
                 - key: str
                     Optional key for using pre-computed perturbation with rieprody.
@@ -528,11 +521,8 @@ class ApoInitializer:
         apo_info : dict
             Information about the apo structure file and residue indices.
             - input types:
-                - case1: apo structure file path
-                    - path: PathLike
-                - case2: sequence and atom37 coordinates
-                    - seq: str
-                    - coords: np.ndarray (L, 37, 3)
+                - seq: str
+                - coords: np.ndarray (L, 37, 3)
             - optional keys:
                 - key: str
                     Optional key for using pre-computed perturbation with rieprody.
@@ -561,24 +551,18 @@ class ApoInitializer:
             # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
             return res_st - 1, res_end, apo_st - 1, apo_end
 
-        # Load apo structure
-        if "seq" in apo_info and "coords" in apo_info:
-            # Apo info includes pre-loaded sequence and coordinates.
-            sequence: str = apo_info["seq"]
-            apo_coords: np.ndarray = apo_info["coords"]
-            assert apo_coords.shape == (len(sequence), 37, 3), (
-                f"Apo coordinates shape mismatch: expected ({len(sequence)}, 37, 3), "
-                f"got {apo_coords.shape}"
-            )
-        elif "path" in apo_info:
-            # Load sequence and apo coordinates from structure file.
-            path = apo_info["path"]
-            sequence, apo_coords = read_protein_structure(path)
-        else:
+        if "seq" not in apo_info or "coords" not in apo_info:
             raise ValueError(
-                "Apo info must contain either 'seq' and 'coords', "
-                "or 'path' to the structure file."
+                f"Apo info must contain 'seq' and 'coords' keys: {apo_info.keys()}"
             )
+
+        # Load apo structure
+        sequence: str = apo_info["seq"]
+        apo_coords: np.ndarray = apo_info["coords"]
+        assert apo_coords.shape == (len(sequence), 37, 3), (
+            f"Apo coordinates shape mismatch: expected ({len(sequence)}, 37, 3), "
+            f"got {apo_coords.shape}"
+        )
 
         # Apply perturbation if enabled
         if (

@@ -78,6 +78,12 @@ class BaseFoldingModel(torch.nn.Module):
         self.trunk.compile(config.compile_trunk, config.compile_mode)
         self.score_model.compile(config.compile_score_model, config.compile_mode)
 
+    def cast_to_bf16(self):
+        """Cast model parameters to bfloat16 for faster inference."""
+        self.input_embedder = self.input_embedder.to(torch.bfloat16)
+        self.trunk = self.trunk.to(torch.bfloat16)
+        self.distogram_head = self.distogram_head.to(torch.bfloat16)
+
     def forward(
         self,
         f_input: FoldingInput,

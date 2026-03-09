@@ -8,7 +8,11 @@ from lightning import pytorch as pl
 from kfold.config import load_config
 from kfold.data.types.ccd import CCD
 from kfold.inference.dataset import prepare_inference_dataloader
-from kfold.inference.pl_client import InferenceConfig, KFoldInferenceClient
+from kfold.inference.pl_client import (
+    InferenceConfig,
+    KFoldInferenceClient,
+    KFoldPredictionWriter,
+)
 from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
 
@@ -119,16 +123,6 @@ def main():
     if args.num_gpus is not None:
         devices = args.num_gpus
 
-    # Construct PyTorch Lightning trainer
-    trainer = pl.Trainer(
-        devices=devices,
-        logger=False,
-        enable_checkpointing=False,
-        precision="bf16-mixed",
-        benchmark=False,
-        deterministic=True,
-    )
-
     # Load model and setup inference client
     config = load_config(args.config)
     if "model" in config:
@@ -145,6 +139,18 @@ def main():
     )
     inference_client = KFoldInferenceClient(
         model, inference_config, save_dir=args.out_dir
+    )
+    inference_writer = KFoldPredictionWriter(args.out_dir)
+
+    # Construct PyTorch Lightning trainer
+    trainer = pl.Trainer(
+        devices=devices,
+        logger=False,
+        callbacks=[inference_writer],
+        enable_checkpointing=False,
+        precision="bf16-mixed",
+        benchmark=False,
+        deterministic=True,
     )
 
     # Load CCD data

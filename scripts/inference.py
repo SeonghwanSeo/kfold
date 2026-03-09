@@ -1,4 +1,5 @@
 import argparse
+import logging
 import pathlib
 import random
 
@@ -14,6 +15,12 @@ from kfold.data.utils.writer import KFoldWriter
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
+
+logger = logging.getLogger("kfold.inference")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 
 def set_seed(seed: int):
@@ -122,28 +129,35 @@ def main():
         raise NotImplementedError("CPU inference is not implemented yet.")
 
     # Load model
+    logger.info(f"Loading model from checkpoint: {args.checkpoint}")
     config = load_config(args.config)
     if "model" in config:
         config = config.model
     model: KFold = KFold.from_checkpoint(config, args.checkpoint)
+    model = model.cast_to_bf16()
     model = model.eval().cuda()
+    logger.info("Model loaded successfully.")
 
     # Load CCD data
+    logger.info(f"Loading CCD data from: {args.ccd}")
     ccd: CCD = CCD.load(args.ccd)
+    logger.info("CCD data loaded successfully.")
 
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
+    logger.info(f"Parsing input queries from: {args.input}")
     input_queries: list[Query] = parse_input_files(
         args.input,
         ccd=ccd,
         skip_invalid=True,
     )
-    print(f"Parsed {len(input_queries)} valid input queries from {args.input}")
+    logger.info(f"Parsed {len(input_queries)} valid input queries")
 
     if args.resume:
         # Filter out queries that already have results saved
+        logger.info("Filtering out queries with existing results for resuming inference")
         input_queries = [q for q in input_queries if not (args.out_dir / q.name).exists()]
-        print(f"{len(input_queries)} queries remaining after filtering existing results")
+        logger.info(f"{len(input_queries)} queries remaining after filtering for resume")
 
     # Create data loader
     dataloader = prepare_inference_dataloader(
@@ -159,6 +173,7 @@ def main():
     writer = KFoldWriter()
 
     # Run inference
+    logger.info("Starting inference...")
     for batch in tqdm(dataloader, desc="Inference"):
         if batch is None:
             # Skip invalid input
@@ -166,14 +181,25 @@ def main():
 
         # Unpack batch
         query: Query = batch[0]
-        ref_struct: RefStructure = batch[1]  # noqa
+        ref_struct: RefStructure = batch[1]
         f_input: FoldingInput = batch[2]
+        apo_dict: dict[int, dict] = batch[3]
 
         if not f_input.is_batched:
             f_input = FoldingInput.from_list([f_input])
 
         assert f_input.batch_size == 1, "Inference batch size should be 1"
         f_input = f_input.to(device="cuda")
+
+        # Tokenize apo structure and fill in input features
+        tokenize_apo = model.structure_encoder.tokenize
+        for entity_id, apo_info in apo_dict.items():  # noqa
+            aatypes, coords = apo_info["aatypes"], apo_info["coords"]
+            seq_st, seq_ed, apo_st, apo_ed = apo_info["mapping"]
+            seq_slc, apo_slc = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
+            bb_tok_ids, fa_tok_ids = tokenize_apo(aatypes.cuda(), coords.cuda())
+            f_input.sequence.bb_struct_token_id[0, seq_slc] = bb_tok_ids[apo_slc]
+            f_input.sequence.fa_struct_token_id[0, seq_slc] = fa_tok_ids[apo_slc]
 
         # HACK: Set random seed for reproducibility
         # FIXME: pass random generator to model sampling function instead
@@ -228,6 +254,7 @@ def main():
                 writer.write_new_coords(ref_struct, coords_i, save_path)
             except Exception as e:
                 tqdm.write(f"Warning: Failed to save sample {i} for {name}: {e}")
+    logger.info("Inference completed.")
 
 
 if __name__ == "__main__":
