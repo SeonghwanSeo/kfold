@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 
@@ -42,6 +43,47 @@ def read_fasta(path: str | Path) -> list[tuple[str, str]]:
             sequence = "".join(seq_parts)
             res.append((seq_id, sequence))
     return res
+
+
+def iter_fasta(path: str | Path) -> Iterator[tuple[str, str]]:
+    """Load sequences from a fasta file (supports multi-line sequences).
+
+    Parameters
+    ----------
+    path : str | Path
+        Path to the fasta file.
+
+    Yields
+    ------
+    tuple[str, str]
+        Tuples of (ID, sequence) for each entry in the fasta file.
+
+    """
+    seq_id: str | None = None
+    seq_parts: list[str] = []
+    with open(path) as f:
+        for line in f:
+            line: str = line.strip()
+            # Skip empty lines if any exist
+            if not line:
+                continue
+
+            if line.startswith(">"):
+                if seq_id is not None:
+                    sequence = "".join(seq_parts)
+                    yield (seq_id, sequence)
+                # Start a new sequence entry
+                seq_id = line[1:]  # Remove '>'
+                seq_parts = []
+            else:
+                # Append sequence lines to the current list buffer
+                if seq_id is not None:
+                    seq_parts.append(line)
+
+        # Add the last sequence after the loop ends
+        if seq_id is not None:
+            sequence = "".join(seq_parts)
+            yield (seq_id, sequence)
 
 
 def write_fasta(

@@ -72,6 +72,7 @@ class InferenceDataset(torch.utils.data.Dataset):
             Random seed for reproducibility.
         """
         self.queries: list[Query] = queries
+        self.queries.sort(key=lambda q: q.estimate_size())
         self.seed: int = seed
 
         # Data pipeline components
@@ -85,12 +86,16 @@ class InferenceDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.queries)
 
-    def __getitem__(self, index: int) -> tuple[Query, RefStructure, FoldingInput] | None:
+    def __getitem__(
+        self, index: int
+    ) -> tuple[Query, RefStructure, FoldingInput, dict] | None:
         """Get the folding input for the given input."""
         query: Query = self.queries[index]
 
         # Prepare input data
-        ref_struct, tok_struct, f_input = self.data_pipeline.process_query(query)
+        ref_struct, tok_struct, f_input, struct_tok_input = (
+            self.data_pipeline.process_query(query)
+        )
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
@@ -98,7 +103,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         # Add batch dimension
         f_input = FoldingInput.from_list([f_input])
 
-        return query, ref_struct, f_input
+        return query, ref_struct, f_input, struct_tok_input
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 32 for LocalAtomAttention."""

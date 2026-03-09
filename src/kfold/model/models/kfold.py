@@ -27,6 +27,15 @@ class KFold(BaseFoldingModel):
             Registry.instantiate(config.structure_encoder)
         )
 
+    def cast_to_bf16(self):
+        """Cast model parameters to bfloat16 for faster inference."""
+        super().cast_to_bf16()
+        self.sequence_encoder = self.sequence_encoder.to(dtype=torch.bfloat16)
+        self.structure_encoder.backbone = self.structure_encoder.backbone.to(
+            dtype=torch.bfloat16
+        )
+        return self
+
     def forward(
         self,
         f_input: FoldingInput,
