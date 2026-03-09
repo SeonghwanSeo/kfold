@@ -72,6 +72,7 @@ class InferenceDataset(torch.utils.data.Dataset):
             Random seed for reproducibility.
         """
         self.queries: list[Query] = queries
+        self.queries.sort(key=lambda q: q.estimate_size())
         self.seed: int = seed
 
         # Data pipeline components

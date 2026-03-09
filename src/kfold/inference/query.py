@@ -86,6 +86,13 @@ class BaseSequence(ABC):
             return [self.id]
         return self.id
 
+    @property
+    def num_chains(self) -> int:
+        """Return the number of chains for this sequence."""
+        if isinstance(self.id, str):
+            return 1
+        return len(self.id)
+
 
 @dataclasses.dataclass(kw_only=True)
 class PolymerSequence(BaseSequence):
@@ -187,6 +194,10 @@ class Query:
         dataclasses.field(default_factory=list)
     )
     yaml: str  # Original YAML content
+
+    def estimate_size(self) -> int:
+        """Estimate the size of the complex based on the input sequences."""
+        return sum(len(seq) * seq.num_chains for seq in self.sequences)
 
 
 def parse_single_file(

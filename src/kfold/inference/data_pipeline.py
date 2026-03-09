@@ -72,7 +72,7 @@ class InputDataPipeline:
         RefStructure,
         TokenizedStructure,
         FoldingInput,
-        dict[int, tuple[torch.Tensor, torch.Tensor]],
+        dict,
     ]:
         """Process an Query into model-ready inputs.
 
