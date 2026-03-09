@@ -43,7 +43,7 @@ def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
 def align_sequence(query: str, target: str, margin: int = 5) -> tuple[int, int, int, int]:
     # Return default 0s if either sequence is empty
     if len(query) == 0 or len(target) == 0:
-        return 0, 0, 0, 0
+        return -1, -1, -1, -1  # No matches found
 
     # Read raw memory directly (no slow Python loops)
     q_arr = np.frombuffer(query.encode("ascii"), dtype=np.uint8)
@@ -81,7 +81,7 @@ def align_sequence(query: str, target: str, margin: int = 5) -> tuple[int, int, 
     match_indices = np.where(align[best_idx, :overlap_len])[0]
 
     if len(match_indices) == 0:
-        return 0, 0, 0, 0
+        return -1, -1, -1, -1  # No matches found
 
     # Get the first and last actual match indices within the evaluated window
     first_match = match_indices[0]
@@ -294,6 +294,8 @@ class InputDataPipeline:
         for entity_id, seq in enumerate(input.sequences, start=1):
             if not isinstance(seq, query.ProteinSequence):
                 continue
+            seq_id = f"{input.name}:{tuple(seq.ids)}"
+
             path = pathlib.Path(seq.apo)
             sequence, coords = read_protein_structure(path)
             if seq.apo_range is not None:
@@ -304,12 +306,17 @@ class InputDataPipeline:
                 length = len(sequence)
                 ref_seq = ref_chain.get_sequence(map_to_standard=True)
                 seq_st, seq_end, apo_st, apo_end = align_sequence(ref_seq, sequence)
+                if seq_st == -1:
+                    self.logger.warning(
+                        f"No apo_range provided for protein sequence {seq_id}, "
+                        f"and no alignment found between reference and apo sequences. "
+                        f"Skipping apo structure loading for this entity."
+                    )
+                    continue
                 apo_range = f"{seq_st + 1}:{seq_end}->{apo_st + 1}:{apo_end}"
                 if apo_range != f"1:{length}->1:{length}":
-                    id = input.name
-                    asym_ids = tuple(seq.ids)
                     self.logger.warning(
-                        f"No apo_range provided for protein sequence {id}:{asym_ids}, "
+                        f"No apo_range provided for protein sequence {seq_id}, "
                         f"but lengths do not match. Inferred apo_range: {apo_range}"
                     )
 

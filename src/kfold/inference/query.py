@@ -117,6 +117,8 @@ class ProteinSequence(PolymerSequence):
 
     def __post_init__(self):
         length = len(self)
+        if not Path(self.apo).exists():
+            raise ValueError(f"Apo file does not exist: {self.apo}")
         if self.apo_range is not None:
             try:
                 seq_part, apo_part = self.apo_range.split("->")

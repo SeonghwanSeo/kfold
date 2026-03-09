@@ -183,7 +183,7 @@ def main():
         query: Query = batch[0]
         ref_struct: RefStructure = batch[1]
         f_input: FoldingInput = batch[2]
-        apo_dict: dict[int, tuple[torch.Tensor, torch.Tensor]] = batch[3]
+        apo_dict: dict[int, dict] = batch[3]
 
         if not f_input.is_batched:
             f_input = FoldingInput.from_list([f_input])

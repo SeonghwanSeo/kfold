@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import lightning.pytorch as pl
+import numpy as np
 import torch
 from lightning.pytorch.callbacks import BasePredictionWriter
 
@@ -75,7 +76,7 @@ class KFoldInferenceClient(pl.LightningModule):
     def predict_step(
         self,
         batch: tuple[Query, RefStructure, FoldingInput, dict[int, dict]],
-    ) -> tuple[Query, RefStructure, dict[str, torch.Tensor]] | None:
+    ) -> tuple[Query, RefStructure, dict[str, np.ndarray]] | None:
         """Predict step for inference.
 
         Parameters
