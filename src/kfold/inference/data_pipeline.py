@@ -23,7 +23,76 @@ from kfold.data.utils.io.structure import read_protein_structure
 
 from . import query
 
-logger = logging.getLogger(__name__)
+
+# === Helper functions ===
+def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
+    """Parse residue map string into start and end indices.
+    Example:
+        "1:100->5:104" -> (0, 100, 4, 104)
+    """
+    res_range, apo_range = residue_map.split("->")
+    res_st, res_end = map(int, res_range.split(":"))
+    apo_st, apo_end = map(int, apo_range.split(":"))
+    if (res_end - res_st) != (apo_end - apo_st):
+        raise ValueError(f"Residue range length mismatch: {residue_map}")
+    # Convert to 0-based indexing
+    # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
+    return res_st - 1, res_end, apo_st - 1, apo_end
+
+
+def align_sequence(query: str, target: str, margin: int = 5) -> tuple[int, int, int, int]:
+    # Return default 0s if either sequence is empty
+    if len(query) == 0 or len(target) == 0:
+        return 0, 0, 0, 0
+
+    # Read raw memory directly (no slow Python loops)
+    q_arr = np.frombuffer(query.encode("ascii"), dtype=np.uint8)
+    t_arr = np.frombuffer(target.encode("ascii"), dtype=np.uint8)
+
+    # Define shift range (k = target_index - query_index)
+    m, n = len(query), len(target)
+    base_shift = n - m
+    k_min = min(-margin, base_shift - margin)
+    k_max = max(margin, base_shift + margin)
+    n_shifts = k_max - k_min + 1
+    n_match = min(m, n)
+
+    # Compute alignment matches
+    align = np.zeros((n_shifts, n_match), dtype=bool)
+    for i, k in enumerate(range(k_min, k_max + 1)):
+        q_st = max(0, -k)
+        t_st = max(0, k)
+        overlap_len = min(m - q_st, n - t_st)
+        if overlap_len > 0:
+            q_end = q_st + overlap_len
+            t_end = t_st + overlap_len
+            align[i, :overlap_len] = q_arr[q_st:q_end] == t_arr[t_st:t_end]
+
+    # Find the shift index with the most matches
+    best_idx = np.argmax(align.sum(axis=1))
+    best_k = k_min + best_idx
+
+    # Recalculate the base bounds for the best shift
+    base_q_st = max(0, -best_k)
+    base_t_st = max(0, best_k)
+    overlap_len = min(m - base_q_st, n - base_t_st)
+
+    # Extract the exact boundaries of the matched region
+    match_indices = np.where(align[best_idx, :overlap_len])[0]
+
+    if len(match_indices) == 0:
+        return 0, 0, 0, 0
+
+    # Get the first and last actual match indices within the evaluated window
+    first_match = match_indices[0]
+    last_match = match_indices[-1]
+
+    q_st_final = base_q_st + first_match
+    q_end_final = base_q_st + last_match + 1
+    t_st_final = base_t_st + first_match
+    t_end_final = base_t_st + last_match + 1
+
+    return int(q_st_final), int(q_end_final), int(t_st_final), int(t_end_final)
 
 
 class InputDataPipeline:
@@ -66,6 +135,9 @@ class InputDataPipeline:
         # Initialize featurizer
         self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer()
 
+        self.logger = logging.getLogger("InputDataPipeline")
+        self.logger.setLevel(logging.INFO)
+
     def process_query(
         self, input: query.Query
     ) -> tuple[
@@ -84,9 +156,9 @@ class InputDataPipeline:
         Returns
         -------
         ref_struct : RefStructure
-            The reference structure representation.
+            The reference structure.
         tokenized_struct : TokenizedStructure
-            The tokenized structure representation.
+            The tokenized structure.
         f_input : FoldingInput
             The featurized model input.
         struct_tok_input : dict[int, tuple[torch.Tensor, torch.Tensor]]
@@ -99,7 +171,7 @@ class InputDataPipeline:
         ref_struct = self.prepare_structure_from_query(input)
 
         # Populate apo structure
-        apo_lookup = self.load_apo_structures(input)
+        apo_lookup = self.load_apo_structures(ref_struct, input)
         self.apo_initializer(ref_struct, lookup=apo_lookup, rng=rng)
 
         # Tokenize structure
@@ -127,7 +199,7 @@ class InputDataPipeline:
         Returns
         -------
         ref_struct : RefStructure
-            The reference structure representation.
+            The reference structure.
         """
         chain_metas: list[ChainInfo] = []
         chains: list[Chain] = []
@@ -197,31 +269,62 @@ class InputDataPipeline:
             metadata=metadata,
         )
 
-    def load_apo_structures(self, input: query.Query) -> dict[int, dict]:
+    def load_apo_structures(
+        self, ref_struct: RefStructure, input: query.Query
+    ) -> dict[int, dict]:
         """Populate apo structure in-place.
 
         Parameters
         ----------
+        ref_struct : RefStructure
+            The reference structure.
         input : Query
             The input query file.
 
         Returns
         -------
         """
-        # Prepare lookup (apo initializer input)
+        entity_to_ref_chain: dict[int, Chain] = {}
+        for chain in ref_struct.chains:
+            eid = chain.entity_id
+            if eid not in entity_to_ref_chain:
+                entity_to_ref_chain[eid] = chain
+
         lookup: dict[int, dict] = {}
         for entity_id, seq in enumerate(input.sequences, start=1):
             if not isinstance(seq, query.ProteinSequence):
                 continue
             path = pathlib.Path(seq.apo)
             sequence, coords = read_protein_structure(path)
-            lookup[entity_id] = {"path": path, "seq": sequence, "coords": coords}
             if seq.apo_range is not None:
-                lookup[entity_id]["residue_map"] = seq.apo_range
+                apo_range = seq.apo_range
+            else:
+                # If no residue_map is provided, check if sequence lengths match
+                ref_chain = entity_to_ref_chain[entity_id]
+                length = len(sequence)
+                ref_seq = ref_chain.get_sequence(map_to_standard=True)
+                seq_st, seq_end, apo_st, apo_end = align_sequence(ref_seq, sequence)
+                apo_range = f"{seq_st + 1}:{seq_end}->{apo_st + 1}:{apo_end}"
+                if apo_range != f"1:{length}->1:{length}":
+                    id = input.name
+                    asym_ids = tuple(seq.ids)
+                    self.logger.warning(
+                        f"No apo_range provided for protein sequence {id}:{asym_ids}, "
+                        f"but lengths do not match. Inferred apo_range: {apo_range}"
+                    )
+
+            lookup[entity_id] = {
+                "path": path,
+                "seq": sequence,
+                "coords": coords,
+                "residue_map": apo_range,
+            }
         return lookup
 
     def prepare_struct_tok_input(
-        self, f_input: FoldingInput, apo_lookup: dict[int, dict]
+        self,
+        f_input: FoldingInput,
+        apo_lookup: dict[int, dict],
     ) -> dict[int, dict]:
         """Prepare the structure tokenization input for apo structures.
 
@@ -237,21 +340,6 @@ class InputDataPipeline:
             A dictionary mapping entity_id to a tuple of (aatypes, coords) for
             structure tokenization.
         """
-
-        def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
-            """Parse residue map string into start and end indices.
-            Example:
-                "1:100->5:104" -> (0, 100, 4, 104)
-            """
-            res_range, apo_range = residue_map.split("->")
-            res_st, res_end = map(int, res_range.split(":"))
-            apo_st, apo_end = map(int, apo_range.split(":"))
-            if (res_end - res_st) != (apo_end - apo_st):
-                raise ValueError(f"Residue range length mismatch: {residue_map}")
-            # Convert to 0-based indexing
-            # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
-            return res_st - 1, res_end, apo_st - 1, apo_end
-
         struct_tok_input: dict[int, dict] = {}
         for entity_id, info in apo_lookup.items():
             length = len(info["seq"])
@@ -261,10 +349,11 @@ class InputDataPipeline:
 
             # Find the corresponding indices in the featurized input.
             indices = torch.where(f_input.sequence.entity_id == entity_id)[0]
-            if len(indices) == 0:
+            ref_length = len(indices)
+            if ref_length == 0:
                 raise ValueError(f"No sequence indices found for entity_id {entity_id}.")
-            seq_base = indices[0].item() + 1  # Account for bos token at the start
 
+            seq_base = indices[0].item() + 1  # Account for bos token at the start
             if "residue_map" in info:
                 # If residue_map is provided, find the corresponding residue ranges
                 res_st, res_end, apo_st, apo_end = parse_residue_map(info["residue_map"])
@@ -304,7 +393,7 @@ class InputDataPipeline:
         Returns
         -------
         chain: Chain
-            The chain representation.
+            The reference chain.
 
         Notes
         -----
@@ -348,7 +437,7 @@ class InputDataPipeline:
         Returns
         -------
         chain: Chain
-            The chain representation.
+            The reference chain.
 
         Notes
         -----
