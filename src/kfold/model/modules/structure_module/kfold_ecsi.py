@@ -868,6 +868,61 @@ class KFoldECSI(BaseECSI):
         noise = torch.randn_like(coords) * perturb_scale
         return (coords + noise) * atom_mask[..., None]
 
+    def _apply_forward_pinned_churn(
+        self,
+        x_t: torch.Tensor,
+        x_churn_target: torch.Tensor,
+        atom_mask: torch.Tensor,
+        t_curr: float,
+        t_next: float,
+        t_exp: torch.Tensor,
+    ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, float]:
+        dt = t_next - t_curr
+        delta_churn = float(self.churn_factor) * abs(dt)
+        apply_churn = t_curr + delta_churn <= self.sigma_max
+        if self.churn_until_time is not None:
+            apply_churn = apply_churn and (t_curr > self.churn_until_time)
+
+        if not apply_churn:
+            t_curr_tensor = torch.full(
+                (x_t.shape[0], x_t.shape[1]),
+                t_curr,
+                device=x_t.device,
+                dtype=x_t.dtype,
+            )
+            return x_t, t_curr, t_curr_tensor, t_exp, dt
+
+        alpha_t = self.alpha(t_exp)
+        beta_t = self.beta(t_exp)
+        gamma_t = self.gamma(t_exp)
+        alpha_dot = self.alpha_deriv(t_exp)
+        beta_dot = self.beta_deriv(t_exp)
+        gamma_dot = self.gamma_deriv(t_exp)
+
+        f_t = alpha_dot / (alpha_t + 1e-8)
+        s_t = beta_dot - f_t * beta_t
+        base_eps = gamma_t * gamma_dot - f_t * gamma_t**2
+        g_t = torch.sqrt(torch.clamp(2.0 * base_eps, min=0.0) + 1e-8)
+
+        churn_noise = torch.randn_like(x_t)
+        x_t = (
+            x_t
+            + (f_t * x_t + s_t * x_churn_target) * delta_churn
+            + g_t * (delta_churn**0.5) * churn_noise
+        )
+        x_t = x_t * atom_mask[..., None]
+
+        t_curr = t_curr + delta_churn
+        t_curr_tensor = torch.full(
+            (x_t.shape[0], x_t.shape[1]),
+            t_curr,
+            device=x_t.device,
+            dtype=x_t.dtype,
+        )
+        t_exp = t_curr_tensor[:, :, None, None]
+        dt = t_next - t_curr
+        return x_t, t_curr, t_curr_tensor, t_exp, dt
+
     def sample_structure(
         self,
         f_input: FoldingInput,
@@ -919,11 +974,12 @@ class KFoldECSI(BaseECSI):
         # Sample x_T from prior (apo structures)
         x_T = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
         x_T = x_T * atom_mask[..., None]
-        x_t = x_T.clone()
 
         sample_out["init_coordinates"] = x_T
         if self.normalize_coordinate:
             x_T = x_T / self.sigma_data_end
+
+        x_t = x_T.clone()
 
         if self.perturb_xt:
             perturb_scale = float(self.endpoint_perturb_scale or 0.0)
@@ -958,41 +1014,14 @@ class KFoldECSI(BaseECSI):
             t_exp = t_curr_tensor[:, :, None, None]  # (B, N, 1, 1)
 
             if self.use_forward_pinned_churn and self.churn_factor > 0.0:
-                delta_churn = float(self.churn_factor) * abs(dt)
-                apply_churn = t_curr + delta_churn <= self.sigma_max
-                if self.churn_until_time is not None:
-                    apply_churn = apply_churn and (t_curr > self.churn_until_time)
-
-                if apply_churn:
-                    alpha_t = self.alpha(t_exp)
-                    beta_t = self.beta(t_exp)
-                    gamma_t = self.gamma(t_exp)
-                    alpha_dot = self.alpha_deriv(t_exp)
-                    beta_dot = self.beta_deriv(t_exp)
-                    gamma_dot = self.gamma_deriv(t_exp)
-
-                    f_t = alpha_dot / (alpha_t + 1e-8)
-                    s_t = beta_dot - f_t * beta_t
-                    base_eps = gamma_t * gamma_dot - f_t * gamma_t**2
-                    g_t = torch.sqrt(torch.clamp(2.0 * base_eps, min=0.0) + 1e-8)
-
-                    churn_noise = torch.randn_like(x_t)
-                    x_t = (
-                        x_t
-                        + (f_t * x_t + s_t * x_churn_target) * delta_churn
-                        + g_t * (delta_churn**0.5) * churn_noise
-                    )
-                    x_t = x_t * atom_mask[..., None]
-
-                    t_curr = t_curr + delta_churn
-                    t_curr_tensor = torch.full(
-                        (x_t.shape[0], x_t.shape[1]),
-                        t_curr,
-                        device=x_t.device,
-                        dtype=x_t.dtype,
-                    )
-                    t_exp = t_curr_tensor[:, :, None, None]
-                    dt = t_next - t_curr
+                x_t, t_curr, t_curr_tensor, t_exp, dt = self._apply_forward_pinned_churn(
+                    x_t=x_t,
+                    x_churn_target=x_churn_target,
+                    atom_mask=atom_mask,
+                    t_curr=t_curr,
+                    t_next=t_next,
+                    t_exp=t_exp,
+                )
 
             # Get denoised prediction \hat{x}_0
             x0_hat = torch.zeros_like(x_t)
