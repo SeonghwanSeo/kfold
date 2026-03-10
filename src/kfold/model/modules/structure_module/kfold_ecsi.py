@@ -254,6 +254,8 @@ class KFoldECSI(BaseECSI):
         sigma_data_end: float = 16.0
         cov_xy: float = 128.0
         rho: int = 7
+        sampling_schedule_type: str = "piecewise_power"
+        sampling_schedule_piecewise_power: float = 5.0
         P_mean: float = -1.2
         P_std: float = 1.5
         eta: float = 1.0
@@ -267,8 +269,13 @@ class KFoldECSI(BaseECSI):
         alignment_entity_strategy: str | None = None
         alignment_level: str = "chain"
         s_trans: float = 1.0
-        inference_align_x0_hat_to_x_apo: bool = True
-        ode_time_duration: float = 0.5
+        inference_align_x0_hat_to_x_t: bool = True
+        perturb_xt: bool = True
+        endpoint_perturb_scale: float | None = 0.1
+        ode_time_duration: float = 0.6
+        use_forward_pinned_churn: bool = True
+        churn_factor: float = 3.0
+        churn_until_time: float | None = 0.7
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the ECSI module."""
@@ -284,6 +291,10 @@ class KFoldECSI(BaseECSI):
         self.sigma_data_end: float = cfg.sigma_data_end
         self.cov_xy: float = cfg.cov_xy
         self.rho: int = cfg.rho
+        self.sampling_schedule_type: str = cfg.sampling_schedule_type
+        self.sampling_schedule_piecewise_power: float = (
+            cfg.sampling_schedule_piecewise_power
+        )
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
         self.eta: float = cfg.eta
@@ -297,8 +308,13 @@ class KFoldECSI(BaseECSI):
         self.use_prior_coords: bool = cfg.use_prior_coords
         self.s_trans: float = cfg.s_trans
         self.alignment_level: str = cfg.alignment_level
-        self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
+        self.inference_align_x0_hat_to_x_t: bool = cfg.inference_align_x0_hat_to_x_t
+        self.perturb_xt: bool = cfg.perturb_xt
+        self.endpoint_perturb_scale: float | None = cfg.endpoint_perturb_scale
         self.ode_time_duration: float = cfg.ode_time_duration
+        self.use_forward_pinned_churn: bool = cfg.use_forward_pinned_churn
+        self.churn_factor: float = cfg.churn_factor
+        self.churn_until_time: float | None = cfg.churn_until_time
 
         self._route: _Route
         self._configure_route_functions(cfg)
@@ -639,20 +655,47 @@ class KFoldECSI(BaseECSI):
         if num_steps is None:
             num_steps = self.num_steps
 
-        inv_rho = 1 / self.rho
+        schedule_type = self.sampling_schedule_type.lower()
+        if schedule_type == "karras":
+            times = self._get_karras_schedule(num_steps=num_steps, device=device)
+        elif schedule_type == "piecewise_power":
+            times = self._get_piecewise_power_schedule(num_steps=num_steps, device=device)
+        else:
+            raise ValueError(
+                "Unsupported sampling_schedule_type; expected 'karras' or "
+                f"'piecewise_power', got {self.sampling_schedule_type!r}"
+            )
 
+        # Last step is t=0 (exactly at target)
+        times = F.pad(times, (0, 1), value=0.0)
+        return times
+
+    def _get_karras_schedule(
+        self, num_steps: int, device: torch.device | None = None
+    ) -> torch.Tensor:
+        inv_rho = 1 / self.rho
         steps = torch.arange(num_steps, dtype=torch.float32, device=device)
-        # t goes from sigma_max (near 1) to sigma_min (near 0)
-        times = (
+        return (
             self.sigma_max**inv_rho
             + steps
             / (num_steps - 1)
             * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
         ) ** self.rho
 
-        # Last step is t=0 (exactly at target)
-        times = F.pad(times, (0, 1), value=0.0)
-        return times
+    def _get_piecewise_power_schedule(
+        self, num_steps: int, device: torch.device | None = None
+    ) -> torch.Tensor:
+        power = float(self.sampling_schedule_piecewise_power)
+        if power <= 0.0:
+            raise ValueError("sampling_schedule_piecewise_power must be > 0")
+
+        steps = torch.arange(num_steps, dtype=torch.float32, device=device)
+        u = steps / (num_steps - 1)
+        t_unit = torch.empty_like(u)
+        left = u <= 0.5
+        t_unit[left] = 1.0 - 0.5 * torch.pow(2.0 * u[left], power)
+        t_unit[~left] = 0.5 * torch.pow(2.0 * (1.0 - u[~left]), power)
+        return self.sigma_min + (self.sigma_max - self.sigma_min) * t_unit
 
     def sample_prior(
         self,
@@ -814,6 +857,72 @@ class KFoldECSI(BaseECSI):
             "true_atom_coords": label_coords_norm,
         }
 
+    @staticmethod
+    def _apply_endpoint_perturbation(
+        coords: torch.Tensor,
+        atom_mask: torch.Tensor,
+        perturb_scale: float,
+    ) -> torch.Tensor:
+        if perturb_scale <= 0.0:
+            return coords
+        noise = torch.randn_like(coords) * perturb_scale
+        return (coords + noise) * atom_mask[..., None]
+
+    def _apply_forward_pinned_churn(
+        self,
+        x_t: torch.Tensor,
+        x_churn_target: torch.Tensor,
+        atom_mask: torch.Tensor,
+        t_curr: float,
+        t_next: float,
+        t_exp: torch.Tensor,
+    ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, float]:
+        dt = t_next - t_curr
+        delta_churn = float(self.churn_factor) * abs(dt)
+        apply_churn = t_curr + delta_churn <= self.sigma_max
+        if self.churn_until_time is not None:
+            apply_churn = apply_churn and (t_curr > self.churn_until_time)
+
+        if not apply_churn:
+            t_curr_tensor = torch.full(
+                (x_t.shape[0], x_t.shape[1]),
+                t_curr,
+                device=x_t.device,
+                dtype=x_t.dtype,
+            )
+            return x_t, t_curr, t_curr_tensor, t_exp, dt
+
+        alpha_t = self.alpha(t_exp)
+        beta_t = self.beta(t_exp)
+        gamma_t = self.gamma(t_exp)
+        alpha_dot = self.alpha_deriv(t_exp)
+        beta_dot = self.beta_deriv(t_exp)
+        gamma_dot = self.gamma_deriv(t_exp)
+
+        f_t = alpha_dot / (alpha_t + 1e-8)
+        s_t = beta_dot - f_t * beta_t
+        base_eps = gamma_t * gamma_dot - f_t * gamma_t**2
+        g_t = torch.sqrt(torch.clamp(2.0 * base_eps, min=0.0) + 1e-8)
+
+        churn_noise = torch.randn_like(x_t)
+        x_t = (
+            x_t
+            + (f_t * x_t + s_t * x_churn_target) * delta_churn
+            + g_t * (delta_churn**0.5) * churn_noise
+        )
+        x_t = x_t * atom_mask[..., None]
+
+        t_curr = t_curr + delta_churn
+        t_curr_tensor = torch.full(
+            (x_t.shape[0], x_t.shape[1]),
+            t_curr,
+            device=x_t.device,
+            dtype=x_t.dtype,
+        )
+        t_exp = t_curr_tensor[:, :, None, None]
+        dt = t_next - t_curr
+        return x_t, t_curr, t_curr_tensor, t_exp, dt
+
     def sample_structure(
         self,
         f_input: FoldingInput,
@@ -848,6 +957,11 @@ class KFoldECSI(BaseECSI):
         if max_parallel_samples is None:
             max_parallel_samples = num_diffusion_samples
 
+        if self.perturb_xt and self.endpoint_perturb_scale is None:
+            raise ValueError(
+                "endpoint_perturb_scale must be provided when perturb_xt is enabled."
+            )
+
         model_cache = {}
 
         # Get time schedule (from t_max toward 0)
@@ -859,6 +973,7 @@ class KFoldECSI(BaseECSI):
 
         # Sample x_T from prior (apo structures)
         x_T = self.sample_prior(f_input, num_diffusion_samples)  # (B, N, Latom, 3)
+        x_T = x_T * atom_mask[..., None]
 
         sample_out["init_coordinates"] = x_T
         if self.normalize_coordinate:
@@ -866,13 +981,27 @@ class KFoldECSI(BaseECSI):
 
         x_t = x_T.clone()
 
+        if self.perturb_xt:
+            perturb_scale = float(self.endpoint_perturb_scale or 0.0)
+            perturb_scale_xt = (
+                perturb_scale / self.sigma_data_end
+                if self.normalize_coordinate
+                else perturb_scale
+            )
+            x_t = self._apply_endpoint_perturbation(x_t, atom_mask, perturb_scale_xt)
+            x_churn_target = x_t.clone()
+        else:
+            x_churn_target = x_T
+
         if return_traj:
             traj.append(x_t.cpu())
 
         # Reverse time sampling from t=T toward t=0
         for step_idx in range(num_steps):
             # Apply random augmentation
-            x_t, x_T = self.random_augmentation(x_t, x_T, mask=atom_mask)
+            x_t, x_T, x_churn_target = self.random_augmentation(
+                x_t, x_T, x_churn_target, mask=atom_mask
+            )
 
             t_curr = times[step_idx]
             t_next = times[step_idx + 1]
@@ -882,6 +1011,17 @@ class KFoldECSI(BaseECSI):
             t_curr_tensor = torch.full(
                 (x_t.shape[0], x_t.shape[1]), t_curr, device=x_t.device, dtype=x_t.dtype
             )
+            t_exp = t_curr_tensor[:, :, None, None]  # (B, N, 1, 1)
+
+            if self.use_forward_pinned_churn and self.churn_factor > 0.0:
+                x_t, t_curr, t_curr_tensor, t_exp, dt = self._apply_forward_pinned_churn(
+                    x_t=x_t,
+                    x_churn_target=x_churn_target,
+                    atom_mask=atom_mask,
+                    t_curr=t_curr,
+                    t_next=t_next,
+                    t_exp=t_exp,
+                )
 
             # Get denoised prediction \hat{x}_0
             x0_hat = torch.zeros_like(x_t)
@@ -898,17 +1038,13 @@ class KFoldECSI(BaseECSI):
                     prior_coords=x_T[:, st:end],
                 )
 
-                # align x0_hat to x_apo
-                if self.inference_align_x0_hat_to_x_apo:
-                    # Kabsch-align x0_hat into the x_apo frame.
+                # Align x0_hat to the current state after churn.
+                if self.inference_align_x0_hat_to_x_t:
                     x0_hat[:, st:end] = self.align_apo_to_label(
                         apo_coords=x0_hat[:, st:end],
-                        label_coords=x_T[:, st:end],
+                        label_coords=x_t[:, st:end],
                         f_input=f_input,
                     )
-
-            # Expand t for coefficient computation
-            t_exp = t_curr_tensor[:, :, None, None]  # (B, N, 1, 1)
 
             # Compute route coefficients
             alpha_t = self.alpha(t_exp)
@@ -921,30 +1057,15 @@ class KFoldECSI(BaseECSI):
             # Compute \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / \gamma_t
             z_hat = (x_t - alpha_t * x0_hat - beta_t * x_T) / (gamma_t + 1e-8)
 
-            # Last 2 steps: use deterministic update (\epsilon_t = 0)
-            # if step_idx >= num_steps - 2:
-
             ode_time_duration = float(self.ode_time_duration)
             if ode_time_duration > 0.0 and t_curr <= ode_time_duration:
-                # x_{t-\Delta t} = \alpha_{t-\Delta t} \hat{x}_0 + \beta_{t-\Delta t} x_T
-                #                + \gamma_{t-\Delta t} \hat{z}_t
                 t_next_exp = torch.full_like(t_exp, t_next)
                 alpha_next = self.alpha(t_next_exp)
                 beta_next = self.beta(t_next_exp)
-                gamma_next = self.gamma(t_next_exp)
-
-                # NOTE: weghting factor for z_hat is (cos(2pi(t_next-0.5)) + 1) / 2
-                weighting_factor = (
-                    math.cos(math.pi * (t_next - ode_time_duration) / ode_time_duration)
-                    + 1
-                ) / 2
-
-                # x_t = alpha_next * x0_hat + beta_next * x_T + gamma_next * z_hat
-                # x_t = alpha_next * x0_hat + beta_next * x_T
+                # Late-stage deterministic SI ODE update.
                 x_t = (
-                    alpha_next * x0_hat
-                    + beta_next * x_T
-                    + gamma_next * z_hat * weighting_factor
+                    beta_next / (beta_t + 1e-8) * x_t
+                    + (alpha_next - alpha_t * beta_next / (beta_t + 1e-8)) * x0_hat
                 )
             else:
                 # Compute \epsilon_t = \eta (\gamma_t \dot{\gamma}_t
