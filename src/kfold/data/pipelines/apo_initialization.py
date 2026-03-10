@@ -170,7 +170,6 @@ class ApoInitializer:
         self,
         config: ApoInitializerConfig,
         ccd: CCD,
-        is_protein_monomer_distillation: bool = False,
     ):
         self.config: ApoInitializerConfig = config
         self.use_residue_permutation: bool = config.use_residue_permutation
@@ -178,10 +177,6 @@ class ApoInitializer:
 
         self.prob_perturbation: float = config.prob_perturbation
         self.ccd: CCD = ccd
-
-        # Protein monomer distillation mode: directly copy holo coordinates to apo.
-        # This is for protein monomer synthetic data, such as AFDB or ESM Atlas.
-        self.is_protein_monomer_distillation: bool = is_protein_monomer_distillation
 
         # Apo perturbation module
         if config.protein_perturbation is not None:
@@ -261,14 +256,7 @@ class ApoInitializer:
         """
         rng = rng or np.random.default_rng()
 
-        # Insert apo coordinates
-        if self.is_protein_monomer_distillation:
-            assert struct.num_chains == 1, (
-                "Protein monomer distillation only supports single-chain structures."
-            )
-            self.copy_chain_holo_coords_to_apo(struct.chains[0], rng)
-        else:
-            self.insert_apo_coordinates(struct, lookup, rng)
+        self.insert_apo_coordinates(struct, lookup, rng)
 
         # If symmetry correction is enabled, align apo to holo
         if self.use_residue_permutation:
