@@ -55,4 +55,4 @@ alignment_level: "chain"
 s_trans: 0.0
 
 # ECSI-specific inference settings
-inference_align_x0_hat_to_x_apo: true
+inference_align_x0_hat_to_x_t: true

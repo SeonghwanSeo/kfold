@@ -269,7 +269,7 @@ class KFoldECSI(BaseECSI):
         alignment_entity_strategy: str | None = None
         alignment_level: str = "chain"
         s_trans: float = 1.0
-        inference_align_x0_hat_to_x_apo: bool = True
+        inference_align_x0_hat_to_x_t: bool = True
         perturb_xt: bool = True
         endpoint_perturb_scale: float | None = 0.1
         ode_time_duration: float = 0.6
@@ -308,7 +308,7 @@ class KFoldECSI(BaseECSI):
         self.use_prior_coords: bool = cfg.use_prior_coords
         self.s_trans: float = cfg.s_trans
         self.alignment_level: str = cfg.alignment_level
-        self.inference_align_x0_hat_to_x_apo: bool = cfg.inference_align_x0_hat_to_x_apo
+        self.inference_align_x0_hat_to_x_t: bool = cfg.inference_align_x0_hat_to_x_t
         self.perturb_xt: bool = cfg.perturb_xt
         self.endpoint_perturb_scale: float | None = cfg.endpoint_perturb_scale
         self.ode_time_duration: float = cfg.ode_time_duration
@@ -1039,7 +1039,7 @@ class KFoldECSI(BaseECSI):
                 )
 
                 # Align x0_hat to the current state after churn.
-                if self.inference_align_x0_hat_to_x_apo:
+                if self.inference_align_x0_hat_to_x_t:
                     x0_hat[:, st:end] = self.align_apo_to_label(
                         apo_coords=x0_hat[:, st:end],
                         label_coords=x_t[:, st:end],
