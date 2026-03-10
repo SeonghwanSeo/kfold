@@ -51,6 +51,3 @@ apo_init:
       # Metric-free BioPrior perturbation settings (fallback if RieProDy is not used or fails)
       min_steps: 1 # Minimum random walk steps
       max_steps: 15 # Maximum random walk steps
-      scale_length: false # Whether to scale noise based on protein length
-      max_rmsd: null # Maximum RMSD (null means no limit)
-      log_level: "INFO" # Logging level

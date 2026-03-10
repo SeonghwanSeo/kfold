@@ -20,7 +20,7 @@ model:
 
 train:
   _yaml_: "train/stage_1.yaml"
-  name: edm-prime-large
+  name: edm
   out_dir: ./experiments/
 
   global_hparams:
@@ -29,74 +29,74 @@ train:
 
   data:
     max_tokens: 376
-    ccd_path: /cache/wykim_lab/kfold_data/v260308/ccd-train.pkl
+    ccd_path: /cache/wykim_lab/kfold_data/v260310/ccd-train.pkl
     train_datasets:
       - _yaml_: "dataset/rcsb-train.yaml"
         weight: 0.500
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/rcsb-train/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-train/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
       - _yaml_: "dataset/afdb-long.yaml"
         weight: 0.415
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/afdb-long/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/afdb-long/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
       - _yaml_: "dataset/afdb-short.yaml"
         weight: 0.005
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/afdb-short/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/afdb-short/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
       - _yaml_: "dataset/sair.yaml"
         weight: 0.030
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/SAIR/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/SAIR/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
       - _yaml_: "dataset/humap.yaml"
         weight: 0.030
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/huMAP/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/huMAP/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
       - _yaml_: "dataset/natural_ab.yaml"
         weight: 0.010
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/NatAb/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/NatAb/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
       - _yaml_: "dataset/encore.yaml"
         weight: 0.005
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/ENCORE/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/ENCORE/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
       - _yaml_: "dataset/protac_db.yaml"
         weight: 0.0045
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/PROTAC-DB/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/PROTAC-DB/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
       - _yaml_: "dataset/molglue_db.yaml"
         weight: 0.0005
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/MolGlueDB/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/MolGlueDB/
         prior_sampler: null
         apo_init:
           use_residue_permutation: false
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
-        data_path: /cache/wykim_lab/kfold_data/v260308/dataset/rcsb-val/
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-val/
         prior_sampler: null
 
   wandb:

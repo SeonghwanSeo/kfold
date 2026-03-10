@@ -10,19 +10,16 @@ seed: null # should be null for data augmentation
 
 sampler: null
 
-# No cropping for short proteins.
 cropper:
   _registry_: "data_cropper"
   _class_: MultiAnchorCropper
   max_anchors: 1
-  w_contiguous: 1.0
-  w_spatial: 0.0
+  w_contiguous: 0.25
+  w_spatial: 0.75
   w_spatial_interface: 0.0
 
 apo_init:
   prob_perturbation: 1.0
-  # We use the same structure to label as the apo; no perturbation required.
-  use_residue_permutation: false
   # Use harsher perturbation than longer one.
   protein_perturbation:
     bioprior:
