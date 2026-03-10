@@ -19,8 +19,10 @@ sigma_data: 16.0  # holo structures (\sigma_0)
 sigma_data_end: 16.0  # apo structures (\sigma_T)
 cov_xy: 128.0  # \sigma_data * \sigma_data_end / 2
 
-# Karras schedule
-rho: 0.7
+# Sampling schedule
+rho: 0.7 # used only for Karras schedule
+sampling_schedule_type: "piecewise_power"
+sampling_schedule_piecewise_power: 5.0
 
 # Training noise level sampling (not used - uniform sampling used instead)
 P_mean: -1.2
@@ -32,7 +34,12 @@ eta: 1.0
 
 # Switch to deterministic update for small t (ODE-like) during sampling.
 # If set <= 0, this deterministic phase is disabled.
-ode_time_duration: 0.5
+ode_time_duration: 0.6
+perturb_xt: true
+endpoint_perturb_scale: 0.1
+use_forward_pinned_churn: true
+churn_factor: 3.0
+churn_until_time: 0.7
 
 # Other settings
 coordinate_augmentation: True
