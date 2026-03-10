@@ -120,11 +120,6 @@ class DatasetConfig:
         Optional path to the custom manifest file.
     seed : int | None
         Random seed for data loading.
-    is_protein_monomer_distillation : bool
-        Whether this is large-scale protein monomer synthetic data,
-        such as AFDB or ESMAtlas. This flag can be used to enable
-        specific handling for monomer distillation data, such as
-        feeding apo structures from labeled monomer structures.
     apo_init : ApoInitializerConfig
         Configuration for apo structure initialization.
     """
@@ -133,7 +128,6 @@ class DatasetConfig:
     data_path: str | Path
     manifest_path: str | Path | None = None
     seed: int | None = None
-    is_protein_monomer_distillation: bool = False
     apo_init: apo_initialization.ApoInitializerConfig
     prior_sampler: prior_sampling.PriorSamplerConfig | None
 
@@ -219,11 +213,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         # Sanity check on dataset files and configurations
         self.sanity_check()
 
-        # Flag for specific handling of protein monomer distillation datasets
-        self.is_protein_monomer_distillation: bool = (
-            config.is_protein_monomer_distillation
-        )
-
         # === Load dataset components === #
         # CCD (shared across datasets)
         self.ccd: CCD = ccd
@@ -240,7 +229,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
         # === Initialize modules === #
         self.apo_initializer = apo_initialization.ApoInitializer(
-            config.apo_init, self.ccd, self.is_protein_monomer_distillation
+            config.apo_init, self.ccd
         )
 
         if config.prior_sampler is not None:
@@ -281,15 +270,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         return metadata_dicts
 
     def load_lookup_table(self) -> dict:
-        if self.is_protein_monomer_distillation:
-            # For protein monomer distillation datasets, we directly
-            # feed apo structures from labeled monomer structures.
-            self.logger.info(
-                "Protein monomer distillation dataset detected. "
-                "Skipping apo lookup table loading."
-            )
-            return {}
-
         lookup_path = self.data_root / "apo_lookup.msgpack"
         if not lookup_path.exists():
             # NOTE: For protein monomer distillation datasets,
@@ -546,16 +526,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
         """Get the apo lookup for the given reference structure."""
-        if self.is_protein_monomer_distillation:
-            # For protein monomer distillation datasets, we directly
-            # feed apo structures from labeled monomer structures, so
-            # we don't have to load apo structures.
-
-            # NOTE: we still need the lookup table to load structure
-            # tokens for apo structures.
-            # monomer: always have a chain with entity_id=1
-            return {1: {"key": ref_struct.id}}
-
         entry_id: str = ref_struct.id
         entry_lookup: dict[int, list[dict[str, str]]] = self.lookup_table[entry_id]
 
@@ -995,10 +965,6 @@ class ValidationDataset(SafeLoadingDataset):
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
-        if cfg.is_protein_monomer_distillation:
-            raise ValueError(
-                "Protein monomer distillation dataset should be training dataset"
-            )
         # Check if perturbation is enabled for validation set, which is not expected.
         if cfg.apo_init.protein_perturbation is not None:
             self.logger.warning("Protein perturbation is enabled for validation set.")
