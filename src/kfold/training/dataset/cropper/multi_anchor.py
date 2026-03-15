@@ -26,8 +26,8 @@ thereby encouraging the learning of global structural transitions.
     - Selects N anchor tokens (default: 4) and partitions the total token budget.
     - The first anchor is sampled based on chain bias or uniformly.
     - Subsequent anchors are sampled from resolved tokens within a defined
-      radius (default: 100 Å) of previous anchors to ensure partial connectivity
-      while maximizing coverage.
+      radius of previous anchors to ensure partial connectivity while maximizing
+      coverage.
 
 3. Spatial Interface Cropping (Multi-Anchor):
     - Selects anchors specifically from tokens involved in chain interfaces.
@@ -89,7 +89,7 @@ class MultiAnchorCropper(BaseCropper):
         anchor_distribution: str = "exponential"
         min_anchors: int = 1
         max_anchors: int = 1
-        max_anchor_distance: float = 50.0
+        max_anchor_distance: float = 25.0
 
     def __init__(self, config: Config):
         self.config = config
