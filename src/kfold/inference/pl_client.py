@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import lightning.pytorch as pl
-import numpy as np
 import torch
 from lightning.pytorch.callbacks import BasePredictionWriter
 
@@ -45,13 +44,11 @@ class KFoldInferenceClient(pl.LightningModule):
         self,
         model: KFold,
         inference_config: InferenceConfig,
-        save_dir: str | pathlib.Path = pathlib.Path("./inference_results/"),
     ):
         super().__init__()
         self.model: KFold = model
+        self.model.cast_to_bf16()  # Use bfloat16 to save memory and speed up
         self.inference_config: InferenceConfig = inference_config
-        self.save_dir: pathlib.Path = pathlib.Path(save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
 
         # Logger
         self._logger = logging.getLogger("KFoldInferenceClient")
@@ -76,7 +73,7 @@ class KFoldInferenceClient(pl.LightningModule):
     def predict_step(
         self,
         batch: tuple[Query, RefStructure, FoldingInput, dict[int, dict]],
-    ) -> tuple[Query, RefStructure, dict[str, np.ndarray]] | None:
+    ) -> tuple[Query, RefStructure, dict[str, torch.Tensor]]:
         """Predict step for inference.
 
         Parameters
@@ -88,7 +85,7 @@ class KFoldInferenceClient(pl.LightningModule):
             - dict: a dictionary for apo structure tokenization.
         """
         if batch is None:
-            return  # Skip empty batch (occured by processing error)
+            return None  # Skip empty batch (occured by processing error)
 
         cfg = self.inference_config
         num_trunk_recycles = cfg.num_recycles
@@ -124,18 +121,21 @@ class KFoldInferenceClient(pl.LightningModule):
             )
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
-                print("**WARNING**: ran out of memory, skipping batch")
+                name = query.name
+                size = f_input.num_tokens
+                self._logger.error(
+                    f"Out of memory error for {name} ({size} tokens). "
+                    f"Skipping this input."
+                )
                 gc.collect()
                 torch.cuda.empty_cache()
-                return
+                return None  # type: ignore[return-value]
             else:
                 raise e
 
-        # Remove batch dimension and move to CPU for saving
-        model_out = {
-            k: v.squeeze(0).to(dtype=torch.float32, device="cpu").numpy()
-            for k, v in model_out.items()
-        }
+        # Remove batch dimension from outputs
+        model_out = {k: v.squeeze(0) for k, v in model_out.items()}
+
         return query, ref_struct, model_out
 
 
@@ -153,15 +153,15 @@ class KFoldPredictionWriter(BasePredictionWriter):
         # Logger
         self.logger = logging.getLogger("KFoldPredictionWriter")
 
-    def write_on_batch_end(
+    def write_on_batch_end(  # type: ignore[override]
         self,
-        trainer,
-        pl_module,
-        prediction,
-        batch_indices,
-        batch,
-        batch_idx,
-        dataloader_idx,
+        trainer: pl.Trainer,
+        pl_module: KFoldInferenceClient,
+        prediction: tuple[Query, RefStructure, dict[str, torch.Tensor]],
+        batch_indices: list[int],
+        batch: list[tuple[Query, RefStructure, FoldingInput, dict[int, dict]]],
+        batch_idx: int,
+        dataloader_idx: int,
     ):
         """
         Lightning calls this automatically after each predict_step.
@@ -189,12 +189,16 @@ class KFoldPredictionWriter(BasePredictionWriter):
             self.logger.error(f"Error saving apo for {name}: {e}")
 
         # 3. Save Diffusion Samples
-        sample_coords = model_out["sample_coordinates"]
         num_atoms = ref_struct.num_atoms
-        coords_np = sample_coords[:, :num_atoms, :]
+        sample_coords = model_out["sample_coordinates"][:, :num_atoms]
+        coords_np = sample_coords.cpu().numpy()
         for i, coord in enumerate(coords_np):
             try:
                 save_path = save_dir / f"sample-{i}.cif"
                 self.writer.write_new_coords(ref_struct, coord, save_path)
             except Exception as e:
                 self.logger.error(f"Error saving sample {i} for {name}: {e}")
+
+        # Free up memory
+        model_out.clear()
+        del model_out, sample_coords, coords_np

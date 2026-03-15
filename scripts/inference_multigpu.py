@@ -137,9 +137,7 @@ def main():
         num_samples=args.num_samples,
         seed=args.seed,
     )
-    inference_client = KFoldInferenceClient(
-        model, inference_config, save_dir=args.out_dir
-    )
+    inference_client = KFoldInferenceClient(model, inference_config)
     inference_writer = KFoldPredictionWriter(args.out_dir)
 
     # Construct PyTorch Lightning trainer
