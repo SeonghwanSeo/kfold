@@ -178,8 +178,9 @@ class KFold(BaseFoldingModel):
                 distogram_dict["logits_aug"] = self.distogram_head(z_aug)
             dict_out["distogram"] = distogram_dict
 
-        if train_interaction_head and self.interaction_head is not None:
+        if train_interaction_head:
             # Interaction head
+            assert self.interaction_head is not None
             interaction_dict = {}
             interaction_dict["logits"] = self.interaction_head(z_trunk)
             dict_out["interaction"] = interaction_dict
@@ -286,7 +287,7 @@ class KFold(BaseFoldingModel):
         et = time.time()
         time_logs["distogram_head"] = et - st
 
-        if self.interaction_head is not None:
+        if hasattr(self, "interaction_head"):
             st = time.time()
             dict_out["interaction_logits"] = self.interaction_head(z_trunk)
             et = time.time()
@@ -334,10 +335,13 @@ class KFold(BaseFoldingModel):
             missing_keys = incompatible_keys.missing_keys
             unexpected_keys = incompatible_keys.unexpected_keys
             # If the sequence encoder is pretrained and not included in the state dict,
-            # we allow missing keys that start with "sequence_encoder.".
+            # missing keys starting with "sequence_encoder." or "structure_encoder." are
+            # allowed.
             if missing_keys:
                 missing_keys = {
-                    key for key in missing_keys if not key.startswith("sequence_encoder.")
+                    key
+                    for key in missing_keys
+                    if not key.startswith(("sequence_encoder.", "structure_encoder."))
                 }
             if missing_keys:
                 raise KeyError(f"Missing keys in state_dict: {missing_keys}")

@@ -29,7 +29,6 @@ class BaseFoldingModelConfig:
     score_model: BaseConfig
     structure_module: BaseConfig
     distogram_head: BaseConfig
-    interaction_head: BaseConfig | None = None
     # confidence_head: Baseconfig
 
 
@@ -63,20 +62,16 @@ class BaseFoldingModel(torch.nn.Module):
         self.distogram_head: submodules.distogram_head.BaseDistogramHead = (
             Registry.instantiate(config.distogram_head)
         )
-        self.interaction_head: submodules.interaction_head.BaseInteractionHead | None = (
-            Registry.instantiate(config.interaction_head)
-            if config.interaction_head is not None
-            else None
-        )
-
         # self.confidence_head: submodules.confidence_head.BaseConfidenceHead = (
         #     Registry.instantiate(config.confidence_head)
         # )
 
         # Compile submodules
-        # NOTE: (SeonghwanSeo) This is very slow... Right now, just disable them.
-        self.trunk.compile(config.compile_trunk, config.compile_mode)
-        self.score_model.compile(config.compile_score_model, config.compile_mode)
+        compile_trunk = getattr(config, "compile_trunk", False)
+        compile_score_model = getattr(config, "compile_score_model", False)
+        compile_mode = getattr(config, "compile_mode", "default")
+        self.trunk.compile(compile_trunk, compile_mode)
+        self.score_model.compile(compile_score_model, compile_mode)
 
     def cast_to_bf16(self):
         """Cast model parameters to bfloat16 for faster inference."""
@@ -122,8 +117,6 @@ class BaseFoldingModel(torch.nn.Module):
             Whether to sample structures for confidence module training,
         train_structure_module : bool, optional
             Whether to train structure module, by default True
-        train_interaction_head : bool, optional
-            Whether to produce interaction logits, by default True
         train_confidence_module : bool, optional
             Whether to train confidence module, by default True
 
@@ -140,9 +133,6 @@ class BaseFoldingModel(torch.nn.Module):
             - distogram:
                 - logits: [B, Ltoken, Ltoken, Dd]
                     Distogram logits
-            - interaction:
-                - logits: [B, Ltoken, Ltoken, K]
-                    Interaction logits (K = num pair interaction types)
             - diffusion:
                 - loss_weights: [B, N_noise]
                     Weights for diffusion noise scale
@@ -218,11 +208,6 @@ class BaseFoldingModel(torch.nn.Module):
             # Distogram head
             dict_out["distogram"] = {
                 "logits": self.distogram_head(z_trunk),
-            }
-
-        if train_interaction_head and self.interaction_head is not None:
-            dict_out["interaction"] = {
-                "logits": self.interaction_head(z_trunk),
             }
 
         if train_structure_module:
@@ -309,12 +294,6 @@ class BaseFoldingModel(torch.nn.Module):
         et = time.time()
         time_logs["distogram_head"] = et - st
 
-        if self.interaction_head is not None:
-            st = time.time()
-            dict_out["interaction_logits"] = self.interaction_head(z_trunk)
-            et = time.time()
-            time_logs["interaction_head"] = et - st
-
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
         st = time.time()
@@ -384,8 +363,7 @@ class BaseFoldingModel(torch.nn.Module):
     ) -> Self:
         """Load model from checkpoint."""
         # Initialize model
-        model_cls = MAIN_MODULE[model_config._class_]
-        model: torch.nn.Module = model_cls(model_config)
+        model: torch.nn.Module = cls(model_config)
 
         # Load checkpoint
         ckpt = torch.load(ckpt_path, map_location="cpu")
