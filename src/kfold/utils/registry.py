@@ -5,6 +5,8 @@ import typing
 from collections.abc import Callable
 from typing import Any, TypeVar
 
+from omegaconf import OmegaConf
+
 C = TypeVar("C", bound=type[Any])
 ConfigT = TypeVar("ConfigT", bound="BaseConfig")
 
@@ -87,6 +89,10 @@ class Registry:
         """
         registry = cls.get_register(config._registry_)
         module_cls = registry[config._class_]
+        config_cls = registry.__config_dict__.get(config._class_, None)
+        if config_cls is not None:
+            base_config = OmegaConf.structured(config_cls)
+            config = OmegaConf.merge(base_config, config)
         return module_cls(config, **kwargs)
 
     def register(

@@ -213,21 +213,19 @@ def tokenize_structure(
     ccd_sequence_dict: dict[int, list[str]] = {}
     all_atom_dict: dict[int, list[str]] = {}
     for chain in input.chains:
-        asym_id = chain.asym_id
+        asym_id: int = chain.asym_id
+        smiles: str | None = chain.smiles
         ccd_sequence: list[str] = chain.get_ccd_sequence()
         ccd_sequence_dict[asym_id] = ccd_sequence
         all_atom_dict[asym_id] = chain.atom.name.tolist()
 
+        if smiles is not None:
+            assert len(ccd_sequence) == 1, (
+                "Chain with SMILES should have exactly one residue."
+            )
+
         for res_idx, ccd_name in enumerate(ccd_sequence, start=1):
-            if ccd_name.startswith("LIG"):
-                # This residue is from a smiles string, load smiles from metadata
-                smiles = chain.smiles
-                assert smiles is not None, (
-                    "Smiles string not found in metadata for LIG residue."
-                )
-                assert chain.num_residues == 1, (
-                    "Residue with LIG prefix found in chain with multiple residues."
-                )
+            if smiles is not None:
                 if smiles in ccd_smi_dict:
                     comp = ccd_smi_dict[smiles]
                 else:

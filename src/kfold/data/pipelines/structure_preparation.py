@@ -94,7 +94,6 @@ def prepare_ref_chain(
     if smiles is not None:
         assert chain_type == C.ChainType.LIGAND
         assert len(ccd_sequences) == 1
-        assert ccd_sequences[0].startswith("LIG")
 
     bonded_atoms = bonded_atoms or {}
 
@@ -122,14 +121,11 @@ def prepare_ref_chain(
 
     for res_idx, code in enumerate(ccd_sequences, start=1):
         is_standard_list.append(code in standard_residues)
-        if code.startswith("LIG"):
+        if smiles is not None:
             # Ligand residue created from SMILES
-            if smiles is None:
-                raise ValueError(f"SMILES must be provided for ligand residue {code}.")
             ref_mol = Component.from_smiles(code, smiles)
         elif code in ccd:
             # Common molecule from CCD
-            assert not code.startswith("LIG"), "LIG codes should be handled separately."
             ref_mol = get_ref_mol(code)
         else:
             # Residue not found in CCD

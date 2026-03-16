@@ -380,27 +380,23 @@ class ApoInitializer:
         """Use ETKDG conformers or CCD reference conformers as apo coordinates"""
         _ref_comp_cache: dict[str, Component] = {}
         _ref_comp_smi_cache: dict[str, Component] = {}
-        for chain_i in range(struct.num_chains):
-            chain = struct.chains[chain_i]
+        for chain in struct.chains:
             if chain.ctype.is_polymer:
                 continue  # polymer chains handled above
-            chain_meta = struct.metadata.chains[chain_i]
+
+            smiles: str | None = chain.smiles
+            if smiles is not None:
+                assert chain.num_residues == 1, (
+                    "Multiple residues found in chain with SMILES string."
+                )
 
             apo_coords = np.full_like(chain.atom.coords, np.nan)
             for res_i in range(chain.num_residues):
                 residue_index = res_i + 1  # 1-based index
                 ccd_name = str(chain.residue.name[res_i])
 
-                # Load reference molecule from CCD
-                if ccd_name.startswith("LIG"):
-                    # This residue is from a smiles string, load smiles from metadata
-                    smiles = chain_meta.smiles
-                    assert smiles is not None, (
-                        "Smiles string not found in metadata for LIG residue."
-                    )
-                    assert chain.num_residues == 1, (
-                        "Residue with LIG found in chain with multiple residues."
-                    )
+                # Load reference molecule from CCD or from SMILES string
+                if smiles is not None:
                     if smiles in _ref_comp_smi_cache:
                         ref_comp = _ref_comp_smi_cache[smiles]
                     else:
@@ -662,6 +658,7 @@ class ApoInitializer:
 
         for chain in struct.chains:
             ctype = chain.ctype
+            smiles = chain.smiles
 
             if chain.is_ion:
                 # Skip ions (single atom)
@@ -680,7 +677,7 @@ class ApoInitializer:
                     # Get ambiguous atom permutations for this standard residue
                     assert ctype.is_polymer, "Only polymer chains have standard residues."
                     perms = get_ambiguous_atoms_in_residue(res_name, extended=False)
-                elif res_name.startswith("LIG"):
+                elif smiles is not None:
                     # For custom ligands, skip.
                     perms = None
                 elif res_name in self.ccd:

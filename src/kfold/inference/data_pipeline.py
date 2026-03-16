@@ -221,7 +221,7 @@ class InputDataPipeline:
             # Parse sequence
             entity_chain: Chain
             if isinstance(seq, query.LigandSequence):
-                entity_chain = self.parse_ligand_sequence(seq)
+                entity_chain = self.parse_ligand_sequence(seq, entity_id)
             else:
                 entity_chain = self.parse_polymer_sequence(seq)
 
@@ -253,6 +253,8 @@ class InputDataPipeline:
                     num_atoms=chain.num_atoms,
                     description=seq.description,
                 )
+                if entity_chain.smiles is not None:
+                    chain_meta.smiles = entity_chain.smiles
                 chain_metas.append(chain_meta)
 
         # Prepare metadata
@@ -430,6 +432,7 @@ class InputDataPipeline:
     def parse_ligand_sequence(
         self,
         seq: query.LigandSequence,
+        entity_id: int,
         is_covalent: bool = False,
     ) -> Chain:
         """Parse a ligand chain from the sequence input.
@@ -438,6 +441,8 @@ class InputDataPipeline:
         ----------
         seq : LigandSequence
             The ligand sequence input.
+        entity_id : int
+            The entity_id to assign to the ligand chain.
         is_covalent : bool, optional
             Whether the ligand is covalently bound. Default is False.
 
@@ -451,8 +456,8 @@ class InputDataPipeline:
         The chain ids (entity_id, asym_id, sym_id) are all set to placeholder (zero)
         """
         # Load ccd or smiles
+        ctype = C.ChainType.LIGAND
         if seq.ccd_ids is not None:
-            ctype = C.ChainType.LIGAND
             return structure_preparation.prepare_ref_chain(
                 chain_type=ctype,
                 ccd_sequences=seq.ccd_ids,
@@ -462,6 +467,10 @@ class InputDataPipeline:
             assert seq.smiles is not None, "Either CCD code or SMILES must be provided."
             # NOTE: Using "LIG" as a placeholder code for ligands from SMILES
             # This will be replaced later during mmcif writing.
-            raise NotImplementedError(
-                "Parsing ligands from SMILES is not implemented yet."
+            code = f"LIG{entity_id}"
+            return structure_preparation.prepare_ref_chain(
+                chain_type=ctype,
+                ccd_sequences=[code],
+                smiles=seq.smiles,
+                ccd=self.ccd,
             )

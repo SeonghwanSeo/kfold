@@ -253,7 +253,7 @@ class KFoldECSI(BaseECSI):
         sigma_data: float = 16.0
         sigma_data_end: float = 16.0
         cov_xy: float = 128.0
-        rho: int = 7
+        rho: float = 0.7
         sampling_schedule_type: str = "piecewise_power"
         sampling_schedule_piecewise_power: float = 5.0
         P_mean: float = -1.2

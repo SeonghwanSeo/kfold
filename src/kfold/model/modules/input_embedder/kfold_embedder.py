@@ -109,7 +109,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         apo_min_dist: float = 2.0
         apo_max_dist: float = 49.0
         # Interaction-related parameters
-        use_interaction: bool = True
+        use_interaction: bool = False
         num_interaction_types: int = 8
         num_pair_interaction_types: int = 5
 
