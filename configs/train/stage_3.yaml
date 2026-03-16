@@ -10,7 +10,7 @@ global_hparams:
 data:
   max_chains: 20
   max_tokens: 768
-  max_sequence_tokens: 1536
+  max_sequence_tokens: 1280
 
 loss:
   weights:

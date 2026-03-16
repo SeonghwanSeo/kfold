@@ -137,8 +137,8 @@ class KFold(BaseFoldingModel):
         # Trunk with recycling
         trunk_out = self.trunk(
             s_inputs,
-            s_init,
-            z_init,
+            s_init.float(),
+            z_init.float(),
             f_input,
             num_recycles,
             seq_emb=seq_emb,
@@ -260,8 +260,8 @@ class KFold(BaseFoldingModel):
         st = time.time()
         trunk_out: dict[str, torch.Tensor] = self.trunk(
             s_inputs,
-            s_init,
-            z_init,
+            s_init.float(),
+            z_init.float(),
             f_input,
             num_recycles,
             seq_emb=seq_emb,
