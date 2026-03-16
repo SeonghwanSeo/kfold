@@ -13,7 +13,7 @@ sampler: null
 cropper:
   _registry_: "data_cropper"
   _class_: MultiAnchorCropper
-  max_anchors: 2
+  max_anchors: 1
   w_contiguous: 0.0
   w_spatial: 0.0
   w_spatial_interface: 1.0

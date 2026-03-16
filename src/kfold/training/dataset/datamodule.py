@@ -81,6 +81,7 @@ class TrainingDataModule(pl.LightningDataModule):
             ccd=self.ccd,
             max_chains=self.config.max_chains,
             max_tokens=self.config.max_tokens,
+            max_sequence_tokens=self.config.max_sequence_tokens,
             safe_load=self.config.safe_load,
         )
         # Print dataset info

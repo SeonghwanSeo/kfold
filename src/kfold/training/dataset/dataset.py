@@ -717,8 +717,10 @@ class TrainingDataset(SafeLoadingDataset):
         self.max_sequence_tokens: int = max_sequence_tokens
 
         assert max_sequence_tokens >= max_tokens + (max_chains * 2), (
-            "max_sequence_tokens should be greater than max_tokens to accommodate "
-            "additional sequence tokens for PLM input."
+            f"max_sequence_tokens should be greater than max_tokens to accommodate "
+            f"additional sequence tokens for PLM input."
+            f" (max_sequence_tokens={max_sequence_tokens}, max_tokens={max_tokens}, "
+            f"max_chains={max_chains})"
         )  # +2 tokens per chain for [CLS] and [SEP]
 
         assert config.cropper is not None, "Cropper config must be provided."
@@ -873,10 +875,10 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         self,
         configs: list[TrainingDatasetConfig],
         ccd: CCD,
+        max_chains: int,
+        max_tokens: int,
+        max_sequence_tokens: int,
         safe_load: bool = True,
-        max_chains: int = 20,
-        max_tokens: int = 384,
-        max_sequence_tokens: int = 768,
     ) -> None:
         """
         Parameters
@@ -885,8 +887,6 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             List of dataset configurations.
         ccd: CCD
             CCD database
-        safe_load : bool
-            Whether to retry loading on failure.
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
@@ -894,6 +894,8 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         max_sequence_tokens : int
             Maximum number of sequence tokens per sample,
             limiting the entire input size of PLM module.
+        safe_load : bool
+            Whether to retry loading on failure.
 
         Notes
         -----
