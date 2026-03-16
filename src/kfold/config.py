@@ -32,9 +32,7 @@ def load_config(
         config = OmegaConf.merge(config, overrides)
 
     config = _resolve_yaml_inheritance(config, Path(path).parent)
-    if override_registry_defaults:
-        config = _resolve_registry_defaults(config)
-        config = _sync_inference_apo_sampling_from_dataset(config)
+    config = _resolve_registry_defaults(config)
     return config
 
 
@@ -152,56 +150,3 @@ def _resolve_registry_defaults(config: DictConfig) -> DictConfig:
     container: dict = OmegaConf.to_container(config)
     resolved_container = _resolve_nested(container)
     return OmegaConf.create(resolved_container)
-
-
-def _sync_inference_apo_sampling_from_dataset(config: DictConfig) -> DictConfig:
-    """Sync ECSI inference apo sampling params from validation dataset config.
-
-    Motivation: avoid managing `model.structure_module.inference_apo_*` independently
-    from dataset `apo_init.*`. This keeps validation/inference behavior aligned with
-    the configured dataset apo initialization policy.
-
-    Policy:
-    - Pull from `train.data.val_datasets[0].apo_init` if available.
-    - Only populate `model.structure_module.inference_apo_*` when they are still at
-      their defaults (0.0 / None), so explicit user overrides remain respected.
-    """
-    try:
-        model_cfg = config.model
-        structure_cfg = model_cfg.structure_module
-        train_cfg = config.train
-        data_cfg = train_cfg.data
-        val_datasets = data_cfg.val_datasets
-    except Exception:
-        return config
-
-    if not val_datasets:
-        return config
-
-    try:
-        apo_init = val_datasets[0].apo_init
-        translation_scale = float(apo_init.translation_scale)
-        chain_com_sampling_radius = apo_init.chain_com_sampling_radius
-        if chain_com_sampling_radius is not None:
-            chain_com_sampling_radius = float(chain_com_sampling_radius)
-            # Mirror dataset behavior: translation_scale is forced to 0
-            # when radius is set.
-            translation_scale = 0.0
-    except Exception:
-        return config
-
-    # Only sync when the model-side values are left as defaults.
-    try:
-        if (
-            float(structure_cfg.inference_apo_translation_scale) == 0.0
-            and structure_cfg.inference_apo_chain_com_sampling_radius is None
-        ):
-            structure_cfg.inference_apo_translation_scale = translation_scale
-            structure_cfg.inference_apo_chain_com_sampling_radius = (
-                chain_com_sampling_radius
-            )
-    except Exception:
-        # If fields are missing or immutable, silently skip.
-        return config
-
-    return config

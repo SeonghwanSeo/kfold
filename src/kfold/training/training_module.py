@@ -923,7 +923,7 @@ class KFoldTrainingModule(pl.LightningModule):
         checkpoint["state_dict"] = {
             k: v
             for k, v in checkpoint["state_dict"].items()
-            if "sequence_encoder" not in k
+            if "sequence_encoder" not in k and "structure_encoder" not in k
         }
 
         # Remove '._orig_mod.' from checkpoint keys

@@ -63,7 +63,7 @@ class AF3DiffusionModule(BaseScoreModel):
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
         token_transformer_blocks: int = 24
-        token_transformer_heads: int = 8
+        token_transformer_heads: int = 16
         atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
         conditioning_transition_layers: int = 2
