@@ -12,8 +12,7 @@ sampler: null
 
 cropper:
   _registry_: "data_cropper"
-  _class_: MultiAnchorCropper
-  max_anchors: 1
+  _class_: AlphaFold3Cropper
   w_contiguous: 0.25
   w_spatial: 0.75
   w_spatial_interface: 0.0
