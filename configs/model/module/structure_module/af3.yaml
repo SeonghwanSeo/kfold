@@ -12,4 +12,3 @@ gamma_min: 1.0
 noise_scale: 1.003
 step_scale: 1.5
 coordinate_augmentation: True
-synchronize_sigmas: False

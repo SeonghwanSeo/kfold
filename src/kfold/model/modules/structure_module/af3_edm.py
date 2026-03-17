@@ -47,8 +47,6 @@ class AF3SampleDiffusion(BaseEDM):
         coordinate_augmentation : bool, optional
             Whether to use coordinate augmentation, by default True.
             This may be useful for non-equivariant score models.
-        synchronize_sigmas : bool, optional
-            Whether to synchronize the sigmas, by default False.
         """
 
         num_steps: int = 200
@@ -63,7 +61,6 @@ class AF3SampleDiffusion(BaseEDM):
         noise_scale: float = 1.003
         step_scale: float = 1.5
         coordinate_augmentation: bool = True
-        synchronize_sigmas: bool = False
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
         """Initialize the atom diffusion module."""
@@ -80,7 +77,6 @@ class AF3SampleDiffusion(BaseEDM):
         self.noise_scale: float = cfg.noise_scale
         self.step_scale: float = cfg.step_scale
         self.coordinate_augmentation: bool = cfg.coordinate_augmentation
-        self.synchronize_sigmas: bool = cfg.synchronize_sigmas
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
@@ -209,17 +205,10 @@ class AF3SampleDiffusion(BaseEDM):
         # See Section 3.7 of AlphaFold3 paper.
         # t_hat = sigma_data * exp(-1.2 + 1.5 * N(0, 1)),
         # where -1.2 is P_mean and 1.5 is P_std.
-        def _sample(*shape: int) -> torch.Tensor:
-            return self.sigma_data * torch.exp(
-                self.P_mean + self.P_std * torch.randn(shape, device=device)
-            )
-
-        if self.synchronize_sigmas:
-            # synchronize sigmas across diffusion samples
-            return _sample(batch_size, 1).repeat(1, num_diffusion_samples)
-        else:
-            # use different sigmas for each diffusion sample
-            return _sample(batch_size, num_diffusion_samples)
+        shape = (batch_size, num_diffusion_samples)
+        return self.sigma_data * torch.exp(
+            self.P_mean + self.P_std * torch.randn(shape, device=device)
+        )
 
     def interpolate(
         self,
