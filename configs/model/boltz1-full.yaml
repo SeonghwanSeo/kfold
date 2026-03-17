@@ -31,5 +31,3 @@ score_model:
 
 distogram_head:
   _yaml_: "module/distogram_head/boltz1.yaml"
-
-interaction_head: null
