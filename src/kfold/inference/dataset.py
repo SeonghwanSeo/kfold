@@ -1,4 +1,4 @@
-"""Define training modules for k-fold"""
+"""Inference dataset for structure prediction."""
 
 from typing import NamedTuple
 

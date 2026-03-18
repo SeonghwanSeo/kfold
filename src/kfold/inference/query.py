@@ -198,7 +198,7 @@ class Query:
     sequences: list[ProteinSequence | DNASequence | RNASequence | LigandSequence] = (
         dataclasses.field(default_factory=list)
     )
-    seed: int = 0  # Default sed, overridden to command line argument
+    seed: int = 0  # Default seed, overridden to command line argument
     yaml: str  # Original YAML content
 
     @property
@@ -232,7 +232,7 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
     json_or_yaml_path : str | Path
         Path to the input JSON/YAML file.
     ccd : CCD
-        CCD for ligand parsing. (Optional)
+        Chemical component dictionary for validating ligand CCD codes.
 
     Returns
     -------
@@ -300,9 +300,8 @@ def parse_input_files(
     ----------
     input_path : str | Path
         Path to the input JSON/YAML file or directory containing such files.
-    ccd : CCD | None
-        CCD data for ligand parsing. (Optional)
-        If provided, used to validate ligand CCD IDs.
+    ccd : CCD
+        Chemical component dictionary for validating ligand CCD codes.
     seeds : int | list[int]
         Random seed(s) for the queries.
     skip_invalid : bool
@@ -344,7 +343,7 @@ def parse_directory(
     input_dir : str | Path
         Path to the input directory containing JSON/YAML files.
     ccd : CCD
-        CCD for ligand parsing.
+        Chemical component dictionary for validating ligand CCD codes.
     skip_invalid : bool
         Whether to skip invalid input files instead of raising an error.
 
@@ -362,7 +361,7 @@ def parse_directory(
                 if skip_invalid:
                     logger.error(f"Skipping invalid input file {file_path}: {e}")
                 else:
-                    raise e
+                    raise
             else:
                 queries.append(query)
     return queries
@@ -449,7 +448,7 @@ def validate_input_sequences(seq_list: list[BaseSequence], ccd: CCD) -> None:
     seq_list : list[BaseSequence]
         List of sequence dataclasses to validate.
     ccd : CCD
-        CCD data for ligand parsing.
+        Chemical component dictionary for validating ligand CCD codes.
 
     Raises
     ------

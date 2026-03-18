@@ -163,7 +163,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
         name = query.name
         seed = query.seed
         save_dir = self.output_dir / name
-        assert save_dir.exists()
+        save_dir.mkdir(parents=True, exist_ok=True)
 
         # Save Diffusion Samples
         num_atoms = ref_struct.num_atoms
