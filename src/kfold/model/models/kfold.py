@@ -1,5 +1,6 @@
 import time
 from collections.abc import Mapping
+from typing import Self
 
 import torch
 
@@ -27,13 +28,11 @@ class KFold(BaseFoldingModel):
             Registry.instantiate(config.structure_encoder)
         )
 
-    def cast_to_bf16(self):
+    def cast_to_bf16(self) -> Self:
         """Cast model parameters to bfloat16 for faster inference."""
         super().cast_to_bf16()
-        self.sequence_encoder = self.sequence_encoder.to(dtype=torch.bfloat16)
-        self.structure_encoder.backbone = self.structure_encoder.backbone.to(
-            dtype=torch.bfloat16
-        )
+        self.sequence_encoder = self.sequence_encoder.cast_to_bf16()
+        self.structure_encoder = self.structure_encoder.cast_to_bf16()
         return self
 
     def forward(
@@ -264,6 +263,8 @@ class KFold(BaseFoldingModel):
         dict_out = {
             "seq_emb": seq_emb,
             "seq_attn": seq_attn,
+            "struct_emb": struct_emb,
+            "s_inputs": s_inputs,
             "s_trunk": s_trunk,
             "z_trunk": z_trunk,
         }

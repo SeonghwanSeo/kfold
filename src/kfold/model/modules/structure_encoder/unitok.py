@@ -1,4 +1,4 @@
-from __future__ import annotations
+from typing import Self
 
 import torch
 
@@ -67,6 +67,11 @@ class UniTok(BaseStructureEncoder):
             return 0
         else:
             return self.cfg.n_heads * self.cfg.n_layers
+
+    def cast_to_bf16(self) -> Self:
+        """Cast model parameters to bfloat16 for faster inference."""
+        self.backbone = self.backbone.to(torch.bfloat16)
+        return self
 
     def tokenize(
         self, aatypes: torch.Tensor, coords: torch.Tensor
