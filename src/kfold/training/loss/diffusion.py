@@ -341,32 +341,31 @@ class SmoothLDDTLoss(torch.nn.Module):
         repr_atom_index: torch.Tensor,
     ) -> list[torch.Tensor]:
         N, L, _ = x_pred.shape
-        # Compute true pairwise distances
         # NOTE: pairwise distances of ground truth coordinates are shared across N.
         x_true = x_true[0]
-        d_true = safe_cdist(x_true, x_true)  # [L, L]
 
         # Create pair mask
         pair_mask = mask[None, :] & mask[:, None]  # [L, L]
         # Mask out self-term
         pair_mask.diagonal(dim1=-2, dim2=-1).zero_()
-        # Mask out invalid distances
-        dist_mask = ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
-            (d_true < self.cutoff) & (~is_nucleotide[..., None])
-        )
-        pair_mask &= dist_mask
 
         if self.repr_atom_only:
             # Extract representative atom indices
-            d_true = d_true[repr_atom_index]  # [L, L] -> [Lrepr, L]
+            d_true = safe_cdist(x_true[repr_atom_index], x_true)  # [Lrepr, L]
             pair_mask = pair_mask[repr_atom_index]  # [L, L] -> [Lrepr, L]
+            is_nucleotide = is_nucleotide[repr_atom_index]  # [L] -> [Lrepr]
+        else:
+            d_true = safe_cdist(x_true, x_true)  # [L, L]
 
-        pair_mask = pair_mask.float()
+        # Mask out invalid distances
+        pair_mask &= ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
+            (d_true < self.cutoff) & (~is_nucleotide[..., None])
+        )  # [L, L] or [Lrepr, L]
 
         loss_fn = partial(
             self._chunk_forward,
             d_true=d_true,  # [L, L] or [Lrepr, L]
-            pair_mask=pair_mask,  # [L, L] or [Lrepr, L]
+            pair_mask=pair_mask.float(),  # [L, L] or [Lrepr, L]
             repr_atom_index=repr_atom_index if self.repr_atom_only else None,
         )
 

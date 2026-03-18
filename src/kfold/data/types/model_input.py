@@ -197,8 +197,8 @@ class TokenTensor(TensorLayout):
     pocket_contact_type: torch.Tensor  # [Ntoken,], bool
 
     # For model training
-    center_coords: torch.Tensor  # [Ntoken, 3], long
-    repr_coords: torch.Tensor  # [Ntoken, 3], long
+    center_coords: torch.Tensor  # [Ntoken, 3], float32
+    repr_coords: torch.Tensor  # [Ntoken, 3], float32
     center_mask: torch.Tensor  # [Ntoken,], bool
     repr_mask: torch.Tensor  # [Ntoken,], bool
 
