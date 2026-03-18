@@ -84,7 +84,6 @@ class TimeBinnedLossLogger(torch.nn.Module):
                 "bond_loss",
                 "smooth_lddt_loss",
                 "diffusion_loss",
-                "interaction_loss",
             ]:
                 md[f"{label}__{name}"] = MeanMetric()
         self.metrics = torch.nn.ModuleDict(md)
@@ -96,7 +95,6 @@ class TimeBinnedLossLogger(torch.nn.Module):
         structure_module: Any,
         diffusion_per_sample: dict[str, torch.Tensor],
         distogram_loss_per_batch: torch.Tensor,
-        interaction_loss_per_batch: torch.Tensor | None,
         loss_weights: dict[str, float],
     ) -> None:
         if not self.enabled:
@@ -115,24 +113,6 @@ class TimeBinnedLossLogger(torch.nn.Module):
                 self.metrics, self.labels, name, values, bin_index, self.nbins
             )
 
-        if interaction_loss_per_batch is not None:
-            interaction_values = interaction_loss_per_batch
-            if interaction_values.ndim == 0:
-                interaction_values = interaction_values.expand(
-                    distogram_loss_per_batch.shape[0]
-                )
-            interaction_values = interaction_values[:, None].expand_as(
-                diffusion_per_sample["diffusion_loss"]
-            )
-            _per_bin_update(
-                self.metrics,
-                self.labels,
-                "interaction_loss",
-                interaction_values,
-                bin_index,
-                self.nbins,
-            )
-
         diffusion_weight = float(loss_weights["diffusion"])
         distogram_weight = float(loss_weights["distogram"])
         disto_term = distogram_loss_per_batch * distogram_weight  # [B]
@@ -140,12 +120,6 @@ class TimeBinnedLossLogger(torch.nn.Module):
             diffusion_per_sample["diffusion_loss"] * diffusion_weight
         )  # [B, N]
         total_per_sample = diffusion_term + disto_term[:, None]
-        interaction_weight = float(loss_weights.get("interaction", 0.0))
-        if interaction_loss_per_batch is not None and interaction_weight != 0.0:
-            interaction_term = interaction_loss_per_batch * interaction_weight
-            if interaction_term.ndim == 0:
-                interaction_term = interaction_term.expand(disto_term.shape[0])
-            total_per_sample = total_per_sample + interaction_term[:, None]
         _per_bin_update(
             self.metrics,
             self.labels,
@@ -194,7 +168,6 @@ class EntityBinnedLossLogger(torch.nn.Module):
                 "bond_loss",
                 "smooth_lddt_loss",
                 "diffusion_loss",
-                "interaction_loss",
             ]:
                 md[f"{label}__{name}"] = MeanMetric()
         self.metrics = torch.nn.ModuleDict(md)
@@ -205,7 +178,6 @@ class EntityBinnedLossLogger(torch.nn.Module):
         f_input: Any,
         diffusion_per_sample: dict[str, torch.Tensor],
         distogram_loss_per_batch: torch.Tensor,
-        interaction_loss_per_batch: torch.Tensor | None,
         loss_weights: dict[str, float],
     ) -> None:
         if not self.enabled:
@@ -229,20 +201,6 @@ class EntityBinnedLossLogger(torch.nn.Module):
                 self.metrics, self.labels, name, values, bin_index, self.nbins
             )
 
-        if interaction_loss_per_batch is not None:
-            interaction_values = interaction_loss_per_batch
-            if interaction_values.ndim == 0:
-                interaction_values = interaction_values.expand(B)
-            interaction_values = interaction_values[:, None].expand(B, N)
-            _per_bin_update(
-                self.metrics,
-                self.labels,
-                "interaction_loss",
-                interaction_values,
-                bin_index,
-                self.nbins,
-            )
-
         diffusion_weight = float(loss_weights["diffusion"])
         distogram_weight = float(loss_weights["distogram"])
         disto_term = distogram_loss_per_batch * distogram_weight  # [B]
@@ -250,12 +208,6 @@ class EntityBinnedLossLogger(torch.nn.Module):
             diffusion_per_sample["diffusion_loss"] * diffusion_weight
         )  # [B, N]
         total_per_sample = diffusion_term + disto_term[:, None]
-        interaction_weight = float(loss_weights.get("interaction", 0.0))
-        if interaction_loss_per_batch is not None and interaction_weight != 0.0:
-            interaction_term = interaction_loss_per_batch * interaction_weight
-            if interaction_term.ndim == 0:
-                interaction_term = interaction_term.expand(B)
-            total_per_sample = total_per_sample + interaction_term[:, None]
         _per_bin_update(
             self.metrics,
             self.labels,

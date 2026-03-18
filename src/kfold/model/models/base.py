@@ -88,7 +88,6 @@ class BaseFoldingModel(torch.nn.Module):
         diffusion_batch_size: int = 48,
         sample_structures: bool = True,
         train_structure_module: bool = True,
-        train_interaction_head: bool = True,
         train_confidence_module: bool = True,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold for model training.

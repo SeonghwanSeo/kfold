@@ -66,7 +66,7 @@ def _try_sanitize_for_features(mol: Chem.Mol) -> bool:
         return False
 
 
-def compute_interaction_types(mol: Chem.Mol) -> np.ndarray:
+def compute_interaction_types(mol: Chem.Mol, dummy: bool = True) -> np.ndarray:
     """Compute per-atom interaction types for molecule atoms.
 
     The rules are adapted from PLIP's ligand preparation logic:
@@ -77,6 +77,10 @@ def compute_interaction_types(mol: Chem.Mol) -> np.ndarray:
     """
     num_atoms = mol.GetNumAtoms()
     interaction_type = np.zeros((num_atoms, C.NUM_INTERACTION_TYPES), dtype=bool)
+    if dummy:
+        # For backward compatibility
+        return interaction_type
+
     if num_atoms == 0:
         return interaction_type
     if num_atoms == 1:

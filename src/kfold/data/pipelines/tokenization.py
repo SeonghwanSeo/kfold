@@ -4,7 +4,6 @@ import numpy as np
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.constants.interaction import get_residue_interaction_type
 from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
@@ -358,11 +357,6 @@ def tokenize_structure(
                 struct.token.center_index[g_tok_i] = ref_atom_idx
                 struct.token.disto_index[g_tok_i] = disto_atom_idx
 
-                # Insert pre-defined non-covalent interaction types
-                nci_indices = get_residue_interaction_type(res_name)
-                if nci_indices:
-                    struct.token.interaction_type[g_tok_i, nci_indices] = True
-
                 # Update atom existence mask
                 struct.atom.pad_mask[g_tok_i, :natoms] = True
 
@@ -388,11 +382,6 @@ def tokenize_structure(
                 struct.token.num_atoms[st:end] = 1
                 struct.token.center_index[st:end] = 0
                 struct.token.disto_index[st:end] = 0
-
-                # Insert interaction types from CCD component
-                atom_indices = comp.get_atom_indices(atom_names)
-                nci_types = comp.interaction_types[atom_indices]
-                struct.token.interaction_type[st:end, :] = nci_types
 
                 # Update atom existence mask
                 struct.atom.pad_mask[st:end, 0] = True

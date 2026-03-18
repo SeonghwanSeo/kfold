@@ -4,7 +4,6 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
 from kfold.model.layers.kfold.encoder import InputEmbedderWithApo
 from kfold.model.layers.primitives import LinearNoBias
-from kfold.utils.interaction_utils import compute_pair_interactions
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 
 from .base import BaseInputEmbedder
@@ -108,10 +107,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         apo_num_bins: int = 48
         apo_min_dist: float = 2.0
         apo_max_dist: float = 49.0
-        # Interaction-related parameters
-        use_interaction: bool = False
-        num_interaction_types: int = 8
-        num_pair_interaction_types: int = 5
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
@@ -147,16 +142,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         # Pair representation
         self.linear_apo_pdist = LinearNoBias(self.distmap.num_bins, cfg.channel_z)
 
-        # Interaction-related
-        self.use_interaction = cfg.use_interaction
-        if self.use_interaction:
-            self.linear_s_interaction = LinearNoBias(
-                cfg.num_interaction_types, cfg.channel_s, init="zero"
-            )
-            self.linear_z_interaction = LinearNoBias(
-                cfg.num_pair_interaction_types, cfg.channel_z, init="zero"
-            )
-
     def forward(
         self,
         f_input: FoldingInput,
@@ -186,12 +171,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         # Get input single representation
         s_inputs = self.encoder(f_input)  # [B, L, c_s]
 
-        if self.use_interaction:
-            # Add token interaction embedding
-            s_inputs = s_inputs + self.linear_s_interaction(
-                f_input.token.interaction_type.to(s_inputs.dtype)
-            )  # [B, L, c_s]
-
         # Get initial single representation
         s_init = self.linear_s_init(s_inputs)  # [B, L, c_s]
 
@@ -214,14 +193,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
 
         # Add apo distance embedding
         z_init = z_init + self.get_apo_embedding(f_input)  # [B, L, L, c_z]
-
-        if self.use_interaction:
-            # Add token interaction embedding
-            pair_interactions = compute_pair_interactions(f_input.token.interaction_type)
-            z_interaction = self.linear_z_interaction(
-                pair_interactions.to(z_init.dtype)
-            )  # [B, L, L, c_z]
-            z_init = z_init + z_interaction
 
         return s_inputs, s_init, z_init
 

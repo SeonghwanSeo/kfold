@@ -184,8 +184,6 @@ class TokenArray(PlainLayout[np.ndarray]):
         Center atom index of shape [L,], used for center calculations.
     disto_index: np.ndarray (int)
         Distogram atom index of shape [L,], used for distogram calculations.
-    interaction_type: np.ndarray (bool)
-        Multi-hot interaction types of shape [L, NUM_INTERACTION_TYPES].
 
     Cached Properties
     -----------------
@@ -211,7 +209,6 @@ class TokenArray(PlainLayout[np.ndarray]):
     seq_token_index: np.ndarray  # [L,], int
     center_index: np.ndarray  # [L,], int
     disto_index: np.ndarray  # [L,], int
-    interaction_type: np.ndarray  # [L, NUM_INTERACTION_TYPES], bool
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
@@ -232,12 +229,6 @@ class TokenArray(PlainLayout[np.ndarray]):
         )
         check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
         check_array(self.disto_index, name="disto_index", dtype=np.integer, shape=shape)
-        check_array(
-            self.interaction_type,
-            name="interaction_type",
-            dtype=np.bool_,
-            shape=(*shape, C.NUM_INTERACTION_TYPES),
-        )
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -275,7 +266,6 @@ class TokenArray(PlainLayout[np.ndarray]):
             center_index=full_minus_one((num_tokens,)),
             disto_index=full_minus_one((num_tokens,)),
             is_standard=full_false((num_tokens,)),
-            interaction_type=full_false((num_tokens, C.NUM_INTERACTION_TYPES)),
         )
 
     def validate(self) -> None:

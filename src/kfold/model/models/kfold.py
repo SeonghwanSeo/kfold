@@ -45,7 +45,6 @@ class KFold(BaseFoldingModel):
         diffusion_batch_size: int = 48,
         sample_structures: bool = True,
         train_structure_module: bool = True,
-        train_interaction_head: bool = True,
         train_confidence_module: bool = True,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold for model training.
@@ -74,8 +73,6 @@ class KFold(BaseFoldingModel):
             Whether to sample structures for confidence module training,
         train_structure_module : bool, optional
             Whether to train structure module, by default True
-        train_interaction_head : bool, optional
-            Whether to produce interaction logits, by default True
         train_confidence_module : bool, optional
             Whether to train confidence module, by default True
 
@@ -92,9 +89,6 @@ class KFold(BaseFoldingModel):
             - distogram:
                 - logits: [B, Ltoken, Ltoken, Dd]
                     Distogram logits
-            - interaction:
-                - logits: [B, Ltoken, Ltoken, K]
-                    Interaction logits (K = num pair interaction types)
             - diffusion:
                 - loss_weights: [B, N_noise]
                     Weights for diffusion noise scale
@@ -177,13 +171,6 @@ class KFold(BaseFoldingModel):
                 z_aug = trunk_out["z_aug"]
                 distogram_dict["logits_aug"] = self.distogram_head(z_aug)
             dict_out["distogram"] = distogram_dict
-
-        if train_interaction_head:
-            # Interaction head
-            assert self.interaction_head is not None
-            interaction_dict = {}
-            interaction_dict["logits"] = self.interaction_head(z_trunk)
-            dict_out["interaction"] = interaction_dict
 
         if train_structure_module:
             # Diffusion head
@@ -286,12 +273,6 @@ class KFold(BaseFoldingModel):
         dict_out["distogram_logits"] = self.distogram_head(z_trunk)
         et = time.time()
         time_logs["distogram_head"] = et - st
-
-        if hasattr(self, "interaction_head"):
-            st = time.time()
-            dict_out["interaction_logits"] = self.interaction_head(z_trunk)
-            et = time.time()
-            time_logs["interaction_head"] = et - st
 
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
