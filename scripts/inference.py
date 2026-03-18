@@ -1,6 +1,7 @@
 import argparse
 import logging
 import pathlib
+import time
 
 import torch
 from tqdm import tqdm
@@ -9,7 +10,7 @@ from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
-from kfold.inference.dataset import prepare_inference_dataloader
+from kfold.inference.dataset import InferenceDataset
 from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
 
@@ -55,8 +56,9 @@ def parse_args():
     )
     parser.add_argument(
         "--seed",
+        nargs="+",
         type=int,
-        default=1,
+        default=[42],
         help="Random seed for inference reproducibility.",
     )
     parser.add_argument(
@@ -88,7 +90,7 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-train.pkl",
+        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl",
         help="Path to the CCD data file.",
     )
     parser.add_argument(
@@ -103,11 +105,10 @@ def parse_args():
         help="Number of worker threads for data loading.",
     )
     parser.add_argument(
-        "--resume",
+        "--overwrite",
         action="store_true",
-        help="Whether to resume from previous inference results if available.",
+        help="Whether to overwrite existing inference results.",
     )
-
     return parser.parse_args()
 
 
@@ -119,6 +120,14 @@ def main():
     torch.set_float32_matmul_precision("highest")
 
     args = parse_args()
+
+    # Check output directory
+    if args.out_dir.exists() and not args.overwrite:
+        logger.error(
+            f"Output directory {args.out_dir} already exists. "
+            f"Use --overwrite to overwrite existing results."
+        )
+        return
 
     if args.cpu:
         raise NotImplementedError("CPU inference is not implemented yet.")
@@ -132,27 +141,33 @@ def main():
     # If directory is provided, invalid files are skipped.
     logger.info(f"Parsing input queries from: {args.input}")
     input_queries: list[Query] = parse_input_files(
-        args.input,
-        ccd=ccd,
-        skip_invalid=True,
+        args.input, ccd, args.seed, skip_invalid=True
     )
-    logger.info(f"Parsed {len(input_queries)} valid input queries")
+    npredict = len(input_queries)
+    nseed = len(args.seed)
+    nquery = npredict // nseed
+    logger.info(
+        f"Parsed {npredict} valid input queries: {nquery} samples x {nseed} seeds."
+    )
+    if len(input_queries) == 0:
+        logger.warning("No valid input queries to process. Exiting.")
+        return
 
-    if args.resume:
-        # Filter out queries that already have results saved
-        logger.info("Filtering out queries with existing results for resuming inference")
-        input_queries = [q for q in input_queries if not (args.out_dir / q.name).exists()]
-        logger.info(f"{len(input_queries)} queries remaining after filtering for resume")
+    # Create output directories for each query
+    save_dir = args.out_dir
+    for query in input_queries:
+        query_dir = save_dir / query.name
+        query_dir.mkdir(parents=True, exist_ok=True)
+        query.save(query_dir / "query.yaml")
 
     # Create data loader
-    dataloader = prepare_inference_dataloader(
-        queries=input_queries,
-        ccd=ccd,
-        num_samples=args.num_samples,
-        use_sequence_masking=args.use_sequence_masking,
-        seed=args.seed,
-        num_workers=args.num_workers,
+    dataset = InferenceDataset(
+        input_queries, ccd, args.num_samples, args.use_sequence_masking
     )
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
+    )
+
     # Load model
     logger.info(f"Loading model from checkpoint: {args.checkpoint}")
     model: KFold = KFold.from_checkpoint(args.config, args.checkpoint)
@@ -164,50 +179,45 @@ def main():
 
     # Run inference
     logger.info("Starting inference...")
+    st = time.time()
     for batch in tqdm(dataloader, desc="Inference"):
         if batch is None:
-            # Skip invalid input
-            continue
+            continue  # skip invalid batch
 
         # Unpack batch
         query: Query = batch[0]
         ref_struct: RefStructure = batch[1]
         f_input: FoldingInput = batch[2]
-        apo_dict: dict[int, dict] = batch[3]
-
-        if not f_input.is_batched:
-            f_input = FoldingInput.from_list([f_input])
-
+        apo_dict: dict[int, dict] = batch[3]  # (entity_id -> apo_info)
         assert f_input.batch_size == 1, "Inference batch size should be 1"
-        f_input = f_input.to(device="cuda")
 
-        # Tokenize apo structure and fill in input features
-        tokenize_apo = model.structure_encoder.tokenize
-        for entity_id, apo_info in apo_dict.items():  # noqa
-            aatypes, coords = apo_info["aatypes"], apo_info["coords"]
-            seq_st, seq_ed, apo_st, apo_ed = apo_info["mapping"]
-            seq_slc, apo_slc = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
-            bb_tok_ids, fa_tok_ids = tokenize_apo(aatypes.cuda(), coords.cuda())
-            f_input.sequence.bb_struct_token_id[0, seq_slc] = bb_tok_ids[apo_slc]
-            f_input.sequence.fa_struct_token_id[0, seq_slc] = fa_tok_ids[apo_slc]
+        name: str = query.name
+        seed: int = query.seed
+        assert seed >= 0  # Seed should be overridden by user input
 
-        # HACK: Set random seed for reproducibility
-        # FIXME: pass random generator to model sampling function instead
-        set_seed(args.seed)
+        # HACK: Set seed for each sample to ensure reproducibility.
+        # TODO: Use torch.Generator.
+        set_seed(seed)
 
-        # Sample structures
+        # Move to device
+        to_cuda = lambda x: x.cuda() if isinstance(x, torch.Tensor) else x  # noqa
+        f_input = f_input.to("cuda")
+        apo_dict = {
+            eid: {k: to_cuda(v) for k, v in dic.items()} for eid, dic in apo_dict.items()
+        }
+
+        # Run model
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            model_out, time_logs = model.sample(
+            model_out, time_log = model.inference(  # noqa
                 f_input,
+                apo_dict,
                 num_recycles=args.num_recycles,
                 num_steps=args.num_steps,
-                num_diffusion_samples=args.num_samples,
+                num_samples=args.num_samples,
             )
 
-        # remove batch dimension
-        model_out = {k: v.squeeze(0) for k, v in model_out.items()}
-
         # NOTE: model_out contains:
+        #   - s_inputs: input features [Ntoken, C_s]
         #   - s_trunk: final trunk outputs [Ntoken, C_s]
         #   - z_trunk: final trunk latent [Ntoken, Ntoken, C_z]
         #   - distogram_logits: predicted distogram logits [Ntoken, Ntoken, bin]
@@ -215,20 +225,8 @@ def main():
         # *) Ntoken and Natom may be different to original ones due to padding.
 
         # Save predictions
-        name = query.name
         save_dir = args.out_dir / name
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        # Save query
-        with open(save_dir / "query.yaml", "w") as f:
-            f.write(query.yaml)
-
-        # Save apo structure
-        apo_save_path = save_dir / "apo.cif"
-        try:
-            writer.write(ref_struct, apo_save_path, save_apo=True)
-        except Exception as e:
-            tqdm.write(f"Warning: Failed to save apo structure for {name}: {e}")
+        assert save_dir.exists()
 
         # Save sampled coordinates
         sample_coords = model_out["sample_coordinates"]  # [num_samples, Natom, 3]
@@ -238,13 +236,14 @@ def main():
         sample_coords_arr = sample_coords[:, :num_atoms, :].cpu().numpy()
 
         for i in range(args.num_samples):
-            save_path = save_dir / f"sample-{i}.cif"
+            save_path = save_dir / f"{name}_seed-{seed}_sample-{i}.cif"
             coords_i = sample_coords_arr[i]
             try:
                 writer.write_new_coords(ref_struct, coords_i, save_path)
             except Exception as e:
-                tqdm.write(f"Warning: Failed to save sample {i} for {name}: {e}")
-    logger.info("Inference completed.")
+                logger.error(f"Warning: Failed to save sample {i} for {name}: {e}")
+    et = time.time()
+    logger.info(f"Inference completed. ({et - st:.2f} seconds)")
 
 
 if __name__ == "__main__":

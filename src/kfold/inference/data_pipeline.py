@@ -101,7 +101,6 @@ class InputDataPipeline:
         ccd: CCD,
         num_samples: int = 5,
         use_sequence_masking: bool = False,
-        seed: int = 1,
     ) -> None:
         """Initialize the input data pipeline.
 
@@ -114,12 +113,9 @@ class InputDataPipeline:
             Default is 5.
         use_sequence_masking : bool, optional
             Whether to apply sequence masking for sample diversity. Default is False.
-        seed : int, optional
-            The random seed for reproducibility. Default is 1.
         """
 
         self.ccd: CCD = ccd
-        self.seed: int = seed
 
         # Initialize apo initializer
         self.apo_initializer = apo_initialization.ApoInitializer.inference_mode(ccd)
@@ -129,8 +125,9 @@ class InputDataPipeline:
         self.tokenizer = tokenization.Tokenizer(self.ccd, self.prior_sampler)
 
         # Initialize sequence masking (0.0-0.15 masking ratio if enabled)
-        mask_prob = 1.0 if use_sequence_masking else 0.0
-        self.sequence_masking = sequence_masking.SequenceMasking(mask_prob)
+        self.use_sequence_masking = use_sequence_masking
+        if use_sequence_masking:
+            self.sequence_masking = sequence_masking.SequenceMasking(1.0, 0.15)
 
         # Initialize featurizer
         self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer()
@@ -138,14 +135,9 @@ class InputDataPipeline:
         self.logger = logging.getLogger("InputDataPipeline")
         self.logger.setLevel(logging.INFO)
 
-    def process_query(
+    def __call__(
         self, input: query.Query
-    ) -> tuple[
-        RefStructure,
-        TokenizedStructure,
-        FoldingInput,
-        dict,
-    ]:
+    ) -> tuple[RefStructure, TokenizedStructure, FoldingInput, dict]:
         """Process an Query into model-ready inputs.
 
         Parameters
@@ -165,10 +157,34 @@ class InputDataPipeline:
             A dictionary mapping entity_id to a tuple of (aatypes, coords) for
             apo structure tokenization.
         """
-        rng = np.random.default_rng(self.seed)
+        return self.run(input)
+
+    def run(
+        self, input: query.Query
+    ) -> tuple[RefStructure, TokenizedStructure, FoldingInput, dict]:
+        """Process an Query into model-ready inputs.
+
+        Parameters
+        ----------
+        input : Query
+            The input file containing sequences and metadata.
+
+        Returns
+        -------
+        ref_struct : RefStructure
+            The reference structure.
+        tokenized_struct : TokenizedStructure
+            The tokenized structure.
+        f_input : FoldingInput
+            The featurized model input.
+        struct_tok_input : dict[int, tuple[torch.Tensor, torch.Tensor]]
+            A dictionary mapping entity_id to a tuple of (aatypes, coords) for
+            apo structure tokenization.
+        """
+        rng = np.random.default_rng(input.seed)
 
         # Prepare structure from input file
-        ref_struct = self.prepare_structure_from_query(input)
+        ref_struct: RefStructure = self.prepare_structure_from_query(input)
 
         # Populate apo structure
         apo_lookup = self.load_apo_structures(ref_struct, input)
@@ -176,13 +192,14 @@ class InputDataPipeline:
 
         # Tokenize structure
         # NOTE: We feed apo structure tokens during model forward pass (gpu required).
-        tok_struct = self.tokenizer.tokenize(ref_struct, structure_tokens={})
+        tok_struct: TokenizedStructure = self.tokenizer(ref_struct, rng)
 
         # Apply sequence masking for sample diversity (only if enabled)
-        self.sequence_masking(tok_struct, rng)
+        if self.use_sequence_masking:
+            self.sequence_masking(tok_struct, rng)
 
         # Featurize input
-        f_input = self.featurizer(tok_struct, rng)
+        f_input: FoldingInput = self.featurizer(tok_struct)
 
         # Prepare structure tokenization input for later use in model inference
         struct_tok_input = self.prepare_struct_tok_input(f_input, apo_lookup)
@@ -296,7 +313,7 @@ class InputDataPipeline:
         for entity_id, seq in enumerate(input.sequences, start=1):
             if not isinstance(seq, query.ProteinSequence):
                 continue
-            seq_id = f"{input.name}:{tuple(seq.ids)}"
+            seq_id = f"{input.name}:{list(seq.ids)}"
 
             path = pathlib.Path(seq.apo)
             sequence, coords = read_protein_structure(path)
@@ -388,10 +405,7 @@ class InputDataPipeline:
     # Chain Parsing Functions
     # ================================================================================
 
-    def parse_polymer_sequence(
-        self,
-        seq: query.PolymerSequence,
-    ) -> Chain:
+    def parse_polymer_sequence(self, seq: query.PolymerSequence) -> Chain:
         """Parse a polymer chain from the sequence input.
 
         Parameters

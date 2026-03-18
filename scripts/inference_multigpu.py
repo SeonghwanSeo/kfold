@@ -1,12 +1,13 @@
 import logging
 import pathlib
+import time
 
 import torch
 from lightning import pytorch as pl
 from lightning.pytorch.utilities import rank_zero_only
 
 from kfold.data.types.ccd import CCD
-from kfold.inference.dataset import prepare_inference_dataloader
+from kfold.inference.dataset import InferenceDataset
 from kfold.inference.pl_client import (
     InferenceConfig,
     KFoldInferenceClient,
@@ -30,6 +31,28 @@ def log_info(message: str):
 @rank_zero_only
 def log_warning(message: str):
     logger.warning(message)
+
+
+@rank_zero_only
+def log_error(message: str):
+    logger.error(message)
+
+
+@rank_zero_only
+def check_out_dir(out_dir: pathlib.Path, overwrite: bool) -> None:
+    if (not overwrite) and out_dir.exists():
+        raise FileExistsError(
+            f"Output directory {out_dir} already exists. "
+            f"Use --overwrite to overwrite existing results."
+        )
+
+
+@rank_zero_only
+def create_out_dir(queries: list[Query], out_dir: pathlib.Path):
+    for query in queries:
+        query_dir = out_dir / query.name
+        query_dir.mkdir(parents=True, exist_ok=True)
+        query.save(query_dir / "query.yaml")
 
 
 def parse_args():
@@ -64,8 +87,9 @@ def parse_args():
     )
     parser.add_argument(
         "--seed",
+        nargs="+",
         type=int,
-        default=1,
+        default=[42],
         help="Random seed for inference reproducibility.",
     )
     parser.add_argument(
@@ -112,44 +136,58 @@ def parse_args():
         help="Number of worker threads for data loading.",
     )
     parser.add_argument(
-        "--resume",
+        "--overwrite",
         action="store_true",
-        help="Whether to resume from previous inference results if available.",
+        help="Whether to overwrite existing inference results.",
     )
 
     return parser.parse_args()
 
 
 def main():
-    # Setup environment
     torch.set_float32_matmul_precision("highest")
 
     args = parse_args()
 
-    # Determine the number of devices
-    devices: str | int = "auto"
-    if args.num_gpus is not None:
-        devices = args.num_gpus
+    # Check output directory
+    check_out_dir(args.out_dir, args.overwrite)
 
-    # Load model and setup inference client
-    log_info(f"Loading model from checkpoint: {args.checkpoint}")
-    model: KFold = KFold.from_checkpoint(args.config, args.checkpoint)
-    model = model.cast_to_bf16().eval()
-    log_info("Model loaded successfully.")
+    # === Input preparation ===
+    # Load CCD data
+    ccd: CCD = CCD.load(args.ccd)
 
-    # Inference configuration
-    inference_config = InferenceConfig(
-        num_recycles=args.num_recycles,
-        num_steps=args.num_steps,
-        num_samples=args.num_samples,
-        seed=args.seed,
+    # Parse input query(s) and create dataloader
+    input_queries: list[Query] = parse_input_files(args.input, ccd, args.seed)
+    nsample = len(input_queries)
+    nseed = len(args.seed)
+    nquery = nsample // nseed
+    log_info(f"Predict total {nsample} samples: {nquery} inputs x {nseed} seeds.")
+
+    # Create output directories for each query
+    create_out_dir(input_queries, args.out_dir)
+
+    # Create dataloader
+    dataset = InferenceDataset(
+        input_queries, ccd, args.num_samples, args.use_sequence_masking
     )
-    inference_client = KFoldInferenceClient(model, inference_config)
-    inference_writer = KFoldPredictionWriter(args.out_dir)
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
+    )
 
+    # === Trainer setup ===
+    ngpu = args.num_gpus or torch.cuda.device_count()
+    if nsample < ngpu:
+        log_warning(
+            f"Number of inputs({nsample}) is less than the number of GPUs({ngpu}). "
+            f"Reducing number of GPUs to {nsample}."
+        )
+        ngpu = nsample
+    log_info(f"Using {ngpu} GPU(s) for inference.")
+
+    inference_writer = KFoldPredictionWriter(args.out_dir)
     # Construct PyTorch Lightning trainer
     trainer = pl.Trainer(
-        devices=devices,
+        devices=ngpu,
         logger=False,
         callbacks=[inference_writer],
         enable_checkpointing=False,
@@ -158,39 +196,28 @@ def main():
         deterministic=True,
     )
 
-    # Load CCD data
-    ccd: CCD = CCD.load(args.ccd)
+    # === Model loading ===
+    # Load model and setup inference client
+    log_info(f"Loading model from checkpoint: {args.checkpoint}")
+    model: KFold = KFold.from_checkpoint(args.config, args.checkpoint)
+    model = model.cast_to_bf16().eval()
+    log_info("Model loaded successfully.")
 
-    # Parse input query(s)
-    # If directory is provided, invalid files are skipped.
-    input_queries: list[Query] = parse_input_files(
-        args.input,
-        ccd=ccd,
-        skip_invalid=True,
-    )
-    if trainer.is_global_zero:
-        print(f"Parsed {len(input_queries)} valid input queries from {args.input}")
-
-    if args.resume:
-        # Filter out queries that already have results saved
-        input_queries = [q for q in input_queries if not (args.out_dir / q.name).exists()]
-        if trainer.is_global_zero:
-            print(
-                f"{len(input_queries)} queries remaining after filtering existing results"
-            )
-
-    # Create data loader
-    dataloader = prepare_inference_dataloader(
-        queries=input_queries,
-        ccd=ccd,
+    # === Run inference ===
+    # Inference configuration
+    inference_config = InferenceConfig(
+        num_recycles=args.num_recycles,
+        num_steps=args.num_steps,
         num_samples=args.num_samples,
-        use_sequence_masking=args.use_sequence_masking,
-        seed=args.seed,
-        num_workers=args.num_workers,
     )
+    inference_client = KFoldInferenceClient(model, inference_config)
 
-    # Run inference
-    trainer.predict(inference_client, dataloaders=dataloader)
+    st = time.time()
+    trainer.predict(inference_client, dataloader)
+    et = time.time()
+    logger.info(
+        f"[Rank {trainer.global_rank}] Inference completed. ({et - st:.2f} seconds)"
+    )
 
 
 if __name__ == "__main__":
