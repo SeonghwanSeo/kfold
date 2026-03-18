@@ -73,11 +73,12 @@ class BaseFoldingModel(torch.nn.Module):
         self.trunk.compile(compile_trunk, compile_mode)
         self.score_model.compile(compile_score_model, compile_mode)
 
-    def cast_to_bf16(self):
+    def cast_to_bf16(self) -> Self:
         """Cast model parameters to bfloat16 for faster inference."""
         self.input_embedder = self.input_embedder.to(torch.bfloat16)
         self.trunk = self.trunk.to(torch.bfloat16)
         self.distogram_head = self.distogram_head.to(torch.bfloat16)
+        return self
 
     def forward(
         self,
@@ -355,14 +356,22 @@ class BaseFoldingModel(torch.nn.Module):
     @classmethod
     def from_checkpoint(
         cls,
-        model_config: BaseFoldingModelConfig,
+        config_path: str | pathlib.Path,
         ckpt_path: str | pathlib.Path,
         use_ema: bool = True,
         strict: bool = True,
     ) -> Self:
         """Load model from checkpoint."""
+        from kfold.config import load_config
+
+        # Load model config
+        config = load_config(config_path)
+        if "model" in config:
+            # Get model config if wrapped in a higher-level config
+            config = config.model
+
         # Initialize model
-        model: torch.nn.Module = cls(model_config)
+        model: torch.nn.Module = cls(config)
 
         # Load checkpoint
         ckpt = torch.load(ckpt_path, map_location="cpu")
