@@ -317,8 +317,8 @@ def tokenize_structure(
 
             if is_res_standard:
                 # Standard protein/dna/rna residues (including ambiguous residues)
-                ref_atom_idx: int = C.atom.REF_ATOM_INDEX[res_name]
-                disto_atom_idx: int = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
+                center_atom_idx: int = C.atom.CENTER_ATOM_INDEX[res_name]
+                repr_atom_index: int = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
                 struct.token.chain_type[g_tok_i] = chain_type_i
                 struct.token.entity_id[g_tok_i] = entity_id
                 struct.token.asym_id[g_tok_i] = asym_id
@@ -328,8 +328,8 @@ def tokenize_structure(
                 struct.token.residue_index[g_tok_i] = res_idx
                 struct.token.seq_token_index[g_tok_i] = seq_token_idx
                 struct.token.num_atoms[g_tok_i] = natoms
-                struct.token.center_index[g_tok_i] = ref_atom_idx
-                struct.token.disto_index[g_tok_i] = disto_atom_idx
+                struct.token.center_index[g_tok_i] = center_atom_idx
+                struct.token.repr_index[g_tok_i] = repr_atom_index
 
                 # Update atom existence mask
                 struct.atom.pad_mask[g_tok_i, :natoms] = True
@@ -355,7 +355,7 @@ def tokenize_structure(
                 struct.token.seq_token_index[st:end] = seq_token_idx
                 struct.token.num_atoms[st:end] = 1
                 struct.token.center_index[st:end] = 0
-                struct.token.disto_index[st:end] = 0
+                struct.token.repr_index[st:end] = 0
 
                 # Update atom existence mask
                 struct.atom.pad_mask[st:end, 0] = True

@@ -38,31 +38,32 @@ class DistogramLoss(torch.nn.Module):
 
         Returns
         -------
-        disto_loss : torch.Tensor
+        distogram_loss : torch.Tensor
             The computed distogram loss of shape (B,).
         """
 
         with torch.autocast("cuda", enabled=False), torch.no_grad():
             boundaries: torch.Tensor = self.boundaries  # [num_bins - 1] # type: ignore
-            disto_coords = f_input.token.disto_coords
-            diff = disto_coords[..., None, :, :] - disto_coords[..., :, None, :]
-            pdist_disto = diff.norm(dim=-1)  # [B, Lt, Lt]
-            target_distogram = (pdist_disto.unsqueeze(-1) > boundaries).sum(dim=-1).long()
+            gt_coords = f_input.token.repr_coords
+            diff = gt_coords[..., None, :, :] - gt_coords[..., :, None, :]
+            d_repr = diff.norm(dim=-1)  # [B, Lt, Lt]
+            target_distogram = (d_repr.unsqueeze(-1) > boundaries).sum(dim=-1).long()
 
         # Compute the distogram loss
         B, L, L = target_distogram.shape
-        disto_loss = torch.nn.functional.cross_entropy(
+        distogram_loss = torch.nn.functional.cross_entropy(
             logits.view(B * L * L, self.num_bins),
             target_distogram.view(B * L * L),
             reduction="none",
         ).view(B, L, L)
 
         # Mask out invalid distogram
-        mask = f_input.token.disto_mask  # [B, Lt]
-        pair_mask = mask[:, None, :] & mask[:, :, None]  # [B, Lt, Lt]
+        mask = f_input.token.repr_mask  # [B, Lt]
+        pair_mask = mask[..., None, :] & mask[..., :, None]  # [B, Lt, Lt]
         pair_mask.diagonal(dim1=-2, dim2=-1).zero_()  # zero out diagonal
-        disto_loss = disto_loss * pair_mask  # [B, Lt, Lt]
+        pair_mask = pair_mask.float()
 
         # Compute mean loss
-        disto_loss = disto_loss.sum((-1, -2)) / pair_mask.sum((-1, -2)).clamp(1)  # [B,]
-        return disto_loss
+        sum_loss = (distogram_loss * pair_mask).sum((-1, -2))  # [B,]
+        n_valid = pair_mask.sum((-1, -2)).clamp(1)  # [B,]
+        return sum_loss / n_valid  # [B,]

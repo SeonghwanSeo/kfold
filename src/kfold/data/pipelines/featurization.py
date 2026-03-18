@@ -135,21 +135,18 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
         token_dict["frames_mask"][tidx] = is_frame
 
     # Map atom indices to global atom indices
-    atom_offset = (
-        np.cumsum(token_dict["num_atoms"]) - token_dict["num_atoms"]
-    )  # [Ntoken,]
+    atom_offset = np.cumsum(token_dict["num_atoms"]) - token_dict["num_atoms"]
     token_dict["center_index"] = token_dict["center_index"] + atom_offset
-    token_dict["disto_index"] = token_dict["disto_index"] + atom_offset
+    token_dict["repr_index"] = token_dict["repr_index"] + atom_offset
     token_dict["frames_index"] = token_dict["frames_index"] + atom_offset[:, np.newaxis]
 
-    # add disto/center coords
-    # HACK: we assume there is only one holo coordinate set.
-    token_dict["disto_coords"] = atom_dict["label_coords"][token_dict["disto_index"]]
+    # Add center/representative atom coordinates
+    token_dict["repr_coords"] = atom_dict["label_coords"][token_dict["repr_index"]]
     token_dict["center_coords"] = atom_dict["label_coords"][token_dict["center_index"]]
 
-    # Masks indicating whether the center/disto atoms are resolved
+    # Masks indicating whether the center/repr atoms are resolved
     token_dict["center_mask"] = atom_dict["resolved_mask"][token_dict["center_index"]]
-    token_dict["disto_mask"] = atom_dict["resolved_mask"][token_dict["disto_index"]]
+    token_dict["repr_mask"] = atom_dict["resolved_mask"][token_dict["repr_index"]]
 
     # === Atom-level features ===
     # Make one-hot vector for atom types
