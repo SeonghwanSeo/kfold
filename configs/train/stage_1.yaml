@@ -11,15 +11,3 @@ data:
   max_chains: 20
   max_tokens: 384
   max_sequence_tokens: 768
-
-loss:
-  weights:
-    # global loss weights
-    distogram: 3e-2
-    diffusion: 4.0
-    confidence: 1e-4
-    # diffusion loss weights
-    smooth_lddt: 1. # 0 for fine-tuning (See Section 5.2 for the AF3 paper)
-    bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
-    # confidence loss weights
-    pae: 0.0 # 1 for final stage training

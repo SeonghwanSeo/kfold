@@ -107,7 +107,7 @@ loss:
     diffusion: 4.0
     confidence: 1e-4
     # diffusion loss weights
-    smooth_lddt: 1. # 0 for fine-tuning (See Section 5.2 for the AF3 paper)
+    smooth_lddt: 1.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     # confidence loss weights
     pae: 0.0 # 1 for final stage training
@@ -135,7 +135,8 @@ loss:
 
     # Smooth LDDT Loss
     smooth_lddt_loss:
-      chunk_size: 8 # in number of samples.
+      repr_atom_only: false # if True, use [Nrepr, N] instead of [N, N] for LDDT calculation.
+      chunk_size: 1 # in number of samples.
 
   # Confidence loss
   # TODO

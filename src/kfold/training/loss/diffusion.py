@@ -1,3 +1,5 @@
+from functools import partial
+
 import torch
 
 from kfold.data.types.model_input import FoldingInput
@@ -7,7 +9,7 @@ from kfold.utils.geometry.rigid_align import weighted_rigid_align
 
 def safe_cdist(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """Compute pairwise distances between two sets of points."""
-    d = x[..., None, :] - y[..., None, :, :]  # [*, Lx, Ly, 3]
+    d = x[..., :, None, :] - y[..., None, :, :]  # [*, Lx, Ly, 3]
     return torch.sqrt(d.pow(2).sum(-1) + eps)
 
 
@@ -149,7 +151,7 @@ class WeightedMSELoss(torch.nn.Module):
                 )  # [B, N, L, 3]
 
         d_sq = ((x_pred - x_true) ** 2).sum(-1)  # [B, N, L]
-        mask_sum = mask.sum(-1).clamp(1)  # [B, 1]
+        mask_sum = mask.sum(-1).clamp(min=1)  # [B, 1]
         mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
 
         return mse_loss
@@ -249,6 +251,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         self,
         cutoff: float = 15.0,
         cutoff_nucleic_acid: float = 30.0,
+        repr_atom_only: bool = False,
         chunk_size: int | None = 1,
     ):
         """Initialize SmoothLDDTLoss.
@@ -259,90 +262,20 @@ class SmoothLDDTLoss(torch.nn.Module):
             The cutoff for non-nucleic acid atoms
         cutoff_nucleic_acid: float
             The cutoff for nucleic acid atoms
+        repr_atom_only: bool
+            Whether to compute LDDT loss using representative atoms instead of all atoms:
+            [Lrepr, L] instead of [L, L]. This is a memory-saving option that can be used
+            for larger chunk sizes. The representative atoms are defined as follows:
+            - For proteins: Cb atoms
+            - For nucleic acids: C4' atoms
+            - For ligands: all atoms
         """
 
         super().__init__()
         self.cutoff: float = cutoff
         self.cutoff_nucleic_acid: float = cutoff_nucleic_acid
+        self.repr_atom_only: bool = repr_atom_only
         self.chunk_size: int | None = chunk_size
-
-    def _chunk_forward(
-        self,
-        x_pred: torch.Tensor,
-        d_true: torch.Tensor,
-        pair_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        # Line 1
-        d_pred = safe_cdist(x_pred, x_pred)  # [N, L, L]
-
-        # Line 2
-        d_true = d_true
-
-        # Line 3
-        d_diff = torch.abs(d_true - d_pred)  # [N, L, L]
-
-        # Line 4
-        eps = (1 / 4) * (
-            torch.sigmoid(0.5 - d_diff)
-            + torch.sigmoid(1.0 - d_diff)
-            + torch.sigmoid(2.0 - d_diff)
-            + torch.sigmoid(4.0 - d_diff)
-        )  # [B, L, L]
-
-        # Line 5: outside function (is_nucleotide = is_dna | is_rna)
-
-        # Line 6: outside function (pair_mask = ...)
-
-        # Line 7
-        n_pair = pair_mask.sum((-1, -2)).clamp(1)  # [N,]
-        lddt = (eps * pair_mask).sum((-1, -2)) / n_pair  # [N,]
-
-        # Line 8
-        lddt_loss = 1.0 - lddt  # [N,]
-        return lddt_loss
-
-    def _forward_single(
-        self,
-        x_pred: torch.Tensor,
-        x_true: torch.Tensor,
-        mask: torch.Tensor,
-        is_nucleotide: torch.Tensor,
-    ) -> list[torch.Tensor]:
-        N, L, _ = x_pred.shape
-        # Compute true pairwise distances
-        # NOTE: this is shared across all samples in the batch.
-        d_true = safe_cdist(x_true[0], x_true[0])  # [L, L]
-
-        # Create pair mask
-        pair_mask = mask[None, :] & mask[:, None]  # [L, L]
-
-        # Mask out self-term
-        pair_mask.diagonal(dim1=-2, dim2=-1).fill_(0)
-
-        # Mask out invalid distances
-        dist_mask = ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
-            (d_true < self.cutoff) & (~is_nucleotide[..., None])
-        )  # [L, L]
-        pair_mask &= dist_mask
-
-        losses = []
-        if self.chunk_size is None:
-            losses.append(self._chunk_forward(x_pred, d_true, pair_mask))
-        else:
-            for i in range(0, N, self.chunk_size):
-                st, end = i, i + self.chunk_size
-                loss_chunk = checkpoint_section(
-                    self._chunk_forward,
-                    (
-                        x_pred[st:end],
-                        d_true,
-                        pair_mask,
-                    ),
-                    apply_ckpt=True,
-                    use_reentrant=False,
-                )
-                losses.append(loss_chunk)
-        return losses
 
     def forward(
         self,
@@ -381,6 +314,9 @@ class SmoothLDDTLoss(torch.nn.Module):
         batch_indices = torch.arange(B, device=f_input.device)[:, None]
         is_nucleotide = is_nucleotide[batch_indices, f_input.atom.token_index]
 
+        # Get representative atom indices if needed
+        repr_atom_index = f_input.token.repr_index
+
         losses = []
         for b_i in range(B):
             losses.extend(
@@ -389,8 +325,101 @@ class SmoothLDDTLoss(torch.nn.Module):
                     x_true[b_i],  # [N, L, 3]
                     mask[b_i],  # [L]
                     is_nucleotide[b_i],  # [L]
+                    repr_atom_index[b_i],  # [L]
                 )
             )
         lddt_loss = torch.cat(losses, dim=0)  # [B*N]
         lddt_loss = lddt_loss.view(B, N)  # [B, N]
+        return lddt_loss
+
+    def _forward_single(
+        self,
+        x_pred: torch.Tensor,
+        x_true: torch.Tensor,
+        mask: torch.Tensor,
+        is_nucleotide: torch.Tensor,
+        repr_atom_index: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        N, L, _ = x_pred.shape
+        # Compute true pairwise distances
+        # NOTE: pairwise distances of ground truth coordinates are shared across N.
+        x_true = x_true[0]
+        d_true = safe_cdist(x_true, x_true)  # [L, L]
+
+        # Create pair mask
+        pair_mask = mask[None, :] & mask[:, None]  # [L, L]
+        # Mask out self-term
+        pair_mask.diagonal(dim1=-2, dim2=-1).zero_()
+        # Mask out invalid distances
+        dist_mask = ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
+            (d_true < self.cutoff) & (~is_nucleotide[..., None])
+        )
+        pair_mask &= dist_mask
+
+        if self.repr_atom_only:
+            # Extract representative atom indices
+            d_true = d_true[repr_atom_index]  # [L, L] -> [Lrepr, L]
+            pair_mask = pair_mask[repr_atom_index]  # [L, L] -> [Lrepr, L]
+
+        pair_mask = pair_mask.float()
+
+        loss_fn = partial(
+            self._chunk_forward,
+            d_true=d_true,  # [L, L] or [Lrepr, L]
+            pair_mask=pair_mask,  # [L, L] or [Lrepr, L]
+            repr_atom_index=repr_atom_index if self.repr_atom_only else None,
+        )
+
+        losses = []
+        if self.chunk_size is None:
+            losses.append(loss_fn(x_pred))  # [N,]
+        else:
+            for i in range(0, N, self.chunk_size):
+                st, end = i, i + self.chunk_size
+                x_chunk = x_pred[st:end]  # [chunk_size, L, 3]
+                loss_chunk = checkpoint_section(
+                    loss_fn, (x_chunk,), apply_ckpt=True, use_reentrant=False
+                )
+                losses.append(loss_chunk)
+        return losses
+
+    @staticmethod
+    def _chunk_forward(
+        x_pred: torch.Tensor,
+        d_true: torch.Tensor,
+        pair_mask: torch.Tensor,
+        repr_atom_index: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        # Line 1
+        if repr_atom_index is not None:
+            # Compute predicted distances between representative atoms and all atoms
+            x_pred_repr = x_pred[:, repr_atom_index]  # [N, Lrepr, 3]
+            d_pred = safe_cdist(x_pred_repr, x_pred)  # [N, Lrepr, L]
+        else:
+            # Compute predicted pairwise distances (original AF3)
+            d_pred = safe_cdist(x_pred, x_pred)  # [N, L, L]
+
+        # Line 2 (outside function): compute true pairwise distances
+
+        # Line 3
+        d_diff = torch.abs(d_pred - d_true[None, ...])  # [N, L, L]
+
+        # Line 4
+        lddt_score = (1 / 4) * (
+            torch.sigmoid(0.5 - d_diff)
+            + torch.sigmoid(1.0 - d_diff)
+            + torch.sigmoid(2.0 - d_diff)
+            + torch.sigmoid(4.0 - d_diff)
+        )  # [N, L, L]
+
+        # Line 5: outside function (is_nucleotide = is_dna | is_rna)
+
+        # Line 6: outside function (pair_mask = ...)
+
+        # Line 7
+        n_pair = pair_mask.sum((-1, -2)).clamp(min=1)  # scalar
+        lddt = (lddt_score * pair_mask[None, ...]).sum((-1, -2)) / n_pair  # [N,]
+
+        # Line 8
+        lddt_loss = 1.0 - lddt  # [N,]
         return lddt_loss
