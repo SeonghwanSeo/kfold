@@ -1,13 +1,10 @@
 import argparse
 import logging
 import pathlib
-import random
 
-import numpy as np
 import torch
 from tqdm import tqdm
 
-from kfold.config import load_config
 from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
@@ -24,8 +21,6 @@ logging.basicConfig(
 
 
 def set_seed(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
@@ -128,16 +123,6 @@ def main():
     if args.cpu:
         raise NotImplementedError("CPU inference is not implemented yet.")
 
-    # Load model
-    logger.info(f"Loading model from checkpoint: {args.checkpoint}")
-    config = load_config(args.config)
-    if "model" in config:
-        config = config.model
-    model: KFold = KFold.from_checkpoint(config, args.checkpoint)
-    model = model.cast_to_bf16()
-    model = model.eval().cuda()
-    logger.info("Model loaded successfully.")
-
     # Load CCD data
     logger.info(f"Loading CCD data from: {args.ccd}")
     ccd: CCD = CCD.load(args.ccd)
@@ -168,6 +153,11 @@ def main():
         seed=args.seed,
         num_workers=args.num_workers,
     )
+    # Load model
+    logger.info(f"Loading model from checkpoint: {args.checkpoint}")
+    model: KFold = KFold.from_checkpoint(args.config, args.checkpoint)
+    model = model.cast_to_bf16().eval().cuda()
+    logger.info("Model loaded successfully.")
 
     # mmCIF writer
     writer = KFoldWriter()

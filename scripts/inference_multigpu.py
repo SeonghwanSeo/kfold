@@ -1,11 +1,10 @@
+import logging
 import pathlib
-import random
 
-import numpy as np
 import torch
 from lightning import pytorch as pl
+from lightning.pytorch.utilities import rank_zero_only
 
-from kfold.config import load_config
 from kfold.data.types.ccd import CCD
 from kfold.inference.dataset import prepare_inference_dataloader
 from kfold.inference.pl_client import (
@@ -16,12 +15,21 @@ from kfold.inference.pl_client import (
 from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
 
+logger = logging.getLogger("kfold.inference")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
-def set_seed(seed: int):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+
+@rank_zero_only
+def log_info(message: str):
+    logger.info(message)
+
+
+@rank_zero_only
+def log_warning(message: str):
+    logger.warning(message)
 
 
 def parse_args():
@@ -124,11 +132,10 @@ def main():
         devices = args.num_gpus
 
     # Load model and setup inference client
-    config = load_config(args.config)
-    if "model" in config:
-        # Get model config if wrapped in a higher-level config
-        config = config.model
-    model: KFold = KFold.from_checkpoint(config, args.checkpoint)
+    log_info(f"Loading model from checkpoint: {args.checkpoint}")
+    model: KFold = KFold.from_checkpoint(args.config, args.checkpoint)
+    model = model.cast_to_bf16().eval()
+    log_info("Model loaded successfully.")
 
     # Inference configuration
     inference_config = InferenceConfig(
