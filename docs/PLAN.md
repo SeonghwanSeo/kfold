@@ -94,6 +94,7 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Prepare data preparation pipeline for inference (from YAML config to `TokenizedStructure`) - [#113](https://github.com/SeonghwanSeo/kfold/pull/113)
 - [x] Implement smiles input option for ligand - [#250](https://github.com/SeonghwanSeo/kfold/pull/250)
 - [ ] Implement covalent bond constraint option
+- [x] Implement multi-seed inference option - [#256](https://github.com/SeonghwanSeo/kfold/pull/256)
 
 ### Benchmark
 
