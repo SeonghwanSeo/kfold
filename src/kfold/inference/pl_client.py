@@ -13,10 +13,11 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.model.models.kfold import KFold
 
+from .dataset import InferenceBatch
 from .query import Query
 
 
-@dataclass(kw_only=True)
+@dataclass
 class InferenceConfig:
     """Configuration for inference.
 
@@ -33,7 +34,6 @@ class InferenceConfig:
     num_recycles: int = 10
     num_steps: int = 200
     num_samples: int = 5
-    seed: int = 1
     # TODO: add more hyperparameters as needed
 
 
@@ -49,6 +49,9 @@ class KFoldInferenceClient(pl.LightningModule):
         self.model: KFold = model
         self.model.cast_to_bf16()  # Use bfloat16 to save memory and speed up
         self.inference_config: InferenceConfig = inference_config
+        self.num_trunk_recycles: int = inference_config.num_recycles
+        self.num_diffusion_steps: int = inference_config.num_steps
+        self.num_diffusion_samples: int = inference_config.num_samples
 
         # Logger
         self._logger = logging.getLogger("KFoldInferenceClient")
@@ -56,24 +59,20 @@ class KFoldInferenceClient(pl.LightningModule):
 
     # === Main forward method === #
     def forward(
-        self,
-        f_input: FoldingInput,
-        num_recycles: int = 10,
-        num_steps: int = 200,
-        num_diffusion_samples: int = 5,
+        self, f_input: FoldingInput, apo_dict: dict[int, dict]
     ) -> dict[str, torch.Tensor]:
-        dict_out, _ = self.model.sample(
+        dict_out, _ = self.model.inference(
             f_input,
-            num_recycles=num_recycles,
-            num_steps=num_steps,
-            num_diffusion_samples=num_diffusion_samples,
+            apo_dict,
+            num_recycles=self.num_trunk_recycles,
+            num_steps=self.num_diffusion_steps,
+            num_samples=self.num_diffusion_samples,
         )
         return dict_out
 
     def predict_step(
-        self,
-        batch: tuple[Query, RefStructure, FoldingInput, dict[int, dict]],
-    ) -> tuple[Query, RefStructure, dict[str, torch.Tensor]]:
+        self, batch: InferenceBatch | None
+    ) -> tuple[Query, RefStructure, dict]:
         """Predict step for inference.
 
         Parameters
@@ -82,44 +81,31 @@ class KFoldInferenceClient(pl.LightningModule):
             - Query: the input query.
             - RefStructure: the reference structure for the query.
             - FoldingInput: the input features for the model.
-            - dict: a dictionary for apo structure tokenization.
+            - apo_dict: a dictionary for apo structure tokenization.
+
+        Returns
+        -------
+        tuple[Query, RefStructure, dict]
+            - Query: the input query (same as input).
+            - RefStructure: the reference structure (same as input).
+            - dict: the model outputs
         """
         if batch is None:
             return None  # Skip empty batch (occured by processing error)
 
-        cfg = self.inference_config
-        num_trunk_recycles = cfg.num_recycles
-        num_diffusion_steps = cfg.num_steps
-        num_diffusion_samples = cfg.num_samples
-        seed = cfg.seed
-
-        # HACK: Set random seed for reproducibility
-        # FIXME: pass random generator to model sampling function instead
-        pl.seed_everything(seed, verbose=False)
-
         # Unpack batch and validate
         query, ref_struct, f_input, apo_dict = batch
         assert f_input.batch_size == 1, "Inference batch size should be 1"
+        assert query.seed >= 0  # seed should be overridden by user input
 
-        # === Tokenize apo structure === #
-        tokenize_apo = self.model.structure_encoder.tokenize
-        for entity_id, apo_info in apo_dict.items():  # noqa
-            aatypes, coords = apo_info["aatypes"], apo_info["coords"]
-            seq_st, seq_ed, apo_st, apo_ed = apo_info["mapping"]
-            seq_slc, apo_slc = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
-            bb_tok_ids, fa_tok_ids = tokenize_apo(aatypes, coords)
-            f_input.sequence.bb_struct_token_id[0, seq_slc] = bb_tok_ids[apo_slc]
-            f_input.sequence.fa_struct_token_id[0, seq_slc] = fa_tok_ids[apo_slc]
+        # HACK: Set random seed for reproducibility
+        # FIXME: pass random generator to model sampling function instead
+        pl.seed_everything(query.seed, verbose=False)
 
         # === Run model inference === #
         try:
-            model_out = self(
-                f_input=f_input,
-                num_recycles=num_trunk_recycles,
-                num_steps=num_diffusion_steps,
-                num_diffusion_samples=num_diffusion_samples,
-            )
-        except RuntimeError as e:  # catch out of memory exceptions
+            model_out = self(f_input, apo_dict)
+        except Exception as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 name = query.name
                 size = f_input.num_tokens
@@ -135,7 +121,6 @@ class KFoldInferenceClient(pl.LightningModule):
 
         # Remove batch dimension from outputs
         model_out = {k: v.squeeze(0) for k, v in model_out.items()}
-
         return query, ref_struct, model_out
 
 
@@ -157,12 +142,12 @@ class KFoldPredictionWriter(BasePredictionWriter):
         self,
         trainer: pl.Trainer,
         pl_module: KFoldInferenceClient,
-        prediction: tuple[Query, RefStructure, dict[str, torch.Tensor]],
+        prediction: tuple[Query, RefStructure, dict],
         batch_indices: list[int],
         batch: list[tuple[Query, RefStructure, FoldingInput, dict[int, dict]]],
         batch_idx: int,
         dataloader_idx: int,
-    ):
+    ) -> None:
         """
         Lightning calls this automatically after each predict_step.
         'prediction' is whatever your predict_step returns.
@@ -174,27 +159,19 @@ class KFoldPredictionWriter(BasePredictionWriter):
         # Note: We return these from predict_step now
         query, ref_struct, model_out = prediction
 
+        # Create save directory for this query
         name = query.name
+        seed = query.seed
         save_dir = self.output_dir / name
-        save_dir.mkdir(exist_ok=True)
+        assert save_dir.exists()
 
-        # 1. Save Query YAML
-        with open(save_dir / "query.yaml", "w") as f:
-            f.write(query.yaml)
-
-        # 2. Save Apo Structure
-        try:
-            self.writer.write_mmcif(ref_struct, save_dir / "apo.cif", save_apo=True)
-        except Exception as e:
-            self.logger.error(f"Error saving apo for {name}: {e}")
-
-        # 3. Save Diffusion Samples
+        # Save Diffusion Samples
         num_atoms = ref_struct.num_atoms
         sample_coords = model_out["sample_coordinates"][:, :num_atoms]
         coords_np = sample_coords.cpu().numpy()
         for i, coord in enumerate(coords_np):
             try:
-                save_path = save_dir / f"sample-{i}.cif"
+                save_path = save_dir / f"{name}_seed-{seed}_sample-{i}.cif"
                 self.writer.write_new_coords(ref_struct, coord, save_path)
             except Exception as e:
                 self.logger.error(f"Error saving sample {i} for {name}: {e}")
