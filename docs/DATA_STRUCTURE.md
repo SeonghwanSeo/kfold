@@ -109,7 +109,7 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `entity_id`     | `(Ntoken,)`   | Entity ID (1-indexed) |
 | `asym_id`       | `(Ntoken,)`   | Asym ID (1-indexed) |
 | `sym_id`        | `(Ntoken,)`   | Sym ID (1-indexed) |
-| `disto_index`   | `(Ntoken,)`   | Disto atom index (Cβ) |
+| `repr_index`   | `(Ntoken,)`   | Representative atom index (Cβ, C4/C2) |
 | `center_index`  | `(Ntoken,)`   | Center atom index (Cα) |
 | `num_atoms`     | `(Ntoken,)`   | Number of atoms in each token |
 | `is_standard`   | `(Ntoken,)`   | Whether the residue is standard |
@@ -202,15 +202,15 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `entity_id`       | `(Ntoken,)`     | Entity ID (1-indexed) |
 | `asym_id`         | `(Ntoken,)`     | Asym ID (1-indexed) |
 | `sym_id`          | `(Ntoken,)`     | Sym ID (1-indexed) |
-| `center_index`    | `(Ntoken,)`     | Center atom index (Cα) |
-| `disto_index`     | `(Ntoken,)`     | Disto atom index (Cβ) |
+| `center_index`    | `(Ntoken,)`     | Center atom index (Cα, C1') |
+| `repr_index`     | `(Ntoken,)`     | Representative atom index (Cβ, C4/C2) |
 | `frames_index`    | `(Ntoken, 3)`   | Frame defining atom index, e.g., protein: (N, Cα, C) |
 | `frames_mask`     | `(Ntoken,)`     | Whether all frame atoms are resolved |
 | `pad_mask`        | `(Ntoken,)`     | Mask for valid tokens or padding |
-| `center_coords`   | `(Ntoken, 3)`   | Center atom coords (Cα) |
-| `disto_coords`    | `(Ntoken, 3)`   | Disto atom coords (Cβ) |
+| `center_coords`   | `(Ntoken, 3)`   | Center atom coords (Cα, C1') |
+| `repr_coords`    | `(Ntoken, 3)`   | Representative atom coords (Cβ, C4/C2) |
 | `center_mask`     | `(Ntoken,)`     | Whether center atom is present |
-| `disto_mask`      | `(Ntoken,)`     | Whether disto atom is present |
+| `repr_mask`      | `(Ntoken,)`     | Whether repr atom is present |
 
 
 ### Atom features

@@ -158,7 +158,7 @@ class TokenTensor(TensorLayout):
         in the SequenceTensor.
     center_index: torch.Tensor (long)
         Center indices of shape [Ntoken,], Cα
-    disto_index: torch.Tensor (long)
+    repr_index: torch.Tensor (long)
         Representative atom indices of shape [Ntoken,], Cβ
     frames_index: torch.Tensor (long)
         Frame indices of shape [Ntoken, 3].
@@ -172,12 +172,12 @@ class TokenTensor(TensorLayout):
     # For model training
     center_coords: torch.Tensor (float32)
         Center coordinates of shape [Ntoken, 3].
-    disto_coords: torch.Tensor (float32)
+    repr_coords: torch.Tensor (float32)
         Representative atom center coordinates of shape [Ntoken, 3].
     center_mask: torch.Tensor (bool)
         Mask tensor of shape [Ntoken,], indicating center atom of tokens to be resolved.
-    disto_mask: torch.Tensor (bool)
-        Mask tensor of shape [Ntoken,], indicating disto atom of tokens to be resolved.
+    repr_mask: torch.Tensor (bool)
+        Mask tensor of shape [Ntoken,], indicating repr atom of tokens to be resolved.
     """
 
     chain_type: torch.Tensor  # [Ntoken,], long
@@ -190,7 +190,7 @@ class TokenTensor(TensorLayout):
     residue_index: torch.Tensor  # [Ntoken,], long
     seq_token_index: torch.Tensor  # [Ntoken,], long
     center_index: torch.Tensor  # [Ntoken,], long
-    disto_index: torch.Tensor  # [Ntoken,], long
+    repr_index: torch.Tensor  # [Ntoken,], long
     frames_index: torch.Tensor  # [Ntoken, 3], long
     frames_mask: torch.Tensor  # [Ntoken,], bool
     pad_mask: torch.Tensor  # [Ntoken,], bool
@@ -198,9 +198,9 @@ class TokenTensor(TensorLayout):
 
     # For model training
     center_coords: torch.Tensor  # [Ntoken, 3], long
-    disto_coords: torch.Tensor  # [Ntoken, 3], long
+    repr_coords: torch.Tensor  # [Ntoken, 3], long
     center_mask: torch.Tensor  # [Ntoken,], bool
-    disto_mask: torch.Tensor  # [Ntoken,], bool
+    repr_mask: torch.Tensor  # [Ntoken,], bool
 
     @property
     def layout_shape(self) -> tuple[int, ...]:
@@ -230,7 +230,7 @@ class TokenTensor(TensorLayout):
         check_tensor(
             self.residue_index, name="residue_index", dtype=torch.long, shape=shape
         )
-        check_tensor(self.disto_index, name="disto_index", dtype=torch.long, shape=shape)
+        check_tensor(self.repr_index, name="repr_index", dtype=torch.long, shape=shape)
         check_tensor(
             self.center_index, name="center_index", dtype=torch.long, shape=shape
         )
@@ -254,10 +254,10 @@ class TokenTensor(TensorLayout):
             shape=(*shape, 3),
         )
         check_tensor(
-            self.disto_coords, name="disto_coords", dtype=torch.float32, shape=(*shape, 3)
+            self.repr_coords, name="repr_coords", dtype=torch.float32, shape=(*shape, 3)
         )
         check_tensor(self.center_mask, name="center_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.disto_mask, name="disto_mask", dtype=torch.bool, shape=shape)
+        check_tensor(self.repr_mask, name="repr_mask", dtype=torch.bool, shape=shape)
 
     @cached_property
     def is_protein(self) -> torch.Tensor:
@@ -301,7 +301,7 @@ class TokenTensor(TensorLayout):
             "asym_id": -1,
             "sym_id": -1,
             "residue_index": -1,
-            "disto_index": -1,
+            "repr_index": -1,
             "center_index": -1,
             "frames_index": -1,
             "frames_mask": False,
@@ -309,9 +309,9 @@ class TokenTensor(TensorLayout):
             "pocket_contact_type": 0,
             # For model training
             "center_coords": 0.0,
-            "disto_coords": 0.0,
+            "repr_coords": 0.0,
             "center_mask": False,
-            "disto_mask": False,
+            "repr_mask": False,
         }
 
         fields = {}
