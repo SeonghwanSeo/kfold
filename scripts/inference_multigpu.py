@@ -158,6 +158,9 @@ def main():
 
     # Parse input query(s) and create dataloader
     input_queries: list[Query] = parse_input_files(args.input, ccd, args.seed)
+    if len(input_queries) == 0:
+        log_error(f"No valid input queries found in {args.input}. Exiting.")
+        return
     nsample = len(input_queries)
     nseed = len(args.seed)
     nquery = nsample // nseed
