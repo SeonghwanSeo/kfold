@@ -1,5 +1,6 @@
 import time
 from collections.abc import Mapping
+from typing import Self
 
 import torch
 
@@ -27,14 +28,70 @@ class KFold(BaseFoldingModel):
             Registry.instantiate(config.structure_encoder)
         )
 
-    def cast_to_bf16(self):
+    def cast_to_bf16(self) -> Self:
         """Cast model parameters to bfloat16 for faster inference."""
         super().cast_to_bf16()
-        self.sequence_encoder = self.sequence_encoder.to(dtype=torch.bfloat16)
-        self.structure_encoder.backbone = self.structure_encoder.backbone.to(
-            dtype=torch.bfloat16
-        )
+        self.sequence_encoder = self.sequence_encoder.cast_to_bf16()
+        self.structure_encoder = self.structure_encoder.cast_to_bf16()
         return self
+
+    def inference(
+        self,
+        f_input: FoldingInput,
+        apo_dict: dict[int, dict[str, torch.Tensor]],
+        num_recycles: int = 10,
+        num_steps: int = 200,
+        num_samples: int = 5,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+        """Forward pass of KFold model for model training.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            Input data for folding model.
+        apo_dict : dict[int, dict[str, torch.Tensor]]
+            Dictionary mapping entity_id to apo structure information.
+        num_recycles : int
+            Number of recycling cycles in trunk.
+        num_steps : int
+            Number of diffusion steps for training.
+        num_samples : int
+            Number of diffusion samples for training.
+
+        Returns
+        -------
+        model_out : dict[str, torch.Tensor]
+            Output dictionary containing sampled structures and intermediate features.
+        time_logs : dict[str, float]
+            Dictionary containing time taken for each module during sampling.
+        """
+        # Ensure batched input
+        f_input = f_input.from_list([f_input]) if not f_input.is_batched else f_input
+
+        # Sanity check: ensure batch size is 1 for sampling
+        assert f_input.batch_size == 1, "Sampling currently only supports batch size of 1"
+
+        # Tokenize apo structure and feed into structure encoder input features
+        for entity_id, apo_info in apo_dict.items():  # noqa
+            for k in ["aatypes", "coords", "mapping"]:
+                if k not in apo_info:
+                    raise KeyError(
+                        f"Apo info for entity_id {entity_id} is missing key: {k}"
+                    )
+            aatypes, coords = apo_info["aatypes"], apo_info["coords"]
+            seq_st, seq_ed, apo_st, apo_ed = apo_info["mapping"]
+            seq_sl, apo_sl = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
+            bb_ids, fa_ids = self.structure_encoder.tokenize(aatypes, coords)
+            f_input.sequence.bb_struct_token_id[0, seq_sl] = bb_ids[apo_sl]
+            f_input.sequence.fa_struct_token_id[0, seq_sl] = fa_ids[apo_sl]
+
+        # Sample structures
+        model_out, time_logs = self.sample(f_input, num_recycles, num_steps, num_samples)
+
+        # remove batch dimension
+        model_out = {k: v.squeeze(0) for k, v in model_out.items()}
+
+        return model_out, time_logs
 
     def forward(
         self,
@@ -264,6 +321,8 @@ class KFold(BaseFoldingModel):
         dict_out = {
             "seq_emb": seq_emb,
             "seq_attn": seq_attn,
+            "struct_emb": struct_emb,
+            "s_inputs": s_inputs,
             "s_trunk": s_trunk,
             "z_trunk": z_trunk,
         }
@@ -318,12 +377,15 @@ class KFold(BaseFoldingModel):
             # If the sequence encoder is pretrained and not included in the state dict,
             # missing keys starting with "sequence_encoder." or "structure_encoder." are
             # allowed.
-            if missing_keys:
-                missing_keys = {
-                    key
-                    for key in missing_keys
-                    if not key.startswith(("sequence_encoder.", "structure_encoder."))
-                }
+            missing_keys = {
+                k
+                for k in missing_keys
+                if not k.startswith(("sequence_encoder.", "structure_encoder."))
+            }
+            # Skip some fourier-related keys that are changed from
+            # nn.Parameter(..., required_grad=False) to buffer. (Backward compatibility)
+            unexpected_keys = {k for k in unexpected_keys if ".fourier_emb." not in k}
+
             if missing_keys:
                 raise KeyError(f"Missing keys in state_dict: {missing_keys}")
             if unexpected_keys:

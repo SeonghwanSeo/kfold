@@ -52,6 +52,7 @@ sequences:
 
 import dataclasses
 import json
+import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar
@@ -63,6 +64,8 @@ import kfold.constants as C
 from kfold.data.types.ccd import CCD
 
 # === Dataclasses for input formats === #
+
+logger = logging.getLogger("kfold.inference.query")
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -195,26 +198,41 @@ class Query:
     sequences: list[ProteinSequence | DNASequence | RNASequence | LigandSequence] = (
         dataclasses.field(default_factory=list)
     )
+    seed: int = 0  # Default seed, overridden to command line argument
     yaml: str  # Original YAML content
+
+    @property
+    def priority(self) -> tuple[int, int, str]:
+        """Compute a priority score for the query (prediction order).
+        - Smaller complexes (less residues) have higher priority.
+        - For queries of the same size, smaller seed values have higher priority.
+        - For queries of the same size and seed, sort by name alphabetically.
+        """
+        return (self.estimate_size(), self.seed, self.name)
 
     def estimate_size(self) -> int:
         """Estimate the size of the complex based on the input sequences."""
         return sum(len(seq) * seq.num_chains for seq in self.sequences)
 
+    def copy(self, **kwargs) -> "Query":
+        """Create a copy of the Query with updated fields."""
+        return dataclasses.replace(self, **kwargs)
 
-def parse_single_file(
-    json_or_yaml_path: str | Path,
-    ccd: CCD | None = None,
-) -> Query:
+    def save(self, path: str | Path) -> None:
+        """Save the Query as a YAML file to the specified path."""
+        with open(path, "w") as f:
+            f.write(self.yaml)
+
+
+def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
     """Parse input YAML file into Query dataclass.
 
     Parameters
     ----------
     json_or_yaml_path : str | Path
         Path to the input JSON/YAML file.
-    ccd : CCD | None
-        CCD data for ligand parsing. (Optional)
-        If provided, used to validate ligand CCD IDs.
+    ccd : CCD
+        Chemical component dictionary for validating ligand CCD codes.
 
     Returns
     -------
@@ -272,7 +290,8 @@ def parse_single_file(
 
 def parse_input_files(
     input_path: str | Path,
-    ccd: CCD | None = None,
+    ccd: CCD,
+    seeds: int | list[int],
     skip_invalid: bool = True,
 ) -> list[Query]:
     """Parse input JSON/YAML file or all files in a directory into a list of Query.
@@ -281,11 +300,13 @@ def parse_input_files(
     ----------
     input_path : str | Path
         Path to the input JSON/YAML file or directory containing such files.
-    ccd : CCD | None
-        CCD data for ligand parsing. (Optional)
-        If provided, used to validate ligand CCD IDs.
+    ccd : CCD
+        Chemical component dictionary for validating ligand CCD codes.
+    seeds : int | list[int]
+        Random seed(s) for the queries.
     skip_invalid : bool
         Whether to skip invalid input files instead of raising an error.
+        Only applicable when input_path is a directory.
 
     Returns
     -------
@@ -296,14 +317,23 @@ def parse_input_files(
     if not input_path.exists():
         raise FileNotFoundError(f"Input path does not exist: {input_path}")
     if input_path.is_dir():
-        return parse_directory(input_path, ccd=ccd, skip_invalid=skip_invalid)
+        queries = parse_directory(input_path, ccd=ccd, skip_invalid=skip_invalid)
     else:
-        return [parse_single_file(input_path, ccd=ccd)]
+        queries = [parse_single_file(input_path, ccd=ccd)]
+
+    # Copy queries with updated seeds
+    seeds = [seeds] if isinstance(seeds, int) else seeds
+    all_queries: list[Query] = []
+    for query in queries:
+        for seed in seeds:
+            all_queries.append(query.copy(seed=seed))
+    all_queries.sort(key=lambda q: q.priority)
+    return all_queries
 
 
 def parse_directory(
     input_dir: str | Path,
-    ccd: CCD | None = None,
+    ccd: CCD,
     skip_invalid: bool = True,
 ) -> list[Query]:
     """Parse all JSON/YAML files in a directory into a list of Query.
@@ -312,9 +342,8 @@ def parse_directory(
     ----------
     input_dir : str | Path
         Path to the input directory containing JSON/YAML files.
-    ccd : CCD | None
-        CCD data for ligand parsing. (Optional)
-        If provided, used to validate ligand CCD IDs.
+    ccd : CCD
+        Chemical component dictionary for validating ligand CCD codes.
     skip_invalid : bool
         Whether to skip invalid input files instead of raising an error.
 
@@ -327,15 +356,14 @@ def parse_directory(
     for file_path in Path(input_dir).iterdir():
         if file_path.suffix in {".json", ".yaml", ".yml"}:
             try:
-                query = parse_single_file(file_path, ccd=ccd)
+                query = parse_single_file(file_path, ccd)
             except Exception as e:
                 if skip_invalid:
-                    print(f"Skipping invalid input file {file_path}: {e}")
+                    logger.error(f"Skipping invalid input file {file_path}: {e}")
                 else:
-                    raise e
+                    raise
             else:
                 queries.append(query)
-    queries.sort(key=lambda q: q.name)
     return queries
 
 
@@ -412,25 +440,23 @@ def validate_input_dicts(
             asym_ids.add(i)
 
 
-def validate_input_sequences(
-    seq_list: list[BaseSequence],
-    ccd: CCD | None = None,
-) -> None:
+def validate_input_sequences(seq_list: list[BaseSequence], ccd: CCD) -> None:
     """Validate the input sequence dataclasses.
 
     Parameters
     ----------
     seq_list : list[BaseSequence]
         List of sequence dataclasses to validate.
-    ccd : CCD | None
-        CCD data for ligand parsing. (Optional)
-        If provided, used to validate ligand CCD IDs.
+    ccd : CCD
+        Chemical component dictionary for validating ligand CCD codes.
 
     Raises
     ------
     ValueError
         If any validation check fails.
     """
+    valid_ccd_ids = set(ccd.keys())
+
     asym_ids: set[str] = set()
     for sequence in seq_list:
         # Check the id(s) are unique
@@ -467,13 +493,10 @@ def validate_input_sequences(
                         f"Invalid SMILES string for ligand with id(s) {sequence.id}."
                     )
             else:
-                ccd_ids = sequence.ccd_ids
-                assert ccd_ids is not None
-                if ccd is not None:
-                    valid_ccd_ids = set(ccd.keys())
-                    for ccd_id in ccd_ids:
-                        if ccd_id not in valid_ccd_ids:
-                            raise ValueError(
-                                f"CCD ID '{ccd_id}' not found in CCD data "
-                                f"for ligand with id(s) {sequence.id}."
-                            )
+                assert sequence.ccd_ids is not None
+                for code in sequence.ccd_ids:
+                    if code not in valid_ccd_ids:
+                        raise ValueError(
+                            f"CCD code '{code}' not found in CCD "
+                            f"for ligand with id {sequence.id}."
+                        )
