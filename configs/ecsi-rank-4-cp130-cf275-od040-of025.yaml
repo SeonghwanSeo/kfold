@@ -1,0 +1,7 @@
+_yaml_: "ecsi.yaml"
+
+structure_module:
+  sampling_schedule_churn_power: 1.30
+  churn_factor: 2.75
+  ode_time_duration: 0.40
+  sampling_schedule_ode_fraction: 0.25
