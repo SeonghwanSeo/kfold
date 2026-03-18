@@ -374,7 +374,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         # ETKDG conformer generation during training/validation.
         use_cached_conformer_only = True
         # TODO: add apo info
-        return self.tokenizer(ref_struct, {}, rng, use_cached_conformer_only)
+        return self.tokenizer(ref_struct, rng, use_cached_conformer_only)
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
@@ -490,7 +490,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         cropped_struct = self.crop_structure(struct, metadata, rng=rng, **kwargs)
 
         # Featurization
-        f_input = self.featurize(cropped_struct, metadata, rng=rng)
+        f_input = self.featurize(cropped_struct)
 
         struct_info = {}
         struct_info["id"] = metadata_id
@@ -510,16 +510,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
         return f_input, struct_info
 
-    def featurize(
-        self,
-        struct: TokenizedStructure,
-        metadata: Metadata,
-        rng: np.random.Generator,
-    ) -> FoldingInput:
+    def featurize(self, struct: TokenizedStructure) -> FoldingInput:
         """Featurize the given tokenized structure."""
-        # Featurization
-        f_input = self.featurizer(struct, rng=rng)
-        return f_input
+        return self.featurizer(struct)
 
     # === Helper methods for apo structure handling === #
     def get_apo_lookup(
