@@ -20,38 +20,23 @@ In developing this codebase, we referred to the following repositories:
 - [Protenix](https://github.com/bytedance/Protenix)
 - [OpenFold3](https://github.com/aqlaboratory/openfold-3)
 
-In particular, we started from Boltz's implementation.
-- NOTE: Boltz1's processed data and training code are publicly available, but Boltz2's training code is not, so implementation is based on Boltz1.
-
 ---
 
 ## Reproduction of AlphaFold3 Algorithms
 
-This section explains how we implement AlphaFold3 algorithm and compares it to Boltz1 or other models, highlighting the differences.
-
-### Data Processing
-
-1. We started from Boltz1's data pre-processed dataset. We re-featurized the data to match our model's input format. (`TokenizedStructure`)
-2. Boltz1's Cropping algorithm is implemented differently from AlphaFold3. For faster implementation, we use the Boltz1 implementation.
-
-### Architecture
-
-Compared to the AlphaFold3 article, Boltz1 modified some layers and architectures. In this repository, we revert these modifications to match the original algorithm as described in the AlphaFold3 paper. However, if the official AlphaFold3 implementation differs from the main article (e.g., due to typos), we prioritize the official repository's implementation.
-
-NOTE: If you want to use Boltz1's original implementation, please refer to [`src/kfold/model/models/boltz.py`](src/kfold/model/models/boltz.py), which contains Boltz1's original architecture and pre-trained weights.
+This section explains how we implement AlphaFold3 algorithm, highlighting the differences. However, if the official AlphaFold3 implementation differs from the main article (e.g., due to typos), we prioritize the official repository's implementation.
 
 1. **InputFeatureEmbedder (Algorithm 2)**: This module is **implemented slightly differently** from the official algorithm. The official implementation simply has an `s_input` dimension of `c_s + 32 (residue) + 32 (profile) + 1`, but we add a Linear layer to project the feature dimension to `s_token`. This may cause minor differences in the model size of modules that take `s_input` as input. (Dimensions of `s_input`, `s_init`, `s_trunk`: `c_s=384`)
 - AF3/Protenix/OpenFold3: `c_s + 32 + 32 + 1`
-- Boltz: `2 * c_s + 32 + 32 + 1` (See point 2)
 - Ours: `c_s` (with projection)
 
 2. **RelativePositionEncoding (Algorithm 3)**:
-- There is a typo in Algorithm. In line 8, $b_{ij}^\text{same-chain}$ should be corrected to $b_{ij}^\text{diff-entity}$, according to AlphaFold3's official implementation. We note that Boltz does not fix this typo. We use the correct version.
+- There is a typo in Algorithm. In line 8, $b_{ij}^\text{same-chain}$ should be corrected to $b_{ij}^\text{diff-entity}$, according to AlphaFold3's official implementation.
 - There is a linear layer after the concatenation of different chain/entity information in the algorithm, it is missing in the official implementation. We follow the official implementation.
 
-3. **AtomAttentionEncoder (Algorithm 3)**: Boltz's output dimension is calculated differently from the actual algorithm (always calculated as `c_token = 2 * c_s`). We explicitly introduce the `c_token` parameter in accordance with the official algorithm's notation.
+3. **AtomAttentionEncoder (Algorithm 3)**: We explicitly introduce the `c_token` parameter in accordance with the official algorithm's notation.
 
-4. **SampleDiffusion (Algorithm 18)**: This part was additionally introduced in Boltz, featuring a function to minimize the drift term during the coordinate update in the sampling process (Line 11). It also implements features like FK steering. However, for now, we only implement the basic AlphaFold3 algorithm as the simplest implementation.
+4. **SampleDiffusion (Algorithm 18)**: We only implement the basic AlphaFold3 algorithm as the simplest implementation.
 
 5. **DiffusionModule (Algorithm 20)**: Due to point 2, the internal dimensions are slightly different.
 
@@ -62,8 +47,6 @@ NOTE: If you want to use Boltz1's original implementation, please refer to [`src
 1. **MSE Loss (Equation 3)**: We follow the official AlphaFold3 implementation exactly:
     - AF3(paper), Protenix, OpenFold3: $\mathcal{L}_{\text{MSE}} = \frac{1}{3}\underset{l}{\text{mean}}\left(w_l||\vec{\mathbf{x}}_l - \vec{\mathbf{x}}_l^{\text{GT-aligned}}||^2\right)$
     - Boltz1: $\mathcal{L}_{\text{MSE}} = \frac{1}{3}\underset{l}{\text{sum}}\left(w_l||\vec{\mathbf{x}}_l - \vec{\mathbf{x}}_l^{\text{GT-aligned}}||^2\right) / \underset{l}{\text{sum}}{\left(w_l\right)}$
-
-2. **Bond Loss (Equation 5)**: Unlike Boltz1, this has been implemented to be usable in final training (Boltz1 did not use it).
 
 3. **Diffusion Loss (Equation 6)**: Unlike AlphaFold3, all other reference codes calculate the weight differently based on the loss scale. Using the official AlphaFold3 implementation prevents the model from training effectively.
     - AF3 (Paper): $w_{\text{diffusion}} = \left(\hat{t}^2 + \sigma_\text{data}^2\right) / \left(\hat{t} + \sigma_\text{data}\right)^2$
@@ -82,9 +65,7 @@ This section describes the additional implementations which are not part of the 
 ### Data Processing
 
 1. **Apo Structure Construction**: To train the model to learn the dynamics between **apo** and **holo** states, we need to generate **apo** structures to pair with the existing **holo** structures in the dataset. We use multiple methods to generate these **apo** structures based on the type of biomolecule:
-    - Protein: Using ESMFold to predict the **apo** structure.
-    - DNA: **Not implemented yet (to be added later).**
-    - RNA: **Not implemented yet (to be added later).**
+    - Protein: Using ESMFold and AFDB to get the **apo** structures of the protein chain.
     - Ligand: Using ETKDG to generate free conformers for small molecule ligands.
 
 2. **Multi-Chain Handling**: Since our model is designed to model dynamics between **apo** and **holo** states, our training pipeline cannot defined on single-chain structures. Therefore, we modified the data processing pipeline to handle **multi-chain complex structures** only:
@@ -97,21 +78,23 @@ This section describes the additional implementations which are not part of the 
     - Rationale: The apo input provides a strong structural prior for intra-chain geometry and relative positioning, reducing the need to learn these features from scratch.
     - Method: We extend standard spatial cropping and spatial interface cropping to multi-anchor cropping, which selects multiple spatial centers to form a single input. This allows the model to simultaneously capture disparate regions of the complex, focusing training on interface regions and global chain arrangement.
 
-4. **Optimal Transport Permutation**: To effectively learn the mapping between **apo** and **holo** structures, we implemented a chain permutation algorithm and residue atom swapping algorithm to match the symmetry between the two states.
+4. **Prior Sampling**: To get the initial structure (`x_T`) of the diffusion bridge, we implemented a prior sampling algorithm that samples from the distribution of **apo** structures.
+    - Chain structure sampling:
+        - For protein and ligand chains, we directly use the **apo** structures.
+        - For nucleic acid chains, we use a langevin dynamics-based sampling algorithm.
+    - Random augmentation:
+        - To enhance the diversity of the sampled structures, we apply random rotations and translations to the sampled **apo** structures. This encourages the model to learn robust mappings between **apo** and **holo** states across a wider range of conformations.
+    - Optimal Transport Permutation: To effectively learn the dynamics, we implemented a chain permutation algorithm and residue atom swapping algorithm to match the symmetry between the two states.
 
 ### Pre-trained Representation Model
 
-1. **Pre-trained Language Model Integration**: We integrated pre-trained language models to enhance the sequence representation of each chain in the complex structure. This replaces the needs of MSA-based representation.
+1. **Pre-trained Language Model Integration**: We integrated two pre-trained encoders to enhance the sequence and apo structure representation of each chain in the complex structure. This replaces the needs of MSA-based representation.
   ```python
-  two_linear_mlp = nn.Sequential(
-      nn.Linear(esm_dim, hidden_dim),
-      nn.ReLU(),
-      nn.Linear(hidden_dim, hidden_dim),
-  )
-  s_inputs = s_inputs + two_linear_mlp(lm_embedding)
+  emb_seq, attn_seq = seq_encoder(sequence)  # [..., Ntoken, C_seq], [..., Ntoken, Ntoken, Nattn]
+  emb_struct = struct_encoder(structure)  # [..., Ntoken, C_struct]
+  s_plm = torch.cat([layernorm(emb_seq), layernorm(emb_struct)], dim=-1)  # [..., Ntoken, C_seq + C_struct]
+  z_init += proj_sttn_to_pair(s_plm)  # [..., Ntoken, Ntoken, C_z]
   ```
-
-2. **Pre-trained Structure Representation Model Integration**: We integrated pre-trained structure representation models to introduce structural priors from the **apo** structure. To feed the multiple structure embeddings (from structure ensemble), we introduce `EnsembleModule`, which is the modified version of `MSAModule`.
 
 ### Apo Feature Embedding
 
@@ -123,19 +106,13 @@ This section describes the additional implementations which are not part of the 
 ### Trunk
 1. **RBF Embedding for Apo Features**: In the trunk module, we added RBF embedding of pairwise distance maps from the **apo** structure to the pair representation update module. This allows the trunk to effectively utilize global structural information from the **apo** state.
 
-2. **Interformer**: We modified the `Pairformer` module to `Interformer`, which allows bi-directional information flow between single (`s`) and pair (`z`) representations. This is crucial to enrich the evolutionary pre-trained sequence features with interaction context from the pair representation.
+2. **PLMModule**: We modified the `MSAModule` module to `PLMModule`, which incorporates the pre-trained sequence and structure features into the trunk. This allows the trunk to effectively utilize the rich evolutionary and structural information from the pre-trained encoders.
 
-3. **EnsembleModule**: We modified the `MSAModule` to `EnsembleModule`, which allows the integration of multiple structure embeddings (from structure ensemble). This is essential for modeling the **flexibility** of the **apo** state, based on multiple pre-trained structure representations from the ensemble of **apo** structures.
-
-4. **MultiStateModule**: TODO: To be added once the AlphaFold2 predicted structures are integrated as additional inputs.
+3. **PairFormer**: We used the `PairFormer` architecture for the pair representation update module in the trunk.
 
 
 ### Structure Module
 1. **Diffusion Bridge**: We implemented a diffusion bridge module that learns the dynamics between **apo** and **holo** states. This module is designed to take both **apo** and **holo** structures as input during training, allowing the model to learn the transition dynamics effectively.
-
-2. **Apo-conditioned Diffusion Score Model**: We implemented the diffusion score model which conditions on the **apo** structure features. This allows the model to generate **holo** structures that are consistent with the provided **apo** context.
-  - Local structure: Same procedure as in Apo Feature Embedding.
-  - Global structure: Inverse distance maps (token-level) are computed to provide attention bias during the diffusion process.
 
 ---
 
@@ -143,10 +120,23 @@ This section describes the additional implementations which are not part of the 
 
 See [`scripts/process/rcsb/README.md`](../scripts/process/rcsb/README.md) for instructions on downloading and preparing the RCSB PDB dataset.
 
-### RCSB Training set
+### Training set
 
+#### RCSB
 Our training dataset contains all PDB entries released before 2022-12-31 (inclusive). The filtering criteria follow those of AlphaFold3 (see SI 2.5.4 of the AlphaFold3 paper) with the following modifications:
 - For bioassemblies with more than 20 chains, we save the entire bioassembly and apply on-the-fly pre-cropping during training.
+
+#### AFDB Distillation Set
+To enhance the sequence diversity, we also include a distillation set derived from the AlphaFold Database (AFDB). We take all structures of the sequences in UniRef30 and filter them with pLDDT >= 50.
+
+#### Boltz Distillation Sets
+To further enhance the diversity of multimeric complexes, we also construct synthetic datasets using Boltz-1x/2. This includes following datasets:
+- SAIR: A synthetic dataset of protein-ligand complexes generated by Boltz-1x.
+- huMAP: A synthetic dataset of human protein-protein complexes generated by Boltz-2.
+- NaturalAb: A synthetic dataset of antibody-antigen complexes generated by Boltz-2.
+- ENCORE: A synthetic dataset of protein-rna complexes generated by Boltz-2.
+- PROTAC-DB: A synthetic dataset of PROTAC complexes generated by Boltz-2.
+- MolGlueDB: A synthetic dataset of molecular glue complexes generated by Boltz-2.
 
 ### RCSB Validation set
 

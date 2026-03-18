@@ -7,5 +7,4 @@ from . import (  # noqa
     structure_module,
     distogram_head,
     confidence_head,
-    interaction_head,
 )

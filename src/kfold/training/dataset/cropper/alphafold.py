@@ -77,23 +77,26 @@ class AlphaFold3Cropper(BaseCropper):
         token_indices: np.ndarray
             The selected token indices.
         """
-        rng = rng or np.random.default_rng()
+        v = rng.random()
+        if v < self.w_contiguous:
+            # Contiguous cropping
+            crop_indices = self.crop_contiguous(struct, metadata, max_tokens, rng=rng)
+        elif v < self.w_contiguous + self.w_spatial:
+            # Spatial cropping
+            crop_indices = self.crop_spatial(
+                struct, metadata, max_tokens, bias_asym_id, rng=rng
+            )
+        else:  # Spatial interface cropping
+            crop_indices = self.crop_spatial_interface(
+                struct, metadata, max_tokens, bias_asym_id, rng=rng
+            )
 
-        # random choice on cropping strategy
-        strategy = utils.random_choice(
-            ["contiguous", "spatial", "spatial_interface"],
-            p=[self.w_contiguous, self.w_spatial, self.w_spatial_interface],
-            rng=rng,
-        )
-        match strategy:
-            case "contiguous":
-                return self.crop_contiguous(struct, max_tokens, rng)
-            case "spatial":
-                return self.crop_spatial(struct, max_tokens, bias_asym_id, rng)
-            case "spatial_interface":
-                return self.crop_spatial_interface(struct, max_tokens, bias_asym_id, rng)
-            case _:
-                raise ValueError(f"Unknown cropping strategy: {strategy}")
+        # Ensure sorted order and limit to max_tokens
+        crop_indices.sort()
+        if len(crop_indices) > max_tokens:
+            crop_indices = crop_indices[:max_tokens]
+
+        return crop_indices
 
     def crop_contiguous(
         self,
@@ -125,38 +128,62 @@ class AlphaFold3Cropper(BaseCropper):
             The selected token indices.
         """
 
-        all_tokens = struct.token.token_index  # =np.arange(num_tokens)
+        # Compute the number of tokens and start indices per chain
+        asym_id_to_chain_idx: dict[int, int] = {
+            v: i for i, v in enumerate(struct.chain.asym_id.tolist())
+        }
+        chain_sizes: dict[int, int] = {
+            asym_id: int(struct.chain.num_tokens[chain_idx])
+            for asym_id, chain_idx in asym_id_to_chain_idx.items()
+        }
 
-        # randomly shuffle chains
-        chain_ids = rng.permutation(struct.chain.asym_id)
+        # Randomly permute the chain order
+        asym_ids = struct.chain.asym_id
+        selected_asym_ids = rng.permutation(asym_ids)
 
-        # Initialize counters; n_remaining is the sum of all tokens
-        n_added = 0
-        n_remaining = np.sum(np.isin(struct.token.asym_id, chain_ids))
-        cropped: set[int] = set()
+        # Line 1
+        n_added: int = 0
+        # Line 2
+        # NOTE: This differs from the original algorithm which uses max_tokens.
+        n_remaining: int = sum(chain_sizes[asym_id] for asym_id in selected_asym_ids)
 
-        # iterate over chains
-        for chain_id in chain_ids:
-            # get chain length as number of tokens
-            chain_mask = struct.token.asym_id == chain_id
-            chain_tokens = all_tokens[chain_mask]
-            chain_length = len(chain_tokens)
-            n_remaining -= chain_length
+        is_selected = np.zeros(struct.num_tokens, dtype=bool)
 
-            # sample crop length and start
-            crop_size_max = min(max_tokens - n_added, chain_length)
-            crop_size_min = min(chain_length, max(0, max_tokens - n_added - n_remaining))
-            crop_size = rng.integers(crop_size_min, crop_size_max + 1, dtype=int)
-            crop_start = rng.integers(0, chain_length - crop_size + 1, dtype=int)
+        # Line 3-13
+        for asym_id in selected_asym_ids:
+            if n_added >= max_tokens:
+                break
+
+            n_k = chain_sizes[asym_id]
+            # Line 4
+            n_remaining -= n_k
+
+            # Sample length of crop for current chain
+            # Line 5
+            max_crop = min(max_tokens - n_added, n_k)
+            # Line 6
+            min_crop = min(n_k, max(0, max_tokens - n_added - n_remaining))
+            # Line 7
+            crop_size = int(rng.integers(min_crop, max_crop + 1))
+            # Line 8
             n_added += crop_size
 
-            # get token indices in crop
-            crop_tokens = chain_tokens[crop_start : crop_start + crop_size]
+            if crop_size == 0:
+                continue
 
-            # slice using sampled crop start and length for this chain
-            cropped.update(crop_tokens.tolist())
+            # Line 9
+            crop_start = int(rng.integers(0, n_k - crop_size + 1))
 
-        return np.array(sorted(cropped))
+            # Line 11
+            chain_idx = asym_id_to_chain_idx[asym_id]
+            chain_st = int(struct.chain.token_start[chain_idx])
+            crop_start += chain_st
+            selected_tokens = np.arange(crop_start, crop_start + crop_size)
+
+            # Line 12
+            is_selected[selected_tokens] = True
+
+        return np.where(is_selected)[0]
 
     def crop_spatial(
         self,
@@ -188,15 +215,15 @@ class AlphaFold3Cropper(BaseCropper):
             The selected token indices.
         """
         # get the tokens with valid center atom
-        resolved_mask = struct.atom.resolved_mask[
-            struct.token.token_index, struct.token.center_index
-        ]
+        tokens = struct.token.token_index  # =np.arange(n_tokens)
+        center_idx = struct.token.center_index  # (n_tokens, 3)
+        resolved_mask = struct.atom.resolved_mask[tokens, center_idx]  # (n_tokens,)
         if not resolved_mask.any():
             raise ValueError("No valid tokens in structure")
 
         # pick a random token from a chain or interface if specified
         anchor = utils.pick_token(struct, bias_asym_id, mask=resolved_mask, rng=rng)
-        return self.get_closest_tokens(struct, max_tokens, anchor)
+        return self.get_closest_tokens(struct, anchor, max_tokens)
 
     def crop_spatial_interface(
         self,
@@ -256,45 +283,56 @@ class AlphaFold3Cropper(BaseCropper):
                 # no valid interfaces found; default to a random interface
                 interface_id = utils.random_choice(all_interfaces, rng=rng)
         anchor = utils.pick_interface_token(struct, interface_id, rng=rng)
-        return self.get_closest_tokens(struct, max_tokens, anchor)
+        return self.get_closest_tokens(struct, anchor, max_tokens)
 
     def get_closest_tokens(
         self,
         struct: TokenizedStructure,
-        max_tokens: int,
-        query: int,
+        anchor_token: int,
+        crop_size: int,
+        center_coords: np.ndarray | None = None,
+        mask: np.ndarray | None = None,
     ) -> np.ndarray:
-        """Get the closest tokens to the query token."""
-        # check inputs
-        tokens = struct.token.token_index  # =np.arange(n_tokens)
-        center_idx = struct.token.center_index  # (n_tokens, 3)
-        resolved_mask = struct.atom.resolved_mask[tokens, center_idx]  # (n_tokens,)
-        if not resolved_mask.any():
-            raise ValueError("No valid tokens in structure")
+        """Crop tokens spatially around an anchor token.
 
-        if resolved_mask.sum() <= max_tokens:
-            # all valid tokens fit in the crop
-            return struct.token.token_index[resolved_mask]
+        Parameters
+        ----------
+        struct : TokenizedStructure
+            The tokenized structure.
+        anchor_token : int
+            The anchor token index.
+        crop_size : int
+            The number of tokens to crop.
+        center_coords : np.ndarray | None, optional
+            Precomputed center coordinates of tokens.
+        mask : np.ndarray | None, optional
+            Precomputed resolved mask of tokens.
 
-        # frequently used variables
-        token_data = struct.token  # [n_tokens, ...]
-        atom_data = struct.atom  # [n_tokens, 24, ...]
-        all_tokens = token_data.token_index
-        valid_tokens = all_tokens[resolved_mask]
+        Returns
+        -------
+        token_indices : np.ndarray
+            The selected token indices.
+        """
+        tokens = struct.token.token_index  # =np.arange(num_tokens)
+        center_idx = struct.token.center_index  # (num_tokens, 3)
+        if center_coords is None:
+            center_coords = struct.atom.label_coords[
+                tokens, center_idx
+            ]  # (num_tokens, 3)
+        if mask is None:
+            mask = struct.atom.resolved_mask[tokens, center_idx]  # (num_tokens,)
 
-        # get the first bioassembly
-        holo_coords = atom_data.label_coords  # [n_tokens, 24, 3]
-        all_token_centers = holo_coords[
-            token_data.token_index, token_data.center_index, :
-        ]  # (num_tokens, 3)
+        if mask.sum() <= crop_size:
+            # If all resolved tokens fit in the budget, return all
+            return np.where(mask)[0]
 
-        query_coords = all_token_centers[query]  # [3,]
-        valid_coords = all_token_centers[valid_tokens]  # [n_val_tokens, 3]
-
-        # sort all tokens by distance to query_coords
-        dists = np.linalg.norm(valid_coords - query_coords, axis=1)  # [n_val_tokens]
-        indices = np.argpartition(dists, max_tokens - 1)[:max_tokens]
-        neighbor_indices = valid_tokens[indices]
+        # Compute distances to all tokens
+        anchor_coord = center_coords[anchor_token]  # (3,)
+        assert np.isfinite(anchor_coord).all(), "Anchor token has non-finite coordinates."
+        dists = np.linalg.norm(center_coords - anchor_coord, axis=1)  # (num_tokens,)
+        dists[~mask] = np.inf
+        # Get tokens within budget (this includes the anchor token itself)
+        neighbor_indices = np.argpartition(dists, crop_size - 1)[:crop_size]
         neighbor_indices.sort()
         return neighbor_indices
 

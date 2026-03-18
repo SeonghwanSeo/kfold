@@ -1,8 +1,8 @@
-# AFDB (<200 residues) training dataset configuration.
+# AFDB (>200 residues) training dataset configuration.
 _yaml_: "default-train.yaml"
 
-name: afdb-short
-weight: 0.05
+name: afdb-long
+weight: 1.0
 
 # Data paths
 data_path: <DATA_PATH_PLACEHOLDER>
@@ -19,10 +19,10 @@ cropper:
 
 apo_init:
   prob_perturbation: 1.0
-  # Use harsher perturbation than longer one.
+  # Use harsh perturbation for AFDB to improve robustness.
   protein_perturbation:
     bioprior:
-      min_steps: 10
-      max_steps: 30
+      min_steps: 5
+      max_steps: 20
   # no ligand
   ligand_perturbation: null
