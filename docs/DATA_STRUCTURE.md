@@ -22,24 +22,33 @@ This document describes the data structure used in **K-Fold** for protein comple
 The preprocessing stage is performed once before training to convert raw mmCIF files into an array-based format for efficient loading during training.
 This processing is done using the functions defined in [`kfold.data.pipelines.cif_factory`](../src/kfold/data/pipelines/cif_factory.py).
 
+In addition, the preprocessing stage also includes apo structure processing from `AFDB, ESMFold` output pdb files and apo tokenization for populating apo structure information into the model input features.
+1.  **PDB Parsing:** Extracts a protein sequence and an atom37 structure (`(L, 37, 3)`) from the PDB/mmCIF file and saves them in `LMDB` format on disk.
+2.  **Apo Lookup Preparation:** Matches each chain in the complex with a corresponding apo structure.
+3.  **Tokenization:** Tokenizes the apo structure in LMDB using backbone and full-atom VQVAE tokenizers (`(L, 37, 3) -> (L,)`) and saves the tokens in the LMDB.
+
 #### On-the-fly Data Processing (`RefStructure` -> `TokenizedStructure` -> `FoldingInput`)
 
 The on-the-fly data processing is performed during training to convert the reference structure into model input features:
 1.  **Data Loading:** Loads preprocessed `RefStructure` from disk.
-2.  **Pre-Cropping:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface token. (See AlphaFold3 SI Section 2.5.4)
+2.  **Chain-Extraction:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface token. (See AlphaFold3 SI Section 2.5.4)
 3.  **Apo Structure Population:** Populates apo structure information into the reference structure. During training, **apo perturbation** is on-the-fly applied in this step.
 4.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
-5.  **Cropping:** If the structure contains more tokens than `max_tokens`, it crops a structure using three cropping strategies. (See AlphaFold3 SI Section 2.7)
-6.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
+5.  **Structure Token Population:** Populates apo structure tokens (backbone, full-atom) into the tokenized structure.
+6.  **Cropping:** If the structure contains more tokens than `max_tokens`, it crops a structure using three cropping strategies. (See AlphaFold3 SI Section 2.7)
+7.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
 
 ### Inference
 
 The inference stage starts by parsing a query file (YAML or JSON) that specifies the target sequences and entities (proteins, ligands, nucleic acids). Unlike training which loads ground truth structures from mmCIF, this step extracts sequences from the query and constructs a RefStructure object with zero-initialized (masked) coordinates.
 
 1.  **Structure Preparation:** (`YAML/JSON` → `RefStructure`) Prepares the reference structure from the query sequences.
-2.  **Apo Structure Population:** Populates given apo structure information into the reference structure.
-3.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
-4.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
+2.  **Apo Monomer Prediction (TODO):** For each protein entity in the complex, it runs a monomer prediction using ESMFold or our own monomer model (`KFold-Mono`) to get the apo structure. This step can be skipped if the user provides apo structures in the query.
+3.  **Apo Structure Population:** Populates given apo structure information into the reference structure.
+4.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
+5.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
+6.  **Apo tokenization:** Runs tokenization for apo structure to populate apo tokens in the model input features.
+7.  **Inference:** Runs the model inference to predict the structure.
 
 ---
 
@@ -59,7 +68,7 @@ metadata: Metadata = ref_struct.metadata
 
 ## Tokenized Structure
 
-K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`. This contains sub-layouts for chain, residue, token, atom, and bond structures. See [here](../src/kfold/data/types.tokenized.py) for more details.
+K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`. This contains sub-layouts for chain, residue, token, atom, and bond structures. See [here](../src/kfold/data/types/tokenized.py) for more details.
 
 ```python
 from kfold.data.types import tokenized
@@ -69,6 +78,7 @@ chain_arr: tokenized.ChainArray = struct.chain
 token_arr: tokenized.TokenArray = struct.token
 atom_arr: tokenized.AtomArray = struct.atom
 bond_arr: tokenized.BondArray = struct.bond
+seq_arr: tokenized.SequenceArray = struct.sequence
 
 asym_id = chain_arr.asym_id  # Shape: (Nchain,)
 coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
@@ -87,6 +97,7 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `num_tokens`  | `(Nchain,)` | Number of tokens in each chain |
 | `num_atoms`   | `(Nchain,)` | Number of atoms in each chain |
 
+
 ### Token-level layout
 
 | Field           | Shape         | Description |
@@ -103,6 +114,7 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `num_atoms`     | `(Ntoken,)`   | Number of atoms in each token |
 | `is_standard`   | `(Ntoken,)`   | Whether the residue is standard |
 
+
 ### Atom-level layout
 
 | Field                 | Shape             | Description |
@@ -118,6 +130,7 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `coords`              | `(Ntoken, 24, 3)` | Target coordinates for training |
 | `resolved_mask`       | `(Ntoken, 24)`    | Whether the atom is resolved |
 
+
 ### Bond-level layout
 
 | Field         | Shape         | Description |
@@ -126,6 +139,19 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `token_index` | `(Nbond, 2)`  | Index of connecting tokens |
 | `atom_index`  | `(Nbond, 2)`  | Index of connecting atoms |
 | `bond_type`   | `(Nbond,)`    | Bond type |
+
+
+### Sequence-level layout
+
+| Field | Shape | Description |
+| :--- | :--- | :--- |
+| `chain_type` | `(Nseq,)` | Chain Type |
+| `entity_id` | `(Nseq,)` | Entity ID |
+| `seq_token_id` | `(Nseq,)` | Token ID for sequence embedding (LLM) |
+| `bb_struct_token_id` | `(Nseq,)` | Backbone structure tokens (VQ-VAE) |
+| `fa_struct_token_id` | `(Nseq,)` | Full-atom structure tokens (VQ-VAE) |
+| `pos_id` | `(Nseq,)` | Position index (0-indexed) |
+| `mlm_mask` | `(Nseq,)` | Mask for stochastic sampling (MLM) |
 
 -----
 
@@ -161,6 +187,7 @@ ref_pos = f_input.atom.ref_pos  # Shape: (Natom, 3)
 | `num_atoms`   | `(Nchain,)` | Number of atoms in each chain |
 | `pad_mask`    | `(Nchain,)` | Mask for valid chains or padding |
 
+
 ### Token features
 
 You can get chain features from `kfold.data.types.model_input.TokenTensor`:
@@ -185,6 +212,7 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `center_mask`     | `(Ntoken,)`     | Whether center atom is present |
 | `disto_mask`      | `(Ntoken,)`     | Whether disto atom is present |
 
+
 ### Atom features
 
 | Field                 | Shape             | Description |
@@ -201,6 +229,7 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `label_coords`        | `(Natom, 3)`      | Target coordinates for training |
 | `resolved_mask`       | `(Natom,)`        | Whether the atom is resolved |
 
+
 ### Bond features
 
 | Field               | Shape         | Description |
@@ -213,13 +242,13 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `is_polymer_ligand` | `(Nbond,)`    | Whether the bond is between polymer and ligand |
 | `is_ligand_ligand`  | `(Nbond,)`    | Whether the bond is between ligands |
 
-### Pretrained embeddings
 
-K-Fold uses residue-level embeddings from pre-trained language models as additional input features.
-To facilitate this, we provide a separate data structure `kfold.data.types.model_input.PretrainedTensor`:
+### Sequence features
 
-| Field                 | Shape               | Description |
-| :---                  | :---                | :--- |
-| `sequence_embedding`  | `(Ntoken, Cseq)`    | Residue-level embedding from pre-trained language representation model |
-| `structure_embedding` | `(Ntoken, Cstruct)` | Residue-level embedding from pre-trained structure representation model |
-| `pad_mask`            | `(Ntoken,)`         | Mask for valid residues or padding |
+| Field | Shape | Description |
+| :--- | :--- | :--- |
+| `seq_token_id` | `(Nseq,)` | Input IDs for LLM embedding |
+| `bb_struct_token_id` | `(Nseq,)` | Backbone VQ tokens |
+| `fa_struct_token_id` | `(Nseq,)` | Full-atom VQ tokens |
+| `mlm_mask` | `(Nseq,)` | Training mask for MLM |
+| `pad_mask` | `(Nseq,)` | Valid sequence token mask |
