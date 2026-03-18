@@ -318,12 +318,15 @@ class KFold(BaseFoldingModel):
             # If the sequence encoder is pretrained and not included in the state dict,
             # missing keys starting with "sequence_encoder." or "structure_encoder." are
             # allowed.
-            if missing_keys:
-                missing_keys = {
-                    key
-                    for key in missing_keys
-                    if not key.startswith(("sequence_encoder.", "structure_encoder."))
-                }
+            missing_keys = {
+                k
+                for k in missing_keys
+                if not k.startswith(("sequence_encoder.", "structure_encoder."))
+            }
+            # Skip some fourier-related keys that are changed from
+            # nn.Parameter(..., required_grad=False) to buffer. (Backward compatibility)
+            unexpected_keys = {k for k in unexpected_keys if ".fourier_emb." not in k}
+
             if missing_keys:
                 raise KeyError(f"Missing keys in state_dict: {missing_keys}")
             if unexpected_keys:

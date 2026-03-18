@@ -357,7 +357,7 @@ class BaseFoldingModel(torch.nn.Module):
         cls,
         model_config: BaseFoldingModelConfig,
         ckpt_path: str | pathlib.Path,
-        use_ema: bool = False,
+        use_ema: bool = True,
         strict: bool = True,
     ) -> Self:
         """Load model from checkpoint."""
@@ -372,7 +372,13 @@ class BaseFoldingModel(torch.nn.Module):
             state_dict = ckpt
         elif use_ema:
             # Load EMA weights
-            state_dict = ckpt["ema"]
+            if "ema" not in ckpt:
+                raise KeyError(
+                    "EMA weights not found in checkpoint. "
+                    "Please set use_ema=False to load regular weights."
+                )
+            else:
+                state_dict = ckpt["ema"]["shadow_params"]
         else:
             # Load regular weights
             state_dict = ckpt["state_dict"]

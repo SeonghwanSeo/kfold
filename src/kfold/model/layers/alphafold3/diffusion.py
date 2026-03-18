@@ -23,7 +23,7 @@ class FourierEmbedding(nn.Module):
     Section 3.7 Algorithm 22 Fourier Embedding
     """
 
-    def __init__(self, channel: int, seed: int = 42):
+    def __init__(self, channel: int):
         """Initialize the Fourier Embeddings.
 
         Parameters
@@ -35,16 +35,14 @@ class FourierEmbedding(nn.Module):
 
         """
         super().__init__()
-
-        self.seed = seed
         generator = torch.Generator()
-        generator.manual_seed(seed)
+        generator.manual_seed(42)
 
         # Line 1: Randomly generate weight/bias once before training
         w = torch.randn(size=(1, channel), generator=generator)
         b = torch.randn(size=(1, channel), generator=generator)
-        self.w = nn.Parameter(w, requires_grad=False)
-        self.b = nn.Parameter(b, requires_grad=False)
+        self.register_buffer("w", w, persistent=False)
+        self.register_buffer("b", b, persistent=False)
 
     def forward(self, t_hat: torch.Tensor) -> torch.Tensor:
         """Forward pass.
