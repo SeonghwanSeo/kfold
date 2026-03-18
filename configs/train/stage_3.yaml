@@ -16,7 +16,6 @@ loss:
   weights:
     # global loss weights
     distogram: 3e-2
-    interaction: 3e-2
     diffusion: 4.0
     confidence: 1e-4
     # diffusion loss weights

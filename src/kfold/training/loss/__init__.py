@@ -1,1 +1,1 @@
-from . import confidence, diffusion, distogram, interaction
+from . import confidence, diffusion, distogram
