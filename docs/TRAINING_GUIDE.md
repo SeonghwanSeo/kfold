@@ -46,8 +46,8 @@ export KFOLD_DATA_DIR=/cache/wykim_lab/kfold_data/
 # Navigate to the data directory
 cd $KFOLD_DATA_DIR
 
-# Clone pre-built dataset (latest: v260130)
-cp -r /storage/wykim_lab/icl_shwan/dataset/v260130/ .
+# Clone pre-built dataset (latest: v260310)
+cp -r /storage/wykim_lab/icl_shwan/dataset/v260310/ .
 
 # Extract the datasets you need
 cd v260130/dataset

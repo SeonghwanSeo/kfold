@@ -22,11 +22,29 @@ If the features listed below are completed, I will include the corresponding PR 
     - [x] Ligand: AlphaFold uses different conformers for each seed. - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
 - [x] **Change time split**:
     - [x] Change the time split date to more recent one. - [#171](https://github.com/SeonghwanSeo/kfold/pull/171)
-- [ ] **Fallback for missing apo**: Use holo protein structure w/o perturbation if no apo structure is found.
+- [x] **Fallback for missing apo**: Use holo protein structure w/o perturbation if no apo structure is found.
 - [ ] **On-the-fly apo prior sampling on Riemannian manifold**:
     - [ ] Peptide (<16 residues)
     - [ ] DNA
     - [ ] RNA
+- [ ] **Synthetic dataset preparation**: Prepare synthetic dataset for better training.
+    - [ ] Disordered protein PDB distillation (used in AlphaFold3)
+    - [x] AlphaFold2 protein monomer distillation.
+        - [x] Incorporate AFDB structures into training dataset. - [#229](https://github.com/SeonghwanSeo/kfold/pull/229)
+        - [x] Run ESMFold as an initial structure of AlphaFold2 structures, i.e., `ESMFold-to-AFDB` scheme. - [#243](https://github.com/SeonghwanSeo/kfold/pull/243)
+        - [ ] Replace AFDB to MGNify dataset used in OpenFold-3.
+    - [ ] RNA monomer distillation.
+        - [ ] Rfam
+    - [ ] Complex structures.
+        - Protein-protein complexes)
+            - [x] Human Protein (huMAP) with Boltz-2 - [#148](https://github.com/SeonghwanSeo/kfold/pull/148)
+            - [x] Antibody-antigen complexes (NaturalAb) with Boltz-2 - [#148](https://github.com/SeonghwanSeo/kfold/pull/148)
+        - Protein-ligand complexes
+            - [x] SAIR(ChEMBL) with Boltz-1x - [#236](https://github.com/SeonghwanSeo/kfold/pull/236)
+        - Protein-RNA complexes
+            - [x] ENCORE with Boltz-2 - [#243](https://github.com/SeonghwanSeo/kfold/pull/223)
+        - Protein-DNA complexes
+            - [ ] JASPAR
 
 ### Data featurization
 
@@ -38,8 +56,8 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Modularize apo perturbation module (RiePrody) - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
 - [x] Separate apo perturbation and prior sampling (langevin dynamics). - [#154](https://github.com/SeonghwanSeo/kfold/pull/154)
 - [x] Implement on-the-fly apo perturbation during training (fallback). - [#181](https://github.com/SeonghwanSeo/kfold/pull/181)
-- [ ] Implement symmetry alignment between ref conformers and holo structures during training.
-- [ ] Implement contact conditioning features as in Boltz1.
+- [x] Implement symmetry alignment between ref conformers and holo structures during training. - [#209](https://github.com/SeonghwanSeo/kfold/pull/201819)
+- [ ] Implement contact conditioning features.
 
 ### Model implementation
 
@@ -53,9 +71,9 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Add apo information (e.g., distance map) before Pairformer trunk - [#80](https://github.com/SeonghwanSeo/kfold/pull/80)
     - [x] Add one-hot distogram option (contact map) - [#140](https://github.com/SeonghwanSeo/kfold/pull/140)
 - [x] Add apo-conditioned diffusion score model in Structure module - [#96](https://github.com/SeonghwanSeo/kfold/pull/96)
-- [x] Add `EnsembleModule` to feed multiple pre-trained structure embeddings from structure ensemble - [#120](https://github.com/SeonghwanSeo/kfold/pull/120)
-- [x] Add `Interformer` to allow bi-directional information flow between single (`s`) and pair (`z`) representations - [#124](https://github.com/SeonghwanSeo/kfold/pull/124)
-- [ ] Add `MultiStateModule` to allow multiple apo states from different sources (e.g., ESMFold, AlphaFold2, Holo structures, etc.)
+- [x] Add `PLMModule` to incorporate pre-trained models' embeddings - [#204](https://github.com/SeonghwanSeo/kfold/pull/204)
+- [x] Implement on-the-fly sequence/structure encoder running in model forward - [#209](https://github.com/SeonghwanSeo/kfold/pull/209)
+- [ ] Extract all layer sequence embeddings instead of just the last layer for better performance, as in ESMFold.
 
 ### Training
 
@@ -66,7 +84,7 @@ If the features listed below are completed, I will include the corresponding PR 
     - [x] Group symmetry for covalent ligands and glycans (chain-permutation) - [#184](https://github.com/SeonghwanSeo/kfold/pull/184)
 - [x] Correct **cropping algorithm** to match training losses and validation metrics to Boltz1. - [#71](https://github.com/SeonghwanSeo/kfold/pull/71)
 - [x] Add **compile** option for training - [#138](https://github.com/SeonghwanSeo/kfold/pull/138)
-    - [ ] Fix the issue related to model save/checkpointing after compilation (`_orig_mod`)
+    - [x] Fix the issue related to model save/checkpointing after compilation (`_orig_mod`)
 - [x] Implement multi-dataset training pipeline (e.g., RCSB + AFDB + ...) - [#149](https://github.com/SeonghwanSeo/kfold/pull/149)
 - [x] Prepare our own validation set. - [#171](https://github.com/SeonghwanSeo/kfold/pull/171)
 - [x] Compute validation metrics with low-homology chains and interfaces only. - [#184](https://github.com/SeonghwanSeo/kfold/pull/184)
@@ -74,6 +92,8 @@ If the features listed below are completed, I will include the corresponding PR 
 
 ### Inference
 - [x] Prepare data preparation pipeline for inference (from YAML config to `TokenizedStructure`) - [#113](https://github.com/SeonghwanSeo/kfold/pull/113)
+- [x] Implement smiles input option for ligand - [#250](https://github.com/SeonghwanSeo/kfold/pull/250)
+- [ ] Implement covalent bond constraint option
 
 ### Benchmark
 
