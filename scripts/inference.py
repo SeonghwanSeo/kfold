@@ -6,6 +6,7 @@ import time
 import torch
 from tqdm import tqdm
 
+from kfold.config import load_config
 from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
@@ -90,8 +91,11 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl",
-        help="Path to the CCD data file.",
+        default=None,
+        help=(
+            "Path to the CCD data file. If omitted, use train.data.ccd_path "
+            "from the resolved config."
+        ),
     )
     parser.add_argument(
         "--cpu",
@@ -109,7 +113,34 @@ def parse_args():
         action="store_true",
         help="Whether to overwrite existing inference results.",
     )
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help=(
+            "OmegaConf dotlist override applied before model construction, "
+            "e.g. model.structure_module.sampling_schedule_type=phase_power"
+        ),
+    )
     return parser.parse_args()
+
+
+def resolve_ccd_path(
+    config_path: pathlib.Path,
+    override_args: list[str],
+    ccd_path: pathlib.Path | None,
+) -> pathlib.Path:
+    if ccd_path is not None:
+        return ccd_path
+
+    config = load_config(config_path, override_args=override_args or None)
+    resolved_path = getattr(getattr(config.train, "data", None), "ccd_path", None)
+    if resolved_path is None:
+        raise ValueError(
+            "CCD path was not provided and train.data.ccd_path was not found "
+            f"in config: {config_path}"
+        )
+    return pathlib.Path(str(resolved_path))
 
 
 @torch.inference_mode()
@@ -133,8 +164,9 @@ def main():
         raise NotImplementedError("CPU inference is not implemented yet.")
 
     # Load CCD data
-    logger.info(f"Loading CCD data from: {args.ccd}")
-    ccd: CCD = CCD.load(args.ccd)
+    ccd_path = resolve_ccd_path(args.config, args.override, args.ccd)
+    logger.info(f"Loading CCD data from: {ccd_path}")
+    ccd: CCD = CCD.load(ccd_path)
     logger.info("CCD data loaded successfully.")
 
     # Parse input query(s)
@@ -170,7 +202,11 @@ def main():
 
     # Load model
     logger.info(f"Loading model from checkpoint: {args.checkpoint}")
-    model: KFold = KFold.from_checkpoint(args.config, args.checkpoint)
+    model: KFold = KFold.from_checkpoint(
+        args.config,
+        args.checkpoint,
+        override_args=args.override or None,
+    )
     model = model.cast_to_bf16().eval().cuda()
     logger.info("Model loaded successfully.")
 

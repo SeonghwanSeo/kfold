@@ -358,6 +358,7 @@ class BaseFoldingModel(torch.nn.Module):
         cls,
         config_path: str | pathlib.Path,
         ckpt_path: str | pathlib.Path,
+        override_args: list[str] | None = None,
         use_ema: bool = True,
         strict: bool = True,
     ) -> Self:
@@ -365,7 +366,7 @@ class BaseFoldingModel(torch.nn.Module):
         from kfold.config import load_config
 
         # Load model config
-        config = load_config(config_path)
+        config = load_config(config_path, override_args=override_args)
         if "model" in config:
             # Get model config if wrapped in a higher-level config
             config = config.model

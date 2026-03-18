@@ -6,6 +6,7 @@ import torch
 from lightning import pytorch as pl
 from lightning.pytorch.utilities import rank_zero_only
 
+from kfold.config import load_config
 from kfold.data.types.ccd import CCD
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.pl_client import (
@@ -121,8 +122,11 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl",
-        help="Path to the CCD data file.",
+        default=None,
+        help=(
+            "Path to the CCD data file. If omitted, use train.data.ccd_path "
+            "from the resolved config."
+        ),
     )
     parser.add_argument(
         "--num_gpus",
@@ -140,8 +144,35 @@ def parse_args():
         action="store_true",
         help="Whether to overwrite existing inference results.",
     )
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help=(
+            "OmegaConf dotlist override applied before model construction, "
+            "e.g. model.structure_module.sampling_schedule_type=phase_power"
+        ),
+    )
 
     return parser.parse_args()
+
+
+def resolve_ccd_path(
+    config_path: pathlib.Path,
+    override_args: list[str],
+    ccd_path: pathlib.Path | None,
+) -> pathlib.Path:
+    if ccd_path is not None:
+        return ccd_path
+
+    config = load_config(config_path, override_args=override_args or None)
+    resolved_path = getattr(getattr(config.train, "data", None), "ccd_path", None)
+    if resolved_path is None:
+        raise ValueError(
+            "CCD path was not provided and train.data.ccd_path was not found "
+            f"in config: {config_path}"
+        )
+    return pathlib.Path(str(resolved_path))
 
 
 def main():
@@ -154,7 +185,9 @@ def main():
 
     # === Input preparation ===
     # Load CCD data
-    ccd: CCD = CCD.load(args.ccd)
+    ccd_path = resolve_ccd_path(args.config, args.override, args.ccd)
+    log_info(f"Loading CCD data from: {ccd_path}")
+    ccd: CCD = CCD.load(ccd_path)
 
     # Parse input query(s) and create dataloader
     input_queries: list[Query] = parse_input_files(args.input, ccd, args.seed)
@@ -202,7 +235,11 @@ def main():
     # === Model loading ===
     # Load model and setup inference client
     log_info(f"Loading model from checkpoint: {args.checkpoint}")
-    model: KFold = KFold.from_checkpoint(args.config, args.checkpoint)
+    model: KFold = KFold.from_checkpoint(
+        args.config,
+        args.checkpoint,
+        override_args=args.override or None,
+    )
     model = model.cast_to_bf16().eval()
     log_info("Model loaded successfully.")
 
