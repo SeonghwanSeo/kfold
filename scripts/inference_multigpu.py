@@ -121,7 +121,9 @@ def parse_args():
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default="/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl",
+        default=pathlib.Path(
+            "/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl"
+        ),
         help="Path to the CCD data file.",
     )
     parser.add_argument(
@@ -140,6 +142,15 @@ def parse_args():
         action="store_true",
         help="Whether to overwrite existing inference results.",
     )
+    parser.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help=(
+            "OmegaConf dotlist override applied before model construction, "
+            "e.g. model.structure_module.sampling_schedule_type=phase_power"
+        ),
+    )
 
     return parser.parse_args()
 
@@ -151,6 +162,7 @@ def main():
 
     # Check output directory
     check_out_dir(args.out_dir, args.overwrite)
+    log_info(f"Output directory: {args.out_dir}")
 
     # === Input preparation ===
     # Load CCD data
@@ -202,7 +214,9 @@ def main():
     # === Model loading ===
     # Load model and setup inference client
     log_info(f"Loading model from checkpoint: {args.checkpoint}")
-    model: KFold = KFold.from_checkpoint(args.config, args.checkpoint)
+    model: KFold = KFold.from_checkpoint(
+        args.config, args.checkpoint, override_args=args.override
+    )
     model = model.cast_to_bf16().eval()
     log_info("Model loaded successfully.")
 
