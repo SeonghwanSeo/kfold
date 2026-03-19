@@ -27,6 +27,11 @@ train:
     batch_size: 1
     global_batch_size: 256
 
+  loss:
+    diffusion_loss:
+      smooth_lddt_loss:
+        chunk_size: 8
+
   data:
     max_tokens: 376
     ccd_path: /cache/wykim_lab/kfold_data/v260310/ccd-train.pkl

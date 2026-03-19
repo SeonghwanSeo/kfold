@@ -172,8 +172,8 @@ RESIDUE_ATOMS: dict[ResidueName, tuple[AtomName, ...]] = {
 }
 
 
-# reference atom for each residue
-REF_ATOM: dict[ResidueName, AtomName] = {
+# center atom for each residue
+CENTER_ATOM: dict[ResidueName, AtomName] = {
     # protein
     ResidueName.ALA: AtomName.CA,
     ResidueName.ARG: AtomName.CA,
@@ -209,8 +209,8 @@ REF_ATOM: dict[ResidueName, AtomName] = {
     ResidueName.DT: AtomName.C1_PRIME,
     ResidueName.DN: AtomName.C1_PRIME,
 }
-REF_ATOM_INDEX: dict[ResidueName, int] = {
-    res: RESIDUE_ATOMS[res].index(atom) for res, atom in REF_ATOM.items()
+CENTER_ATOM_INDEX: dict[ResidueName, int] = {
+    res: RESIDUE_ATOMS[res].index(atom) for res, atom in CENTER_ATOM.items()
 }
 
 # pseudo-beta atom for each residue to compute distogram

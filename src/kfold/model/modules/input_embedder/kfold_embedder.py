@@ -211,9 +211,9 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         """
         batch_index = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
         # Extract apo C-beta coordinates and mask
-        center_index = f_input.token.disto_index
-        apo_coords = f_input.atom.apo_coords[batch_index, center_index]  # [B, L, 3]
-        mask = f_input.atom.apo_mask[batch_index, center_index]  # [B, L]
+        repr_index = f_input.token.repr_index
+        apo_coords = f_input.atom.apo_coords[batch_index, repr_index]  # [B, L, 3]
+        mask = f_input.atom.apo_mask[batch_index, repr_index]  # [B, L]
         pair_mask = mask[:, :, None] & mask[:, None, :]
 
         # Chain identity mask (no inter-chain apo distances)
