@@ -23,17 +23,16 @@ thereby encouraging the learning of global structural transitions.
     - Same as AF-M/AF3's contiguous cropping strategy.
 
 2. Spatial Cropping (Multi-Anchor):
-    - Selects N anchor tokens (default: 4) and partitions the total token budget.
+    - Selects N anchor tokens (default: 2) and partitions the total token budget.
     - The first anchor is sampled based on chain bias or uniformly.
     - Subsequent anchors are sampled from resolved tokens within a defined
       radius of previous anchors to ensure partial connectivity while maximizing
       coverage.
 
 3. Spatial Interface Cropping (Multi-Anchor):
-    - Selects anchors specifically from tokens involved in chain interfaces.
-    - Unlike random sampling, this strategy traverses the 'interaction graph'.
-      Subsequent anchors are chosen from interfaces connected to already
-      selected chains, preserving the biological context of the complex assembly.
+    - Similar to spatial cropping but prioritizes selecting the first anchor
+      from interface regions between chains.
+
 
 **References**
 - AlphaFold-Multimer (Evans et al., 2021):
@@ -42,8 +41,6 @@ thereby encouraging the learning of global structural transitions.
 - AlphaFold 3 (Abramson et al., 2024):
     - Section 2.7: Cropping strategies (Contiguous, Spatial, Spatial Interface)
 """
-
-from collections import defaultdict
 
 import numpy as np
 
@@ -88,7 +85,7 @@ class MultiAnchorCropper(BaseCropper):
         w_spatial_interface: float = 0.4
         anchor_distribution: str = "exponential"
         min_anchors: int = 1
-        max_anchors: int = 1
+        max_anchors: int = 2
         max_anchor_distance: float = 25.0
 
     def __init__(self, config: Config):
@@ -367,23 +364,16 @@ class MultiAnchorCropper(BaseCropper):
             "Resolved coordinates expected to be NaN."
         )
 
-        # Collect neighboring chains for each chain
-        chain_to_neighbors: dict[int, list[int]] = defaultdict(list)
-        for interface in set(all_interfaces):
-            i1, i2 = interface
-            chain_to_neighbors[i1].append(i2)
-            chain_to_neighbors[i2].append(i1)
-
         # Sample number of anchors and their budgets
         num_anchors: int = self.sample_num_anchors(rng)
         budgets: list[int] = self.sample_budgets_per_anchor(num_anchors, max_tokens, rng)
 
+        anchor_tokens: list[int] = []
         is_selected = np.zeros(struct.num_tokens, dtype=bool)
         is_remaining = resolved_mask.copy()
-        visited_chains: list[int] = []
         for i in range(num_anchors):
-            # Select an interface to sample anchor from
             if i == 0:
+                # For the first anchor, pick from interfaces.
                 if bias_asym_id is None:
                     # Pick a random interface
                     interface_id = utils.random_choice(all_interfaces, rng=rng)
@@ -404,24 +394,22 @@ class MultiAnchorCropper(BaseCropper):
                     else:
                         # Fallback to random interface
                         interface_id = utils.random_choice(all_interfaces, rng=rng)
+                anchor = utils.pick_interface_token(
+                    struct, interface_id, resolved_mask, rng
+                )
             else:
-                # Pick an interface connected to visited chains
-                assert len(visited_chains) > 0, "No visited chains"
-                candidates: set[tuple[int, int]] = set()
-                for asym_id1 in visited_chains:
-                    neighbors = chain_to_neighbors[asym_id1]
-                    for asym_id2 in neighbors:
-                        interface_id = (min(asym_id1, asym_id2), max(asym_id1, asym_id2))
-                        candidates.add(interface_id)
-                if len(candidates) == 0:
-                    # No connected interfaces, fallback to all interfaces
-                    candidates = set(all_interfaces)
-                interface_id = utils.random_choice(sorted(candidates), rng=rng)
+                # Then, pick anchor token not too far from previous anchors
+                prev_anchor = anchor_tokens[-1]
+                prev_anchor_coords = center_coords[prev_anchor]  # (3,)
+                dists = np.linalg.norm(center_coords - prev_anchor_coords, axis=1)
+                cutoff_mask = dists < self.max_anchor_distance
+                anchor_mask = is_remaining & cutoff_mask
+                if not np.any(anchor_mask):
+                    # Fallback to allow picking from all remaining tokens
+                    anchor_mask = resolved_mask & cutoff_mask
+                anchor = utils.pick_token(struct, None, anchor_mask, rng)
 
-            # Select anchor token from the interface
-            # NOTE: Since re-sample from visited interfaces, we allow picking from
-            # all resolved tokens even if already selected.
-            anchor = utils.pick_interface_token(struct, interface_id, resolved_mask, rng)
+            anchor_tokens.append(anchor)
 
             # Collect spatial neighbors around the anchor token among remaining tokens
             crop_size = budgets[i]
@@ -430,8 +418,6 @@ class MultiAnchorCropper(BaseCropper):
             )
             is_selected[neighbor_indices] = True
             is_remaining[neighbor_indices] = False
-
-            visited_chains = np.unique(struct.token.asym_id[is_selected]).tolist()
 
         return np.where(is_selected)[0]
 
