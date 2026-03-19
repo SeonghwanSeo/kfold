@@ -256,6 +256,16 @@ class KFoldECSI(BaseECSI):
         rho: float = 0.7
         sampling_schedule_type: str = "piecewise_power"
         sampling_schedule_piecewise_power: float = 5.0
+        sampling_schedule_start_power: float | None = None
+        sampling_schedule_end_power: float | None = None
+        sampling_schedule_midpoint: float = 0.5
+        sampling_schedule_endpoint_trim: float = 0.0
+        sampling_schedule_global_u_power: float = 1.0
+        sampling_schedule_churn_fraction: float = 0.3
+        sampling_schedule_ode_fraction: float = 0.45
+        sampling_schedule_middle_power: float = 1.0
+        sampling_schedule_churn_power: float = 1.75
+        sampling_schedule_ode_power: float = 2.6
         P_mean: float = -1.2
         P_std: float = 1.5
         eta: float = 1.0
@@ -295,6 +305,22 @@ class KFoldECSI(BaseECSI):
         self.sampling_schedule_piecewise_power: float = (
             cfg.sampling_schedule_piecewise_power
         )
+        self.sampling_schedule_start_power: float | None = (
+            cfg.sampling_schedule_start_power
+        )
+        self.sampling_schedule_end_power: float | None = cfg.sampling_schedule_end_power
+        self.sampling_schedule_midpoint: float = cfg.sampling_schedule_midpoint
+        self.sampling_schedule_endpoint_trim: float = cfg.sampling_schedule_endpoint_trim
+        self.sampling_schedule_global_u_power: float = (
+            cfg.sampling_schedule_global_u_power
+        )
+        self.sampling_schedule_churn_fraction: float = (
+            cfg.sampling_schedule_churn_fraction
+        )
+        self.sampling_schedule_ode_fraction: float = cfg.sampling_schedule_ode_fraction
+        self.sampling_schedule_middle_power: float = cfg.sampling_schedule_middle_power
+        self.sampling_schedule_churn_power: float = cfg.sampling_schedule_churn_power
+        self.sampling_schedule_ode_power: float = cfg.sampling_schedule_ode_power
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
         self.eta: float = cfg.eta
@@ -660,10 +686,13 @@ class KFoldECSI(BaseECSI):
             times = self._get_karras_schedule(num_steps=num_steps, device=device)
         elif schedule_type == "piecewise_power":
             times = self._get_piecewise_power_schedule(num_steps=num_steps, device=device)
+        elif schedule_type == "phase_power":
+            times = self._get_phase_power_schedule(num_steps=num_steps, device=device)
         else:
             raise ValueError(
-                "Unsupported sampling_schedule_type; expected 'karras' or "
-                f"'piecewise_power', got {self.sampling_schedule_type!r}"
+                "Unsupported sampling_schedule_type; expected 'karras', "
+                "'piecewise_power', or 'phase_power', got "
+                f"{self.sampling_schedule_type!r}"
             )
 
         # Last step is t=0 (exactly at target)
@@ -689,13 +718,164 @@ class KFoldECSI(BaseECSI):
         if power <= 0.0:
             raise ValueError("sampling_schedule_piecewise_power must be > 0")
 
+        start_power = (
+            power
+            if self.sampling_schedule_start_power is None
+            else float(self.sampling_schedule_start_power)
+        )
+        end_power = (
+            power
+            if self.sampling_schedule_end_power is None
+            else float(self.sampling_schedule_end_power)
+        )
+        if start_power <= 0.0 or end_power <= 0.0:
+            raise ValueError("piecewise start/end powers must be > 0")
+
+        midpoint = float(self.sampling_schedule_midpoint)
+        if not 0.0 < midpoint < 1.0:
+            raise ValueError("sampling_schedule_midpoint must lie in (0, 1)")
+
+        endpoint_trim = float(self.sampling_schedule_endpoint_trim)
+        if not 0.0 <= endpoint_trim < 0.5:
+            raise ValueError("sampling_schedule_endpoint_trim must lie in [0, 0.5)")
+
         steps = torch.arange(num_steps, dtype=torch.float32, device=device)
         u = steps / (num_steps - 1)
-        t_unit = torch.empty_like(u)
-        left = u <= 0.5
-        t_unit[left] = 1.0 - 0.5 * torch.pow(2.0 * u[left], power)
-        t_unit[~left] = 0.5 * torch.pow(2.0 * (1.0 - u[~left]), power)
+
+        if endpoint_trim > 0.0:
+            u = endpoint_trim + (1.0 - 2.0 * endpoint_trim) * u
+
+        t_unit = self._piecewise_power_curve(
+            u=u,
+            start_power=start_power,
+            end_power=end_power,
+            midpoint=midpoint,
+        )
+
+        if endpoint_trim > 0.0:
+            start_u = torch.tensor([endpoint_trim], dtype=u.dtype, device=device)
+            end_u = torch.tensor([1.0 - endpoint_trim], dtype=u.dtype, device=device)
+            start_value = self._piecewise_power_curve(
+                u=start_u,
+                start_power=start_power,
+                end_power=end_power,
+                midpoint=midpoint,
+            )
+            end_value = self._piecewise_power_curve(
+                u=end_u,
+                start_power=start_power,
+                end_power=end_power,
+                midpoint=midpoint,
+            )
+            denom = start_value - end_value
+            if torch.any(torch.abs(denom) < 1e-8):
+                raise ValueError(
+                    "sampling_schedule_endpoint_trim produced a degenerate schedule"
+                )
+            t_unit = (t_unit - end_value) / denom
+
         return self.sigma_min + (self.sigma_max - self.sigma_min) * t_unit
+
+    @staticmethod
+    def _piecewise_power_curve(
+        u: torch.Tensor,
+        start_power: float,
+        end_power: float,
+        midpoint: float,
+    ) -> torch.Tensor:
+        t_unit = torch.empty_like(u)
+        left = u <= midpoint
+        t_unit[left] = 1.0 - 0.5 * torch.pow(u[left] / midpoint, start_power)
+        t_unit[~left] = 0.5 * torch.pow(
+            (1.0 - u[~left]) / (1.0 - midpoint),
+            end_power,
+        )
+        return t_unit.clamp(min=0.0, max=1.0)
+
+    def _get_phase_power_schedule(
+        self, num_steps: int, device: torch.device | None = None
+    ) -> torch.Tensor:
+        global_u_power = float(self.sampling_schedule_global_u_power)
+        if global_u_power <= 0.0:
+            raise ValueError("sampling_schedule_global_u_power must be > 0")
+
+        churn_fraction = float(self.sampling_schedule_churn_fraction)
+        ode_fraction = float(self.sampling_schedule_ode_fraction)
+        if churn_fraction <= 0.0 or ode_fraction <= 0.0:
+            raise ValueError(
+                "sampling_schedule_churn_fraction and sampling_schedule_ode_fraction "
+                "must both be > 0"
+            )
+        if churn_fraction + ode_fraction >= 1.0:
+            raise ValueError(
+                "sampling_schedule_churn_fraction + "
+                "sampling_schedule_ode_fraction must be < 1"
+            )
+
+        churn_power = float(self.sampling_schedule_churn_power)
+        middle_power = float(self.sampling_schedule_middle_power)
+        ode_power = float(self.sampling_schedule_ode_power)
+        if churn_power <= 1.0:
+            raise ValueError("sampling_schedule_churn_power must be > 1")
+        if middle_power <= 0.0:
+            raise ValueError("sampling_schedule_middle_power must be > 0")
+        if ode_power <= global_u_power:
+            raise ValueError(
+                "sampling_schedule_ode_power must be > "
+                "sampling_schedule_global_u_power so the late ODE tail closes with "
+                "zero slope in t-space"
+            )
+
+        total_scale = self.sigma_max - self.sigma_min
+        if total_scale <= 0.0:
+            raise ValueError("sigma_max must be > sigma_min")
+
+        churn_time = self.churn_until_time
+        if churn_time is None:
+            churn_time = 0.7
+        churn_time = float(churn_time)
+        ode_time = float(self.ode_time_duration)
+        if not self.sigma_min < ode_time < churn_time < self.sigma_max:
+            raise ValueError(
+                "phase_power schedule requires sigma_min < ode_time_duration < "
+                "churn_until_time < sigma_max"
+            )
+
+        churn_unit = (churn_time - self.sigma_min) / total_scale
+        ode_unit = (ode_time - self.sigma_min) / total_scale
+
+        churn_u = churn_unit**global_u_power
+        ode_u = ode_unit**global_u_power
+        if not 0.0 < ode_u < churn_u < 1.0:
+            raise ValueError("phase_power schedule produced invalid u-space bounds")
+
+        steps = torch.arange(num_steps, dtype=torch.float32, device=device)
+        s = steps / (num_steps - 1)
+        churn_boundary = churn_fraction
+        ode_boundary = 1.0 - ode_fraction
+
+        u_value = torch.empty_like(s)
+
+        head_mask = s <= churn_boundary
+        mid_mask = (s > churn_boundary) & (s <= ode_boundary)
+        tail_mask = s > ode_boundary
+
+        head_progress = s[head_mask] / churn_boundary
+        mid_progress = (s[mid_mask] - churn_boundary) / (ode_boundary - churn_boundary)
+        tail_progress = (s[tail_mask] - ode_boundary) / (1.0 - ode_boundary)
+
+        u_value[head_mask] = 1.0 - (1.0 - churn_u) * torch.pow(
+            head_progress,
+            churn_power,
+        )
+        u_value[mid_mask] = churn_u - (churn_u - ode_u) * torch.pow(
+            mid_progress,
+            middle_power,
+        )
+        u_value[tail_mask] = ode_u * torch.pow(1.0 - tail_progress, ode_power)
+
+        t_unit = torch.pow(u_value.clamp(min=0.0, max=1.0), 1.0 / global_u_power)
+        return self.sigma_min + total_scale * t_unit
 
     def sample_prior(
         self,
