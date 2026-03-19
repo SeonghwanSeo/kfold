@@ -132,7 +132,6 @@ class KFoldPredictionWriter(BasePredictionWriter):
     ):
         super().__init__(write_interval)
         self.output_dir = pathlib.Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         # mmCIF writer
         self.writer = KFoldWriter()
         # Logger
