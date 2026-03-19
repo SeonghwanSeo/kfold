@@ -384,7 +384,7 @@ class KFold(BaseFoldingModel):
             }
             # Skip some fourier-related keys that are changed from
             # nn.Parameter(..., required_grad=False) to buffer. (Backward compatibility)
-            unexpected_keys = {k for k in unexpected_keys if ".fourier_emb." not in k}
+            unexpected_keys = {k for k in unexpected_keys if ".fourier_embed." not in k}
 
             if missing_keys:
                 raise KeyError(f"Missing keys in state_dict: {missing_keys}")
