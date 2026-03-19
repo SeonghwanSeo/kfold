@@ -28,13 +28,13 @@ sampling_schedule_global_u_power: 2.0
 
 # 2. churn-region schedule: allocate a dedicated early SDE/churn window
 sampling_schedule_churn_fraction: 0.35
-sampling_schedule_churn_power: 1.2
+sampling_schedule_churn_power: 1.40
 
 # middle SDE region between churn cutoff and ODE cutoff
 sampling_schedule_middle_power: 1.0
 
 # 3. ODE-region schedule: allocate a dedicated late ODE window with a zero-slope tail
-sampling_schedule_ode_fraction: 0.25
+sampling_schedule_ode_fraction: 0.20
 sampling_schedule_ode_power: 2.6
 
 # legacy piecewise-power knobs kept for backwards-compatible overrides
@@ -54,7 +54,7 @@ eta: 1.0
 
 # Switch to deterministic update for small t (ODE-like) during sampling.
 # If set <= 0, this deterministic phase is disabled.
-ode_time_duration: 0.4
+ode_time_duration: 0.35
 perturb_xt: true
 endpoint_perturb_scale: 0.1
 use_forward_pinned_churn: true
