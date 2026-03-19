@@ -14,12 +14,4 @@ data:
 
 loss:
   weights:
-    # global loss weights
-    distogram: 3e-2
-    diffusion: 4.0
-    confidence: 1e-4
-    # diffusion loss weights
-    smooth_lddt: 0.0 # 0 for fine-tuning (See Section 5.2 for the AF3 paper)
-    bond: 1.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
-    # confidence loss weights
-    pae: 0.0 # 1 for final stage training
+    bond: 1.0 # Turn on bond loss (See Section 5.2 for the AF3 paper)

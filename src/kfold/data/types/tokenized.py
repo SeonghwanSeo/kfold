@@ -182,8 +182,8 @@ class TokenArray(PlainLayout[np.ndarray]):
         starting from 0.
     center_index: np.ndarray (int)
         Center atom index of shape [L,], used for center calculations.
-    disto_index: np.ndarray (int)
-        Distogram atom index of shape [L,], used for distogram calculations.
+    repr_index: np.ndarray (int)
+        Representative atom index of shape [L,], used for distogram calculations.
 
     Cached Properties
     -----------------
@@ -208,7 +208,7 @@ class TokenArray(PlainLayout[np.ndarray]):
     residue_index: np.ndarray  # [L,], int
     seq_token_index: np.ndarray  # [L,], int
     center_index: np.ndarray  # [L,], int
-    disto_index: np.ndarray  # [L,], int
+    repr_index: np.ndarray  # [L,], int
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
@@ -228,7 +228,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             self.residue_index, name="residue_index", dtype=np.integer, shape=shape
         )
         check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
-        check_array(self.disto_index, name="disto_index", dtype=np.integer, shape=shape)
+        check_array(self.repr_index, name="repr_index", dtype=np.integer, shape=shape)
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -264,7 +264,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             sym_id=full_minus_one((num_tokens,)),
             num_atoms=full_minus_one((num_tokens,)),
             center_index=full_minus_one((num_tokens,)),
-            disto_index=full_minus_one((num_tokens,)),
+            repr_index=full_minus_one((num_tokens,)),
             is_standard=full_false((num_tokens,)),
         )
 
