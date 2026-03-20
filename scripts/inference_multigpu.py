@@ -38,23 +38,6 @@ def log_error(message: str):
     logger.error(message)
 
 
-@rank_zero_only
-def check_out_dir(out_dir: pathlib.Path, overwrite: bool) -> None:
-    if (not overwrite) and out_dir.exists():
-        raise FileExistsError(
-            f"Output directory {out_dir} already exists. "
-            f"Use --overwrite to overwrite existing results."
-        )
-
-
-@rank_zero_only
-def create_out_dir(queries: list[Query], out_dir: pathlib.Path):
-    for query in queries:
-        query_dir = out_dir / query.name
-        query_dir.mkdir(parents=True, exist_ok=True)
-        query.save(query_dir / "query.yaml")
-
-
 def parse_args():
     import argparse
 
@@ -161,8 +144,12 @@ def main():
     args = parse_args()
 
     # Check output directory
-    check_out_dir(args.out_dir, args.overwrite)
     log_info(f"Output directory: {args.out_dir}")
+    if (not args.overwrite) and args.out_dir.exists():
+        raise FileExistsError(
+            f"Output directory {args.out_dir} already exists. "
+            f"Use --overwrite to overwrite existing results."
+        )
 
     # === Input preparation ===
     # Load CCD data
@@ -177,9 +164,6 @@ def main():
     nseed = len(args.seed)
     nquery = nsample // nseed
     log_info(f"Predict total {nsample} samples: {nquery} inputs x {nseed} seeds.")
-
-    # Create output directories for each query
-    create_out_dir(input_queries, args.out_dir)
 
     # Create dataloader
     dataset = InferenceDataset(
@@ -199,8 +183,8 @@ def main():
         ngpu = nsample
     log_info(f"Using {ngpu} GPU(s) for inference.")
 
-    inference_writer = KFoldPredictionWriter(args.out_dir)
     # Construct PyTorch Lightning trainer
+    inference_writer = KFoldPredictionWriter(args.out_dir, input_queries)
     trainer = pl.Trainer(
         devices=ngpu,
         logger=False,

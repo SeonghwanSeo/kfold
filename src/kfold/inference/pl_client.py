@@ -128,14 +128,34 @@ class KFoldPredictionWriter(BasePredictionWriter):
     def __init__(
         self,
         output_dir: str | pathlib.Path,
+        queries: list[Query],
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "batch",
     ):
         super().__init__(write_interval)
         self.output_dir = pathlib.Path(output_dir)
+        self.queries: list[Query] = queries
         # mmCIF writer
         self.writer = KFoldWriter()
         # Logger
         self.logger = logging.getLogger("KFoldPredictionWriter")
+
+    def on_predict_start(self, trainer, pl_module) -> None:
+        """Called at the start of prediction."""
+        # Ensure all processes wait until directory is created
+        trainer.strategy.barrier()
+
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Check output directory
+        if trainer.global_rank == 0:
+            for query in self.queries:
+                query_path = self.output_dir / query.name / "query.yaml"
+                if query_path.exists():
+                    continue
+                query_path.parent.mkdir(parents=True, exist_ok=True)
+                query.save(query_path)
+
+        # Ensure all processes wait until directory is created
+        trainer.strategy.barrier()
 
     def write_on_batch_end(  # type: ignore[override]
         self,

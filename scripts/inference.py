@@ -133,13 +133,13 @@ def main():
     args = parse_args()
 
     # Check output directory
+    logger.info(f"Output directory: {args.out_dir}")
     if args.out_dir.exists() and not args.overwrite:
         logger.error(
             f"Output directory {args.out_dir} already exists. "
             f"Use --overwrite to overwrite existing results."
         )
         return
-    logger.info(f"Output directory: {args.out_dir}")
 
     if args.cpu:
         raise NotImplementedError("CPU inference is not implemented yet.")
@@ -168,9 +168,11 @@ def main():
     # Create output directories for each query
     save_dir = args.out_dir
     for query in input_queries:
-        query_dir = save_dir / query.name
-        query_dir.mkdir(parents=True, exist_ok=True)
-        query.save(query_dir / "query.yaml")
+        query_path = save_dir / query.name / "query.yaml"
+        if query_path.exists():
+            continue  # skip if already exists
+        query_path.parent.mkdir(parents=True, exist_ok=True)
+        query.save(query_path)
 
     # Create data loader
     dataset = InferenceDataset(
