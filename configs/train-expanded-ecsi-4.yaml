@@ -12,14 +12,14 @@ model:
       use_qk_norm: true
       blocks_per_ckpt: 4
     pairformer:
-      num_blocks: 16
+      num_blocks: 48
       use_qk_norm: true
       blocks_per_ckpt: 24
     num_register_tokens: 8
   score_model:
-    atom_encoder_blocks: 1
-    token_transformer_blocks: 8
-    atom_decoder_blocks: 1
+    atom_encoder_blocks: 3
+    token_transformer_blocks: 24
+    atom_decoder_blocks: 3
     blocks_per_ckpt: null
 
 train:
