@@ -61,5 +61,7 @@ sampling_alpha: 1.0
 sampling_beta: 1.0
 alignment_entity_strategy: null
 alignment_level: "chain"
+train_prior_chain_translation_scale: 100.0
+train_align_prior_to_label: false
 s_trans: 0.0
 inference_align_x0_hat_to_x_t: true

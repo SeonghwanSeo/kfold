@@ -72,6 +72,8 @@ sampling_beta: 1.0
 
 alignment_entity_strategy: null
 alignment_level: "chain"
+train_prior_chain_translation_scale: 0.0
+train_align_prior_to_label: true
 s_trans: 0.0
 
 # ECSI-specific inference settings
