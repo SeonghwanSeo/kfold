@@ -43,6 +43,11 @@ class LangevinDynamicsSimulator:
         self.ent_r: float = config.ent_r
         self.sphere_r: float = config.sphere_r
 
+    @classmethod
+    def default(cls) -> Self:
+        """Create a LangevinDynamicsSimulator with default configuration."""
+        return cls(LangevinDynamicsConfig())
+
     def __call__(
         self,
         x_init: np.ndarray,

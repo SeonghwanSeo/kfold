@@ -8,7 +8,3 @@ seed: 42 # fixed seed for validation
 apo_init:
   prob_perturbation: 0.0
   use_cached_conformer_only: true
-
-prior_sampler:
-  num_samples: 5
-  use_ot_permutation: false

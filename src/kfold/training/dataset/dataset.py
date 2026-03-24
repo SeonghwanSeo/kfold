@@ -204,6 +204,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.return_symmetry: bool = return_symmetry
         self.return_structure: bool = return_structure
         self.safe_load: bool = safe_load
+        self.train: bool = train
 
         if train:
             self.logger = logging.getLogger(f"[Training Dataset:{self.name}]")
@@ -231,6 +232,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.apo_initializer = apo_initialization.ApoInitializer(
             config.apo_init, self.ccd
         )
+        self.tokenizer = tokenization.Tokenizer(
+            self.ccd, mode="train" if train else "val"
+        )
+        self.featurizer = featurization.InputFeaturizer()
 
         if config.prior_sampler is not None:
             # For diffusion bridge model, we may want to sample prior structures
@@ -238,13 +243,11 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             self.prior_sampler = prior_sampling.PriorSampler(
                 config.prior_sampler, self.ccd
             )
+            self.num_priors = 16 if train else 5
         else:
             # For regular edm, we don't need to sample prior structures since
             # the prior distribution is gaussian.
             self.prior_sampler = None
-
-        self.tokenizer = tokenization.Tokenizer(self.ccd, self.prior_sampler)
-        self.featurizer = featurization.InputFeaturizer()
 
         # Additional setup can be done in subclasses
         self.setup()
@@ -367,14 +370,29 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.apo_initializer(ref_struct, apo_lookup, rng)
 
     def tokenize(
-        self, ref_struct: RefStructure, rng: np.random.Generator
+        self,
+        ref_struct: RefStructure,
+        rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        # only use cached conformer tokens to avoid
-        # ETKDG conformer generation during training/validation.
-        use_cached_conformer_only = True
-        # TODO: add apo info
-        return self.tokenizer(ref_struct, rng, use_cached_conformer_only)
+        return self.tokenizer(ref_struct, rng)
+
+    def sample_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        tokenized: TokenizedStructure,
+        num_priors: int,
+        rng: np.random.Generator,
+    ) -> None:
+        """Populate the prior coordinates for the given reference structure."""
+        if self.prior_sampler is not None:
+            prior_coords = np.full(
+                (tokenized.num_tokens, 24, num_priors, 3), np.nan, dtype=np.float32
+            )
+            prior_coords[tokenized.atom.pad_mask] = self.prior_sampler(
+                ref_struct, num_priors, rng=rng
+            ).transpose(1, 0, 2)
+            tokenized.atom.prior_coords = prior_coords
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
@@ -394,13 +412,17 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
     def crop_structure(
         self,
-        struct: TokenizedStructure,
+        tokenized: TokenizedStructure,
         metadata: Metadata,
         rng: np.random.Generator,
         **kwargs,
     ) -> TokenizedStructure:
-        """Crop the folding input structure as needed."""
-        return struct
+        """Crop the tokenized structure as needed to fit within the model input size."""
+        return tokenized
+
+    def featurize(self, tokenized: TokenizedStructure) -> FoldingInput:
+        """Featurize the given tokenized structure."""
+        return self.featurizer(tokenized)
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 32 for LocalAtomAttention."""
@@ -481,16 +503,19 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.load_apo_structure(ref_struct, apo_lookup, rng)
 
         # Tokenization
-        struct: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
+        tokenized: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
+
+        # Sample prior coordinates for diffusion bridge model (in-place)
+        self.sample_prior_coords(ref_struct, tokenized, self.num_priors, rng)
 
         # Populate structure tokens for apo structure (in-place)
-        self.populate_structure_tokens(struct, apo_lookup, rng)
+        self.populate_structure_tokens(tokenized, apo_lookup, rng)
 
         # Cropping
-        cropped_struct = self.crop_structure(struct, metadata, rng=rng, **kwargs)
+        cropped = self.crop_structure(tokenized, metadata, rng=rng, **kwargs)
 
         # Featurization
-        f_input = self.featurize(cropped_struct)
+        f_input = self.featurize(cropped)
 
         struct_info = {}
         struct_info["id"] = metadata_id
@@ -509,10 +534,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         f_input = self.pad_input(f_input)
 
         return f_input, struct_info
-
-    def featurize(self, struct: TokenizedStructure) -> FoldingInput:
-        """Featurize the given tokenized structure."""
-        return self.featurizer(struct)
 
     # === Helper methods for apo structure handling === #
     def get_apo_lookup(
@@ -573,23 +594,23 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
     def populate_structure_tokens(
         self,
-        struct: TokenizedStructure,
+        tokenized: TokenizedStructure,
         apo_lookup: dict[int, dict],
         rng: np.random.Generator,
     ) -> None:
         """Populate the structure tokens for the given tokenized structure."""
 
-        bb_struct_token_id = struct.sequence.bb_struct_token_id
-        fa_struct_token_id = struct.sequence.fa_struct_token_id
+        bb_struct_token_id = tokenized.sequence.bb_struct_token_id
+        fa_struct_token_id = tokenized.sequence.fa_struct_token_id
 
         visited_entity_ids: set[int] = set()
         with self.unitok_lmdb_env.begin(write=False) as txn:
-            for c_i in range(struct.num_chains):
-                if struct.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
+            for c_i in range(tokenized.num_chains):
+                if tokenized.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
                     continue  # only populate structure tokens for protein chains
 
-                eid = struct.chain.entity_id[c_i]
-                ek = f"{struct.id}:{eid}"  # For logging purpose
+                eid = tokenized.chain.entity_id[c_i]
+                ek = f"{tokenized.id}:{eid}"  # For logging purpose
 
                 if eid in visited_entity_ids:
                     continue  # already populated from another chain with same entity_id
@@ -616,7 +637,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
                 toklen = len(bb_tok)
 
                 # Find the corresponding sequence token indices
-                seq_token_i = np.where(struct.sequence.entity_id == eid)[0]
+                seq_token_i = np.where(tokenized.sequence.entity_id == eid)[0]
                 # Remove bos/eos
                 seq_token_i = seq_token_i[1:-1]
 
@@ -796,24 +817,24 @@ class TrainingDataset(SafeLoadingDataset):
     @override
     def crop_structure(
         self,
-        struct: TokenizedStructure,
+        tokenized: TokenizedStructure,
         metadata: Metadata,
         rng: np.random.Generator,
         **kwargs,
     ) -> TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
-        if self.max_tokens < struct.num_tokens:
+        if self.max_tokens < tokenized.num_tokens:
             # Crop the tokenized structure
-            struct = self.cropper.crop(
-                struct,
+            tokenized = self.cropper.crop(
+                tokenized,
                 metadata,
                 max_tokens=self.max_tokens,
                 max_sequence_tokens=self.max_sequence_tokens,
                 bias_asym_id=asym_ids,
                 rng=rng,
             )
-        return struct
+        return tokenized
 
     @override
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:

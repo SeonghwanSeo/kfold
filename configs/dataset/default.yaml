@@ -15,12 +15,6 @@ apo_init:
   ligand_perturbation: null
 
 prior_sampler:
-  num_samples: 0
   use_chain_com_sampling: false
   use_ot_permutation: false
   translation_scale: 1.0 # Angstroms
-  # missing atom filling settings
-  relaxation:
-    num_steps: 64
-    res_r: 4.0
-    bond_r: 2.0

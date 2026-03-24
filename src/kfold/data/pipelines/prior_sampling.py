@@ -10,12 +10,10 @@ import numpy as np
 import kfold.constants as C
 from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import Chain, RefStructure
-from kfold.data.utils.simulation.langevin_dynamics import (
-    LangevinDynamicsConfig,
-    LangevinDynamicsSimulator,
-)
+from kfold.data.utils.simulation.langevin_dynamics import LangevinDynamicsSimulator
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import compute_rmsd
+from kfold.utils.misc import spawn_rng
 
 from .apo_initialization import get_ambiguous_atoms_in_residue, get_molecule_symmetries
 
@@ -38,8 +36,6 @@ class PriorSamplerConfig:
 
     Attributes
     ----------
-    num_samples : int
-        Number of prior coordinates to sample.
     use_chain_com_sampling : bool
         If set, place each chain's center of mass on a sphere surface with
         this radius (uniformly sampled).
@@ -49,22 +45,14 @@ class PriorSamplerConfig:
         Scale of random translation augmentation (in Angstrom).
     """
 
-    num_samples: int = 1
     use_chain_com_sampling: bool = False
     use_ot_permutation: bool = False
     translation_scale: float = 1.0  # Angstrom
-    # Langevin dynamics parameters for relaxing missing atoms
-    relaxation: LangevinDynamicsConfig = dataclasses.field(
-        default_factory=lambda: LangevinDynamicsConfig(
-            num_steps=64, res_r=4.0, bond_r=2.0
-        )
-    )
 
     @classmethod
-    def inference_mode(cls, num_samples: int) -> Self:
+    def inference_mode(cls) -> Self:
         """Get a PriorSampler instance configured for inference"""
         return cls(
-            num_samples=num_samples,
             use_chain_com_sampling=False,
             use_ot_permutation=False,
         )
@@ -77,29 +65,35 @@ class PriorSampler:
         self.config: PriorSamplerConfig = config
         self.ccd: CCD = ccd
 
-        self.num_samples: int = config.num_samples
         self.use_ot_permutation: bool = config.use_ot_permutation
         self.use_chain_com_sampling: bool = config.use_chain_com_sampling
         self.translation_scale: float = config.translation_scale
 
         # Langevin dynamics simulator for relaxing missing atoms
-        self.langevin_simulator = LangevinDynamicsSimulator(config.relaxation)
+        self.langevin_simulator = LangevinDynamicsSimulator.default()
 
         # Logger
         self.logger = logging.getLogger("PriorSampler")
 
     @classmethod
-    def inference_mode(cls, ccd: CCD, num_samples: int) -> Self:
+    def inference_mode(cls, ccd: CCD) -> Self:
         """Get a PriorSampler instance configured for inference"""
-        return cls(PriorSamplerConfig.inference_mode(num_samples), ccd)
+        return cls(PriorSamplerConfig.inference_mode(), ccd)
 
-    def __call__(self, struct: RefStructure, rng: np.random.Generator) -> np.ndarray:
+    def __call__(
+        self,
+        struct: RefStructure,
+        num_samples: int,
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
         """Sample prior coordinates for the given structure.
 
         Parameters
         ----------
         struct : RefStructure
             Reference structure containing apo coordinates.
+        num_samples : int
+            Number of prior samples to generate.
         rng : np.random.Generator
             Random number generator for stochastic operations.
 
@@ -108,12 +102,13 @@ class PriorSampler:
         prior_coords : np.ndarray
             Sampled prior coordinates of shape [num_priors, N_atoms, 3].
         """
-        return self.sample_prior_coordinates(struct, rng)
+        return self.sample_prior_coordinates(struct, num_samples, rng)
 
     def sample_prior_coordinates(
         self,
         struct: RefStructure,
-        rng: np.random.Generator,
+        num_samples: int,
+        rng: np.random.Generator | None = None,
     ) -> np.ndarray:
         """Sample prior coordinates (xT) for the given structure.
 
@@ -121,6 +116,8 @@ class PriorSampler:
         ----------
         struct : RefStructure
             Reference structure containing apo coordinates.
+        num_samples : int
+            Number of prior samples to generate.
         rng : np.random.Generator
             Random number generator for stochastic operations.
 
@@ -129,7 +126,10 @@ class PriorSampler:
         prior_coords : np.ndarray
             Sampled prior coordinates of shape [num_priors, N_atoms, 3].
         """
-        if self.num_samples <= 0:
+        # Use a separate RNG for sampling to avoid affecting global state
+        rng = spawn_rng(rng)
+
+        if num_samples <= 0:
             return np.empty((0, struct.num_atoms, 3), dtype=np.float32)
 
         # === 1. Get chain apo coordinates or sample from prior === #
@@ -154,8 +154,7 @@ class PriorSampler:
 
         # === 2. Random augmentation === #
         prior_coords_list: list[np.ndarray] = [
-            self.sample_prior(chain_coords_list, struct, rng)
-            for _ in range(self.num_samples)
+            self.sample_prior(chain_coords_list, struct, rng) for _ in range(num_samples)
         ]
         return np.stack(prior_coords_list, axis=0)
 

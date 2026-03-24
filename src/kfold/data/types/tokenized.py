@@ -33,7 +33,7 @@ def full_nan(shape: tuple[int, ...]) -> np.ndarray:
 
 
 # === Tokenized data structures === #
-@dataclasses.dataclass(frozen=True, kw_only=True)
+@dataclasses.dataclass(kw_only=True)
 class ChainArray(PlainLayout[np.ndarray]):
     """Chain information.
 
@@ -151,7 +151,7 @@ class ChainArray(PlainLayout[np.ndarray]):
                 )
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
+@dataclasses.dataclass(kw_only=True)
 class TokenArray(PlainLayout[np.ndarray]):
     """Token information.
 
@@ -278,7 +278,7 @@ class TokenArray(PlainLayout[np.ndarray]):
                 )
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
+@dataclasses.dataclass(kw_only=True)
 class AtomArray(PlainLayout[np.ndarray]):
     """Atom information.
 
@@ -421,7 +421,7 @@ class AtomArray(PlainLayout[np.ndarray]):
                     )
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
+@dataclasses.dataclass(kw_only=True)
 class BondArray(PlainLayout[np.ndarray]):
     """Bond information.
 
@@ -479,7 +479,7 @@ class BondArray(PlainLayout[np.ndarray]):
                 )
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
+@dataclasses.dataclass(kw_only=True)
 class SequenceArray(PlainLayout[np.ndarray]):
     """Full sequence information for sequence embedding.
 
