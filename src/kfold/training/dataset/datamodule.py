@@ -76,6 +76,9 @@ class TrainingDataModule(pl.LightningDataModule):
 
     def construct_train_dataset(self) -> MultiTrainingDataset:
         """Construct training dataset."""
+        if hasattr(self, "_train_ds"):
+            return self._train_ds
+
         multi_ds = MultiTrainingDataset(
             configs=self.config.train_datasets,
             ccd=self.ccd,
@@ -95,6 +98,10 @@ class TrainingDataModule(pl.LightningDataModule):
         return multi_ds
 
     def construct_val_dataset(self) -> ValidationDataset:
+        """Construct validation dataset."""
+        if hasattr(self, "_val_ds"):
+            return self._val_ds
+
         # TODO: (SeonghwanSeo): currently only supports a single validation dataset
         if len(self.config.val_datasets) != 1:
             raise NotImplementedError(

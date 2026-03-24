@@ -120,7 +120,7 @@ class ValidationConfig(_Config):
     traj_format: str = "cif"
     symmetry_correction: bool = True
     # Validation output logging
-    save_predictions: bool = True
+    save_predictions: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
