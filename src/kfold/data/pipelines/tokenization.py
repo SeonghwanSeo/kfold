@@ -8,36 +8,29 @@ from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
-from kfold.utils.geometry.rigid_align import compute_rmsd
-
-from .apo_initialization import get_ambiguous_atoms_in_residue, get_molecule_symmetries
-from .prior_sampling import PriorSampler
+from kfold.utils.misc import spawn_rng
 
 
 class Tokenizer:
-    def __init__(
-        self,
-        ccd: CCD,
-        prior_sampler: PriorSampler | None,
-    ):
+    def __init__(self, ccd: CCD, mode: str = "inference"):
         """Tokenizer for structures.
 
         Parameters
         ----------
         ccd : CCD
             The chemical component dictionary.
-        prior_sampler : PriorSampler | None
-            The prior sampler.
         """
         self.ccd: CCD = ccd
-        self.prior_sampler: PriorSampler | None = prior_sampler
+        match mode:
+            case "train" | "val":
+                self.train = True
+            case "inference":
+                self.train = False
+            case _:
+                raise ValueError(f"Invalid mode: {mode}")
 
     def __call__(
-        self,
-        input: RefStructure,
-        rng: np.random.Generator | None = None,
-        use_cached_conformer_only: bool = False,
-        ref_pos_permutation: bool = False,
+        self, input: RefStructure, rng: np.random.Generator | None = None
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -47,29 +40,16 @@ class Tokenizer:
             The input structure.
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
-        use_cached_conformer_only : bool, optional
-            if True, only the cached conformers in the CCD will be used.
-        ref_pos_permutation : bool, optional
-            If True, apply permutation to reference positions to match label structure.
 
         Returns
         -------
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return self.tokenize(
-            input,
-            rng,
-            use_cached_conformer_only,
-            ref_pos_permutation,
-        )
+        return self.tokenize(input, rng)
 
     def tokenize(
-        self,
-        input: RefStructure,
-        rng: np.random.Generator | None = None,
-        use_cached_conformer_only: bool = False,
-        ref_pos_permutation: bool = False,
+        self, input: RefStructure, rng: np.random.Generator | None = None
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -79,33 +59,20 @@ class Tokenizer:
             The input structure.
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
-        use_cached_conformer_only : bool, optional
-            if True, only the cached conformers in the CCD will be used.
-        ref_pos_permutation : bool, optional
-            If True, apply permutation to reference positions to match label structure.
 
         Returns
         -------
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return tokenize_structure(
-            input,
-            self.prior_sampler,
-            self.ccd,
-            rng,
-            use_cached_conformer_only,
-            ref_pos_permutation=ref_pos_permutation,
-        )
+        return tokenize_structure(input, self.ccd, rng, self.train)
 
 
 def tokenize_structure(
     input: RefStructure,
-    prior_sampler: PriorSampler | None,
     ccd: CCD,
     rng: np.random.Generator | None = None,
-    use_cached_conformer_only: bool = False,
-    ref_pos_permutation: bool = False,
+    train: bool = False,
 ) -> TokenizedStructure:
     """Tokenize structure.
 
@@ -117,19 +84,16 @@ def tokenize_structure(
         The chemical component dictionary.
     rng : np.random.Generator, optional
         Random number generator for stochastic processes, by default None.
-    use_cached_conformer_only : bool, optional
-        if True, only the cached conformers in the CCD will be used.
-          - EKTDG-cached (up to 10 conformers by default with `ccd-train.pkl`)
-          - Ideal
-          - Model (Experimental)
-    ref_pos_permutation : bool, optional
-        If True, apply permutation to reference positions to match label structure.
+    train : bool, optional
+        Whether in training mode, by default False.
 
     Returns
     -------
     struct: TokenizedStructure
         The parsed tokenized structure.
     """
+    # Create new rng for this sampling to avoid affecting global state
+    rng = spawn_rng(rng)
 
     ccd_dict: dict[str, Component] = {}
     ccd_smi_dict: dict[str, Component] = {}
@@ -144,12 +108,6 @@ def tokenize_structure(
         if ccd_name not in ccd_dict:
             ccd_dict[ccd_name] = ccd[ccd_name]
         return ccd_dict[ccd_name]
-
-    rng = rng or np.random.default_rng()
-
-    conformer_mode = "auto"
-    if use_cached_conformer_only:
-        conformer_mode = "train"
 
     # ==================================================
     # Estimate sizes
@@ -178,14 +136,13 @@ def tokenize_structure(
     # Create empty tokenized structure
     # ==================================================
     num_bonds = input.num_bonds + input.num_connections
-    num_priors = prior_sampler.num_samples if prior_sampler is not None else 0
     struct = TokenizedStructure.get_empty(
         id=input.id,
         num_chains=len(input.chains),
         num_tokens=input.num_tokens,
         num_bonds=num_bonds,
         num_sequence_tokens=num_seq_tokens,
-        num_priors=num_priors,
+        num_priors=0,
     )
 
     # ==================================================
@@ -211,12 +168,7 @@ def tokenize_structure(
                 if smiles in ccd_smi_dict:
                     comp = ccd_smi_dict[smiles]
                 else:
-                    # Use a shorter timeout (5.0s) for training,
-                    # and longer timeout (30.0s) for inference.
-                    timeout = 5 if use_cached_conformer_only else 30
-                    comp: Component = Component.from_smiles(
-                        ccd_name, smiles, num_confs=1, timeout=timeout
-                    )
+                    comp: Component = Component.from_smiles(ccd_name, smiles)
                     ccd_smi_dict[smiles] = comp
             else:
                 assert ccd_name in ccd, f"Residue name {ccd_name} not found in CCD."
@@ -413,7 +365,7 @@ def tokenize_structure(
             ref_comp: Component = ccd_components[(asym_id, res_idx)]
 
             # Get reference conformer positions with random augmentation
-            ref_pos: np.ndarray = ref_comp.get_conformer(conformer_mode, rng)  # type: ignore
+            ref_pos: np.ndarray = ref_comp.get_ref_conformer(rng, train)
             assert ref_pos is not None, "Auto mode always provides a conformer."
 
             # Insert coordinates based on atom names
@@ -425,15 +377,6 @@ def tokenize_structure(
             ref_mask = np.isfinite(ref_pos).all(axis=-1)
 
             if ref_mask.any():
-                # Match residue permutation to label structure
-                if ref_pos_permutation:
-                    label_pos = chain.atom.coords[atom_slices]
-                    perm = find_best_residue_permutation(
-                        ref_pos, label_pos, ref_comp, atom_names, is_standard
-                    )
-                    if perm is not None:
-                        ref_pos, ref_mask = ref_pos[perm], ref_mask[perm]
-
                 # Apply random augmentation to reference positions
                 ref_pos = center_random_augmentation(ref_pos, ref_mask, rng=rng)
                 ref_pos[~ref_mask] = np.nan
@@ -456,18 +399,13 @@ def tokenize_structure(
                 struct.atom.ref_pos[st:end, 0, :] = ref_pos
                 g_tok_i += natoms
 
-    # Sample prior coordinates (xT)
-    pad_mask = struct.atom.pad_mask
-    if prior_sampler is not None and prior_sampler.num_samples > 0:
-        prior_coords = prior_sampler(input, rng=rng)  # (num_samples, num_atoms, 3)
-        struct.atom.prior_coords[pad_mask] = prior_coords.transpose(1, 0, 2)
-
     # Update atom masks at once
     struct.atom.ref_mask[:] = np.isfinite(struct.atom.ref_pos).all(axis=-1)
     struct.atom.resolved_mask[:] = np.isfinite(struct.atom.label_coords).all(axis=-1)
     struct.atom.apo_mask[:] = np.isfinite(struct.atom.apo_coords).all(axis=-1)
 
     # Update NaN to zero
+    pad_mask = struct.atom.pad_mask
     struct.atom.ref_charge[pad_mask] = np.nan_to_num(
         struct.atom.ref_charge[pad_mask], nan=0.0
     )
@@ -555,63 +493,3 @@ def tokenize_structure(
     struct.validate()
 
     return struct
-
-
-def find_best_residue_permutation(
-    ref_pos: np.ndarray,
-    label_pos: np.ndarray,
-    ref_comp: Component,
-    atom_names: list[str],
-    is_standard: bool,
-) -> list[int] | None:
-    """Find the best permutation of reference positions to match label positions.
-
-    Parameters
-    ----------
-    ref_pos : np.ndarray
-        Reference positions. Shape: (N, 3)
-    label_pos : np.ndarray
-        Label positions. Shape: (N, 3)
-    ref_comp : Component
-        Reference component from CCD.
-    atom_names : list[str]
-        List of atom names in the residue.
-    is_standard : bool
-        Whether the residue is standard.
-
-    Returns
-    -------
-    list[int] | None
-        The best permutation of reference positions. Shape: (N,)
-    """
-    if is_standard:
-        # Standard residue: use predefined ambiguous atom groups
-        perms = get_ambiguous_atoms_in_residue(ref_comp.code, extended=True)
-    else:
-        # Non-standard residue: use molecular symmetries from CCD
-        perms = get_molecule_symmetries(ref_comp, atom_names)
-
-    if perms is None or len(perms) <= 1:
-        return None
-
-    ref_mask = np.isfinite(ref_pos).all(axis=-1)
-    if not ref_mask.any():
-        return None
-
-    label_mask = np.isfinite(label_pos).all(axis=-1)
-    if not label_mask.any():
-        return None
-
-    best_rmsd = np.inf
-    best_perm = None
-    for perm in perms[:20]:
-        x = ref_pos[perm]
-        m = label_mask & ref_mask[perm]
-        if not m.any():
-            continue
-        rmsd = compute_rmsd(x[m], label_pos[m], mask=None, align=True, no_svd=True)
-        if rmsd < best_rmsd:
-            best_rmsd, best_perm = rmsd, perm
-    if best_perm is not None and best_perm == list(range(len(ref_pos))):
-        best_perm = None
-    return best_perm

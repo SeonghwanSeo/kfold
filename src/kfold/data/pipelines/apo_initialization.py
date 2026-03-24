@@ -10,6 +10,7 @@ from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import Chain, RefStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import compute_rmsd
+from kfold.utils.misc import spawn_rng
 
 from ._protein_perturbation import ProteinPerturbation, ProteinPerturbationConfig
 from ._small_mol_perturbation import SmallMolPerturbation, SmallMolPerturbationConfig
@@ -254,7 +255,8 @@ class ApoInitializer:
         rng : np.random.Generator
             Random number generator for stochastic operations.
         """
-        rng = rng or np.random.default_rng()
+        # Create new rng for this sampling to avoid affecting global state
+        rng = spawn_rng(rng)
 
         self.insert_apo_coordinates(struct, lookup, rng)
 

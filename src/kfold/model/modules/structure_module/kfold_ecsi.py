@@ -1364,6 +1364,6 @@ class KFoldECSI(BaseECSI):
 
         sample_out["sample_coordinates"] = x_t
         if return_traj:
-            sample_out["traj"] = torch.stack(traj)
+            sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Latom, 3)
 
         return sample_out

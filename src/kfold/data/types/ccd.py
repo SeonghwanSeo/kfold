@@ -253,6 +253,32 @@ class Component:
             indices.append(name_to_index[name])
         return indices
 
+    def get_ref_conformer(
+        self,
+        rng: np.random.Generator | None = None,
+        train: bool = False,
+    ) -> np.ndarray:
+        """Get the reference conformer coordinates.
+
+        The reference conformer is selected based on the following preference order:
+        `etkdg-cached` -> `etkdg` -> `ideal` -> `model` -> `nan`.
+
+        Parameters
+        ----------
+        rng : np.random.Generator | None, optional
+            A random number generator for conformer generation (default is None).
+        train : bool, optional
+            Whether to use the training conformer selection strategy (default is False).
+
+        Returns
+        -------
+        np.ndarray
+            An array of shape (n_atoms, 3) representing the coordinates.
+        """
+        conformer_type = "train" if train else "auto"
+        timeout = 5 if train else 30
+        return self.get_conformer(conformer_type, rng, timeout)
+
     def get_conformer(
         self,
         conformer_type: str,

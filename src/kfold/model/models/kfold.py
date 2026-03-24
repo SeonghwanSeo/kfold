@@ -42,6 +42,7 @@ class KFold(BaseFoldingModel):
         num_recycles: int = 10,
         num_steps: int = 200,
         num_samples: int = 5,
+        return_traj: bool = False,
     ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         """Forward pass of KFold model for model training.
 
@@ -86,7 +87,13 @@ class KFold(BaseFoldingModel):
             f_input.sequence.fa_struct_token_id[0, seq_sl] = fa_ids[apo_sl]
 
         # Sample structures
-        model_out, time_logs = self.sample(f_input, num_recycles, num_steps, num_samples)
+        model_out, time_logs = self.sample(
+            f_input,
+            num_recycles,
+            num_steps,
+            num_samples,
+            return_traj=return_traj,
+        )
 
         # remove batch dimension
         model_out = {k: v.squeeze(0) for k, v in model_out.items()}

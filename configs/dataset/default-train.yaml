@@ -33,7 +33,3 @@ apo_init:
     langevin_k_angle: 10.0
     langevin_temperature: 1.0
     recenter: true
-
-prior_sampler:
-  num_samples: 16
-  use_ot_permutation: false

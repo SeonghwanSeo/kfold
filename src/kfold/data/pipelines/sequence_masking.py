@@ -18,6 +18,7 @@ from kfold.constants.sequence import (
     PAD_TOKEN_INDEX,
 )
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.utils.misc import spawn_rng
 
 
 class SequenceMasking:
@@ -73,10 +74,11 @@ class SequenceMasking:
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
         """
+        # Create new rng for this sampling to avoid affecting global state
+        rng = spawn_rng(rng)
+
         if self.prob <= 0.0:
             return  # No masking needed
-
-        rng = rng or np.random.default_rng()
 
         if rng.random() >= self.prob:
             return  # Skip masking based on probability

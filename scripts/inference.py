@@ -41,6 +41,14 @@ def parse_args():
         help="Path to the model checkpoint file.",
     )
     parser.add_argument(
+        "--ccd",
+        type=pathlib.Path,
+        default=pathlib.Path(
+            "/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl"
+        ),
+        help="Path to the CCD data file.",
+    )
+    parser.add_argument(
         "-i",
         "--input",
         type=pathlib.Path,
@@ -80,20 +88,17 @@ def parse_args():
         help="Number of samples to generate per input.",
     )
     parser.add_argument(
+        "--save_trajectory",
+        action="store_true",
+        help="Whether to save diffusion trajectory.",
+    )
+    parser.add_argument(
         "--use_sequence_masking",
         action="store_true",
         help=(
             "Whether to mask sequence to increase sampling diversity."
             "This is only meaningful when using multiple seeds"
         ),
-    )
-    parser.add_argument(
-        "--ccd",
-        type=pathlib.Path,
-        default=pathlib.Path(
-            "/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl"
-        ),
-        help="Path to the CCD data file.",
     )
     parser.add_argument(
         "--cpu",
@@ -230,6 +235,7 @@ def main():
                 num_recycles=args.num_recycles,
                 num_steps=args.num_steps,
                 num_samples=args.num_samples,
+                return_traj=args.save_trajectory,
             )
 
         # NOTE: model_out contains:
@@ -238,6 +244,7 @@ def main():
         #   - z_trunk: final trunk latent [Ntoken, Ntoken, C_z]
         #   - distogram_logits: predicted distogram logits [Ntoken, Ntoken, bin]
         #   - sample_coordinates: generated coordinates [num_samples, Natom, 3]
+        #   - traj: (optional) diffusion trajectory [num_samples, num_frames, Natom, 3]
         # *) Ntoken and Natom may be different to original ones due to padding.
 
         # Save predictions
@@ -258,6 +265,21 @@ def main():
                 writer.write_new_coords(ref_struct, coords_i, save_path)
             except Exception as e:
                 logger.error(f"Warning: Failed to save sample {i} for {name}: {e}")
+
+        # Save trajectory
+        # [num_samples, num_frames, Natom, 3]
+        traj_coords = model_out["traj"][:, :, :num_atoms, :]
+        traj_coords = traj_coords.cpu().numpy()
+        for i in range(args.num_samples):
+            save_path = save_dir / f"{name}_seed-{seed}_sample-{i}_traj.pdb"
+            coords_i = traj_coords[i]
+            try:
+                writer.write_trajectory(ref_struct, coords_i, save_path)
+            except Exception as e:
+                logger.error(
+                    f"Warning: Failed to save trajectory for sample {i} of {name}: {e}"
+                )
+
     et = time.time()
     logger.info(f"Inference completed. ({et - st:.2f} seconds)")
 

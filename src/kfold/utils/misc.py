@@ -13,6 +13,26 @@ def set_seed(seed: int):
     torch.cuda.manual_seed(seed)
 
 
+def spawn_rng(global_rng: np.random.Generator | None = None) -> np.random.Generator:
+    """Get a random number generator.
+    This is designed to create a new RNG which is independent from the global RNG.
+
+    Parameters
+    ----------
+    rng : np.random.Generator, optional
+        A random number generator, by default None.
+
+    Returns
+    -------
+    np.random.Generator
+        A random number generator.
+    """
+    if global_rng is None:
+        return np.random.default_rng()
+    else:
+        return np.random.default_rng(global_rng.integers(0, 1 << 30))
+
+
 def hash_seq(seq: str) -> str:
     """Hash a sequence string to create a unique identifier."""
     return hashlib.sha256(seq.encode("utf-8")).hexdigest()
