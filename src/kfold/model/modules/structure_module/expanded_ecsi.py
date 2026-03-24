@@ -71,9 +71,7 @@ class KFoldExpandedECSI(KFoldECSI):
         alpha_dot: torch.Tensor,
         eta: float,
     ) -> torch.Tensor:
-        return eta * (
-            gamma_t * gamma_dot - (alpha_dot / (alpha_t + 1e-8)) * gamma_t**2
-        )
+        return eta * (gamma_t * gamma_dot - (alpha_dot / (alpha_t + 1e-8)) * gamma_t**2)
 
     def _compute_drift_components(
         self,
@@ -96,9 +94,9 @@ class KFoldExpandedECSI(KFoldECSI):
         xT_com, xT_internal = self.decompose_coords(x_T, mask)
 
         z_hat_com = (x_t_com - alpha_t * x0_com - beta_t * xT_com) / (gamma_com + 1e-8)
-        z_hat_internal = (
-            x_t_internal - alpha_t * x0_internal - beta_t * xT_internal
-        ) / (gamma_internal + 1e-8)
+        z_hat_internal = (x_t_internal - alpha_t * x0_internal - beta_t * xT_internal) / (
+            gamma_internal + 1e-8
+        )
 
         eps_com = self._compute_eps(
             gamma_t=gamma_com,
@@ -191,13 +189,9 @@ class KFoldExpandedECSI(KFoldECSI):
         f_t = alpha_dot / (alpha_t + 1e-8)
         s_t = beta_dot - f_t * beta_t
         base_eps_com = gamma_com * gamma_dot_com - f_t * gamma_com**2
-        base_eps_internal = (
-            gamma_internal * gamma_dot_internal - f_t * gamma_internal**2
-        )
+        base_eps_internal = gamma_internal * gamma_dot_internal - f_t * gamma_internal**2
         g_com = torch.sqrt(torch.clamp(2.0 * base_eps_com, min=0.0) + 1e-8)
-        g_internal = torch.sqrt(
-            torch.clamp(2.0 * base_eps_internal, min=0.0) + 1e-8
-        )
+        g_internal = torch.sqrt(torch.clamp(2.0 * base_eps_internal, min=0.0) + 1e-8)
 
         x_t_com, x_t_internal = self.decompose_coords(x_t, atom_mask)
         x_target_com, x_target_internal = self.decompose_coords(x_churn_target, atom_mask)
@@ -371,5 +365,5 @@ class KFoldExpandedECSI(KFoldECSI):
 
         sample_out["sample_coordinates"] = x_t
         if return_traj:
-            sample_out["traj"] = torch.stack(traj)
+            sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Latom, 3)
         return sample_out

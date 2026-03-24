@@ -508,7 +508,6 @@ class KFoldTrainingModule(pl.LightningModule):
             )
             sample_out = out["sample"]
             sample_coords = sample_out["sample_coordinates"]
-            traj = sample_out.get("traj")
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -605,10 +604,11 @@ class KFoldTrainingModule(pl.LightningModule):
                     )
 
                 # Save trajectory if available
-                if traj is not None:
+                if "traj" in sample_out:
+                    traj = sample_out["traj"][0]  # remove batch dim
                     self.save_trajectory(
                         ref_struct,
-                        traj[:, 0],  # [T, Natom, 3]
+                        traj,
                         save_dir,
                         format=val_config.traj_format,
                     )
@@ -989,7 +989,7 @@ class KFoldTrainingModule(pl.LightningModule):
         """Save predicted and ground-truth structures as mmCIF files."""
         name: str = ref_struct.id
 
-        assert traj.ndim == 4, "Trajectory must be of shape (Nframe, Nsample, Natom, 3)"
+        assert traj.ndim == 4, "Trajectory must be of shape (Nsample, Nframe, Natom, 3)"
         num_samples: int = traj.shape[1]
 
         # Remove padding atoms
@@ -999,6 +999,6 @@ class KFoldTrainingModule(pl.LightningModule):
         # Compute structure metrics
         for i in range(num_samples):
             # Save trajectory
-            traj_i = traj[:, i, :, :]  # [Nframe, Natom, 3]
+            traj_i = traj[i]
             save_path = save_dir / f"{name}-sample-{i}-traj.{format}"
             self.writer.write_trajectory(ref_struct, traj_i, save_path)

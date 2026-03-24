@@ -341,7 +341,7 @@ class AF3SampleDiffusion(BaseEDM):
         sample_out["init_coordinates"] = start_coords
         sample_out["sample_coordinates"] = atom_coords
         if return_traj:
-            sample_out["traj"] = torch.stack(traj)
+            sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Latom, 3)
 
         return sample_out
 
