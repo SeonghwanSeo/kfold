@@ -23,10 +23,6 @@ train:
   name: edm
   out_dir: ./experiments/
 
-  global_hparams:
-    batch_size: 1
-    global_batch_size: 256
-
   loss:
     diffusion_loss:
       smooth_lddt_loss:

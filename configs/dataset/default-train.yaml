@@ -35,5 +35,5 @@ apo_init:
     recenter: true
 
 prior_sampler:
-  num_samples: 4
-  use_ot_permutation: true
+  num_samples: 16
+  use_ot_permutation: false
