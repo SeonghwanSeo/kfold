@@ -240,7 +240,7 @@ def normalize_apo_path(apo_path: str, input_dir: str | Path) -> str:
         The normalized absolute path to the apo file.
     """
     apo_path: Path = Path(apo_path)
-    if not apo_path.is_absolute():
+    if not apo_path.exists():
         apo_path = Path(input_dir) / apo_path
     return str(apo_path.resolve())
 
