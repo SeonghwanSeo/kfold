@@ -1,7 +1,6 @@
 import argparse
 import logging
 from pathlib import Path
-from typing import Any
 
 import lightning.pytorch as pl
 import lightning.pytorch.callbacks as pl_callbacks
@@ -12,55 +11,6 @@ from omegaconf import DictConfig
 from kfold.config import load_config, print_config, save_config, to_dict
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.training.training_module import KFoldTrainingModule
-
-
-class LoadLrStateCallback(pl_callbacks.Callback):
-    def __init__(self, checkpoint_path: str) -> None:
-        self.checkpoint_path = checkpoint_path
-        self._loaded = False
-
-    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        del pl_module
-        if self._loaded:
-            return
-
-        checkpoint = torch.load(self.checkpoint_path, map_location="cpu")
-        lr_schedulers = checkpoint.get("lr_schedulers")
-        if not lr_schedulers:
-            raise KeyError(
-                f"No lr_schedulers state found in checkpoint: {self.checkpoint_path}"
-            )
-
-        if len(trainer.lr_scheduler_configs) != len(lr_schedulers):
-            raise ValueError(
-                "Checkpoint lr_schedulers do not match current trainer setup: "
-                f"{len(lr_schedulers)} vs {len(trainer.lr_scheduler_configs)}"
-            )
-
-        for scheduler_config, scheduler_state in zip(
-            trainer.lr_scheduler_configs, lr_schedulers, strict=True
-        ):
-            scheduler = scheduler_config.scheduler
-            scheduler.load_state_dict(scheduler_state)
-
-            last_lr = scheduler_state.get("_last_lr")
-            if last_lr is None:
-                continue
-
-            param_groups = scheduler.optimizer.param_groups
-            if len(param_groups) != len(last_lr):
-                raise ValueError(
-                    "Checkpoint lr state does not match optimizer param groups: "
-                    f"{len(last_lr)} vs {len(param_groups)}"
-                )
-
-            for param_group, lr in zip(param_groups, last_lr, strict=True):
-                param_group["lr"] = lr
-                if "initial_lr" in param_group:
-                    param_group["initial_lr"] = lr
-
-        self._loaded = True
-        print(f"Loaded lr scheduler state from: {self.checkpoint_path}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -118,21 +68,6 @@ def parse_args() -> argparse.Namespace:
         help="Path to a checkpoint file to resume training from.",
     )
     parser.add_argument(
-        "--load_weights_only_from_checkpoint",
-        type=str,
-        help=(
-            "Load model weights only from checkpoint without restoring optimizer state."
-        ),
-    )
-    parser.add_argument(
-        "--load_lr_state_from_checkpoint",
-        type=str,
-        help=(
-            "Load lr scheduler state only from checkpoint without restoring "
-            "optimizer state."
-        ),
-    )
-    parser.add_argument(
         "--wandb",
         action="store_true",
         help="Enable Weights & Biases logging.",
@@ -154,18 +89,6 @@ def parse_args() -> argparse.Namespace:
         help="Override configuration options using 'key=value' format.",
     )
     return parser.parse_args()
-
-
-def validate_args(args: argparse.Namespace) -> None:
-    if args.resume_from_checkpoint is not None and (
-        args.load_weights_only_from_checkpoint is not None
-        or args.load_lr_state_from_checkpoint is not None
-    ):
-        raise ValueError(
-            "--resume_from_checkpoint cannot be combined with "
-            "--load_weights_only_from_checkpoint or "
-            "--load_lr_state_from_checkpoint."
-        )
 
 
 def parse_config(args) -> DictConfig:
@@ -343,24 +266,9 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
     return trainer
 
 
-def load_model_weights_only(
-    model_module: KFoldTrainingModule, checkpoint_path: str
-) -> None:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state_dict: dict[str, Any]
-    if "state_dict" in checkpoint:
-        state_dict = checkpoint["state_dict"]
-    else:
-        state_dict = checkpoint
-
-    model_module.load_state_dict(state_dict, strict=True)
-    print(f"Loaded model weights from: {checkpoint_path}")
-
-
 def train(args) -> None:
     # To ignore warning
     torch.set_float32_matmul_precision("high")
-    validate_args(args)
 
     cfg = parse_config(args)
 
@@ -371,12 +279,6 @@ def train(args) -> None:
 
     model_module = KFoldTrainingModule(cfg)
     data_module = TrainingDataModule(cfg.train.data)
-
-    if args.load_weights_only_from_checkpoint is not None:
-        load_model_weights_only(model_module, args.load_weights_only_from_checkpoint)
-
-    if args.load_lr_state_from_checkpoint is not None:
-        trainer.callbacks.append(LoadLrStateCallback(args.load_lr_state_from_checkpoint))
 
     # Print config
     if trainer.is_global_zero:

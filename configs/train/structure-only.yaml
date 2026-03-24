@@ -99,6 +99,7 @@ optimizer:
   lr_decay_factor: 0.95
   use_ema: true
   ema_decay: 0.999
+  load_opt_state_from_checkpoint: true
 
 loss:
   weights:
