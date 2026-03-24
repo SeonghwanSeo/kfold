@@ -137,6 +137,19 @@ class PriorSampler:
         for i in range(struct.num_chains):
             chain = struct.chains[i]
             chain_coords = chain.atom.apo_coords
+
+            # Fill missing atoms and relax
+            # NOTE: This operation is conducted before augmentation and OT permutation
+            # to reduce the computational cost.
+            is_missing: np.ndarray = ~np.isfinite(chain_coords).all(axis=-1)
+            if is_missing.any():
+                # Insert gaussian noise for missing atoms
+                chain_coords = self.fill_missing_atoms(chain_coords, is_missing, rng)
+                # Relax with Langevin dynamics
+                chain_coords = self.langevin_relaxation(
+                    chain_coords, is_missing, chain, rng
+                )
+
             chain_coords_list.append(chain_coords)
 
         # === 2. Random augmentation === #
@@ -152,23 +165,13 @@ class PriorSampler:
         struct: RefStructure,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        prior_coords_list: list[np.ndarray] = []
-        for chain_i, chain in enumerate(struct.chains):
-            chain_coords = chain_apo_list[chain_i]
-
-            # Fill missing atoms and relax
-            is_missing: np.ndarray = ~np.isfinite(chain_coords).all(axis=-1)
-            if is_missing.any():
-                # Insert gaussian noise for missing atoms
-                chain_coords = self.fill_missing_atoms(chain_coords, is_missing, rng)
-                # Relax using Langevin dynamics
-                chain_coords = self.langevin_relaxation(
-                    chain_coords, is_missing, chain, rng
-                )
-
-            # Apply random rotation/translation augmentation
-            augmented_coords = self.apply_random_augmentation(chain_coords, rng)
-            prior_coords_list.append(augmented_coords)
+        """Sample a single prior coordinate set with augmentation and optional
+        optimal-transport permutation."""
+        # Apply random augmentation to each chain
+        prior_coords_list: list[np.ndarray] = [
+            self.apply_random_augmentation(chain_coords, rng)
+            for chain_coords in chain_apo_list
+        ]
 
         if self.use_ot_permutation:
             # Optimal transport permutation

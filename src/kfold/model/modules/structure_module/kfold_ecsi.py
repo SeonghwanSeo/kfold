@@ -240,6 +240,15 @@ class KFoldECSI(BaseECSI):
         alignment_entity_strategy : str | None, optional
             Strategy for selecting entity to align: None (all entities), "largest",
             or "random_non_ligand", by default "largest".
+        train_prior_chain_translation_scale : float, optional
+            Standard deviation of per-chain random translation applied to sampled
+            prior coordinates during training, by default 0.0.
+        inference_prior_chain_translation_scale : float, optional
+            Standard deviation of per-chain random translation applied to sampled
+            prior coordinates during inference, by default 0.0.
+        train_align_prior_to_label : bool, optional
+            Whether to rigidly align sampled prior coordinates to label coordinates
+            during training, by default True.
         """
 
         num_steps: int = 200
@@ -278,6 +287,9 @@ class KFoldECSI(BaseECSI):
         use_prior_coords: bool = True
         alignment_entity_strategy: str | None = None
         alignment_level: str = "chain"
+        train_prior_chain_translation_scale: float = 0.0
+        inference_prior_chain_translation_scale: float = 0.0
+        train_align_prior_to_label: bool = True
         s_trans: float = 1.0
         inference_align_x0_hat_to_x_t: bool = True
         perturb_xt: bool = True
@@ -334,6 +346,13 @@ class KFoldECSI(BaseECSI):
         self.use_prior_coords: bool = cfg.use_prior_coords
         self.s_trans: float = cfg.s_trans
         self.alignment_level: str = cfg.alignment_level
+        self.train_prior_chain_translation_scale: float = (
+            cfg.train_prior_chain_translation_scale
+        )
+        self.inference_prior_chain_translation_scale: float = (
+            cfg.inference_prior_chain_translation_scale
+        )
+        self.train_align_prior_to_label: bool = cfg.train_align_prior_to_label
         self.inference_align_x0_hat_to_x_t: bool = cfg.inference_align_x0_hat_to_x_t
         self.perturb_xt: bool = cfg.perturb_xt
         self.endpoint_perturb_scale: float | None = cfg.endpoint_perturb_scale
@@ -370,6 +389,63 @@ class KFoldECSI(BaseECSI):
     ) -> torch.Tensor:
         """Apply random augmentation to coordinates."""
         return self.random_augmentation(coords, mask=mask)
+
+    @staticmethod
+    def _expand_batch_metadata(metadata: torch.Tensor, batch_size: int) -> torch.Tensor:
+        if metadata.dim() == 1:
+            metadata = metadata.unsqueeze(0)
+        if metadata.shape[0] == 1 and batch_size > 1:
+            metadata = metadata.expand(batch_size, -1)
+        return metadata
+
+    def _get_atom_chain_ids(self, f_input: FoldingInput, batch_size: int) -> torch.Tensor:
+        token_asym_id = self._expand_batch_metadata(f_input.token.asym_id, batch_size)
+        atom_token_index = self._expand_batch_metadata(
+            f_input.atom.token_index, batch_size
+        )
+        return token_asym_id.gather(-1, atom_token_index.clamp(min=0))
+
+    def _apply_prior_chain_translation(
+        self,
+        coords: torch.Tensor,
+        f_input: FoldingInput,
+        translation_scale: float,
+    ) -> torch.Tensor:
+        if translation_scale <= 0.0:
+            return coords
+
+        batch_size, num_samples, num_atoms = coords.shape[:3]
+        atom_chain_id = self._get_atom_chain_ids(f_input, batch_size).clamp(min=0)
+        max_chain_id = int(atom_chain_id.max().item())
+
+        chain_translation = (
+            torch.randn(
+                batch_size,
+                num_samples,
+                max_chain_id + 1,
+                3,
+                device=coords.device,
+                dtype=coords.dtype,
+            )
+            * translation_scale
+        )
+        gather_index = atom_chain_id[:, None, :, None].expand(
+            batch_size, num_samples, num_atoms, 3
+        )
+        atom_translation = torch.gather(chain_translation, dim=2, index=gather_index)
+        atom_mask = f_input.atom.pad_mask[:, None, :, None].to(dtype=coords.dtype)
+        return coords + atom_translation * atom_mask
+
+    def _apply_train_prior_chain_translation(
+        self,
+        coords: torch.Tensor,
+        f_input: FoldingInput,
+    ) -> torch.Tensor:
+        return self._apply_prior_chain_translation(
+            coords=coords,
+            f_input=f_input,
+            translation_scale=self.train_prior_chain_translation_scale,
+        )
 
     def _configure_route_functions(self, cfg: Config) -> None:
         route = (cfg.route_type or "linear").lower().replace("-", "_")
@@ -908,12 +984,22 @@ class KFoldECSI(BaseECSI):
         prior_coords = prior_coords.permute(0, 2, 1, 3)  # [B, N, Latom, 3]
 
         if label_coords is None:
+            prior_coords = self._apply_prior_chain_translation(
+                coords=prior_coords,
+                f_input=f_input,
+                translation_scale=self.inference_prior_chain_translation_scale,
+            )
             # No label provided; apply random augmentation
             prior_mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Latom]
             prior_coords = self.apply_random_augmentation(prior_coords, mask=prior_mask)
         else:
-            # Skip random augmentation since we will align to label
-            prior_coords = self.align_apo_to_label(prior_coords, label_coords, f_input)
+            prior_coords = self._apply_train_prior_chain_translation(
+                prior_coords, f_input
+            )
+            if self.train_align_prior_to_label:
+                prior_coords = self.align_apo_to_label(
+                    prior_coords, label_coords, f_input
+                )
 
         return prior_coords
 

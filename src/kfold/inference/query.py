@@ -224,6 +224,27 @@ class Query:
             f.write(self.yaml)
 
 
+def normalize_apo_path(apo_path: str, input_dir: str | Path) -> str:
+    """Normalize the apo file path to be absolute based on the input directory.
+
+    Parameters
+    ----------
+    apo_path : str
+        The original apo file path from the input.
+    input_dir : str | Path
+        The directory of the input file, used as the base for relative paths.
+
+    Returns
+    -------
+    normalized_path: str
+        The normalized absolute path to the apo file.
+    """
+    apo_path: Path = Path(apo_path)
+    if not apo_path.exists():
+        apo_path = Path(input_dir) / apo_path
+    return str(apo_path.resolve())
+
+
 def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
     """Parse input YAML file into Query dataclass.
 
@@ -266,6 +287,10 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
             "Each sequence entry must contain exactly one chain type."
         )
         chain_type, chain_info = next(iter(seq_dict.items()))
+        if chain_type == "protein" and "apo" in chain_info:
+            # Normalize apo path to be absolute based on input file directory
+            input_dir = Path(json_or_yaml_path).parent
+            chain_info["apo"] = normalize_apo_path(chain_info["apo"], input_dir)
         match chain_type:
             case "protein":
                 sequence = ProteinSequence(**chain_info)
@@ -279,7 +304,7 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
                 raise ValueError(f"Unsupported chain type: {chain_type}")
         sequences.append(sequence)
 
-    validate_input_sequences(sequences, ccd=ccd)
+    validate_input_sequences(json_or_yaml_path, sequences, ccd=ccd)
 
     return Query(
         name=name,
@@ -440,11 +465,17 @@ def validate_input_dicts(
             asym_ids.add(i)
 
 
-def validate_input_sequences(seq_list: list[BaseSequence], ccd: CCD) -> None:
+def validate_input_sequences(
+    input_path: str | Path,
+    seq_list: list[BaseSequence],
+    ccd: CCD,
+) -> None:
     """Validate the input sequence dataclasses.
 
     Parameters
     ----------
+    input_path : str | Path
+        Path to the input JSON/YAML file.
     seq_list : list[BaseSequence]
         List of sequence dataclasses to validate.
     ccd : CCD
@@ -484,7 +515,9 @@ def validate_input_sequences(seq_list: list[BaseSequence], ccd: CCD) -> None:
                     raise ValueError(
                         f"Invalid residue '{res}' found in sequence of type {ctype}."
                     )
-        elif isinstance(sequence, LigandSequence):
+
+        # Additional checks for LigandSequence
+        if isinstance(sequence, LigandSequence):
             if sequence.smiles is not None:
                 # Basic check for SMILES string
                 mol = Chem.MolFromSmiles(sequence.smiles)
