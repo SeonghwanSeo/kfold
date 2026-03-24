@@ -18,44 +18,25 @@ from kfold.utils.misc import spawn_rng
 from .apo_initialization import get_ambiguous_atoms_in_residue, get_molecule_symmetries
 
 
-def sample_uniform_sphere_surface(
-    radius: float,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """Sample a point uniformly from the surface of a sphere."""
-    z = rng.uniform(-1.0, 1.0)
-    theta = rng.uniform(0.0, 2.0 * np.pi)
-    r_xy = np.sqrt(max(0.0, 1.0 - z * z))
-    point = np.array([r_xy * np.cos(theta), r_xy * np.sin(theta), z], dtype=np.float32)
-    return point * np.float32(radius)
-
-
 @dataclasses.dataclass(kw_only=True)
 class PriorSamplerConfig:
     """Configuration for ComplexPriorSampler.
 
     Attributes
     ----------
-    use_chain_com_sampling : bool
-        If set, place each chain's center of mass on a sphere surface with
-        this radius (uniformly sampled).
     use_ot_permutation : bool
         Whether to apply optimal transport-based permutation
     translation_scale : float
         Scale of random translation augmentation (in Angstrom).
     """
 
-    use_chain_com_sampling: bool = False
     use_ot_permutation: bool = False
     translation_scale: float = 1.0  # Angstrom
 
     @classmethod
     def inference_mode(cls) -> Self:
         """Get a PriorSampler instance configured for inference"""
-        return cls(
-            use_chain_com_sampling=False,
-            use_ot_permutation=False,
-        )
+        return cls()
 
 
 class PriorSampler:
@@ -66,7 +47,6 @@ class PriorSampler:
         self.ccd: CCD = ccd
 
         self.use_ot_permutation: bool = config.use_ot_permutation
-        self.use_chain_com_sampling: bool = config.use_chain_com_sampling
         self.translation_scale: float = config.translation_scale
 
         # Langevin dynamics simulator for relaxing missing atoms
@@ -254,18 +234,9 @@ class PriorSampler:
             return coords
 
         # Apply random augmentation
-        if self.use_chain_com_sampling:
-            augmented_coords = center_random_augmentation(
-                coords, mask, augmentation=True, s_trans=0.0, rng=rng
-            )
-            current_com = augmented_coords[mask].mean(axis=0)
-            target_com = sample_uniform_sphere_surface(self.translation_scale, rng)
-            shift = target_com - current_com
-            augmented_coords += shift[None, :]
-        else:
-            augmented_coords = center_random_augmentation(
-                coords, mask, augmentation=True, s_trans=self.translation_scale, rng=rng
-            )
+        augmented_coords = center_random_augmentation(
+            coords, mask, augmentation=True, s_trans=self.translation_scale, rng=rng
+        )
 
         augmented_coords[~mask] = np.nan
         return augmented_coords

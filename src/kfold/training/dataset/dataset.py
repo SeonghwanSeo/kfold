@@ -58,7 +58,6 @@ import lmdb
 import msgpack
 import numpy as np
 import torch
-from omegaconf import OmegaConf
 from typing_extensions import override
 
 import kfold.constants as C
@@ -82,6 +81,7 @@ from .sampler import BaseSampler, Sample
 from .utils import pre_crop, symmetry
 
 
+# === Helper functions === #
 def _open_lmdb(lmdb_path: str | Path) -> lmdb.Environment:
     if not Path(lmdb_path).exists():
         raise FileNotFoundError(f"LMDB file {lmdb_path} not found.")
@@ -92,8 +92,7 @@ def _open_lmdb(lmdb_path: str | Path) -> lmdb.Environment:
 
 def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
     """Parse residue map string into start and end indices.
-    Example:
-        "1:100->5:104" -> (0, 100, 4, 104)
+    Example: "1:100->5:104" -> (0, 100, 4, 104)
     """
     res_range, apo_range = residue_map.split("->")
     res_st, res_end = map(int, res_range.split(":"))
@@ -130,12 +129,6 @@ class DatasetConfig:
     seed: int | None = None
     apo_init: apo_initialization.ApoInitializerConfig
     prior_sampler: prior_sampling.PriorSamplerConfig | None
-
-    @classmethod
-    def from_dict(cls, config) -> "DatasetConfig":
-        default_config = OmegaConf.create(cls)
-        merged_config = OmegaConf.merge(default_config, OmegaConf.create(config))
-        return OmegaConf.to_object(merged_config)
 
 
 @dataclasses.dataclass(kw_only=True)
