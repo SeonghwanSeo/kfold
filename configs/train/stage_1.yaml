@@ -1,13 +1,51 @@
 _yaml_: "structure-only.yaml"
 
-# Training parameters for multi-gpu setup.
 global_hparams:
-  batch_size: 1
   diffusion_batch_size: 48
-  global_batch_size: 256
-  num_global_steps_per_epoch: 1000
 
 data:
   max_chains: 20
   max_tokens: 384
-  max_sequence_tokens: 768
+  max_sequence_tokens: 512
+
+  ccd_path: /cache/wykim_lab/kfold_data/v260310/ccd-train.pkl
+  train_datasets:
+    - _yaml_: "../dataset/rcsb-train.yaml"
+      weight: 0.460
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-train/
+
+    - _yaml_: "../dataset/afdb-long.yaml"
+      weight: 0.455
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/afdb-long/
+
+    - _yaml_: "../dataset/afdb-short.yaml"
+      weight: 0.005
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/afdb-short/
+
+    - _yaml_: "../dataset/sair.yaml"
+      weight: 0.030
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/SAIR/
+
+    - _yaml_: "../dataset/humap.yaml"
+      weight: 0.030
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/huMAP/
+
+    - _yaml_: "../dataset/natural_ab.yaml"
+      weight: 0.010
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/NatAb/
+
+    - _yaml_: "../dataset/encore.yaml"
+      weight: 0.005
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/ENCORE/
+
+    - _yaml_: "../dataset/protac_db.yaml"
+      weight: 0.0045
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/PROTAC-DB/
+
+    - _yaml_: "../dataset/molglue_db.yaml"
+      weight: 0.0005
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/MolGlueDB/
+
+  val_datasets:
+    - _yaml_: "../dataset/rcsb-val.yaml"
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-val/
