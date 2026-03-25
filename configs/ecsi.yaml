@@ -12,3 +12,13 @@ trunk:
   pairformer:
     use_qk_norm: true
   num_register_tokens: 8
+
+structure_module:
+  # high-priority parameters
+  sampling_schedule_global_u_power: 2.0
+  sampling_schedule_churn_fraction: 0.35
+  sampling_schedule_ode_fraction: 0.20
+  # low-priority parameters
+  sampling_schedule_churn_power: 1.40
+  sampling_schedule_middle_power: 1.0
+  sampling_schedule_ode_power: 2.6
