@@ -147,5 +147,5 @@ wandb:
   use: false
   project: "KFold"
   group: null # set your group name
-  entity: null # set your entity name
+  entity: "K-Fold" # set your entity name
   tags: [] # add your tags
