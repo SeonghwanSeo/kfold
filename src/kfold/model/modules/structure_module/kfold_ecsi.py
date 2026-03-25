@@ -2,7 +2,6 @@
 # Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
 # Adapted from ECSI training code and kfold_ddbm.py
 
-import math
 from typing import Protocol
 
 import torch
@@ -17,8 +16,6 @@ from .base import BaseECSI
 
 
 class _Route(Protocol):
-    route_type: str
-
     def alpha(self, t: torch.Tensor) -> torch.Tensor: ...
 
     def alpha_deriv(self, t: torch.Tensor) -> torch.Tensor: ...
@@ -33,8 +30,6 @@ class _Route(Protocol):
 
 
 class _LinearRoute:
-    route_type = "linear"
-
     def __init__(self, gamma_max: float, power: float) -> None:
         self.gamma_max = gamma_max
         self.power = power
@@ -74,100 +69,6 @@ class _LinearRoute:
         return (self.gamma_max / 4) * coeff * (1 - 2 * t_pow) / (denom + 1e-8)
 
 
-class _DdbmVpRoute:
-    route_type = "ddbm_vp"
-
-    def __init__(self, beta_min: float, beta_d: float) -> None:
-        self.beta_min = beta_min
-        self.beta_d = beta_d
-
-        exponent = 0.5 * beta_d + beta_min
-        self.a1 = math.exp(exponent) ** -0.5
-        self.sigma1_sq = math.exp(exponent) - 1.0
-
-    def _constants(self, t: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        a1 = t.new_tensor(self.a1)
-        sigma1_sq = t.new_tensor(self.sigma1_sq)
-        return a1, sigma1_sq
-
-    def _base(
-        self, t: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        beta_d = t.new_tensor(self.beta_d)
-        beta_min = t.new_tensor(self.beta_min)
-        log_snr = 0.5 * beta_d * t**2 + beta_min * t
-        exp_term = torch.exp(log_snr)
-        sigma_sq = exp_term - 1.0
-        sigma_sq_prime = exp_term * (beta_d * t + beta_min)
-        a_t = torch.rsqrt(exp_term)
-        a_t_prime = -0.5 * (beta_d * t + beta_min) * a_t
-        return a_t, a_t_prime, sigma_sq, sigma_sq_prime
-
-    def alpha(self, t: torch.Tensor) -> torch.Tensor:
-        a_t, _, sigma_sq, _ = self._base(t)
-        a1, sigma1_sq = self._constants(t)
-        a1_sq = a1 * a1
-        a_t_sq = a_t * a_t
-        denom = sigma1_sq * a_t_sq + 1e-8
-        ratio = sigma_sq * a1_sq / denom
-        return a_t * (1 - ratio)
-
-    def alpha_deriv(self, t: torch.Tensor) -> torch.Tensor:
-        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._base(t)
-        a1, sigma1_sq = self._constants(t)
-        a1_sq = a1 * a1
-        a_t_sq = a_t * a_t
-        a_t_sq_prime = 2 * a_t * a_t_prime
-        inv_a_t_sq = 1 / (a_t_sq + 1e-8)
-        k = a1_sq / (sigma1_sq + 1e-8)
-        ratio = k * sigma_sq * inv_a_t_sq
-        ratio_prime = k * (
-            sigma_sq_prime * inv_a_t_sq
-            - sigma_sq * a_t_sq_prime * inv_a_t_sq * inv_a_t_sq
-        )
-        return a_t_prime * (1 - ratio) - a_t * ratio_prime
-
-    def beta(self, t: torch.Tensor) -> torch.Tensor:
-        a_t, _, sigma_sq, _ = self._base(t)
-        a1, sigma1_sq = self._constants(t)
-        denom = sigma1_sq * a_t + 1e-8
-        return sigma_sq * a1 / denom
-
-    def beta_deriv(self, t: torch.Tensor) -> torch.Tensor:
-        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._base(t)
-        a1, sigma1_sq = self._constants(t)
-        inv_a_t = 1 / (a_t + 1e-8)
-        k = a1 / (sigma1_sq + 1e-8)
-        return k * (sigma_sq_prime * inv_a_t - sigma_sq * a_t_prime * inv_a_t * inv_a_t)
-
-    def gamma(self, t: torch.Tensor) -> torch.Tensor:
-        a_t, _, sigma_sq, _ = self._base(t)
-        a1, sigma1_sq = self._constants(t)
-        a1_sq = a1 * a1
-        a_t_sq = a_t * a_t
-        ratio = sigma_sq * a1_sq / (sigma1_sq * a_t_sq + 1e-8)
-        gamma_sq = sigma_sq * (1 - ratio)
-        return torch.sqrt(torch.clamp(gamma_sq, min=0.0) + 1e-8)
-
-    def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
-        a_t, a_t_prime, sigma_sq, sigma_sq_prime = self._base(t)
-        a1, sigma1_sq = self._constants(t)
-        a1_sq = a1 * a1
-        a_t_sq = a_t * a_t
-        a_t_sq_prime = 2 * a_t * a_t_prime
-        inv_a_t_sq = 1 / (a_t_sq + 1e-8)
-        k = a1_sq / (sigma1_sq + 1e-8)
-        ratio = k * sigma_sq * inv_a_t_sq
-        ratio_prime = k * (
-            sigma_sq_prime * inv_a_t_sq
-            - sigma_sq * a_t_sq_prime * inv_a_t_sq * inv_a_t_sq
-        )
-        gamma_sq = sigma_sq * (1 - ratio)
-        gamma_sq_prime = sigma_sq_prime * (1 - ratio) - sigma_sq * ratio_prime
-        gamma = torch.sqrt(torch.clamp(gamma_sq, min=0.0) + 1e-8)
-        return 0.5 * gamma_sq_prime / (gamma + 1e-8)
-
-
 @STRUCTURE_MODULE.register()
 class KFoldECSI(BaseECSI):
     r"""Endpoint-Conditioned Stochastic Interpolant module for structure prediction.
@@ -180,7 +81,6 @@ class KFoldECSI(BaseECSI):
     - Linear route with shared power k:
       \alpha_t=1-t^k, \beta_t=t^k,
       \gamma_t^2=\gamma_{max}^2/4 \cdot t^k(1-t^k)
-    - DDBM-VP route (Appendix C.2): configurable via route_type="ddbm_vp"
     - Stochasticity control via \eta parameter during sampling
     - Preconditioning adapted from DDBM
 
@@ -207,13 +107,6 @@ class KFoldECSI(BaseECSI):
             Shared exponent k for linear route coefficients.
             Uses \alpha_t=1-t^k, \beta_t=t^k, and
             \gamma_t^2=\gamma_{max}^2/4 * t^k(1-t^k), by default 2.0.
-        route_type : str, optional
-            Route selection for (\alpha_t, \beta_t, \gamma_t). Options: "linear"
-            (default) or "ddbm_vp".
-        ddbm_vp_beta_min : float, optional
-            DDBM-VP beta_min parameter for \sigma_t and a_t schedules.
-        ddbm_vp_beta_d : float, optional
-            DDBM-VP beta_d parameter for \sigma_t and a_t schedules.
         sigma_data : float, optional
             Standard deviation of target (holo) distribution, by default 16.0.
         sigma_data_end : float, optional
@@ -240,12 +133,9 @@ class KFoldECSI(BaseECSI):
         alignment_entity_strategy : str | None, optional
             Strategy for selecting entity to align: None (all entities), "largest",
             or "random_non_ligand", by default "largest".
-        train_prior_chain_translation_scale : float, optional
+        prior_chain_translation_scale : float, optional
             Standard deviation of per-chain random translation applied to sampled
-            prior coordinates during training, by default 0.0.
-        inference_prior_chain_translation_scale : float, optional
-            Standard deviation of per-chain random translation applied to sampled
-            prior coordinates during inference, by default 0.0.
+            prior coordinates, by default 0.0.
         train_align_prior_to_label : bool, optional
             Whether to rigidly align sampled prior coordinates to label coordinates
             during training, by default True.
@@ -256,9 +146,6 @@ class KFoldECSI(BaseECSI):
         sigma_max: float = 0.999
         gamma_max: float = 0.25
         time_power: float = 2.0
-        route_type: str = "linear"
-        ddbm_vp_beta_min: float = 0.1
-        ddbm_vp_beta_d: float = 16.0
         sigma_data: float = 16.0
         sigma_data_end: float = 16.0
         cov_xy: float = 128.0
@@ -287,8 +174,7 @@ class KFoldECSI(BaseECSI):
         use_prior_coords: bool = True
         alignment_entity_strategy: str | None = None
         alignment_level: str = "chain"
-        train_prior_chain_translation_scale: float = 0.0
-        inference_prior_chain_translation_scale: float = 0.0
+        prior_chain_translation_scale: float = 50.0
         train_align_prior_to_label: bool = True
         s_trans: float = 1.0
         inference_align_x0_hat_to_x_t: bool = True
@@ -306,13 +192,10 @@ class KFoldECSI(BaseECSI):
         self.sigma_max: float = cfg.sigma_max
         self.gamma_max: float = cfg.gamma_max
         self.time_power: float = cfg.time_power
-        self.route_type: str = cfg.route_type
-        self.ddbm_vp_beta_min: float = cfg.ddbm_vp_beta_min
-        self.ddbm_vp_beta_d: float = cfg.ddbm_vp_beta_d
         self.sigma_data: float = cfg.sigma_data
         self.sigma_data_end: float = cfg.sigma_data_end
         self.cov_xy: float = cfg.cov_xy
-        self.rho: int = cfg.rho
+        self.rho: float = cfg.rho
         self.sampling_schedule_type: str = cfg.sampling_schedule_type
         self.sampling_schedule_piecewise_power: float = (
             cfg.sampling_schedule_piecewise_power
@@ -346,12 +229,7 @@ class KFoldECSI(BaseECSI):
         self.use_prior_coords: bool = cfg.use_prior_coords
         self.s_trans: float = cfg.s_trans
         self.alignment_level: str = cfg.alignment_level
-        self.train_prior_chain_translation_scale: float = (
-            cfg.train_prior_chain_translation_scale
-        )
-        self.inference_prior_chain_translation_scale: float = (
-            cfg.inference_prior_chain_translation_scale
-        )
+        self.prior_chain_translation_scale: float = cfg.prior_chain_translation_scale
         self.train_align_prior_to_label: bool = cfg.train_align_prior_to_label
         self.inference_align_x0_hat_to_x_t: bool = cfg.inference_align_x0_hat_to_x_t
         self.perturb_xt: bool = cfg.perturb_xt
@@ -361,8 +239,7 @@ class KFoldECSI(BaseECSI):
         self.churn_factor: float = cfg.churn_factor
         self.churn_until_time: float | None = cfg.churn_until_time
 
-        self._route: _Route
-        self._configure_route_functions(cfg)
+        self._route: _Route = _LinearRoute(self.gamma_max, self.time_power)
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
@@ -406,14 +283,8 @@ class KFoldECSI(BaseECSI):
         return token_asym_id.gather(-1, atom_token_index.clamp(min=0))
 
     def _apply_prior_chain_translation(
-        self,
-        coords: torch.Tensor,
-        f_input: FoldingInput,
-        translation_scale: float,
+        self, coords: torch.Tensor, f_input: FoldingInput
     ) -> torch.Tensor:
-        if translation_scale <= 0.0:
-            return coords
-
         batch_size, num_samples, num_atoms = coords.shape[:3]
         atom_chain_id = self._get_atom_chain_ids(f_input, batch_size).clamp(min=0)
         max_chain_id = int(atom_chain_id.max().item())
@@ -427,7 +298,7 @@ class KFoldECSI(BaseECSI):
                 device=coords.device,
                 dtype=coords.dtype,
             )
-            * translation_scale
+            * self.prior_chain_translation_scale
         )
         gather_index = atom_chain_id[:, None, :, None].expand(
             batch_size, num_samples, num_atoms, 3
@@ -435,37 +306,6 @@ class KFoldECSI(BaseECSI):
         atom_translation = torch.gather(chain_translation, dim=2, index=gather_index)
         atom_mask = f_input.atom.pad_mask[:, None, :, None].to(dtype=coords.dtype)
         return coords + atom_translation * atom_mask
-
-    def _apply_train_prior_chain_translation(
-        self,
-        coords: torch.Tensor,
-        f_input: FoldingInput,
-    ) -> torch.Tensor:
-        return self._apply_prior_chain_translation(
-            coords=coords,
-            f_input=f_input,
-            translation_scale=self.train_prior_chain_translation_scale,
-        )
-
-    def _configure_route_functions(self, cfg: Config) -> None:
-        route = (cfg.route_type or "linear").lower().replace("-", "_")
-        self.route_type = route
-        if route == "linear":
-            self._route = _LinearRoute(
-                gamma_max=self.gamma_max,
-                power=self.time_power,
-            )
-            return
-        if route == "ddbm_vp":
-            self._route = _DdbmVpRoute(
-                beta_min=self.ddbm_vp_beta_min,
-                beta_d=self.ddbm_vp_beta_d,
-            )
-            return
-        raise ValueError(
-            "Unsupported route_type; expected 'linear' or 'ddbm_vp', "
-            f"got {cfg.route_type!r}."
-        )
 
     # === Route Functions (Stochastic Interpolants) === #
     def alpha(self, t: torch.Tensor) -> torch.Tensor:
@@ -983,19 +823,12 @@ class KFoldECSI(BaseECSI):
         prior_coords = all_prior_coords[:, :, prior_index, :]  # [B, Latom, N, 3]
         prior_coords = prior_coords.permute(0, 2, 1, 3)  # [B, N, Latom, 3]
 
+        prior_coords = self._apply_prior_chain_translation(prior_coords, f_input)
         if label_coords is None:
-            prior_coords = self._apply_prior_chain_translation(
-                coords=prior_coords,
-                f_input=f_input,
-                translation_scale=self.inference_prior_chain_translation_scale,
-            )
             # No label provided; apply random augmentation
             prior_mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Latom]
             prior_coords = self.apply_random_augmentation(prior_coords, mask=prior_mask)
         else:
-            prior_coords = self._apply_train_prior_chain_translation(
-                prior_coords, f_input
-            )
             if self.train_align_prior_to_label:
                 prior_coords = self.align_apo_to_label(
                     prior_coords, label_coords, f_input

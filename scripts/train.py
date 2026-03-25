@@ -127,7 +127,6 @@ def parse_config(args) -> DictConfig:
         cfg.train.trainer.limit_train_batches = 100
         cfg.train.trainer.limit_val_batches = 10
         cfg.train.trainer.enable_checkpointing = False
-        cfg.train.data.train_batch_size = 1
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False
         cfg.train.wandb.use = False
