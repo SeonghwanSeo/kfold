@@ -1,0 +1,32 @@
+# === Model Configuration === #
+_registry_: "main_module"
+_class_: KFold
+
+kernel:
+  cuequivariance: true
+
+compile_trunk: false
+compile_score_model: false
+compile_mode: "default"
+
+input_embedder:
+  _yaml_: "module/input_embedder/kfold.yaml"
+
+sequence_encoder:
+  _yaml_: "module/sequence_encoder/esm-multimodal.yaml"
+
+structure_encoder:
+  _yaml_: "module/structure_encoder/unitok.yaml"
+
+trunk:
+  _yaml_: "module/trunk/kfold.yaml"
+
+structure_module:
+  _yaml_: "module/structure_module/expanded_ecsi.yaml"
+
+score_model:
+  _yaml_: "module/score_model/ecsi.yaml"
+  use_prior_coords: true
+
+distogram_head:
+  _yaml_: "module/distogram_head/af3.yaml"

@@ -4,6 +4,7 @@ import gemmi
 import numpy as np
 
 from kfold.data.types.structure import RefStructure
+from kfold.utils.geometry.rigid_align import rigid_align
 
 from .gemmi_utils import create_gemmi_structure, make_mmcif_block
 
@@ -96,6 +97,7 @@ class KFoldWriter:
         struct: RefStructure,
         trajectory: np.ndarray,
         filename: str | Path,
+        align: bool = True,
     ):
         if trajectory.shape[1:] != (struct.num_atoms, 3):
             raise ValueError(
@@ -113,8 +115,12 @@ class KFoldWriter:
             n_frames = trajectory.shape[0]
             traj_structures: gemmi.Structure = gemmi.Structure()
             # Add models
+            prev_coords = None
             for i in range(n_frames):
                 frame_coords = trajectory[i]
+                if align and prev_coords is not None:
+                    frame_coords = rigid_align(frame_coords, prev_coords, mask=None)
+                prev_coords = frame_coords
                 frame_struct = struct.copy_with_new_coords(frame_coords)
                 _struct: gemmi.Structure = create_gemmi_structure(
                     frame_struct, pdb_compatible=pdb_compatible

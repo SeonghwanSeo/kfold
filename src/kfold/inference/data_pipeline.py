@@ -119,10 +119,11 @@ class InputDataPipeline:
 
         # Initialize apo initializer
         self.apo_initializer = apo_initialization.ApoInitializer.inference_mode(ccd)
-        self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd, num_samples)
+        self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd)
+        self.num_samples = num_samples
 
         # Initialize tokenizer
-        self.tokenizer = tokenization.Tokenizer(self.ccd, self.prior_sampler)
+        self.tokenizer = tokenization.Tokenizer(self.ccd)
 
         # Initialize sequence masking (0.0-0.15 masking ratio if enabled)
         self.use_sequence_masking = use_sequence_masking
@@ -192,18 +193,21 @@ class InputDataPipeline:
 
         # Tokenize structure
         # NOTE: We feed apo structure tokens during model forward pass (gpu required).
-        tok_struct: TokenizedStructure = self.tokenizer(ref_struct, rng)
+        tokenized: TokenizedStructure = self.tokenizer(ref_struct, rng)
+
+        # Sample prior coordinates for diffusion bridge modeling
+        self.sample_prior_coords(ref_struct, tokenized, rng)
 
         # Apply sequence masking for sample diversity (only if enabled)
         if self.use_sequence_masking:
-            self.sequence_masking(tok_struct, rng)
+            self.sequence_masking(tokenized, rng)
 
         # Featurize input
-        f_input: FoldingInput = self.featurizer(tok_struct)
+        f_input: FoldingInput = self.featurizer(tokenized)
 
         # Prepare structure tokenization input for later use in model inference
         struct_tok_input = self.prepare_struct_tok_input(f_input, apo_lookup)
-        return ref_struct, tok_struct, f_input, struct_tok_input
+        return ref_struct, tokenized, f_input, struct_tok_input
 
     def prepare_structure_from_query(self, input: query.Query) -> RefStructure:
         """Prepare the reference structure from the input file.
@@ -346,6 +350,21 @@ class InputDataPipeline:
                 "residue_map": apo_range,
             }
         return lookup
+
+    def sample_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        tokenized: TokenizedStructure,
+        rng: np.random.Generator,
+    ) -> None:
+        """Populate the prior coordinates for the given reference structure."""
+        prior_coords = np.full(
+            (tokenized.num_tokens, 24, self.num_samples, 3), np.nan, dtype=np.float32
+        )
+        prior_coords[tokenized.atom.pad_mask] = self.prior_sampler(
+            ref_struct, self.num_samples, rng=rng
+        ).transpose(1, 0, 2)
+        tokenized.atom.prior_coords = prior_coords
 
     def prepare_struct_tok_input(
         self,

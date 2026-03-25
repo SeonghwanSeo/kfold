@@ -1,9 +1,9 @@
 """Define training modules for k-fold"""
 
+import dataclasses
 import gc
 import json
 import pathlib
-from dataclasses import dataclass
 from typing import Any, Self
 
 import lightning.pytorch as pl
@@ -32,24 +32,28 @@ from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
 
 
-@dataclass(kw_only=True)
+class _Config:
+    @classmethod
+    def from_dict(cls, config) -> Self:
+        merged = OmegaConf.merge(OmegaConf.create(cls), OmegaConf.create(config))
+        return OmegaConf.to_object(merged)
+
+
+@dataclasses.dataclass(kw_only=True)
 class TrainConfig:
     """Configuration for training and validation steps."""
 
+    name: str
+    out_dir: str
+    seed: int
     training: "TrainingConfig"
     validation: "ValidationConfig"
     optimizer: "OptimizerConfig"
     loss: "LossConfig"
 
-    @classmethod
-    def from_dict(cls, config) -> Self:
-        default_config = OmegaConf.create(cls)
-        merged_config = OmegaConf.merge(default_config, OmegaConf.create(config))
-        return OmegaConf.to_object(merged_config)
 
-
-@dataclass(kw_only=True)
-class OptimizerConfig:
+@dataclasses.dataclass(kw_only=True)
+class OptimizerConfig(_Config):
     """Optimizer configuration.
     See Section 5.4 of the AlphaFold3 paper.
     """
@@ -70,10 +74,12 @@ class OptimizerConfig:
     # ema
     use_ema: bool = True
     ema_decay: float = 0.999
+    # multi-phase training
+    load_opt_state_from_checkpoint: bool = True
 
 
-@dataclass(kw_only=True)
-class TrainingConfig:
+@dataclasses.dataclass(kw_only=True)
+class TrainingConfig(_Config):
     """Training step configuration."""
 
     # Whether to train each submodules
@@ -103,8 +109,8 @@ class TrainingConfig:
     log_entity_binned_losses: bool = False
 
 
-@dataclass(kw_only=True)
-class ValidationConfig:
+@dataclasses.dataclass(kw_only=True)
+class ValidationConfig(_Config):
     """Validation step configuration."""
 
     num_recycles: int = 3
@@ -114,11 +120,11 @@ class ValidationConfig:
     traj_format: str = "cif"
     symmetry_correction: bool = True
     # Validation output logging
-    save_predictions: bool = True
+    save_predictions: bool = False
 
 
-@dataclass(kw_only=True)
-class LossConfig:
+@dataclasses.dataclass(kw_only=True)
+class LossConfig(_Config):
     """Loss configuration."""
 
     weights: dict[str, float]
@@ -131,12 +137,53 @@ class KFoldTrainingModule(pl.LightningModule):
     def __init__(self, config: DictConfig):
         super().__init__()
         self.global_config: DictConfig = config
-        self.config: TrainConfig = self.global_config.train
-        self.training_config: TrainingConfig = self.config.training
-        self.validation_config: ValidationConfig = self.config.validation
-        self.optimizer_config: OptimizerConfig = self.config.optimizer
-        self.loss_config: LossConfig = self.config.loss
+        self.config: TrainConfig = config.train
+        self.training_config: TrainingConfig = TrainingConfig.from_dict(
+            self.config.training
+        )
+        self.validation_config: ValidationConfig = ValidationConfig.from_dict(
+            self.config.validation
+        )
+        self.optimizer_config: OptimizerConfig = OptimizerConfig.from_dict(
+            self.config.optimizer
+        )
+        self.loss_config: LossConfig = LossConfig.from_dict(self.config.loss)
+
+        # Save hyperparameters
+        self.save_hyperparameters(to_dict(self.global_config))
+
+        # EMA state
         self.use_ema: bool = self.optimizer_config.use_ema
+
+        # Whether to train structure and confidence modules
+        self.train_trunk: bool = self.training_config.train_trunk
+        self.train_distogram_head: bool = self.training_config.train_distogram_head
+        self.train_structure_module: bool = self.training_config.train_structure_module
+        self.train_confidence_head: bool = self.training_config.train_confidence_head
+
+        # Initialize model here
+        model_config: KFoldConfig = self.global_config.model
+        model_cls = MAIN_MODULE[model_config._class_]
+        self.model: KFold = model_cls(model_config)
+
+        # Freeze parts of the model if needed
+        self.freeze_submodules()
+
+        # Setup losses and metrics
+        self.setup_losses()
+        self.setup_metrics()
+
+        # Create writer
+        self.writer: KFoldWriter = KFoldWriter()
+
+        # Pre-sample recycling steps for training
+        # This ensures all GPUs use the same recycling schedule
+        rng = np.random.default_rng(seed=42)
+        self.recycles_per_step: np.ndarray = rng.integers(
+            0,
+            self.training_config.num_recycles + 1,
+            size=100_000,
+        )
 
         # Time-binned logging state (populated only when enabled)
         self._timebin_enabled: bool = bool(self.training_config.log_time_binned_losses)
@@ -164,39 +211,6 @@ class KFoldTrainingModule(pl.LightningModule):
         )
         self.entity_binned_logger = EntityBinnedLossLogger(
             EntityBinConfig(enabled=self._entitybin_enabled, nbins=10)
-        )
-
-        # Whether to train structure and confidence modules
-        self.train_trunk: bool = self.training_config.train_trunk
-        self.train_distogram_head: bool = self.training_config.train_distogram_head
-        self.train_structure_module: bool = self.training_config.train_structure_module
-        self.train_confidence_head: bool = self.training_config.train_confidence_head
-
-        # Initialize model here
-        model_config: KFoldConfig = self.global_config.model
-        model_cls = MAIN_MODULE[model_config._class_]
-        self.model: KFold = model_cls(model_config)
-
-        # Freeze parts of the model if needed
-        self.freeze_submodules()
-
-        # Setup losses and metrics
-        self.setup_losses()
-        self.setup_metrics()
-
-        # Create writer
-        self.writer: KFoldWriter = KFoldWriter()
-
-        # Save hyperparameters
-        self.save_hyperparameters(to_dict(self.global_config))
-
-        # Pre-sample recycling steps for training
-        # This ensures all GPUs use the same recycling schedule
-        rng = np.random.default_rng(seed=42)
-        self.recycles_per_step: np.ndarray = rng.integers(
-            0,
-            self.training_config.num_recycles + 1,
-            size=100_000,
         )
 
     def freeze_submodules(self):
@@ -248,15 +262,17 @@ class KFoldTrainingModule(pl.LightningModule):
             # Diffusion loss
             diffusion_loss_config = loss_config.diffusion_loss
             self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(
-                **diffusion_loss_config.mse_loss
+                **diffusion_loss_config["mse_loss"]
             )
             if self.loss_weights["bond"] > 0:
                 # Only used in fine-tuning stage
-                self.bond_loss = loss_fn.diffusion.BondLoss()
+                self.bond_loss = loss_fn.diffusion.BondLoss(
+                    **diffusion_loss_config["bond_loss"]
+                )
             if self.loss_weights["smooth_lddt"] > 0:
                 # Only used in regular training stage
                 self.smooth_lddt_loss = loss_fn.diffusion.SmoothLDDTLoss(
-                    **diffusion_loss_config.smooth_lddt_loss
+                    **diffusion_loss_config["smooth_lddt_loss"]
                 )
 
         if self.train_confidence_head:
@@ -294,6 +310,7 @@ class KFoldTrainingModule(pl.LightningModule):
             )
         else:
             raise NotImplementedError(f"Optimizer {config.opt} not implemented yet.")
+
         if config.lr_scheduler == "af3":
             scheduler = AF3LRScheduler(
                 optimizer,
@@ -304,9 +321,11 @@ class KFoldTrainingModule(pl.LightningModule):
                 decay_every_n_steps=config.lr_decay_every_n_steps,
                 decay_factor=config.lr_decay_factor,
             )
-            return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
         else:
-            return optimizer
+            raise NotImplementedError(
+                f"LR scheduler {config.lr_scheduler} not implemented yet."
+            )
+        return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def forward(
         self,
@@ -489,7 +508,6 @@ class KFoldTrainingModule(pl.LightningModule):
             )
             sample_out = out["sample"]
             sample_coords = sample_out["sample_coordinates"]
-            traj = sample_out.get("traj")
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -586,10 +604,11 @@ class KFoldTrainingModule(pl.LightningModule):
                     )
 
                 # Save trajectory if available
-                if traj is not None:
+                if "traj" in sample_out:
+                    traj = sample_out["traj"][0]  # remove batch dim
                     self.save_trajectory(
                         ref_struct,
-                        traj[:, 0],  # [T, Natom, 3]
+                        traj,
                         save_dir,
                         format=val_config.traj_format,
                     )
@@ -886,7 +905,14 @@ class KFoldTrainingModule(pl.LightningModule):
             checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        """Load EMA state dict if EMA is used and present in the checkpoint."""
+        if self.config.optimizer.load_opt_state_from_checkpoint is False:
+            # When loading optimizer state from checkpoint is disabled,
+            # replace the optimizer state in the checkpoint with the initialized state.
+            state = checkpoint["optimizer_states"][0]
+            init_state = self.configure_optimizers()[0][0].state_dict()
+            state["state"] = init_state["state"]
+            state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
+            # checkpoint.pop("lr_schedulers", None)
         if self.use_ema and "ema" in checkpoint:
             # Create EMA object if not exists
             ema_decay = self.optimizer_config.ema_decay
@@ -963,7 +989,7 @@ class KFoldTrainingModule(pl.LightningModule):
         """Save predicted and ground-truth structures as mmCIF files."""
         name: str = ref_struct.id
 
-        assert traj.ndim == 4, "Trajectory must be of shape (Nframe, Nsample, Natom, 3)"
+        assert traj.ndim == 4, "Trajectory must be of shape (Nsample, Nframe, Natom, 3)"
         num_samples: int = traj.shape[1]
 
         # Remove padding atoms
@@ -973,6 +999,6 @@ class KFoldTrainingModule(pl.LightningModule):
         # Compute structure metrics
         for i in range(num_samples):
             # Save trajectory
-            traj_i = traj[:, i, :, :]  # [Nframe, Natom, 3]
+            traj_i = traj[i]
             save_path = save_dir / f"{name}-sample-{i}-traj.{format}"
             self.writer.write_trajectory(ref_struct, traj_i, save_path)

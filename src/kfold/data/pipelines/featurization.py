@@ -19,16 +19,10 @@ from kfold.data.utils import frame_utils
 class InputFeaturizer:
     """A class for featurizing tokenized structures into model input features."""
 
-    def __call__(
-        self,
-        struct: TokenizedStructure,
-    ) -> FoldingInput:
+    def __call__(self, struct: TokenizedStructure) -> FoldingInput:
         return self.run(struct)
 
-    def run(
-        self,
-        struct: TokenizedStructure,
-    ) -> FoldingInput:
+    def run(self, struct: TokenizedStructure) -> FoldingInput:
         """Featurize a tokenized structure into model input features.
 
         Parameters
