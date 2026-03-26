@@ -118,12 +118,9 @@ def parse_args():
     )
     parser.add_argument(
         "--override",
-        action="append",
-        default=[],
-        help=(
-            "OmegaConf dotlist override applied before model construction, "
-            "e.g. model.structure_module.sampling_schedule_type=phase_power"
-        ),
+        type=str,
+        nargs="+",
+        help="Override configuration options using 'key=value' format.",
     )
     return parser.parse_args()
 
@@ -264,21 +261,22 @@ def main():
             try:
                 writer.write_new_coords(ref_struct, coords_i, save_path)
             except Exception as e:
-                logger.error(f"Warning: Failed to save sample {i} for {name}: {e}")
+                logger.error(f"Failed to save sample {i} for {name}: {e}")
 
-        # Save trajectory
-        # [num_samples, num_frames, Natom, 3]
-        traj_coords = model_out["traj"][:, :, :num_atoms, :]
-        traj_coords = traj_coords.cpu().numpy()
-        for i in range(args.num_samples):
-            save_path = save_dir / f"{name}_seed-{seed}_sample-{i}_traj.pdb"
-            coords_i = traj_coords[i]
-            try:
-                writer.write_trajectory(ref_struct, coords_i, save_path)
-            except Exception as e:
-                logger.error(
-                    f"Warning: Failed to save trajectory for sample {i} of {name}: {e}"
-                )
+        if args.save_trajectory:
+            # Save trajectory
+            # [num_samples, num_frames, Natom, 3]
+            traj_coords = model_out["traj"][:, :, :num_atoms, :]
+            traj_coords = traj_coords.cpu().numpy()
+            for i in range(args.num_samples):
+                save_path = save_dir / f"{name}_seed-{seed}_sample-{i}_traj.pdb"
+                coords_i = traj_coords[i]
+                try:
+                    writer.write_trajectory(ref_struct, coords_i, save_path)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to save trajectory for sample {i} of {name}: {e}"
+                    )
 
     et = time.time()
     logger.info(f"Inference completed. ({et - st:.2f} seconds)")
