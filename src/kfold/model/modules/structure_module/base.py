@@ -29,7 +29,6 @@ class BaseStructureModule(ABC):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache=None,
         prior_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model.
@@ -49,8 +48,6 @@ class BaseStructureModule(ABC):
             Trunk sequence embeddings. Shape (B, Lt, c_s).
         z_trunk : torch.Tensor
             Trunk pairwise embeddings. Shape (B, Lt, Lt, c_z).
-        model_cache : optional
-            Model cache for efficiency.
 
         Returns
         -------
@@ -205,7 +202,6 @@ class BaseStructureModule(ABC):
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         diffusion_batch_size: int = 1,
-        model_cache: dict | None = None,
     ) -> dict[str, torch.Tensor]:
         """Perform a single training step for the structure module.
         See Section 5 of EDM paper.
@@ -238,7 +234,6 @@ class BaseStructureModule(ABC):
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
-            model_cache=model_cache,
             prior_coords=prior_coords,  # [B, N, La, 3]
         )  # [B, N, La, 3]
 

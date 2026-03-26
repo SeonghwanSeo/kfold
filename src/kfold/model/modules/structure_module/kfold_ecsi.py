@@ -453,7 +453,6 @@ class KFoldECSI(BaseECSI):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache=None,
         prior_coords: torch.Tensor | None = None,
         use_prior_coords: bool | None = None,
     ) -> torch.Tensor:
@@ -473,8 +472,6 @@ class KFoldECSI(BaseECSI):
             Trunk sequence embeddings. Shape (B, L, c_s).
         z_trunk : torch.Tensor
             Trunk pairwise embeddings. Shape (B, L, L, c_z).
-        model_cache : optional
-            Model cache for efficiency.
         prior_coords : torch.Tensor | None
             Source (apo) coordinates x_T. Shape (B, N, L, 3).
 
@@ -522,7 +519,6 @@ class KFoldECSI(BaseECSI):
             s_inputs=s_inputs,
             s_trunk=s_trunk,
             z_trunk=z_trunk,
-            model_cache=model_cache,
         )
 
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
@@ -899,7 +895,6 @@ class KFoldECSI(BaseECSI):
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         diffusion_batch_size: int = 1,
-        model_cache: dict | None = None,
     ) -> dict[str, torch.Tensor]:
         """Perform a single training step for the structure module.
         See Section 5 of EDM paper.
@@ -941,7 +936,6 @@ class KFoldECSI(BaseECSI):
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
-            model_cache=model_cache,
             prior_coords=prior_coords_norm,  # [B, N, La, 3]
         )  # [B, N, La, 3]
 
@@ -1061,8 +1055,6 @@ class KFoldECSI(BaseECSI):
                 "endpoint_perturb_scale must be provided when perturb_xt is enabled."
             )
 
-        model_cache = {}
-
         # Get time schedule (from t_max toward 0)
         times = self.get_sampling_schedule(
             num_steps=num_steps, device=s_inputs.device
@@ -1133,7 +1125,6 @@ class KFoldECSI(BaseECSI):
                     s_inputs=s_inputs,
                     s_trunk=s_trunk,
                     z_trunk=z_trunk,
-                    model_cache=model_cache,
                     prior_coords=x_T[:, st:end],
                 )
 

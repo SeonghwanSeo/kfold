@@ -191,7 +191,6 @@ class DiffusionModule(nn.Module):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache: dict | None = None,
         use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Forward pass of the AF3 diffusion module.
@@ -229,7 +228,6 @@ class DiffusionModule(nn.Module):
             s_inputs=s_inputs,
             s_trunk=s_trunk,
             z_trunk=z_trunk,
-            model_cache=model_cache,
         )  # [B, N, Lt, c_s], [B, Lt, Lt, c_z]
 
         s_trunk = s_trunk.unsqueeze(-3)  # [B, 1, Lt, c_s]
@@ -250,7 +248,6 @@ class DiffusionModule(nn.Module):
             r_noisy=r_noisy,  # [B, N, La, 3]
             s_trunk=s_trunk,  # [B, 1, Lt, c_s], broadcasted to [B, N, Lt, c_s]
             z_trunk=z,  # [B, 1, Lt, Lt, c_z], broadcasted to [B, N, Lt, Lt, c_z]
-            model_cache=model_cache,
         )
         # Shape:
         # - a: [B, N, Lt, c_token]
@@ -374,7 +371,6 @@ class DiffusionConditioning(nn.Module):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache: dict | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
 
@@ -391,8 +387,6 @@ class DiffusionConditioning(nn.Module):
             Tensor of shape (B, Lt, c_s) containing trunk single embeddings.
         z_trunk : torch.Tensor
             Tensor of shape (B, Lt, Lt, c_z) containing trunk pair embeddings.
-        model_cache : dict | None
-            The model cache for storing intermediate representations, by default None.
 
         Returns
         -------
@@ -402,31 +396,16 @@ class DiffusionConditioning(nn.Module):
             Tensor of shape (B, Lt, Lt, c_z) containing conditioned pair embeddings.
         """
 
-        if model_cache is not None:
-            cache_prefix = "diffusion_conditioning"
-            if cache_prefix not in model_cache:
-                model_cache[cache_prefix] = {}
-            layer_cache = model_cache[cache_prefix]
-        else:
-            layer_cache = {}
+        # Line 1
+        rel_pos_feats = self.rel_pos_encoding(f_input)  # [B, Lt, Lt, c_z]
+        z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
 
-        if "z" not in layer_cache:
-            # For time-independent pair representation z, we cache the result
-            # Line 1
-            rel_pos_feats = self.rel_pos_encoding(
-                f_input, z_trunk.dtype, model_cache
-            )  # [B, Lt, Lt, c_z]
-            z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
+        # Line 2
+        z = self.linear_z(self.layernorm_z(z))  # [B, Lt, Lt, c_z]
 
-            # Line 2
-            z = self.linear_z(self.layernorm_z(z))  # [B, Lt, Lt, c_z]
-
-            # Line 3-5
-            for transition in self.transitions_z:
-                z = z + transition(z)
-            layer_cache["z"] = z
-        else:
-            z = layer_cache["z"]
+        # Line 3-5
+        for transition in self.transitions_z:
+            z = z + transition(z)
 
         # Line 6
         s = torch.cat((s_trunk, s_inputs), dim=-1)  # [B, Lt, 2*c_s]

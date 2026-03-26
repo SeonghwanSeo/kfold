@@ -113,7 +113,6 @@ class ECSIDiffusionModule(BaseScoreModel):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache: dict | None = None,
     ) -> torch.Tensor:
         """Forward pass of the apo-conditioned diffusion score model.
 
@@ -140,9 +139,6 @@ class ECSIDiffusionModule(BaseScoreModel):
         r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """
-        if self.training:
-            assert model_cache is None, "model_cache is only used during evaluation."
-
         # Revert to uncompiled version for validation
         diffusion_stack: DiffusionModule
         if self.is_compiled and not self.training:
@@ -157,6 +153,5 @@ class ECSIDiffusionModule(BaseScoreModel):
             s_inputs,
             s_trunk,
             z_trunk,
-            model_cache,
             use_cuequiv_kernels=self.kernel_config.cuequivariance,
         )

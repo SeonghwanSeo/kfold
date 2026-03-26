@@ -1,5 +1,3 @@
-# Started from code from https://github.com/jwohlwend/boltz, MIT License
-
 import math
 from functools import partial
 
@@ -25,8 +23,6 @@ from .utils import (
     aggregate_atoms_to_tokens,
     broadcast_tokens_to_atoms,
 )
-
-# === Helper functions for local atom attention === #
 
 
 class AttentionPairBias(nn.Module):
@@ -680,7 +676,6 @@ class AtomAttentionEncoder(nn.Module):
         s_trunk: torch.Tensor | None,
         z_trunk: torch.Tensor | None,
         r_noisy: torch.Tensor | None,
-        model_cache: dict | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of the atom attention encoder.
         See Algorithm 5 in the AF3 paper for more details.
@@ -700,8 +695,6 @@ class AtomAttentionEncoder(nn.Module):
         r_noisy : torch.Tensor | None
             The noised structures' positions, shape [B, N, La, c_r],
             where Nsample is the number of diffusion samples.
-        model_cache : dict | None
-            The model cache for storing intermediate representations, by default None.
 
         Returns
         -------
@@ -714,18 +707,6 @@ class AtomAttentionEncoder(nn.Module):
         p_skip : torch.Tensor
             The atom pair representation, shape [B, N, W, Lq, Lk, c_atompair]
         """
-        if model_cache is not None:
-            # NOTE: (seonghwanseo) Since atom encoder is used in both InputEmbedder and
-            # DiffusionModule, I constrain caching only for DiffusionModule usage
-            # according to Boltz's implementation.
-            assert self.use_structure, "Caching is only supported when using structure."
-            cache_prefix = "atom_attn_encoder"
-            if cache_prefix not in model_cache:
-                model_cache[cache_prefix] = {}
-            layer_cache = model_cache[cache_prefix]
-        else:
-            layer_cache = {}
-
         # Get indexing matrix for single to keys conversion
         local_attn_index = LocalAttentionIndex(
             num_atoms=f_input.num_atoms,
@@ -734,12 +715,8 @@ class AtomAttentionEncoder(nn.Module):
             device=f_input.device,
         )
 
-        if "qcp" in layer_cache:
-            q, c, p = layer_cache["qcp"]
-        else:
-            # Line 1-7
-            q, c, p = self.initialize_atom_representation(f_input, local_attn_index)
-            layer_cache["qcp"] = (q, c, p)
+        # Line 1-7
+        q, c, p = self.initialize_atom_representation(f_input, local_attn_index)
 
         # Shapes at this point:
         # q: [B, La, c_atom]

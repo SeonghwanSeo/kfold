@@ -124,7 +124,6 @@ class AF3SampleDiffusion(BaseEDM):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache=None,
         prior_coords: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model.
@@ -144,8 +143,6 @@ class AF3SampleDiffusion(BaseEDM):
             Trunk sequence embeddings. Shape (B, L, c_s).
         z_trunk : torch.Tensor
             Trunk pairwise embeddings. Shape (B, L, L, c_z).
-        model_cache : optional
-            Model cache for efficiency.
 
         Returns
         -------
@@ -171,7 +168,6 @@ class AF3SampleDiffusion(BaseEDM):
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
-            model_cache=model_cache,
         )
 
         # Line 8 of Algorithm 20
@@ -267,8 +263,6 @@ class AF3SampleDiffusion(BaseEDM):
         if max_parallel_samples is None:
             max_parallel_samples = num_diffusion_samples
 
-        model_cache = {}
-
         # Get noise schedule
         sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device)
         gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
@@ -323,7 +317,6 @@ class AF3SampleDiffusion(BaseEDM):
                     s_inputs=s_inputs,
                     s_trunk=s_trunk,
                     z_trunk=z_trunk,
-                    model_cache=model_cache,
                 )
 
             # Line 9
