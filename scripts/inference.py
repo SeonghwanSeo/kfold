@@ -189,7 +189,7 @@ def main():
     model: KFold = KFold.from_checkpoint(
         args.config, args.checkpoint, override_args=args.override
     )
-    model = model.cast_to_bf16().eval().cuda()
+    model = model.bfloat16().eval().cuda()
     logger.info("Model loaded successfully.")
 
     # mmCIF writer

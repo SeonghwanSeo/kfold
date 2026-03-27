@@ -175,36 +175,20 @@ class KFoldTrunkPrime(BaseTrunk):
         else:
             self.register_tokens = None
 
-    def do_compile(self, mode: str = "default"):
+    def _compile(self, **kwargs):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
-        self.plm_module_prime = torch.compile(
-            self.plm_module_prime,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+        self.plm_module_prime = torch.compile(self.plm_module_prime, **kwargs)
         self.pairformer_module_prime = torch.compile(
-            self.pairformer_module_prime,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
-        self.plm_module_refine = torch.compile(
-            self.plm_module_refine,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+            self.pairformer_module_prime, **kwargs
+        )
+        self.plm_module_refine = torch.compile(self.plm_module_refine, **kwargs)
         self.pairformer_module_refine = torch.compile(
-            self.pairformer_module_refine,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+            self.pairformer_module_refine, **kwargs
+        )
 
     def forward(
         self,

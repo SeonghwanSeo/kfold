@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-from typing import Self
 
 import torch
 
@@ -39,7 +38,3 @@ class BaseSequenceEncoder(torch.nn.Module, ABC):
             Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
             where N is number of layers and H is number of heads.
         """
-
-    def cast_to_bf16(self) -> Self:
-        """Cast model parameters to bfloat16 for faster inference."""
-        return self.to(dtype=torch.bfloat16)

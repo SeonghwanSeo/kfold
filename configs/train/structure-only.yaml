@@ -14,6 +14,12 @@ global_hparams:
   global_batch_size: 256
   num_global_steps_per_epoch: 1000
 
+# compilation settings
+compile:
+  enabled: false
+  mode: "default"
+  dynamic: false
+
 data:
   _registry_: "datamodule"
   _class_: TrainingDataModule

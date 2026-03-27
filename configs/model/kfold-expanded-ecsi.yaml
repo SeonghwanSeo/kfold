@@ -5,10 +5,6 @@ _class_: KFold
 kernel:
   cuequivariance: true
 
-compile_trunk: false
-compile_score_model: false
-compile_mode: "default"
-
 input_embedder:
   _yaml_: "module/input_embedder/kfold.yaml"
 

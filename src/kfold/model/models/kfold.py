@@ -1,6 +1,5 @@
 import time
 from collections.abc import Mapping
-from typing import Self
 
 import torch
 
@@ -27,13 +26,6 @@ class KFold(BaseFoldingModel):
         self.structure_encoder: submodules.structure_encoder.BaseStructureEncoder = (
             Registry.instantiate(config.structure_encoder)
         )
-
-    def cast_to_bf16(self) -> Self:
-        """Cast model parameters to bfloat16 for faster inference."""
-        super().cast_to_bf16()
-        self.sequence_encoder = self.sequence_encoder.cast_to_bf16()
-        self.structure_encoder = self.structure_encoder.cast_to_bf16()
-        return self
 
     def inference(
         self,
@@ -213,16 +205,15 @@ class KFold(BaseFoldingModel):
             # diffusion module training. Instead, we construct cache inside
             # sample_structure method if necessary.
             self.score_model.eval()
-            with torch.no_grad(), torch.autocast("cuda", dtype=torch.float32):
-                coordinates = self.structure_module.sample_structure(
-                    f_input=f_input,
-                    s_inputs=s_inputs.detach(),
-                    s_trunk=s_trunk.detach(),
-                    z_trunk=z_trunk.detach(),
-                    num_steps=num_steps,
-                    num_diffusion_samples=num_diffusion_samples,
-                    max_parallel_samples=None,
-                )["sample_coordinates"]  # [B, N_samples, Ltoken, 3]
+            coordinates = self.structure_module.sample_structure(
+                f_input=f_input,
+                s_inputs=s_inputs.detach(),
+                s_trunk=s_trunk.detach(),
+                z_trunk=z_trunk.detach(),
+                num_steps=num_steps,
+                num_diffusion_samples=num_diffusion_samples,
+                max_parallel_samples=None,
+            )["sample_coordinates"]  # [B, N_samples, Ltoken, 3]
             sample_dict = {"coordinates": coordinates}
             dict_out["sample"] = sample_dict
 
@@ -239,14 +230,13 @@ class KFold(BaseFoldingModel):
         if train_structure_module:
             # Diffusion head
             self.score_model.train()
-            with torch.autocast("cuda", dtype=torch.float32):
-                diffusion_dict = self.structure_module.training_step(
-                    f_input,
-                    s_inputs,
-                    s_trunk,
-                    z_trunk,
-                    diffusion_batch_size,
-                )
+            diffusion_dict = self.structure_module.training_step(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                diffusion_batch_size,
+            )
             dict_out["diffusion"] = diffusion_dict
 
         if train_confidence_module:
@@ -343,18 +333,17 @@ class KFold(BaseFoldingModel):
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
         st = time.time()
-        with torch.autocast("cuda", dtype=torch.float32):
-            dict_out.update(
-                self.structure_module.sample_structure(
-                    f_input,
-                    s_inputs,
-                    s_trunk,
-                    z_trunk,
-                    num_steps,
-                    num_diffusion_samples,
-                    return_traj=return_traj,
-                )
+        dict_out.update(
+            self.structure_module.sample_structure(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                num_steps,
+                num_diffusion_samples,
+                return_traj=return_traj,
             )
+        )
         et = time.time()
         time_logs["diffusion_head"] = et - st
 

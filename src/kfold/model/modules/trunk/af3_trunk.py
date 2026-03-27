@@ -78,18 +78,13 @@ class AF3PairformerTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-    def do_compile(self, mode: str = "default"):
+    def _compile(self, **kwargs):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
-        self.pairformer_module = torch.compile(
-            self.pairformer_module,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+        self.pairformer_module = torch.compile(self.pairformer_module, **kwargs)
 
     def forward(
         self,
