@@ -103,7 +103,8 @@ def checkpoint_blocks(
         or blocks_per_ckpt > len(blocks)
     ):
         return exec(blocks, args)
-    elif blocks_per_ckpt < 1:
+
+    if blocks_per_ckpt is not None and blocks_per_ckpt < 1:
         raise ValueError("blocks_per_ckpt must be at least 1")
 
     checkpoint = get_checkpoint_fn(use_reentrant=use_reentrant)

@@ -244,7 +244,6 @@ class KFoldExpandedECSI(KFoldECSI):
                 "endpoint_perturb_scale must be provided when perturb_xt is enabled."
             )
 
-        model_cache = {}
         times = self.get_sampling_schedule(
             num_steps=num_steps, device=s_inputs.device
         ).tolist()
@@ -310,7 +309,6 @@ class KFoldExpandedECSI(KFoldECSI):
                     s_inputs=s_inputs,
                     s_trunk=s_trunk,
                     z_trunk=z_trunk,
-                    model_cache=model_cache,
                     prior_coords=x_T[:, st:end],
                 )
                 if self.inference_align_x0_hat_to_x_t:

@@ -2,7 +2,7 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
-from kfold.model.layers.kfold.encoder import InputEmbedderWithApo
+from kfold.model.layers.kfold.input_encoder import InputEmbedderWithApo
 from kfold.model.layers.primitives import LinearNoBias
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 
@@ -71,10 +71,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             The atom single embedding size.
         channel_atompair : int
             The atom pairwise embedding size.
-        atoms_per_window_queries: int
-            The number of atoms per window for queries.
-        atoms_per_window_keys: int
-            The number of atoms per window for keys.
         atom_encoder_blocks: int
             The atom encoder blocks.
         atom_encoder_heads: int
@@ -97,8 +93,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         channel_z: int = 128
         channel_atom: int = 128
         channel_atompair: int = 16
-        atoms_per_window_queries: int = 32
-        atoms_per_window_keys: int = 128
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
         max_relative_token: int = 32
@@ -115,12 +109,10 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         self.channel_atom: int = cfg.channel_atom
         self.channel_atompair: int = cfg.channel_atompair
 
-        self.encoder = InputEmbedderWithApo(
+        self.input_embedder = InputEmbedderWithApo(
             channel_s=cfg.channel_s,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
-            atoms_per_window_queries=cfg.atoms_per_window_queries,
-            atoms_per_window_keys=cfg.atoms_per_window_keys,
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
         )
@@ -169,7 +161,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         """
 
         # Get input single representation
-        s_inputs = self.encoder(f_input)  # [B, L, c_s]
+        s_inputs = self.input_embedder(f_input)  # [B, L, c_s]
 
         # Get initial single representation
         s_init = self.linear_s_init(s_inputs)  # [B, L, c_s]

@@ -363,16 +363,23 @@ class BaseFoldingModel(torch.nn.Module):
         strict: bool = True,
     ) -> Self:
         """Load model from checkpoint."""
+        from omegaconf import OmegaConf
+
         from kfold.config import load_config
 
         # Load model config
-        config = load_config(config_path, override_args=override_args)
+        config = load_config(config_path)
         if "model" in config:
             # Get model config if wrapped in a higher-level config
             config = config.model
 
+        if override_args is not None:
+            # Override specific arguments in the config
+            overrides = OmegaConf.from_dotlist(override_args)
+            config = OmegaConf.merge(config, overrides)
+
         # Initialize model
-        model: torch.nn.Module = cls(config)
+        model = cls(config)
 
         # Load checkpoint
         ckpt = torch.load(ckpt_path, map_location="cpu")
