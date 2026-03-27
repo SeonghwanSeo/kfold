@@ -138,6 +138,7 @@ loss:
     smooth_lddt_loss:
       repr_atom_only: false # if True, use [Nrepr, N] instead of [N, N] for LDDT calculation.
       chunk_size: 1 # in number of samples.
+      use_kernel: true
 
   # Confidence loss
   # TODO
