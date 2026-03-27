@@ -27,5 +27,3 @@ pairformer:
 
 num_register_tokens: 0
 register_token_init_std: 0.05
-
-tri_attn_chunk_threshold: 384

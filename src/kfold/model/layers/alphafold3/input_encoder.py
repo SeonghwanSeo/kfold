@@ -4,7 +4,7 @@ import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LinearNoBias
 
-from .atom_transformer import AtomAttentionEncoder, AtomInputEmbedder
+from .atom_transformer import AtomAttentionEncoder, AtomEmbedder
 
 
 class InputFeatureEmbedder(torch.nn.Module):
@@ -38,7 +38,7 @@ class InputFeatureEmbedder(torch.nn.Module):
         """
         super().__init__()
 
-        self.embedder = AtomInputEmbedder(
+        self.embedder = AtomEmbedder(
             channel_s=channel_s,
             channel_z=None,
             channel_atom=channel_atom,

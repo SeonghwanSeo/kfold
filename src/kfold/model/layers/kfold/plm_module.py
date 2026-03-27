@@ -137,7 +137,6 @@ class PLMModule(nn.Module):
         s_plm: torch.Tensor,
         asym_id: torch.Tensor,
         mask: torch.Tensor,
-        chunk_size_tri_attn: int | None = None,
         use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Perform the forward pass.
@@ -152,8 +151,6 @@ class PLMModule(nn.Module):
             The asymmetry IDs of shape (B, L)
         mask : torch.Tensor
             The token mask of shape (B, L)
-        chunk_size_tri_attn : int | None, optional
-            The chunk size for triangle attention, by default None.
         use_cuequiv_kernels : bool, optional
             Whether to use cuEQUIV kernels, by default False.
 
@@ -177,7 +174,6 @@ class PLMModule(nn.Module):
                 intra_mask=intra_mask,
                 inter_mask=inter_mask,
                 use_cuequiv_kernels=use_cuequiv_kernels,
-                chunk_size_tri_attn=chunk_size_tri_attn,
             )
             for b in self.blocks
         ]
@@ -243,7 +239,6 @@ class PLMBlock(nn.Module):
         pair_mask: torch.Tensor,
         intra_mask: torch.Tensor,
         inter_mask: torch.Tensor,
-        chunk_size_tri_attn: int | None = None,
         use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -306,7 +301,6 @@ class PLMBlock(nn.Module):
             self.tri_att_start(
                 z,
                 mask=pair_mask,
-                chunk_size=chunk_size_tri_attn,
                 use_kernels=use_cuequiv_kernels,
             )
         )
@@ -314,7 +308,6 @@ class PLMBlock(nn.Module):
             self.tri_att_end(
                 z,
                 mask=pair_mask,
-                chunk_size=chunk_size_tri_attn,
                 use_kernels=use_cuequiv_kernels,
             )
         )

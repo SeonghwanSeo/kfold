@@ -8,7 +8,7 @@ try:
 except ImportError:
     cueq_attention_pair_bias = None
 
-from .utils import add, mul, permute_final_dims
+from .utils import permute_final_dims
 
 
 def _attention(
@@ -17,7 +17,6 @@ def _attention(
     value: torch.Tensor,
     bias: torch.Tensor | None = None,
     scale: float | None = None,
-    inplace: bool = False,
 ) -> torch.Tensor:
     """Compute the attention operation.
     Parameters
@@ -32,8 +31,6 @@ def _attention(
         The attention bias of shape (..., Q, K), default None
     scale : Optional[float]
         The scaling factor for the query-key dot product, default None
-    inplace : bool
-        Whether to perform operations in-place, default False
 
     Returns
     -------
@@ -41,20 +38,20 @@ def _attention(
         The output tensor of shape (..., Q, C)
     """
 
-    with torch.autocast("cuda", dtype=torch.float32):
+    with torch.autocast(query.device.type, enabled=False):
         query = query.to(torch.float32)
         key = key.to(torch.float32)
         bias = bias.to(torch.float32) if bias is not None else None
 
         if scale is not None:
-            query = mul(query, scale, inplace=inplace)
+            query = query * scale
 
         # Compute attention weights
         attn = torch.einsum("...qc,...kc->...qk", query, key)
 
         # Add attention bias
         if bias is not None:
-            attn = add(attn, bias, inplace=inplace)
+            attn = attn + bias
 
         # Softmax
         attn = attn.softmax(dim=-1)
@@ -225,8 +222,8 @@ def attention_pair_bias(
         attn_bias = F.linear(z_ln, w_proj_z, b_proj_z)  # [*, Q, K, H]
         attn_bias = permute_final_dims(attn_bias, (2, 0, 1))  # [*, H, Q, K]
         del z_ln
-        attn_bias = attn_bias - inf * (
-            1 - mask.to(attn_bias.dtype)[..., None, None, :]
+        attn_bias = (
+            attn_bias - inf * ((~mask.bool()).to(attn_bias.dtype)[..., None, None, :])
         )  # [*, H, Q, K]
 
         # === Attention === #
@@ -242,7 +239,7 @@ def attention_pair_bias(
         Av = permute_final_dims(Av, (1, 0, 2))  # [B, N, Q, H, C_h]
         Av = Av.reshape(s.shape)  # [B, N, Q, C]
 
-        g = F.sigmoid(F.linear(s, w_proj_g, b_proj_g))  # [B, N, L, C]
+        g = torch.sigmoid(F.linear(s, w_proj_g, b_proj_g))  # [B, N, L, C]
         out = F.linear(g * Av, w_proj_o, b_proj_o)  # [B, N, L, C]
 
     return out

@@ -64,7 +64,6 @@ class PairformerStack(nn.Module):
         s: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-        chunk_size_tri_attn: int | None = None,
         use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -77,8 +76,6 @@ class PairformerStack(nn.Module):
             The pairwise embeddings
         mask : torch.Tensor
             The token mask
-        chunk_size_tri_attn : int | None, optional
-            The chunk size for triangle attention, by default None
         use_cuequiv_kernels : bool, optional
             Whether to use CuEQuiv kernels, by default False
 
@@ -90,11 +87,6 @@ class PairformerStack(nn.Module):
             The updated pairwise embeddings.
 
         """
-        if self.training:
-            assert chunk_size_tri_attn is None, (
-                "During training, chunk_size_tri_attn must be None."
-            )
-
         pair_mask = mask[..., None] & mask[..., None, :]
 
         blocks = [
@@ -102,7 +94,6 @@ class PairformerStack(nn.Module):
                 b,
                 single_mask=mask,
                 pair_mask=pair_mask,
-                chunk_size_tri_attn=chunk_size_tri_attn,
                 use_cuequiv_kernels=use_cuequiv_kernels,
             )
             for b in self.blocks
@@ -182,7 +173,6 @@ class PairformerBlock(nn.Module):
         z: torch.Tensor,
         single_mask: torch.Tensor,
         pair_mask: torch.Tensor,
-        chunk_size_tri_attn: int | None = None,
         use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
@@ -212,7 +202,6 @@ class PairformerBlock(nn.Module):
             self.tri_att_start(
                 z,
                 mask=pair_mask,
-                chunk_size=chunk_size_tri_attn,
                 use_kernels=use_cuequiv_kernels,
             )
         )
@@ -222,7 +211,6 @@ class PairformerBlock(nn.Module):
             self.tri_att_end(
                 z,
                 mask=pair_mask,
-                chunk_size=chunk_size_tri_attn,
                 use_kernels=use_cuequiv_kernels,
             )
         )
