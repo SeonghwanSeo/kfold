@@ -1,7 +1,5 @@
 """Section 3.6 Pairformer Stack of AlphaFold 3 paper."""
 
-# started from code from https://github.com/jwohlwend/boltz, MIT License,
-
 from functools import partial
 
 import torch
@@ -17,7 +15,7 @@ from kfold.model.layers.primitives import (
 )
 from kfold.utils.checkpointing import checkpoint_blocks
 
-from .transformers import AttentionPairBias
+from .attention_pair_bias import SelfAttentionPairBias
 from .transition import Transition
 
 
@@ -109,18 +107,12 @@ class PairformerStack(nn.Module):
             )
             for b in self.blocks
         ]
-        blocks_per_ckpt = self.blocks_per_ckpt
-
-        if self.training and torch.is_grad_enabled():
-            s, z = checkpoint_blocks(
-                blocks,
-                (s, z),
-                blocks_per_ckpt,
-                use_reentrant=False,
-            )
-        else:
-            for block in blocks:
-                s, z = block(s, z)
+        s, z = checkpoint_blocks(
+            blocks,
+            (s, z),
+            self.blocks_per_ckpt,
+            use_reentrant=False,
+        )
 
         # Line 10
         return s, z
@@ -170,12 +162,11 @@ class PairformerBlock(nn.Module):
             channel_z, num_heads_tri_attn, inf=1e9
         )
 
-        self.attention = AttentionPairBias(
+        self.attention = SelfAttentionPairBias(
             channel_a=channel_s,
             channel_z=channel_z,
             num_heads=num_heads_attn,
             channel_s=None,
-            use_single_cond=False,
             qk_norm=use_qk_norm,
         )
 
@@ -241,10 +232,10 @@ class PairformerBlock(nn.Module):
 
         # Line 7
         s = s + self.attention(
-            s,  # [B, L, C_s]
-            None,
-            z,  # [B, L, L, C_z]
-            attn_mask=single_mask,  # [B, L]
+            a=s,  # [B, L, C_s]
+            s=None,
+            z=z,  # [B, L, L, C_z]
+            mask=single_mask,  # [B, L]
             use_kernels=use_cuequiv_kernels,
         )
 

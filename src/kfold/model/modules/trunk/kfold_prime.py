@@ -111,7 +111,6 @@ class KFoldTrunkPrime(BaseTrunk):
             num_blocks=cfg.plm_module.num_blocks,
             dropout_plm=cfg.plm_module.dropout_plm,
             dropout_z=cfg.plm_module.dropout_z,
-            use_separate_projections=cfg.plm_module.use_separate_projections,
             use_qk_norm=cfg.plm_module.use_qk_norm,
             blocks_per_ckpt=cfg.plm_module.blocks_per_ckpt,
         )
@@ -142,7 +141,6 @@ class KFoldTrunkPrime(BaseTrunk):
             num_blocks=cfg.plm_module.num_blocks,
             dropout_plm=cfg.plm_module.dropout_plm,
             dropout_z=cfg.plm_module.dropout_z,
-            use_separate_projections=cfg.plm_module.use_separate_projections,
             use_qk_norm=cfg.plm_module.use_qk_norm,
             blocks_per_ckpt=cfg.plm_module.blocks_per_ckpt,
         )

@@ -9,4 +9,4 @@ dropout: 0.25
 use_msa: False
 use_template: False
 tri_attn_chunk_threshold: 384
-blocks_per_ckpt: 1
+blocks_per_ckpt: null

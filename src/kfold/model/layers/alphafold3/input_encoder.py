@@ -4,7 +4,7 @@ import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LinearNoBias
 
-from .transformers import AtomAttentionEncoder
+from .atom_transformer import AtomAttentionEncoder, AtomInputEmbedder
 
 
 class InputFeatureEmbedder(torch.nn.Module):
@@ -17,8 +17,6 @@ class InputFeatureEmbedder(torch.nn.Module):
         channel_s: int = 384,
         channel_atom: int = 128,
         channel_atompair: int = 16,
-        atoms_per_window_queries: int = 32,
-        atoms_per_window_keys: int = 128,
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
         blocks_per_ckpt: int | None = None,
@@ -33,10 +31,6 @@ class InputFeatureEmbedder(torch.nn.Module):
             The atom single embedding size.
         channel_atompair : int
             The atom pairwise embedding size.
-        atoms_per_window_queries: int,
-            The number of atoms per window for queries.
-        atoms_per_window_keys: int,
-            The number of atoms per window for keys.
         atom_encoder_blocks: int,
             The number of blocks in atom encoder.
         atom_encoder_heads: int,
@@ -44,18 +38,21 @@ class InputFeatureEmbedder(torch.nn.Module):
         """
         super().__init__()
 
-        self.encoder = AtomAttentionEncoder(
+        self.embedder = AtomInputEmbedder(
             channel_s=channel_s,
             channel_z=None,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
-            channel_token=channel_s,  # Same to channel_s
-            atoms_per_window_queries=atoms_per_window_queries,
-            atoms_per_window_keys=atoms_per_window_keys,
+            use_structure=False,
+        )
+        self.encoder = AtomAttentionEncoder(
+            channel_s=channel_s,
+            channel_atom=channel_atom,
+            channel_atompair=channel_atompair,
+            channel_token=channel_s,
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
             use_structure=False,
-            blocks_per_ckpt=blocks_per_ckpt,
         )
 
         # residue info
@@ -80,8 +77,18 @@ class InputFeatureEmbedder(torch.nn.Module):
         Tensor
             The embedded tokens. [B, Lt, c_s]
         """
+        # Atom input embedding
+        q, c, p = self.embedder(f_input)
+
         # Atom attention encoder forward
-        a, *_ = self.encoder(f_input, None, None, None)  # [B, Lt, c_s]
+        a, *_ = self.encoder(
+            q,
+            c,
+            p,
+            token_index=f_input.atom.token_index,
+            mask=f_input.atom.pad_mask,
+            num_tokens=f_input.num_tokens,
+        )
 
         # Concatenate additional token features
         res_type = f_input.token.res_type  # [B, Lt, 32]

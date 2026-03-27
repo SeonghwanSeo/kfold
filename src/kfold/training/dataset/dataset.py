@@ -418,13 +418,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         return self.featurizer(tokenized)
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
-        """Pad the folding input to multiple of 32 for LocalAtomAttention."""
+        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
         # Pad num_tokens for CUDA efficiency.
-        num_tokens = next_multiple(f_input.num_tokens, 16)
+        num_tokens = next_multiple(f_input.num_tokens, 64)
         # Pad num_seq_tokens for CUDA efficiency.
         num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 64)
         # Pad num_atoms for local attention.
-        num_atoms = next_multiple(f_input.num_atoms, 32)
+        num_atoms = next_multiple(f_input.num_atoms, 64)
         return f_input.pad(
             max_tokens=num_tokens,
             max_atoms=num_atoms,

@@ -14,9 +14,8 @@ plm_module:
   num_blocks: 4
   dropout_plm: 0.15
   dropout_z: 0.25
-  use_separate_projections: true
   use_qk_norm: false
-  blocks_per_ckpt: 1
+  blocks_per_ckpt: null
 
 pairformer:
   num_heads_attn: 16
@@ -24,7 +23,7 @@ pairformer:
   num_blocks: 48
   dropout: 0.25
   use_qk_norm: false
-  blocks_per_ckpt: 1
+  blocks_per_ckpt: null
 
 num_register_tokens: 0
 register_token_init_std: 0.05

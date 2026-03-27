@@ -1,5 +1,4 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License,
-
+import dataclasses
 import math
 from functools import lru_cache
 from typing import TypeVar, overload
@@ -36,155 +35,141 @@ def default(v: _T | None, d: _T) -> _T:
     return v if exists(v) else d  # type: ignore[return-value]
 
 
+# === Atom-Token mapping functions === #
 def broadcast_tokens_to_atoms(
-    x_token: torch.Tensor,
+    x: torch.Tensor,
     token_index: torch.Tensor,
-    atom_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Broadcast token features to atom features.
 
     Parameters
     ----------
-    x_token : torch.Tensor
-        Token features of shape (..., Ntoken, D)
-    token_index : torch.Tensor
-        Token indices for each atom of shape (..., Natom)
-    atom_mask : torch.Tensor (optional)
-        Atom mask of shape (..., Natom)
+    x: torch.Tensor
+        Token features of shape (*, Ntoken, D)
+    token_index: torch.Tensor
+        Tensor of shape (*, Natom) mapping each atom to a token index.
 
     Returns
     -------
-    torch.Tensor
-        Atom features of shape (..., Natom, D)
+    x_atom: torch.Tensor
+        Atom features of shape (*, Natom, D)
     """
-    # 1. Expand indices to match the feature dimension D
-    # Shape: [..., Natom] -> [..., Natom, 1] -> [..., Natom, D]
-    D = x_token.size(-1)
-    index_expanded = token_index[..., None].expand(*token_index.shape, D)
 
-    # 2. Gather (No reshaping needed, preserves arbitrary batch dims)
-    # Gather along the token dimension (second to last dim)
-    atom_features = torch.gather(x_token, dim=-2, index=index_expanded)
+    # Expand indices to match the input dimensions.
+    gather_shape = list(x.shape)
+    gather_shape[-2] = token_index.shape[-1]  # Natom
+    index_expanded = token_index.unsqueeze(-1).expand(*gather_shape)  # [*, Natom, D]
 
-    # 3. Apply Masking (Type-safe and in-place efficient)
-    if atom_mask is not None:
-        # Zero out invalid atoms.
-        atom_features.masked_fill_(~atom_mask.bool()[..., None], 0)
-
-    return atom_features
-
-
-def aggregate_atoms_to_tokens(
-    x_atom: torch.Tensor,
-    token_index: torch.Tensor,
-    num_tokens: int,
-    atom_mask: torch.Tensor | None = None,
-    aggr: str = "mean",
-) -> torch.Tensor:
-    """Aggregate atom features to token features.
-
-    Parameters
-    ----------
-    x_atom : torch.Tensor
-        Atom features of shape (..., Natom, D)
-    token_index : torch.Tensor
-        Token indices for each atom of shape (..., Natom)
-    num_tokens : int
-        Number of tokens
-    atom_mask : torch.Tensor (optional)
-        Atom mask of shape (..., Natom)
-    aggr : str
-        Aggregation method: "mean" or "sum"
-
-    Returns
-    -------
-    torch.Tensor
-        Token features of shape (..., Ntoken, D)
-    """
-    # Parse shapes & Device
-    *batch_dims, num_atoms, D = x_atom.shape
-    batch_size = math.prod(batch_dims) if batch_dims else 1
-    device = x_atom.device
-    dtype = x_atom.dtype
-
-    # Flatten inputs
-    num_total_atoms = batch_size * num_atoms
-    total_tokens = num_tokens * batch_size
-
-    x_atom_flat = x_atom.view(num_total_atoms, D)
-    indices_flat = token_index.expand(x_atom.shape[:-1]).reshape(-1)
-    # Add offsets to shift indices for each batch
-    offsets = torch.arange(batch_size, device=device) * num_tokens
-    indices_flat = indices_flat + offsets.repeat_interleave(num_atoms)
-
-    # Handle Masking
-    # Allocate one extra slot for trash bin (last index)
-    alloc_tokens = total_tokens + 1
-    trash_idx = total_tokens
-
-    if atom_mask is not None:
-        mask_flat = atom_mask.expand(x_atom.shape[:-1]).reshape(-1)
-        indices_flat = torch.where(mask_flat, indices_flat, trash_idx)
-
-    # Aggregate
-    out_flat = torch.zeros(alloc_tokens, D, device=device, dtype=dtype)
-    out_flat.index_add_(0, indices_flat, x_atom_flat)
-
-    # Mean Handling
-    if aggr == "mean":
-        # Compute counts using the same strategy (1 channel only)
-        ones = torch.ones((num_total_atoms, 1), device=device, dtype=dtype)
-        counts_flat = torch.zeros((alloc_tokens, 1), device=device, dtype=dtype)
-        counts_flat.index_add_(0, indices_flat, ones)
-        # Avoid division by zero
-        out_flat = out_flat / counts_flat.clamp_(min=1.0)
-
-    # Remove Trash Bin & Reshape
-    out_flat = out_flat[:total_tokens]
-
-    # Reshape to original batch dims
-    out = out_flat.view(*batch_dims, num_tokens, D)
-
+    # Gather token features for each atom based on the token index.
+    out = torch.gather(x, dim=-2, index=index_expanded)  # [*, Natom, D]
     return out
 
 
+def aggregate_atoms_to_tokens(
+    x: torch.Tensor, token_index: torch.Tensor, mask: torch.Tensor, num_tokens: int
+) -> torch.Tensor:
+    """Aggregate atom features to token features. (mean pooling)
+
+    Parameters
+    ----------
+    x: torch.Tensor
+        Atom features of shape (*, Natom, D)
+    token_index: torch.Tensor
+        Tensor of shape (*, Natom) mapping each atom to a token index.
+    mask: torch.Tensor
+        Tensor of shape (*, Natom) indicating valid atoms
+    num_tokens: int
+        The number of tokens.
+
+    Returns
+    -------
+    x_token: torch.Tensor
+        Token features of shape (*, Ntoken, D)
+    """
+    # Prepare indices for scatter_reduce
+    trash_idx = num_tokens  # An out-of-range index for padding atoms.
+    index = torch.where(mask, token_index, trash_idx)
+    index_expanded = index.unsqueeze(-1).expand(*x.shape)
+
+    # Prepare an output tensor with an extra slot for padding atoms
+    out_shape = list(x.shape)
+    out_shape[-2] = num_tokens + 1  # Add an extra slot for padding atoms
+    out = torch.zeros(*out_shape, dtype=x.dtype, device=x.device)  # [*, Ntoken + 1, D]
+
+    # Scatter reduce atom features to token features
+    out.scatter_reduce_(
+        dim=-2, index=index_expanded, src=x, reduce="mean", include_self=False
+    )
+    # Remove the extra slot for padding atoms
+    out = out[..., :num_tokens, :]
+    return out.contiguous()
+
+
+# === Local Attention Indexing === #
+def window_to_qk(
+    x: torch.Tensor, dim: int, window_size_queries: int = 32, window_size_keys: int = 128
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Window-based indexing for local attention.
+
+    Parameters
+    ----------
+    x: torch.Tensor
+        Input tensor of shape [*, L, *]
+    dim: int, optional
+        Dimension along which to unflatten into query/key windows.
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        Query tensor of shape [*, W, Lq, *]
+        Key tensor of shape [*, W, Lk, *]
+    """
+    length = x.shape[dim]
+    device = x.device
+    local_index = LocalAttentionIndex.create(
+        length, window_size_queries, window_size_keys, device
+    )
+    return local_index.to_qk(x, dim)
+
+
+@dataclasses.dataclass(slots=True)
 class LocalAttentionIndex:
-    def __init__(
-        self,
-        num_atoms: int,
-        atoms_per_window_queries: int,
-        atoms_per_window_keys: int,
-        device: torch.device,
-    ) -> None:
-        """Indexer for local atom attention.
+    L: int
+    W: int
+    Lq: int
+    Lk: int
+    gather_indices: torch.Tensor
+    pad_mask: torch.Tensor
 
-        Converts flat atom sequences into windowed query/key representations
-        using efficient index gathering.
-        """
-        assert num_atoms % atoms_per_window_queries == 0
-
-        self.L: int = num_atoms
-        self.W: int = num_atoms // atoms_per_window_queries
-        self.Lq: int = atoms_per_window_queries
-        self.Lk: int = atoms_per_window_keys
-        self.device = device
-
-        # Check alignment
-        half_block = self.Lq // 2
-        assert self.Lk % half_block == 0
+    @classmethod
+    @lru_cache(maxsize=3)
+    def create(
+        cls,
+        length: int,
+        window_size_query: int = 32,
+        window_size_key: int = 128,
+        device: str | torch.device = "cpu",
+    ) -> "LocalAttentionIndex":
+        """Indexer for local attention."""
+        assert window_size_key % (window_size_query // 2) == 0
+        if length % window_size_query != 0:
+            raise ValueError(
+                "Length must be divisible by window size for keys."
+                f" Got length={length} and window_size_query={window_size_query}."
+            )
+        L: int = length
+        W: int = length // window_size_query
+        Lq: int = window_size_query
+        Lk: int = window_size_key
 
         # Pre-calculate the gather indices once
         # Shape: [W, Lk]
-        gather_indices, pad_mask = self._build_gather_indices(
-            self.W, self.Lq, self.Lk, device
-        )
-        self.gather_indices: torch.Tensor = gather_indices
-        self.pad_mask: torch.Tensor = pad_mask
+        gather_indices, pad_mask = cls._build_gather_indices(W, Lq, Lk, device)
+        return cls(L, W, Lq, Lk, gather_indices, pad_mask)
 
     @staticmethod
-    @lru_cache(maxsize=5)
     def _build_gather_indices(
-        W: int, Lq: int, Lk: int, device: torch.device
+        W: int, Lq: int, Lk: int, device: str | torch.device
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Constructs the index map [W, Lk] mapping window rows to atom indices."""
         half_block_size = Lq // 2
@@ -216,90 +201,71 @@ class LocalAttentionIndex:
 
         return gather_indices, pad_mask
 
-    def to_qk(self, x: torch.Tensor, dim: int = -2) -> tuple[torch.Tensor, torch.Tensor]:
+    def to_qk(self, x: torch.Tensor, dim: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Convert single tensor to query and key tensors.
-        feature: [..., L, D] -> [..., W, Lq, D], [..., W, Lk, D]
-        mask, indices: [..., L] -> [..., W, Lq], [..., W, Lk]
 
         Parameters
         ----------
-        x : torch.Tensor
-            Input tensor of shape [..., L, D] or [..., L]
-        dim : int, optional
-            Dimension corresponding to the atom sequence (default: -2)
-            should be -2 for features and -1 for masks or indices.
+        x: torch.Tensor
+            Input tensor of shape [*, L, *]
+        dim: int, optional
+            Dimension along which to unflatten into query/key windows.
 
         Returns
         -------
         tuple[torch.Tensor, torch.Tensor]
-            Query tensor of shape [..., W, Lq, D] or [..., W, Lq]
-            Key tensor of shape [..., W, Lk, D] or [..., W, Lk]
+            Query tensor of shape [*, W, Lq, *]
+            Key tensor of shape [*, W, Lk, *]
         """
-        queries = self.to_query(x, dim=dim)
-        keys = self.to_key(x, dim=dim)
-        return queries, keys
+        return self.to_query(x, dim), self.to_key(x, dim)
 
-    def to_query(self, x: torch.Tensor, dim: int = -2) -> torch.Tensor:
+    def to_query(self, x: torch.Tensor, dim: int) -> torch.Tensor:
         """Convert single tensor to query tensor.
-        feature: [..., L, D] -> [..., W, Lq, D] (set dim=-2)
-        mask, indices: [..., L] -> [..., W, Lq] (set dim=-1)
 
         Parameters
         ----------
-        x : torch.Tensor
-            Input tensor of shape [..., L, D] or [..., L]
-        dim : int, optional
-            Dimension corresponding to the atom sequence (default: -2)
-            should be -2 for features and -1 for masks or indices.
+        x: torch.Tensor
+            Input tensor of shape [*, L, *]
+        dim: int, optional
+            Dimension along which to unflatten into query/key windows.
 
         Returns
         -------
         torch.Tensor
-            Query tensor of shape [..., W, Lq, D] or [..., W, Lq]
+            Query tensor of shape [*, W, Lq, *]
         """
-        # Efficient view (zero-copy)
-        assert dim in (-2, -1), "Only supports dim -2 or -1 for unflattening."
         return x.unflatten(dim=dim, sizes=(self.W, self.Lq))
 
     def to_key(self, x: torch.Tensor, dim: int = -2) -> torch.Tensor:
         """Convert single tensor to key tensor using index gathering.
-        feature: [..., L, D] -> [..., W, Lk, D]
-        mask, indices: [..., L] -> [..., W, Lk]
 
         Parameters
         ----------
-        x : torch.Tensor
-            Input tensor of shape [..., L, D] or [..., L]
+        x: torch.Tensor
+            Input tensor of shape [*, L, *]
+        dim: int, optional
+            Dimension along which to unflatten into query/key windows.
+
         Returns
         -------
         torch.Tensor
-            Key tensor of shape [..., W, Lk, D] or [..., W, Lk]
+            Key tensor of shape [*, W, Lk, *]
         """
-        assert dim in (-2, -1), "Only supports dim -2 or -1 for unflattening."
+        # Normalize negative dimension index to a positive integer
+        dim = dim if dim >= 0 else x.ndim + dim
 
-        if dim == -1:
-            # Add feature dim
-            x = x.unsqueeze(-1)  # [..., L, 1]
+        # 1. Advanced Indexing
+        indexer = [slice(None)] * x.ndim
+        indexer[dim] = self.gather_indices
+        keys = x[tuple(indexer)]
 
-        # gather_indices: [W, Lk]
-        # x: [..., L, D]
+        # 2. Apply Padding Mask
+        mask_shape = [1] * keys.ndim
+        mask_shape[dim] = self.W
+        mask_shape[dim + 1] = self.Lk
+        keys.masked_fill_(self.pad_mask.view(*mask_shape), 0)
 
-        # Flatten batch dims for clean gathering: [Batch_Total, L, D]
-        D = x.shape[-1]
-        original_shape = x.shape
-        x_flat = x.reshape(-1, self.L, D)
-
-        # Indexing
-        keys = x_flat[:, self.gather_indices]  # [Batch, W, Lk, D]
-
-        # Apply padding mask
-        keys.masked_fill_(self.pad_mask.unsqueeze(0).unsqueeze(-1), 0)
-
-        # Reshape back
-        out = keys.reshape(*original_shape[:-2], self.W, self.Lk, D)
-        if dim == -1:
-            out = out.squeeze(-1)  # [..., W, Lk]
-        return out
+        return keys
 
 
 def center_random_augmentation(

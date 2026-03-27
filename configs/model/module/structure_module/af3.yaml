@@ -1,6 +1,5 @@
 _registry_: "structure_module"
 _class_: "AF3SampleDiffusion"
-num_steps: 200
 sigma_min: 0.0004
 sigma_max: 160.0
 sigma_data: 16.0

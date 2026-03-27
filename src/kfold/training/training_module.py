@@ -445,9 +445,10 @@ class KFoldTrainingModule(pl.LightningModule):
                         "distogram_loss"
                     ]
 
+                diffusion_out = model_output["diffusion"]
                 diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
-                    x_pred=model_output["diffusion"]["denoised_atom_coords"],
-                    x_true=model_output["diffusion"]["true_atom_coords"],
+                    x_pred=diffusion_out["x_0_hat"],
+                    x_true=diffusion_out["x_gt"],
                     per_sample_weights=model_output["diffusion"]["loss_weights"],
                     f_input=f_input,
                 )

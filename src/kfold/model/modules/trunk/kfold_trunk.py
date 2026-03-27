@@ -21,7 +21,6 @@ class PLMModuleConfig:
     num_blocks: int = 4
     dropout_plm: float = 0.15
     dropout_z: float = 0.25
-    use_separate_projections: bool = True
     use_qk_norm: bool = False
     blocks_per_ckpt: int | None = None
 
@@ -133,7 +132,6 @@ class KFoldTrunk(BaseTrunk):
             num_blocks=cfg.plm_module.num_blocks,
             dropout_plm=cfg.plm_module.dropout_plm,
             dropout_z=cfg.plm_module.dropout_z,
-            use_separate_projections=cfg.plm_module.use_separate_projections,
             use_qk_norm=cfg.plm_module.use_qk_norm,
             blocks_per_ckpt=cfg.plm_module.blocks_per_ckpt,
         )

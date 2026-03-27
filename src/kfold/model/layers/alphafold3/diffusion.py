@@ -1,7 +1,4 @@
 """Section 3.7 Diffusion Module in the AF3 paper."""
-# started from code from https://github.com/jwohlwend/boltz, MIT License
-
-import math
 
 import torch
 import torch.nn as nn
@@ -9,59 +6,147 @@ import torch.nn as nn
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 
-from .embeddings import RelativePositionEncoding
-from .transformers import (
-    AtomAttentionDecoder,
-    AtomAttentionEncoder,
-    DiffusionTransformer,
-)
+from .atom_transformer import AtomAttentionDecoder, AtomAttentionEncoder, AtomEmbedder
+from .diffusion_transformer import GlobalTransformerStack
+from .embeddings import FourierEmbedding, RelativePositionEncoding
 from .transition import Transition
 
+# === Diffusion Conditioning Layers === #
+"""Diffusion conditioning layer.
 
-class FourierEmbedding(nn.Module):
-    """Fourier embedding layer.
-    Section 3.7 Algorithm 22 Fourier Embedding
+NOTE(Seonghwan Seo):
+According to AlphaFold3 paper, s is time-dependent single representation,
+while z is time-independent pair representation.
+
+For model efficiency, I separate the diffusion conditioning into two classes,
+PairConditioning and SingleConditioning, which can be called separately in the
+diffusion module. The PairConditioning can be pre-computed before the diffusion
+steps, while the SingleConditioning needs to be computed at each diffusion step.
+"""
+
+
+class PairConditioning(nn.Module):
+    """Diffusion conditioning layer for pair representations.
+    See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
     """
 
-    def __init__(self, channel: int):
-        """Initialize the Fourier Embeddings.
+    def __init__(self, channel_z: int = 128):
+        """Initialize the single conditioning layer.
 
         Parameters
         ----------
-        channel : int
-            The fourier embedding dimension.
-        seed : int, optional
-            The random seed, by default 42
-
+        channel_z : int
+            The pair representation dimension, by default 128.
         """
         super().__init__()
-        generator = torch.Generator()
-        generator.manual_seed(42)
+        # Pair representation conditioning
+        self.rel_pos_encoding = RelativePositionEncoding()
+        rel_pos_dim = self.rel_pos_encoding.dimension
 
-        # Line 1: Randomly generate weight/bias once before training
-        w = torch.randn(size=(1, channel), generator=generator)
-        b = torch.randn(size=(1, channel), generator=generator)
-        self.register_buffer("w", w, persistent=False)
-        self.register_buffer("b", b, persistent=False)
+        self.layernorm = LayerNorm(channel_z + rel_pos_dim, create_offset=False)
+        self.linear = LinearNoBias(channel_z + rel_pos_dim, channel_z, init="default")
+        self.transitions = nn.ModuleList(
+            [Transition(channel_z, expansion_factor=2) for _ in range(2)]
+        )
 
-    def forward(self, t_hat: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-        See Section 3.7 Algorithm 22 of AlphaFold3 paper.
+    def forward(self, f_input: FoldingInput, z_trunk: torch.Tensor) -> torch.Tensor:
+        """See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
 
         Parameters
         ----------
-        t_hat : torch.Tensor
-            The input noise level. Shape (B, N,)
+        f_input : FoldingInput
+            The folding input.
+        z_trunk : torch.Tensor
+            Tensor of shape (B, Lt, Lt, c_z) containing trunk pair embeddings.
 
         Returns
         -------
-        torch.Tensor
-            The Fourier embeddings. Shape (B, N, channel)
+        z : torch.Tensor
+            Tensor of shape (B, Lt, Lt, c_z) containing conditioned pair embeddings.
         """
+        # Line 1
+        rel_pos_feats = self.rel_pos_encoding(f_input).to(z_trunk.dtype)
+        z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
+
         # Line 2
-        return torch.cos((2 * math.pi) * t_hat[..., None] * self.w + self.b)
+        z = self.linear(self.layernorm(z))  # [B, Lt, Lt, c_z]
+
+        # Line 3-5
+        for transition in self.transitions:
+            z = z + transition(z)
+
+        return z
 
 
+class SingleConditioning(nn.Module):
+    """Diffusion conditioning layer for single representations.
+    See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
+    """
+
+    def __init__(self, channel_s: int = 384, dim_fourier: int = 256):
+        """Initialize the single conditioning layer.
+
+        Parameters
+        ----------
+        channel_s : int
+            The single representation dimension, by default 384.
+        dim_fourier : int
+            The fourier embeddings dimension, by default 256.
+        """
+        super().__init__()
+        self.fourier_embed = FourierEmbedding(dim_fourier)
+        self.layernorm_fourier = LayerNorm(dim_fourier, create_offset=False)
+        self.linear_fourier = LinearNoBias(dim_fourier, channel_s, init="default")
+        self.layernorm = LayerNorm(channel_s * 2, create_offset=False)
+        self.linear = LinearNoBias(channel_s * 2, channel_s, init="default")
+        self.transitions = nn.ModuleList(
+            [Transition(channel_s, expansion_factor=2) for _ in range(2)]
+        )
+
+    def forward(
+        self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, c_noise: torch.Tensor
+    ) -> torch.Tensor:
+        """See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
+
+        Parameters
+        ----------
+        s_inputs : torch.Tensor
+            Tensor of shape (B, Lt, c_s) containing input single embeddings.
+        s_trunk : torch.Tensors
+            Tensor of shape (B, Lt, c_s) containing trunk single embeddings.
+        c_noise : torch.Tensor
+            Tensor of shape (B, N) containing diffusion noise level (or sigma).
+            c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm.)
+
+        Returns
+        -------
+        s : torch.Tensor
+            Tensor of shape (B, N, Lt, c_s) containing conditioned single embeddings.
+        """
+        # Line 6
+        s = torch.cat((s_trunk, s_inputs), dim=-1)  # [B, Lt, 2*c_s]
+
+        # Line 7
+        s = self.linear(self.layernorm(s))  # [B, Lt, c_s]
+
+        # Line 8:
+        # NOTE: 1/4 log(t_hat / sigma_data) is computed outside of this class.
+        # See StructureModule for more details.
+        fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]
+
+        # Line 9
+        fourier_embed = self.linear_fourier(self.layernorm_fourier(fourier_embed))
+        s = s[:, None, :, :] + fourier_embed[:, :, None, :]  # [B, N, Lt, c_s]
+
+        # Line 10-12
+        for transition in self.transitions:
+            s = transition(s) + s
+
+        # Line 13
+        return s
+
+
+# === Main Diffusion Score Model === #
 class DiffusionModule(nn.Module):
     """AF3 Diffusion module
     Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
@@ -74,16 +159,12 @@ class DiffusionModule(nn.Module):
         channel_atom: int = 128,
         channel_atompair: int = 16,
         channel_coords: int = 3,
-        atoms_per_window_queries: int = 32,
-        atoms_per_window_keys: int = 128,
-        dim_fourier: int = 256,
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
         token_transformer_blocks: int = 24,
         token_transformer_heads: int = 8,
         atom_decoder_blocks: int = 3,
         atom_decoder_heads: int = 4,
-        conditioning_transition_layers: int = 2,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         """Initialize the diffusion module.
@@ -100,12 +181,6 @@ class DiffusionModule(nn.Module):
             The atom pair representation dimension.
         channel_coords : int
             The atom coordinates dimension, by default 3.
-        atoms_per_window_queries : int, optional
-            The number of atoms per window for queries, by default 32.
-        atoms_per_window_keys : int, optional
-            The number of atoms per window for keys, by default 128.
-        dim_fourier : int, optional
-            The dimension of the fourier embedding, by default 256.
         atom_encoder_blocks : int, optional
             The number of blocks in the atom encoder, by default 3.
         atom_encoder_heads : int, optional
@@ -118,8 +193,6 @@ class DiffusionModule(nn.Module):
             The number of blocks in the atom decoder, by default 3.
         atom_decoder_heads : int, optional
             The number of heads in the atom decoder, by default 4.
-        conditioning_transition_layers : int, optional
-            The number of transition layers for conditioning, by default 2.
         blocks_per_ckpt : int | None, optional
             The number of blocks per checkpoint for gradient checkpointing,
             by default None.
@@ -127,32 +200,27 @@ class DiffusionModule(nn.Module):
         """
         super().__init__()
 
-        self.atoms_per_window_queries: int = atoms_per_window_queries
-        self.atoms_per_window_keys: int = atoms_per_window_keys
-
-        channel_token = channel_s * 2
-
         # === Diffusion conditioning === #
-        self.diffusion_conditioning = DiffusionConditioning(
-            channel_s=channel_s,
-            channel_z=channel_z,
-            dim_fourier=dim_fourier,
-            num_transitions=conditioning_transition_layers,
-        )
+        self.pair_conditioning = PairConditioning(channel_z)
+        self.single_conditioning = SingleConditioning(channel_s, dim_fourier=256)
 
         # === Local atom-level attention encoder === #
-        self.atom_attention_encoder = AtomAttentionEncoder(
+        channel_token = channel_s * 2
+        self.atom_embedder = AtomEmbedder(
             channel_s=channel_s,
             channel_z=channel_z,
+            channel_atom=channel_atom,
+            channel_atompair=channel_atompair,
+            use_structure=True,
+        )
+        self.atom_attention_encoder = AtomAttentionEncoder(
+            channel_s=channel_s,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             channel_token=channel_token,
             channel_coords=channel_coords,
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
-            atoms_per_window_queries=atoms_per_window_queries,
-            atoms_per_window_keys=atoms_per_window_keys,
-            blocks_per_ckpt=blocks_per_ckpt,
             use_structure=True,
         )
 
@@ -160,7 +228,7 @@ class DiffusionModule(nn.Module):
         self.layernorm_s = LayerNorm(channel_s, create_offset=False)
         self.linear_s_to_a = LinearNoBias(channel_s, channel_token, init="final")
 
-        self.token_transformer = DiffusionTransformer(
+        self.token_transformer = GlobalTransformerStack(
             channel_a=channel_token,
             channel_s=channel_s,
             channel_z=channel_z,
@@ -178,253 +246,246 @@ class DiffusionModule(nn.Module):
             channel_atompair=channel_atompair,
             num_blocks=atom_decoder_blocks,
             num_heads=atom_decoder_heads,
-            attn_window_queries=atoms_per_window_queries,
-            attn_window_keys=atoms_per_window_keys,
-            blocks_per_ckpt=blocks_per_ckpt,
+            use_structure=True,
         )
 
+    # === Main forward function for training === #
     def forward(
         self,
+        f_input: FoldingInput,
         r_noisy: torch.Tensor,
         c_noise: torch.Tensor,
-        f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
         use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
-        """Forward pass of the AF3 diffusion module.
+        """Training forward pass of the AF3 diffusion module
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
 
         Parameters
         ----------
-        r_noisy : torch.Tensor
-            The scaled noisy atom positions, shape [B, N, La, 3],
-            where B is the batch size and Nsample is the number of diffusion samples.
-        c_noise : torch.Tensor
-            The diffusion noise level (or sigmas), shape [B, N].
-            c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm 21.)
-            c_noise is computed outside of this class (See StructureModule).
         f_input : FoldingInput
             The folding input.
-        s_inputs : torch.Tensor
+        r_noisy: torch.Tensor
+            The noisy atom positions, shape [B, N, La, 3],
+            where N is number of diffusion samples and La is number of atoms.
+        c_noise: torch.Tensor
+            The diffusion noise level (or sigmas), shape [B, N].
+        s_inputs: torch.Tensor
             The input single representation, shape [B, Lt, c_s].
-        s_trunk : torch.Tensor
+        s_trunk: torch.Tensor
             The trunk single representation, shape [B, Lt, c_s].
-        z_trunk : torch.Tensor
-            The trunk pair representation, shape [B, Lt, c_z].
+        z_trunk: torch.Tensor
+            The trunk pair representation, shape [B, Lt, Lt, c_z].
+        use_cuequiv_kernels: bool
+            Whether to use cuequivariant kernels in the attention layers.
 
         Returns
         -------
         r_update : torch.Tensor
             The scaled updated atom positions, shape [B, N, La, 3].
         """
-        # B: batch size, N: number of diffusion samples
+        token_index = f_input.atom.token_index  # [B, Lt]
+        atom_mask = f_input.atom.pad_mask  # [B, La]
+        token_mask = f_input.token.pad_mask  # [B, Lt]
 
-        # Line 1
-        s, z = self.diffusion_conditioning(
-            c_noise=c_noise,
-            f_input=f_input,
-            s_inputs=s_inputs,
-            s_trunk=s_trunk,
-            z_trunk=z_trunk,
-        )  # [B, N, Lt, c_s], [B, Lt, Lt, c_z]
-
-        s_trunk = s_trunk.unsqueeze(-3)  # [B, 1, Lt, c_s]
-        z = z.unsqueeze(-4)  # [B, 1, Lt, Lt, c_z]
-
-        # Shape:
-        # - s_trunk: [B, 1, Lt, c_s]
-        # - s: [B, N, Lt, c_s] where N is number of diffusion samples
-        # - z: [B, 1, Lt, Lt, c_z] (time-independent)
-
-        # Line 2: x_noisy -> r_noisy
-        # Already given as input
-
-        # === Local attention on atom-level and aggregate to coarse-grained token === #
-        # Line 3
-        a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
-            f_input=f_input,
-            r_noisy=r_noisy,  # [B, N, La, 3]
-            s_trunk=s_trunk,  # [B, 1, Lt, c_s], broadcasted to [B, N, Lt, c_s]
-            z_trunk=z,  # [B, 1, Lt, Lt, c_z], broadcasted to [B, N, Lt, Lt, c_z]
+        # Line 1: Diffusion conditioning
+        s = self.get_single_conditioning(s_inputs, s_trunk, c_noise)  # [B, N, Lt, c_s]
+        z = self.get_pair_conditioning(f_input, z_trunk)  # [B, Lt, Lt, c_z]
+        q, c, p = self.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        r_update = self.step(
+            r_noisy,
+            q,
+            c,
+            p,
+            token_index,
+            atom_mask,
+            s,
+            z,
+            token_mask,
+            use_cuequiv_kernels,
         )
-        # Shape:
-        # - a: [B, N, Lt, c_token]
-        # - q_skip: [B, N, La, c_atom]
-        # - c_skip: [B, N, La, c_atom]
-        # - p_skip: [B, N, La, La, c_atompair]
-
-        # === Full attention on token-level === #
-        # Line 4
-        a = a + self.linear_s_to_a(self.layernorm_s(s))  # [Nsample, La, c_token]
-
-        # Line 5
-        token_mask = f_input.token.pad_mask.unsqueeze(-2)  # [B, 1, Lt]
-        a = self.token_transformer(
-            a,  # [B, N, Lt, c_token]
-            s=s,  # [B, N, Lt, c_s]
-            z=z,  # [B, 1, Lt, Lt, c_z], broadcasted to [B, N, Lt, Lt, c_z]
-            attn_mask=token_mask,  # [B, 1, Lt], broadcasted to [B, N, Lt]
-            use_cuequiv_kernels=use_cuequiv_kernels,
-        )
-
-        # Line 6
-        a = self.layernorm_a(a)
-
-        # === Broadcast token to atoms and run Local Atom Attention === #
-        # Line 7
-        r_update = self.atom_attention_decoder(
-            a=a,
-            q_skip=q_skip,
-            c_skip=c_skip,
-            p_skip=p_skip,
-            f_input=f_input,
-        )
-
-        # Line 8: Performed on StructureModule side.
-
         return r_update
 
-
-class DiffusionConditioning(nn.Module):
-    """Diffusion conditioning layer.
-
-    NOTE(seonghwanseo):
-    According to AlphaFold3 paper, s is time-dependent single representation,
-    while z is time-independent pair representation.
-
-    For model efficiency, I implement this function to return batched s and
-    single z, where the batch size is the number of diffusion samples.
-    Input:
-        t_hat: [B, N] - diffusion noise level (or sigma in EDM)
-        s_inputs: [B, Lt, c_s] - input single representation
-        s_trunk: [B, Lt, c_s] - trunk single representation
-        z_trunk: [B, Lt, Lt, c_z] - trunk pair representation
-    Output:
-        s: [B, N, Lt, c_s] - time-dependent single conditioning
-        z: [B, Lt, Lt, c_z] - time-independent pair conditioning
-
-    Due to this reason, in Boltz2, they remove the time term from conditioning,
-    i.e., return time-independent s and z. (see Boltz2's diffusion_conditioning.py)
-    """
-
-    def __init__(
-        self,
-        channel_s: int = 384,
-        channel_z: int = 128,
-        dim_fourier: int = 256,
-        num_transitions: int = 2,
-        transition_expansion_factor: int = 2,
-        eps: float = 1e-20,
-    ):
-        """Initialize the single conditioning layer.
+    # === Multiple forward functions for different parts of the diffusion module === #
+    def get_pair_conditioning(
+        self, f_input: FoldingInput, z_trunk: torch.Tensor
+    ) -> torch.Tensor:
+        """Get the pair conditioning for the diffusion module.
+        This is time-independent and can be pre-computed before the diffusion steps.
 
         Parameters
         ----------
-        channel_s : int
-            The single representation dimension, by default 384.
-        channel_z : int
-        The pair representation dimension, by default 128.
-        dim_fourier : int
-            The fourier embeddings dimension, by default 256.
-        num_transitions : int
-            The number of transitions layers, by default 2.
-        transition_expansion_factor : int
-            The transition expansion factor, by default 2.
+        f_input : FoldingInput
+            The folding input.
+        z_trunk : torch.Tensor
+            The trunk pair representation, shape [B, Lt, Lt, c_z].
+
+        Returns
+        -------
+        z : torch.Tensor
+            The conditioned pair representation, shape [B, Lt, Lt, c_z].
         """
-        super().__init__()
+        # Algorithm 21 Line 1-5
+        return self.pair_conditioning(f_input, z_trunk)
 
-        # Pair representation conditioning
-        self.rel_pos_encoding = RelativePositionEncoding()
-        rel_pos_dim = self.rel_pos_encoding.dimension
-
-        self.layernorm_z = LayerNorm(channel_z + rel_pos_dim, create_offset=False)
-        self.linear_z = LinearNoBias(channel_z + rel_pos_dim, channel_z, init="default")
-
-        self.transitions_z = nn.ModuleList(
-            [
-                Transition(channel_z, expansion_factor=transition_expansion_factor)
-                for _ in range(num_transitions)
-            ]
-        )
-
-        # Single representation conditioning
-        self.layernorm_s = LayerNorm(channel_s * 2, create_offset=False)
-        self.linear_s = LinearNoBias(channel_s * 2, channel_s, init="default")
-
-        self.fourier_embed = FourierEmbedding(dim_fourier)
-        self.layernorm_fourier = LayerNorm(dim_fourier, create_offset=False)
-        self.linear_fourier = LinearNoBias(dim_fourier, channel_s, init="default")
-
-        self.transitions_s = nn.ModuleList(
-            [
-                Transition(channel_s, expansion_factor=transition_expansion_factor)
-                for _ in range(num_transitions)
-            ]
-        )
-
-    def forward(
-        self,
-        c_noise: torch.Tensor,
-        f_input: FoldingInput,
-        s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
+    def get_single_conditioning(
+        self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, c_noise: torch.Tensor
+    ) -> torch.Tensor:
+        """Get the single conditioning for the diffusion module.
+        This is time-dependent and needs to be computed at each diffusion step.
 
         Parameters
         ----------
+        s_inputs : torch.Tensor
+            The input single representation, shape [B, Lt, c_s].
+        s_trunk : torch.Tensor
+            The trunk single representation, shape [B, Lt, c_s].
         c_noise : torch.Tensor
             Tensor of shape (B, N) containing diffusion noise level (or sigma).
             c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm.)
-        f_input : FoldingInput
-            The folding input.
-        s_inputs : torch.Tensor
-            Tensor of shape (B, Lt, c_s) containing input single embeddings.
-        s_trunk : torch.Tensors
-            Tensor of shape (B, Lt, c_s) containing trunk single embeddings.
-        z_trunk : torch.Tensor
-            Tensor of shape (B, Lt, Lt, c_z) containing trunk pair embeddings.
 
         Returns
         -------
         s : torch.Tensor
-            Tensor of shape (B, N, Lt, c_s) containing conditioned single embeddings.
-        z : torch.Tensor
-            Tensor of shape (B, Lt, Lt, c_z) containing conditioned pair embeddings.
+            The single conditioning, shape [B, N, Lt, c_s].
         """
+        return self.single_conditioning(s_inputs, s_trunk, c_noise)
 
-        # Line 1
-        rel_pos_feats = self.rel_pos_encoding(f_input)  # [B, Lt, Lt, c_z]
-        z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
+    def get_atom_embeddings(
+        self,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        s_trunk: torch.Tensor,
+        z: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Prepare the inputs which are static across diffusion steps.
+        # Algorithm 5 Line 1-10, 13-14.
 
-        # Line 2
-        z = self.linear_z(self.layernorm_z(z))  # [B, Lt, Lt, c_z]
+        Parameters
+        ----------
+        f_input : FoldingInput
+            The folding input.
+        s_inputs : torch.Tensor
+            The input single representation, shape [B, Lt, c_s].
+        s_trunk : torch.Tensor
+            The trunk single representation, shape [B, Lt, c_s].
+        z : torch.Tensor
+            The trunk pair conditioning, shape [B, Lt, Lt, c_z].
 
-        # Line 3-5
-        for transition in self.transitions_z:
-            z = z + transition(z)
+        Returns
+        -------
+        q : torch.Tensor
+            The atom single representation, shape [B, La, c_atom].
+        c : torch.Tensor
+            The atom single conditioning, shape [B, La, c_atom].
+        p : torch.Tensor
+            The atom pair representation, shape [B, La, La, c_atompair].
+        """
+        return self.atom_embedder(f_input, s_trunk, z)
+
+    def step(
+        self,
+        # atom-level inputs
+        r_noisy: torch.Tensor,
+        q: torch.Tensor,
+        c: torch.Tensor,
+        p: torch.Tensor,
+        token_index: torch.Tensor,
+        atom_mask: torch.Tensor,
+        # token-level inputs
+        s: torch.Tensor,
+        z: torch.Tensor,
+        token_mask: torch.Tensor,
+        # kernel options
+        use_cuequiv_kernels: bool = False,
+    ) -> torch.Tensor:
+        """Forward pass of the AF3 diffusion module (Time-dependent part only)
+        See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
+
+        Parameters
+        ----------
+        r_noisy: torch.Tensor
+            The noisy atom positions, shape [B, N, La, 3],
+            where N is number of diffusion samples and La is number of atoms.
+        q: torch.Tensor
+            The atom single representation, shape [B, La, c_atom].
+        c: torch.Tensor
+            The atom conditioning, shape [B, La, c_atom].
+        p: torch.Tensor
+            The atom pair representation, shape [B, W, Lq, Lk, c_atompair],
+            where W is the number of attention windows.
+        token_index: torch.Tensor
+            The token index for each atom, shape [B, La].
+        atom_mask: torch.Tensor
+            The atom padding mask, shape [B, La].
+        s: torch.Tensor
+            The single conditioning, shape [B, N, Lt, c_s].
+        z: torch.Tensor
+            The pair conditioning, shape [B, Lt, Lt, c_z].
+        token_mask: torch.Tensor
+            The token padding mask, shape [B, Lt].
+        use_cuequiv_kernels: bool
+            Whether to use cuequivariant kernels in the attention layers.
+
+        Returns
+        -------
+        r_update : torch.Tensor
+            The scaled updated atom positions, shape [B, N, La, 3].
+        """
+        # Line 1: Outside of this function.
+        # Already given as an input, s, z
+
+        # Line 2: x_noisy -> r_noisy
+        # Already given as an input: r_noisy
+
+        # === Local attention on atom-level and aggregate to coarse-grained token === #
+        # Line 3
+        # NOTE: Add extra dimension for the number of diffusion samples, N.
+        a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
+            q.unsqueeze(1),  # [B, 1, La, c_atom]
+            c.unsqueeze(1),  # [B, 1, La, c_atom]
+            p.unsqueeze(1),  # [B, 1, W, Lq, Lk, c_atompair]
+            r_noisy=r_noisy,  # [B, N, La, 3]
+            token_index=token_index.unsqueeze(1),  # [B, 1, Lt]
+            mask=atom_mask.unsqueeze(1),  # [B, 1, La]
+            num_tokens=token_mask.shape[-1],
+        )
+
+        # Shape:
+        # - a: [B, N, Lt, c_token]
+        # - q_skip: [B, N, La, c_atom]
+        # - c_skip: [B, 1, La, c_atom]
+        # - p_skip: [B, 1, W, Lq, Lk, c_atompair]
+
+        # === Full attention on token-level === #
+        # Line 4
+        a = a + self.linear_s_to_a(self.layernorm_s(s))  # [B, N, Lt, c_token]
+
+        # Line 5
+        a = self.token_transformer(
+            a,  # [B, N, Lt, c_token]
+            s,  # [B, N, Lt, c_s]
+            z,  # [B, 1, Lt, Lt, c_z]
+            mask=token_mask.unsqueeze(1),  # [B, 1, Lt]
+            use_cuequiv_kernels=use_cuequiv_kernels,
+        )
 
         # Line 6
-        s = torch.cat((s_trunk, s_inputs), dim=-1)  # [B, Lt, 2*c_s]
+        a = self.layernorm_a(a)  # [B, N, Lt, c_token]
 
+        # === Broadcast token to atoms and run Local Atom Attention === #
         # Line 7
-        s = self.linear_s(self.layernorm_s(s))  # [B, Lt, c_s]
+        r_update = self.atom_attention_decoder(
+            a,  # [B, N, Lt, c_token]
+            q_skip,  # [B, N, La, c_atom]
+            c_skip,  # [B, 1, La, c_atom]
+            p_skip,  # [B, 1, W, Lq, Lk, c_atompair]
+            token_index=token_index.unsqueeze(-2),  # [B, 1, Lt]
+            mask=atom_mask.unsqueeze(-2),  # [B, 1, La]
+        )  # -> [B, N, La, 3]
 
-        # Line 8:
-        # NOTE: 1/4 log(t_hat / sigma_data) is computed outside of this class.
-        # See StructureModule for more details.
-        fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]
+        # Line 8: Performed on StructureModule side.
 
-        # Line 9
-        fourier_embed = self.linear_fourier(self.layernorm_fourier(fourier_embed))
-        s = s[:, None, :, :] + fourier_embed[:, :, None, :]  # [B, N, Lt, c_s]
-
-        # Line 10-12
-        for transition in self.transitions_s:
-            s = transition(s) + s
-
-        # Line 13
-        return s, z
+        return r_update

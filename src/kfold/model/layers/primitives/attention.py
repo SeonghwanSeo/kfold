@@ -11,7 +11,7 @@ except ImportError:
 from .utils import add, mul, permute_final_dims
 
 
-def attention(
+def _attention(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -140,19 +140,18 @@ def attention_pair_bias(
     Parameters
     ----------
     s : torch.Tensor
-        The input tensor of shape (B, *, L, C)
-        where B is the batch size, N is the number of samples,
+        The input tensor of shape (*, L, C)
         L is the sequence length, and C is the feature dimension.
     q : torch.Tensor
-        The query tensor of shape (B, *, H, Lq, C_h)
+        The query tensor of shape (*, H, Lq, C_h)
     k : torch.Tensor
-        The key tensor of shape (B, *, H, Lk, C_h)
+        The key tensor of shape (*, H, Lk, C_h)
     v : torch.Tensor
-        The value tensor of shape (B, *, H, Lk, C_h)
+        The value tensor of shape (*, H, Lk, C_h)
     z : torch.Tensor
-        The pair bias tensor of shape (B, *, Lq, Lk, C_z)
+        The pair bias tensor of shape (*, Lq, Lk, C_z)
     mask : torch.Tensor
-        The attention mask tensor of shape (B, *, Lk)
+        The attention mask tensor of shape (*, Lk)
     w_proj_z : torch.Tensor
         The weight tensor for projecting z
     w_proj_g : torch.Tensor
@@ -190,12 +189,12 @@ def attention_pair_bias(
             )
         # Merge batch dims for compatibility
         batch_dims = s.shape[:-2]
-        s = s.flatten(0, -3)  # [B*N, L, C]
-        q = q.flatten(0, -4)  # [B*N, H, Q, C_h]
-        k = k.flatten(0, -4)  # [B*N, H, K, C_h]
-        v = v.flatten(0, -4)  # [B*N, H, K, C_h]
-        z = z.flatten(0, -4)  # [B*N, Q, K, C_z]
-        mask = mask.flatten(0, -2)  # [B*N, K]
+        s = s.flatten(0, -3)  # [*, L, C]
+        q = q.flatten(0, -4)  # [*, H, Q, C_h]
+        k = k.flatten(0, -4)  # [*, H, K, C_h]
+        v = v.flatten(0, -4)  # [*, H, K, C_h]
+        z = z.flatten(0, -4)  # [*, Q, K, C_z]
+        mask = mask.flatten(0, -2)  # [*, K]
 
         out = kernel_attention_pair_bias(
             s,
@@ -221,19 +220,19 @@ def attention_pair_bias(
 
     else:
         # layernorm on z
-        z_ln = F.layer_norm(z, z.shape[-1:], w_ln_z, b_ln_z)  # [B, Q, K, C_z]
+        z_ln = F.layer_norm(z, z.shape[-1:], w_ln_z, b_ln_z)  # [*, Q, K, C_z]
         # project z to get attention bias
-        attn_bias = F.linear(z_ln, w_proj_z, b_proj_z)  # [B, Q, K, H]
-        attn_bias = permute_final_dims(attn_bias, (2, 0, 1))  # [B, H, Q, K]
+        attn_bias = F.linear(z_ln, w_proj_z, b_proj_z)  # [*, Q, K, H]
+        attn_bias = permute_final_dims(attn_bias, (2, 0, 1))  # [*, H, Q, K]
         del z_ln
         attn_bias = attn_bias - inf * (
-            1 - mask.float()[..., None, None, :]
-        )  # [B, H, Q, K]
+            1 - mask.to(attn_bias.dtype)[..., None, None, :]
+        )  # [*, H, Q, K]
 
         # === Attention === #
         if attn_scale is None:
             attn_scale = 1 / math.sqrt(q.shape[-1])
-        Av = attention(
+        Av = _attention(
             q,  # [B, N, H, Q, C_h]
             k,  # [B, N, H, K, C_h]
             v,  # [B, N, H, K, C_h]

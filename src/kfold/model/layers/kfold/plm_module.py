@@ -3,7 +3,7 @@ from functools import partial
 import torch
 import torch.nn as nn
 
-from kfold.model.layers.alphafold3.transformers import AttentionPairBias
+from kfold.model.layers.alphafold3.attention_pair_bias import SelfAttentionPairBias
 from kfold.model.layers.alphafold3.transition import Transition
 from kfold.model.layers.primitives import (
     DropoutColumnwise,
@@ -111,7 +111,6 @@ class PLMModule(nn.Module):
         num_blocks: int = 4,
         dropout_plm: float = 0.15,
         dropout_z: float = 0.25,
-        use_separate_projections: bool = True,
         use_qk_norm: bool = False,
         blocks_per_ckpt: int | None = None,
     ) -> None:
@@ -126,7 +125,6 @@ class PLMModule(nn.Module):
                     num_heads_tri_attn=num_heads_tri_attn,
                     dropout_plm=dropout_plm,
                     dropout_z=dropout_z,
-                    use_separate_projections=use_separate_projections,
                     use_qk_norm=use_qk_norm,
                     is_last_block=(i == num_blocks - 1),
                 )
@@ -183,17 +181,12 @@ class PLMModule(nn.Module):
             )
             for b in self.blocks
         ]
-        if self.training and torch.is_grad_enabled():
-            s_plm, z = checkpoint_blocks(
-                blocks,
-                (s_plm, z),
-                self.blocks_per_ckpt,
-                use_reentrant=False,
-            )
-        else:
-            for b in blocks:
-                s_plm, z = b(s_plm, z)
-
+        s_plm, z = checkpoint_blocks(
+            blocks,
+            (s_plm, z),
+            self.blocks_per_ckpt,
+            use_reentrant=False,
+        )
         return z
 
 
@@ -206,20 +199,15 @@ class PLMBlock(nn.Module):
         num_heads_tri_attn: int = 4,
         dropout_plm: float = 0.15,
         dropout_z: float = 0.25,
-        use_separate_projections: bool = True,
         use_qk_norm: bool = False,
         is_last_block: bool = False,
     ) -> None:
         super().__init__()
         self.channel_z: int = channel_z
         self.channel_plm: int = channel_plm
-        self.use_separate_projections: bool = use_separate_projections
 
-        if self.use_separate_projections:
-            self.pairwise_proj_intra = PairwiseProdDiff(channel_plm, channel_z)
-            self.pairwise_proj_inter = PairwiseProdDiff(channel_plm, channel_z)
-        else:
-            self.pairwise_proj = PairwiseProdDiff(channel_plm, channel_z)
+        self.pairwise_proj_intra = PairwiseProdDiff(channel_plm, channel_z)
+        self.pairwise_proj_inter = PairwiseProdDiff(channel_plm, channel_z)
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
@@ -238,12 +226,11 @@ class PLMBlock(nn.Module):
 
         self.is_last_block: bool = is_last_block
         if not self.is_last_block:
-            self.attention = AttentionPairBias(
+            self.attention = SelfAttentionPairBias(
                 channel_a=channel_plm,
                 channel_z=channel_z,
                 channel_s=None,
                 num_heads=num_heads_attn,
-                use_single_cond=False,
                 qk_norm=use_qk_norm,
             )
             self.transition_plm = Transition(channel_plm, expansion_factor=4)
@@ -284,20 +271,17 @@ class PLMBlock(nn.Module):
             The updated pair representations
         """
         # Step 1: single to pair
-        if self.use_separate_projections:
-            z = z + self.pairwise_proj_intra(s_plm) * intra_mask[..., None]
-            z = z + self.pairwise_proj_inter(s_plm) * inter_mask[..., None]
-        else:
-            z = z + self.pairwise_proj(s_plm) * pair_mask[..., None]
+        z = z + self.pairwise_proj_intra(s_plm) * intra_mask[..., None]
+        z = z + self.pairwise_proj_inter(s_plm) * inter_mask[..., None]
 
         # Step 2: pair to single
         if not self.is_last_block:
             s_plm = s_plm + self.dropout_plm(
                 self.attention(
-                    s_plm,  # [*, L, C_plm]
-                    None,
-                    z,  # [*, L, L, C_z]
-                    attn_mask=mask,  # [*, L]
+                    a=s_plm,  # [*, L, C_plm]
+                    s=None,
+                    z=z,  # [*, L, L, C_z]
+                    mask=mask,  # [*, L]
                     use_kernels=False,
                 )
             )

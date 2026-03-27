@@ -1,11 +1,10 @@
-# Started from code from https://github.com/jwohlwend/boltz, MIT License
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.layers.primitives import LinearNoBias
 
 
 class RelativePositionEncoding(nn.Module):
@@ -114,53 +113,45 @@ class RelativePositionEncoding(nn.Module):
         return rel_position_encoding.float()  # [B, L, L, D]
 
 
-class AtomEmbedding(nn.Module):
-    """Atom embedding.
-    See Section 3.2 Algorithm 5 AtomAttentionEncoder: Line 1
+class FourierEmbedding(nn.Module):
+    """Fourier embedding layer.
+    Section 3.7 Algorithm 22 Fourier Embedding
     """
 
-    def __init__(self, channel_atom: int):
-        """Initialize the atom attention encoder.
+    def __init__(self, channel: int):
+        """Initialize the Fourier Embeddings.
 
         Parameters
         ----------
-        channel_atom : int
-            The atom single representation dimension.
+        channel : int
+            The fourier embedding dimension.
+        seed : int, optional
+            The random seed, by default 42
+
         """
         super().__init__()
-        num_atom_elements: int = C.NUM_ATOM_ELEMENTS
-        num_atom_name_chars: int = C.NUM_ATOM_NAME_CHARS
-        atom_name_dim = 4 * num_atom_name_chars
+        generator = torch.Generator()
+        generator.manual_seed(42)
 
-        # Atom feature embeddings
-        self.embed_atom_pos = LinearNoBias(3, channel_atom, init="default")
-        self.embed_atom_charge = LinearNoBias(1, channel_atom, init="default")
-        self.embed_atom_mask = LinearNoBias(1, channel_atom, init="default")
-        self.embed_atom_element = LinearNoBias(
-            num_atom_elements, channel_atom, init="default"
-        )
-        self.embed_atom_name_chars = LinearNoBias(
-            atom_name_dim, channel_atom, init="default"
-        )
+        # Line 1: Randomly generate weight/bias once before training
+        w = torch.randn(size=(1, channel), generator=generator)
+        b = torch.randn(size=(1, channel), generator=generator)
+        self.register_buffer("w", w, persistent=False)
+        self.register_buffer("b", b, persistent=False)
 
-    def forward(self, f_input: FoldingInput) -> torch.Tensor:
-        """Embed atom features.
-        Line 1:
-        c = LinearNoBias(concat(ref_pos, ref_charge, ref_mask, ref_element, ref_atom_name_chars)))
-        """  # noqa: E501
+    def forward(self, t_hat: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+        See Section 3.7 Algorithm 22 of AlphaFold3 paper.
 
-        atom_layout = f_input.atom
-        ref_pos = atom_layout.ref_pos
-        ref_charge = atom_layout.ref_charge
-        ref_mask = atom_layout.pad_mask
-        ref_element = atom_layout.ref_element
-        ref_atom_name_chars = atom_layout.ref_atom_name_chars
+        Parameters
+        ----------
+        t_hat : torch.Tensor
+            The input noise level. Shape (B, N,)
 
-        atom_feats = self.embed_atom_pos(ref_pos)
-        atom_feats = atom_feats + self.embed_atom_charge(ref_charge.unsqueeze(-1))
-        atom_feats = atom_feats + self.embed_atom_mask(ref_mask.float().unsqueeze(-1))
-        atom_feats = atom_feats + self.embed_atom_element(ref_element)
-        atom_feats = atom_feats + self.embed_atom_name_chars(
-            ref_atom_name_chars.flatten(-2)
-        )
-        return atom_feats
+        Returns
+        -------
+        torch.Tensor
+            The Fourier embeddings. Shape (B, N, channel)
+        """
+        # Line 2
+        return torch.cos((2 * math.pi) * t_hat[..., None] * self.w + self.b)
