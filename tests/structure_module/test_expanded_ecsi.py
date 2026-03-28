@@ -101,21 +101,30 @@ def test_decompose_recompose_is_exact() -> None:
     assert torch.allclose(expanded.compute_com(internal, mask), torch.zeros_like(com))
 
 
-def test_interpolate_matches_base_when_scales_are_one() -> None:
-    base, expanded = _build_modules()
+def test_interpolate_matches_full_noise_when_component_maxima_match() -> None:
+    expanded = _build_modules()
     apo, holo, mask = _make_coords()
     t_hat = torch.full((1, 1), 0.37)
 
-    torch.manual_seed(7)
-    base_xt = base.interpolate(apo, holo, t_hat, mask)
+    t_exp = t_hat[:, :, None, None]
+    alpha_t = expanded.si_coeffs.alpha(t_exp)
+    beta_t = expanded.si_coeffs.beta(t_exp)
+    gamma_t = expanded.si_coeffs.gamma(t_exp)
+
     torch.manual_seed(7)
     expanded_xt = expanded.interpolate(apo, holo, t_hat, mask)
+    torch.manual_seed(7)
+    expected_xt = (
+        alpha_t * holo
+        + beta_t * apo
+        + gamma_t * torch.randn_like(apo)
+    ) * mask[:, None, :, None]
 
-    assert torch.allclose(expanded_xt, base_xt, atol=1e-6)
+    assert torch.allclose(expanded_xt, expected_xt, atol=1e-6)
 
 
 def test_interpolate_boundary_with_zero_noise_scales() -> None:
-    _, expanded = _build_modules(gamma_scale_com=0.0, gamma_scale_internal=0.0)
+    expanded = _build_modules(gamma_scale_com=0.0, gamma_scale_internal=0.0)
     apo, holo, mask = _make_coords()
 
     x_at_zero = expanded.interpolate(apo, holo, torch.zeros((1, 1)), mask)
@@ -125,38 +134,46 @@ def test_interpolate_boundary_with_zero_noise_scales() -> None:
     assert torch.allclose(x_at_one, apo, atol=1e-6)
 
 
-def test_split_drift_matches_base_when_scales_and_eta_match() -> None:
-    base, expanded = _build_modules()
-    apo, holo, mask = _make_coords()
+def test_component_scales_follow_component_maxima() -> None:
+    expanded = _build_modules(
+        gamma_max=4.0,
+        gamma_scale_com=2.0,
+        gamma_scale_internal=1.0,
+    )
     t_hat = torch.full((1, 1, 1, 1), 0.37)
-    x_t = 0.6 * holo + 0.4 * apo
-    x0_hat = 0.7 * holo + 0.3 * apo
 
-    alpha_t = base.alpha(t_hat)
-    beta_t = base.beta(t_hat)
-    gamma_t = base.gamma(t_hat)
-    alpha_dot = base.alpha_deriv(t_hat)
-    beta_dot = base.beta_deriv(t_hat)
-    gamma_dot = base.gamma_deriv(t_hat)
-    z_hat = (x_t - alpha_t * x0_hat - beta_t * apo) / (gamma_t + 1e-8)
-    eps_t = base.eta * (
-        gamma_t * gamma_dot - (alpha_dot / (alpha_t + 1e-8)) * gamma_t**2
-    )
-    base_drift = (
-        alpha_dot * x0_hat
-        + beta_dot * apo
-        + (gamma_dot + eps_t / (gamma_t + 1e-8)) * z_hat
+    gamma_com, gamma_internal, gamma_dot_com, gamma_dot_internal = (
+        expanded._component_scales(t_hat)
     )
 
-    drift_com, drift_internal, eps_com, eps_internal = (
-        expanded._compute_drift_components(
-            x_t=x_t,
-            x0_hat=x0_hat,
-            x_T=apo,
-            t_exp=t_hat,
-            mask=mask.unsqueeze(1),
-        )
+    assert torch.allclose(gamma_com, expanded.si_coeffs.gamma_com(t_hat), atol=1e-6)
+    assert torch.allclose(
+        gamma_internal,
+        expanded.si_coeffs.gamma_internal(t_hat),
+        atol=1e-6,
+    )
+    assert torch.allclose(
+        gamma_dot_com,
+        expanded.si_coeffs.gamma_com_deriv(t_hat),
+        atol=1e-6,
+    )
+    assert torch.allclose(
+        gamma_dot_internal,
+        expanded.si_coeffs.gamma_internal_deriv(t_hat),
+        atol=1e-6,
     )
 
-    assert torch.allclose(drift_com + drift_internal, base_drift, atol=1e-5)
-    assert torch.allclose(eps_com, eps_internal, atol=1e-6)
+
+def test_train_time_uniform_beta_mixture_sampling_runs() -> None:
+    expanded = _build_modules()
+    expanded.train_time_sampling.uniform_mix_prob = 0.5
+
+    t_hat = expanded.sample_noise_level(
+        batch_size=4,
+        num_diffusion_samples=8,
+        device=torch.device("cpu"),
+    )
+
+    assert t_hat.shape == (4, 8)
+    assert torch.all(t_hat >= expanded.sampling.time_min)
+    assert torch.all(t_hat <= expanded.sampling.time_max)

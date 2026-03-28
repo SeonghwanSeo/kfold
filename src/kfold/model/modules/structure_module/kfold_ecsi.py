@@ -407,71 +407,6 @@ class KFoldECSI(BaseECSI):
         """Apply random augmentation to coordinates."""
         return self.random_augmentation(coords, mask=mask)
 
-    @staticmethod
-    def _expand_batch_metadata(metadata: torch.Tensor, batch_size: int) -> torch.Tensor:
-        if metadata.dim() == 1:
-            metadata = metadata.unsqueeze(0)
-        if metadata.shape[0] == 1 and batch_size > 1:
-            metadata = metadata.expand(batch_size, -1)
-        return metadata
-
-    def _get_atom_chain_ids(self, f_input: FoldingInput, batch_size: int) -> torch.Tensor:
-        token_asym_id = self._expand_batch_metadata(f_input.token.asym_id, batch_size)
-        atom_token_index = self._expand_batch_metadata(
-            f_input.atom.token_index, batch_size
-        )
-        return token_asym_id.gather(-1, atom_token_index.clamp(min=0))
-
-    def _apply_prior_chain_translation(
-        self, coords: torch.Tensor, f_input: FoldingInput
-    ) -> torch.Tensor:
-        batch_size, num_samples, num_atoms = coords.shape[:3]
-        atom_chain_id = self._get_atom_chain_ids(f_input, batch_size).clamp(min=0)
-        max_chain_id = int(atom_chain_id.max().item())
-
-        chain_translation = (
-            torch.randn(
-                batch_size,
-                num_samples,
-                max_chain_id + 1,
-                3,
-                device=coords.device,
-                dtype=coords.dtype,
-            )
-            * self.prior_chain_translation_scale
-        )
-        gather_index = atom_chain_id[:, None, :, None].expand(
-            batch_size, num_samples, num_atoms, 3
-        )
-        atom_translation = torch.gather(chain_translation, dim=2, index=gather_index)
-        atom_mask = f_input.atom.pad_mask[:, None, :, None].to(dtype=coords.dtype)
-        return coords + atom_translation * atom_mask
-
-    # === Route Functions (Stochastic Interpolants) === #
-    def alpha(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Weight for target (x_0/holo); route selected by config."""
-        return self._route.alpha(t)
-
-    def alpha_deriv(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Derivative of alpha; route selected by config."""
-        return self._route.alpha_deriv(t)
-
-    def beta(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Weight for source (x_T/apo); route selected by config."""
-        return self._route.beta(t)
-
-    def beta_deriv(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Derivative of beta; route selected by config."""
-        return self._route.beta_deriv(t)
-
-    def gamma(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Noise scale; route selected by config."""
-        return self._route.gamma(t)
-
-    def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
-        r"""Derivative of gamma; route selected by config."""
-        return self._route.gamma_deriv(t)
-
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(
         self, t: torch.Tensor
@@ -834,18 +769,146 @@ class KFoldECSI(BaseECSI):
         prior_coords = all_prior_coords[:, :, prior_index, :]  # [B, Latom, N, 3]
         prior_coords = prior_coords.permute(0, 2, 1, 3)  # [B, N, Latom, 3]
 
-        prior_coords = self._apply_prior_chain_translation(prior_coords, f_input)
         if label_coords is None:
             # No label provided; apply random augmentation
             prior_mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Latom]
             prior_coords = self.apply_random_augmentation(prior_coords, mask=prior_mask)
         else:
             if self.train_align_prior_to_label:
-                prior_coords = self.align_apo_to_label(
-                    prior_coords, label_coords, f_input
-                )
+                prior_coords = self.align_apo_to_label(prior_coords, label_coords)
 
         return prior_coords
+
+    @staticmethod
+    def _broadcast_mask(coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask_out = mask.bool()
+        while mask_out.ndim < coords.ndim - 1:
+            mask_out = mask_out.unsqueeze(-2)
+        return mask_out.expand(coords.shape[:-1])
+
+    def compute_com(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask_broadcast = self._broadcast_mask(coords, mask)
+        return get_center(coords, mask_broadcast)
+
+    def decompose_coords(
+        self, coords: torch.Tensor, mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        mask_broadcast = self._broadcast_mask(coords, mask)
+        com = self.compute_com(coords, mask_broadcast)
+        internal = (coords - com) * mask_broadcast.unsqueeze(-1)
+        return com, internal
+
+    def recompose_coords(
+        self, com: torch.Tensor, internal: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        mask_broadcast = self._broadcast_mask(internal, mask)
+        return (com + internal) * mask_broadcast.unsqueeze(-1)
+
+    def _component_scales(
+        self, t_exp: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        gamma_com = self.si_coeffs.gamma_com(t_exp)
+        gamma_internal = self.si_coeffs.gamma_internal(t_exp)
+        gamma_dot_com = self.si_coeffs.gamma_com_deriv(t_exp)
+        gamma_dot_internal = self.si_coeffs.gamma_internal_deriv(t_exp)
+        return gamma_com, gamma_internal, gamma_dot_com, gamma_dot_internal
+
+    @staticmethod
+    def _compute_eps(
+        gamma_t: torch.Tensor,
+        gamma_dot: torch.Tensor,
+        alpha_t: torch.Tensor,
+        alpha_dot: torch.Tensor,
+        eta: float,
+    ) -> torch.Tensor:
+        return eta * (gamma_t * gamma_dot - (alpha_dot / (alpha_t + 1e-8)) * gamma_t**2)
+
+    def _compute_drift_components(
+        self,
+        x_t: torch.Tensor,
+        x0_hat: torch.Tensor,
+        x_T: torch.Tensor,
+        t_exp: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        alpha_t = self.si_coeffs.alpha(t_exp)
+        beta_t = self.si_coeffs.beta(t_exp)
+        alpha_dot = self.si_coeffs.alpha_deriv(t_exp)
+        beta_dot = self.si_coeffs.beta_deriv(t_exp)
+        gamma_com, gamma_internal, gamma_dot_com, gamma_dot_internal = (
+            self._component_scales(t_exp)
+        )
+
+        x_t_com, x_t_internal = self.decompose_coords(x_t, mask)
+        x0_com, x0_internal = self.decompose_coords(x0_hat, mask)
+        xT_com, xT_internal = self.decompose_coords(x_T, mask)
+
+        z_hat_com = (x_t_com - alpha_t * x0_com - beta_t * xT_com) / (gamma_com + 1e-8)
+        z_hat_internal = (x_t_internal - alpha_t * x0_internal - beta_t * xT_internal) / (
+            gamma_internal + 1e-8
+        )
+
+        eps_com = self._compute_eps(
+            gamma_t=gamma_com,
+            gamma_dot=gamma_dot_com,
+            alpha_t=alpha_t,
+            alpha_dot=alpha_dot,
+            eta=(
+                self.sampling.eta
+                if self.sampling.eta_com is None
+                else self.sampling.eta_com
+            ),
+        )
+        eps_internal = self._compute_eps(
+            gamma_t=gamma_internal,
+            gamma_dot=gamma_dot_internal,
+            alpha_t=alpha_t,
+            alpha_dot=alpha_dot,
+            eta=(
+                self.sampling.eta
+                if self.sampling.eta_internal is None
+                else self.sampling.eta_internal
+            ),
+        )
+
+        drift_com = (
+            alpha_dot * x0_com
+            + beta_dot * xT_com
+            + (gamma_dot_com + eps_com / (gamma_com + 1e-8)) * z_hat_com
+        )
+        drift_internal = (
+            alpha_dot * x0_internal
+            + beta_dot * xT_internal
+            + (gamma_dot_internal + eps_internal / (gamma_internal + 1e-8))
+            * z_hat_internal
+        )
+        return drift_com, drift_internal, eps_com, eps_internal
+
+    def _compute_sampling_drift_and_diffusion(
+        self,
+        x_t: torch.Tensor,
+        x0_hat: torch.Tensor,
+        x_T: torch.Tensor,
+        t_exp: torch.Tensor,
+        atom_mask: torch.Tensor,
+        dt: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        drift_com, drift_internal, eps_com, eps_internal = self._compute_drift_components(
+            x_t=x_t,
+            x0_hat=x0_hat,
+            x_T=x_T,
+            t_exp=t_exp,
+            mask=atom_mask,
+        )
+        drift = drift_com + drift_internal
+
+        diffusion_noise = torch.randn_like(x_t)
+        noise_com, noise_internal = self.decompose_coords(diffusion_noise, atom_mask)
+        diffusion = (
+            torch.sqrt(2 * torch.abs(eps_com) * abs(dt) + 1e-8) * noise_com
+            + torch.sqrt(2 * torch.abs(eps_internal) * abs(dt) + 1e-8) * noise_internal
+        )
+        return drift, diffusion
 
     def interpolate(
         self,
@@ -853,7 +916,6 @@ class KFoldECSI(BaseECSI):
         label_coords: torch.Tensor,
         t_hat: torch.Tensor,
         mask: torch.Tensor,
-        f_input: FoldingInput | None = None,
     ) -> torch.Tensor:
         r"""Interpolate between apo and holo using ECSI bridge.
 
@@ -870,38 +932,29 @@ class KFoldECSI(BaseECSI):
             Time values. Shape (B, N).
         mask : torch.Tensor
             The atom mask. Shape (B, La).
-        f_input : FoldingInput | None
-            Unused. Kept for backward compatibility.
 
         Returns
         -------
         noised_coords : torch.Tensor
             Bridge-sampled coordinates x_t. Shape (B, N, La, 3).
         """
-        del f_input
+        t_expanded = t_hat[:, :, None, None]
+        alpha_t = self.si_coeffs.alpha(t_expanded)
+        beta_t = self.si_coeffs.beta(t_expanded)
+        gamma_com, gamma_internal, _, _ = self._component_scales(t_expanded)
 
-        x_apo = noise_coords  # x_T (source)
-        x_holo = label_coords  # x_0 (target)
+        apo_com, apo_internal = self.decompose_coords(noise_coords, mask)
+        holo_com, holo_internal = self.decompose_coords(label_coords, mask)
 
-        # Expand t_hat to match coordinate dimensions
-        t_expanded = t_hat[:, :, None, None]  # (B, N, 1, 1)
+        mean_com = alpha_t * holo_com + beta_t * apo_com
+        mean_internal = alpha_t * holo_internal + beta_t * apo_internal
 
-        # Compute interpolation coefficients
-        alpha_t = self.alpha(t_expanded)  # weight for x_0 (holo)
-        beta_t = self.beta(t_expanded)  # weight for x_T (apo)
-        gamma_t = self.gamma(t_expanded)  # noise scale
+        full_noise = torch.randn_like(noise_coords)
+        noise_com, noise_internal = self.decompose_coords(full_noise, mask)
 
-        # Mean of bridge distribution: \mu_t = \alpha_t x_0 + \beta_t x_T
-        mu_t = alpha_t * x_holo + beta_t * x_apo
-
-        # Sample from bridge distribution
-        noise = torch.randn_like(x_apo)
-        noised_coords = mu_t + gamma_t * noise
-
-        # Mask out padding atoms
-        noised_coords = noised_coords * mask[:, None, :, None]
-
-        return noised_coords
+        x_t_com = mean_com + gamma_com * noise_com
+        x_t_internal = mean_internal + gamma_internal * noise_internal
+        return self.recompose_coords(x_t_com, x_t_internal, mask)
 
     def training_step(
         self,
@@ -941,7 +994,7 @@ class KFoldECSI(BaseECSI):
 
             # sample xt via interpolation
             noised_atom_coords = self.interpolate(
-                prior_coords_norm, label_coords_norm, t_hat, mask, f_input=f_input
+                prior_coords_norm, label_coords_norm, t_hat, mask
             )
             noised_atom_coords = noised_atom_coords * mask[..., None, :, None]
 
@@ -986,41 +1039,47 @@ class KFoldECSI(BaseECSI):
         t_curr: float,
         t_next: float,
         t_exp: torch.Tensor,
-    ) -> tuple[torch.Tensor, float, torch.Tensor, torch.Tensor, float]:
+    ) -> tuple[torch.Tensor, float, torch.Tensor, float]:
         dt = t_next - t_curr
-        delta_churn = float(self.churn_factor) * abs(dt)
-        apply_churn = t_curr + delta_churn <= self.sigma_max
-        if self.churn_until_time is not None:
-            apply_churn = apply_churn and (t_curr > self.churn_until_time)
+        delta_churn = float(self.sampling.churn_factor) * abs(dt)
+        apply_churn = t_curr + delta_churn <= self.sampling.time_max
+        if self.sampling.churn_end_time is not None:
+            apply_churn = apply_churn and (t_curr > self.sampling.churn_end_time)
 
         if not apply_churn:
-            t_curr_tensor = torch.full(
-                (x_t.shape[0], x_t.shape[1]),
-                t_curr,
-                device=x_t.device,
-                dtype=x_t.dtype,
-            )
-            return x_t, t_curr, t_curr_tensor, t_exp, dt
+            return x_t, t_curr, t_exp, dt
 
-        alpha_t = self.alpha(t_exp)
-        beta_t = self.beta(t_exp)
-        gamma_t = self.gamma(t_exp)
-        alpha_dot = self.alpha_deriv(t_exp)
-        beta_dot = self.beta_deriv(t_exp)
-        gamma_dot = self.gamma_deriv(t_exp)
+        alpha_t = self.si_coeffs.alpha(t_exp)
+        beta_t = self.si_coeffs.beta(t_exp)
+        alpha_dot = self.si_coeffs.alpha_deriv(t_exp)
+        beta_dot = self.si_coeffs.beta_deriv(t_exp)
+        gamma_com, gamma_internal, gamma_dot_com, gamma_dot_internal = (
+            self._component_scales(t_exp)
+        )
 
         f_t = alpha_dot / (alpha_t + 1e-8)
         s_t = beta_dot - f_t * beta_t
-        base_eps = gamma_t * gamma_dot - f_t * gamma_t**2
-        g_t = torch.sqrt(torch.clamp(2.0 * base_eps, min=0.0) + 1e-8)
+        base_eps_com = gamma_com * gamma_dot_com - f_t * gamma_com**2
+        base_eps_internal = gamma_internal * gamma_dot_internal - f_t * gamma_internal**2
+        g_com = torch.sqrt(torch.clamp(2.0 * base_eps_com, min=0.0) + 1e-8)
+        g_internal = torch.sqrt(torch.clamp(2.0 * base_eps_internal, min=0.0) + 1e-8)
 
+        x_t_com, x_t_internal = self.decompose_coords(x_t, atom_mask)
+        x_target_com, x_target_internal = self.decompose_coords(x_churn_target, atom_mask)
         churn_noise = torch.randn_like(x_t)
-        x_t = (
-            x_t
-            + (f_t * x_t + s_t * x_churn_target) * delta_churn
-            + g_t * (delta_churn**0.5) * churn_noise
+        noise_com, noise_internal = self.decompose_coords(churn_noise, atom_mask)
+
+        x_t_com = (
+            x_t_com
+            + (f_t * x_t_com + s_t * x_target_com) * delta_churn
+            + g_com * (delta_churn**0.5) * noise_com
         )
-        x_t = x_t * atom_mask[..., None]
+        x_t_internal = (
+            x_t_internal
+            + (f_t * x_t_internal + s_t * x_target_internal) * delta_churn
+            + g_internal * (delta_churn**0.5) * noise_internal
+        )
+        x_t = self.recompose_coords(x_t_com, x_t_internal, atom_mask)
 
         t_curr = t_curr + delta_churn
         t_curr_tensor = torch.full(
@@ -1031,7 +1090,7 @@ class KFoldECSI(BaseECSI):
         )
         t_exp = t_curr_tensor[:, :, None, None]
         dt = t_next - t_curr
-        return x_t, t_curr, t_curr_tensor, t_exp, dt
+        return x_t, t_curr, t_exp, dt
 
     def sample_structure(
         self,
@@ -1047,7 +1106,7 @@ class KFoldECSI(BaseECSI):
         r"""Sample structures via ECSI sampling.
 
         Implements Algorithm 1 from the paper with Euler discretization.
-        Uses stochasticity control via \eta parameter.
+        Uses stochasticity control via `sampling_eta`-style parameters.
 
         The sampling SDE is:
         dX_t = b(t, X_t, x_T) dt + \sqrt{2\epsilon_t} dW_t
@@ -1062,14 +1121,15 @@ class KFoldECSI(BaseECSI):
         traj: list[torch.Tensor] = []
 
         if num_steps is None:
-            num_steps = self.num_steps
+            num_steps = self.sampling.steps
 
         if max_parallel_samples is None:
             max_parallel_samples = num_diffusion_samples
 
-        if self.perturb_xt and self.endpoint_perturb_scale is None:
+        if self.sampling.perturb_xt and self.sampling.endpoint_perturb_scale is None:
             raise ValueError(
-                "endpoint_perturb_scale must be provided when perturb_xt is enabled."
+                "sampling_endpoint_perturb_scale must be provided when "
+                "sampling_perturb_xt is enabled."
             )
 
         model_cache = {}
@@ -1091,8 +1151,8 @@ class KFoldECSI(BaseECSI):
 
         x_t = x_T.clone()
 
-        if self.perturb_xt:
-            perturb_scale = float(self.endpoint_perturb_scale or 0.0)
+        if self.sampling.perturb_xt:
+            perturb_scale = float(self.sampling.endpoint_perturb_scale or 0.0)
             perturb_scale_xt = (
                 perturb_scale / self.sigma_data_end
                 if self.normalize_coordinate
@@ -1123,8 +1183,8 @@ class KFoldECSI(BaseECSI):
             )
             t_exp = t_curr_tensor[:, :, None, None]  # (B, N, 1, 1)
 
-            if self.use_forward_pinned_churn and self.churn_factor > 0.0:
-                x_t, t_curr, t_curr_tensor, t_exp, dt = self._apply_forward_pinned_churn(
+            if self.sampling.use_pinned_churn and self.sampling.churn_factor > 0.0:
+                x_t, t_curr, t_exp, dt = self._apply_forward_pinned_churn(
                     x_t=x_t,
                     x_churn_target=x_churn_target,
                     atom_mask=atom_mask,
@@ -1149,53 +1209,35 @@ class KFoldECSI(BaseECSI):
                 )
 
                 # Align x0_hat to the current state after churn.
-                if self.inference_align_x0_hat_to_x_t:
+                if self.sampling.align_x0_hat_to_xt:
                     x0_hat[:, st:end] = self.align_apo_to_label(
                         apo_coords=x0_hat[:, st:end],
                         label_coords=x_t[:, st:end],
-                        f_input=f_input,
                     )
 
-            # Compute route coefficients
-            alpha_t = self.alpha(t_exp)
-            beta_t = self.beta(t_exp)
-            gamma_t = self.gamma(t_exp)
-            alpha_dot = self.alpha_deriv(t_exp)
-            beta_dot = self.beta_deriv(t_exp)
-            gamma_dot = self.gamma_deriv(t_exp)
+            alpha_t = self.si_coeffs.alpha(t_exp)
+            beta_t = self.si_coeffs.beta(t_exp)
 
-            # Compute \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / \gamma_t
-            z_hat = (x_t - alpha_t * x0_hat - beta_t * x_T) / (gamma_t + 1e-8)
-
-            ode_time_duration = float(self.ode_time_duration)
-            if ode_time_duration > 0.0 and t_curr <= ode_time_duration:
+            sampling_ode_time = float(self.sampling.ode_start_time)
+            if sampling_ode_time > 0.0 and t_curr <= sampling_ode_time:
                 t_next_exp = torch.full_like(t_exp, t_next)
-                alpha_next = self.alpha(t_next_exp)
-                beta_next = self.beta(t_next_exp)
+                alpha_next = self.si_coeffs.alpha(t_next_exp)
+                beta_next = self.si_coeffs.beta(t_next_exp)
                 # Late-stage deterministic SI ODE update.
                 x_t = (
                     beta_next / (beta_t + 1e-8) * x_t
                     + (alpha_next - alpha_t * beta_next / (beta_t + 1e-8)) * x0_hat
                 )
             else:
-                # Compute \epsilon_t = \eta (\gamma_t \dot{\gamma}_t
-                #                    - \dot{\alpha}_t/\alpha_t \gamma_t^2)
-                eps_t = self.eta * (
-                    gamma_t * gamma_dot - (alpha_dot / (alpha_t + 1e-8)) * gamma_t**2
+                drift, diffusion = self._compute_sampling_drift_and_diffusion(
+                    x_t=x_t,
+                    x0_hat=x0_hat,
+                    x_T=x_T,
+                    t_exp=t_exp,
+                    atom_mask=atom_mask,
+                    dt=dt,
                 )
-
-                # Compute drift: b(t) = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_T
-                #                     + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
-                drift = (
-                    alpha_dot * x0_hat
-                    + beta_dot * x_T
-                    + (gamma_dot + eps_t / (gamma_t + 1e-8)) * z_hat
-                )
-
-                # Euler step: x_{t+dt} = x_t + b_t * dt + \sqrt{2\epsilon_t |dt|} * noise
-                noise = torch.randn_like(x_t)
-                diffusion_scale = torch.sqrt(2 * torch.abs(eps_t) * abs(dt) + 1e-8)
-                x_t = x_t + drift * dt + diffusion_scale * noise
+                x_t = x_t + drift * dt + diffusion
 
             # Apply mask
             x_t = x_t * atom_mask[..., None]
