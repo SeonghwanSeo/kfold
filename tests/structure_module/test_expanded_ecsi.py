@@ -2,8 +2,11 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.model.modules.structure_module.expanded_ecsi import KFoldExpandedECSI
-from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
+from kfold.model.modules.structure_module.kfold_ecsi import (
+    KFoldECSI,
+    SamplingConfig,
+    TrainTimeSamplingConfig,
+)
 
 
 class DummyScoreModel(BaseScoreModel):
@@ -26,44 +29,35 @@ class DummyScoreModel(BaseScoreModel):
 
 def _build_modules(
     *,
+    gamma_max: float = 4.0,
     gamma_scale_com: float = 1.0,
     gamma_scale_internal: float = 1.0,
-    eta: float = 1.0,
-    eta_com: float | None = None,
-    eta_internal: float | None = None,
-) -> tuple[KFoldECSI, KFoldExpandedECSI]:
+    sampling_eta: float = 1.0,
+    sampling_eta_com: float | None = None,
+    sampling_eta_internal: float | None = None,
+) -> KFoldECSI:
     score_model = DummyScoreModel()
-    base_cfg = KFoldECSI.Config(
-        num_steps=16,
-        sigma_min=0.001,
-        sigma_max=0.999,
-        gamma_max=4.0,
-        sigma_data=16.0,
-        sigma_data_end=16.0,
-        cov_xy=128.0,
-        eta=eta,
-        coordinate_augmentation=False,
-        perturb_xt=False,
-        use_forward_pinned_churn=False,
-    )
-    expanded_cfg = KFoldExpandedECSI.Config(
-        num_steps=16,
-        sigma_min=0.001,
-        sigma_max=0.999,
-        gamma_max=4.0,
-        sigma_data=16.0,
-        sigma_data_end=16.0,
-        cov_xy=128.0,
-        eta=eta,
-        eta_com=eta_com,
-        eta_internal=eta_internal,
+    cfg = KFoldECSI.Config(
+        gamma_max=gamma_max,
         gamma_scale_com=gamma_scale_com,
         gamma_scale_internal=gamma_scale_internal,
+        sampling=SamplingConfig(
+            steps=16,
+            time_min=0.001,
+            time_max=0.999,
+            eta=sampling_eta,
+            eta_com=sampling_eta_com,
+            eta_internal=sampling_eta_internal,
+            perturb_xt=False,
+            use_pinned_churn=False,
+        ),
+        train_time_sampling=TrainTimeSamplingConfig(),
+        sigma_data=16.0,
+        sigma_data_end=16.0,
+        cov_xy=128.0,
         coordinate_augmentation=False,
-        perturb_xt=False,
-        use_forward_pinned_churn=False,
     )
-    return KFoldECSI(base_cfg, score_model), KFoldExpandedECSI(expanded_cfg, score_model)
+    return KFoldECSI(cfg, score_model)
 
 
 def _make_coords() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -98,7 +92,7 @@ def _make_coords() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
 
 def test_decompose_recompose_is_exact() -> None:
-    _, expanded = _build_modules()
+    expanded = _build_modules()
     coords, _, mask = _make_coords()
     com, internal = expanded.decompose_coords(coords, mask)
     recomposed = expanded.recompose_coords(com, internal, mask)

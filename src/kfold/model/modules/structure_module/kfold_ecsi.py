@@ -2,37 +2,34 @@
 # Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
 # Adapted from ECSI training code and kfold_ddbm.py
 
-from typing import Protocol
+import dataclasses
 
 import torch
 import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation, get_center
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseECSI
 
 
-class _Route(Protocol):
-    def alpha(self, t: torch.Tensor) -> torch.Tensor: ...
+class SICoeffs:
+    """Stochastic interpolant coefficient helper for ECSI."""
 
-    def alpha_deriv(self, t: torch.Tensor) -> torch.Tensor: ...
-
-    def beta(self, t: torch.Tensor) -> torch.Tensor: ...
-
-    def beta_deriv(self, t: torch.Tensor) -> torch.Tensor: ...
-
-    def gamma(self, t: torch.Tensor) -> torch.Tensor: ...
-
-    def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor: ...
-
-
-class _LinearRoute:
-    def __init__(self, gamma_max: float, power: float) -> None:
-        self.gamma_max = gamma_max
+    def __init__(
+        self,
+        *,
+        power: float,
+        gamma_max: float,
+        gamma_scale_com: float,
+        gamma_scale_internal: float,
+    ) -> None:
         self.power = power
+        self.gamma_max = gamma_max
+        self.gamma_scale_com = gamma_scale_com
+        self.gamma_scale_internal = gamma_scale_internal
 
     @staticmethod
     def _clamp_t(t: torch.Tensor) -> torch.Tensor:
@@ -57,16 +54,133 @@ class _LinearRoute:
         return self.power * torch.pow(t_clamped, self.power - 1)
 
     def gamma(self, t: torch.Tensor) -> torch.Tensor:
-        t_clamped = self._clamp_t(t)
-        t_pow = torch.pow(t_clamped, self.power)
-        return 0.5 * self.gamma_max * torch.sqrt(t_pow * (1 - t_pow) + 1e-8)
+        return self._gamma_with_max(t, self.gamma_max)
 
     def gamma_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        return self._gamma_deriv_with_max(t, self.gamma_max)
+
+    def gamma_com(self, t: torch.Tensor) -> torch.Tensor:
+        return self.gamma_scale_com * self.gamma(t)
+
+    def gamma_com_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        return self.gamma_scale_com * self.gamma_deriv(t)
+
+    def gamma_internal(self, t: torch.Tensor) -> torch.Tensor:
+        return self.gamma_scale_internal * self.gamma(t)
+
+    def gamma_internal_deriv(self, t: torch.Tensor) -> torch.Tensor:
+        return self.gamma_scale_internal * self.gamma_deriv(t)
+
+    def _gamma_with_max(self, t: torch.Tensor, gamma_max: float) -> torch.Tensor:
+        t_clamped = self._clamp_t(t)
+        t_pow = torch.pow(t_clamped, self.power)
+        return 0.5 * gamma_max * torch.sqrt(t_pow * (1 - t_pow) + 1e-8)
+
+    def _gamma_deriv_with_max(self, t: torch.Tensor, gamma_max: float) -> torch.Tensor:
         t_clamped = self._clamp_t(t)
         t_pow = torch.pow(t_clamped, self.power)
         denom = torch.sqrt(t_pow * (1 - t_pow) + 1e-8)
         coeff = self.power * torch.pow(t_clamped, self.power - 1)
-        return (self.gamma_max / 4) * coeff * (1 - 2 * t_pow) / (denom + 1e-8)
+        return (gamma_max / 4) * coeff * (1 - 2 * t_pow) / (denom + 1e-8)
+
+
+@dataclasses.dataclass(kw_only=True)
+class SamplingScheduleConfig:
+    """Maps normalized solver progress to reverse-time sampling time.
+
+    Reverse-time sampling itself runs in time-space from `t = time_max` down to `0`.
+    Internally, the scheduler first parameterizes solver progress with
+    `s in [0, 1]`, then maps that progress to actual sampling time `t`.
+
+    In solver-progress space, phase-power allocates steps across three regions:
+
+      head   : solver progress in [0, churn_fraction]
+      middle : solver progress in (churn_fraction, 1 - ode_fraction]
+      tail   : solver progress in (1 - ode_fraction, 1]
+
+    Higher `churn_power` concentrates more steps near `time_max`. Higher
+    `ode_power` makes the late tail flatter near `t = 0`. These fields decide
+    where the solver spends steps, not which dynamics branch is used.
+    """
+
+    global_u_power: float = 1.0
+    churn_fraction: float = 0.3
+    ode_fraction: float = 0.45
+    middle_power: float = 1.0
+    churn_power: float = 1.75
+    ode_power: float = 2.6
+
+
+@dataclasses.dataclass(kw_only=True)
+class SamplingConfig:
+    """Controls how reverse-time ECSI sampling proceeds.
+
+    Timeline in time-space (`t: time_max -> 0`):
+
+      1. Prior initialization
+         - start from sampled prior `x_T`
+         - if `perturb_xt`, add endpoint noise with `endpoint_perturb_scale`
+
+      2. Early high-time region (`t > churn_end_time`)
+         - if `use_pinned_churn`, apply the forward-pinned churn substep
+
+      3. Middle stochastic region (`ode_start_time < t <= churn_end_time`)
+         - use the expanded ECSI SDE update
+         - stochasticity is controlled by `eta`, `eta_com`, `eta_internal`
+
+      4. Late deterministic region (`t <= ode_start_time`)
+         - switch to the SI ODE update
+         - no diffusion noise is added in this branch
+
+    Parameter groups:
+      - horizon: `steps`, `time_min`, `time_max`
+      - stochasticity: `eta`, `eta_com`, `eta_internal`
+      - endpoint handling: `perturb_xt`, `endpoint_perturb_scale`
+      - early churn: `use_pinned_churn`, `churn_factor`, `churn_end_time`
+      - late ODE switch: `ode_start_time`
+      - time allocation across steps: `schedule`
+    """
+
+    steps: int = 200
+    time_min: float = 0.001
+    time_max: float = 0.999
+    eta: float = 1.0
+    eta_com: float | None = None
+    eta_internal: float | None = None
+    align_x0_hat_to_xt: bool = True
+    perturb_xt: bool = True
+    endpoint_perturb_scale: float | None = 0.1
+    ode_start_time: float = 0.6
+    use_pinned_churn: bool = True
+    churn_factor: float = 3.0
+    churn_end_time: float = 0.7
+    schedule: SamplingScheduleConfig = dataclasses.field(
+        default_factory=SamplingScheduleConfig
+    )
+
+
+@dataclasses.dataclass(kw_only=True)
+class TrainTimeSamplingConfig:
+    """Configuration for train-time sampling of `t_hat`.
+
+    Parameters
+    ----------
+    logit_normal : bool, optional
+        If `True`, ignore the Beta/Uniform branch and sample from a
+        LogitNormal-like `sigmoid(N(0, 1))` distribution.
+    alpha : float, optional
+        Alpha parameter of the Beta branch.
+    beta : float, optional
+        Beta parameter of the Beta branch.
+    uniform_mix_prob : float, optional
+        Per-sample probability of drawing from `Uniform(0, 1)` instead of the
+        Beta branch when `logit_normal` is disabled.
+    """
+
+    logit_normal: bool = False
+    alpha: float = 1.0
+    beta: float = 1.0
+    uniform_mix_prob: float = 0.0
 
 
 @STRUCTURE_MODULE.register()
@@ -77,175 +191,201 @@ class KFoldECSI(BaseECSI):
     Models" for biomolecular structure prediction (apo -> holo translation).
 
     Key features:
-    - Decoupled kernel parameters (\alpha_t, \beta_t, \gamma_t) for flexible bridge paths
+    - Expanded bridge dynamics with separate COM and internal-coordinate noise paths
     - Linear route with shared power k:
-      \alpha_t=1-t^k, \beta_t=t^k,
-      \gamma_t^2=\gamma_{max}^2/4 \cdot t^k(1-t^k)
-    - Stochasticity control via \eta parameter during sampling
-    - Preconditioning adapted from DDBM
+      \alpha_t=1-t^k and \beta_t=t^k
+    - Shared base gamma with component scales:
+      \gamma_t^2=\gamma_{\max}^2/4 \cdot t^k(1-t^k)
+      \gamma_{\mathrm{com}, t}=s_{\mathrm{com}}\gamma_t
+      \gamma_{\mathrm{int}, t}=s_{\mathrm{int}}\gamma_t
+    - Stochasticity control via \eta_{com}, \eta_{int} during sampling
+    - Preconditioning adapted from DDBM using the shared base gamma
 
     Reference:
     - ECSI: Zhang et al., "Exploring the Design Space of Diffusion Bridge Models"
-    - DDBM: Zhou et al., "Denoising Diffusion Bridge Models"
     """
 
     class Config(BaseConfig):
-        r"""Configuration for the ECSI Structure module.
+        """Configuration for the ECSI structure module.
 
         Parameters
         ----------
-        num_steps : int, optional
-            The number of sampling steps, by default 200.
-        sigma_min : float, optional
-            Minimum time value (near t=0), by default 0.001.
-        sigma_max : float, optional
-            Maximum time value (near t=T), by default 0.999.
         gamma_max : float, optional
-            Scale parameter for \gamma_t, by default 1.0.
-            Uses \gamma_t^2 = \gamma_{max}^2/4 * t^k(1-t^k).
+            Shared base bridge maximum used by `gamma(t)`. Expanded COM/internal
+            branches are defined by scaling this base gamma with
+            `gamma_scale_com` and `gamma_scale_internal`.
+        gamma_scale_com : float, optional
+            Multiplicative scale applied to the shared base gamma for the COM
+            branch of the expanded bridge dynamics.
+        gamma_scale_internal : float, optional
+            Multiplicative scale applied to the shared base gamma for the
+            internal-coordinate branch of the expanded bridge dynamics.
         time_power : float, optional
-            Shared exponent k for linear route coefficients.
-            Uses \alpha_t=1-t^k, \beta_t=t^k, and
-            \gamma_t^2=\gamma_{max}^2/4 * t^k(1-t^k), by default 2.0.
+            Shared exponent `k` for the route coefficients
+            `alpha_t = 1 - t^k`, `beta_t = t^k`, and the base gamma schedule.
         sigma_data : float, optional
-            Standard deviation of target (holo) distribution, by default 16.0.
+            Effective target-coordinate scale used in ECSI preconditioning.
         sigma_data_end : float, optional
-            Standard deviation of source (apo) distribution, by default 16.0.
-            Uses physical coordinate scale (not normalized to image-like variance).
+            Effective source-coordinate scale used in ECSI preconditioning.
         cov_xy : float, optional
-            Covariance between source and target distributions, by default 128.0.
-            Controls the correlation structure in preconditioning.
-        rho : int, optional
-            The rho value for Karras schedule, by default 7.
-        P_mean : float, optional
-            Mean for log-normal noise level sampling, by default -1.2.
-        P_std : float, optional
-            Standard deviation for log-normal noise level sampling, by default 1.5.
-        eta : float, optional
-            Stochasticity control parameter, by default 1.0.
-            \eta=0 gives deterministic ODE, \eta=1 gives full SDE sampling.
+            Cross-covariance term between source and target coordinates used by
+            the bridge preconditioning formulas.
+        sampling : SamplingConfig, optional
+            Reverse-time rollout configuration including stochasticity, endpoint
+            perturbation, late ODE switching, and the nested step-allocation
+            schedule.
+        train_time_sampling : TrainTimeSamplingConfig, optional
+            Training-time sampling policy for `t_hat`, including the optional
+            Uniform mixture applied to the Beta branch.
         coordinate_augmentation : bool, optional
-            Whether to use coordinate augmentation, by default True.
+            Whether to apply random rigid-body augmentation when centering
+            coordinates.
         normalize_data_end : bool, optional
-            Whether to normalize the source (apo) input, by default False.
+            Whether prior coordinates are normalized before being concatenated
+            into the score-model input.
         normalize_coordinate : bool, optional
-            Whether to normalize the source and target coordinates, by default False.
-        alignment_entity_strategy : str | None, optional
-            Strategy for selecting entity to align: None (all entities), "largest",
-            or "random_non_ligand", by default "largest".
-        prior_chain_translation_scale : float, optional
-            Standard deviation of per-chain random translation applied to sampled
-            prior coordinates, by default 0.0.
+            Whether the module internally works on normalized coordinates for
+            both source and target structures.
+        use_prior_coords : bool, optional
+            Whether the score model receives prior/source coordinates as an
+            additional conditioning input.
         train_align_prior_to_label : bool, optional
-            Whether to rigidly align sampled prior coordinates to label coordinates
-            during training, by default True.
+            Whether sampled prior coordinates are rigidly aligned to labels
+            during training before interpolation.
+        s_trans : float, optional
+            Translation scale used by `CenterRandomAugmentation`.
         """
 
-        num_steps: int = 200
-        sigma_min: float = 0.001
-        sigma_max: float = 0.999
-        gamma_max: float = 0.25
-        time_power: float = 2.0
+        gamma_max: float = 12.0
+        gamma_scale_com: float = 1.0
+        gamma_scale_internal: float = 1.0
+        time_power: float = 1.0
         sigma_data: float = 16.0
         sigma_data_end: float = 16.0
         cov_xy: float = 128.0
-        rho: float = 0.7
-        sampling_schedule_type: str = "piecewise_power"
-        sampling_schedule_piecewise_power: float = 5.0
-        sampling_schedule_start_power: float | None = None
-        sampling_schedule_end_power: float | None = None
-        sampling_schedule_midpoint: float = 0.5
-        sampling_schedule_endpoint_trim: float = 0.0
-        sampling_schedule_global_u_power: float = 1.0
-        sampling_schedule_churn_fraction: float = 0.3
-        sampling_schedule_ode_fraction: float = 0.45
-        sampling_schedule_middle_power: float = 1.0
-        sampling_schedule_churn_power: float = 1.75
-        sampling_schedule_ode_power: float = 2.6
-        P_mean: float = -1.2
-        P_std: float = 1.5
-        eta: float = 1.0
+        sampling: SamplingConfig = dataclasses.field(default_factory=SamplingConfig)
+        train_time_sampling: TrainTimeSamplingConfig = dataclasses.field(
+            default_factory=TrainTimeSamplingConfig
+        )
         coordinate_augmentation: bool = True
         normalize_data_end: bool = False
         normalize_coordinate: bool = False
-        logit_normal_sampling: bool = False
-        sampling_alpha: float = 1.0
-        sampling_beta: float = 1.0
         use_prior_coords: bool = True
-        alignment_entity_strategy: str | None = None
-        alignment_level: str = "chain"
-        prior_chain_translation_scale: float = 50.0
         train_align_prior_to_label: bool = True
         s_trans: float = 1.0
-        inference_align_x0_hat_to_x_t: bool = True
-        perturb_xt: bool = True
-        endpoint_perturb_scale: float | None = 0.1
-        ode_time_duration: float = 0.6
-        use_forward_pinned_churn: bool = True
-        churn_factor: float = 3.0
-        churn_until_time: float | None = 0.7
 
     def __init__(self, cfg: Config, score_model: BaseScoreModel):
-        """Initialize the ECSI module."""
+        """Initialize the ECSI module.
+
+        The constructor copies the high-level config fields onto runtime
+        attributes, then immediately validates and normalizes the nested
+        sampling config so downstream code can assume a runtime-ready ECSI
+        configuration.
+        """
         super().__init__(cfg, score_model)
-        self.sigma_min: float = cfg.sigma_min
-        self.sigma_max: float = cfg.sigma_max
-        self.gamma_max: float = cfg.gamma_max
+        self.sampling = cfg.sampling
+        self.train_time_sampling = cfg.train_time_sampling
+
+        self.gamma_max: float = float(cfg.gamma_max)
+        self.gamma_scale_com: float = float(cfg.gamma_scale_com)
+        self.gamma_scale_internal: float = float(cfg.gamma_scale_internal)
         self.time_power: float = cfg.time_power
         self.sigma_data: float = cfg.sigma_data
         self.sigma_data_end: float = cfg.sigma_data_end
         self.cov_xy: float = cfg.cov_xy
-        self.rho: float = cfg.rho
-        self.sampling_schedule_type: str = cfg.sampling_schedule_type
-        self.sampling_schedule_piecewise_power: float = (
-            cfg.sampling_schedule_piecewise_power
-        )
-        self.sampling_schedule_start_power: float | None = (
-            cfg.sampling_schedule_start_power
-        )
-        self.sampling_schedule_end_power: float | None = cfg.sampling_schedule_end_power
-        self.sampling_schedule_midpoint: float = cfg.sampling_schedule_midpoint
-        self.sampling_schedule_endpoint_trim: float = cfg.sampling_schedule_endpoint_trim
-        self.sampling_schedule_global_u_power: float = (
-            cfg.sampling_schedule_global_u_power
-        )
-        self.sampling_schedule_churn_fraction: float = (
-            cfg.sampling_schedule_churn_fraction
-        )
-        self.sampling_schedule_ode_fraction: float = cfg.sampling_schedule_ode_fraction
-        self.sampling_schedule_middle_power: float = cfg.sampling_schedule_middle_power
-        self.sampling_schedule_churn_power: float = cfg.sampling_schedule_churn_power
-        self.sampling_schedule_ode_power: float = cfg.sampling_schedule_ode_power
-        self.P_mean: float = cfg.P_mean
-        self.P_std: float = cfg.P_std
-        self.eta: float = cfg.eta
-        self.num_steps: int = cfg.num_steps
         self.coordinate_augmentation: bool = cfg.coordinate_augmentation
         self.normalize_data_end: bool = cfg.normalize_data_end
         self.normalize_coordinate: bool = cfg.normalize_coordinate
-        self.logit_normal_sampling: bool = cfg.logit_normal_sampling
-        self.sampling_alpha: float = cfg.sampling_alpha
-        self.sampling_beta: float = cfg.sampling_beta
         self.use_prior_coords: bool = cfg.use_prior_coords
         self.s_trans: float = cfg.s_trans
-        self.alignment_level: str = cfg.alignment_level
-        self.prior_chain_translation_scale: float = cfg.prior_chain_translation_scale
         self.train_align_prior_to_label: bool = cfg.train_align_prior_to_label
-        self.inference_align_x0_hat_to_x_t: bool = cfg.inference_align_x0_hat_to_x_t
-        self.perturb_xt: bool = cfg.perturb_xt
-        self.endpoint_perturb_scale: float | None = cfg.endpoint_perturb_scale
-        self.ode_time_duration: float = cfg.ode_time_duration
-        self.use_forward_pinned_churn: bool = cfg.use_forward_pinned_churn
-        self.churn_factor: float = cfg.churn_factor
-        self.churn_until_time: float | None = cfg.churn_until_time
 
-        self._route: _Route = _LinearRoute(self.gamma_max, self.time_power)
+        self.__validate_config()
+
+        self.si_coeffs = SICoeffs(
+            power=self.time_power,
+            gamma_max=self.gamma_max,
+            gamma_scale_com=self.gamma_scale_com,
+            gamma_scale_internal=self.gamma_scale_internal,
+        )
 
         self.random_augmentation = CenterRandomAugmentation(
             centering=True,
             augmentation=self.coordinate_augmentation,
             s_trans=self.s_trans,
         )
+
+    def __validate_config(self) -> None:
+        """Validate and normalize runtime config used by ECSI.
+
+        This method is the single runtime gate for ECSI-specific config
+        correctness. It enforces schedule invariants, validates time/stochastic
+        parameter ranges, and normalizes optional sampling fields such as
+        `eta_com`, `eta_internal`, and `churn_end_time`.
+        """
+        schedule = self.sampling.schedule
+
+        if schedule.global_u_power <= 0.0:
+            raise ValueError("sampling.schedule.global_u_power must be > 0")
+        if schedule.churn_fraction <= 0.0 or schedule.ode_fraction <= 0.0:
+            raise ValueError(
+                "sampling.schedule.churn_fraction and "
+                "sampling.schedule.ode_fraction must both be > 0"
+            )
+        if schedule.churn_fraction + schedule.ode_fraction >= 1.0:
+            raise ValueError(
+                "sampling.schedule.churn_fraction + "
+                "sampling.schedule.ode_fraction must be < 1"
+            )
+        if schedule.churn_power <= 1.0:
+            raise ValueError("sampling.schedule.churn_power must be > 1")
+        if schedule.middle_power <= 0.0:
+            raise ValueError("sampling.schedule.middle_power must be > 0")
+        if schedule.ode_power <= schedule.global_u_power:
+            raise ValueError(
+                "sampling.schedule.ode_power must be > "
+                "sampling.schedule.global_u_power"
+            )
+
+        if self.sampling.steps <= 0:
+            raise ValueError("sampling.steps must be > 0")
+        if self.sampling.time_max <= self.sampling.time_min:
+            raise ValueError("sampling.time_max must be > sampling.time_min")
+        if self.sampling.eta < 0.0:
+            raise ValueError("sampling.eta must be >= 0")
+        if self.sampling.eta_com is None:
+            self.sampling.eta_com = self.sampling.eta
+        elif self.sampling.eta_com < 0.0:
+            raise ValueError("sampling.eta_com must be >= 0")
+        if self.sampling.eta_internal is None:
+            self.sampling.eta_internal = self.sampling.eta
+        elif self.sampling.eta_internal < 0.0:
+            raise ValueError("sampling.eta_internal must be >= 0")
+        if self.sampling.churn_end_time is None:
+            self.sampling.churn_end_time = 0.7
+        if self.sampling.perturb_xt and self.sampling.endpoint_perturb_scale is None:
+            raise ValueError(
+                "sampling.endpoint_perturb_scale must be provided when "
+                "sampling.perturb_xt is enabled"
+            )
+        if not (
+            self.sampling.time_min
+            < self.sampling.ode_start_time
+            < self.sampling.churn_end_time
+            < self.sampling.time_max
+        ):
+            raise ValueError(
+                "sampling requires time_min < ode_time < churn_until_time < time_max"
+            )
+
+        if self.train_time_sampling.alpha <= 0.0:
+            raise ValueError("train_time_sampling.alpha must be > 0")
+        if self.train_time_sampling.beta <= 0.0:
+            raise ValueError("train_time_sampling.beta must be > 0")
+        if not 0.0 <= self.train_time_sampling.uniform_mix_prob <= 1.0:
+            raise ValueError(
+                "train_time_sampling.uniform_mix_prob must lie in [0, 1]"
+            )
 
     @property
     def _effective_sigma_data(self) -> float:
@@ -354,9 +494,9 @@ class KFoldECSI(BaseECSI):
         c_in : torch.Tensor
             Input scaling coefficient.
         """
-        alpha_t = self.alpha(t)
-        beta_t = self.beta(t)
-        gamma_t = self.gamma(t)
+        alpha_t = self.si_coeffs.alpha(t)
+        beta_t = self.si_coeffs.beta(t)
+        gamma_t = self.si_coeffs.gamma(t)
 
         sigma_data = self._effective_sigma_data
         sigma_data_end = self._effective_sigma_data_end
@@ -539,13 +679,16 @@ class KFoldECSI(BaseECSI):
     ) -> torch.Tensor:
         r"""Sample time values for training.
 
-        Returns samples in [sigma_min, sigma_max] which represents
+        Returns samples in [sampling_time_min, sampling_time_max] which represents
         the time interval [t_{min}, t_{max}] \subset [0, 1].
 
-        If logit_normal_sampling is True, samples from LogitNormal(0, 1).
-        Else, samples from Beta(alpha, beta).
-        If alpha=1, beta=1, this is equivalent to Uniform(0, 1).
-        Finally scales to [sigma_min, sigma_max].
+        If `train_time_sampling.logit_normal` is True, sample from
+        `sigmoid(N(0, 1))`.
+        Else, sample from a Bernoulli mixture between:
+        - `Uniform(0, 1)` with probability `uniform_mix_prob`
+        - `Beta(alpha, beta)` with probability `1 - uniform_mix_prob`
+        If `alpha=1` and `beta=1`, the Beta branch is itself Uniform.
+        Finally scales to [sampling_time_min, sampling_time_max].
 
         Returns
         -------
@@ -554,23 +697,32 @@ class KFoldECSI(BaseECSI):
         """
         shape = (batch_size, num_diffusion_samples)
 
-        if self.logit_normal_sampling:
+        if self.train_time_sampling.logit_normal:
             # LogitNormal(0, 1) sampling
             y = torch.randn(shape, device=device)
             t = torch.sigmoid(y)
         else:
-            # Beta sampling (default to Uniform if alpha=1, beta=1)
-            if self.sampling_alpha == 1.0 and self.sampling_beta == 1.0:
+            # Beta sampling branch (defaulting to Uniform if alpha=1, beta=1).
+            if (
+                self.train_time_sampling.alpha == 1.0
+                and self.train_time_sampling.beta == 1.0
+            ):
                 t = torch.rand(shape, device=device)
             else:
                 m = torch.distributions.Beta(
-                    torch.tensor(self.sampling_alpha, device=device),
-                    torch.tensor(self.sampling_beta, device=device),
+                    torch.tensor(self.train_time_sampling.alpha, device=device),
+                    torch.tensor(self.train_time_sampling.beta, device=device),
                 )
                 t = m.sample(shape)
 
-        # Scale to [sigma_min, sigma_max]
-        t = self.sigma_min + (self.sigma_max - self.sigma_min) * t
+            mix_prob = float(self.train_time_sampling.uniform_mix_prob)
+            if mix_prob > 0.0:
+                uniform_sample = torch.rand(shape, device=device)
+                uniform_mask = torch.rand(shape, device=device) < mix_prob
+                t = torch.where(uniform_mask, uniform_sample, t)
+
+        # Scale to [sampling_time_min, sampling_time_max]
+        t = self.sampling.time_min + (self.sampling.time_max - self.sampling.time_min) * t
         return t
 
     def get_sampling_schedule(
@@ -580,190 +732,49 @@ class KFoldECSI(BaseECSI):
     ) -> torch.Tensor:
         r"""Get the time schedule for diffusion sampling.
 
-        Uses Karras schedule adapted for t \in [0, 1].
+        Uses the configured phase-power schedule adapted for t \in [0, 1].
 
         Parameters
         ----------
         num_steps : int, optional
-            Number of sampling steps. If None, uses self.num_steps.
+            Number of sampling steps. If None, uses `self.sampling.steps`.
         device : torch.device, optional
             Device for tensor allocation.
 
         Returns
         -------
         times : torch.Tensor
-            Time schedule. Shape (num_steps + 1,), from t_{max} to 0.
+            Time schedule. Shape (num_steps + 1,), from t_max to 0.
         """
         if num_steps is None:
-            num_steps = self.num_steps
+            num_steps = self.sampling.steps
 
-        schedule_type = self.sampling_schedule_type.lower()
-        if schedule_type == "karras":
-            times = self._get_karras_schedule(num_steps=num_steps, device=device)
-        elif schedule_type == "piecewise_power":
-            times = self._get_piecewise_power_schedule(num_steps=num_steps, device=device)
-        elif schedule_type == "phase_power":
-            times = self._get_phase_power_schedule(num_steps=num_steps, device=device)
-        else:
-            raise ValueError(
-                "Unsupported sampling_schedule_type; expected 'karras', "
-                "'piecewise_power', or 'phase_power', got "
-                f"{self.sampling_schedule_type!r}"
-            )
+        times = self._get_phase_power_schedule(num_steps=num_steps, device=device)
 
         # Last step is t=0 (exactly at target)
         times = F.pad(times, (0, 1), value=0.0)
         return times
 
-    def _get_karras_schedule(
-        self, num_steps: int, device: torch.device | None = None
-    ) -> torch.Tensor:
-        inv_rho = 1 / self.rho
-        steps = torch.arange(num_steps, dtype=torch.float32, device=device)
-        return (
-            self.sigma_max**inv_rho
-            + steps
-            / (num_steps - 1)
-            * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
-        ) ** self.rho
-
-    def _get_piecewise_power_schedule(
-        self, num_steps: int, device: torch.device | None = None
-    ) -> torch.Tensor:
-        power = float(self.sampling_schedule_piecewise_power)
-        if power <= 0.0:
-            raise ValueError("sampling_schedule_piecewise_power must be > 0")
-
-        start_power = (
-            power
-            if self.sampling_schedule_start_power is None
-            else float(self.sampling_schedule_start_power)
-        )
-        end_power = (
-            power
-            if self.sampling_schedule_end_power is None
-            else float(self.sampling_schedule_end_power)
-        )
-        if start_power <= 0.0 or end_power <= 0.0:
-            raise ValueError("piecewise start/end powers must be > 0")
-
-        midpoint = float(self.sampling_schedule_midpoint)
-        if not 0.0 < midpoint < 1.0:
-            raise ValueError("sampling_schedule_midpoint must lie in (0, 1)")
-
-        endpoint_trim = float(self.sampling_schedule_endpoint_trim)
-        if not 0.0 <= endpoint_trim < 0.5:
-            raise ValueError("sampling_schedule_endpoint_trim must lie in [0, 0.5)")
-
-        steps = torch.arange(num_steps, dtype=torch.float32, device=device)
-        u = steps / (num_steps - 1)
-
-        if endpoint_trim > 0.0:
-            u = endpoint_trim + (1.0 - 2.0 * endpoint_trim) * u
-
-        t_unit = self._piecewise_power_curve(
-            u=u,
-            start_power=start_power,
-            end_power=end_power,
-            midpoint=midpoint,
-        )
-
-        if endpoint_trim > 0.0:
-            start_u = torch.tensor([endpoint_trim], dtype=u.dtype, device=device)
-            end_u = torch.tensor([1.0 - endpoint_trim], dtype=u.dtype, device=device)
-            start_value = self._piecewise_power_curve(
-                u=start_u,
-                start_power=start_power,
-                end_power=end_power,
-                midpoint=midpoint,
-            )
-            end_value = self._piecewise_power_curve(
-                u=end_u,
-                start_power=start_power,
-                end_power=end_power,
-                midpoint=midpoint,
-            )
-            denom = start_value - end_value
-            if torch.any(torch.abs(denom) < 1e-8):
-                raise ValueError(
-                    "sampling_schedule_endpoint_trim produced a degenerate schedule"
-                )
-            t_unit = (t_unit - end_value) / denom
-
-        return self.sigma_min + (self.sigma_max - self.sigma_min) * t_unit
-
-    @staticmethod
-    def _piecewise_power_curve(
-        u: torch.Tensor,
-        start_power: float,
-        end_power: float,
-        midpoint: float,
-    ) -> torch.Tensor:
-        t_unit = torch.empty_like(u)
-        left = u <= midpoint
-        t_unit[left] = 1.0 - 0.5 * torch.pow(u[left] / midpoint, start_power)
-        t_unit[~left] = 0.5 * torch.pow(
-            (1.0 - u[~left]) / (1.0 - midpoint),
-            end_power,
-        )
-        return t_unit.clamp(min=0.0, max=1.0)
-
     def _get_phase_power_schedule(
         self, num_steps: int, device: torch.device | None = None
     ) -> torch.Tensor:
-        global_u_power = float(self.sampling_schedule_global_u_power)
-        if global_u_power <= 0.0:
-            raise ValueError("sampling_schedule_global_u_power must be > 0")
+        sampling = self.sampling
+        schedule = sampling.schedule
+        global_u_power = float(schedule.global_u_power)
+        churn_fraction = float(schedule.churn_fraction)
+        ode_fraction = float(schedule.ode_fraction)
+        churn_power = float(schedule.churn_power)
+        middle_power = float(schedule.middle_power)
+        ode_power = float(schedule.ode_power)
+        total_scale = sampling.time_max - sampling.time_min
+        churn_time = float(sampling.churn_end_time)
+        ode_time = float(sampling.ode_start_time)
 
-        churn_fraction = float(self.sampling_schedule_churn_fraction)
-        ode_fraction = float(self.sampling_schedule_ode_fraction)
-        if churn_fraction <= 0.0 or ode_fraction <= 0.0:
-            raise ValueError(
-                "sampling_schedule_churn_fraction and sampling_schedule_ode_fraction "
-                "must both be > 0"
-            )
-        if churn_fraction + ode_fraction >= 1.0:
-            raise ValueError(
-                "sampling_schedule_churn_fraction + "
-                "sampling_schedule_ode_fraction must be < 1"
-            )
-
-        churn_power = float(self.sampling_schedule_churn_power)
-        middle_power = float(self.sampling_schedule_middle_power)
-        ode_power = float(self.sampling_schedule_ode_power)
-        if churn_power <= 1.0:
-            raise ValueError("sampling_schedule_churn_power must be > 1")
-        if middle_power <= 0.0:
-            raise ValueError("sampling_schedule_middle_power must be > 0")
-        if ode_power <= global_u_power:
-            raise ValueError(
-                "sampling_schedule_ode_power must be > "
-                "sampling_schedule_global_u_power so the late ODE tail closes with "
-                "zero slope in t-space"
-            )
-
-        total_scale = self.sigma_max - self.sigma_min
-        if total_scale <= 0.0:
-            raise ValueError("sigma_max must be > sigma_min")
-
-        churn_time = self.churn_until_time
-        if churn_time is None:
-            churn_time = 0.7
-        churn_time = float(churn_time)
-        ode_time = float(self.ode_time_duration)
-        if not self.sigma_min < ode_time < churn_time < self.sigma_max:
-            raise ValueError(
-                "phase_power schedule requires sigma_min < ode_time_duration < "
-                "churn_until_time < sigma_max"
-            )
-
-        churn_unit = (churn_time - self.sigma_min) / total_scale
-        ode_unit = (ode_time - self.sigma_min) / total_scale
+        churn_unit = (churn_time - sampling.time_min) / total_scale
+        ode_unit = (ode_time - sampling.time_min) / total_scale
 
         churn_u = churn_unit**global_u_power
         ode_u = ode_unit**global_u_power
-        if not 0.0 < ode_u < churn_u < 1.0:
-            raise ValueError("phase_power schedule produced invalid u-space bounds")
 
         steps = torch.arange(num_steps, dtype=torch.float32, device=device)
         s = steps / (num_steps - 1)
@@ -791,7 +802,7 @@ class KFoldECSI(BaseECSI):
         u_value[tail_mask] = ode_u * torch.pow(1.0 - tail_progress, ode_power)
 
         t_unit = torch.pow(u_value.clamp(min=0.0, max=1.0), 1.0 / global_u_power)
-        return self.sigma_min + total_scale * t_unit
+        return sampling.time_min + total_scale * t_unit
 
     def sample_prior(
         self,

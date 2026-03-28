@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
+from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI, SamplingConfig
 
 
 def create_synthetic_conformations(
@@ -62,7 +62,9 @@ def analyze_interpolation_statistics(
     Returns mean and variance of interpolated positions at each time step.
     """
     t_values = torch.linspace(
-        structure_module.sigma_min, structure_module.sigma_max, num_time_steps
+        structure_module.sampling.time_min,
+        structure_module.sampling.time_max,
+        num_time_steps,
     )
 
     results = {
@@ -95,9 +97,9 @@ def analyze_interpolation_statistics(
         # Compute expected values
         # Expected mean: alpha_t * holo + beta_t * apo
         t_exp = torch.tensor([[[[t.item()]]]])
-        alpha_t = structure_module.alpha(t_exp).item()
-        beta_t = structure_module.beta(t_exp).item()
-        gamma_t = structure_module.gamma(t_exp).item()
+        alpha_t = structure_module.si_coeffs.alpha(t_exp).item()
+        beta_t = structure_module.si_coeffs.beta(t_exp).item()
+        gamma_t = structure_module.si_coeffs.gamma(t_exp).item()
 
         expected_mean = alpha_t * coords_holo + beta_t * coords_apo
         expected_var = gamma_t**2  # Variance from noise term
@@ -308,7 +310,7 @@ def test_variance_matches_gamma(
     empirical_var = samples.var(dim=1).mean().item()  # avg across atoms/dims
 
     # Expected variance = gamma^2
-    gamma_t = structure_module.gamma(torch.tensor([[t_test]])).item()
+    gamma_t = structure_module.si_coeffs.gamma(torch.tensor([[t_test]])).item()
     expected_var = gamma_t**2
 
     print(f"  At t={t_test}:")
@@ -340,19 +342,26 @@ if __name__ == "__main__":
 
     # Create ECSI module with test configuration
     ecsi_config = KFoldECSI.Config(
-        num_steps=200,
-        sigma_min=0.001,
-        sigma_max=0.999,
         gamma_max=4.0,
+        gamma_scale_com=1.0,
+        gamma_scale_internal=1.0,
+        sampling=SamplingConfig(
+            steps=200,
+            time_min=0.001,
+            time_max=0.999,
+            eta=1.0,
+        ),
         sigma_data=16.0,
         sigma_data_end=16.0,
         cov_xy=128.0,
-        eta=1.0,
         coordinate_augmentation=False,
     )
 
     structure_module = KFoldECSI(ecsi_config, MockScoreModel())
-    print(f"Created KFoldECSI with gamma_max={structure_module.gamma_max}")
+    print(
+        "Created KFoldECSI with "
+        f"gamma_max={structure_module.gamma_max}"
+    )
 
     # Create synthetic molecules
     num_atoms = 10
