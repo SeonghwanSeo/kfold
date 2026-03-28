@@ -6,6 +6,7 @@ import torch
 from lightning import pytorch as pl
 from lightning.pytorch.utilities import rank_zero_only
 
+from kfold.config import load_config
 from kfold.data.types.ccd import CCD
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.pl_client import (
@@ -36,6 +37,40 @@ def log_warning(message: str):
 @rank_zero_only
 def log_error(message: str):
     logger.error(message)
+
+
+def resolve_prior_translation_scale(
+    config_path: pathlib.Path,
+    override_args: list[str],
+    explicit_value: float | None,
+) -> float:
+    if explicit_value is not None:
+        return float(explicit_value)
+
+    config = load_config(config_path, override_args=override_args)
+    data_cfg = None
+    if "train" in config and "data" in config.train:
+        data_cfg = config.train.data
+    elif "data" in config:
+        data_cfg = config.data
+
+    if data_cfg is None:
+        return 1.0
+
+    candidate_groups = []
+    if "val_datasets" in data_cfg:
+        candidate_groups.append(data_cfg.val_datasets)
+    if "train_datasets" in data_cfg:
+        candidate_groups.append(data_cfg.train_datasets)
+
+    for datasets in candidate_groups:
+        if not datasets:
+            continue
+        prior_sampler = datasets[0].get("prior_sampler", None)
+        if prior_sampler is not None and "translation_scale" in prior_sampler:
+            return float(prior_sampler.translation_scale)
+
+    return 1.0
 
 
 def parse_args():
@@ -94,6 +129,15 @@ def parse_args():
         help="Number of samples to generate per input.",
     )
     parser.add_argument(
+        "--prior_translation_scale",
+        type=float,
+        default=None,
+        help=(
+            "Chain-wise rigid-body translation scale used by inference prior "
+            "sampling. If omitted, derive from the config."
+        ),
+    )
+    parser.add_argument(
         "--use_sequence_masking",
         action="store_true",
         help=(
@@ -142,6 +186,11 @@ def main():
     torch.set_float32_matmul_precision("highest")
 
     args = parse_args()
+    prior_translation_scale = resolve_prior_translation_scale(
+        args.config,
+        args.override,
+        args.prior_translation_scale,
+    )
 
     # Check output directory
     log_info(f"Output directory: {args.out_dir}")
@@ -167,7 +216,11 @@ def main():
 
     # Create dataloader
     dataset = InferenceDataset(
-        input_queries, ccd, args.num_samples, args.use_sequence_masking
+        input_queries,
+        ccd,
+        args.num_samples,
+        prior_translation_scale,
+        args.use_sequence_masking,
     )
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers

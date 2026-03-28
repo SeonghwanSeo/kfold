@@ -34,6 +34,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         queries: list[Query],
         ccd: CCD,
         num_samples: int = 5,
+        prior_translation_scale: float = 1.0,
         use_sequence_masking: bool = False,
     ) -> None:
         """
@@ -45,11 +46,19 @@ class InferenceDataset(torch.utils.data.Dataset):
             Component for handling common chemical components.
         num_samples : int
             Number of diffusion samples to generate for each query.
+        prior_translation_scale : float
+            Chain-wise rigid-body translation scale used when sampling prior
+            coordinates during inference.
         use_sequence_masking : bool
             Whether to use sequence masking for sampling diversity
         """
         self.queries: list[Query] = queries
-        self.data_pipeline = InputDataPipeline(ccd, num_samples, use_sequence_masking)
+        self.data_pipeline = InputDataPipeline(
+            ccd,
+            num_samples,
+            prior_translation_scale,
+            use_sequence_masking,
+        )
 
     def __len__(self) -> int:
         return len(self.queries)
