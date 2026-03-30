@@ -5,7 +5,7 @@ import torch
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model import BaseScoreModel
 from kfold.utils.geometry.random_augment import do_centering
-from kfold.utils.misc import repeat_dim
+from kfold.utils.misc import expand_dim
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 
@@ -33,11 +33,7 @@ class BaseStructureModule(ABC):
         """Sample structures via diffusion sampling."""
 
     @abstractmethod
-    def sample_noise_level(
-        self,
-        shape: tuple,
-        device: torch.device | None = None,
-    ) -> torch.Tensor:
+    def sample_noise_level(self, shape: tuple, device: torch.device) -> torch.Tensor:
         """Sample noise levels (t_hat) during model training. Shape: (B, N)."""
 
     @abstractmethod
@@ -69,30 +65,6 @@ class BaseStructureModule(ABC):
         coords = do_centering(coords, mask, mask_to_zero=True)
         return coords
 
-    def sample_label(self, f_input: FoldingInput, num_samples: int = 1) -> torch.Tensor:
-        """Sample label coordinates from input features.
-        Return shape: [B, N, La, 3], where N is number of diffusion samples
-        and La is number of atoms.
-
-        Parameters
-        -----------
-        f_input: FoldingInput
-            Input features
-        num_samples:
-            Number of diffusion samples
-
-        Returns
-        -------
-        label_coords: torch.Tensor
-            Label coordinates. Shape: [B, N, La, 3]
-        """
-        # if the model is equivariance, skip augment
-        random_augment = True
-
-        holo_coords = self.sample_holo(f_input, num_samples, random_augment)
-
-        return holo_coords
-
     @abstractmethod
     def sample_prior(
         self,
@@ -123,8 +95,8 @@ class BaseStructureModule(ABC):
     @abstractmethod
     def interpolate(
         self,
-        x_T: torch.Tensor,
         x_0: torch.Tensor,
+        x_prior: torch.Tensor,
         t_hat: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
@@ -134,10 +106,10 @@ class BaseStructureModule(ABC):
 
         Parameters
         ----------
-        x_T : torch.Tensor
-            The prior coordinates. Shape (B, N, La, 3).
         x_0 : torch.Tensor
             The label coordinates. Shape (B, N, La, 3).
+        x_prior : torch.Tensor
+            The prior coordinates. Shape (B, N, La, 3).
         t_hat : torch.Tensor
             The dffusion noise levels (or sigmas of EDM). Shape (B, N).
         mask : torch.Tensor
@@ -177,12 +149,7 @@ class BaseStructureModule(ABC):
         raise NotImplementedError("training_step must be implemented in subclass")
 
     # === Sampling holo/apo structures === #
-    def sample_holo(
-        self,
-        f_input: FoldingInput,
-        num_samples: int = 1,
-        random_augment: bool = True,
-    ) -> torch.Tensor:
+    def sample_holo(self, f_input: FoldingInput, num_samples: int = 1) -> torch.Tensor:
         """Sample holo structures from input for model training.
 
         Parameters
@@ -190,9 +157,7 @@ class BaseStructureModule(ABC):
         f_input : FoldingInput
             FoldingInput object containing model inputs.
         num_samples : int, optional
-            Number of diffusion samples to generate, by default 1.
-        random_augment: bool
-            Whether to apply random augmentation to holo coordinates.
+            Number of diffusion samples(N) to generate, by default 1.
 
         Returns
         -------
@@ -201,15 +166,14 @@ class BaseStructureModule(ABC):
             where N is number of diffusion samples and L is the number of atoms.
         """
         holo_coords = f_input.atom.label_coords  # [B, L, 3]
-        atom_mask = f_input.atom.resolved_mask  # [B, L]
+        mask = f_input.atom.resolved_mask  # [B, L]
 
         # repeat holo coords
-        holo_coords = repeat_dim(holo_coords, num_samples, dim=-3)  # [B, N, L, 3]
-        atom_mask = atom_mask.unsqueeze(-2)  # [B, 1, L]
+        holo_coords = expand_dim(holo_coords, num_samples, dim=-3)  # [B, N, L, 3]
+        mask = mask.unsqueeze(-2)  # [B, 1, L]
 
-        # Apply coordinate augmentation or centering
-        if random_augment:
-            holo_coords = self.apply_random_augmentation(holo_coords, atom_mask)
+        # Apply centering/coordinate augmentation
+        holo_coords = self.apply_random_augmentation(holo_coords, mask)
 
         return holo_coords  # [B, N, L, 3]
 
@@ -224,7 +188,6 @@ class BaseEDM(BaseStructureModule):
     # === EDM (Elucidating Diffusion Models) preconditioning coefficients === #
     # Reference: Karras et al., "Elucidating the Design Space of Diffusion-Based "
     # Generative Models"
-    # Check Boltz Implementation
     @abstractmethod
     def c_skip(self, sigma: torch.Tensor) -> torch.Tensor:
         """Skip connection coefficient for EDM preconditioning."""
@@ -264,15 +227,13 @@ class BaseEDM(BaseStructureModule):
         t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
 
         # sample x0 from label
-        x_gt = self.sample_label(f_input, num_samples)
+        x_0 = self.sample_holo(f_input, num_samples)
 
         # sample xT from prior
-        x_prior = self.sample_prior(f_input, num_samples, x_gt)
+        x_prior = self.sample_prior(f_input, num_samples, x_0)
 
         # sample xt via interpolation
-        x_t = self.interpolate(x_prior, x_gt, t_hat, mask)
-        # NOTE: here we use masked_fill_ to avoid bf16 casting.
-        x_t.masked_fill_(~mask[:, None, :, None], 0.0)
+        x_t = self.interpolate(x_0, x_prior, t_hat, mask)
 
         x_0_hat = self.forward_train(
             x_t=x_t.float(),  # [B, N, La, 3]
@@ -289,7 +250,7 @@ class BaseEDM(BaseStructureModule):
             "t_hat": t_hat,
             "x_t": x_t,
             "x_0_hat": x_0_hat,
-            "x_gt": x_gt,
+            "x_gt": x_0,
             "loss_weights": loss_weights,
         }
 

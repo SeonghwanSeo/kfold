@@ -71,7 +71,7 @@ class AF3SampleDiffusion(BaseEDM):
         self.gamma_min: float = cfg.gamma_min
         self.noise_scale: float = cfg.noise_scale
         self.step_scale: float = cfg.step_scale
-        self.random_augmentation = CenterRandomAugmentation(s_trans=1.0)
+        self.random_augmentation = CenterRandomAugmentation()
 
     # === EDM diffusion coefficients === #
     def c_skip(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
@@ -139,29 +139,29 @@ class AF3SampleDiffusion(BaseEDM):
 
         Returns
         -------
-        x_out : torch.Tensor
+        x_0_hat : torch.Tensor
             Denoised atom coordinates. Shape (B, N, La, 3).
         """
-        t_hat_reshaped = t_hat[..., None, None]  # [B, N, 1, 1]
+        c_in = self.c_in(t_hat)  # [B, N]
+        c_noise = self.c_noise(t_hat)  # [B, N]
+        c_skip = self.c_skip(t_hat)  # [B, N]
+        c_out = self.c_out(t_hat)  # [B, N]
 
         # Line 2 of Algorithm 20
-        r_noisy = self.c_in(t_hat_reshaped) * x_t  # [B, N, La, 3]
-
-        # Line 8 of Algorithm 21
-        c_noise = self.c_noise(t_hat)  # [B, N]
+        r_noisy = c_in[..., None, None] * x_t  # [B, N, La, 3]
 
         r_update = self.score_model.train_step(
+            f_input=f_input,
             r_noisy=r_noisy,  # [B, N, La, 3]
             c_noise=c_noise,  # [B, N]
-            f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
         )
 
         # Line 8 of Algorithm 20
-        x_out = self.c_skip(t_hat_reshaped) * x_t + self.c_out(t_hat_reshaped) * r_update
-        return x_out
+        x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
+        return x_0_hat
 
     def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
         """Compute loss weights based on noise levels t_hat.
@@ -173,11 +173,7 @@ class AF3SampleDiffusion(BaseEDM):
         """
         return (t_hat**2 + self.sigma_data**2) / ((t_hat * self.sigma_data) ** 2)
 
-    def sample_noise_level(
-        self,
-        shape: tuple,
-        device: torch.device | None = None,
-    ) -> torch.Tensor:
+    def sample_noise_level(self, shape: tuple, device: torch.device) -> torch.Tensor:
         """Sample from the prior distribution.
         Return shape: [B, N, La, 3], where N is number of diffusion samples
         and La is number of atoms.
@@ -185,14 +181,13 @@ class AF3SampleDiffusion(BaseEDM):
         # See Section 3.7 of AlphaFold3 paper.
         # t_hat = sigma_data * exp(-1.2 + 1.5 * N(0, 1)),
         # where -1.2 is P_mean and 1.5 is P_std.
-        return self.sigma_data * torch.exp(
-            self.P_mean + self.P_std * torch.randn(shape, device=device)
-        )
+        normal = torch.randn(shape, dtype=torch.float32, device=device)
+        return self.sigma_data * torch.exp(self.P_mean + self.P_std * normal)
 
     def interpolate(
         self,
-        x_T: torch.Tensor,
         x_0: torch.Tensor,
+        x_prior: torch.Tensor,
         t_hat: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
@@ -205,17 +200,21 @@ class AF3SampleDiffusion(BaseEDM):
 
         Parameters
         ----------
-        x_T : torch.Tensor
-            The noisy coordinates. Shape (B, N, La, 3).
         x_0 : torch.Tensor
             The label coordinates. Shape (B, N, La, 3).
+        x_prior : torch.Tensor
+            The noise. Shape (B, N, La, 3).
         sigma : torch.Tensor
             The sigma values. Shape (B, N).
         mask : torch.Tensor
             The atom mask. Shape (B, La).
         """
-        with torch.autocast(device_type="cuda", enabled=False):
-            return x_0 + t_hat[:, :, None, None] * x_T  # (B, N, La, 3)
+        noise = x_prior
+        sigma = t_hat
+        with torch.autocast(device_type="cuda", dtype=torch.float32):
+            x_t = x_0 + sigma[:, :, None, None] * noise
+        x_t.masked_fill_(~mask[:, None, :, None], 0.0)  # apply atom mask
+        return x_t
 
     # === For sampling === #
     def sample_structure(
@@ -242,6 +241,7 @@ class AF3SampleDiffusion(BaseEDM):
         sigma_0 = sigmas[0]
         x: torch.Tensor = sigma_0 * self.sample_prior(f_input, num_samples)
         mask: torch.Tensor = f_input.atom.pad_mask.unsqueeze(1)  # (B, 1, Latom)
+        x.masked_fill_(~mask[:, :, :, None], 0.0)  # apply atom mask
 
         # Compute time-independent variables
         z = self.get_pair_conditioning(f_input, z_trunk)
@@ -281,6 +281,7 @@ class AF3SampleDiffusion(BaseEDM):
             # Line 6
             noise_var: float = self.noise_scale**2 * (t_hat**2 - sigma_tm**2)
             eps = math.sqrt(noise_var) * torch.randn_like(x)
+            eps.masked_fill_(~mask[:, :, :, None], 0.0)  # apply atom mask
 
             # Line 7
             x_noisy = x + eps
@@ -296,7 +297,6 @@ class AF3SampleDiffusion(BaseEDM):
 
             # Line 11
             x = x_noisy + self.step_scale * dt * delta
-            x.masked_fill_(~mask[:, :, :, None], 0.0)  # apply atom mask
 
         sample_out: dict[str, torch.Tensor] = {
             "sample_coordinates": x,
