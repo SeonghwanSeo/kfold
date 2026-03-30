@@ -149,12 +149,6 @@ class BaseFoldingModel(torch.nn.Module):
                 "sample_structures must be True to provide sampled structures."
             )
 
-        if not train_structure_module:
-            # Set trunk and structure module to eval mode
-            self.input_embedder.eval()
-            self.trunk.eval()
-            self.score_model.eval()
-
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
@@ -180,7 +174,6 @@ class BaseFoldingModel(torch.nn.Module):
             # are stored in the model cache, which may lead to unexpected bugs with
             # diffusion module training. Instead, we construct cache inside
             # sample_structure method if necessary.
-            self.score_model.eval()
             coordinates = self.structure_module.sample_structure(
                 f_input=f_input,
                 s_inputs=s_inputs.detach(),
@@ -201,7 +194,6 @@ class BaseFoldingModel(torch.nn.Module):
 
         if train_structure_module:
             # Diffusion head
-            self.score_model.train()
             dict_out["diffusion"] = self.structure_module.training_step(
                 f_input,
                 s_inputs,

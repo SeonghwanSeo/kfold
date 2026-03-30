@@ -124,16 +124,16 @@ class SelfAttentionPairBias(AttentionPairBias):
         inf : float, optional
             The inf value, by default 1e6
         """
-        zero_init_out = channel_s is None
+        self.use_single_conditioning: bool = channel_s is not None
+
         super().__init__(
             channel_a,
             num_heads,
             qk_norm=qk_norm,
-            zero_init_out=zero_init_out,
+            zero_init_out=(not self.use_single_conditioning),
             inf=inf,
         )
 
-        self.use_single_conditioning: bool = channel_s is not None
         if self.use_single_conditioning:
             assert channel_s is not None
             self.adaln_a = AdaLN(channel_a, channel_s)
@@ -210,16 +210,16 @@ class CrossAttentionPairBias(AttentionPairBias):
         inf : float, optional
             The inf value, by default 1e6
         """
-        zero_init_out = channel_s is not None
+        self.use_single_conditioning: bool = channel_s is not None
+
         super().__init__(
             channel_a,
             num_heads,
             qk_norm=qk_norm,
-            zero_init_out=zero_init_out,
+            zero_init_out=(not self.use_single_conditioning),
             inf=inf,
         )
 
-        self.use_single_conditioning: bool = channel_s is not None
         if self.use_single_conditioning:
             assert channel_s is not None
             self.adaln_a_q = AdaLN(channel_a, channel_s)

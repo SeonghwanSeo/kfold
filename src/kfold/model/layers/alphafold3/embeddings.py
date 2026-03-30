@@ -66,7 +66,7 @@ class RelativePositionEncoding(nn.Module):
             2 * self.r_max + 1,
         )
         # Line 5
-        a_rel_pos = F.one_hot(d_residue, 2 * self.r_max + 2)
+        a_rel_pos = F.one_hot(d_residue, 2 * self.r_max + 2).float()
 
         # Line 6
         d_token = torch.clip(
@@ -80,7 +80,7 @@ class RelativePositionEncoding(nn.Module):
             2 * self.r_max + 1,
         )
         # Line 7
-        a_rel_token = F.one_hot(d_token, 2 * self.r_max + 2)
+        a_rel_token = F.one_hot(d_token, 2 * self.r_max + 2).float()
 
         # Line 8
         d_chain = torch.clip(
@@ -98,15 +98,15 @@ class RelativePositionEncoding(nn.Module):
             2 * self.s_max + 1,
         )
         # Line 9
-        a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2)
+        a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2).float()
 
         # Line 10 (concat)
         rel_position_encoding = torch.cat(
             [
-                a_rel_pos.float(),
-                a_rel_token.float(),
+                a_rel_pos,
+                a_rel_token,
                 b_same_entity.float().unsqueeze(-1),
-                a_rel_chain.float(),
+                a_rel_chain,
             ],
             dim=-1,
         )
