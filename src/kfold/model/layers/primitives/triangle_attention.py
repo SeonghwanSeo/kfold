@@ -20,9 +20,11 @@ import torch
 import torch.nn as nn
 
 try:
-    from cuequivariance_torch.primitives.triangle import triangle_attention
+    from cuequivariance_torch.primitives.triangle import (
+        triangle_attention as cueq_triangle_attention,
+    )
 except ImportError:
-    triangle_attention = None
+    cueq_triangle_attention = None
 
 from .linear import LinearNoBias
 from .normalization import LayerNorm
@@ -61,12 +63,12 @@ def kernel_triangular_attn(
     mask: torch.Tensor,
     scale: float,
 ) -> torch.Tensor:
-    if triangle_attention is None:
+    if cueq_triangle_attention is None:
         raise ImportError(
             "cuequivariance_torch is not installed. "
             "Please install cuequivariance_torch to use the kernel implementation."
         )
-    return triangle_attention(q, k, v, bias, mask=mask, scale=scale)
+    return cueq_triangle_attention(q, k, v, bias.float(), mask=mask, scale=scale)
 
 
 class MultiHeadAttention(nn.Module):

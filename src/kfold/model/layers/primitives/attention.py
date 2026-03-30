@@ -177,7 +177,7 @@ def attention_pair_bias(
     b_proj_g: torch.Tensor | None,
     b_proj_o: torch.Tensor | None,
     num_heads: int = 32,
-    inf: float = 1e6,
+    inf: float = 1e9,
     attn_scale: float | None = None,
     use_kernels: bool = False,
 ) -> torch.Tensor:

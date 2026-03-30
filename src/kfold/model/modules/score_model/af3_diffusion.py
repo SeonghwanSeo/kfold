@@ -117,6 +117,11 @@ class AF3DiffusionModule(BaseScoreModel):
         r_update : torch.Tensor
             The denoised atom positions, shape [B, N, La, 3].
         """
+        # NOTE (SeonghwanSeo): cuEquiv uses pytorch fallback for short sequences.
+        # Since training crop size triggers this fallback, the kernels provide
+        # no speedup during training. On the other hand, torch.compile provides
+        # significant speedup during training. Therefore, we disable kernels
+        # to optimize computational graph with torch.compile.
         return self.diffusion_stack(
             f_input,
             r_noisy,
@@ -124,7 +129,7 @@ class AF3DiffusionModule(BaseScoreModel):
             s_inputs,
             s_trunk,
             z_trunk,
-            use_cuequiv_kernels=self.kernel_config.cuequivariance,
+            use_cuequiv_kernels=False,
         )
 
     # === Inference step ===
@@ -266,6 +271,7 @@ class AF3DiffusionModule(BaseScoreModel):
         r_update : torch.Tensor
             The scaled updated atom positions, shape [B, N, La, 3].
         """
+        # TODO: Test CuEquiv kernels work correctly on inference step.
         return self._diffusion_stack.step(
             r_noisy,
             q,
@@ -276,5 +282,5 @@ class AF3DiffusionModule(BaseScoreModel):
             s,
             pair_bias,
             token_mask,
-            use_cuequiv_kernels=self.kernel_config.cuequivariance,
+            use_cuequiv_kernels=False,
         )

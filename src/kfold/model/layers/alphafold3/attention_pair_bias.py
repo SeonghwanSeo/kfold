@@ -22,7 +22,7 @@ class AttentionPairBias(nn.Module):
         *,
         qk_norm: bool = False,
         zero_init_out: bool = False,
-        inf: float = 1e6,
+        inf: float = 1e9,
     ) -> None:
         """Initialize the attention pair bias layer.
 
@@ -33,7 +33,7 @@ class AttentionPairBias(nn.Module):
         num_heads : int
             The number of heads.
         inf : float, optional
-            The inf value, by default 1e6
+            The inf value, by default 1e9
         """
         super().__init__()
         assert channel_a % num_heads == 0
@@ -122,7 +122,7 @@ class SelfAttentionPairBias(AttentionPairBias):
         qk_norm : bool, optional
             Whether to apply LayerNorm to Q and K.
         inf : float, optional
-            The inf value, by default 1e6
+            The inf value, by default 1e9
         """
         self.use_single_conditioning: bool = channel_s is not None
 
@@ -208,7 +208,7 @@ class CrossAttentionPairBias(AttentionPairBias):
         channel_s : int
             The single conditioning dimension.
         inf : float, optional
-            The inf value, by default 1e6
+            The inf value, by default 1e9
         """
         self.use_single_conditioning: bool = channel_s is not None
 

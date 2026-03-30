@@ -143,15 +143,16 @@ def center_random_augmentation(
     else:
         assert isinstance(mask, torch.Tensor)
         assert isinstance(rng, torch.Generator | None)
-        return _center_random_augmentation_torch(
-            coords,
-            mask,
-            centering,
-            augmentation,
-            s_trans,
-            mask_to_zero,
-            rng,
-        )
+        with torch.no_grad(), torch.autocast(coords.device.type, enabled=False):
+            return _center_random_augmentation_torch(
+                coords,
+                mask,
+                centering,
+                augmentation,
+                s_trans,
+                mask_to_zero,
+                rng,
+            )
 
 
 def _center_random_augmentation_npy(
@@ -412,6 +413,14 @@ class CenterRandomAugmentation:
         mask : torch.Tensor
             A tensor of shape (..., L) representing the atom mask.
         """
+        with torch.no_grad(), torch.autocast(mask.device.type, enabled=False):
+            return self._augment(*coords, mask=mask)
+
+    def _augment(
+        self,
+        *coords: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         coords_list: list[torch.Tensor] = list(coords)
         # Check all input coords have the same batch size and number of atoms
         ref_coords = coords_list[0]
@@ -437,13 +446,13 @@ class CenterRandomAugmentation:
             # Line 3,4
             if self.s_trans > 0.0:
                 random_trans = torch.randn_like(ref_coords[..., 0:1, :]) * self.s_trans
-                coords_list = [x + random_trans for x in coords_list]
+                coords_list = [x.add_(random_trans) for x in coords_list]
 
         # Mask out
         if self.mask_to_zero:
             # Use masked_fill to handle NaNs correctly
             mask_bool = mask.bool().unsqueeze(-1)
-            coords_list = [x.masked_fill(~mask_bool, 0.0) for x in coords_list]
+            coords_list = [x.masked_fill_(~mask_bool, 0.0) for x in coords_list]
 
         if len(coords) == 1:
             # Single tensor input, return tensor
