@@ -72,7 +72,7 @@ class InferenceDataset(torch.utils.data.Dataset):
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 64"""
         # Pad num_tokens for CUDA efficiency.
-        num_tokens = next_multiple(f_input.num_tokens, 64)
+        num_tokens = next_multiple(f_input.num_tokens, 32)
         # Pad max_sequence length for CUDA efficiency.
         num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 64)
         # Pad num_atoms for local attention.

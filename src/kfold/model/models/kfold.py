@@ -97,7 +97,7 @@ class KFold(BaseFoldingModel):
         f_input: FoldingInput,
         num_recycles: int = 3,
         num_steps: int = 20,
-        num_diffusion_samples: int = 1,
+        num_samples: int = 1,
         diffusion_batch_size: int = 48,
         sample_structures: bool = True,
         train_structure_module: bool = True,
@@ -117,7 +117,7 @@ class KFold(BaseFoldingModel):
         num_steps : int
             Number of diffusion steps to sample structures:
             Used for validation and confidence module training.
-        num_diffusion_samples : int
+        num_samples : int
             Number of diffusion samples to sample structures for
             confidence module training.
 
@@ -211,8 +211,7 @@ class KFold(BaseFoldingModel):
                 s_trunk=s_trunk.detach(),
                 z_trunk=z_trunk.detach(),
                 num_steps=num_steps,
-                num_diffusion_samples=num_diffusion_samples,
-                max_parallel_samples=None,
+                num_samples=num_samples,
             )["sample_coordinates"]  # [B, N_samples, Ltoken, 3]
             sample_dict = {"coordinates": coordinates}
             dict_out["sample"] = sample_dict
@@ -253,7 +252,7 @@ class KFold(BaseFoldingModel):
         f_input: FoldingInput,
         num_recycles: int = 10,
         num_steps: int = 200,
-        num_diffusion_samples: int = 5,
+        num_samples: int = 5,
         return_traj: bool = False,
     ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         """Forward pass of KFold model for model training.
@@ -266,7 +265,7 @@ class KFold(BaseFoldingModel):
             Number of recycling cycles in trunk.
         num_steps : int
             Number of diffusion steps for training.
-        num_diffusion_samples : int
+        num_samples : int
             Number of diffusion samples for training.
         return_traj : bool, optional
             Whether to return sampling trajectories.
@@ -340,7 +339,7 @@ class KFold(BaseFoldingModel):
                 s_trunk,
                 z_trunk,
                 num_steps,
-                num_diffusion_samples,
+                num_samples,
                 return_traj=return_traj,
             )
         )
