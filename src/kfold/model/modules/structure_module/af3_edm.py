@@ -44,9 +44,6 @@ class AF3SampleDiffusion(BaseEDM):
             The noise scale, by default 1.003.
         step_scale : float, optional
             The step scale, by default 1.5.
-        coordinate_augmentation : bool, optional
-            Whether to use coordinate augmentation, by default True.
-            This may be useful for non-equivariant score models.
         """
 
         sigma_min: float = 0.0004
@@ -59,7 +56,6 @@ class AF3SampleDiffusion(BaseEDM):
         gamma_min: float = 1.0
         noise_scale: float = 1.003
         step_scale: float = 1.5
-        coordinate_augmentation: bool = True
 
     def __init__(self, cfg: Config, score_model: AF3DiffusionModule):
         """Initialize the atom diffusion module."""
@@ -75,13 +71,7 @@ class AF3SampleDiffusion(BaseEDM):
         self.gamma_min: float = cfg.gamma_min
         self.noise_scale: float = cfg.noise_scale
         self.step_scale: float = cfg.step_scale
-        self.coordinate_augmentation: bool = cfg.coordinate_augmentation
-
-        self.random_augmentation = CenterRandomAugmentation(
-            centering=True,
-            augmentation=self.coordinate_augmentation,
-            s_trans=1.0,  # not used when augmentation is False
-        )
+        self.random_augmentation = CenterRandomAugmentation(s_trans=1.0)
 
     # === EDM diffusion coefficients === #
     def c_skip(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
@@ -116,7 +106,7 @@ class AF3SampleDiffusion(BaseEDM):
         B = f_input.batch_size
         N = num_samples
         La = f_input.num_atoms
-        return torch.randn((B, N, La, 3), device=f_input.device)
+        return torch.randn((B, N, La, 3), device=f_input.device, dtype=torch.float32)
 
     # === For model training === #
     def forward_train(
@@ -224,7 +214,8 @@ class AF3SampleDiffusion(BaseEDM):
         mask : torch.Tensor
             The atom mask. Shape (B, La).
         """
-        return x_0 + t_hat[:, :, None, None] * x_T  # (B, N, La, 3)
+        with torch.autocast(device_type="cuda", enabled=False):
+            return x_0 + t_hat[:, :, None, None] * x_T  # (B, N, La, 3)
 
     # === For sampling === #
     def sample_structure(
@@ -305,6 +296,7 @@ class AF3SampleDiffusion(BaseEDM):
 
             # Line 11
             x = x_noisy + self.step_scale * dt * delta
+            x.masked_fill_(~mask[:, :, :, None], 0.0)  # apply atom mask
 
         sample_out: dict[str, torch.Tensor] = {
             "sample_coordinates": x,

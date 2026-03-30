@@ -46,6 +46,7 @@ class TrainConfig:
     name: str
     out_dir: str
     seed: int
+    compile: "CompileConfig"
     training: "TrainingConfig"
     validation: "ValidationConfig"
     optimizer: "OptimizerConfig"
@@ -133,6 +134,13 @@ class LossConfig(_Config):
     confidence_loss: Any
 
 
+@dataclasses.dataclass(kw_only=True)
+class CompileConfig(_Config):
+    enabled: bool = False
+    mode: str = "default"
+    dynamic: bool = False
+
+
 class KFoldTrainingModule(pl.LightningModule):
     def __init__(self, config: DictConfig):
         super().__init__()
@@ -148,6 +156,7 @@ class KFoldTrainingModule(pl.LightningModule):
             self.config.optimizer
         )
         self.loss_config: LossConfig = LossConfig.from_dict(self.config.loss)
+        self.compile_config: CompileConfig = CompileConfig.from_dict(self.config.compile)
 
         # Save hyperparameters
         self.save_hyperparameters(to_dict(self.global_config))
@@ -165,6 +174,12 @@ class KFoldTrainingModule(pl.LightningModule):
         model_config: KFoldConfig = self.global_config.model
         model_cls = MAIN_MODULE[model_config._class_]
         self.model: KFold = model_cls(model_config)
+
+        # Compile
+        if self.compile_config.enabled:
+            self.model.do_compile(
+                mode=self.compile_config.mode, dynamic=self.compile_config.dynamic
+            )
 
         # Freeze parts of the model if needed
         self.freeze_submodules()

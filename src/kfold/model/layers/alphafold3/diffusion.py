@@ -441,15 +441,24 @@ class DiffusionModule(nn.Module):
         # Already given as an input: r_noisy
 
         # === Local attention on atom-level and aggregate to coarse-grained token === #
+        # Add diffusion sample dimension
+        q = q.unsqueeze(-3)  # [B, 1, La, c_atom]
+        c = c.unsqueeze(-3)  # [B, 1, La, c_atom]
+        p = p.unsqueeze(-5)  # [B, 1, W, Lq, Lk, c_atompair]
+        atom_mask = atom_mask.unsqueeze(-2)  # [B, 1, La]
+        token_mask = token_mask.unsqueeze(-2)  # [B, 1, Lt]
+        token_index = token_index.unsqueeze(-2)  # [B, 1, La]
+
         # Line 3
         # NOTE: Add extra dimension for the number of diffusion samples, N.
+        r_noisy = r_noisy * atom_mask[..., None]
         a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
-            q.unsqueeze(1),  # [B, 1, La, c_atom]
-            c.unsqueeze(1),  # [B, 1, La, c_atom]
-            p.unsqueeze(1),  # [B, 1, W, Lq, Lk, c_atompair]
+            q,  # [B, 1, La, c_atom]
+            c,  # [B, 1, La, c_atom]
+            p,  # [B, 1, W, Lq, Lk, c_atompair]
             r_noisy=r_noisy,  # [B, N, La, 3]
-            token_index=token_index.unsqueeze(1),  # [B, 1, Lt]
-            mask=atom_mask.unsqueeze(1),  # [B, 1, La]
+            token_index=token_index,  # [B, 1, Lt]
+            mask=atom_mask,  # [B, 1, La]
             num_tokens=token_mask.shape[-1],
         )
 
@@ -461,6 +470,7 @@ class DiffusionModule(nn.Module):
 
         # === Full attention on token-level === #
         # Line 4
+        a = a.float()  # Convert to float32 for stability in residual connection.
         a = a + self.linear_s_to_a(self.layernorm_s(s))  # [B, N, Lt, c_token]
 
         # Line 5
@@ -468,7 +478,7 @@ class DiffusionModule(nn.Module):
             a,  # [B, N, Lt, c_token]
             s,  # [B, N, Lt, c_s]
             z,  # [B, 1, Lt, Lt, c_z]
-            mask=token_mask.unsqueeze(1),  # [B, 1, Lt]
+            mask=token_mask,  # [B, 1, Lt]
             use_cuequiv_kernels=use_cuequiv_kernels,
         )
 
@@ -482,10 +492,11 @@ class DiffusionModule(nn.Module):
             q_skip,  # [B, N, La, c_atom]
             c_skip,  # [B, 1, La, c_atom]
             p_skip,  # [B, 1, W, Lq, Lk, c_atompair]
-            token_index=token_index.unsqueeze(-2),  # [B, 1, Lt]
-            mask=atom_mask.unsqueeze(-2),  # [B, 1, La]
+            token_index=token_index,  # [B, 1, La]
+            mask=atom_mask,  # [B, 1, La]
         )  # -> [B, N, La, 3]
 
         # Line 8: Performed on StructureModule side.
+        r_update = r_update * atom_mask[..., None]  # Mask out padded atoms.
 
         return r_update

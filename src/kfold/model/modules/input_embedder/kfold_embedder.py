@@ -215,7 +215,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         pair_mask = pair_mask & chain_mask
 
         # Pair representation: pairwise distance RBF
-        with torch.autocast("cuda", enabled=False), torch.no_grad():
+        with torch.autocast(apo_coords.device.type, enabled=False), torch.no_grad():
             diff = apo_coords[..., :, None, :] - apo_coords[..., None, :, :]
             pdist = torch.norm(diff, dim=-1)  # [B, L, L]
             pdist_map = self.distmap(pdist)  # [B, L, L, num_bin]

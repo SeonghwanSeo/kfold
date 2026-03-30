@@ -1,4 +1,5 @@
 import math
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -7,7 +8,11 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 
 from .diffusion_transformer import LocalTransformerStack
-from .utils import aggregate_atoms_to_tokens, broadcast_tokens_to_atoms, window_to_qk
+from .utils import (
+    aggregate_atoms_to_tokens,
+    broadcast_tokens_to_atoms,
+    build_atom_to_qk_fn,
+)
 
 
 class AtomEmbedder(nn.Module):
@@ -123,12 +128,14 @@ class AtomEmbedder(nn.Module):
             The atom pair representation
             shape [B, W, Lq, Lk, c_atompair]
         """
+        to_qk = build_atom_to_qk_fn(f_input.num_atoms, f_input.device)
+
         # Line 1: Initialize single conditioning
         c = self.embed_atom(f_input)  # [B, La, c_atom]
 
         # Line 2-6, Initialize pair representation
         # [B, W, Lq, Lk, c_atompair]
-        p = self.embed_atom_pairs(f_input)
+        p = self.embed_atom_pairs(f_input, to_qk)
 
         # LIne 7: Initialize atom single representation
         q = c  # [B, La, c_atom]
@@ -139,12 +146,12 @@ class AtomEmbedder(nn.Module):
             token_index = f_input.atom.token_index  # [B, La]
             # Line 9-10
             c = self.add_trunk_single_representation(c, s_trunk, token_index)
-            p = self.add_trunk_pair_conditioning(p, z, token_index)
+            p = self.add_trunk_pair_conditioning(p, z, token_index, to_qk)
         else:
             assert s_trunk is None and z is None
 
         # Line 13: Add atom-wise contributions to pair representation
-        c_q, c_k = window_to_qk(c, dim=-2)  # [B, W, Lq|Lk, c_atom]
+        c_q, c_k = to_qk(c, -2)  # [B, W, Lq|Lk, c_atom]
         p = p + self.linear_query(c_q)[..., :, None, :]
         p = p + self.linear_key(c_k)[..., None, :, :]
         # Line 14
@@ -160,27 +167,30 @@ class AtomEmbedder(nn.Module):
         c = c + self.embed_atom_name_chars(f_input.atom.ref_atom_name_chars.flatten(-2))
         return c
 
-    def embed_atom_pairs(self, f_input: FoldingInput) -> torch.Tensor:
+    def embed_atom_pairs(self, f_input: FoldingInput, to_qk: Callable) -> torch.Tensor:
         """Get atom pair representation from reference molecule conformer.
 
         Parameters
         ----------
         f_input : FoldingInputk
             The folding input.
+        atom_to_query: tuple[torch.Tensor, torch.Tensor]
+            The pre-computed atom to query indices for window attention.
 
         Returns
         -------
         p : torch.Tensor
             The atom pair representation, shape [B, W, Lq, Lk, c_atompair]
         """
+
         # Mask with residue identity
         uid = f_input.atom.ref_space_uid  # [B, La]
-        uid_q, uid_k = window_to_qk(uid, dim=-1)  # [B, W, Lq|Lk]
+        uid_q, uid_k = to_qk(uid, dim=-1)  # [B, W, Lq|Lk]
         v = uid_q[..., :, None] == uid_k[..., None, :]  # [B, W, Lq, Lk]
         v = v.float().unsqueeze(-1)  # [B, W, Lq, Lk, 1]
 
         ref_pos = f_input.atom.ref_pos  # [B, La, 3]
-        ref_pos_q, ref_pos_k = window_to_qk(ref_pos, dim=-2)  # [B, W, Lq|Lk, 3]
+        ref_pos_q, ref_pos_k = to_qk(ref_pos, dim=-2)  # [B, W, Lq|Lk, 3]
         # Shape: [B, W, Lq, Lk, 3], [B, W, Lq, Lk, 1]
         ref_d_offset = ref_pos_q[..., :, None, :] - ref_pos_k[..., None, :, :]
         ref_dsq_inv = 1.0 / (1.0 + ref_d_offset.pow(2).sum(-1, keepdim=True))
@@ -223,6 +233,7 @@ class AtomEmbedder(nn.Module):
         p: torch.Tensor,
         z: torch.Tensor,
         token_index: torch.Tensor,
+        to_qk: Callable,
     ) -> torch.Tensor:
         """Add trunk pair conditioning to atom pair representation.
         Parameters
@@ -248,7 +259,7 @@ class AtomEmbedder(nn.Module):
 
         # 2. Get Windowed Indices
         # [*, La] -> [*, W, Lq], [*, W, Lk]
-        idx_q, idx_k = window_to_qk(token_index, dim=-1)
+        idx_q, idx_k = to_qk(token_index, dim=-1)
         idx_q = idx_q.expand(*batch_shape, W, Lq)
         idx_k = idx_k.expand(*batch_shape, W, Lk)
 
@@ -470,6 +481,5 @@ class AtomAttentionDecoder(nn.Module):
         q = self.transformer(q, c_skip, p_skip, mask)
 
         # Line 3: Project atom representation to updated coordinates
-        with torch.autocast(a.device.type, enabled=False):
-            r_update = self.linear_q_to_r(self.layernorm_q(q.float()))  # [*, N, La, 3]
+        r_update = self.linear_q_to_r(self.layernorm_q(q))  # [*, N, La, 3]
         return r_update

@@ -271,9 +271,11 @@ class BaseEDM(BaseStructureModule):
 
         # sample xt via interpolation
         x_t = self.interpolate(x_prior, x_gt, t_hat, mask)
+        # NOTE: here we use masked_fill_ to avoid bf16 casting.
+        x_t.masked_fill_(~mask[:, None, :, None], 0.0)
 
         x_0_hat = self.forward_train(
-            x_t=x_t,  # [B, N, La, 3]
+            x_t=x_t.float(),  # [B, N, La, 3]
             t_hat=t_hat,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]

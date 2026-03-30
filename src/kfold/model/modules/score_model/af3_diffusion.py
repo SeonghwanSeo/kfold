@@ -71,14 +71,9 @@ class AF3DiffusionModule(BaseScoreModel):
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
 
-    def do_compile(self, mode: str = "default"):
+    def _compile(self, **kwargs):
         """Compile the trunk module."""
-        self.diffusion_stack = torch.compile(
-            self.diffusion_stack,
-            mode="default",  # reduce-overhead mode has issues on DDP.
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+        self.diffusion_stack = torch.compile(self.diffusion_stack, **kwargs)
 
     @property
     def _diffusion_stack(self) -> DiffusionModule:

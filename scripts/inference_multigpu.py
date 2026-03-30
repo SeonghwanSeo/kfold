@@ -190,7 +190,7 @@ def main():
         logger=False,
         callbacks=[inference_writer],
         enable_checkpointing=False,
-        precision="bf16-mixed",
+        precision="bf16-true",
         benchmark=False,
         deterministic=True,
     )
@@ -201,7 +201,7 @@ def main():
     model: KFold = KFold.from_checkpoint(
         args.config, args.checkpoint, override_args=args.override
     )
-    model = model.cast_to_bf16().eval()
+    model = model.bfloat16().eval().cuda()
     log_info("Model loaded successfully.")
 
     # === Run inference ===

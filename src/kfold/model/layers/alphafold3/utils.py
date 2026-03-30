@@ -1,6 +1,6 @@
-import dataclasses
 import math
-from functools import lru_cache
+from collections.abc import Callable
+from functools import partial
 from typing import TypeVar, overload
 
 import torch
@@ -106,8 +106,65 @@ def aggregate_atoms_to_tokens(
 
 
 # === Local Attention Indexing === #
-def window_to_qk(
-    x: torch.Tensor, dim: int, window_size_queries: int = 32, window_size_keys: int = 128
+def build_atom_to_qk_fn(
+    length: int, device: str | torch.device
+) -> Callable[[torch.Tensor, int], tuple[torch.Tensor, torch.Tensor]]:
+    """Build indices for window-based local attention from atoms to query windows.
+
+    Parameters
+    ----------
+    length: int
+        The sequence length (number of atoms).
+    device: str | torch.device
+        The device on which to create the index tensors.
+
+    Returns
+    -------
+    Callable[[torch.Tensor, int], tuple[torch.Tensor, torch.Tensor]]
+        A function that takes an input tensor and a dimension, and returns the
+        query and key tensors for local attention.
+    """
+    Lq, Lk = 32, 128  # noqa
+    if length % 32 != 0:
+        raise ValueError("Length must be divisible by 32")
+
+    W: int = length // 32
+    half_block_size = 16
+    num_half_blocks = 2 * W
+    h = 8  # 128 // 16
+
+    # Block Logic
+    start_offset = -(h // 2) + 1
+    block_offsets = torch.arange(h, device=device) + start_offset
+    window_starts = torch.arange(W, device=device).unsqueeze(-1) * 2
+    block_indices = window_starts + block_offsets  # [W, h]
+
+    # Pad mask for out-of-bounds
+    pad_mask = (block_indices < 0) | (block_indices >= num_half_blocks)
+    # [W, h] -> [W, Lk]
+    pad_mask = pad_mask.repeat_interleave(half_block_size, dim=-1)
+
+    # Clamp block indices to valid range
+    block_indices = block_indices.clamp(min=0, max=num_half_blocks - 1)
+
+    # Expand block indices to atom indices
+    atom_offsets = torch.arange(half_block_size, device=device)
+
+    # Broadcasting to construct full [W, Lk] index matrix
+    gather_indices = (
+        block_indices[..., None] * half_block_size + atom_offsets[None, None, ...]
+    )
+    gather_indices = gather_indices.view(W, Lk)
+
+    func = partial(convert_atom_to_qk, gather_indices=gather_indices, pad_mask=pad_mask)
+    return func
+
+
+def convert_atom_to_qk(
+    x: torch.Tensor,
+    dim: int,
+    gather_indices: torch.Tensor,
+    pad_mask: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Window-based indexing for local attention.
 
@@ -120,154 +177,30 @@ def window_to_qk(
 
     Returns
     -------
-    tuple[torch.Tensor, torch.Tensor]
+    torch.Tensor
         Query tensor of shape [*, W, Lq, *]
+    torch.Tensor
         Key tensor of shape [*, W, Lk, *]
     """
-    length = x.shape[dim]
-    device = x.device
-    local_index = LocalAttentionIndex.create(
-        length, window_size_queries, window_size_keys, device
-    )
-    return local_index.to_qk(x, dim)
+    W = gather_indices.shape[0]
+    dim = dim % x.ndim
+
+    # Get query
+    x_q = x.unflatten(dim, sizes=(W, 32))
+
+    # Get keys using gather indices
+    x_k = x.index_select(dim, gather_indices.view(-1))
+    x_k = x_k.unflatten(dim, sizes=(W, 128))
+
+    # Apply Padding Mask
+    mask_shape = [1] * x_k.ndim
+    mask_shape[dim] = gather_indices.shape[0]  # W
+    mask_shape[dim + 1] = gather_indices.shape[1]  # Lk
+    x_k = x_k.masked_fill(pad_mask.view(*mask_shape), 0)
+    return x_q, x_k
 
 
-@dataclasses.dataclass(slots=True)
-class LocalAttentionIndex:
-    L: int
-    W: int
-    Lq: int
-    Lk: int
-    gather_indices: torch.Tensor
-    pad_mask: torch.Tensor
-
-    @classmethod
-    @lru_cache(maxsize=3)
-    def create(
-        cls,
-        length: int,
-        window_size_query: int = 32,
-        window_size_key: int = 128,
-        device: str | torch.device = "cpu",
-    ) -> "LocalAttentionIndex":
-        """Indexer for local attention."""
-        assert window_size_key % (window_size_query // 2) == 0
-        if length % window_size_query != 0:
-            raise ValueError(
-                "Length must be divisible by window size for keys."
-                f" Got length={length} and window_size_query={window_size_query}."
-            )
-        L: int = length
-        W: int = length // window_size_query
-        Lq: int = window_size_query
-        Lk: int = window_size_key
-
-        # Pre-calculate the gather indices once
-        # Shape: [W, Lk]
-        gather_indices, pad_mask = cls._build_gather_indices(W, Lq, Lk, device)
-        return cls(L, W, Lq, Lk, gather_indices, pad_mask)
-
-    @staticmethod
-    def _build_gather_indices(
-        W: int, Lq: int, Lk: int, device: str | torch.device
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Constructs the index map [W, Lk] mapping window rows to atom indices."""
-        half_block_size = Lq // 2
-        num_half_blocks = 2 * W
-        h = Lk // (Lq // 2)  # Number of half-blocks per key window
-
-        # Block Logic
-        start_offset = -(h // 2) + 1
-        block_offsets = torch.arange(h, device=device) + start_offset
-        window_starts = torch.arange(W, device=device).unsqueeze(-1) * 2
-        block_indices = window_starts + block_offsets  # [W, h]
-
-        # Pad mask for out-of-bounds
-        pad_mask = (block_indices < 0) | (block_indices >= num_half_blocks)
-        # [W, h] -> [W, Lk]
-        pad_mask = pad_mask.repeat_interleave(half_block_size, dim=-1)
-
-        # Clamp block indices to valid range
-        block_indices = block_indices.clamp(min=0, max=num_half_blocks - 1)
-
-        # Expand block indices to atom indices
-        atom_offsets = torch.arange(half_block_size, device=device)
-
-        # Broadcasting to construct full [W, Lk] index matrix
-        gather_indices = (
-            block_indices[..., None] * half_block_size + atom_offsets[None, None, ...]
-        )
-        gather_indices = gather_indices.view(W, Lk)
-
-        return gather_indices, pad_mask
-
-    def to_qk(self, x: torch.Tensor, dim: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Convert single tensor to query and key tensors.
-
-        Parameters
-        ----------
-        x: torch.Tensor
-            Input tensor of shape [*, L, *]
-        dim: int, optional
-            Dimension along which to unflatten into query/key windows.
-
-        Returns
-        -------
-        tuple[torch.Tensor, torch.Tensor]
-            Query tensor of shape [*, W, Lq, *]
-            Key tensor of shape [*, W, Lk, *]
-        """
-        return self.to_query(x, dim), self.to_key(x, dim)
-
-    def to_query(self, x: torch.Tensor, dim: int) -> torch.Tensor:
-        """Convert single tensor to query tensor.
-
-        Parameters
-        ----------
-        x: torch.Tensor
-            Input tensor of shape [*, L, *]
-        dim: int, optional
-            Dimension along which to unflatten into query/key windows.
-
-        Returns
-        -------
-        torch.Tensor
-            Query tensor of shape [*, W, Lq, *]
-        """
-        return x.unflatten(dim=dim, sizes=(self.W, self.Lq))
-
-    def to_key(self, x: torch.Tensor, dim: int = -2) -> torch.Tensor:
-        """Convert single tensor to key tensor using index gathering.
-
-        Parameters
-        ----------
-        x: torch.Tensor
-            Input tensor of shape [*, L, *]
-        dim: int, optional
-            Dimension along which to unflatten into query/key windows.
-
-        Returns
-        -------
-        torch.Tensor
-            Key tensor of shape [*, W, Lk, *]
-        """
-        # Normalize negative dimension index to a positive integer
-        dim = dim if dim >= 0 else x.ndim + dim
-
-        # 1. Advanced Indexing
-        indexer = [slice(None)] * x.ndim
-        indexer[dim] = self.gather_indices
-        keys = x[tuple(indexer)]
-
-        # 2. Apply Padding Mask
-        mask_shape = [1] * keys.ndim
-        mask_shape[dim] = self.W
-        mask_shape[dim + 1] = self.Lk
-        keys.masked_fill_(self.pad_mask.view(*mask_shape), 0)
-
-        return keys
-
-
+# === Centering and Random Augmentation === #
 def center_random_augmentation(
     coords: torch.Tensor,
     mask: torch.Tensor,

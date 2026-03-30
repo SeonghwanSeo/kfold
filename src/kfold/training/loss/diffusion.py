@@ -5,6 +5,7 @@ import torch
 from kfold.data.types.model_input import FoldingInput
 from kfold.utils.checkpointing import checkpoint_section
 from kfold.utils.geometry.rigid_align import weighted_rigid_align
+from kfold.utils.kernels.cdist import cdist as kernel_cdist
 
 
 def safe_cdist(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
@@ -253,6 +254,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         cutoff_nucleic_acid: float = 30.0,
         repr_atom_only: bool = False,
         chunk_size: int | None = 1,
+        use_kernel: bool = False,
     ):
         """Initialize SmoothLDDTLoss.
 
@@ -269,6 +271,10 @@ class SmoothLDDTLoss(torch.nn.Module):
             - For proteins: Cb atoms
             - For nucleic acids: C4' atoms
             - For ligands: all atoms
+        chunk_size: int | None
+            The chunk size for computing LDDT loss.
+        use_kernel: bool
+            Whether to use triton implementation for pairwise distance calculation.
         """
 
         super().__init__()
@@ -276,6 +282,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         self.cutoff_nucleic_acid: float = cutoff_nucleic_acid
         self.repr_atom_only: bool = repr_atom_only
         self.chunk_size: int | None = chunk_size
+        self.use_kernel: bool = use_kernel
 
     def forward(
         self,
@@ -339,6 +346,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         mask: torch.Tensor,
         is_nucleotide: torch.Tensor,
         repr_atom_index: torch.Tensor,
+        use_kernel: bool = False,
     ) -> list[torch.Tensor]:
         N, L, _ = x_pred.shape
         # NOTE: pairwise distances of ground truth coordinates are shared across N.
@@ -349,13 +357,15 @@ class SmoothLDDTLoss(torch.nn.Module):
         # Mask out self-term
         pair_mask.diagonal(dim1=-2, dim2=-1).zero_()
 
+        _cdist = kernel_cdist if self.use_kernel else safe_cdist
+
         if self.repr_atom_only:
             # Extract representative atom indices
-            d_true = safe_cdist(x_true[repr_atom_index], x_true)  # [Lrepr, L]
+            d_true = _cdist(x_true[repr_atom_index], x_true)  # [Lrepr, L]
             pair_mask = pair_mask[repr_atom_index]  # [L, L] -> [Lrepr, L]
             is_nucleotide = is_nucleotide[repr_atom_index]  # [L] -> [Lrepr]
         else:
-            d_true = safe_cdist(x_true, x_true)  # [L, L]
+            d_true = _cdist(x_true, x_true)  # [L, L]
 
         # Mask out invalid distances
         pair_mask &= ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
@@ -367,6 +377,7 @@ class SmoothLDDTLoss(torch.nn.Module):
             d_true=d_true,  # [L, L] or [Lrepr, L]
             pair_mask=pair_mask.float(),  # [L, L] or [Lrepr, L]
             repr_atom_index=repr_atom_index if self.repr_atom_only else None,
+            use_kernel=self.use_kernel,
         )
 
         losses = []
@@ -388,15 +399,18 @@ class SmoothLDDTLoss(torch.nn.Module):
         d_true: torch.Tensor,
         pair_mask: torch.Tensor,
         repr_atom_index: torch.Tensor | None = None,
+        use_kernel: bool = False,
     ) -> torch.Tensor:
+        _cdist = kernel_cdist if use_kernel else safe_cdist
+
         # Line 1
         if repr_atom_index is not None:
             # Compute predicted distances between representative atoms and all atoms
             x_pred_repr = x_pred[:, repr_atom_index]  # [N, Lrepr, 3]
-            d_pred = safe_cdist(x_pred_repr, x_pred)  # [N, Lrepr, L]
+            d_pred = _cdist(x_pred_repr, x_pred)  # [N, Lrepr, L]
         else:
             # Compute predicted pairwise distances (original AF3)
-            d_pred = safe_cdist(x_pred, x_pred)  # [N, L, L]
+            d_pred = _cdist(x_pred, x_pred)  # [N, L, L]
 
         # Line 2 (outside function): compute true pairwise distances
 

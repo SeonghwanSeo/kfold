@@ -7,7 +7,7 @@ from kfold.model.layers.primitives import AdaLN, Linear, LinearNoBias, SwiGLU
 from kfold.utils.checkpointing import checkpoint_blocks
 
 from .attention_pair_bias import CrossAttentionPairBias, SelfAttentionPairBias
-from .utils import window_to_qk
+from .utils import build_atom_to_qk_fn
 
 
 class ConditionedTransitionBlock(nn.Module):
@@ -267,11 +267,12 @@ class LocalTransformerStack(nn.Module):
         a : torch.Tensor
             The output single representation tensor (*, L, c_a)
         """
-        s_q, s_k = window_to_qk(s, dim=-2)
-        _, mask_k = window_to_qk(mask, dim=-1)
+        to_qk = build_atom_to_qk_fn(a.shape[-2], a.device)
+        s_q, s_k = to_qk(s, -2)
+        _, mask_k = to_qk(mask, -1)
 
         for block in self.blocks:
-            a_q, a_k = window_to_qk(a, dim=-2)  # [*, W, Lq/Lk, c_a]
+            a_q, a_k = to_qk(a, -2)  # [*, W, Lq/Lk, c_a]
             a_q = block(a_q, a_k, s_q, s_k, z, mask_k)
             a = a_q.flatten(-3, -2)  # [*, L, c_a]
         return a
