@@ -406,7 +406,6 @@ class AtomAttentionDecoder(nn.Module):
         channel_atompair: int,
         num_blocks: int = 3,
         num_heads: int = 4,
-        use_structure: bool = False,
     ):
         """Initialize the atom attention decoder.
 
@@ -422,11 +421,8 @@ class AtomAttentionDecoder(nn.Module):
             The number of transformer blocks, by default 3.
         num_heads : int, optional
             The number of transformer heads, by default 4.
-        use_structure : bool, optional
-            Whether to use structure information, by default False.
         """
         super().__init__()
-        self.use_structure: bool = use_structure
 
         self.linear_a_to_q = LinearNoBias(channel_a, channel_atom, init="default")
         self.transformer = LocalTransformerStack(

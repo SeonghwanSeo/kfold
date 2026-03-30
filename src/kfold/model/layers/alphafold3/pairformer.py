@@ -8,11 +8,14 @@ import torch.nn as nn
 from kfold.model.layers.primitives import (
     DropoutColumnwise,
     DropoutRowwise,
+    LayerNorm,
+    LinearNoBias,
     TriangleAttentionEndingNode,
     TriangleAttentionStartingNode,
     TriangleMultiplicationIncoming,
     TriangleMultiplicationOutgoing,
 )
+from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
 
 from .attention_pair_bias import SelfAttentionPairBias
@@ -153,9 +156,12 @@ class PairformerBlock(nn.Module):
             channel_z, num_heads_tri_attn, inf=1e9
         )
 
+        self.proj_z_to_bias = nn.Sequential(
+            LayerNorm(channel_z),
+            LinearNoBias(channel_z, num_heads_attn, init="default"),
+        )
         self.attention = SelfAttentionPairBias(
             channel_a=channel_s,
-            channel_z=channel_z,
             num_heads=num_heads_attn,
             channel_s=None,
             qk_norm=use_qk_norm,
@@ -219,10 +225,12 @@ class PairformerBlock(nn.Module):
         z = z + self.transition_z(z)
 
         # Line 7
+        pair_bias = self.proj_z_to_bias(z)  # [B, L, L, H]
+        pair_bias = permute_final_dims(pair_bias, (2, 0, 1))  # [B, H, L, L])
         s = s + self.attention(
             a=s,  # [B, L, C_s]
             s=None,
-            z=z,  # [B, L, L, C_z]
+            pair_bias=pair_bias,  # [B, H, L, L]
             mask=single_mask,  # [B, L]
             use_kernels=use_cuequiv_kernels,
         )

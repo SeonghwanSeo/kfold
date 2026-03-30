@@ -3,7 +3,7 @@ from functools import partial
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.utils.checkpointing import checkpoint_section
+from kfold.utils.checkpointing import checkpoint_fn
 from kfold.utils.geometry.rigid_align import weighted_rigid_align
 from kfold.utils.kernels.cdist import cdist as kernel_cdist
 
@@ -375,7 +375,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         loss_fn = partial(
             self._chunk_forward,
             d_true=d_true,  # [L, L] or [Lrepr, L]
-            pair_mask=pair_mask.float(),  # [L, L] or [Lrepr, L]
+            pair_mask=pair_mask,  # [L, L] or [Lrepr, L]
             repr_atom_index=repr_atom_index if self.repr_atom_only else None,
             use_kernel=self.use_kernel,
         )
@@ -387,8 +387,11 @@ class SmoothLDDTLoss(torch.nn.Module):
             for i in range(0, N, self.chunk_size):
                 st, end = i, i + self.chunk_size
                 x_chunk = x_pred[st:end]  # [chunk_size, L, 3]
-                loss_chunk = checkpoint_section(
-                    loss_fn, (x_chunk,), apply_ckpt=True, use_reentrant=False
+                loss_chunk = checkpoint_fn(
+                    loss_fn,
+                    x_chunk,
+                    use_reentrant=False,
+                    determinism_check="none",  # No randomness in loss function
                 )
                 losses.append(loss_chunk)
         return losses
@@ -430,6 +433,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         # Line 6: outside function (pair_mask = ...)
 
         # Line 7
+        pair_mask = pair_mask.float()
         n_pair = pair_mask.sum((-1, -2)).clamp(min=1)  # scalar
         lddt = (lddt_score * pair_mask[None, ...]).sum((-1, -2)) / n_pair  # [N,]
 

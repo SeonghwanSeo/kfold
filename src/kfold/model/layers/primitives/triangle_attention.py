@@ -29,22 +29,6 @@ from .normalization import LayerNorm
 from .utils import flatten_final_dims, permute_final_dims
 
 
-@torch.jit.ignore
-def softmax_no_cast(t: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """
-    Softmax, but without automatic casting to fp32 when the input is of
-    type bfloat16
-    """
-    d = t.dtype
-    if d is torch.bfloat16:
-        with torch.autocast("cuda", enabled=False):
-            s = torch.nn.functional.softmax(t, dim=dim)
-    else:
-        s = torch.nn.functional.softmax(t, dim=dim)
-
-    return s
-
-
 def _attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -60,7 +44,7 @@ def _attention(
     for b in biases:
         a += b
 
-    a = softmax_no_cast(a, -1)
+    a = a.softmax(dim=-1)
 
     # [*, H, Q, C_hidden]
     a = torch.matmul(a, value)
@@ -73,7 +57,7 @@ def kernel_triangular_attn(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    tri_bias: torch.Tensor,
+    bias: torch.Tensor,
     mask: torch.Tensor,
     scale: float,
 ) -> torch.Tensor:
@@ -82,7 +66,7 @@ def kernel_triangular_attn(
             "cuequivariance_torch is not installed. "
             "Please install cuequivariance_torch to use the kernel implementation."
         )
-    return triangle_attention(q, k, v, tri_bias, mask=mask, scale=scale)
+    return triangle_attention(q, k, v, bias, mask=mask, scale=scale)
 
 
 class MultiHeadAttention(nn.Module):
@@ -233,7 +217,7 @@ class MultiHeadAttention(nn.Module):
                 q,
                 k,
                 v,
-                tri_bias=tri_bias,
+                bias=tri_bias,
                 mask=mask,
                 scale=scale,
             )
@@ -328,7 +312,7 @@ class TriangleAttention(nn.Module):
         x = self.mha(
             x,
             x,
-            triangle_bias.float(),
+            triangle_bias,
             mask,
             use_kernels=use_kernels,
         )

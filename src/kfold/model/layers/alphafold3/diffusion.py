@@ -7,7 +7,7 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 
 from .atom_transformer import AtomAttentionDecoder, AtomAttentionEncoder, AtomEmbedder
-from .diffusion_transformer import GlobalTransformerStack
+from .diffusion_transformer import CachedGlobalTransformerStack
 from .embeddings import FourierEmbedding, RelativePositionEncoding
 from .transition import Transition
 
@@ -162,7 +162,7 @@ class DiffusionModule(nn.Module):
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
         token_transformer_blocks: int = 24,
-        token_transformer_heads: int = 8,
+        token_transformer_heads: int = 16,
         atom_decoder_blocks: int = 3,
         atom_decoder_heads: int = 4,
         blocks_per_ckpt: int | None = None,
@@ -188,7 +188,7 @@ class DiffusionModule(nn.Module):
         token_transformer_blocks : int, optional
             The number of blocks in the token transformer, by default 24.
         token_transformer_heads : int, optional
-            The number of heads in the token transformer, by default 8.
+            The number of heads in the token transformer, by default 16.
         atom_decoder_blocks : int, optional
             The number of blocks in the atom decoder, by default 3.
         atom_decoder_heads : int, optional
@@ -199,6 +199,17 @@ class DiffusionModule(nn.Module):
 
         """
         super().__init__()
+        self.channel_s: int = channel_s
+        self.channel_z: int = channel_z
+        self.channel_atom: int = channel_atom
+        self.channel_atompair: int = channel_atompair
+        self.channel_coords: int = channel_coords
+        self.atom_encoder_blocks: int = atom_encoder_blocks
+        self.atom_encoder_heads: int = atom_encoder_heads
+        self.token_transformer_blocks: int = token_transformer_blocks
+        self.token_transformer_heads: int = token_transformer_heads
+        self.atom_decoder_blocks: int = atom_decoder_blocks
+        self.atom_decoder_heads: int = atom_decoder_heads
 
         # === Diffusion conditioning === #
         self.pair_conditioning = PairConditioning(channel_z)
@@ -227,11 +238,14 @@ class DiffusionModule(nn.Module):
         # === Full token-level attention === #
         self.layernorm_s = LayerNorm(channel_s, create_offset=False)
         self.linear_s_to_a = LinearNoBias(channel_s, channel_token, init="final")
+        self.layernorm_z = LayerNorm(channel_z, create_offset=False)
+        self.linear_z_to_bias = LinearNoBias(
+            channel_z, token_transformer_blocks * token_transformer_heads
+        )
 
-        self.token_transformer = GlobalTransformerStack(
+        self.token_transformer = CachedGlobalTransformerStack(
             channel_a=channel_token,
             channel_s=channel_s,
-            channel_z=channel_z,
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             blocks_per_ckpt=blocks_per_ckpt,
@@ -246,7 +260,6 @@ class DiffusionModule(nn.Module):
             channel_atompair=channel_atompair,
             num_blocks=atom_decoder_blocks,
             num_heads=atom_decoder_heads,
-            use_structure=True,
         )
 
     # === Main forward function for training === #
@@ -294,6 +307,7 @@ class DiffusionModule(nn.Module):
         s = self.get_single_conditioning(s_inputs, s_trunk, c_noise)  # [B, N, Lt, c_s]
         z = self.get_pair_conditioning(f_input, z_trunk)  # [B, Lt, Lt, c_z]
         q, c, p = self.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        pair_bias = self.get_pair_bias(z)  # [B, Nblock, H, Lt, Lt]
         r_update = self.step(
             r_noisy,
             q,
@@ -302,7 +316,7 @@ class DiffusionModule(nn.Module):
             token_index,
             atom_mask,
             s,
-            z,
+            pair_bias,
             token_mask,
             use_cuequiv_kernels,
         )
@@ -329,6 +343,28 @@ class DiffusionModule(nn.Module):
         """
         # Algorithm 21 Line 1-5
         return self.pair_conditioning(f_input, z_trunk)
+
+    def get_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
+        """Get the pair bias for the token transformer.
+        This is time-independent and can be pre-computed before the diffusion steps.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            The pair conditioning, shape [B, Lt, Lt, c_z].
+
+        Returns
+        -------
+        pair_bias : torch.Tensor
+            The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
+        """
+        # Algorithm 21 Line 1-5
+        B, L, _, c_z = z.shape
+        N, H = self.token_transformer_blocks, self.token_transformer_heads
+        pair_bias = self.linear_z_to_bias(self.layernorm_z(z)).view(B, L, L, N, H)
+        pair_bias = pair_bias.permute(0, 3, 4, 1, 2)  # [B, N, H, L, L]
+        pair_bias = pair_bias.contiguous()
+        return pair_bias
 
     def get_single_conditioning(
         self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, c_noise: torch.Tensor
@@ -396,7 +432,7 @@ class DiffusionModule(nn.Module):
         atom_mask: torch.Tensor,
         # token-level inputs
         s: torch.Tensor,
-        z: torch.Tensor,
+        pair_bias: torch.Tensor,
         token_mask: torch.Tensor,
         # kernel options
         use_cuequiv_kernels: bool = False,
@@ -422,8 +458,8 @@ class DiffusionModule(nn.Module):
             The atom padding mask, shape [B, La].
         s: torch.Tensor
             The single conditioning, shape [B, N, Lt, c_s].
-        z: torch.Tensor
-            The pair conditioning, shape [B, Lt, Lt, c_z].
+        pair_bias: torch.Tensor
+            The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
         token_mask: torch.Tensor
             The token padding mask, shape [B, Lt].
         use_cuequiv_kernels: bool
@@ -447,6 +483,7 @@ class DiffusionModule(nn.Module):
         p = p.unsqueeze(-5)  # [B, 1, W, Lq, Lk, c_atompair]
         atom_mask = atom_mask.unsqueeze(-2)  # [B, 1, La]
         token_mask = token_mask.unsqueeze(-2)  # [B, 1, Lt]
+        pair_bias = pair_bias.unsqueeze(-5)  # [B, 1, Nblock, H, Lt, Lt]
         token_index = token_index.unsqueeze(-2)  # [B, 1, La]
 
         # Line 3
@@ -477,7 +514,7 @@ class DiffusionModule(nn.Module):
         a = self.token_transformer(
             a,  # [B, N, Lt, c_token]
             s,  # [B, N, Lt, c_s]
-            z,  # [B, 1, Lt, Lt, c_z]
+            pair_bias,  # [B, 1, Nblock, H, Lt, Lt]
             mask=token_mask,  # [B, 1, Lt]
             use_cuequiv_kernels=use_cuequiv_kernels,
         )

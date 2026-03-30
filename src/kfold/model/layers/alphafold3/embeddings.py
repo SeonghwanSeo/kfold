@@ -103,14 +103,14 @@ class RelativePositionEncoding(nn.Module):
         # Line 10 (concat)
         rel_position_encoding = torch.cat(
             [
-                a_rel_pos,
-                a_rel_token,
-                b_same_entity.unsqueeze(-1),
-                a_rel_chain,
+                a_rel_pos.float(),
+                a_rel_token.float(),
+                b_same_entity.float().unsqueeze(-1),
+                a_rel_chain.float(),
             ],
             dim=-1,
         )
-        return rel_position_encoding.float()  # [B, L, L, D]
+        return rel_position_encoding  # [B, L, L, D]
 
 
 class FourierEmbedding(nn.Module):

@@ -9,37 +9,8 @@ from torch.types import Device
 _T = TypeVar("_T")
 
 
-def expand_dim(x: torch.Tensor, dim: int, n: int, add_dim: bool) -> torch.Tensor:
-    """Expands a tensor x"""
-    if add_dim:
-        x = x.unsqueeze(dim)
-    shape = [-1] * x.ndim
-    shape[dim] = n
-    return x.expand(shape)
-
-
-def repeat_dim(x: torch.Tensor, dim: int, n: int, add_dim: bool) -> torch.Tensor:
-    """Repeats a tensor x"""
-    if add_dim:
-        x = x.unsqueeze(dim)
-    shape = [1] * x.ndim
-    shape[dim] *= n
-    return x.repeat(shape)
-
-
-def exists(v) -> bool:
-    return v is not None
-
-
-def default(v: _T | None, d: _T) -> _T:
-    return v if exists(v) else d  # type: ignore[return-value]
-
-
 # === Atom-Token mapping functions === #
-def broadcast_tokens_to_atoms(
-    x: torch.Tensor,
-    token_index: torch.Tensor,
-) -> torch.Tensor:
+def broadcast_tokens_to_atoms(x: torch.Tensor, token_index: torch.Tensor) -> torch.Tensor:
     """Broadcast token features to atom features.
 
     Parameters
@@ -86,7 +57,7 @@ def aggregate_atoms_to_tokens(
     x_token: torch.Tensor
         Token features of shape (*, Ntoken, D)
     """
-    # Prepare indices for scatter_reduce
+    # Prepare indices
     trash_idx = num_tokens  # An out-of-range index for padding atoms.
     index = torch.where(mask, token_index, trash_idx)
     index_expanded = index.unsqueeze(-1).expand(*x.shape)
@@ -96,7 +67,7 @@ def aggregate_atoms_to_tokens(
     out_shape[-2] = num_tokens + 1  # Add an extra slot for padding atoms
     out = torch.zeros(*out_shape, dtype=x.dtype, device=x.device)  # [*, Ntoken + 1, D]
 
-    # Scatter reduce atom features to token features
+    # Aggregate atom features to token features
     out.scatter_reduce_(
         dim=-2, index=index_expanded, src=x, reduce="mean", include_self=False
     )

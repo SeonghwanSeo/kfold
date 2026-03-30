@@ -108,7 +108,9 @@ class AF3SampleDiffusion(BaseEDM):
         La = f_input.num_atoms
         return torch.randn((B, N, La, 3), device=f_input.device, dtype=torch.float32)
 
-    # === For model training === #
+    # ============================================================
+    # For model training
+    # ============================================================
     def forward_train(
         self,
         x_t: torch.Tensor,
@@ -216,7 +218,9 @@ class AF3SampleDiffusion(BaseEDM):
         x_t.masked_fill_(~mask[:, None, :, None], 0.0)  # apply atom mask
         return x_t
 
-    # === For sampling === #
+    # ============================================================
+    # For inference
+    # ============================================================
     def sample_structure(
         self,
         f_input: FoldingInput,
@@ -246,6 +250,8 @@ class AF3SampleDiffusion(BaseEDM):
         # Compute time-independent variables
         z = self.get_pair_conditioning(f_input, z_trunk)
         q, c, p = self.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        pair_bias = self.get_pair_bias(z)
+        del z_trunk, z  # Free up memory for large LxL tensors
 
         def run_step(x_t: torch.Tensor, t_hat: float) -> torch.Tensor:
             s = self.get_single_conditioning(s_inputs, s_trunk, t_hat)
@@ -257,7 +263,7 @@ class AF3SampleDiffusion(BaseEDM):
                 c=c,
                 p=p,
                 s=s,
-                z=z,
+                pair_bias=pair_bias,
                 chunk_size=chunk_size,
             )
 
@@ -335,7 +341,7 @@ class AF3SampleDiffusion(BaseEDM):
         c: torch.Tensor,
         p: torch.Tensor,
         s: torch.Tensor,
-        z: torch.Tensor,
+        pair_bias: torch.Tensor,
         chunk_size: int | None = None,
     ) -> torch.Tensor:
         """Forward pass through the score model.
@@ -357,11 +363,8 @@ class AF3SampleDiffusion(BaseEDM):
             The atom pair representation, shape [B, La, La, c_atompair].
         s : torch.Tensor
             Single conditioning. Shape (B, 1, L, c_s), broadcast to (B, N, L, c_s).
-        z : torch.Tensor
-            Pair conditioning. Shape (B, L, L, c_z).
-        x_T : torch.Tensor | None
-            The initial noise coordinates at the start of diffusion sampling.
-            Shape (B, N, L, 3).
+        pair_bias : torch.Tensor
+            The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
 
         Returns
         -------
@@ -380,7 +383,7 @@ class AF3SampleDiffusion(BaseEDM):
                 f_input.atom.token_index,  # [B, La]
                 f_input.atom.pad_mask,  # [B, La]
                 s,  # [B, 1, L, c_s], broadcast to [B, N, L, c_s]
-                z,  # [B, L, L, c_z]
+                pair_bias,  # [B, Nblock, H, Lt, Lt]
                 f_input.token.pad_mask,  # [B, L]
             )
 
@@ -447,6 +450,22 @@ class AF3SampleDiffusion(BaseEDM):
             The atom pair representation, shape [B, La, La, c_atompair].
         """
         return self.score_model.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+
+    def get_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
+        """Get the pair bias for the token transformer.
+        This is time-independent and can be pre-computed before the diffusion steps.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            The pair conditioning, shape [B, Lt, Lt, c_z].
+
+        Returns
+        -------
+        pair_bias : torch.Tensor
+            The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
+        """
+        return self.score_model.get_pair_bias(z)
 
     def get_single_conditioning(
         self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, t_hat: float

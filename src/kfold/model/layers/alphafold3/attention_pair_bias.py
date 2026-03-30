@@ -18,7 +18,6 @@ class AttentionPairBias(nn.Module):
     def __init__(
         self,
         channel_a: int,
-        channel_z: int,
         num_heads: int,
         *,
         qk_norm: bool = False,
@@ -31,8 +30,6 @@ class AttentionPairBias(nn.Module):
         ----------
         channel_a : int
             The atom/token dimension.
-        channel_z : int
-            The input pair bias dimension.
         num_heads : int
             The number of heads.
         inf : float, optional
@@ -41,7 +38,6 @@ class AttentionPairBias(nn.Module):
         super().__init__()
         assert channel_a % num_heads == 0
         self.channel_a: int = channel_a
-        self.channel_z: int = channel_z
         self.num_heads: int = num_heads
         self.head_dim: int = channel_a // num_heads
         self.inf: float = inf
@@ -50,8 +46,6 @@ class AttentionPairBias(nn.Module):
         self.linear_k = LinearNoBias(channel_a, channel_a, init="default")
         self.linear_v = LinearNoBias(channel_a, channel_a, init="default")
         self.linear_g = LinearNoBias(channel_a, channel_a, init="gating")
-        self.layernorm_z = LayerNorm(channel_z, create_offset=False)
-        self.linear_z = LinearNoBias(channel_z, num_heads, init="default")
 
         if qk_norm:
             self.layernorm_q = LayerNorm(channel_a, create_offset=True)
@@ -84,7 +78,7 @@ class AttentionPairBias(nn.Module):
         q: torch.Tensor,
         k: torch.Tensor,
         v: torch.Tensor,
-        z: torch.Tensor,
+        pair_bias: torch.Tensor,
         mask: torch.Tensor,
         use_kernels: bool,
     ) -> torch.Tensor:
@@ -94,16 +88,12 @@ class AttentionPairBias(nn.Module):
             q=q,
             k=k,
             v=v,
-            z=z,
+            pair_bias=pair_bias,
             mask=mask,
-            w_proj_z=self.linear_z.weight,
-            b_proj_z=self.linear_z.bias,
             w_proj_g=self.linear_g.weight,
             b_proj_g=self.linear_g.bias,
             w_proj_o=self.linear_out.weight,
             b_proj_o=self.linear_out.bias,
-            w_ln_z=self.layernorm_z.weight,  # type: ignore
-            b_ln_z=self.layernorm_z.bias,
             num_heads=self.num_heads,
             inf=self.inf,
             use_kernels=use_kernels,
@@ -114,7 +104,6 @@ class SelfAttentionPairBias(AttentionPairBias):
     def __init__(
         self,
         channel_a: int,
-        channel_z: int,
         num_heads: int,
         channel_s: int | None,
         qk_norm: bool = False,
@@ -126,8 +115,6 @@ class SelfAttentionPairBias(AttentionPairBias):
         ----------
         channel_a : int
             The atom/token dimension.
-        channel_z : int
-            The input pair bias dimension.
         num_heads : int
             The number of heads.
         channel_s : int
@@ -140,7 +127,6 @@ class SelfAttentionPairBias(AttentionPairBias):
         zero_init_out = channel_s is None
         super().__init__(
             channel_a,
-            channel_z,
             num_heads,
             qk_norm=qk_norm,
             zero_init_out=zero_init_out,
@@ -160,7 +146,7 @@ class SelfAttentionPairBias(AttentionPairBias):
         self,
         a: torch.Tensor,
         s: torch.Tensor | None,
-        z: torch.Tensor,
+        pair_bias: torch.Tensor,
         mask: torch.Tensor,
         use_kernels: bool = False,
     ) -> torch.Tensor:
@@ -172,8 +158,8 @@ class SelfAttentionPairBias(AttentionPairBias):
             The input tensor (..., L, c_a).
         s : torch.Tensor | None
             The single conditioning tensor (..., L, c_s).
-        z : torch.Tensor
-            The pair representation tensor (..., W, Lq, Lk, c_z)
+        pair_bias : torch.Tensor
+            The pair representation tensor (..., H, L, L)
         mask : torch.Tensor
             The attention mask tensor (..., L)
         use_kernels : bool, optional
@@ -192,7 +178,7 @@ class SelfAttentionPairBias(AttentionPairBias):
             a = self.layernorm_a(a)
 
         q, k, v = self._prev_qkv(a, a)
-        a = self._attention(a, q, k, v, z, mask, use_kernels)
+        a = self._attention(a, q, k, v, pair_bias, mask, use_kernels)
 
         if self.use_single_conditioning:
             assert s is not None
@@ -204,7 +190,6 @@ class CrossAttentionPairBias(AttentionPairBias):
     def __init__(
         self,
         channel_a: int,
-        channel_z: int,
         num_heads: int,
         channel_s: int | None,
         qk_norm: bool = False,
@@ -228,7 +213,6 @@ class CrossAttentionPairBias(AttentionPairBias):
         zero_init_out = channel_s is not None
         super().__init__(
             channel_a,
-            channel_z,
             num_heads,
             qk_norm=qk_norm,
             zero_init_out=zero_init_out,
@@ -252,7 +236,7 @@ class CrossAttentionPairBias(AttentionPairBias):
         a_k: torch.Tensor,
         s_q: torch.Tensor | None,
         s_k: torch.Tensor | None,
-        z_qk: torch.Tensor,
+        pair_bias: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
         """Forward pass.
@@ -267,8 +251,8 @@ class CrossAttentionPairBias(AttentionPairBias):
             The query single conditioning tensor (..., W, Lq, c_s).
         s_k : torch.Tensor | None
             The key/value single conditioning tensor (..., W, Lk, c_s).
-        z_qk : torch.Tensor
-            The pair representation tensor (..., W, Lq, Lk, c_z)
+        pair_bias : torch.Tensor
+            The pair representation tensor (..., W, H, Lq, Lk)
         mask : torch.Tensor
             The attention mask tensor (..., W, Lk)
 
@@ -293,7 +277,7 @@ class CrossAttentionPairBias(AttentionPairBias):
         # [*, W, Lq/k, c] -> [*, W, H, Lq/k, c_h]
         q, k, v = self._prev_qkv(a_q, a_k)
 
-        a = self._attention(a, q, k, v, z_qk, mask, use_kernels=False)
+        a = self._attention(a, q, k, v, pair_bias, mask, use_kernels=False)
 
         # Reshape back to original shape
         a_q = rearrange(a, "... (w l) d -> ... w l d", w=a_q.shape[-3])

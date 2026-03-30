@@ -203,6 +203,22 @@ class AF3DiffusionModule(BaseScoreModel):
         """
         return self._diffusion_stack.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
 
+    def get_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
+        """Get the pair bias for the token transformer.
+        This is time-independent and can be pre-computed before the diffusion steps.
+
+        Parameters
+        ----------
+        z : torch.Tensor
+            The pair conditioning, shape [B, Lt, Lt, c_z].
+
+        Returns
+        -------
+        pair_bias : torch.Tensor
+            The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
+        """
+        return self._diffusion_stack.get_pair_bias(z)
+
     def step(
         self,
         # atom-level inputs
@@ -214,7 +230,7 @@ class AF3DiffusionModule(BaseScoreModel):
         atom_mask: torch.Tensor,
         # token-level inputs
         s: torch.Tensor,
-        z: torch.Tensor,
+        pair_bias: torch.Tensor,
         token_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Forward pass of the AF3 diffusion module (Time-dependent part only)
@@ -238,8 +254,8 @@ class AF3DiffusionModule(BaseScoreModel):
             The atom padding mask, shape [B, La].
         s: torch.Tensor
             The single conditioning, shape [B, N, Lt, c_s].
-        z: torch.Tensor
-            The pair conditioning, shape [B, Lt, Lt, c_z].
+        pair_bias: torch.Tensor
+            The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
         token_mask: torch.Tensor
             The token padding mask, shape [B, Lt].
         use_cuequiv_kernels: bool
@@ -258,7 +274,7 @@ class AF3DiffusionModule(BaseScoreModel):
             token_index,
             atom_mask,
             s,
-            z,
+            pair_bias,
             token_mask,
             use_cuequiv_kernels=self.kernel_config.cuequivariance,
         )

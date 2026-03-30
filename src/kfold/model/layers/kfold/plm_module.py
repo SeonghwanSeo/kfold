@@ -16,6 +16,7 @@ from kfold.model.layers.primitives import (
     TriangleMultiplicationIncoming,
     TriangleMultiplicationOutgoing,
 )
+from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
 
 
@@ -222,9 +223,12 @@ class PLMBlock(nn.Module):
 
         self.is_last_block: bool = is_last_block
         if not self.is_last_block:
+            self.proj_z_to_bias = nn.Sequential(
+                LayerNorm(channel_z),
+                LinearNoBias(channel_z, num_heads_attn, init="default"),
+            )
             self.attention = SelfAttentionPairBias(
                 channel_a=channel_plm,
-                channel_z=channel_z,
                 channel_s=None,
                 num_heads=num_heads_attn,
                 qk_norm=use_qk_norm,
@@ -271,11 +275,13 @@ class PLMBlock(nn.Module):
 
         # Step 2: pair to single
         if not self.is_last_block:
+            pair_bias = self.proj_z_to_bias(z)  # [*, L, L, H]
+            pair_bias = permute_final_dims(pair_bias, (2, 0, 1))  # [*, H, L, L]
             s_plm = s_plm + self.dropout_plm(
                 self.attention(
                     a=s_plm,  # [*, L, C_plm]
                     s=None,
-                    z=z,  # [*, L, L, C_z]
+                    pair_bias=pair_bias,  # [*, H, L, L]
                     mask=mask,  # [*, L]
                     use_kernels=False,
                 )
