@@ -96,18 +96,6 @@ class AF3SampleDiffusion(BaseEDM):
         """Apply random augmentation to coordinates."""
         return self.random_augmentation(coords, mask=mask)
 
-    def sample_prior(
-        self,
-        f_input: FoldingInput,
-        num_samples: int,
-        label_coords: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Sample from the prior distribution."""
-        B = f_input.batch_size
-        N = num_samples
-        La = f_input.num_atoms
-        return torch.randn((B, N, La, 3), device=f_input.device, dtype=torch.float32)
-
     # ============================================================
     # For model training
     # ============================================================
@@ -189,7 +177,7 @@ class AF3SampleDiffusion(BaseEDM):
     def interpolate(
         self,
         x_0: torch.Tensor,
-        x_prior: torch.Tensor,
+        x_T: torch.Tensor,
         t_hat: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
@@ -204,14 +192,14 @@ class AF3SampleDiffusion(BaseEDM):
         ----------
         x_0 : torch.Tensor
             The label coordinates. Shape (B, N, La, 3).
-        x_prior : torch.Tensor
+        x_T : torch.Tensor
             The noise. Shape (B, N, La, 3).
         sigma : torch.Tensor
             The sigma values. Shape (B, N).
         mask : torch.Tensor
             The atom mask. Shape (B, La).
         """
-        noise = x_prior
+        noise = x_T
         sigma = t_hat
         with torch.autocast(device_type="cuda", dtype=torch.float32):
             x_t = x_0 + sigma[:, :, None, None] * noise

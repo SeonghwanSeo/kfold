@@ -66,12 +66,7 @@ class BaseStructureModule(ABC):
         return coords
 
     @abstractmethod
-    def sample_prior(
-        self,
-        f_input: FoldingInput,
-        num_samples: int,
-        label_coords: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    def sample_prior(self, f_input: FoldingInput, num_samples: int) -> torch.Tensor:
         """Sample from the prior distribution.
         Return shape: [B, N, La, 3], where N is number of diffusion samples
         and La is number of atoms.
@@ -82,9 +77,6 @@ class BaseStructureModule(ABC):
             Input features
         num_samples:
             Number of diffusion samples
-        label_coords: torch.Tensor
-            Label coordinates. Shape: [B, N, La, 3]
-            where N is the number of diffusion samples
 
         Returns
         -------
@@ -96,19 +88,17 @@ class BaseStructureModule(ABC):
     def interpolate(
         self,
         x_0: torch.Tensor,
-        x_prior: torch.Tensor,
+        x_T: torch.Tensor,
         t_hat: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
         """Interpolate between noise and label coordinates.
 
-        We may want to perform kabsch alignment here before interpolation.
-
         Parameters
         ----------
         x_0 : torch.Tensor
             The label coordinates. Shape (B, N, La, 3).
-        x_prior : torch.Tensor
+        x_T : torch.Tensor
             The prior coordinates. Shape (B, N, La, 3).
         t_hat : torch.Tensor
             The dffusion noise levels (or sigmas of EDM). Shape (B, N).
@@ -117,7 +107,7 @@ class BaseStructureModule(ABC):
 
         Returns
         -------
-        interpolated_coords : torch.Tensor
+        x_t : torch.Tensor
             The interpolated coordinates. Shape (B, N, La, 3).
         """
 
@@ -148,9 +138,8 @@ class BaseStructureModule(ABC):
         """
         raise NotImplementedError("training_step must be implemented in subclass")
 
-    # === Sampling holo/apo structures === #
-    def sample_holo(self, f_input: FoldingInput, num_samples: int = 1) -> torch.Tensor:
-        """Sample holo structures from input for model training.
+    def sample_x_0(self, f_input: FoldingInput, num_samples: int = 1) -> torch.Tensor:
+        """Sample label structures from input for model training.
 
         Parameters
         ----------
@@ -208,6 +197,16 @@ class BaseEDM(BaseStructureModule):
         """Compute loss weights based on noise levels t_hat. Shape: (B, N)."""
         return 1 / self.c_out(t_hat) ** 2
 
+    def sample_prior(self, f_input: FoldingInput, num_samples: int) -> torch.Tensor:
+        """Sample from the prior distribution."""
+        B = f_input.batch_size
+        N = num_samples
+        La = f_input.num_atoms
+        mask = f_input.atom.pad_mask
+        x = torch.randn((B, N, La, 3), device=f_input.device, dtype=torch.float32)
+        x.masked_fill_(mask[:, None, :, None], 0.0)
+        return x
+
     def training_step(
         self,
         f_input: FoldingInput,
@@ -224,16 +223,17 @@ class BaseEDM(BaseStructureModule):
         mask = f_input.atom.pad_mask  # [B, La]
         device = f_input.device
 
-        t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
+        with torch.autocast(device.type, enabled=False):
+            t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
 
-        # sample x0 from label
-        x_0 = self.sample_holo(f_input, num_samples)
+            # sample x0 from label
+            x_0 = self.sample_x_0(f_input, num_samples)
 
-        # sample xT from prior
-        x_prior = self.sample_prior(f_input, num_samples, x_0)
+            # sample xT from prior
+            x_prior = self.sample_prior(f_input, num_samples)
 
-        # sample xt via interpolation
-        x_t = self.interpolate(x_0, x_prior, t_hat, mask)
+            # sample xt via interpolation
+            x_t = self.interpolate(x_0, x_prior, t_hat, mask)
 
         x_0_hat = self.forward_train(
             x_t=x_t.float(),  # [B, N, La, 3]
@@ -256,5 +256,5 @@ class BaseEDM(BaseStructureModule):
 
 
 @STRUCTURE_MODULE.register()
-class BaseECSI(BaseEDM):
+class BaseECSI(BaseStructureModule):
     """High-level ECSI framework for structure generation."""

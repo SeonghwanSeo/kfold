@@ -7,10 +7,10 @@ import math
 from pathlib import Path
 
 import torch
+from kfold.data.pipelines._apo_perturbation import ApoPerturbationConfig
 from omegaconf import DictConfig, OmegaConf
 
 from kfold.config import load_config
-from kfold.data.pipelines._apo_perturbation import ApoPerturbationConfig
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
 from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
@@ -261,9 +261,9 @@ def _bridge_c_in(
     cov_xy: float,
 ) -> torch.Tensor:
     t_exp = t_hat[..., None, None]
-    alpha_t = structure_module.alpha(t_exp)
-    beta_t = structure_module.beta(t_exp)
-    gamma_t = structure_module.gamma(t_exp)
+    alpha_t = structure_module.si_coeffs.alpha(t_exp)
+    beta_t = structure_module.si_coeffs.beta(t_exp)
+    gamma_t = structure_module.si_coeffs.gamma(t_exp)
     a_term = alpha_t**2 * sigma_data**2
     b_term = beta_t**2 * sigma_data_end**2
     cov_term = 2 * alpha_t * beta_t * cov_xy
@@ -291,7 +291,10 @@ def main() -> None:
         "--num_times",
         type=int,
         default=11,
-        help="Number of interpolation times between sigma_min and sigma_max.",
+        help=(
+            "Number of interpolation times between sampling_time_min and "
+            "sampling_time_max."
+        ),
     )
     parser.add_argument(
         "--times",
@@ -382,8 +385,8 @@ def main() -> None:
 
     time_values = _parse_times(
         args.times,
-        structure_module.sigma_min,
-        structure_module.sigma_max,
+        structure_module.sampling.time_min,
+        structure_module.sampling.time_max,
         args.num_times,
     )
 

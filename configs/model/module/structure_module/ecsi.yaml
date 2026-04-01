@@ -1,64 +1,45 @@
 _registry_: "structure_module"
-_class_: "KFoldExpandedECSI"
+_class_: "KFoldECSI"
 
-# Sampling configuration
-num_steps: 200
-sigma_min: 0.001
-sigma_max: 0.999
-
-# Shared route parameters
 gamma_max: 12
+gamma_scale_com: 4.0
+gamma_scale_internal: 2.0
 time_power: 1.0
 
-# Expanded bridge parameters
-gamma_scale_com: 2.0
-gamma_scale_internal: 1.0
-eta: 1.0
-eta_com: null
-eta_internal: null
-
-# Data distribution parameters
 sigma_data: 16.0
-sigma_data_end: 66.0
+sigma_data_end: 46.0
 cov_xy: 128.0
 
-# Training noise level sampling
-P_mean: -1.2
-P_std: 1.5
-
-# Inference settings
-perturb_xt: true
-endpoint_perturb_scale: 0.1
-use_forward_pinned_churn: true
-churn_factor: 2.5
-churn_until_time: 0.7
-ode_time_duration: 0.35
-
-# Sampling schedule
-rho: 0.7
-sampling_schedule_type: "phase_power"
-sampling_schedule_global_u_power: 2.0
-sampling_schedule_churn_fraction: 0.5
-sampling_schedule_churn_power: 1.7
-sampling_schedule_middle_power: 1.0
-sampling_schedule_ode_fraction: 0.20
-sampling_schedule_ode_power: 2.6
-sampling_schedule_piecewise_power: 3.0
-sampling_schedule_start_power: 2.0
-sampling_schedule_end_power: 3.0
-sampling_schedule_midpoint: 0.4
-sampling_schedule_endpoint_trim: 0.02
-
-# Other settings
-coordinate_augmentation: True
-normalize_data_end: True
 use_prior_coords: true
-logit_normal_sampling: False
-sampling_alpha: 1.0
-sampling_beta: 1.0
-alignment_entity_strategy: null
-alignment_level: "chain"
-prior_chain_translation_scale: 50.0
+normalize_data_end: true
+normalize_coordinates: false
 train_align_prior_to_label: false
-s_trans: 0.0
-inference_align_x0_hat_to_x_t: true
+s_trans: 1.0
+
+sampling:
+  steps: 200
+  time_min: 0.001
+  time_max: 0.999
+  eta: 1.0
+  eta_com: null
+  eta_internal: null
+  align_x0_hat_to_xt: true
+  perturb_xt: true
+  endpoint_perturb_scale: 0.1
+  ode_start_time: 0.35
+  use_pinned_churn: true
+  churn_factor: 2.5
+  churn_end_time: 0.7
+  schedule:
+    global_u_power: 2.0
+    churn_fraction: 0.5
+    churn_power: 1.7
+    middle_power: 1.0
+    ode_fraction: 0.20
+    ode_power: 2.6
+
+train_time_sampling:
+  logit_normal: false
+  alpha: 1.0
+  beta: 1.0
+  uniform_mix_prob: 0.0

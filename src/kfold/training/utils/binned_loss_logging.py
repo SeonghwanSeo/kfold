@@ -34,11 +34,15 @@ def _entitybin_labels(nbins: int) -> list[str]:
 def _get_time_bounds(structure_module: Any) -> tuple[float, float]:
     """Return (t_min, t_max) bounds used for u-normalization.
 
-    - ECSI: sigma_min/max are already in [0, 1].
+    - ECSI: sampling_time_min/max are already in [0, 1].
     - EDM/AF3/Boltz-style: sigma_min/max are relative and typically scaled by sigma_data.
     """
-    t_min = float(structure_module.sigma_min)
-    t_max = float(structure_module.sigma_max)
+    if hasattr(structure_module, "sampling"):
+        t_min = float(structure_module.sampling.time_min)
+        t_max = float(structure_module.sampling.time_max)
+    else:
+        t_min = float(structure_module.sigma_min)
+        t_max = float(structure_module.sigma_max)
     if hasattr(structure_module, "sigma_data") and t_max > 1.0:
         sigma_data = float(structure_module.sigma_data)
         t_min *= sigma_data
