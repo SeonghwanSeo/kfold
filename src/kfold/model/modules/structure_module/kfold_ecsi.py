@@ -183,14 +183,17 @@ class TrainTimeSamplingConfig:
     ----------
     schedule : str
         The sampling distribution for `t_hat` during training. Options:
-        - 'logit_normal': sample from `sigmoid(N(0, 1))` distribution.
+        - 'logit_normal': sample from `sigmoid(N(mu, sigma))` distribution.
         - 'uniform': sample uniformly from [0, 1].
         - 'beta': sample from `Beta(alpha, beta)` distribution.
+    logit_normal_coeff : tuple[float, float], optional
+        Mean and standard deviation of the underlying normal distribution.
     beta_coeff : tuple[float, float], optional
-        Alpha and Beta parameter of the Beta branch.
+        Alpha and Beta parameter of the Beta distribution.
     """
 
     schedule: str = "logit_normal"
+    logit_normal_coeff: tuple[float, float] = (-1.2, 1.5)
     beta_coeff: tuple[float, float] = (0.5, 0.5)
 
 
@@ -553,9 +556,9 @@ class KFoldECSI(BaseECSI):
         schedule = self.train_time_sampling.schedule
         match schedule:
             case "logit_normal":
-                # LogitNormal(0, 1) sampling
-                y = torch.randn(shape, device=device)
-                t = torch.sigmoid(y)
+                mu, sigma = self.train_time_sampling.logit_normal_coeff
+                x = torch.randn(shape, device=device)
+                t = torch.sigmoid(mu + sigma * x)
             case "uniform":
                 # Uniform sampling
                 t = torch.rand(shape, device=device)
