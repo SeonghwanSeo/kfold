@@ -11,7 +11,11 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.ecsi_diffusion import ECSIDiffusionModule
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation, get_center
+from kfold.utils.geometry.random_augment import (
+    CenterRandomAugmentation,
+    do_centering,
+    get_center,
+)
 from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
@@ -24,9 +28,8 @@ def decompose(x: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.
     """Decompose coordinates into center-of-mass and internal components.
     (*, L, 3) -> (*, 3), (*, L, 3)
     """
-    assert x.ndim == mask.ndim + 1
     com = get_center(x, mask)
-    internal = (x - com).masked_fill_(~mask[..., None, :], 0.0)
+    internal = (x - com).masked_fill_(~mask[..., None], 0.0)
     return com, internal
 
 
@@ -36,7 +39,7 @@ def compose(
     """Compose center-of-mass and internal components back to coordinates.
     (*, 3), (*, L, 3) -> (*, L, 3)
     """
-    return (com + internal).masked_fill_(~mask[..., None, :], 0.0)
+    return (com + internal).masked_fill_(~mask[..., None], 0.0)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -800,7 +803,7 @@ class KFoldECSI(BaseECSI):
         ode_start_time: float = self.sampling.ode_start_time
 
         # Sampling loop
-        for step_idx in range(num_steps + 1):
+        for step_idx in range(num_steps):
             append_traj(x_t)
 
             # Apply random augmentation
@@ -821,6 +824,9 @@ class KFoldECSI(BaseECSI):
 
             # Get denoised prediction \hat{x}_0
             x_0_hat = run_step(x_t, t)
+
+            # Centering c_0_hat
+            x_0_hat = do_centering(x_0_hat, mask)
 
             if t > ode_start_time:
                 # Early/Mid-stage stochastic SI SDE update.
