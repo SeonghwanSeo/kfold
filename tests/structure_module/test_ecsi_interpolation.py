@@ -19,7 +19,10 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.data.utils.writer import KFoldWriter
-from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
+from kfold.model.modules.structure_module.kfold_ecsi import (
+    KFoldECSI,
+    SamplingConfig,
+)
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.utils import errors
 from kfold.utils.registry import Registry
@@ -95,9 +98,9 @@ def test_interpolation_coefficients(structure_module: KFoldECSI) -> None:
 
     for t in t_values:
         t_tensor = t.reshape(1, 1)
-        alpha = structure_module.alpha(t_tensor).item()
-        beta = structure_module.beta(t_tensor).item()
-        gamma = structure_module.gamma(t_tensor).item()
+        alpha = structure_module.si_coeffs.alpha(t_tensor).item()
+        beta = structure_module.si_coeffs.beta(t_tensor).item()
+        gamma = structure_module.si_coeffs.gamma(t_tensor).item()
 
         print(f"  {t:.2f}  | {alpha:.4f} | {beta:.4f} | {gamma:.4f} | {alpha + beta:.4f}")
 
@@ -110,9 +113,11 @@ def test_interpolation_coefficients(structure_module: KFoldECSI) -> None:
         assert abs(alpha - (1 - t.item())) < 1e-5, "alpha should be 1-t"
         assert abs(beta - t.item()) < 1e-5, "beta should be t"
 
-        # Verify gamma is correct: 2 * gamma_max * sqrt(t * (1-t))
+        # Verify gamma uses the shared base gamma.
         expected_gamma = (
-            structure_module.gamma_max * 2 * (t * (1 - t) + 1e-8).sqrt().item()
+            0.5
+            * structure_module.gamma_max
+            * (t * (1 - t) + 1e-8).sqrt().item()
         )
         assert abs(gamma - expected_gamma) < 1e-4, (
             f"gamma mismatch: got {gamma}, expected {expected_gamma}"
@@ -164,22 +169,23 @@ def test_interpolation_smoothness(
 
 
 def test_gamma_max_effect(structure_module: KFoldECSI) -> None:
-    """Test the effect of gamma_max on the noise scale."""
+    """Test the effect of shared gamma_max on the base noise scale."""
     print("\n=== Testing Gamma Max Effect ===")
 
     # gamma is maximized at t=0.5
     t_mid = torch.tensor([[0.5]])
-    gamma_at_mid = structure_module.gamma(t_mid).item()
+    gamma_at_mid = structure_module.si_coeffs.gamma(t_mid).item()
 
-    # At t=0.5: gamma = 2 * gamma_max * sqrt(0.5 * 0.5) = 2 * gamma_max * 0.5 = gamma_max
-    expected_gamma_at_mid = structure_module.gamma_max
+    # At t=0.5 with power=1: gamma = 0.5 * gamma_max * sqrt(0.25).
+    expected_gamma_at_mid = 0.25 * structure_module.gamma_max
 
     print(f"  gamma_max setting: {structure_module.gamma_max}")
     print(f"  gamma at t=0.5: {gamma_at_mid:.4f}")
     print(f"  Expected (gamma_max): {expected_gamma_at_mid:.4f}")
 
     assert abs(gamma_at_mid - expected_gamma_at_mid) < 1e-4, (
-        f"gamma at t=0.5 should equal gamma_max, got {gamma_at_mid}"
+        "gamma at t=0.5 should match the shared base gamma rule, "
+        f"got {gamma_at_mid}"
     )
 
     print("  ✓ Gamma max test passed!")
@@ -254,15 +260,18 @@ if __name__ == "__main__":
 
     def _build_structure_module(power: float) -> KFoldECSI:
         ecsi_config = KFoldECSI.Config(
-            num_steps=200,
-            sigma_min=0.001,
-            sigma_max=0.999,
             gamma_max=4.0,
+            gamma_scale_com=1.0,
+            gamma_scale_internal=1.0,
+            sampling=SamplingConfig(
+                steps=200,
+                time_min=0.001,
+                time_max=0.999,
+                eta=1.0,
+            ),
             sigma_data=16.0,
             sigma_data_end=16.0,
             cov_xy=128.0,
-            rho=7,
-            eta=1.0,
             coordinate_augmentation=False,  # Disable for testing
             time_power=power,
         )
@@ -399,7 +408,9 @@ if __name__ == "__main__":
 
         # Generate time values
         t_hat = torch.linspace(
-            structure_module.sigma_max, structure_module.sigma_min, num_samples
+            structure_module.sampling.time_max,
+            structure_module.sampling.time_min,
+            num_samples,
         )[None, :]  # [1, num_samples]
 
         # Expand coords for multiple samples

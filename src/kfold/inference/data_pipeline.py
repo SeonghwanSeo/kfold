@@ -100,6 +100,7 @@ class InputDataPipeline:
         self,
         ccd: CCD,
         num_samples: int = 5,
+        prior_translation_scale: float = 1.0,
         use_sequence_masking: bool = False,
     ) -> None:
         """Initialize the input data pipeline.
@@ -111,6 +112,9 @@ class InputDataPipeline:
         num_samples : int, optional
             The number of samples to generate for prior sampling.
             Default is 5.
+        prior_translation_scale : float, optional
+            Chain-wise rigid-body translation scale for prior sampling during
+            inference. Default is 1.0.
         use_sequence_masking : bool, optional
             Whether to apply sequence masking for sample diversity. Default is False.
         """
@@ -119,7 +123,10 @@ class InputDataPipeline:
 
         # Initialize apo initializer
         self.apo_initializer = apo_initialization.ApoInitializer.inference_mode(ccd)
-        self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd)
+        self.prior_sampler = prior_sampling.PriorSampler.inference_mode(
+            ccd,
+            translation_scale=prior_translation_scale,
+        )
         self.num_samples = num_samples
 
         # Initialize tokenizer

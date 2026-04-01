@@ -16,4 +16,4 @@ apo_init:
 
 prior_sampler:
   use_ot_permutation: false
-  translation_scale: 1.0 # Angstroms
+  translation_scale: 50.0 # Angstroms

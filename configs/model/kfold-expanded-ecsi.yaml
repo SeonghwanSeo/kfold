@@ -22,7 +22,7 @@ trunk:
   _yaml_: "module/trunk/kfold.yaml"
 
 structure_module:
-  _yaml_: "module/structure_module/expanded_ecsi.yaml"
+  _yaml_: "module/structure_module/ecsi.yaml"
 
 score_model:
   _yaml_: "module/score_model/ecsi.yaml"

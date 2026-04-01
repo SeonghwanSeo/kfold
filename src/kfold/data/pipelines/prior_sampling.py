@@ -34,9 +34,9 @@ class PriorSamplerConfig:
     translation_scale: float = 1.0  # Angstrom
 
     @classmethod
-    def inference_mode(cls) -> Self:
-        """Get a PriorSampler instance configured for inference"""
-        return cls()
+    def inference_mode(cls, translation_scale: float = 1.0) -> Self:
+        """Get a PriorSampler config configured for inference."""
+        return cls(translation_scale=translation_scale)
 
 
 class PriorSampler:
@@ -56,9 +56,11 @@ class PriorSampler:
         self.logger = logging.getLogger("PriorSampler")
 
     @classmethod
-    def inference_mode(cls, ccd: CCD) -> Self:
-        """Get a PriorSampler instance configured for inference"""
-        return cls(PriorSamplerConfig.inference_mode(), ccd)
+    def inference_mode(cls, ccd: CCD, translation_scale: float = 1.0) -> Self:
+        """Get a PriorSampler instance configured for inference."""
+        return cls(
+            PriorSamplerConfig.inference_mode(translation_scale=translation_scale), ccd
+        )
 
     def __call__(
         self,
