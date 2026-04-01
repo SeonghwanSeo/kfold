@@ -35,7 +35,7 @@ class PriorSamplerConfig:
     align_for_permutation : bool
         Whether to align coordinates to compute fitness for optimal transport
         permutation. If False, the permutation is computed based on unaligned
-        coordinates.
+        coordinates (only centering).
     """
 
     chain_translation_scale: float = 30.0  # Angstrom
@@ -60,7 +60,6 @@ class PriorSampler:
         self.config: PriorSamplerConfig = config
         self.logger = logging.getLogger("PriorSampler")
 
-        self.use_ot_permutation: bool = config.use_ot_permutation
         self.chain_translation_scale: float = config.chain_translation_scale
         self.chain_translation_range: float = config.chain_translation_range
         if self.chain_translation_scale < 0.0:
@@ -69,6 +68,9 @@ class PriorSampler:
             raise ValueError(
                 "chain_translation_range must be in [0, chain_translation_scale]."
             )
+
+        self.use_ot_permutation: bool = config.use_ot_permutation
+        self.align_for_permutation: bool = config.align_for_permutation
 
         # Langevin dynamics simulator for relaxing missing atoms
         self.langevin_simulator = LangevinDynamicsSimulator.default()
@@ -441,14 +443,14 @@ class PriorSampler:
         if not label_mask.any():
             # No resolved anchor atoms in label structure
             return prior_chain_coords
-
-        entity_order = [chain.entity_id for chain in perm_chains]
+        label_centers_masked = label_centers[label_mask]
+        label_centers_masked -= label_centers_masked.mean(axis=0)  # Center label anchors
 
         # === 5. Evaluate permutations === #
+        entity_order = [chain.entity_id for chain in perm_chains]
+        prior_centers = np.empty_like(label_centers)
         best_perm = None
         best_rmsd = float("inf")
-        prior_centers = np.empty_like(label_centers)
-        label_centers_masked = label_centers[label_mask]
         for perm in final_permutations:
             # Use a simpler way to track which index to take for each entity
             st = 0
@@ -465,7 +467,7 @@ class PriorSampler:
                 prior_centers[label_mask],
                 label_centers_masked,
                 mask=None,
-                align=self.config.align_for_permutation,
+                align=self.align_for_permutation,
                 no_svd=True,
             )
             if rmsd < best_rmsd:

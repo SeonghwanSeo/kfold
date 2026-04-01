@@ -24,4 +24,4 @@ train:
   loss:
     diffusion_loss:
       smooth_lddt_loss:
-        chunk_size: 12
+        chunk_size: 8

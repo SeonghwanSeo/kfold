@@ -13,9 +13,3 @@ apo_init:
   use_holo_if_apo_unavailable: false
   protein_perturbation: null
   ligand_perturbation: null
-
-prior_sampler:
-  chain_translation_scale: 30.0 # Angstroms
-  chain_translation_range: 0.0 # Angstroms
-  use_ot_permutation: false
-  align_for_permutation: false

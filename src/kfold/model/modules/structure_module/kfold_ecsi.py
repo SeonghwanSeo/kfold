@@ -186,15 +186,15 @@ class TrainTimeSamplingConfig:
         - 'logit_normal': sample from `sigmoid(N(mu, sigma))` distribution.
         - 'uniform': sample uniformly from [0, 1].
         - 'beta': sample from `Beta(alpha, beta)` distribution.
-    logit_normal_coeff : tuple[float, float], optional
+    logit_normal_param : tuple[float, float], optional
         Mean and standard deviation of the underlying normal distribution.
-    beta_coeff : tuple[float, float], optional
+    beta_param : tuple[float, float], optional
         Alpha and Beta parameter of the Beta distribution.
     """
 
     schedule: str = "logit_normal"
-    logit_normal_coeff: tuple[float, float] = (-1.2, 1.5)
-    beta_coeff: tuple[float, float] = (0.5, 0.5)
+    logit_normal_param: tuple[float, float] = (-1.2, 1.5)
+    beta_param: tuple[float, float] = (0.5, 0.5)
 
 
 @STRUCTURE_MODULE.register()
@@ -556,7 +556,7 @@ class KFoldECSI(BaseECSI):
         schedule = self.train_time_sampling.schedule
         match schedule:
             case "logit_normal":
-                mu, sigma = self.train_time_sampling.logit_normal_coeff
+                mu, sigma = self.train_time_sampling.logit_normal_param
                 x = torch.randn(shape, device=device)
                 t = torch.sigmoid(mu + sigma * x)
             case "uniform":
@@ -564,7 +564,7 @@ class KFoldECSI(BaseECSI):
                 t = torch.rand(shape, device=device)
             case "beta":
                 # Beta sampling branch.
-                alpha, beta = self.train_time_sampling.beta_coeff
+                alpha, beta = self.train_time_sampling.beta_param
                 m = torch.distributions.Beta(alpha, beta)
                 t = m.sample(shape).to(device)
             case _:

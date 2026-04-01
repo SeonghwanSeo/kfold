@@ -7,6 +7,7 @@ import lightning.pytorch as pl
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
+from kfold.data.pipelines import featurization, prior_sampling, tokenization
 from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import DATAMODULE, BaseConfig
@@ -47,6 +48,9 @@ class DataModuleConfig(BaseConfig):
     train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
     val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
 
+    # === Other configs === #
+    prior_sampler: prior_sampling.PriorSamplerConfig | None
+
 
 @DATAMODULE.register(config_cls=DataModuleConfig)
 class TrainingDataModule(pl.LightningDataModule):
@@ -79,8 +83,18 @@ class TrainingDataModule(pl.LightningDataModule):
         if hasattr(self, "_train_ds"):
             return self._train_ds
 
+        tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
+        featurizer = featurization.InputFeaturizer()
+        if self.config.prior_sampler is not None:
+            prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
+        else:
+            prior_sampler = None
+
         multi_ds = MultiTrainingDataset(
             configs=self.config.train_datasets,
+            tokenizer=tokenizer,
+            featurizer=featurizer,
+            prior_sampler=prior_sampler,
             ccd=self.ccd,
             max_chains=self.config.max_chains,
             max_tokens=self.config.max_tokens,
@@ -108,8 +122,20 @@ class TrainingDataModule(pl.LightningDataModule):
                 "Currently only single validation dataset is supported."
             )
 
+        tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
+        featurizer = featurization.InputFeaturizer()
+        if self.config.prior_sampler is not None:
+            prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
+            # For validation, we should not use OT permutation.
+            prior_sampler.use_ot_permutation = False
+        else:
+            prior_sampler = None
+
         ds = ValidationDataset(
             config=self.config.val_datasets[0],
+            tokenizer=tokenizer,
+            featurizer=featurizer,
+            prior_sampler=prior_sampler,
             ccd=self.ccd,
             safe_load=self.config.safe_load,
         )
