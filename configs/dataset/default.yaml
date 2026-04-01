@@ -15,5 +15,7 @@ apo_init:
   ligand_perturbation: null
 
 prior_sampler:
+  chain_translation_scale: 30.0 # Angstroms
+  chain_translation_range: 0.0 # Angstroms
   use_ot_permutation: false
-  translation_scale: 50.0 # Angstroms
+  align_for_permutation: false

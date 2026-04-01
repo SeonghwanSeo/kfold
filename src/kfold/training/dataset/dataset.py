@@ -233,14 +233,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         if config.prior_sampler is not None:
             # For diffusion bridge model, we may want to sample prior structures
             # from apo structures with ot-permutation.
-            self.prior_sampler = prior_sampling.PriorSampler(
-                config.prior_sampler, self.ccd
-            )
-            self.num_priors = 16 if train else 5
+            self.prior_sampler = prior_sampling.PriorSampler(config.prior_sampler)
+            self.num_priors = 8 if train else 5
         else:
             # For regular edm, we don't need to sample prior structures since
             # the prior distribution is gaussian.
             self.prior_sampler = None
+            self.num_priors = 0
 
         # Additional setup can be done in subclasses
         self.setup()
@@ -368,24 +367,21 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        return self.tokenizer(ref_struct, rng)
+        return self.tokenizer(ref_struct, rng, num_priors=self.num_priors)
 
     def sample_prior_coords(
         self,
         ref_struct: RefStructure,
         tokenized: TokenizedStructure,
-        num_priors: int,
         rng: np.random.Generator,
     ) -> None:
         """Populate the prior coordinates for the given reference structure."""
+        num_priors = self.num_priors
         if self.prior_sampler is not None:
-            prior_coords = np.full(
-                (tokenized.num_tokens, 24, num_priors, 3), np.nan, dtype=np.float32
-            )
-            prior_coords[tokenized.atom.pad_mask] = self.prior_sampler(
-                ref_struct, num_priors, rng=rng
-            ).transpose(1, 0, 2)
-            tokenized.atom.prior_coords = prior_coords
+            prior_coords = self.prior_sampler(ref_struct, num_priors, rng)
+            prior_coords = prior_coords.transpose(1, 0, 2)
+            mask = tokenized.atom.pad_mask
+            tokenized.atom.prior_coords[mask] = prior_coords
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
@@ -420,7 +416,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 64 for LocalAtomAttention."""
         # Pad num_tokens for CUDA efficiency.
-        num_tokens = next_multiple(f_input.num_tokens, 64)
+        num_tokens = next_multiple(f_input.num_tokens, 32)
         # Pad num_seq_tokens for CUDA efficiency.
         num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 64)
         # Pad num_atoms for local attention.
@@ -499,7 +495,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         tokenized: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
 
         # Sample prior coordinates for diffusion bridge model (in-place)
-        self.sample_prior_coords(ref_struct, tokenized, self.num_priors, rng)
+        self.sample_prior_coords(ref_struct, tokenized, rng)
 
         # Populate structure tokens for apo structure (in-place)
         self.populate_structure_tokens(tokenized, apo_lookup, rng)
