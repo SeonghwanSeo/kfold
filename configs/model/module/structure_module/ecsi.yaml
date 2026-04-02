@@ -10,9 +10,6 @@ sigma_data: 16.0
 sigma_data_end: 46.0
 cov_xy: 128.0
 
-use_prior_coords: true
-normalize_data_end: true
-normalize_coordinate: false
 train_align_prior_to_label: false
 s_trans: 1.0
 

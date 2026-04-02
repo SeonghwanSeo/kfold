@@ -1,6 +1,5 @@
 # Implementation of Endpoint-Conditioned Stochastic Interpolant (ECSI)
 # Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
-# Adapted from ECSI training code and kfold_ddbm.py
 
 import dataclasses
 import math
@@ -26,8 +25,9 @@ _T = TypeVar("_T", float, torch.Tensor)
 
 def decompose(x: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Decompose coordinates into center-of-mass and internal components.
-    (*, L, 3) -> (*, 3), (*, L, 3)
+    (*, L, 3) -> (*, 1, 3), (*, L, 3)
     """
+    assert x.ndim == mask.ndim + 1
     com = get_center(x, mask)
     internal = (x - com).masked_fill_(~mask[..., None], 0.0)
     return com, internal
@@ -37,8 +37,9 @@ def compose(
     com: torch.Tensor, internal: torch.Tensor, mask: torch.Tensor
 ) -> torch.Tensor:
     """Compose center-of-mass and internal components back to coordinates.
-    (*, 3), (*, L, 3) -> (*, L, 3)
+    (*, 1, 3), (*, L, 3) -> (*, L, 3)
     """
+    assert com.ndim == internal.ndim == mask.ndim + 1
     return (com + internal).masked_fill_(~mask[..., None], 0.0)
 
 
@@ -251,15 +252,6 @@ class KFoldECSI(BaseECSI):
         train_time_sampling : TrainTimeSamplingConfig, optional
             Training-time sampling policy for `t_hat`, including the optional
             Uniform mixture applied to the Beta branch.
-        normalize_data_end : bool, optional
-            Whether prior coordinates are normalized before being concatenated
-            into the score-model input.
-        normalize_coordinate : bool, optional
-            Whether the module internally works on normalized coordinates for
-            both source and target structures.
-        use_prior_coords : bool, optional
-            Whether the score model receives prior/source coordinates as an
-            additional conditioning input.
         train_align_prior_to_label : bool, optional
             Whether sampled prior coordinates are rigidly aligned to labels
             during training before interpolation.
@@ -276,9 +268,6 @@ class KFoldECSI(BaseECSI):
         sigma_data_end: float = 46.0  # 16 + 30
         cov_xy: float = 128.0
 
-        use_prior_coords: bool = True
-        normalize_data_end: bool = True
-        normalize_coordinate: bool = False
         train_align_prior_to_label: bool = False
         s_trans: float = 1.0
 
@@ -296,38 +285,32 @@ class KFoldECSI(BaseECSI):
         configuration.
         """
         super().__init__(cfg, score_model)
+        self.__validate_config(cfg)
+
         self.score_model: ECSIDiffusionModule = score_model
         self.sampling: SamplingConfig = cfg.sampling
         self.train_time_sampling: TrainTimeSamplingConfig = cfg.train_time_sampling
 
-        self.gamma_max: float = float(cfg.gamma_max)
-        self.gamma_scale_com: float = float(cfg.gamma_scale_com)
-        self.gamma_scale_internal: float = float(cfg.gamma_scale_internal)
-        self.time_power: float = cfg.time_power
         self.sigma_data: float = cfg.sigma_data
         self.sigma_data_end: float = cfg.sigma_data_end
         self.cov_xy: float = cfg.cov_xy
-        self.normalize_data_end: bool = cfg.normalize_data_end
-        self.normalize_coordinate: bool = cfg.normalize_coordinate
-        self.use_prior_coords: bool = cfg.use_prior_coords
-        self.s_trans: float = cfg.s_trans
-        self.train_align_prior_to_label: bool = cfg.train_align_prior_to_label
-
-        self.__validate_config()
 
         self.si_coeffs = SICoeffs(
-            power=self.time_power,
-            gamma_max=self.gamma_max,
-            gamma_scale_com=self.gamma_scale_com,
-            gamma_scale_internal=self.gamma_scale_internal,
+            power=cfg.time_power,
+            gamma_max=cfg.gamma_max,
+            gamma_scale_com=cfg.gamma_scale_com,
+            gamma_scale_internal=cfg.gamma_scale_internal,
         )
+
+        self.train_align_prior_to_label: bool = cfg.train_align_prior_to_label
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation(
-            centering=False, s_trans=self.s_trans
+            centering=False, s_trans=cfg.s_trans
         )
 
-    def __validate_config(self) -> None:
+    @staticmethod
+    def __validate_config(config: Config) -> None:
         """Validate and normalize runtime config used by ECSI.
 
         This method is the single runtime gate for ECSI-specific config
@@ -335,55 +318,43 @@ class KFoldECSI(BaseECSI):
         parameter ranges, and normalizes optional sampling fields such as
         `eta_com`, `eta_internal`, and `churn_end_time`.
         """
-        schedule = self.sampling.schedule
-        if schedule.churn_fraction + schedule.ode_fraction >= 1.0:
-            raise ValueError(
-                "sampling.schedule.churn_fraction + "
-                "sampling.schedule.ode_fraction must be < 1"
-            )
-        if schedule.churn_power <= 1.0:
-            raise ValueError("sampling.schedule.churn_power must be > 1")
-        if schedule.middle_power <= 0.0:
-            raise ValueError("sampling.schedule.middle_power must be > 0")
-        if schedule.ode_power <= schedule.global_u_power:
-            raise ValueError(
-                "sampling.schedule.ode_power must be > sampling.schedule.global_u_power"
-            )
-
-        if self.sampling.time_max <= self.sampling.time_min:
+        sampling_cfg = config.sampling
+        if sampling_cfg.time_max <= sampling_cfg.time_min:
             raise ValueError("sampling.time_max must be > sampling.time_min")
-        if self.sampling.eta_com is None:
-            self.sampling.eta_com = self.sampling.eta
-        if self.sampling.eta_internal is None:
-            self.sampling.eta_internal = self.sampling.eta
+        if sampling_cfg.eta_com is None:
+            sampling_cfg.eta_com = sampling_cfg.eta
+        if sampling_cfg.eta_internal is None:
+            sampling_cfg.eta_internal = sampling_cfg.eta
         if not (
-            self.sampling.time_min
-            < self.sampling.ode_start_time
-            < self.sampling.churn_end_time
-            < self.sampling.time_max
+            sampling_cfg.time_min
+            < sampling_cfg.ode_start_time
+            < sampling_cfg.churn_end_time
+            < sampling_cfg.time_max
         ):
             raise ValueError(
                 "sampling requires time_min < ode_time < churn_until_time < time_max"
             )
-        if self.train_time_sampling.schedule not in {"logit_normal", "uniform", "beta"}:
+
+        schedule_cfg = sampling_cfg.schedule
+        if schedule_cfg.churn_fraction + schedule_cfg.ode_fraction >= 1.0:
             raise ValueError(
-                f"train_time_sampling.schedule must be one of logit_normal, uniform, "
-                f"or beta, but got {self.train_time_sampling.schedule}"
+                "sampling.schedule.churn_fraction + "
+                "sampling.schedule.ode_fraction must be < 1"
+            )
+        if schedule_cfg.churn_power <= 1.0:
+            raise ValueError("sampling.schedule.churn_power must be > 1")
+        if schedule_cfg.middle_power <= 0.0:
+            raise ValueError("sampling.schedule.middle_power must be > 0")
+        if schedule_cfg.ode_power <= schedule_cfg.global_u_power:
+            raise ValueError(
+                "sampling.schedule.ode_power must be > sampling.schedule.global_u_power"
             )
 
-    @property
-    def _effective_sigma_data(self) -> float:
-        return 1.0 if self.normalize_coordinate else self.sigma_data
-
-    @property
-    def _effective_sigma_data_end(self) -> float:
-        return 1.0 if self.normalize_coordinate else self.sigma_data_end
-
-    @property
-    def _effective_cov_xy(self) -> float:
-        if self.normalize_coordinate:
-            return self.cov_xy / (self.sigma_data * self.sigma_data_end)
-        return self.cov_xy
+        train_time_cfg = config.train_time_sampling
+        if train_time_cfg.schedule not in {"logit_normal", "uniform", "beta"}:
+            raise ValueError(
+                "train_time_sampling.schedule must be one of logit_normal, uniform, beta"
+            )
 
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(self, t: _T) -> tuple[_T, _T, _T]:
@@ -409,9 +380,9 @@ class KFoldECSI(BaseECSI):
         beta_t = self.si_coeffs.beta(t)
         gamma_t = self.si_coeffs.gamma(t)
 
-        sigma_data = self._effective_sigma_data
-        sigma_data_end = self._effective_sigma_data_end
-        cov_xy = self._effective_cov_xy
+        sigma_data = self.sigma_data
+        sigma_data_end = self.sigma_data_end
+        cov_xy = self.cov_xy
 
         # Total variance A (adapted from DDBM Eq. 81)
         # A = \alpha_t^2 \sigma_0^2 + \beta_t^2 \sigma_T^2
@@ -470,6 +441,52 @@ class KFoldECSI(BaseECSI):
     # ============================================================
     # For training
     # ============================================================
+    def training_step(
+        self,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        s_trunk: torch.Tensor,
+        z_trunk: torch.Tensor,
+        diffusion_batch_size: int = 1,
+    ) -> dict[str, torch.Tensor]:
+        """Perform a single training step for the structure module.
+        See Section 5 of EDM paper.
+        """
+        batch_size = f_input.batch_size  # =B
+        num_samples = diffusion_batch_size  # =N
+        mask = f_input.atom.pad_mask  # [B, La]
+        device = f_input.device
+
+        with torch.no_grad(), torch.autocast(device.type, enabled=False):
+            t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
+
+            # sample xT from label
+            x_0, x_T = self.sample_x_0_and_x_T(f_input, num_samples)
+
+            # sample xt via interpolation
+            x_t = self.interpolate(x_0, x_T, t_hat, mask)  # [B, N, La, 3]
+
+        x_0_hat = self.forward_train(
+            x_t=x_t.float(),  # [B, N, La, 3]
+            t_hat=t_hat,  # [B, N]
+            f_input=f_input,
+            s_inputs=s_inputs,  # [B, Lt, c_s]
+            s_trunk=s_trunk,  # [B, Lt, c_s]
+            z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
+            x_T=x_T,  # [B, N, La, 3]
+        )  # [B, N, La, 3]
+
+        loss_weights = self.loss_weights(t_hat)  # [B, N]
+
+        return {
+            "t_hat": t_hat,
+            "x_t": x_t,
+            "x_T": x_T,
+            "x_0_hat": x_0_hat,
+            "x_gt": x_0,
+            "loss_weights": loss_weights,
+        }
+
     def forward_train(
         self,
         x_t: torch.Tensor,
@@ -505,22 +522,21 @@ class KFoldECSI(BaseECSI):
         x_0_hat : torch.Tensor
             Denoised atom coordinates. Shape (B, N, La, 3).
         """
+        assert x_T is not None, "x_T must be provided for ECSI"
         c_skip, c_out, c_in = self._get_bridge_scalings(t_hat)  # [B, N]
         c_noise = self.c_noise(t_hat)  # [B, N]
 
-        # Input preconditioning
+        # Input preconditioning: r_noisy = c_in * x_t, r_T = x_T / sigma_data_end
         r_noisy = c_in[:, :, None, None] * x_t  # [B, N, La, 3]
 
-        if self.use_prior_coords:
-            assert x_T is not None, "x_T must be provided when use_prior_coords is True"
-            if self.normalize_data_end or self.normalize_coordinate:
-                x_T = x_T / self.sigma_data_end
-            r_noisy = torch.cat([r_noisy, x_T], dim=-1)
+        # End-point conditioning: r_T = x_T / sigma_data_end
+        r_T = x_T / self.sigma_data_end  # [B, N, La, 3]
+        r_noisy = torch.cat([r_noisy, r_T], dim=-1)
 
         # Call score model
         r_update = self.score_model.train_step(
             f_input=f_input,
-            r_noisy=r_noisy,  # [B, N, La, 3] or [B, N, La, 6]
+            r_noisy=r_noisy,  # [B, N, La, 6]
             c_noise=c_noise,  # [B, N]
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
@@ -650,7 +666,7 @@ class KFoldECSI(BaseECSI):
 
         Returns
         -------
-        noised_coords : torch.Tensor
+        x_t : torch.Tensor
             Bridge-sampled coordinates x_t. Shape (B, N, La, 3).
         """
         t_expanded = t_hat[:, :, None, None]
@@ -676,56 +692,6 @@ class KFoldECSI(BaseECSI):
         # Recompose to Cartesian coordinates
         x_t = compose(x_t_com, x_t_internal, mask_expanded)
         return x_t
-
-    def training_step(
-        self,
-        f_input: FoldingInput,
-        s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
-        diffusion_batch_size: int = 1,
-    ) -> dict[str, torch.Tensor]:
-        """Perform a single training step for the structure module.
-        See Section 5 of EDM paper.
-        """
-        batch_size = f_input.batch_size  # =B
-        num_samples = diffusion_batch_size  # =N
-        mask = f_input.atom.pad_mask  # [B, La]
-        device = f_input.device
-
-        with torch.autocast(device.type, enabled=False):
-            t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
-
-            # sample xT from label
-            x_0, x_T = self.sample_x_0_and_x_T(f_input, num_samples)
-
-            if self.normalize_coordinate:
-                x_0 = x_0 / self.sigma_data
-                x_T = x_T / self.sigma_data_end
-
-            # sample xt via interpolation
-            x_t = self.interpolate(x_0, x_T, t_hat, mask)  # [B, N, La, 3]
-
-        x_0_hat = self.forward_train(
-            x_t=x_t.float(),  # [B, N, La, 3]
-            t_hat=t_hat,  # [B, N]
-            f_input=f_input,
-            s_inputs=s_inputs,  # [B, Lt, c_s]
-            s_trunk=s_trunk,  # [B, Lt, c_s]
-            z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
-            x_T=x_T,  # [B, N, La, 3]
-        )  # [B, N, La, 3]
-
-        loss_weights = self.loss_weights(t_hat)  # [B, N]
-
-        return {
-            "t_hat": t_hat,
-            "x_t": x_t,
-            "x_T": x_T,
-            "x_0_hat": x_0_hat,
-            "x_gt": x_0,
-            "loss_weights": loss_weights,
-        }
 
     # ============================================================
     # For inference
@@ -763,11 +729,6 @@ class KFoldECSI(BaseECSI):
         x_t = x_T.clone()
         mask = f_input.atom.pad_mask[..., None, :]  # (B, 1, Latom)
 
-        if self.normalize_coordinate or self.normalize_data_end:
-            x_T = x_T / self.sigma_data_end
-        if self.normalize_coordinate:
-            x_t = x_t / self.sigma_data
-
         if self.sampling.perturb_xt:
             x_t = self._apply_endpoint_perturbation(x_t, mask)
         x_churn_target = x_t.clone()
@@ -797,8 +758,6 @@ class KFoldECSI(BaseECSI):
 
         def append_traj(x_t: torch.Tensor):
             if return_traj:
-                if self.normalize_coordinate:
-                    x_t = x_t * self.sigma_data
                 traj.append(x_t.cpu())
 
         # Time schedule and branch control parameters
@@ -839,11 +798,6 @@ class KFoldECSI(BaseECSI):
                 x_t = self._ode_step(x_t, x_0_hat, mask, t, dt)
 
         append_traj(x_t)
-
-        # Final denoised prediction at t=0
-        if self.normalize_coordinate:
-            x_T = x_T * self.sigma_data_end
-            x_t = x_t * self.sigma_data
 
         sample_out: dict[str, torch.Tensor] = {}
         sample_out["init_coordinates"] = x_T
@@ -924,23 +878,20 @@ class KFoldECSI(BaseECSI):
         x_out : torch.Tensor
             Denoised atom coordinates. Shape (B, N, L, 3).
         """
-        _t_hat = torch.tensor(t_hat)
-        c_in = self.c_in(_t_hat).item()
-        c_skip = self.c_skip(_t_hat).item()
-        c_out = self.c_out(_t_hat).item()
-
-        # Input preconditioning: r_noisy = c_in * x_t
-        r_noisy = c_in * x_t
-
         token_index = f_input.atom.token_index  # [B, La]
         atom_mask = f_input.atom.pad_mask  # [B, La]
         token_mask = f_input.token.pad_mask  # [B, L]
 
+        # Input preconditioning: r_noisy = c_in * x_t
+        r_noisy = self.c_in(t_hat) * x_t
+
+        # End-point conditioning: r_T = x_T / sigma_data_end
+        r_T = x_T / self.sigma_data_end  # [B, N, L, 3]
+        r_noisy = torch.cat([r_noisy, r_T], dim=-1)
+
         def _step(r: torch.Tensor) -> torch.Tensor:
-            if self.use_prior_coords:
-                r = torch.cat([r, x_T], dim=-1)  # [B, N, L, 6]
             return self.score_model.step(
-                r,  # [B, N, L, 3]
+                r,  # [B, N, L, 6]
                 q,  # [B, La, c_atom]
                 c,  # [B, La, c_atom]
                 p,  # [B, La, La, c_atompair]
@@ -954,13 +905,13 @@ class KFoldECSI(BaseECSI):
         if chunk_size is None:
             r_update = _step(r_noisy)
         else:
-            r_update = torch.zeros_like(r_noisy)
-            for st in range(0, r_noisy.shape[1], chunk_size):
+            r_update = torch.zeros_like(x_t)
+            for st in range(0, x_t.shape[1], chunk_size):
                 end = st + chunk_size
                 r_update[:, st:end] = _step(r_noisy[:, st:end])
 
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
-        x_out = c_skip * x_t + c_out * r_update  # [B, N, La, 3]
+        x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update  # [B, N, La, 3]
         return x_out
 
     def get_pair_conditioning(
@@ -1076,6 +1027,8 @@ class KFoldECSI(BaseECSI):
         sampling = self.sampling
         time_max = sampling.time_max
         time_min = sampling.time_min
+        churn_time = sampling.churn_end_time
+        ode_time = sampling.ode_start_time
         total_scale = time_max - time_min
 
         schedule = self.sampling.schedule
@@ -1085,8 +1038,6 @@ class KFoldECSI(BaseECSI):
         churn_power = schedule.churn_power
         middle_power = schedule.middle_power
         ode_power = schedule.ode_power
-        churn_time = sampling.churn_end_time
-        ode_time = sampling.ode_start_time
 
         churn_unit = (churn_time - time_min) / total_scale
         ode_unit = (ode_time - time_min) / total_scale
@@ -1131,10 +1082,7 @@ class KFoldECSI(BaseECSI):
     def _apply_endpoint_perturbation(
         self, x: torch.Tensor, mask: torch.Tensor
     ) -> torch.Tensor:
-        perturb_scale = self.sampling.endpoint_perturb_scale
-        if self.normalize_coordinate:
-            perturb_scale = perturb_scale / self.sigma_data
-        noise = torch.randn_like(x) * perturb_scale
+        noise = torch.randn_like(x) * self.sampling.endpoint_perturb_scale
         noise.masked_fill_(~mask[..., None], 0.0)
         return x + noise
 
@@ -1213,8 +1161,9 @@ class KFoldECSI(BaseECSI):
         com_scale = abs(2 * eps_com * dt) ** 0.5
         internal_scale = abs(2 * eps_internal * dt) ** 0.5
         diffusion = compose(com_scale * noise_com, internal_scale * noise_internal, mask)
-
-        return x_t + drift * dt + diffusion
+        x_update = x_t + drift * dt + diffusion
+        x_update.masked_fill_(~mask[..., None], 0.0)
+        return x_update
 
     def _compute_drift_components(
         self,
@@ -1297,5 +1246,6 @@ class KFoldECSI(BaseECSI):
         alpha_next, beta_next = coeffs.alpha(t_next), coeffs.beta(t_next)
         c_skip = beta_next / (beta + 1e-8)
         c_update = alpha_next - alpha * c_skip
-        x_t = c_skip * x_t + c_update * x_0_hat
-        return x_t
+        x_update = c_skip * x_t + c_update * x_0_hat
+        x_update.masked_fill_(~mask[..., None], 0.0)
+        return x_update

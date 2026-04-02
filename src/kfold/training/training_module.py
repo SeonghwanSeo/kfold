@@ -1006,7 +1006,7 @@ class KFoldTrainingModule(pl.LightningModule):
         name: str = ref_struct.id
 
         assert traj.ndim == 4, "Trajectory must be of shape (Nsample, Nframe, Natom, 3)"
-        num_samples: int = traj.shape[1]
+        num_samples: int = traj.shape[0]
 
         # Remove padding atoms
         num_atoms: int = ref_struct.num_atoms
