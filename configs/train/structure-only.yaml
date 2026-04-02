@@ -14,6 +14,12 @@ global_hparams:
   global_batch_size: 256
   num_global_steps_per_epoch: 1000
 
+# compilation settings
+compile:
+  enabled: false
+  mode: "default"
+  dynamic: false
+
 data:
   _registry_: "datamodule"
   _class_: TrainingDataModule
@@ -33,6 +39,13 @@ data:
 
   # CCD path
   ccd_path: <CCD_PATH_PLACEHOLDER>
+
+  # Prior sampler for diffusion bridge modeling
+  prior_sampler: # If null, no prior sampling
+    chain_translation_scale: 30.0 # Angstroms
+    chain_translation_range: 10.0 # Angstroms
+    use_ot_permutation: true # Only for training.
+    align_for_permutation: false # Only for training.
 
   # Datasets
   train_datasets: []
@@ -138,6 +151,7 @@ loss:
     smooth_lddt_loss:
       repr_atom_only: false # if True, use [Nrepr, N] instead of [N, N] for LDDT calculation.
       chunk_size: 1 # in number of samples.
+      use_kernel: true
 
   # Confidence loss
   # TODO

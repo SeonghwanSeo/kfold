@@ -1,17 +1,19 @@
 _registry_: "structure_module"
 _class_: "KFoldECSI"
 
-gamma_max: 12
+gamma_max: 24
 gamma_scale_com: 2.0
-gamma_scale_internal: 2.0
+gamma_scale_internal: 1.0
 time_power: 1.0
 
 sigma_data: 16.0
-sigma_data_end: 66.0
+sigma_data_end: 46.0
 cov_xy: 128.0
 
+inference_align_x_0_hat_to_x_t: true
+s_trans: 1.0
+
 sampling:
-  steps: 200
   time_min: 0.001
   time_max: 0.999
   eta: 1.0
@@ -21,7 +23,6 @@ sampling:
   perturb_xt: true
   endpoint_perturb_scale: 0.1
   ode_start_time: 0.35
-  use_pinned_churn: true
   churn_factor: 2.5
   churn_end_time: 0.7
   schedule:
@@ -33,13 +34,6 @@ sampling:
     ode_power: 2.6
 
 train_time_sampling:
-  logit_normal: false
-  alpha: 1.0
-  beta: 1.0
-  uniform_mix_prob: 0.0
-
-coordinate_augmentation: True
-normalize_data_end: True
-use_prior_coords: true
-train_align_prior_to_label: false
-s_trans: 0.0
+  schedule: 'logit_normal'
+  logit_normal_param: [-1.5, 1.5]
+  beta_param: [0.5, 0.5]

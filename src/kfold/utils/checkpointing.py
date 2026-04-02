@@ -1,3 +1,4 @@
+# Copyright 2026 KAIST
 # Copyright 2025 AlQuraishi Laboratory
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,42 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import importlib
 from collections.abc import Callable, Sequence
-from functools import partial
 from typing import Any
 
 import torch
 import torch.utils.checkpoint
 
-deepspeed_is_installed = importlib.util.find_spec("deepspeed") is not None
-if deepspeed_is_installed:
-    import deepspeed
-    from deepspeed.runtime.activation_checkpointing.checkpointing import (
-        non_reentrant_checkpoint as ds_non_reentrant_checkpoint,
-    )
-
+checkpoint_fn = torch.utils.checkpoint.checkpoint
 
 BLOCK_ARG = Any
 BLOCK_ARGS = Sequence[BLOCK_ARG]
+LAYER_ARG = Any
+LAYER_ARGS = dict[str, Sequence[LAYER_ARG]]
 
 
-def is_deepspeed_configured() -> bool:
-    return deepspeed_is_installed and deepspeed.checkpointing.is_configured()
-
-
-def get_checkpoint_fn(use_reentrant: bool | None = None):
-    if is_deepspeed_configured():
-        if use_reentrant is False:
-            checkpoint = ds_non_reentrant_checkpoint
-        else:
-            checkpoint = deepspeed.checkpointing.checkpoint
-    else:
-        checkpoint = partial(
-            torch.utils.checkpoint.checkpoint, use_reentrant=use_reentrant
-        )
-
-    return checkpoint
+def wrap(a: BLOCK_ARG) -> BLOCK_ARGS:
+    return (a,) if type(a) is not tuple else a
 
 
 @torch.jit.ignore
@@ -55,114 +36,64 @@ def checkpoint_blocks(
     blocks: list[Callable],
     args: BLOCK_ARGS,
     blocks_per_ckpt: int | None,
-    use_reentrant: bool | None = False,
+    layer_args: LAYER_ARGS | None = None,
+    use_reentrant: bool = False,
 ) -> BLOCK_ARGS:
     """
     Chunk a list of blocks and run each chunk with activation
     checkpointing. We define a "block" as a callable whose only inputs are
     the outputs of the previous block.
 
-    Implements Subsection 1.11.8
+    Parameters
+    ----------
+    blocks: list[Callable]
+        List of blocks to execute sequentially.
+    args: BLOCK_ARGS
+        Tuple of arguments for the first block.
+    blocks_per_ckpt: int | None
+        Size of each chunk. A higher value corresponds to fewer
+        checkpoints, and trades memory for speed. If None, no checkpointing
+        is performed.
+    layer_args: LAYER_ARGS | None
+        Optional dictionary mapping argument names to lists of arguments for
+        each block. If provided, the arguments for block i will be passed as
+        keyword arguments to block i. If not provided, no keyword arguments
+        will be passed to the blocks.
+    use_reentrant: bool
+        Whether to use reentrant checkpointing.
 
-    Args:
-        blocks:
-            List of blocks
-        args:
-            Tuple of arguments for the first block.
-        blocks_per_ckpt:
-            Size of each chunk. A higher value corresponds to fewer
-            checkpoints, and trades memory for speed. If None, no checkpointing
-            is performed.
-        use_reentrant:
-            Whether to use reentrant checkpointing. If set, torch checkpointing
-            will be used.
     Returns:
         The output of the final block
     """
+    # Add layer arguments if not provided
+    layer_args = layer_args or {}
+    for k, v in layer_args.items():
+        if len(v) != len(blocks):
+            raise ValueError(
+                f"Length of layer arguments for {k} must match number of blocks"
+            )
 
-    def wrap(a):
-        return (a,) if type(a) is not tuple else a
+    # Add block indices
+    blocks: list[tuple[int, Callable]] = list(enumerate(blocks))
 
-    def exec(b, a):
-        for block in b:
-            a = wrap(block(*a))
+    def exec(b: list[tuple[int, Callable]], a: BLOCK_ARGS) -> BLOCK_ARGS:
+        for i, _b in b:
+            la = {k: v[i] for k, v in layer_args.items()}
+            a = wrap(_b(*a, **la))
         return a
 
-    def chunker(s, e):
-        def exec_sliced(*a):
-            return exec(blocks[s:e], a)
-
-        return exec_sliced
-
-    # Avoids mishaps when the blocks take just one argument
-    args = wrap(args)
-
-    if (
-        not torch.is_grad_enabled()
-        or blocks_per_ckpt is None
-        or blocks_per_ckpt > len(blocks)
-    ):
+    if not torch.is_grad_enabled() or blocks_per_ckpt is None:
         return exec(blocks, args)
-    elif blocks_per_ckpt < 1:
+
+    if blocks_per_ckpt < 1:
         raise ValueError("blocks_per_ckpt must be at least 1")
 
-    checkpoint = get_checkpoint_fn(use_reentrant=use_reentrant)
+    def chunker(s, e):
+        return lambda *a: exec(blocks[s:e], a)
 
     for s in range(0, len(blocks), blocks_per_ckpt):
         e = s + blocks_per_ckpt
-
-        if is_deepspeed_configured():
-            args = checkpoint(chunker(s, e), *args)
-        else:
-            args = checkpoint(chunker(s, e), *args, use_reentrant=use_reentrant)
-
+        args = checkpoint_fn(chunker(s, e), *args, use_reentrant=use_reentrant)
         args = wrap(args)
-
-    return args
-
-
-@torch.jit.ignore
-def checkpoint_section(
-    fn: Callable,
-    args: BLOCK_ARGS,
-    apply_ckpt: bool | None = True,
-    use_reentrant: bool | None = None,
-):
-    """
-    Apply checkpointing to a single function.
-
-    Args:
-        fn:
-            Function to checkpoint
-        args:
-            Tuple of arguments for the first block.
-        apply_ckpt:
-            Whether to apply checkpointing. If None, no checkpointing
-            is performed.
-        use_reentrant:
-            Whether to use reentrant checkpointing. If set, torch checkpointing
-            will be used.
-    Returns:
-        The output of the final block
-    """
-
-    def wrap(a):
-        return (a,) if type(a) is not tuple else a
-
-    def exec(fn, a):
-        return fn(*a)
-
-    # Avoids mishaps when the function takes just one argument
-    args = wrap(args)
-
-    if not apply_ckpt or not torch.is_grad_enabled():
-        return exec(fn, args)
-
-    checkpoint = get_checkpoint_fn(use_reentrant=use_reentrant)
-
-    if is_deepspeed_configured():
-        args = checkpoint(fn, *args)
-    else:
-        args = checkpoint(fn, *args, use_reentrant=use_reentrant)
 
     return args

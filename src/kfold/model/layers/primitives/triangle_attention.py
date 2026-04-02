@@ -15,35 +15,20 @@
 # limitations under the License.
 
 import math
-from functools import partial
 
 import torch
 import torch.nn as nn
 
 try:
-    from cuequivariance_torch.primitives.triangle import triangle_attention
+    from cuequivariance_torch.primitives.triangle import (
+        triangle_attention as cueq_triangle_attention,
+    )
 except ImportError:
-    triangle_attention = None
+    cueq_triangle_attention = None
 
 from .linear import LinearNoBias
 from .normalization import LayerNorm
-from .utils import chunk_layer, flatten_final_dims, permute_final_dims
-
-
-@torch.jit.ignore
-def softmax_no_cast(t: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """
-    Softmax, but without automatic casting to fp32 when the input is of
-    type bfloat16
-    """
-    d = t.dtype
-    if d is torch.bfloat16:
-        with torch.autocast("cuda", enabled=False):
-            s = torch.nn.functional.softmax(t, dim=dim)
-    else:
-        s = torch.nn.functional.softmax(t, dim=dim)
-
-    return s
+from .utils import flatten_final_dims, permute_final_dims
 
 
 def _attention(
@@ -61,7 +46,7 @@ def _attention(
     for b in biases:
         a += b
 
-    a = softmax_no_cast(a, -1)
+    a = a.softmax(dim=-1)
 
     # [*, H, Q, C_hidden]
     a = torch.matmul(a, value)
@@ -74,16 +59,16 @@ def kernel_triangular_attn(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    tri_bias: torch.Tensor,
+    bias: torch.Tensor,
     mask: torch.Tensor,
     scale: float,
 ) -> torch.Tensor:
-    if triangle_attention is None:
+    if cueq_triangle_attention is None:
         raise ImportError(
             "cuequivariance_torch is not installed. "
             "Please install cuequivariance_torch to use the kernel implementation."
         )
-    return triangle_attention(q, k, v, tri_bias, mask=mask, scale=scale)
+    return cueq_triangle_attention(q, k, v, bias.float(), mask=mask, scale=scale)
 
 
 class MultiHeadAttention(nn.Module):
@@ -234,16 +219,13 @@ class MultiHeadAttention(nn.Module):
                 q,
                 k,
                 v,
-                tri_bias=tri_bias,
-                mask=mask.bool(),
+                bias=tri_bias,
+                mask=mask,
                 scale=scale,
             )
             o = o.transpose(-2, -3)
         else:
-            if mask.dtype == torch.bool:
-                mask_bias = -self.inf * (~mask).to(q.dtype)
-            else:
-                mask_bias = self.inf * (mask - 1).to(q.dtype)
+            mask_bias = -self.inf * (~mask.bool()).to(q.dtype)
             biases = [mask_bias, tri_bias]
             o = _attention(q, k, v, biases)
             o = o.transpose(-2, -3)
@@ -282,57 +264,10 @@ class TriangleAttention(nn.Module):
             self.c_in, self.c_in, self.c_in, self.c_hidden, self.no_heads
         )
 
-    @torch.jit.ignore
-    def _chunk(
-        self,
-        x: torch.Tensor,
-        tri_bias: torch.Tensor,
-        mask: torch.Tensor,
-        chunk_size: int,
-        use_kernels: bool = False,
-    ) -> torch.Tensor:
-        """Compute triangle attention.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor of shape [*, I, J, C_in]
-        biases : list[torch.Tensor]
-            List of bias tensors of shape [*, H, I, J]
-        chunk_size : int
-            Size of chunks for memory efficient computation
-        use_kernels : bool, default=False
-            Whether to use optimized CUDA kernels
-
-        Returns
-        -------
-        torch.Tensor
-            Output tensor of shape [*, I, J, C_in]
-
-        """
-        mha_inputs = {
-            "q_x": x,
-            "kv_x": x,
-            "tri_bias": tri_bias,
-            "mask": mask,
-        }
-
-        return chunk_layer(
-            partial(
-                self.mha,
-                use_kernels=use_kernels,
-            ),
-            mha_inputs,
-            chunk_size=chunk_size,
-            no_batch_dims=len(x.shape[:-2]),
-            _out=None,
-        )
-
     def forward(
         self,
         x: torch.Tensor,
         mask: torch.Tensor | None = None,
-        chunk_size: int | None = None,
         use_kernels: bool = False,
     ) -> torch.Tensor:
         """Compute triangle attention.
@@ -343,8 +278,6 @@ class TriangleAttention(nn.Module):
             Input tensor of shape [*, I, J, C_in]
         mask : torch.Tensor, optional
             Attention mask of shape [*, I, J]
-        chunk_size : int, optional
-            Size of chunks for memory efficient computation
         use_kernels : bool, default=False
             Whether to use optimized CUDA kernels
 
@@ -370,32 +303,21 @@ class TriangleAttention(nn.Module):
         # [*, I, 1, 1, J]
         mask = mask[..., :, None, None, :]
 
-        with torch.autocast(x.device.type, dtype=torch.float32, enabled=use_kernels):
-            # NOTE: casting to float32 for cuequiv kernels.
-            triangle_bias = self.linear(x)
+        triangle_bias = self.linear(x)
 
-            # [*, H, I, J]
-            triangle_bias = permute_final_dims(triangle_bias, (2, 0, 1))
+        # [*, H, I, J]
+        triangle_bias = permute_final_dims(triangle_bias, (2, 0, 1))
 
-            # [*, 1, H, I, J]
-            triangle_bias = triangle_bias.unsqueeze(-4)
+        # [*, 1, H, I, J]
+        triangle_bias = triangle_bias.unsqueeze(-4)
 
-        if chunk_size is not None and not use_kernels:
-            x = self._chunk(
-                x,
-                triangle_bias,
-                mask,
-                chunk_size,
-                use_kernels=use_kernels,
-            )
-        else:
-            x = self.mha(
-                x,
-                x,
-                triangle_bias,
-                mask,
-                use_kernels=use_kernels,
-            )
+        x = self.mha(
+            x,
+            x,
+            triangle_bias,
+            mask,
+            use_kernels=use_kernels,
+        )
 
         if not self.starting:
             x = x.transpose(-2, -3)

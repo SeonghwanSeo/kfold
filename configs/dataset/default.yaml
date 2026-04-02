@@ -13,7 +13,3 @@ apo_init:
   use_holo_if_apo_unavailable: false
   protein_perturbation: null
   ligand_perturbation: null
-
-prior_sampler:
-  use_ot_permutation: false
-  translation_scale: 50.0 # Angstroms

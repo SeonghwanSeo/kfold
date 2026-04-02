@@ -47,11 +47,10 @@ class KFoldInferenceClient(pl.LightningModule):
     ):
         super().__init__()
         self.model: KFold = model
-        self.model.cast_to_bf16()  # Use bfloat16 to save memory and speed up
         self.inference_config: InferenceConfig = inference_config
         self.num_trunk_recycles: int = inference_config.num_recycles
         self.num_diffusion_steps: int = inference_config.num_steps
-        self.num_diffusion_samples: int = inference_config.num_samples
+        self.num_samples: int = inference_config.num_samples
 
         # Logger
         self._logger = logging.getLogger("KFoldInferenceClient")
@@ -66,7 +65,7 @@ class KFoldInferenceClient(pl.LightningModule):
             apo_dict,
             num_recycles=self.num_trunk_recycles,
             num_steps=self.num_diffusion_steps,
-            num_samples=self.num_diffusion_samples,
+            num_samples=self.num_samples,
         )
         return dict_out
 

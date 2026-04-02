@@ -6,11 +6,6 @@ _class_: KFold
 kernel:
   cuequivariance: true
 
-# compilation settings
-compile_trunk: false
-compile_score_model: false
-compile_mode: "default"
-
 # Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/kfold.yaml"
@@ -29,7 +24,6 @@ structure_module:
 
 score_model:
   _yaml_: "module/score_model/ecsi.yaml"
-  use_prior_coords: true
 
 distogram_head:
   _yaml_: "module/distogram_head/af3.yaml"

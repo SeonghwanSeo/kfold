@@ -100,7 +100,6 @@ class InputDataPipeline:
         self,
         ccd: CCD,
         num_samples: int = 5,
-        prior_translation_scale: float = 1.0,
         use_sequence_masking: bool = False,
     ) -> None:
         """Initialize the input data pipeline.
@@ -112,9 +111,6 @@ class InputDataPipeline:
         num_samples : int, optional
             The number of samples to generate for prior sampling.
             Default is 5.
-        prior_translation_scale : float, optional
-            Chain-wise rigid-body translation scale for prior sampling during
-            inference. Default is 1.0.
         use_sequence_masking : bool, optional
             Whether to apply sequence masking for sample diversity. Default is False.
         """
@@ -123,10 +119,7 @@ class InputDataPipeline:
 
         # Initialize apo initializer
         self.apo_initializer = apo_initialization.ApoInitializer.inference_mode(ccd)
-        self.prior_sampler = prior_sampling.PriorSampler.inference_mode(
-            ccd,
-            translation_scale=prior_translation_scale,
-        )
+        self.prior_sampler = prior_sampling.PriorSampler.inference_mode()
         self.num_samples = num_samples
 
         # Initialize tokenizer
@@ -200,7 +193,9 @@ class InputDataPipeline:
 
         # Tokenize structure
         # NOTE: We feed apo structure tokens during model forward pass (gpu required).
-        tokenized: TokenizedStructure = self.tokenizer(ref_struct, rng)
+        tokenized: TokenizedStructure = self.tokenizer(
+            ref_struct, rng, num_priors=self.num_samples
+        )
 
         # Sample prior coordinates for diffusion bridge modeling
         self.sample_prior_coords(ref_struct, tokenized, rng)
@@ -365,13 +360,10 @@ class InputDataPipeline:
         rng: np.random.Generator,
     ) -> None:
         """Populate the prior coordinates for the given reference structure."""
-        prior_coords = np.full(
-            (tokenized.num_tokens, 24, self.num_samples, 3), np.nan, dtype=np.float32
-        )
-        prior_coords[tokenized.atom.pad_mask] = self.prior_sampler(
+        prior_coords = self.prior_sampler(
             ref_struct, self.num_samples, rng=rng
-        ).transpose(1, 0, 2)
-        tokenized.atom.prior_coords = prior_coords
+        ).transpose(1, 0, 2)  # [Natom, Nsample, 3]
+        tokenized.atom.prior_coords[tokenized.atom.pad_mask] = prior_coords
 
     def prepare_struct_tok_input(
         self,
