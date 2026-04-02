@@ -143,6 +143,11 @@ loss:
       upweight_rna: 5.0
       upweight_ligand: 10.0
       align_true_to_pred: true
+      com_weight: 1.0
+      internal_weight: 1.0
+      # λ_com(t) = 1 + c_com * t, λ_internal(t) = 1 - c_internal * t (t from t_hat)
+      c_com: 1.0
+      c_internal: 0.0
 
     # Bond Loss
     bond_loss: {}

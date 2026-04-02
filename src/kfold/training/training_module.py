@@ -24,6 +24,7 @@ from kfold.training.utils.binned_loss_logging import (
     TimeBinnedLossLogger,
 )
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
+from kfold.training.utils.mse_component_schedule import linear_com_internal_weights
 from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
@@ -276,9 +277,14 @@ class KFoldTrainingModule(pl.LightningModule):
 
             # Diffusion loss
             diffusion_loss_config = loss_config.diffusion_loss
-            self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(
-                **diffusion_loss_config["mse_loss"]
+            mse_loss_cfg = dict(diffusion_loss_config["mse_loss"])
+            self._mse_com_weight_default = float(mse_loss_cfg.pop("com_weight", 1.0))
+            self._mse_internal_weight_default = float(
+                mse_loss_cfg.pop("internal_weight", 1.0)
             )
+            self._mse_c_com = float(mse_loss_cfg.pop("c_com", 1.0))
+            self._mse_c_internal = float(mse_loss_cfg.pop("c_internal", 1.0))
+            self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(**mse_loss_cfg)
             if self.loss_weights["bond"] > 0:
                 # Only used in fine-tuning stage
                 self.bond_loss = loss_fn.diffusion.BondLoss(
@@ -466,6 +472,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     x_true=diffusion_out["x_gt"],
                     per_sample_weights=model_output["diffusion"]["loss_weights"],
                     f_input=f_input,
+                    t_hat=model_output["diffusion"].get("t_hat"),
                 )
 
             else:
@@ -676,12 +683,26 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics = {"distogram_loss": loss.detach().mean()}
         return loss, metrics
 
+    def _resolve_mse_component_weights(
+        self,
+        t_hat: torch.Tensor | None,
+    ) -> tuple[float | torch.Tensor, float | torch.Tensor]:
+        """COM/internal MSE coeffs; see `linear_com_internal_weights`"""
+        return linear_com_internal_weights(
+            t_hat,
+            com_weight=self._mse_com_weight_default,
+            internal_weight=self._mse_internal_weight_default,
+            c_com=self._mse_c_com,
+            c_internal=self._mse_c_internal,
+        )
+
     def compute_diffusion_loss(
         self,
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
         per_sample_weights: torch.Tensor,
         f_input: FoldingInput,
+        t_hat: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute diffusion structure loss.
         See Section 3.7.1 Diffusion Training.
@@ -697,20 +718,44 @@ class KFoldTrainingModule(pl.LightningModule):
             which is computed from the diffusion noise scale.
         f_input : FoldingInput
             The input features containing the target distogram and masks.
+        t_hat : torch.Tensor or None
+            Diffusion time(s) in ``[0, 1]`` when available; used by
+            ``_resolve_mse_component_weights`` for time-dependent COM/internal weights.
 
         Returns
         -------
         diffusion_loss : torch.Tensor
             The computed diffusion loss of shape (B,).
         metrics : dict[str, torch.Tensor]
-            A dictionary containing loss metrics.
+            A dictionary containing loss metrics. ``mse_loss``, ``com_mse_loss``,
+            and ``internal_mse_loss`` are batch/sample means of the raw COM/internal
+            terms times ``per_sample_weights`` (no λ). Element-wise,
+            ``com * σ_w + internal * σ_w = mse_loss * σ_w`` and
+            ``λ_com * com * σ_w + λ_internal * internal * σ_w`` matches the MSE
+            term inside ``L_mse_weighted``.
         """
         metrics: dict[str, torch.Tensor] = {}
 
         # Equations 3-4
-        L_mse = self.weighted_mse_loss(x_pred, x_true, f_input)  # [B, Nsample]
+        com_w, int_w = self._resolve_mse_component_weights(t_hat)
+        mse_terms = self.weighted_mse_loss(
+            x_pred,
+            x_true,
+            f_input,
+            com_weight=com_w,
+            internal_weight=int_w,
+            return_components=True,
+        )
+        L_mse = mse_terms["weighted_mse_loss"]  # [B, Nsample]
         L_mse_weighted = L_mse * per_sample_weights  # [B, Nsample]
-        metrics["mse_loss"] = L_mse_weighted.detach().mean()
+        # Log COM/internal (and their sum) with σ weights only, not λ: per element
+        #   λ_com * (com * w) + λ_internal * (internal * w) == L_mse_weighted.
+        com_sigma = mse_terms["com_mse_loss"] * per_sample_weights
+        internal_sigma = mse_terms["internal_mse_loss"] * per_sample_weights
+        mse_sigma = mse_terms["mse_loss"] * per_sample_weights
+        metrics["mse_loss"] = mse_sigma.detach().mean()
+        metrics["com_mse_loss"] = com_sigma.detach().mean()
+        metrics["internal_mse_loss"] = internal_sigma.detach().mean()
 
         # Equation 5
         alpha_bond = self.loss_weights["bond"]
@@ -746,9 +791,11 @@ class KFoldTrainingModule(pl.LightningModule):
 
         if self._binned_cache_enabled and self.train_structure_module:
             payload: dict[str, torch.Tensor] = {
-                "mse_loss": L_mse_weighted.detach(),
+                "mse_loss": mse_sigma.detach(),
                 "diffusion_loss": L_diffusion_per_sample.detach(),
             }
+            payload["com_mse_loss"] = com_sigma.detach()
+            payload["internal_mse_loss"] = internal_sigma.detach()
             if L_bond_weighted is not None:
                 payload["bond_loss"] = L_bond_weighted.detach()
             if L_smooth_lddt is not None:
