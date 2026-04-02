@@ -45,8 +45,10 @@ class ChainDecomposition:
         f_input : FoldingInput
             FoldingInput object containing model inputs, used to extract chain_id.
         """
-        # Simply set max chains to the number of tokens
-        self.num_chains = f_input.num_chains + 1  # 0 is reserved for padding
+        num_chains = f_input.num_chains
+        atom_mask = f_input.atom.pad_mask  # [B, Natom]
+        token_mask = f_input.token.pad_mask  # [B, Ntoken]
+        token_index = f_input.atom.token_index  # [B, Natom]
 
         # Renumber asym id to chain id: 1, 2, 5, 6, ... -> 1, 2, 3, ..., 0 0 0(pad)
         # NOTE: This is necessary for training because original asym id can be very large
@@ -57,17 +59,22 @@ class ChainDecomposition:
         assert (asym_id[f_input.token.pad_mask] >= 1).all(), (
             "Non-pad tokens must have asym_id >= 1"
         )
-
-        chain_id = torch.zeros_like(asym_id)
-        asym_id_uniq = torch.sort(torch.unique(asym_id))[0]
-        for i, asym in enumerate(asym_id_uniq):
-            chain_id[asym_id == asym] = i  # [B, Ntoken]
-
         # Token to atom mapping
-        b_idx = torch.arange(f_input.batch_size, device=asym_id.device)[:, None]
-        self.chain_id = chain_id[b_idx, f_input.atom.token_index]  # [B, Natom]
-        self.chain_id[~f_input.atom.pad_mask] = 0  # Set pad atoms to chain_id 0
-        self.pad_mask = f_input.atom.pad_mask  # [B, Natom]
+        chain_id = torch.zeros_like(asym_id)
+        for b_i in range(f_input.batch_size):
+            asym_id_i = asym_id[b_i]
+            mask_i = token_mask[b_i]
+            uniq_id = torch.sort(torch.unique(asym_id_i[mask_i]))[0]
+            for c_i, a_i in enumerate(uniq_id, start=1):
+                chain_id[b_i, asym_id_i == a_i] = c_i  # [B, Ntoken]
+
+        b_i = torch.arange(f_input.batch_size, device=asym_id.device)[:, None]
+        chain_id = chain_id[b_i, token_index]  # [B, Natom]
+        chain_id[~atom_mask] = 0  # Set pad atoms to chain_id 0
+
+        self.num_chains = num_chains + 1  # 0 is reserved for padding
+        self.chain_id = chain_id  # [B, Natom]
+        self.pad_mask = atom_mask  # [B, Natom]
 
     def decompose(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Decompose coordinates into each chain components

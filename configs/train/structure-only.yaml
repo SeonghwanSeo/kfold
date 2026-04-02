@@ -121,8 +121,9 @@ loss:
     diffusion: 4.0
     confidence: 1e-4
     # diffusion loss weights
-    smooth_lddt: 1.0
+    chain_com: 1.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
+    smooth_lddt: 1.0
     # confidence loss weights
     pae: 0.0 # 1 for final stage training
 
@@ -143,11 +144,6 @@ loss:
       upweight_rna: 5.0
       upweight_ligand: 10.0
       align_true_to_pred: true
-      com_weight: 1.0
-      internal_weight: 1.0
-      # λ_com(t) = 1 + c_com * t, λ_internal(t) = 1 - c_internal * t (t from t_hat)
-      c_com: 1.0
-      c_internal: 0.0
 
     # Bond Loss
     bond_loss: {}

@@ -33,5 +33,5 @@ sampling:
 
 train_time_sampling:
   schedule: 'logit_normal'
-  logit_normal_param: [-1.5, 1.5]
+  logit_normal_param: [-2.0, 1.6]
   beta_param: [0.5, 0.5]
