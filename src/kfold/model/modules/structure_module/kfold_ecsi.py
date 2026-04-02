@@ -1,5 +1,21 @@
-"""Implementation of Endpoint-Conditioned Stochastic Interpolant (ECSI)
-Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
+"""Implementation of Endpoint-Conditioned Stochastic Interpolant (ECSI) for biomolecular
+structure prediction.
+
+Reference: "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553).
+
+# Diffusion Path Design
+
+Models the transition from source (apo) to target (holo) conformations.
+- t=1 (Prior): Apo chain structures perturbed with 50 Å translational noise.
+- t=0 (Data): Ground-truth assembled holo complexes.
+
+# Decoupling COM and Intra-chain Dynamics
+
+In standard diffusion formulations, the variance of the Center of Mass (COM) scales
+proportionally to 1/sqrt(N_atom). This naturally suppresses global motion, leading to
+overly deterministic COM trajectories and suboptimal sampling. To resolve this, our
+ECSI bridge formulation decouples COM and intra-chain dynamics, enabling independent
+noise scheduling for rigid-body translations versus local conformational changes.
 """
 
 import dataclasses
@@ -11,11 +27,7 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.ecsi_diffusion import ECSIDiffusionModule
-from kfold.utils.geometry.random_augment import (
-    CenterRandomAugmentation,
-    do_centering,
-    get_center,
-)
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
 from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
@@ -24,34 +36,87 @@ from .base import BaseECSI
 _T = TypeVar("_T", float, torch.Tensor)
 
 
-def decompose(x: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Decompose coordinates into center-of-mass and internal components.
-    (*, L, 3) -> (*, 1, 3), (*, L, 3)
-    """
-    assert x.ndim == mask.ndim + 1
-    com = get_center(x, mask)
-    internal = (x - com).masked_fill_(~mask[..., None], 0.0)
-    return com, internal
+class ChainDecomposition:
+    def __init__(self, f_input: FoldingInput):
+        """Helper class for chain-aware decomposition and composition of coordinates.
 
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs, used to extract chain_id.
+        """
+        # Simply set max chains to the number of tokens
+        self.num_chains = f_input.num_chains + 1  # 0 is reserved for padding
 
-def compose(
-    com: torch.Tensor, internal: torch.Tensor, mask: torch.Tensor
-) -> torch.Tensor:
-    """Compose center-of-mass and internal components back to coordinates.
-    (*, 1, 3), (*, L, 3) -> (*, L, 3)
-    """
-    assert com.ndim == internal.ndim == mask.ndim + 1
-    return (com + internal).masked_fill_(~mask[..., None], 0.0)
+        # Renumber asym id to chain id: 1, 2, 5, 6, ... -> 1, 2, 3, ..., 0 0 0(pad)
+        # NOTE: This is necessary for training because original asym id can be very large
+        asym_id = f_input.token.asym_id
+        assert (asym_id[~f_input.token.pad_mask] == -1).all(), (
+            "Pad tokens must have asym_id = -1"
+        )
+        assert (asym_id[f_input.token.pad_mask] >= 1).all(), (
+            "Non-pad tokens must have asym_id >= 1"
+        )
+
+        chain_id = torch.zeros_like(asym_id)
+        asym_id_uniq = torch.sort(torch.unique(asym_id))[0]
+        for i, asym in enumerate(asym_id_uniq):
+            chain_id[asym_id == asym] = i  # [B, Ntoken]
+
+        # Token to atom mapping
+        b_idx = torch.arange(f_input.batch_size, device=asym_id.device)[:, None]
+        self.chain_id = chain_id[b_idx, f_input.atom.token_index]  # [B, Natom]
+        self.chain_id[~f_input.atom.pad_mask] = 0  # Set pad atoms to chain_id 0
+        self.pad_mask = f_input.atom.pad_mask  # [B, Natom]
+
+    def decompose(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Decompose coordinates into each chain components
+        (B, *, L, 3) -> (B, *, Nchain, 3), (B, *, L, 3)
+        """
+        assert x.dtype == torch.float32
+        B, *mid, L, _ = x.shape
+
+        # Compute chain-wise COM
+        view_shape = [B] + [1] * len(mid) + [L, 1]
+        chain_id = self.chain_id.view(*view_shape).expand(x.shape)
+        chain_com = torch.zeros(
+            (B, *mid, self.num_chains, 3), device=x.device, dtype=x.dtype
+        ).scatter_reduce_(-2, chain_id, x, reduce="mean", include_self=False)
+        # Zero out COM for padding chain (chain_id=0)
+        chain_com[..., 0, :] = 0.0
+
+        x_com = chain_com.gather(-2, chain_id)  # [B, *, Natom, 3]
+        x_intra = x - x_com
+
+        # Zero out padding
+        pad_mask = self.pad_mask.view(*view_shape).expand(x.shape)
+        x_intra.masked_fill_(~pad_mask, 0.0)
+        return chain_com, x_intra
+
+    def recompose(self, x_com: torch.Tensor, x_intra: torch.Tensor) -> torch.Tensor:
+        """Recompose coordinates from chain COM and intra components
+        (B, *, Nchain, 3), (B, *, L, 3) -> (B, *, L, 3)
+        """
+        assert x_com.dtype == torch.float32 and x_intra.dtype == torch.float32
+        B, *mid, Natom, _ = x_intra.shape
+        view_shape = [B] + [1] * len(mid) + [Natom, 1]
+        chain_id = self.chain_id.view(*view_shape).expand(x_intra.shape)
+        pad_mask = self.pad_mask.view(*view_shape).expand(x_intra.shape)
+        x_com = x_com.gather(-2, chain_id)  # [B, *, Natom, 3]
+        x = x_com + x_intra
+        # Zero out padding
+        x.masked_fill_(~pad_mask, 0.0)
+        return x
 
 
 @dataclasses.dataclass(kw_only=True)
 class SICoeffs:
     """Stochastic interpolant coefficient helper for ECSI."""
 
-    power: float
     gamma_max: float
     gamma_scale_com: float
-    gamma_scale_internal: float
+    gamma_scale_intra: float
+    power: float
 
     @staticmethod
     def _clamp_t(t: _T) -> _T:
@@ -95,11 +160,11 @@ class SICoeffs:
     def gamma_com_deriv(self, t: _T) -> _T:
         return self.gamma_scale_com * self.gamma_deriv(t)
 
-    def gamma_internal(self, t: _T) -> _T:
-        return self.gamma_scale_internal * self.gamma(t)
+    def gamma_intra(self, t: _T) -> _T:
+        return self.gamma_scale_intra * self.gamma(t)
 
-    def gamma_internal_deriv(self, t: _T) -> _T:
-        return self.gamma_scale_internal * self.gamma_deriv(t)
+    def gamma_intra_deriv(self, t: _T) -> _T:
+        return self.gamma_scale_intra * self.gamma_deriv(t)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -137,14 +202,14 @@ class SamplingConfig:
 
       1. Prior initialization
          - start from sampled prior `x_T`
-         - if `perturb_xt`, add endpoint noise with `endpoint_perturb_scale`
+         - if `perturb_x_t`, add endpoint noise with `endpoint_perturb_scale`
 
       2. Early high-time region (`t > churn_end_time`)
          - Apply the forward-pinned churn substep
 
       3. Middle stochastic region (`ode_start_time < t <= churn_end_time`)
          - use the expanded ECSI SDE update
-         - stochasticity is controlled by `eta`, `eta_com`, `eta_internal`
+         - stochasticity is controlled by `eta_com`, `eta_intra`
 
       4. Late deterministic region (`t <= ode_start_time`)
          - switch to the SI ODE update
@@ -152,8 +217,8 @@ class SamplingConfig:
 
     Parameter groups:
       - horizon: `steps`, `time_min`, `time_max`
-      - stochasticity: `eta`, `eta_com`, `eta_internal`
-      - endpoint handling: `perturb_xt`, `endpoint_perturb_scale`
+      - stochasticity: `eta_com`, `eta_intra`
+      - endpoint handling: `perturb_x_t`, `endpoint_perturb_scale`
       - early churn: `churn_end_time`, `churn_factor`
       - late ODE switch: `ode_start_time`
       - time allocation across steps: `schedule`
@@ -161,11 +226,10 @@ class SamplingConfig:
 
     time_min: float = 0.001
     time_max: float = 0.999
-    eta: float = 1.0
-    eta_com: float | None = None
-    eta_internal: float | None = None
-    align_x0_hat_to_xt: bool = True
-    perturb_xt: bool = True
+    eta_com: float = 1.0  # scale: eta_com
+    eta_intra: float = 1.0  # scale: eta_intra
+    align_x_0_hat_to_x_t: bool = True
+    perturb_x_t: bool = True
     endpoint_perturb_scale: float = 0.1
     # Early-stage Pinned churn
     churn_end_time: float = 0.7  # 1.0 to disable
@@ -207,7 +271,7 @@ class KFoldECSI(BaseECSI):
     Models" for biomolecular structure prediction (apo -> holo translation).
 
     Key features:
-    - Expanded bridge dynamics with separate COM and internal-coordinate noise paths
+    - Expanded bridge dynamics with separate COM and intra-coordinate noise paths
     - Linear route with shared power k:
       \alpha_t=1-t^k and \beta_t=t^k
     - Shared base gamma with component scales:
@@ -227,15 +291,15 @@ class KFoldECSI(BaseECSI):
         Parameters
         ----------
         gamma_max : float, optional
-            Shared base bridge maximum used by `gamma(t)`. Expanded COM/internal
+            Shared base bridge maximum used by `gamma(t)`. Expanded COM/intra
             branches are defined by scaling this base gamma with
-            `gamma_scale_com` and `gamma_scale_internal`.
+            `gamma_scale_com` and `gamma_scale_intra`.
         gamma_scale_com : float, optional
             Multiplicative scale applied to the shared base gamma for the COM
             branch of the expanded bridge dynamics.
-        gamma_scale_internal : float, optional
+        gamma_scale_intra : float, optional
             Multiplicative scale applied to the shared base gamma for the
-            internal-coordinate branch of the expanded bridge dynamics.
+            intra-coordinate branch of the expanded bridge dynamics.
         time_power : float, optional
             Shared exponent `k` for the route coefficients
             `alpha_t = 1 - t^k`, `beta_t = t^k`, and the base gamma schedule.
@@ -253,23 +317,19 @@ class KFoldECSI(BaseECSI):
         train_time_sampling : TrainTimeSamplingConfig, optional
             Training-time sampling policy for `t_hat`, including the optional
             Uniform mixture applied to the Beta branch.
-        inference_align_x_0_hat_to_x_t : bool, optional
-            Whether sampled prior coordinates are rigidly aligned to labels
-            during training before interpolation.
         s_trans : float, optional
             Translation scale used by `CenterRandomAugmentation`.
         """
 
-        gamma_max: float = 12.0
-        gamma_scale_com: float = 4.0
-        gamma_scale_internal: float = 2.0
+        gamma_max: float = 24.0
+        gamma_scale_com: float = 1.0
+        gamma_scale_intra: float = 1.0
         time_power: float = 1.0
 
         sigma_data: float = 16.0
-        sigma_data_end: float = 46.0  # 16 + 30
+        sigma_data_end: float = 66.0  # 16 + 50 translations
         cov_xy: float = 128.0
 
-        inference_align_x_0_hat_to_x_t: bool = True
         s_trans: float = 1.0
 
         sampling: SamplingConfig = dataclasses.field(default_factory=SamplingConfig)
@@ -297,13 +357,11 @@ class KFoldECSI(BaseECSI):
         self.cov_xy: float = cfg.cov_xy
 
         self.si_coeffs = SICoeffs(
-            power=cfg.time_power,
             gamma_max=cfg.gamma_max,
             gamma_scale_com=cfg.gamma_scale_com,
-            gamma_scale_internal=cfg.gamma_scale_internal,
+            gamma_scale_intra=cfg.gamma_scale_intra,
+            power=cfg.time_power,
         )
-
-        self.inference_align_x_0_hat_to_x_t: bool = cfg.inference_align_x_0_hat_to_x_t
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation(
@@ -317,15 +375,11 @@ class KFoldECSI(BaseECSI):
         This method is the single runtime gate for ECSI-specific config
         correctness. It enforces schedule invariants, validates time/stochastic
         parameter ranges, and normalizes optional sampling fields such as
-        `eta_com`, `eta_internal`, and `churn_end_time`.
+        `eta_com`, `eta_intra`, and `churn_end_time`.
         """
         sampling_cfg = config.sampling
         if sampling_cfg.time_max <= sampling_cfg.time_min:
             raise ValueError("sampling.time_max must be > sampling.time_min")
-        if sampling_cfg.eta_com is None:
-            sampling_cfg.eta_com = sampling_cfg.eta
-        if sampling_cfg.eta_internal is None:
-            sampling_cfg.eta_internal = sampling_cfg.eta
         if not (
             sampling_cfg.time_min
             < sampling_cfg.ode_start_time
@@ -412,7 +466,8 @@ class KFoldECSI(BaseECSI):
             numerator_out = max(numerator_out_sq, 0) ** 0.5
 
         c_out = c_in * numerator_out
-
+        if isinstance(c_out, torch.Tensor):
+            c_skip, c_out, c_in = c_skip.float(), c_out.float(), c_in.float()
         return c_skip, c_out, c_in
 
     def c_skip(self, t: _T) -> _T:
@@ -455,27 +510,28 @@ class KFoldECSI(BaseECSI):
         """
         batch_size = f_input.batch_size  # =B
         num_samples = diffusion_batch_size  # =N
-        mask = f_input.atom.pad_mask  # [B, La]
+        mask = f_input.atom.pad_mask  # [B, Natom]
         device = f_input.device
+        decomposer = ChainDecomposition(f_input)
 
-        with torch.no_grad(), torch.autocast(device.type, enabled=False):
+        with torch.no_grad(), torch.autocast(device.type, dtype=torch.float32):
             t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
 
             # sample xT from label
             x_0, x_T = self.sample_x_0_and_x_T(f_input, num_samples)
 
             # sample xt via interpolation
-            x_t = self.interpolate(x_0, x_T, t_hat, mask)  # [B, N, La, 3]
+            x_t = self.interpolate(x_0, x_T, t_hat, mask, decomposer)  # [B, N, Natom, 3]
 
         x_0_hat = self.forward_train(
-            x_t=x_t.float(),  # [B, N, La, 3]
+            x_t=x_t,  # [B, N, Natom, 3]
             t_hat=t_hat,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
-            x_T=x_T,  # [B, N, La, 3]
-        )  # [B, N, La, 3]
+            x_T=x_T,  # [B, N, Natom, 3]
+        )  # [B, N, Natom, 3]
 
         loss_weights = self.loss_weights(t_hat)  # [B, N]
 
@@ -521,23 +577,23 @@ class KFoldECSI(BaseECSI):
         Returns
         -------
         x_0_hat : torch.Tensor
-            Denoised atom coordinates. Shape (B, N, La, 3).
+            Denoised atom coordinates. Shape (B, N, Natom, 3).
         """
         assert x_T is not None, "x_T must be provided for ECSI"
         c_skip, c_out, c_in = self._get_bridge_scalings(t_hat)  # [B, N]
         c_noise = self.c_noise(t_hat)  # [B, N]
 
         # Input preconditioning: r_noisy = c_in * x_t, r_T = x_T / sigma_data_end
-        r_noisy = c_in[:, :, None, None] * x_t  # [B, N, La, 3]
+        r_noisy = c_in[:, :, None, None] * x_t  # [B, N, Natom, 3]
 
         # End-point conditioning: r_T = x_T / sigma_data_end
-        r_T = x_T / self.sigma_data_end  # [B, N, La, 3]
+        r_T = x_T / self.sigma_data_end  # [B, N, Natom, 3]
         r_noisy = torch.cat([r_noisy, r_T], dim=-1)
 
         # Call score model
         r_update = self.score_model.train_step(
             f_input=f_input,
-            r_noisy=r_noisy,  # [B, N, La, 6]
+            r_noisy=r_noisy,  # [B, N, Natom, 6]
             c_noise=c_noise,  # [B, N]
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
@@ -545,7 +601,8 @@ class KFoldECSI(BaseECSI):
         )
 
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
-        x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
+        with torch.autocast(x_t.device.type, dtype=torch.float32):
+            x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
         return x_0_hat
 
     def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
@@ -607,22 +664,22 @@ class KFoldECSI(BaseECSI):
         Returns
         -------
         x_0 : torch.Tensor
-            Label coordinates. Shape (B, N, La, 3).
+            Label coordinates. Shape (B, N, Natom, 3).
         prior_coords : torch.Tensor
-            prior coordinates. Shape (B, N, La, 3).
+            prior coordinates. Shape (B, N, Natom, 3).
         """
         # Sample from label coordinates
-        x_0 = f_input.atom.label_coords[..., None, :, :]  # [B, 1, Latom, 3]
-        label_mask = f_input.atom.resolved_mask[..., None, :]  # [B, 1, Latom]
-        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Latom]
+        x_0 = f_input.atom.label_coords[..., None, :, :]  # [B, 1, Natom, 3]
+        label_mask = f_input.atom.resolved_mask[..., None, :]  # [B, 1, Natom]
+        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
 
         # Sample from prior coordinates
         # If num_diffusion_samples > num_prior, cycle through prior coords
-        all_prior_coords = f_input.atom.prior_coords  # [B, Latom, Nprior, 3]
+        all_prior_coords = f_input.atom.prior_coords  # [B, Natom, Nprior, 3]
         num_prior = all_prior_coords.shape[-2]
         idx = [i % num_prior for i in range(num_samples)]
-        x_T = all_prior_coords[:, :, idx, :]  # [B, Latom, N, 3]
-        x_T = x_T.permute(0, 2, 1, 3)  # [B, N, Latom, 3]
+        x_T = all_prior_coords[:, :, idx, :]  # [B, Natom, N, 3]
+        x_T = x_T.permute(0, 2, 1, 3)  # [B, N, Natom, 3]
 
         # repeat label coords
         x_0 = x_0.expand(-1, num_samples, -1, -1)  # [B, N, L, 3]
@@ -638,12 +695,13 @@ class KFoldECSI(BaseECSI):
         x_T.masked_fill_(~mask[..., None], 0.0)
         return x_0, x_T
 
-    def interpolate(
+    def interpolate(  # type: ignore
         self,
         x_0: torch.Tensor,
         x_T: torch.Tensor,
         t_hat: torch.Tensor,
         mask: torch.Tensor,
+        decomposer: ChainDecomposition,
     ) -> torch.Tensor:
         r"""Interpolate between x_0 and x_T using ECSI bridge.
 
@@ -653,41 +711,44 @@ class KFoldECSI(BaseECSI):
         Parameters
         ----------
         x_0 : torch.Tensor
-            The target (holo) coordinates x_0. Shape (B, N, La, 3).
+            The target (holo) coordinates x_0. Shape (B, N, Natom, 3).
         x_T : torch.Tensor
-            The source (apo) coordinates x_T. Shape (B, N, La, 3).
+            The source (apo) coordinates x_T. Shape (B, N, Natom, 3).
         t_hat : torch.Tensor
             Time values. Shape (B, N).
         mask : torch.Tensor
-            The atom mask. Shape (B, La).
+            The atom mask. Shape (B, Natom).
+        decomposer : ChainDecomposition
+            ChainDecomposition object for decomposing/recomposing coordinates
+            into COM/intra space for ECSI interpolation.
 
         Returns
         -------
         x_t : torch.Tensor
-            Bridge-sampled coordinates x_t. Shape (B, N, La, 3).
+            Bridge-sampled coordinates x_t. Shape (B, N, Natom, 3).
         """
+        B, N, Natom, _ = x_0.shape
         t_expanded = t_hat[:, :, None, None]
         alpha_t = self.si_coeffs.alpha(t_expanded)
         beta_t = self.si_coeffs.beta(t_expanded)
         gamma_com = self.si_coeffs.gamma_com(t_expanded)
-        gamma_internal = self.si_coeffs.gamma_internal(t_expanded)
+        gamma_intra = self.si_coeffs.gamma_intra(t_expanded)
 
-        mask_expanded = mask.unsqueeze(-2)  # [B, 1, La]
+        # Interpolate in COM/intra space
+        x_0_com, x_0_intra = decomposer.decompose(x_0)
+        x_T_com, x_T_intra = decomposer.decompose(x_T)
 
-        # Interpolate in COM/internal space
-        x_0_com, x_0_internal = decompose(x_0, mask_expanded)
-        x_T_com, x_T_internal = decompose(x_T, mask_expanded)
+        # Add noise in COM/intra space
+        noise_com = torch.randn_like(x_T_com)
+        _, noise_intra = decomposer.decompose(torch.randn_like(x_T))
 
-        # Add noise in COM/internal space
-        noise = torch.randn_like(x_T)
-        noise_com, noise_internal = decompose(noise, mask_expanded)
         mean_com = alpha_t * x_0_com + beta_t * x_T_com
-        mean_internal = alpha_t * x_0_internal + beta_t * x_T_internal
+        mean_intra = alpha_t * x_0_intra + beta_t * x_T_intra
         x_t_com = mean_com + gamma_com * noise_com
-        x_t_internal = mean_internal + gamma_internal * noise_internal
+        x_t_intra = mean_intra + gamma_intra * noise_intra
 
         # Recompose to Cartesian coordinates
-        x_t = compose(x_t_com, x_t_internal, mask_expanded)
+        x_t = decomposer.recompose(x_t_com, x_t_intra)
         return x_t
 
     # ============================================================
@@ -718,15 +779,18 @@ class KFoldECSI(BaseECSI):
         \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / \gamma_t
         \epsilon_t = \eta (\gamma_t \dot{\gamma}_t - \dot{\alpha}_t/\alpha_t \gamma_t^2)
         """
+        # Construct chain decomposer
+        decomposer = ChainDecomposition(f_input)
+
         # Get time schedule (from t_max toward t_min)
         times = self.get_sampling_schedule(num_steps)
 
         # Sample x_T from prior (apo structures)
-        x_T = self.sample_prior(f_input, num_samples)  # (B, N, Latom, 3)
+        x_T = self.sample_prior(f_input, num_samples)  # (B, N, Natom, 3)
         x_t = x_T.clone()
-        mask = f_input.atom.pad_mask[..., None, :]  # (B, 1, Latom)
+        mask = f_input.atom.pad_mask[..., None, :]  # (B, 1, Natom)
 
-        if self.sampling.perturb_xt:
+        if self.sampling.perturb_x_t:
             x_t = self._apply_endpoint_perturbation(x_t, mask)
         x_churn_target = x_t.clone()
 
@@ -777,26 +841,27 @@ class KFoldECSI(BaseECSI):
             if churn_end_time < t:
                 # Early-stage forward-pinned churn.
                 x_t, t = self._apply_forward_pinned_churn(
-                    x_t, x_churn_target, mask, t, t_next
+                    x_t, x_churn_target, decomposer, t, t_next
                 )
                 dt = t_next - t
 
             # Get denoised prediction \hat{x}_0
             x_0_hat = run_step(x_t, t)
 
-            if self.inference_align_x_0_hat_to_x_t:
+            if self.sampling.align_x_0_hat_to_x_t:
                 # Rigidly align x_0_hat to x_t before centering.
                 x_0_hat = rigid_align(x_0_hat, x_t, mask)
 
             # Centering c_0_hat
             x_0_hat = do_centering(x_0_hat, mask)
 
-            if t > ode_start_time:
-                # Early/Mid-stage stochastic SI SDE update.
-                x_t = self._sde_step(x_t, x_0_hat, x_T, mask, t, dt)
-            else:
-                # Late-stage deterministic ODE update.
-                x_t = self._ode_step(x_t, x_0_hat, mask, t, dt)
+            with torch.autocast(x_t.device.type, dtype=torch.float32):
+                if t > ode_start_time:
+                    # Early/Mid-stage stochastic SI SDE update.
+                    x_t = self._sde_step(x_t, x_0_hat, x_T, decomposer, t, dt)
+                else:
+                    # Late-stage deterministic ODE update.
+                    x_t = self._ode_step(x_t, x_0_hat, mask, t, dt)
 
         append_traj(x_t)
 
@@ -804,7 +869,7 @@ class KFoldECSI(BaseECSI):
         sample_out["init_coordinates"] = x_T
         sample_out["sample_coordinates"] = x_t
         if return_traj:
-            sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Latom, 3)
+            sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Natom, 3)
 
         return sample_out
 
@@ -821,19 +886,19 @@ class KFoldECSI(BaseECSI):
         Returns
         -------
         xT : torch.Tensor
-            prior coordinates. Shape (B, N, Latom, 3).
+            prior coordinates. Shape (B, N, Natom, 3).
 
         """
         # Sample from prior coordinates
         # If num_diffusion_samples > num_prior, cycle through prior coords
-        all_prior_coords = f_input.atom.prior_coords  # [B, Latom, Nprior, 3]
+        all_prior_coords = f_input.atom.prior_coords  # [B, Natom, Nprior, 3]
         num_prior = all_prior_coords.shape[-2]
         idx = [i % num_prior for i in range(num_samples)]
-        xT = all_prior_coords[:, :, idx, :]  # [B, Latom, N, 3]
-        xT = xT.permute(0, 2, 1, 3)  # [B, N, Latom, 3]
+        xT = all_prior_coords[:, :, idx, :]  # [B, Natom, N, 3]
+        xT = xT.permute(0, 2, 1, 3)  # [B, N, Natom, 3]
 
         # Apply random augmentation to prior coords without centering.
-        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Latom]
+        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
         xT = self.random_augmentation(xT, mask=mask, mask_to_zero=True, centering=False)
         return xT
 
@@ -864,11 +929,11 @@ class KFoldECSI(BaseECSI):
         t_hat : float
             Diffusion noise level (or sigmas of EDM).
         q : torch.Tensor
-            The atom single representation, shape [B, La, c_atom].
+            The atom single representation, shape [B, Natom, c_atom].
         c : torch.Tensor
-            The atom single conditioning, shape [B, La, c_atom].
+            The atom single conditioning, shape [B, Natom, c_atom].
         p : torch.Tensor
-            The atom pair representation, shape [B, La, La, c_atompair].
+            The atom pair representation, shape [B, Natom, Natom, c_atompair].
         s : torch.Tensor
             Single conditioning. Shape (B, 1, L, c_s), broadcast to (B, N, L, c_s).
         pair_bias : torch.Tensor
@@ -879,8 +944,8 @@ class KFoldECSI(BaseECSI):
         x_out : torch.Tensor
             Denoised atom coordinates. Shape (B, N, L, 3).
         """
-        token_index = f_input.atom.token_index  # [B, La]
-        atom_mask = f_input.atom.pad_mask  # [B, La]
+        token_index = f_input.atom.token_index  # [B, Natom]
+        atom_mask = f_input.atom.pad_mask  # [B, Natom]
         token_mask = f_input.token.pad_mask  # [B, L]
 
         # Input preconditioning: r_noisy = c_in * x_t
@@ -893,12 +958,12 @@ class KFoldECSI(BaseECSI):
         def _step(r: torch.Tensor) -> torch.Tensor:
             return self.score_model.step(
                 r,  # [B, N, L, 6]
-                q,  # [B, La, c_atom]
-                c,  # [B, La, c_atom]
-                p,  # [B, La, La, c_atompair]
-                token_index,  # [B, La]
-                atom_mask,  # [B, La]
-                s,  # [B, 1, L, c_s], broadcast to [B, N, L, c_s]
+                q,  # [B, Natom, c_atom]
+                c,  # [B, Natom, c_atom]
+                p,  # [B, Natom, Natom, c_atompair]
+                token_index,  # [B, Natom]
+                atom_mask,  # [B, Natom]
+                s,  # [B, 1, Ntoken, c_s]
                 pair_bias,  # [B, Nblock, H, Lt, Lt]
                 token_mask,  # [B, L]
             )
@@ -912,7 +977,8 @@ class KFoldECSI(BaseECSI):
                 r_update[:, st:end] = _step(r_noisy[:, st:end])
 
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
-        x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update  # [B, N, La, 3]
+        with torch.autocast(x_t.device.type, dtype=torch.float32):
+            x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update
         return x_out
 
     def get_pair_conditioning(
@@ -959,11 +1025,11 @@ class KFoldECSI(BaseECSI):
         Returns
         -------
         q : torch.Tensor
-            The atom single representation, shape [B, La, c_atom].
+            The atom single representation, shape [B, Natom, c_atom].
         c : torch.Tensor
-            The atom single conditioning, shape [B, La, c_atom].
+            The atom single conditioning, shape [B, Natom, c_atom].
         p : torch.Tensor
-            The atom pair representation, shape [B, La, La, c_atompair].
+            The atom pair representation, shape [B, Natom, Natom, c_atompair].
         """
         return self.score_model.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
 
@@ -1091,7 +1157,7 @@ class KFoldECSI(BaseECSI):
         self,
         x_t: torch.Tensor,
         x_churn_target: torch.Tensor,
-        mask: torch.Tensor,
+        decomposer: ChainDecomposition,
         t: float,
         t_next: float,
     ) -> tuple[torch.Tensor, float]:
@@ -1100,8 +1166,8 @@ class KFoldECSI(BaseECSI):
             return x_t, t
 
         dt = abs(t_next - t)
-        delta_churn = self.sampling.churn_factor * dt
-        if t + delta_churn > self.sampling.time_max:
+        dt_churn = self.sampling.churn_factor * dt
+        if t + dt_churn > self.sampling.time_max:
             # Do not apply churn if it would exceed time_max
             return x_t, t
 
@@ -1110,37 +1176,39 @@ class KFoldECSI(BaseECSI):
         alpha_dot: float = self.si_coeffs.alpha_deriv(t)
         beta_dot: float = self.si_coeffs.beta_deriv(t)
         gamma_com = self.si_coeffs.gamma_com(t)
-        gamma_internal = self.si_coeffs.gamma_internal(t)
+        gamma_intra = self.si_coeffs.gamma_intra(t)
         gamma_dot_com = self.si_coeffs.gamma_com_deriv(t)
-        gamma_dot_internal = self.si_coeffs.gamma_internal_deriv(t)
+        gamma_dot_intra = self.si_coeffs.gamma_intra_deriv(t)
 
         f_t = alpha_dot / (alpha_t + 1e-8)
         s_t = beta_dot - f_t * beta_t
         base_eps_com = gamma_com * gamma_dot_com - f_t * gamma_com**2
         g_com = max(2 * base_eps_com, 0.0) ** 0.5
-        base_eps_internal = gamma_internal * gamma_dot_internal - f_t * gamma_internal**2
-        g_internal = max(2 * base_eps_internal, 0.0) ** 0.5
+        base_eps_intra = gamma_intra * gamma_dot_intra - f_t * gamma_intra**2
+        g_intra = max(2 * base_eps_intra, 0.0) ** 0.5
 
-        # Decompose coordinates into COM/internal space
-        x_t_com, x_t_internal = decompose(x_t, mask)
-        x_target_com, x_target_internal = decompose(x_churn_target, mask)
-        churn_noise = torch.randn_like(x_t)
-        noise_com, noise_internal = decompose(churn_noise, mask)
+        # Decompose coordinates into COM/intra space
+        x_t_com, x_t_intra = decomposer.decompose(x_t)
+        x_target_com, x_target_intra = decomposer.decompose(x_churn_target)
+
+        # Sample noise for COM and intra space
+        noise_com = torch.randn_like(x_t_com)
+        noise_intra = torch.randn_like(x_t)
 
         # Euler update with forward-pinned noise
-        t += delta_churn
+        t += dt_churn
         x_t_com = (
             x_t_com
-            + (f_t * x_t_com + s_t * x_target_com) * delta_churn
-            + g_com * (delta_churn**0.5) * noise_com
+            + (f_t * x_t_com + s_t * x_target_com) * dt_churn
+            + g_com * (dt_churn**0.5) * noise_com
         )
-        x_t_internal = (
-            x_t_internal
-            + (f_t * x_t_internal + s_t * x_target_internal) * delta_churn
-            + g_internal * (delta_churn**0.5) * noise_internal
+        x_t_intra = (
+            x_t_intra
+            + (f_t * x_t_intra + s_t * x_target_intra) * dt_churn
+            + g_intra * (dt_churn**0.5) * noise_intra
         )
         # Recompose to Cartesian coordinates
-        x_t = compose(x_t_com, x_t_internal, mask)
+        x_t = decomposer.recompose(x_t_com, x_t_intra)
         return x_t, t
 
     def _sde_step(
@@ -1148,90 +1216,59 @@ class KFoldECSI(BaseECSI):
         x_t: torch.Tensor,
         x_0_hat: torch.Tensor,
         x_T: torch.Tensor,
-        mask: torch.Tensor,
+        decomposer: ChainDecomposition,
         t: float,
         dt: float,
     ) -> torch.Tensor:
-        drift_com, drift_internal, eps_com, eps_internal = self._compute_drift_components(
-            x_t, x_0_hat, x_T, mask, t
-        )
-        drift = compose(drift_com, drift_internal, mask)
+        si_coeffs = self.si_coeffs
+        alpha_t: float = si_coeffs.alpha(t)
+        beta_t: float = si_coeffs.beta(t)
+        alpha_dot: float = si_coeffs.alpha_deriv(t)
+        beta_dot: float = si_coeffs.beta_deriv(t)
 
-        diffusion_noise = torch.randn_like(x_t)
-        noise_com, noise_internal = decompose(diffusion_noise, mask)
-        com_scale = abs(2 * eps_com * dt) ** 0.5
-        internal_scale = abs(2 * eps_internal * dt) ** 0.5
-        diffusion = compose(com_scale * noise_com, internal_scale * noise_internal, mask)
-        x_update = x_t + drift * dt + diffusion
-        x_update.masked_fill_(~mask[..., None], 0.0)
-        return x_update
+        # === Compute drift ===
+        x_t_com, x_t_intra = decomposer.decompose(x_t)
+        x_0_com, x_0_intra = decomposer.decompose(x_0_hat)
+        x_T_com, x_T_intra = decomposer.decompose(x_T)
 
-    def _compute_drift_components(
-        self,
-        x_t: torch.Tensor,
-        x0_hat: torch.Tensor,
-        x_T: torch.Tensor,
-        mask: torch.Tensor,
-        t: float,
-    ) -> tuple[torch.Tensor, torch.Tensor, float, float]:
-        alpha_t: float = self.si_coeffs.alpha(t)
-        beta_t: float = self.si_coeffs.beta(t)
-        alpha_dot: float = self.si_coeffs.alpha_deriv(t)
-        beta_dot: float = self.si_coeffs.beta_deriv(t)
-        gamma_com: float = self.si_coeffs.gamma_com(t)
-        gamma_internal: float = self.si_coeffs.gamma_internal(t)
-        gamma_dot_com: float = self.si_coeffs.gamma_com_deriv(t)
-        gamma_dot_internal: float = self.si_coeffs.gamma_internal_deriv(t)
+        def compute_eps(gamma: float, gamma_dot: float, eta: float) -> float:
+            return eta * (gamma * gamma_dot - (alpha_dot / (alpha_t + 1e-8)) * gamma**2)
 
-        x_t_com, x_t_internal = decompose(x_t, mask)
-        x0_com, x0_internal = decompose(x0_hat, mask)
-        xT_com, xT_internal = decompose(x_T, mask)
+        eta_com: float = self.sampling.eta_com
+        gamma_com: float = si_coeffs.gamma_com(t)
+        gamma_dot_com: float = si_coeffs.gamma_com_deriv(t)
+        eps_com: float = compute_eps(gamma_com, gamma_dot_com, eta_com)
 
-        z_hat_com = (x_t_com - alpha_t * x0_com - beta_t * xT_com) / (gamma_com + 1e-8)
-        z_hat_internal = (x_t_internal - alpha_t * x0_internal - beta_t * xT_internal) / (
-            gamma_internal + 1e-8
-        )
+        eta_intra: float = self.sampling.eta_intra
+        gamma_intra: float = si_coeffs.gamma_intra(t)
+        gamma_dot_intra: float = si_coeffs.gamma_intra_deriv(t)
+        eps_intra: float = compute_eps(gamma_intra, gamma_dot_intra, eta_intra)
 
-        eta = self.sampling.eta
-        eta_com = self.sampling.eta_com if self.sampling.eta_com is not None else eta
-        eta_internal = (
-            self.sampling.eta_internal if self.sampling.eta_internal is not None else eta
-        )
-
-        def compute_eps(
-            gamma_t: float, gamma_dot: float, alpha_t: float, alpha_dot: float, eta: float
-        ) -> float:
-            return eta * (
-                gamma_t * gamma_dot - (alpha_dot / (alpha_t + 1e-8)) * gamma_t**2
-            )
-
-        eps_com: float = compute_eps(
-            gamma_t=gamma_com,
-            gamma_dot=gamma_dot_com,
-            alpha_t=alpha_t,
-            alpha_dot=alpha_dot,
-            eta=eta_com,
-        )
-        eps_internal: float = compute_eps(
-            gamma_t=gamma_internal,
-            gamma_dot=gamma_dot_internal,
-            alpha_t=alpha_t,
-            alpha_dot=alpha_dot,
-            eta=eta_internal,
-        )
-
+        z_hat_com = (x_t_com - alpha_t * x_0_com - beta_t * x_T_com) / gamma_com
+        z_hat_intra = (x_t_intra - alpha_t * x_0_intra - beta_t * x_T_intra) / gamma_intra
         drift_com = (
-            alpha_dot * x0_com
-            + beta_dot * xT_com
-            + (gamma_dot_com + eps_com / (gamma_com + 1e-8)) * z_hat_com
+            alpha_dot * x_0_com
+            + beta_dot * x_T_com
+            + (gamma_dot_com + eps_com / gamma_com) * z_hat_com
         )
-        drift_internal = (
-            alpha_dot * x0_internal
-            + beta_dot * xT_internal
-            + (gamma_dot_internal + eps_internal / (gamma_internal + 1e-8))
-            * z_hat_internal
+        drift_intra = (
+            alpha_dot * x_0_intra
+            + beta_dot * x_T_intra
+            + (gamma_dot_intra + eps_intra / gamma_intra) * z_hat_intra
         )
-        return drift_com, drift_internal, eps_com, eps_internal
+
+        # === Compute diffusion noise ===
+        noise_com = torch.randn_like(x_t_com)
+        _, noise_intra = decomposer.decompose(torch.randn_like(x_t))
+        com_scale = abs(2 * eps_com * dt) ** 0.5
+        intra_scale = abs(2 * eps_intra * dt) ** 0.5
+
+        # === Euler-Maruyama update ===
+        x_com = x_t_com + drift_com * dt + com_scale * noise_com
+        x_intra = x_t_intra + drift_intra * dt + intra_scale * noise_intra
+
+        x_update = decomposer.recompose(x_com, x_intra)
+        return x_update
 
     def _ode_step(
         self,
@@ -1241,12 +1278,11 @@ class KFoldECSI(BaseECSI):
         t: float,
         dt: float,
     ) -> torch.Tensor:
-        t_next = t + dt  # Note: dt is negative since t decreases
         coeffs = self.si_coeffs
         alpha, beta = coeffs.alpha(t), coeffs.beta(t)
-        alpha_next, beta_next = coeffs.alpha(t_next), coeffs.beta(t_next)
-        c_skip = beta_next / (beta + 1e-8)
-        c_update = alpha_next - alpha * c_skip
+        alpha_next, beta_next = coeffs.alpha(t + dt), coeffs.beta(t + dt)
+        c_skip: float = beta_next / (beta + 1e-8)
+        c_update: float = alpha_next - alpha * c_skip
         x_update = c_skip * x_t + c_update * x_0_hat
         x_update.masked_fill_(~mask[..., None], 0.0)
         return x_update

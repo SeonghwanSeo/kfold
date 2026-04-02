@@ -150,7 +150,8 @@ class AF3SampleDiffusion(BaseEDM):
         )
 
         # Line 8 of Algorithm 20
-        x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
+        with torch.autocast(device_type=c_skip.device.type, dtype=torch.float32):
+            x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
         return x_0_hat
 
     def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
@@ -384,7 +385,8 @@ class AF3SampleDiffusion(BaseEDM):
                 r_update[:, st:end] = _step(r_noisy[:, st:end])
 
         # Line 8 of Algorithm 20
-        x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update  # [B, N, La, 3]
+        with torch.autocast(device_type="cuda", dtype=torch.float32):
+            x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update
         return x_out
 
     def get_pair_conditioning(

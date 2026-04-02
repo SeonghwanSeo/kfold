@@ -2,25 +2,23 @@ _registry_: "structure_module"
 _class_: "KFoldECSI"
 
 gamma_max: 24
-gamma_scale_com: 2.0
-gamma_scale_internal: 1.0
+gamma_scale_com: 1.0
+gamma_scale_intra: 1.0
 time_power: 1.0
 
 sigma_data: 16.0
-sigma_data_end: 46.0
+sigma_data_end: 66.0
 cov_xy: 128.0
 
-inference_align_x_0_hat_to_x_t: true
 s_trans: 1.0
 
 sampling:
   time_min: 0.001
   time_max: 0.999
-  eta: 1.0
-  eta_com: null
-  eta_internal: null
-  align_x0_hat_to_xt: true
-  perturb_xt: true
+  eta_com: 1.0
+  eta_intra: 1.0
+  align_x_0_hat_to_x_t: true
+  perturb_x_t: true
   endpoint_perturb_scale: 0.1
   ode_start_time: 0.35
   churn_factor: 2.5
