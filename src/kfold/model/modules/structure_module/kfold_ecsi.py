@@ -1,5 +1,6 @@
-# Implementation of Endpoint-Conditioned Stochastic Interpolant (ECSI)
-# Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
+"""Implementation of Endpoint-Conditioned Stochastic Interpolant (ECSI)
+Based on "Exploring the Design Space of Diffusion Bridge Models" (arXiv:2410.21553)
+"""
 
 import dataclasses
 import math
@@ -252,7 +253,7 @@ class KFoldECSI(BaseECSI):
         train_time_sampling : TrainTimeSamplingConfig, optional
             Training-time sampling policy for `t_hat`, including the optional
             Uniform mixture applied to the Beta branch.
-        train_align_prior_to_label : bool, optional
+        inference_align_x_0_hat_to_x_t : bool, optional
             Whether sampled prior coordinates are rigidly aligned to labels
             during training before interpolation.
         s_trans : float, optional
@@ -268,7 +269,7 @@ class KFoldECSI(BaseECSI):
         sigma_data_end: float = 46.0  # 16 + 30
         cov_xy: float = 128.0
 
-        train_align_prior_to_label: bool = False
+        inference_align_x_0_hat_to_x_t: bool = True
         s_trans: float = 1.0
 
         sampling: SamplingConfig = dataclasses.field(default_factory=SamplingConfig)
@@ -302,7 +303,7 @@ class KFoldECSI(BaseECSI):
             gamma_scale_internal=cfg.gamma_scale_internal,
         )
 
-        self.train_align_prior_to_label: bool = cfg.train_align_prior_to_label
+        self.inference_align_x_0_hat_to_x_t: bool = cfg.inference_align_x_0_hat_to_x_t
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation(
@@ -623,10 +624,6 @@ class KFoldECSI(BaseECSI):
         x_T = all_prior_coords[:, :, idx, :]  # [B, Latom, N, 3]
         x_T = x_T.permute(0, 2, 1, 3)  # [B, N, Latom, 3]
 
-        if self.train_align_prior_to_label:
-            # Rigidly align prior to label
-            x_T = rigid_align(x_T, x_0, mask=label_mask)
-
         # repeat label coords
         x_0 = x_0.expand(-1, num_samples, -1, -1)  # [B, N, L, 3]
 
@@ -786,6 +783,10 @@ class KFoldECSI(BaseECSI):
 
             # Get denoised prediction \hat{x}_0
             x_0_hat = run_step(x_t, t)
+
+            if self.inference_align_x_0_hat_to_x_t:
+                # Rigidly align x_0_hat to x_t before centering.
+                x_0_hat = rigid_align(x_0_hat, x_t, mask)
 
             # Centering c_0_hat
             x_0_hat = do_centering(x_0_hat, mask)

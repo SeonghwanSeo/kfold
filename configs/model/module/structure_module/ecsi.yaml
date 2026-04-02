@@ -10,7 +10,7 @@ sigma_data: 16.0
 sigma_data_end: 46.0
 cov_xy: 128.0
 
-train_align_prior_to_label: false
+inference_align_x_0_hat_to_x_t: true
 s_trans: 1.0
 
 sampling:
