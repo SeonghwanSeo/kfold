@@ -202,8 +202,7 @@ class AF3SampleDiffusion(BaseEDM):
         """
         noise = x_T
         sigma = t_hat
-        with torch.autocast(device_type="cuda", dtype=torch.float32):
-            x_t = x_0 + sigma[:, :, None, None] * noise
+        x_t = x_0 + sigma[:, :, None, None] * noise
         x_t.masked_fill_(~mask[:, None, :, None], 0.0)  # apply atom mask
         return x_t
 
@@ -385,8 +384,7 @@ class AF3SampleDiffusion(BaseEDM):
                 r_update[:, st:end] = _step(r_noisy[:, st:end])
 
         # Line 8 of Algorithm 20
-        with torch.autocast(device_type="cuda", dtype=torch.float32):
-            x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update
+        x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update
         return x_out
 
     def get_pair_conditioning(

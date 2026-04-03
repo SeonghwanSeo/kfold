@@ -1033,4 +1033,4 @@ class KFoldTrainingModule(pl.LightningModule):
             # Save trajectory
             traj_i = traj[i]
             save_path = save_dir / f"{name}-sample-{i}-traj.{format}"
-            self.writer.write_trajectory(ref_struct, traj_i, save_path)
+            self.writer.write_trajectory(ref_struct, traj_i, save_path, align=True)
