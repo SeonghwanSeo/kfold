@@ -161,13 +161,21 @@ def add_com_noise(
         Noisy COM coordinates. Shape (B, N, Nchain, 3).
     """
     # Decompose noise into radial and tangential components
-    com_norm = torch.norm(com, dim=-1, keepdim=True).clamp(min=1e-8)
-    radial_direction = com / com_norm
-    radial_noise = (noise * radial_direction).sum(dim=-1, keepdim=True) * radial_direction
+    com_norm = torch.norm(com, dim=-1, keepdim=True)
+
+    radial_dir = com / com_norm.clamp(min=1e-8)
+    radial_noise = (noise * radial_dir).sum(dim=-1, keepdim=True) * radial_dir
     tangential_noise = noise - radial_noise
+    com_noise = radial_noise * radial_scale + tangential_noise * tentacle_scale
+
+    # Edge case handling: if COM is near zero, apply isotropic noise instead
+    near_zero_mask = com_norm < 1e-3
+    isotropic_noise = noise * radial_scale  # Use radial_scale for isotropic noise
+    com_noise = torch.where(near_zero_mask, isotropic_noise, com_noise)
 
     # Scale and combine noise components
-    noisy_com = com + radial_scale * radial_noise + tentacle_scale * tangential_noise
+    noisy_com = com + com_noise
+
     return noisy_com
 
 
