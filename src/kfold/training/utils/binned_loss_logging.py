@@ -85,6 +85,7 @@ class TimeBinnedLossLogger(torch.nn.Module):
             for name in [
                 "loss",
                 "mse_loss",
+                "chain_com_loss",
                 "bond_loss",
                 "smooth_lddt_loss",
                 "diffusion_loss",
@@ -169,6 +170,7 @@ class EntityBinnedLossLogger(torch.nn.Module):
             for name in [
                 "loss",
                 "mse_loss",
+                "chain_com_loss",
                 "bond_loss",
                 "smooth_lddt_loss",
                 "diffusion_loss",

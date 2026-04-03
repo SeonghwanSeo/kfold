@@ -265,7 +265,7 @@ class KFoldTrainingModule(pl.LightningModule):
     def setup_losses(self):
         """Setup loss functions for training"""
         loss_config = self.loss_config
-        self.loss_weights = loss_config.weights
+        self.loss_weights: dict[str, float] = loss_config.weights
 
         if self.train_structure_module:
             # Distogram loss
@@ -706,14 +706,25 @@ class KFoldTrainingModule(pl.LightningModule):
             A dictionary containing loss metrics.
         """
         metrics: dict[str, torch.Tensor] = {}
+        alpha_chain_com = self.loss_weights["chain_com"]
+        alpha_bond = self.loss_weights["bond"]
+        alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
 
         # Equations 3-4
-        L_mse = self.weighted_mse_loss(x_pred, x_true, f_input)  # [B, Nsample]
+        L_mse, L_chain_com = self.weighted_mse_loss(
+            x_pred, x_true, f_input, compute_chain_com_loss=alpha_chain_com > 0
+        )
         L_mse_weighted = L_mse * per_sample_weights  # [B, Nsample]
         metrics["mse_loss"] = L_mse_weighted.detach().mean()
 
+        if alpha_chain_com > 0:
+            assert L_chain_com is not None
+            L_chain_com_weighted = L_chain_com * per_sample_weights  # [B, Nsample]
+            metrics["chain_com_loss"] = L_chain_com_weighted.detach().mean()
+        else:
+            L_chain_com_weighted = None
+
         # Equation 5
-        alpha_bond = self.loss_weights["bond"]
         if alpha_bond > 0:
             L_bond = self.bond_loss(x_pred, x_true, f_input)
             L_bond_weighted = L_bond * per_sample_weights  # [B, Nsample]
@@ -722,17 +733,20 @@ class KFoldTrainingModule(pl.LightningModule):
             L_bond_weighted = None
 
         # Algorithm 27
-        alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
         if alpha_smooth_lddt > 0:
-            L_smooth_lddt = self.smooth_lddt_loss(x_pred, x_true, f_input)
+            L_smooth_lddt = self.smooth_lddt_loss(x_pred, x_true, f_input)  # [B, Nsample]
             metrics["smooth_lddt_loss"] = L_smooth_lddt.detach().mean()
         else:
             L_smooth_lddt = None
 
         # Equation 6
         # NOTE: per-sample weights are already applied in L_mse and L_bond
-        # L_diff = loss_weights(L_mse + α_bond * L_bond) + L_smooth_lddt
+        # L_diff = loss_weights(L_mse + α_com * L_com + α_bond * L_bond) + L_smooth_lddt
         L_diffusion_per_sample = L_mse_weighted
+        if L_chain_com_weighted is not None:
+            L_diffusion_per_sample = (
+                L_diffusion_per_sample + alpha_chain_com * L_chain_com_weighted
+            )
         if L_bond_weighted is not None:
             L_diffusion_per_sample = L_diffusion_per_sample + alpha_bond * L_bond_weighted
         if L_smooth_lddt is not None:
@@ -749,6 +763,8 @@ class KFoldTrainingModule(pl.LightningModule):
                 "mse_loss": L_mse_weighted.detach(),
                 "diffusion_loss": L_diffusion_per_sample.detach(),
             }
+            if L_chain_com_weighted is not None:
+                payload["chain_com_loss"] = L_chain_com_weighted.detach()
             if L_bond_weighted is not None:
                 payload["bond_loss"] = L_bond_weighted.detach()
             if L_smooth_lddt is not None:
@@ -1017,4 +1033,4 @@ class KFoldTrainingModule(pl.LightningModule):
             # Save trajectory
             traj_i = traj[i]
             save_path = save_dir / f"{name}-sample-{i}-traj.{format}"
-            self.writer.write_trajectory(ref_struct, traj_i, save_path)
+            self.writer.write_trajectory(ref_struct, traj_i, save_path, align=True)
