@@ -16,6 +16,12 @@ proportionally to 1/sqrt(N_atom). This naturally suppresses global motion, leadi
 overly deterministic COM trajectories and suboptimal sampling. To resolve this, our
 ECSI bridge formulation decouples COM and intra-chain dynamics, enabling independent
 noise scheduling for rigid-body translations versus local conformational changes.
+
+# Decoupling Radial and Tangential COM Noise
+To further enhance sampling diversity, we decompose the COM noise into radial and
+tangential components. This allows separate control over the magnitude of noise that
+pushes the structure directly towards/away from the target (radial) versus noise that
+induces lateral "tentacle-like" exploration around the direct path (tangential).
 """
 
 import dataclasses
@@ -36,6 +42,7 @@ from .base import BaseECSI
 _T = TypeVar("_T", float, torch.Tensor)
 
 
+# === Utility functions with type flexibility and numerical stability handling === #
 def _clip(t: _T, eps: float = 1e-10) -> _T:
     return t.clip(min=eps) if isinstance(t, torch.Tensor) else max(t, eps)  # type: ignore
 
@@ -49,6 +56,7 @@ def _log(t: _T) -> _T:
     return log(_clip(t, eps=1e-10))  # type: ignore
 
 
+# === Helper class/functions for ECSI bridge decomposition and noise handling === #
 class ChainDecomposition:
     def __init__(self, f_input: FoldingInput):
         """Helper class for chain-aware decomposition and composition of coordinates.
@@ -129,6 +137,41 @@ class ChainDecomposition:
         return x
 
 
+def add_com_noise(
+    com: torch.Tensor,
+    noise: torch.Tensor,
+    tentacle_scale: float | torch.Tensor,
+    radial_scale: float | torch.Tensor,
+) -> torch.Tensor:
+    """Add noise to coordinates with separate tentacle and radial components for COM.
+
+    Parameters
+    ----------
+    com : torch.Tensor
+        Input COM coordinates. Shape (B, N, Nchain, 3).
+    noise : torch.Tensor
+        Noise tensor. Shape (B, N, Nchain, 3).
+    tentacle_scale : float | torch.Tensor
+        Scale for the tangential (tentacle) component of the COM noise.
+    radial_scale : float | torch.Tensor
+        Scale for the radial component of the COM noise.
+    Returns
+    -------
+    com_noisy : torch.Tensor
+        Noisy COM coordinates. Shape (B, N, Nchain, 3).
+    """
+    # Decompose noise into radial and tangential components
+    com_norm = torch.norm(com, dim=-1, keepdim=True).clamp(min=1e-8)
+    radial_direction = com / com_norm
+    radial_noise = (noise * radial_direction).sum(dim=-1, keepdim=True) * radial_direction
+    tangential_noise = noise - radial_noise
+
+    # Scale and combine noise components
+    noisy_com = com + radial_scale * radial_noise + tentacle_scale * tangential_noise
+    return noisy_com
+
+
+# === Main ECSI module implementation === #
 @dataclasses.dataclass(kw_only=True)
 class SICoeffs:
     """Stochastic interpolant coefficient helper for ECSI."""
@@ -214,7 +257,7 @@ class SamplingConfig:
 
     Parameter groups:
       - horizon: `steps`, `time_min`, `time_max`
-      - stochasticity: `eta`, `eta_scale_com`, `eta_scale_intra`
+      - stochasticity: `eta`, `eta_scale_*`.
       - endpoint handling: `perturb_x_t`, `endpoint_perturb_scale`
       - early churn: `churn_end_time`, `churn_factor`
       - late ODE switch: `ode_start_time`
@@ -224,8 +267,9 @@ class SamplingConfig:
     time_min: float = 0.0001
     time_max: float = 0.9999
     eta: float = 1.0  # global stochasticity scale
-    eta_scale_com: float = 1.0
     eta_scale_intra: float = 1.0
+    eta_scale_com_tentacle: float = 1.0
+    eta_scale_com_radial: float = 1.0
     align_x_0_hat_to_x_t: bool = True
     perturb_x_t: bool = True
     endpoint_perturb_scale: float = 0.1
@@ -289,18 +333,19 @@ class KFoldECSI(BaseECSI):
         Parameters
         ----------
         gamma_max : float, optional
-            Shared base bridge maximum used by `gamma(t)`. Expanded COM/intra
-            branches are defined by scaling this base gamma with
-            `gamma_scale_com` and `gamma_scale_intra`.
-        gamma_scale_com : float, optional
-            Multiplicative scale applied to the shared base gamma for the COM
-            branch of the expanded bridge dynamics.
-        gamma_scale_intra : float, optional
-            Multiplicative scale applied to the shared base gamma for the
-            intra-coordinate branch of the expanded bridge dynamics.
+            Shared base bridge maximum used by `gamma(t)`.
         time_power : float, optional
             Shared exponent `k` for the route coefficients
             `alpha_t = 1 - t^k`, `beta_t = t^k`, and the base gamma schedule.
+        gamma_scale_intra : float, optional
+            Multiplicative scale applied to the shared base gamma for the
+            intra-coordinate branch of the expanded bridge dynamics.
+        gamma_scale_com_tentacle : float, optional
+            Multiplicative scale applied to the shared base gamma for the
+            tangential component of the COM branch of the expanded bridge dynamics.
+        gamma_scale_com_radial : float, optional
+            Multiplicative scale applied to the shared base gamma for the
+            radial component of the COM branch of the expanded bridge dynamics.
         sigma_data : float, optional
             Effective target-coordinate scale used in ECSI preconditioning.
         sigma_data_end : float, optional
@@ -308,6 +353,8 @@ class KFoldECSI(BaseECSI):
         cov_xy : float, optional
             Cross-covariance term between source and target coordinates used by
             the bridge preconditioning formulas.
+        s_trans : float, optional
+            Translation scale used by `CenterRandomAugmentation`.
         sampling : SamplingConfig, optional
             Reverse-time rollout configuration including stochasticity, endpoint
             perturbation, late ODE switching, and the nested step-allocation
@@ -315,15 +362,14 @@ class KFoldECSI(BaseECSI):
         train_time_sampling : TrainTimeSamplingConfig, optional
             Training-time sampling policy for `t_hat`, including the optional
             Uniform mixture applied to the Beta branch.
-        s_trans : float, optional
-            Translation scale used by `CenterRandomAugmentation`.
         """
 
         gamma_max: float = 24.0
         time_power: float = 2.0
 
-        gamma_scale_com: float = 1.0
         gamma_scale_intra: float = 1.0
+        gamma_scale_com_tentacle: float = 0.5  # Tangential noise scale for COM
+        gamma_scale_com_radial: float = 0.5  # Radial noise scale for COM
 
         sigma_data: float = 16.0
         sigma_data_end: float = 66.0  # 16 + 50 translations
@@ -360,10 +406,12 @@ class KFoldECSI(BaseECSI):
             power=cfg.time_power,
             eta=cfg.sampling.eta,
         )
-        self.gamma_scale_com = cfg.gamma_scale_com
         self.gamma_scale_intra = cfg.gamma_scale_intra
-        self.eta_scale_com = cfg.sampling.eta_scale_com
+        self.gamma_scale_com_t = cfg.gamma_scale_com_tentacle
+        self.gamma_scale_com_r = cfg.gamma_scale_com_radial
         self.eta_scale_intra = cfg.sampling.eta_scale_intra
+        self.eta_scale_com_t = cfg.sampling.eta_scale_com_tentacle
+        self.eta_scale_com_r = cfg.sampling.eta_scale_com_radial
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation(
@@ -707,21 +755,22 @@ class KFoldECSI(BaseECSI):
         beta_t = self.si_coeffs.beta(t_expanded)
         gamma = self.si_coeffs.gamma(t_expanded)
 
-        gamma_com = gamma * self.gamma_scale_com
         gamma_intra = gamma * self.gamma_scale_intra
+        gamma_com_t = gamma * self.gamma_scale_com_t
+        gamma_com_r = gamma * self.gamma_scale_com_r
 
         # Interpolate in COM/intra space
         x_0_com, x_0_intra = decomposer.decompose(x_0)
         x_T_com, x_T_intra = decomposer.decompose(x_T)
 
         # Add noise in COM/intra space
-        noise_com = torch.randn_like(x_T_com)
+        noise_com = torch.randn_like(x_0_com)
         _, noise_intra = decomposer.decompose(torch.randn_like(x_T))
 
-        mean_com = alpha_t * x_0_com + beta_t * x_T_com
-        mean_intra = alpha_t * x_0_intra + beta_t * x_T_intra
-        x_t_com = mean_com + gamma_com * noise_com
-        x_t_intra = mean_intra + gamma_intra * noise_intra
+        _mu = alpha_t * x_0_com + beta_t * x_T_com
+        x_t_com = add_com_noise(_mu, noise_com, gamma_com_t, gamma_com_r)
+        _mu = alpha_t * x_0_intra + beta_t * x_T_intra
+        x_t_intra = _mu + gamma_intra * noise_intra
 
         # Recompose to Cartesian coordinates
         x_t = decomposer.recompose(x_t_com, x_t_intra)
@@ -1150,23 +1199,17 @@ class KFoldECSI(BaseECSI):
         _, noise_intra = decomposer.decompose(torch.randn_like(x_t))
 
         # Euler update with forward-pinned noise
-        t += dt_churn
-
-        g_com = g * self.gamma_scale_com
+        g_com_t = g * self.gamma_scale_com_t
+        g_com_r = g * self.gamma_scale_com_r
         g_intra = g * self.gamma_scale_intra
+        mean_com = x_t_com + (f_t * x_t_com + s_t * x_target_com) * dt_churn
+        mean_intra = x_t_intra + (f_t * x_t_intra + s_t * x_target_intra) * dt_churn
+        x_t_com = add_com_noise(mean_com, noise_com * (dt_churn**0.5), g_com_t, g_com_r)
+        x_t_intra = mean_intra + g_intra * noise_intra * (dt_churn**0.5)
 
-        x_t_com = (
-            x_t_com
-            + (f_t * x_t_com + s_t * x_target_com) * dt_churn
-            + g_com * (dt_churn**0.5) * noise_com
-        )
-        x_t_intra = (
-            x_t_intra
-            + (f_t * x_t_intra + s_t * x_target_intra) * dt_churn
-            + g_intra * (dt_churn**0.5) * noise_intra
-        )
         # Recompose to Cartesian coordinates
         x_t = decomposer.recompose(x_t_com, x_t_intra)
+        t += dt_churn
         return x_t, t
 
     def _sde_step(
@@ -1187,33 +1230,40 @@ class KFoldECSI(BaseECSI):
         gamma_dot: float = si_coeffs.gamma_deriv(t)
         eps: float = si_coeffs.eps(t)
 
-        gamma_com = gamma * self.gamma_scale_com
-        gamma_intra = gamma * self.gamma_scale_intra
-        gamma_dot_com = gamma_dot * self.gamma_scale_com
-        gamma_dot_intra = gamma_dot * self.gamma_scale_intra
-        eps_com = self.eta_scale_com * self.gamma_scale_com**2 * eps
-        eps_intra = self.eta_scale_intra * self.gamma_scale_intra**2 * eps
+        # Scale eps for COM/intra space separately
+        eps_com_r = self.eta_scale_com_r * eps
+        eps_com_t = self.eta_scale_com_t * eps
+        eps_intra = self.eta_scale_intra * eps
 
-        # === Compute drift ===
+        # Decompose coordinates into COM/intra space
         x_t_com, x_t_intra = decomposer.decompose(x_t)
         x_0_com, x_0_intra = decomposer.decompose(x_0_hat)
         x_T_com, x_T_intra = decomposer.decompose(x_T)
 
-        # Compute \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / \gamma_t
-        z_hat_com = (x_t_com - alpha_t * x_0_com - beta_t * x_T_com) / gamma_com
-        z_hat_intra = (x_t_intra - alpha_t * x_0_intra - beta_t * x_T_intra) / gamma_intra
+        # Compute \hat{z}_t
+        # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
+        raw_z_com = x_t_com - alpha_t * x_0_com - beta_t * x_T_com
+        _com_norm = x_t_com.norm(dim=-1, keepdim=True)
+        _r_dir = x_t_com / (_com_norm + 1e-8)
+        raw_z_com_r = (raw_z_com * _r_dir).sum(dim=-1, keepdim=True) * _r_dir
+        raw_z_com_t = raw_z_com - raw_z_com_r
+        del raw_z_com, _com_norm, _r_dir  # Free up memory
+        raw_z_intra = x_t_intra - alpha_t * x_0_intra - beta_t * x_T_intra
 
-        # Compute drift: b(t) = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_T
-        #                       + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
+        base_z_com_r = raw_z_com_r / gamma
+        base_z_com_t = raw_z_com_t / gamma
+        base_z_intra = raw_z_intra / gamma
+
+        # Compute drift b(t)
+        # b(t) = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_T
+        #        + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
         drift_com = (
-            alpha_dot * x_0_com
-            + beta_dot * x_T_com
-            + (gamma_dot_com + eps_com / gamma_com) * z_hat_com
+            (alpha_dot * x_0_com + beta_dot * x_T_com)
+            + ((gamma_dot + eps_com_r / gamma) * base_z_com_r)
+            + ((gamma_dot + eps_com_t / gamma) * base_z_com_t)
         )
-        drift_intra = (
-            alpha_dot * x_0_intra
-            + beta_dot * x_T_intra
-            + (gamma_dot_intra + eps_intra / gamma_intra) * z_hat_intra
+        drift_intra = (alpha_dot * x_0_intra + beta_dot * x_T_intra) + (
+            (gamma_dot + eps_intra / gamma) * base_z_intra
         )
 
         # === Euler-Maruyama update ===
@@ -1222,10 +1272,13 @@ class KFoldECSI(BaseECSI):
         _, noise_intra = decomposer.decompose(torch.randn_like(x_t))
 
         # Update in COM/intra space
-        noise_scale_com = abs(2 * eps_com * dt) ** 0.5
-        noise_scale_intra = abs(2 * eps_intra * dt) ** 0.5
-        x_com = x_t_com + drift_com * dt + noise_scale_com * noise_com
-        x_intra = x_t_intra + drift_intra * dt + noise_scale_intra * noise_intra
+        noise_scale_com_t = self.gamma_scale_com_t * abs(2 * eps_com_t * dt) ** 0.5
+        noise_scale_com_r = self.gamma_scale_com_r * abs(2 * eps_com_r * dt) ** 0.5
+        noise_scale_intra = self.gamma_scale_intra * abs(2 * eps_intra * dt) ** 0.5
+        mean_com = x_t_com + drift_com * dt
+        mean_intra = x_t_intra + drift_intra * dt
+        x_com = add_com_noise(mean_com, noise_com, noise_scale_com_t, noise_scale_com_r)
+        x_intra = mean_intra + noise_scale_intra * noise_intra
 
         # Recompose to Cartesian coordinates
         x_update = decomposer.recompose(x_com, x_intra)

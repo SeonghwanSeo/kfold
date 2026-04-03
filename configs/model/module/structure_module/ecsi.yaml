@@ -2,8 +2,9 @@ _registry_: "structure_module"
 _class_: "KFoldECSI"
 
 gamma_max: 24
-gamma_scale_com: 0.5
 gamma_scale_intra: 1.0
+gamma_scale_com_radial: 0.5
+gamma_scale_com_tentacle: 0.5
 time_power: 2.0
 
 sigma_data: 16.0
@@ -16,7 +17,8 @@ sampling:
   time_min: 0.0001
   time_max: 0.9999
   eta: 1.0
-  eta_scale_com: 1.0
+  eta_scale_com_radial: 1.0
+  eta_scale_com_tentacle: 1.0
   eta_scale_intra: 1.0
   align_x_0_hat_to_x_t: true
   perturb_x_t: true
