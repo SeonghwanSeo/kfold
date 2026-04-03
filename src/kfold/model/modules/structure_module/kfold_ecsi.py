@@ -36,7 +36,7 @@ from .base import BaseECSI
 _T = TypeVar("_T", float, torch.Tensor)
 
 
-def _clip(t: _T, eps: float = 1e-20) -> _T:
+def _clip(t: _T, eps: float = 1e-10) -> _T:
     return t.clip(min=eps) if isinstance(t, torch.Tensor) else max(t, eps)  # type: ignore
 
 
@@ -46,7 +46,7 @@ def _sqrt(t: _T) -> _T:
 
 def _log(t: _T) -> _T:
     log = torch.log if isinstance(t, torch.Tensor) else math.log
-    return log(_clip(t, eps=1e-20))  # type: ignore
+    return log(_clip(t, eps=1e-10))  # type: ignore
 
 
 class ChainDecomposition:
@@ -606,7 +606,7 @@ class KFoldECSI(BaseECSI):
         Uses Karras-style weighting: w(t) = 1 / c_{out}(t)^2
         """
         c_out = self.c_out(t_hat)
-        weights = 1 / c_out.pow(2).clamp(min=1e-20)
+        weights = 1 / c_out.pow(2).clamp(min=1e-8)
         return weights
 
     def sample_noise_level(
