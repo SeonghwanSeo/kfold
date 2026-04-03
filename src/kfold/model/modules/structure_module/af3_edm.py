@@ -223,6 +223,8 @@ class AF3SampleDiffusion(BaseEDM):
         """Sample structures via diffusion sampling.
         See Section 3.7: Algorithm 18 of AlphaFold3 paper.
         """
+        model = self.score_model
+
         # Get noise schedule
         sigmas: list[float] = self.get_sampling_schedule(num_steps)
         gammas: list[float] = [
@@ -236,13 +238,14 @@ class AF3SampleDiffusion(BaseEDM):
         x.masked_fill_(~mask[:, :, :, None], 0.0)  # apply atom mask
 
         # Compute time-independent variables
-        z = self.get_pair_conditioning(f_input, z_trunk)
-        q, c, p = self.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
-        pair_bias = self.get_pair_bias(z)
+        z = model.get_pair_conditioning(f_input, z_trunk)
+        q, c, p = model.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        pair_bias = model.get_pair_bias(z)
         del z_trunk, z  # Free up memory for large LxL tensors
 
         def run_step(x_t: torch.Tensor, t_hat: float) -> torch.Tensor:
-            s = self.get_single_conditioning(s_inputs, s_trunk, t_hat)
+            c_noise = torch.tensor(self.c_noise(t_hat), device=s_inputs.device)
+            s = model.get_single_conditioning(s_inputs, s_trunk, c_noise.view(1, 1))
             return self.inference_step(
                 f_input=f_input,
                 x_t=x_t,
@@ -386,96 +389,3 @@ class AF3SampleDiffusion(BaseEDM):
         # Line 8 of Algorithm 20
         x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update
         return x_out
-
-    def get_pair_conditioning(
-        self, f_input: FoldingInput, z_trunk: torch.Tensor
-    ) -> torch.Tensor:
-        """Get the pair conditioning for the score model.
-        See Section 3.7: Algorithm 21 of AlphaFold3 paper.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            The folding input.
-        z_trunk : torch.Tensor
-            The trunk pair representation, shape [B, Lt, Lt, c_z].
-
-        Returns
-        -------
-        z : torch.Tensor
-            The pair conditioning, shape [B, Lt, Lt, c_z].
-        """
-        return self.score_model.get_pair_conditioning(f_input, z_trunk)
-
-    def get_atom_embeddings(
-        self,
-        f_input: FoldingInput,
-        s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Prepare the inputs which are static across diffusion steps.
-        # Algorithm 5 Line 1-10, 13-14.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            The folding input.
-        s_inputs : torch.Tensor
-            The input single representation, shape [B, Lt, c_s].
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
-        z : torch.Tensor
-            The trunk pair conditioning, shape [B, Lt, Lt, c_z].
-
-        Returns
-        -------
-        q : torch.Tensor
-            The atom single representation, shape [B, La, c_atom].
-        c : torch.Tensor
-            The atom single conditioning, shape [B, La, c_atom].
-        p : torch.Tensor
-            The atom pair representation, shape [B, La, La, c_atompair].
-        """
-        return self.score_model.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
-
-    def get_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
-        """Get the pair bias for the token transformer.
-        This is time-independent and can be pre-computed before the diffusion steps.
-
-        Parameters
-        ----------
-        z : torch.Tensor
-            The pair conditioning, shape [B, Lt, Lt, c_z].
-
-        Returns
-        -------
-        pair_bias : torch.Tensor
-            The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
-        """
-        return self.score_model.get_pair_bias(z)
-
-    def get_single_conditioning(
-        self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, t_hat: float
-    ) -> torch.Tensor:
-        """Get the single conditioning for the score model.
-        See Section 3.7: Algorithm 21 of AlphaFold3 paper.
-
-        Parameters
-        ----------
-        s_inputs : torch.Tensor
-            The input single representation, shape [B, Lt, c_s].
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
-        t_hat : float
-            Diffusion noise level (or sigma).
-
-        Returns
-        -------
-        s : torch.Tensor
-            The single conditioning, shape [B, 1, Lt, c_s].
-        """
-        c_noise = self.c_noise(t_hat)
-        c_noise = torch.tensor(c_noise, device=s_inputs.device)
-        c_noise = c_noise.view(1, 1)
-        return self.score_model.get_single_conditioning(s_inputs, s_trunk, c_noise)
