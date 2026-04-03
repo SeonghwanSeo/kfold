@@ -134,12 +134,8 @@ class SICoeffs:
     """Stochastic interpolant coefficient helper for ECSI."""
 
     gamma_max: float
-    gamma_scale_com: float
-    gamma_scale_intra: float
     power: float
     eta: float
-    eta_scale_com: float
-    eta_scale_intra: float
 
     def alpha(self, t: _T) -> _T:
         return 1.0 - _clip(t) ** self.power  # type: ignore
@@ -163,29 +159,11 @@ class SICoeffs:
         coeff = self.power * t ** (self.power - 1)
         return (self.gamma_max / 4) * coeff * (1 - 2 * t_pow) / _clip(denom)  # type: ignore
 
-    def gamma_com(self, t: _T) -> _T:
-        return self.gamma_scale_com * self.gamma(t)
-
-    def gamma_com_deriv(self, t: _T) -> _T:
-        return self.gamma_scale_com * self.gamma_deriv(t)
-
-    def gamma_intra(self, t: _T) -> _T:
-        return self.gamma_scale_intra * self.gamma(t)
-
-    def gamma_intra_deriv(self, t: _T) -> _T:
-        return self.gamma_scale_intra * self.gamma_deriv(t)
-
     # Compute \epsilon = \eta (\gamma \dot{\gamma} - \dot{\alpha}/\alpha \gamma^2)
-    def eps_com(self, t: _T) -> _T:
-        eta = self.eta * self.eta_scale_com
+    def eps(self, t: _T) -> _T:
+        eta = self.eta
         alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
-        gamma, gamma_dot = self.gamma_com(t), self.gamma_com_deriv(t)
-        return eta * (gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2)  # type: ignore
-
-    def eps_intra(self, t: _T) -> _T:
-        eta = self.eta * self.eta_scale_intra
-        alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
-        gamma, gamma_dot = self.gamma_intra(t), self.gamma_intra_deriv(t)
+        gamma, gamma_dot = self.gamma(t), self.gamma_deriv(t)
         return eta * (gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2)  # type: ignore
 
 
@@ -342,9 +320,10 @@ class KFoldECSI(BaseECSI):
         """
 
         gamma_max: float = 24.0
+        time_power: float = 2.0
+
         gamma_scale_com: float = 1.0
         gamma_scale_intra: float = 1.0
-        time_power: float = 2.0
 
         sigma_data: float = 16.0
         sigma_data_end: float = 66.0  # 16 + 50 translations
@@ -378,13 +357,13 @@ class KFoldECSI(BaseECSI):
 
         self.si_coeffs = SICoeffs(
             gamma_max=cfg.gamma_max,
-            gamma_scale_com=cfg.gamma_scale_com,
-            gamma_scale_intra=cfg.gamma_scale_intra,
             power=cfg.time_power,
             eta=cfg.sampling.eta,
-            eta_scale_com=cfg.sampling.eta_scale_com,
-            eta_scale_intra=cfg.sampling.eta_scale_intra,
         )
+        self.gamma_scale_com = cfg.gamma_scale_com
+        self.gamma_scale_intra = cfg.gamma_scale_intra
+        self.eta_scale_com = cfg.sampling.eta_scale_com
+        self.eta_scale_intra = cfg.sampling.eta_scale_intra
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation(
@@ -726,8 +705,10 @@ class KFoldECSI(BaseECSI):
         t_expanded = t_hat[:, :, None, None]
         alpha_t = self.si_coeffs.alpha(t_expanded)
         beta_t = self.si_coeffs.beta(t_expanded)
-        gamma_com = self.si_coeffs.gamma_com(t_expanded)
-        gamma_intra = self.si_coeffs.gamma_intra(t_expanded)
+        gamma = self.si_coeffs.gamma(t_expanded)
+
+        gamma_com = gamma * self.gamma_scale_com
+        gamma_intra = gamma * self.gamma_scale_intra
 
         # Interpolate in COM/intra space
         x_0_com, x_0_intra = decomposer.decompose(x_0)
@@ -1153,17 +1134,12 @@ class KFoldECSI(BaseECSI):
         beta_t: float = self.si_coeffs.beta(t)
         alpha_dot: float = self.si_coeffs.alpha_deriv(t)
         beta_dot: float = self.si_coeffs.beta_deriv(t)
-        gamma_com = self.si_coeffs.gamma_com(t)
-        gamma_intra = self.si_coeffs.gamma_intra(t)
-        gamma_dot_com = self.si_coeffs.gamma_com_deriv(t)
-        gamma_dot_intra = self.si_coeffs.gamma_intra_deriv(t)
+        gamma = self.si_coeffs.gamma(t)
+        gamma_dot = self.si_coeffs.gamma_deriv(t)
 
         f_t = alpha_dot / alpha_t
         s_t = beta_dot - f_t * beta_t
-        base_eps_com = gamma_com * gamma_dot_com - f_t * gamma_com**2
-        g_com = max(2 * base_eps_com, 0.0) ** 0.5
-        base_eps_intra = gamma_intra * gamma_dot_intra - f_t * gamma_intra**2
-        g_intra = max(2 * base_eps_intra, 0.0) ** 0.5
+        g = _sqrt(2 * (gamma * gamma_dot - f_t * gamma**2))
 
         # Decompose coordinates into COM/intra space
         x_t_com, x_t_intra = decomposer.decompose(x_t)
@@ -1175,6 +1151,10 @@ class KFoldECSI(BaseECSI):
 
         # Euler update with forward-pinned noise
         t += dt_churn
+
+        g_com = g * self.gamma_scale_com
+        g_intra = g * self.gamma_scale_intra
+
         x_t_com = (
             x_t_com
             + (f_t * x_t_com + s_t * x_target_com) * dt_churn
@@ -1203,15 +1183,16 @@ class KFoldECSI(BaseECSI):
         beta_t: float = si_coeffs.beta(t)
         alpha_dot: float = si_coeffs.alpha_deriv(t)
         beta_dot: float = si_coeffs.beta_deriv(t)
+        gamma: float = si_coeffs.gamma(t)
+        gamma_dot: float = si_coeffs.gamma_deriv(t)
+        eps: float = si_coeffs.eps(t)
 
-        gamma_com: float = si_coeffs.gamma_com(t)
-        gamma_intra: float = si_coeffs.gamma_intra(t)
-        gamma_dot_com: float = si_coeffs.gamma_com_deriv(t)
-        gamma_dot_intra: float = si_coeffs.gamma_intra_deriv(t)
-        eps_com: float = si_coeffs.eps_com(t)
-        eps_intra: float = si_coeffs.eps_intra(t)
-        com_scale = abs(2 * eps_com * dt) ** 0.5
-        intra_scale = abs(2 * eps_intra * dt) ** 0.5
+        gamma_com = gamma * self.gamma_scale_com
+        gamma_intra = gamma * self.gamma_scale_intra
+        gamma_dot_com = gamma_dot * self.gamma_scale_com
+        gamma_dot_intra = gamma_dot * self.gamma_scale_intra
+        eps_com = self.eta_scale_com * self.gamma_scale_com**2 * eps
+        eps_intra = self.eta_scale_intra * self.gamma_scale_intra**2 * eps
 
         # === Compute drift ===
         x_t_com, x_t_intra = decomposer.decompose(x_t)
@@ -1241,8 +1222,10 @@ class KFoldECSI(BaseECSI):
         _, noise_intra = decomposer.decompose(torch.randn_like(x_t))
 
         # Update in COM/intra space
-        x_com = x_t_com + drift_com * dt + com_scale * noise_com
-        x_intra = x_t_intra + drift_intra * dt + intra_scale * noise_intra
+        noise_scale_com = abs(2 * eps_com * dt) ** 0.5
+        noise_scale_intra = abs(2 * eps_intra * dt) ** 0.5
+        x_com = x_t_com + drift_com * dt + noise_scale_com * noise_com
+        x_intra = x_t_intra + drift_intra * dt + noise_scale_intra * noise_intra
 
         # Recompose to Cartesian coordinates
         x_update = decomposer.recompose(x_com, x_intra)
