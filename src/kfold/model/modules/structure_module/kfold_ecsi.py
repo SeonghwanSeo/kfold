@@ -211,8 +211,6 @@ class KFoldECSI(BaseECSI):
         cov_xy : float, optional
             Cross-covariance term between source and target coordinates used by
             the bridge preconditioning formulas.
-        s_trans : float, optional
-            Translation scale used by `CenterRandomAugmentation`.
         sampling : SamplingConfig, optional
             Reverse-time rollout configuration including stochasticity, endpoint
             perturbation, late ODE switching, and the nested step-allocation
@@ -228,8 +226,6 @@ class KFoldECSI(BaseECSI):
         sigma_data: float = 16.0
         sigma_data_end: float = 66.0  # 16 + 50 translations
         cov_xy: float = 128.0
-
-        s_trans: float = 0.0
 
         sampling: SamplingConfig = dataclasses.field(default_factory=SamplingConfig)
         train_time_sampling: TrainTimeSamplingConfig = dataclasses.field(
@@ -262,9 +258,14 @@ class KFoldECSI(BaseECSI):
         )
 
         # NOTE: centering should be disabled.
-        self.random_augmentation = CenterRandomAugmentation(
-            centering=False, s_trans=cfg.s_trans
-        )
+        self.random_augmentation = CenterRandomAugmentation()
+
+    def apply_random_augmentation(
+        self,
+        coords: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.random_augmentation(coords, mask=mask)
 
     @staticmethod
     def __validate_config(config: Config) -> None:
@@ -387,10 +388,17 @@ class KFoldECSI(BaseECSI):
 
         t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
 
-        # sample xT from label
-        x_0, x_T = self.sample_x_0_and_x_T(f_input, num_samples)
+        # Sample xT from label
+        x_0 = self.sample_x_0(f_input, num_samples)  # [B, N, Natom, 3]
+        x_T = self.sample_prior(f_input, num_samples)  # [B, N, Natom, 3]
 
-        # sample xt via interpolation
+        # Rigid align x_T to x_0
+        align_mask = f_input.atom.resolved_mask.unsqueeze(-2)  # [B, 1, Natom]
+        x_T = rigid_align(x_T, x_0, align_mask)  # [B, N, Natom, 3]
+        # Mask out padding atoms
+        x_T.masked_fill_(~mask[..., None], 0.0)
+
+        # Sample xt via interpolation
         x_t = self.interpolate(x_0, x_T, t_hat, mask)  # [B, N, Natom, 3]
 
         x_0_hat = self.forward_train(
@@ -516,12 +524,8 @@ class KFoldECSI(BaseECSI):
         t = self.sampling.time_min + (self.sampling.time_max - self.sampling.time_min) * t
         return t
 
-    def sample_x_0_and_x_T(
-        self, f_input: FoldingInput, num_samples: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample x0 (labels) and xT (prior) coordinates for ECSI training.
-        To maintain the relative alignment between x0 and xT,  use specific
-        method to augment them together.
+    def sample_prior(self, f_input: FoldingInput, num_samples: int) -> torch.Tensor:
+        """Sample xT (prior) coordinates for ECSI sampling.
 
         Parameters
         ----------
@@ -532,37 +536,22 @@ class KFoldECSI(BaseECSI):
 
         Returns
         -------
-        x_0 : torch.Tensor
-            Label coordinates. Shape (B, N, Natom, 3).
-        prior_coords : torch.Tensor
+        xT : torch.Tensor
             prior coordinates. Shape (B, N, Natom, 3).
-        """
-        # Sample from label coordinates
-        x_0 = f_input.atom.label_coords[..., None, :, :]  # [B, 1, Natom, 3]
-        label_mask = f_input.atom.resolved_mask[..., None, :]  # [B, 1, Natom]
-        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
 
+        """
         # Sample from prior coordinates
         # If num_diffusion_samples > num_prior, cycle through prior coords
         all_prior_coords = f_input.atom.prior_coords  # [B, Natom, Nprior, 3]
         num_prior = all_prior_coords.shape[-2]
         idx = [i % num_prior for i in range(num_samples)]
-        x_T = all_prior_coords[:, :, idx, :]  # [B, Natom, N, 3]
-        x_T = x_T.permute(0, 2, 1, 3)  # [B, N, Natom, 3]
+        xT = all_prior_coords[:, :, idx, :]  # [B, Natom, N, 3]
+        xT = xT.permute(0, 2, 1, 3)  # [B, N, Natom, 3]
 
-        # repeat label coords
-        x_0 = x_0.expand(-1, num_samples, -1, -1)  # [B, N, L, 3]
-
-        # Apply random augmentation to label and prior coords altogether
-        # to maintain their relative alignment.
-        # Note: mask is not used if mask_to_zero=False, so pass any mask here.
-        x_0, x_T = self.random_augmentation(
-            x_0, x_T, mask=mask, centering=False, mask_to_zero=False
-        )
-        # Manual masking after augmentation (This is not required process)
-        x_0.masked_fill_(~label_mask[..., None], 0.0)
-        x_T.masked_fill_(~mask[..., None], 0.0)
-        return x_0, x_T
+        # Apply random augmentation to prior coords without centering.
+        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
+        xT = self.apply_random_augmentation(xT, mask)
+        return xT
 
     def interpolate(  # type: ignore
         self,
@@ -719,35 +708,6 @@ class KFoldECSI(BaseECSI):
             sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Natom, 3)
 
         return sample_out
-
-    def sample_prior(self, f_input: FoldingInput, num_samples: int) -> torch.Tensor:
-        """Sample xT (prior) coordinates for ECSI sampling.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            FoldingInput object containing model inputs.
-        num_samples : int
-            Number of diffusion samples
-
-        Returns
-        -------
-        xT : torch.Tensor
-            prior coordinates. Shape (B, N, Natom, 3).
-
-        """
-        # Sample from prior coordinates
-        # If num_diffusion_samples > num_prior, cycle through prior coords
-        all_prior_coords = f_input.atom.prior_coords  # [B, Natom, Nprior, 3]
-        num_prior = all_prior_coords.shape[-2]
-        idx = [i % num_prior for i in range(num_samples)]
-        xT = all_prior_coords[:, :, idx, :]  # [B, Natom, N, 3]
-        xT = xT.permute(0, 2, 1, 3)  # [B, N, Natom, 3]
-
-        # Apply random augmentation to prior coords without centering.
-        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
-        xT = self.random_augmentation(xT, mask=mask, mask_to_zero=True, centering=False)
-        return xT
 
     def inference_step(
         self,
