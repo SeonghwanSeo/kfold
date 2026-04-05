@@ -27,9 +27,6 @@ class PriorSamplerConfig:
     ----------
     chain_translation_scale : float
         Scale of random translation augmentation for each chain (in Angstrom).
-    chain_translation_range : float
-        Range of random translation augmentation for each chain (in Angstrom).
-        Translation: uniform[scale - range, scale + range].
     use_ot_permutation : bool
         Whether to apply optimal transport-based permutation
     align_for_permutation : bool
@@ -38,8 +35,7 @@ class PriorSamplerConfig:
         coordinates (only centering).
     """
 
-    chain_translation_scale: float = 30.0  # Angstrom
-    chain_translation_range: float = 10.0  # # Angstrom
+    chain_translation_scale: float = 50.0  # Angstrom
     use_ot_permutation: bool = False
     align_for_permutation: bool = False
 
@@ -47,8 +43,7 @@ class PriorSamplerConfig:
     def inference_mode(cls) -> Self:
         """Get a PriorSampler config configured for inference."""
         return cls(
-            chain_translation_scale=30.0,
-            chain_translation_range=0.0,
+            chain_translation_scale=50.0,
             use_ot_permutation=False,
         )
 
@@ -61,13 +56,6 @@ class PriorSampler:
         self.logger = logging.getLogger("PriorSampler")
 
         self.chain_translation_scale: float = config.chain_translation_scale
-        self.chain_translation_range: float = config.chain_translation_range
-        if self.chain_translation_scale < 0.0:
-            raise ValueError("chain_translation_scale must be non-negative.")
-        if not (0 <= self.chain_translation_range <= self.chain_translation_scale):
-            raise ValueError(
-                "chain_translation_range must be in [0, chain_translation_scale]."
-            )
 
         self.use_ot_permutation: bool = config.use_ot_permutation
         self.align_for_permutation: bool = config.align_for_permutation
@@ -281,16 +269,11 @@ class PriorSampler:
             Augmented structure coordinates of shape [Natom, 3].
         """
         assert coords.ndim == 2, "Apo coordinates must be of shape [Natom, 3]."
-        mu, sigma = self.chain_translation_scale, self.chain_translation_range
-        if mu == 0.0:
+        scale = self.chain_translation_scale
+        if scale == 0.0:
             return coords
-        if sigma == 0.0:
-            scale = mu
-        else:
-            scale = rng.uniform(mu - sigma, mu + sigma)
-        vector = rng.normal(size=(3,))
-        vector /= np.linalg.norm(vector) + 1e-8
-        augmented_coords = coords + scale * vector
+        v = rng.normal(size=(3,))
+        augmented_coords = coords + v * scale
         # Skip NaN masking here since translation does not change NaN positions
         return augmented_coords
 

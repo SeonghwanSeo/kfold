@@ -19,8 +19,9 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.ecsi_diffusion import ECSIDiffusionModule
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation
+from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
 from kfold.utils.geometry.rigid_align import rigid_align
+from kfold.utils.misc import expand_dim
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseECSI
@@ -227,6 +228,8 @@ class KFoldECSI(BaseECSI):
         sigma_data_end: float = 66.0  # 16 + 50 translations
         cov_xy: float = 128.0
 
+        version: int = 0
+
         sampling: SamplingConfig = dataclasses.field(default_factory=SamplingConfig)
         train_time_sampling: TrainTimeSamplingConfig = dataclasses.field(
             default_factory=TrainTimeSamplingConfig
@@ -256,6 +259,8 @@ class KFoldECSI(BaseECSI):
             power=cfg.time_power,
             eta=cfg.sampling.eta,
         )
+        self.version = cfg.version  # 0, 1
+        assert self.version in {0, 1}, "version must be 0 or 1"
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation()
@@ -389,14 +394,7 @@ class KFoldECSI(BaseECSI):
         t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
 
         # Sample xT from label
-        x_0 = self.sample_x_0(f_input, num_samples)  # [B, N, Natom, 3]
-        x_T = self.sample_prior(f_input, num_samples)  # [B, N, Natom, 3]
-
-        # Rigid align x_T to x_0
-        align_mask = f_input.atom.resolved_mask.unsqueeze(-2)  # [B, 1, Natom]
-        x_T = rigid_align(x_T, x_0, align_mask)  # [B, N, Natom, 3]
-        # Mask out padding atoms
-        x_T.masked_fill_(~mask[..., None], 0.0)
+        x_0, x_T = self.sample_x_0_and_x_T(f_input, num_samples)  # [B, N, Natom, 3]
 
         # Sample xt via interpolation
         x_t = self.interpolate(x_0, x_T, t_hat, mask)  # [B, N, Natom, 3]
@@ -524,6 +522,56 @@ class KFoldECSI(BaseECSI):
         t = self.sampling.time_min + (self.sampling.time_max - self.sampling.time_min) * t
         return t
 
+    def sample_x_0_and_x_T(
+        self, f_input: FoldingInput, num_samples: int = 1
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample label structures from input for model training.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+        num_samples : int, optional
+            Number of diffusion samples(N) to generate, by default 1.
+
+        Returns
+        -------
+        holo_coords : torch.Tensor
+            Sampled holo coordinates. Shape (B, N, L, 3),
+            where N is number of diffusion samples and L is the number of atoms.
+        """
+        x_holo = f_input.atom.label_coords  # [B, L, 3]
+        x_holo_mask = f_input.atom.resolved_mask  # [B, L]
+        x_apo = f_input.atom.prior_coords  # [B, Natom, Nprior, 3]
+        x_apo_mask = f_input.atom.pad_mask  # [B, L]
+
+        # repeat holo coords
+        x_0 = expand_dim(x_holo, num_samples, dim=-3)  # [B, N, L, 3]
+        x_0_mask = x_holo_mask.unsqueeze(-2)  # [B, 1, L]
+
+        # Sample from prior coordinates
+        # If num_diffusion_samples > num_prior, cycle through prior coords
+        num_prior = x_apo.shape[-2]
+        idx = [i % num_prior for i in range(num_samples)]
+        x_T = x_apo[:, :, idx, :]  # [B, Natom, N, 3]
+        x_T = x_T.permute(0, 2, 1, 3)  # [B, N, Natom, 3]
+        x_T_mask = x_apo_mask.unsqueeze(-2)  # [B, 1, Natom]
+
+        # Apply centering/coordinate augmentation
+        if self.version == 0:
+            # version 0: kabsch align x_0 to x_T
+            x_0 = self.random_augmentation(x_0, mask=x_0_mask)
+            x_T = rigid_align(x_T, x_0, x_0_mask)
+        else:
+            # version 1: no kabsch alignment.
+            x_0, x_T = self.random_augmentation(
+                x_0, x_T, mask=x_0_mask, centering=False, mask_to_zero=False
+            )
+        x_0.masked_fill_(~x_0_mask[..., None], 0.0)
+        x_T.masked_fill_(~x_T_mask[..., None], 0.0)
+
+        return x_0, x_T
+
     def sample_prior(self, f_input: FoldingInput, num_samples: int) -> torch.Tensor:
         """Sample xT (prior) coordinates for ECSI sampling.
 
@@ -553,7 +601,7 @@ class KFoldECSI(BaseECSI):
         xT = self.apply_random_augmentation(xT, mask)
         return xT
 
-    def interpolate(  # type: ignore
+    def interpolate(
         self,
         x_0: torch.Tensor,
         x_T: torch.Tensor,
@@ -691,6 +739,10 @@ class KFoldECSI(BaseECSI):
             if self.sampling.align_x_0_hat_to_x_t:
                 # Rigidly align x_0_hat to x_t before centering.
                 x_0_hat = rigid_align(x_0_hat, x_t, mask)
+
+            if self.version == 1:
+                # version 1: center x_0_hat after alignment.
+                x_0_hat = do_centering(x_0_hat, mask)
 
             if t > ode_start_time:
                 # Early/Mid-stage stochastic SI SDE update.
