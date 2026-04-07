@@ -1,6 +1,7 @@
 import itertools
 import logging
 import pathlib
+from collections import defaultdict
 
 import numpy as np
 import torch
@@ -17,7 +18,7 @@ from kfold.data.pipelines import (
 from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
-from kfold.data.types.structure import Chain, RefStructure
+from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.data.utils.io.structure import read_protein_structure
 
@@ -225,6 +226,13 @@ class InputDataPipeline:
         chain_metas: list[ChainInfo] = []
         chains: list[Chain] = []
         asym_id_iter = itertools.count(1)
+        chain_id_to_asym_id: dict[str, int] = {}
+
+        # Collect bonded atoms
+        chain_bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
+        for (chain_id1, res_idx1, atom1), (chain_id2, res_idx2, atom2) in input.bonds:
+            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
+            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
 
         # TODO: add constraints if needed (covalent ligands)
         # This should be conducted here to property assign
@@ -236,15 +244,13 @@ class InputDataPipeline:
             num_chains = len(chain_names)
             asym_ids: list[int] = [next(asym_id_iter) for _ in range(num_chains)]
             sym_ids: list[int] = [i for i in range(1, num_chains + 1)]
+            for name, asym_id in zip(chain_names, asym_ids, strict=True):
+                chain_id_to_asym_id[name] = asym_id
 
             num_residues = len(seq)
 
             # Parse sequence
-            entity_chain: Chain
-            if isinstance(seq, query.LigandSequence):
-                entity_chain = self.parse_ligand_sequence(seq, entity_id)
-            else:
-                entity_chain = self.parse_polymer_sequence(seq)
+            entity_chain: Chain = self.parse_sequence(seq, entity_id)
 
             # Create copies for multiple chains
             for i in range(num_chains):
@@ -254,12 +260,17 @@ class InputDataPipeline:
                 sym_id: int = sym_ids[i]
 
                 # Create chain copy
-                chain = entity_chain.copy_with(
-                    entity_id=entity_id,
-                    asym_id=asym_id,
-                    sym_id=sym_id,
-                    deepcopy=(i > 0),  # deep copy only for additional chains
-                )
+                if chain_name in chain_bonded_atoms:
+                    # If it's a ligand with covalent bonds, create a new chain
+                    bonded_atoms = chain_bonded_atoms[chain_name]
+                    chain = self.parse_sequence(seq, entity_id, bonded_atoms).copy_with(
+                        asym_id=asym_id, sym_id=sym_id
+                    )
+                else:
+                    # Otherwise, create a copy of the original chain with new ids
+                    chain = entity_chain.copy_with(
+                        asym_id=asym_id, sym_id=sym_id, deepcopy=(i > 0)
+                    )
                 chains.append(chain)
 
                 # Add chain metadata
@@ -285,12 +296,19 @@ class InputDataPipeline:
             chains=chain_metas,
         )
 
+        # Add covalent bond
+        connections: list[CovalentConnection] = []
+        for (chain_id1, res_idx1, atom1), (chain_id2, res_idx2, atom2) in input.bonds:
+            asym_id1 = chain_id_to_asym_id[chain_id1]
+            asym_id2 = chain_id_to_asym_id[chain_id2]
+            connections.append(
+                CovalentConnection(
+                    (asym_id1, asym_id2), (res_idx1, res_idx2), (atom1, atom2)
+                )
+            )
+
         # Return RefStructure
-        return structure_preparation.prepare_structure(
-            chains=chains,
-            connections=[],  # No connections for now
-            metadata=metadata,
-        )
+        return structure_preparation.prepare_structure(chains, connections, metadata)
 
     def load_apo_structures(
         self, ref_struct: RefStructure, input: query.Query
@@ -423,61 +441,23 @@ class InputDataPipeline:
     # ================================================================================
     # Chain Parsing Functions
     # ================================================================================
-
-    def parse_polymer_sequence(self, seq: query.PolymerSequence) -> Chain:
-        """Parse a polymer chain from the sequence input.
-
-        Parameters
-        ----------
-        seq : PolymerSequence
-            The polymer sequence input.
-
-        Returns
-        -------
-        chain: Chain
-            The reference chain.
-
-        Notes
-        -----
-        The chain ids (entity_id, asym_id, sym_id) are all set to placeholder (zero)
-        """
-        # Load sequence and modifications
-        sequence: str = seq.sequence
-        modifications: dict[int, str] = {int(k): v for k, v in seq.modifications.items()}
-
-        # Get CCD sequences (three-letter codes) from one-letter sequence
-        ccd_sequences: list[str] = [
-            C.residue.map_one_letter_to_residue_name(aa, seq.ctype).name
-            for aa in sequence
-        ]
-        # Apply modifications
-        for res_idx, ccd_code in modifications.items():
-            ccd_sequences[res_idx - 1] = ccd_code  # res_idx is 1-based
-
-        # Prepare reference chain
-        chain = structure_preparation.prepare_ref_chain(
-            chain_type=seq.ctype,
-            ccd_sequences=ccd_sequences,
-            ccd=self.ccd,
-        )
-        return chain
-
-    def parse_ligand_sequence(
+    def parse_sequence(
         self,
-        seq: query.LigandSequence,
+        seq: query.BaseSequence,
         entity_id: int,
-        is_covalent: bool = False,
+        bonded_atoms: dict[int, set[str]] | None = None,
     ) -> Chain:
-        """Parse a ligand chain from the sequence input.
+        """Parse a chain from the sequence input.
 
         Parameters
         ----------
-        seq : LigandSequence
-            The ligand sequence input.
+        seq : Sequence
+            The sequence input.
         entity_id : int
-            The entity_id to assign to the ligand chain.
-        is_covalent : bool, optional
-            Whether the ligand is covalently bound. Default is False.
+            The entity_id to assign to the chain.
+        bonded_atoms : dict[int, set[str]], optional
+            A dictionary mapping residue index to a set of atom names that are involved
+            in covalent bonds.
 
         Returns
         -------
@@ -488,22 +468,58 @@ class InputDataPipeline:
         -----
         The chain ids (entity_id, asym_id, sym_id) are all set to placeholder (zero)
         """
-        # Load ccd or smiles
-        ctype = C.ChainType.LIGAND
-        if seq.ccd_ids is not None:
+        if isinstance(seq, query.PolymerSequence):
+            # Load sequence and modifications
+            sequence: str = seq.sequence
+            modifications: dict[int, str] = {
+                int(k): v for k, v in seq.modifications.items()
+            }
+
+            # Get CCD sequences (three-letter codes) from one-letter sequence
+            ccd_sequences: list[str] = [
+                C.residue.map_one_letter_to_residue_name(aa, seq.ctype).name
+                for aa in sequence
+            ]
+            # Apply modifications
+            for res_idx, ccd_code in modifications.items():
+                ccd_sequences[res_idx - 1] = ccd_code  # res_idx is 1-based
+
+            # Prepare reference chain
             return structure_preparation.prepare_ref_chain(
-                chain_type=ctype,
-                ccd_sequences=seq.ccd_ids,
+                chain_type=seq.ctype,
+                entity_id=entity_id,
+                ccd_sequences=ccd_sequences,
                 ccd=self.ccd,
+                bonded_atoms=bonded_atoms,
             )
+        elif isinstance(seq, query.LigandSequence):
+            # Load ccd or smiles
+            ctype = C.ChainType.LIGAND
+            if seq.ccd_ids is not None:
+                return structure_preparation.prepare_ref_chain(
+                    chain_type=ctype,
+                    ccd_sequences=seq.ccd_ids,
+                    ccd=self.ccd,
+                    bonded_atoms=bonded_atoms,
+                )
+            else:
+                assert seq.smiles is not None, (
+                    "Either CCD code or SMILES must be provided."
+                )
+                if bonded_atoms is not None and len(bonded_atoms) > 0:
+                    raise ValueError(
+                        "Covalent bonds are not supported for ligand sequences "
+                        "without CCD codes."
+                    )
+                # NOTE: Using "LIG" as a placeholder code for ligands from SMILES
+                # This will be replaced later during mmcif writing.
+                code = f"LIG{entity_id}"
+                return structure_preparation.prepare_ref_chain(
+                    chain_type=ctype,
+                    entity_id=entity_id,
+                    ccd_sequences=[code],
+                    smiles=seq.smiles,
+                    ccd=self.ccd,
+                )
         else:
-            assert seq.smiles is not None, "Either CCD code or SMILES must be provided."
-            # NOTE: Using "LIG" as a placeholder code for ligands from SMILES
-            # This will be replaced later during mmcif writing.
-            code = f"LIG{entity_id}"
-            return structure_preparation.prepare_ref_chain(
-                chain_type=ctype,
-                ccd_sequences=[code],
-                smiles=seq.smiles,
-                ccd=self.ccd,
-            )
+            raise ValueError(f"Unsupported sequence type: {type(seq)}")

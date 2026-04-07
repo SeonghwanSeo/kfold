@@ -120,7 +120,6 @@ def prepare_ref_chain(
     ref_mols: list[Component] = []
 
     for res_idx, code in enumerate(ccd_sequences, start=1):
-        is_standard_list.append(code in standard_residues)
         if smiles is not None:
             # Ligand residue created from SMILES
             ref_mol = Component.from_smiles(code, smiles)
@@ -132,17 +131,21 @@ def prepare_ref_chain(
             # NOTE: For polymers, this should not happen due to prior conversion to UNK.
             raise ValueError(f"Residue {code} not found in CCD database.")
 
+        res_bonded_atoms = bonded_atoms.get(res_idx, set())
+        is_covalent = len(res_bonded_atoms) > 0
+
         if chain_type.is_polymer:
-            # Return pre-defined atoms for standard polymer residues to
-            # ensure consistency across different CCD versions. Otherwise,
-            # use all non-leaving atoms.
+            is_standard = code in standard_residues and not is_covalent
             if code in standard_residues:
+                # Return pre-defined atoms for standard polymer residues to
+                # ensure consistency across different CCD versions.
                 atom_names = C.atom.residue_atoms[code]
             else:
+                # For non-standard polymer residues, keep all atoms except leaving atoms
                 atom_names = ref_mol.get_atom_names(drop_leaving_atoms=True)
         else:
             # Special handling for glycans in covalent ligands
-            res_bonded_atoms = bonded_atoms.get(res_idx, set())
+            is_standard = False
             if code in C.ccd.GLYCANS:
                 # Only retain oxygen if it is participating in the covalent bond
                 atom_names = ref_mol.get_atom_names()
@@ -162,6 +165,7 @@ def prepare_ref_chain(
         atom_elem_list.append(ref_mol.elements[atom_indices])
         atom_charge_list.append(ref_mol.charges[atom_indices])
         ref_mols.append(ref_mol)
+        is_standard_list.append(is_standard)
 
     num_res_atoms = [arr.shape[0] for arr in atom_name_list]
     residue_struct = ResidueLayout(
