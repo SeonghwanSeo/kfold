@@ -26,6 +26,9 @@ from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseECSI
 
+RIGID_ALIGN = 0  # conduct centering ; kabsch align
+NO_ALIGN = 1  # no centering; no kabsch align
+
 _T = TypeVar("_T", float, torch.Tensor)
 
 
@@ -200,6 +203,8 @@ class KFoldECSI(BaseECSI):
 
         Parameters
         ----------
+        align: bool
+            Whether to apply Kabsch alignment of x_0 to x_T during training.
         gamma_max : float, optional
             Shared base bridge maximum used by `gamma(t)`.
         time_power : float, optional
@@ -221,14 +226,14 @@ class KFoldECSI(BaseECSI):
             Uniform mixture applied to the Beta branch.
         """
 
+        align: bool = True
+
         gamma_max: float = 24.0
         time_power: float = 2.0
 
         sigma_data: float = 16.0
         sigma_data_end: float = 66.0  # 16 + 50 translations
         cov_xy: float = 128.0
-
-        version: int = 0
 
         sampling: SamplingConfig = dataclasses.field(default_factory=SamplingConfig)
         train_time_sampling: TrainTimeSamplingConfig = dataclasses.field(
@@ -259,18 +264,15 @@ class KFoldECSI(BaseECSI):
             power=cfg.time_power,
             eta=cfg.sampling.eta,
         )
-        self.version = cfg.version  # 0, 1
-        assert self.version in {0, 1}, "version must be 0 or 1"
+        self.align_mode = RIGID_ALIGN if cfg.align else NO_ALIGN
 
         # NOTE: centering should be disabled.
-        self.random_augmentation = CenterRandomAugmentation()
-
-    def apply_random_augmentation(
-        self,
-        coords: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.random_augmentation(coords, mask=mask)
+        if self.align_mode == RIGID_ALIGN:
+            self.random_augmentation = CenterRandomAugmentation()
+        else:
+            self.random_augmentation = CenterRandomAugmentation(
+                centering=False, s_trans=0.0
+            )
 
     @staticmethod
     def __validate_config(config: Config) -> None:
@@ -558,14 +560,12 @@ class KFoldECSI(BaseECSI):
         x_T_mask = x_apo_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Apply centering/coordinate augmentation
-        if self.version == 0:
-            # version 0: kabsch align x_0 to x_T
+        if self.align_mode == RIGID_ALIGN:
             x_0 = self.random_augmentation(x_0, mask=x_0_mask)
             x_T = rigid_align(x_T, x_0, x_0_mask)
         else:
-            # version 1: no kabsch alignment.
             x_0, x_T = self.random_augmentation(
-                x_0, x_T, mask=x_0_mask, centering=False, mask_to_zero=False
+                x_0, x_T, mask=x_0_mask, mask_to_zero=False
             )
         x_0.masked_fill_(~x_0_mask[..., None], 0.0)
         x_T.masked_fill_(~x_T_mask[..., None], 0.0)
@@ -598,7 +598,7 @@ class KFoldECSI(BaseECSI):
 
         # Apply random augmentation to prior coords without centering.
         mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
-        xT = self.apply_random_augmentation(xT, mask)
+        xT = self.random_augmentation(xT, mask=mask)
         return xT
 
     def interpolate(
@@ -740,7 +740,7 @@ class KFoldECSI(BaseECSI):
                 # Rigidly align x_0_hat to x_t before centering.
                 x_0_hat = rigid_align(x_0_hat, x_t, mask)
 
-            if self.version == 1:
+            if self.align_mode == NO_ALIGN:
                 # version 1: center x_0_hat after alignment.
                 x_0_hat = do_centering(x_0_hat, mask)
 

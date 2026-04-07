@@ -14,7 +14,9 @@ model:
       num_blocks: 16
       blocks_per_ckpt: 4
   score_model:
+    atom_encoder_blocks: 1
     token_transformer_blocks: 8
+    atom_decoder_blocks: 1
     blocks_per_ckpt: null
 
 train:
