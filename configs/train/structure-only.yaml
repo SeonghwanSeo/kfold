@@ -43,7 +43,6 @@ data:
   # Prior sampler for diffusion bridge modeling
   prior_sampler: # If null, no prior sampling
     chain_translation_scale: 50.0 # Angstroms
-    chain_translation_range: 10.0 # Angstroms
     use_ot_permutation: true # Only for training.
     align_for_permutation: false # Only for training.
 
@@ -121,7 +120,7 @@ loss:
     diffusion: 4.0
     confidence: 1e-4
     # diffusion loss weights
-    chain_com: 1.0
+    chain_com: 0.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
     # confidence loss weights

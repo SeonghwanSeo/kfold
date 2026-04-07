@@ -128,7 +128,6 @@ class TrainingDataModule(pl.LightningDataModule):
             prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
             # For validation, we should not use OT permutation.
             prior_sampler.use_ot_permutation = False
-            prior_sampler.chain_translation_range = 0.0
         else:
             prior_sampler = None
 
