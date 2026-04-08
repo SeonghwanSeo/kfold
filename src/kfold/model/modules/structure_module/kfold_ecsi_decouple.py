@@ -626,3 +626,19 @@ class KFoldECSI_Decoupling(base_ecsi.KFoldECSI):
         x_update = decomposer.recompose(x_com, x_intra)
 
         return x_update
+
+    def _ode_step(
+        self,
+        x_t: torch.Tensor,
+        x_0_hat: torch.Tensor,
+        mask: torch.Tensor,
+        t: float,
+        dt: float,
+    ) -> torch.Tensor:
+        coeffs = self.si_coeffs
+        alpha, beta = coeffs.alpha(t), coeffs.beta(t)
+        alpha_next, beta_next = coeffs.alpha(t + dt), coeffs.beta(t + dt)
+        c_skip: float = beta_next / beta
+        c_update: float = alpha_next - alpha * c_skip
+        x_update = c_skip * x_t + c_update * x_0_hat
+        return x_update

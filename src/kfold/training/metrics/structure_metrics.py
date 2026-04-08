@@ -163,7 +163,6 @@ def compute_pair_lddt(
 def compute_validation_metric(
     ref_struct: RefStructure,
     pred_coords: torch.Tensor,
-    align: bool = True,
 ) -> dict:
     """Get structure prediction metrics.
 
@@ -173,9 +172,6 @@ def compute_validation_metric(
         Reference structure containing metadata
     pred_coords : torch.Tensor
         Predicted atom coordinates, Shape of [Natom, 3]
-    align : bool
-        Whether to align the predicted coordinates to the true coordinates
-        before metric computation.
 
     Returns
     -------
@@ -253,8 +249,12 @@ def compute_validation_metric(
     # Get true coordinates
     dev = pred_coords.device
     true_coords = torch.from_numpy(ref_struct.get_atom_coords()).to(dev)
-    # Remove unresolved atoms
     atom_mask = torch.isfinite(true_coords).all(-1)  # [Natom]
+
+    # Rigid-align
+    true_coords = rigid_align(true_coords, pred_coords, atom_mask)  # [Natom, 3]
+
+    # Remove unresolved atoms
     true_coords = true_coords[atom_mask]  # [Natom_resolved, 3]
     pred_coords = pred_coords[atom_mask]  # [Natom_resolved, 3]
     atom_asym_ids = atom_asym_ids[atom_mask]  # [Natom_resolved]
