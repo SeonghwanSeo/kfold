@@ -899,43 +899,6 @@ class FoldingInput:
             )
         return data_list
 
-    def get_atom_to_token(self) -> torch.Tensor:
-        """Return [Natom, Ntoken] or [B, Natom, Ntoken] dense mapping matrix
-        from atoms to tokens.
-        """
-        return self.atom_to_token
-
-    @cached_property
-    def atom_to_token(self) -> torch.Tensor:
-        """Return [Natom, Ntoken] or [B, Natom, Ntoken] dense mapping matrix
-        from atoms to tokens.
-        """
-
-        if not self.is_batched:
-            Natom = int(self.atom.pad_mask.sum().item())
-            atom_indices = torch.arange(Natom, device=self.device)
-            token_indices = self.atom.token_index[:Natom]
-            mapping = torch.zeros(
-                (self.num_atoms, self.num_tokens),
-                dtype=torch.float32,
-                device=self.device,
-            )
-            mapping[atom_indices, token_indices] = 1.0
-        else:
-            batch_size = self.chain.batch_size
-            num_atoms = self.atom.pad_mask.sum(dim=1).tolist()
-            mapping = torch.zeros(
-                (batch_size, self.num_atoms, self.num_tokens),
-                dtype=torch.float32,
-                device=self.device,
-            )
-            for b in range(batch_size):
-                Natom = num_atoms[b]
-                atom_indices = torch.arange(Natom, device=self.device)
-                token_indices = self.atom.token_index[b, :Natom]
-                mapping[b, atom_indices, token_indices] = 1.0
-        return mapping
-
     def __repr__(self) -> str:
         """FoldingInput summary representation."""
         device = self.device

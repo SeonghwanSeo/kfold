@@ -36,8 +36,6 @@ class AF3PairformerTrunk(BaseTrunk):
             Whether to use template, by default False
         use_msa: bool, optional
             Whether to use MSA, by default False
-        tri_attn_chunk_threshold : int, optional
-            The threshold for chunking in triangle attention, by default 384
         """
 
         channel_s: int = 384
@@ -49,14 +47,12 @@ class AF3PairformerTrunk(BaseTrunk):
         use_msa: bool = False
         use_template: bool = False
         blocks_per_ckpt: int | None = None
-        tri_attn_chunk_threshold: int = 384
 
     def __init__(self, cfg: Config, kernel_config):
         """Initialize the Pairformer module."""
         super().__init__(cfg, kernel_config)
         self.use_msa: bool = cfg.use_msa
         self.use_template: bool = cfg.use_template
-        self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
 
         if self.use_template:
             raise NotImplementedError(
@@ -82,18 +78,13 @@ class AF3PairformerTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
-    def do_compile(self, mode: str = "default"):
+    def _compile(self, **kwargs):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
-        self.pairformer_module = torch.compile(
-            self.pairformer_module,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+        self.pairformer_module = torch.compile(self.pairformer_module, **kwargs)
 
     def forward(
         self,
@@ -126,14 +117,6 @@ class AF3PairformerTrunk(BaseTrunk):
         z_trunk: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        if not self.training:
-            if z_init.shape[1] > self.chunk_threshold:
-                chunk_size_tri_attn = 128
-            else:
-                chunk_size_tri_attn = 512
-        else:
-            chunk_size_tri_attn = None
-
         # Revert to uncompiled version for validation
         pairformer_module: PairformerStack
         if self.is_compiled and not self.training:
@@ -171,7 +154,6 @@ class AF3PairformerTrunk(BaseTrunk):
                     s,
                     z,
                     mask=f_input.token.pad_mask,
-                    chunk_size_tri_attn=chunk_size_tri_attn,
                     use_cuequiv_kernels=self.kernel_config.cuequivariance,
                 )
 

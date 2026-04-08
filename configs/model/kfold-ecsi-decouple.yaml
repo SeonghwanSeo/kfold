@@ -2,13 +2,11 @@
 _registry_: "main_module"
 _class_: KFold
 
+# kernel settings
 kernel:
   cuequivariance: true
 
-compile_trunk: false
-compile_score_model: false
-compile_mode: "default"
-
+# Module configurations
 input_embedder:
   _yaml_: "module/input_embedder/kfold.yaml"
 
@@ -22,11 +20,10 @@ trunk:
   _yaml_: "module/trunk/kfold.yaml"
 
 structure_module:
-  _yaml_: "module/structure_module/expanded_ecsi.yaml"
+  _yaml_: "module/structure_module/ecsi-decouple.yaml"
 
 score_model:
   _yaml_: "module/score_model/ecsi.yaml"
-  use_prior_coords: true
 
 distogram_head:
   _yaml_: "module/distogram_head/af3.yaml"

@@ -11,6 +11,11 @@ from kfold.utils.geometry.random_augment import center_random_augmentation, do_c
 from kfold.utils.misc import spawn_rng
 
 
+def get_mask(coords: np.ndarray) -> np.ndarray:
+    """Get mask for valid coordinates: [*, 3] -> [*]."""
+    return np.isfinite(coords).all(axis=-1)
+
+
 class Tokenizer:
     def __init__(self, ccd: CCD, mode: str = "inference"):
         """Tokenizer for structures.
@@ -30,7 +35,11 @@ class Tokenizer:
                 raise ValueError(f"Invalid mode: {mode}")
 
     def __call__(
-        self, input: RefStructure, rng: np.random.Generator | None = None
+        self,
+        input: RefStructure,
+        rng: np.random.Generator | None = None,
+        *,
+        num_priors: int = 0,
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -40,16 +49,22 @@ class Tokenizer:
             The input structure.
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
+        num_priors : int, optional
+            Number of prior conformers to include, by default 0.
 
         Returns
         -------
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return self.tokenize(input, rng)
+        return self.tokenize(input, rng, num_priors=num_priors)
 
     def tokenize(
-        self, input: RefStructure, rng: np.random.Generator | None = None
+        self,
+        input: RefStructure,
+        rng: np.random.Generator | None = None,
+        *,
+        num_priors: int = 0,
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -59,20 +74,26 @@ class Tokenizer:
             The input structure.
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
+        num_priors : int, optional
+            Number of prior conformers to include, by default 0.
 
         Returns
         -------
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return tokenize_structure(input, self.ccd, rng, self.train)
+        return tokenize_structure(
+            input, self.ccd, rng, train=self.train, num_priors=num_priors
+        )
 
 
 def tokenize_structure(
     input: RefStructure,
     ccd: CCD,
     rng: np.random.Generator | None = None,
+    *,
     train: bool = False,
+    num_priors: int = 0,
 ) -> TokenizedStructure:
     """Tokenize structure.
 
@@ -86,6 +107,8 @@ def tokenize_structure(
         Random number generator for stochastic processes, by default None.
     train : bool, optional
         Whether in training mode, by default False.
+    num_priors : int, optional
+        Number of prior conformers to include, by default 0.
 
     Returns
     -------
@@ -142,7 +165,7 @@ def tokenize_structure(
         num_tokens=input.num_tokens,
         num_bonds=num_bonds,
         num_sequence_tokens=num_seq_tokens,
-        num_priors=0,
+        num_priors=num_priors,
     )
 
     # ==================================================
@@ -374,12 +397,13 @@ def tokenize_structure(
             atom_indices: list[int] = ref_comp.get_atom_indices(atom_names)
             natoms = len(atom_names)
             ref_pos = ref_pos[atom_indices, :]
-            ref_mask = np.isfinite(ref_pos).all(axis=-1)
+            ref_mask = get_mask(ref_pos)
 
             if ref_mask.any():
                 # Apply random augmentation to reference positions
-                ref_pos = center_random_augmentation(ref_pos, ref_mask, rng=rng)
-                ref_pos[~ref_mask] = np.nan
+                ref_pos = center_random_augmentation(
+                    ref_pos, ref_mask, rng=rng, mask_to_zero=False
+                )
 
             if is_standard:
                 # Standard residue (one token)
@@ -400,17 +424,15 @@ def tokenize_structure(
                 g_tok_i += natoms
 
     # Update atom masks at once
-    struct.atom.ref_mask[:] = np.isfinite(struct.atom.ref_pos).all(axis=-1)
-    struct.atom.resolved_mask[:] = np.isfinite(struct.atom.label_coords).all(axis=-1)
-    struct.atom.apo_mask[:] = np.isfinite(struct.atom.apo_coords).all(axis=-1)
-
+    struct.atom.ref_mask[:] = get_mask(struct.atom.ref_pos)
+    struct.atom.resolved_mask[:] = get_mask(struct.atom.label_coords)
+    struct.atom.apo_mask[:] = get_mask(struct.atom.apo_coords)
     # Update NaN to zero
-    pad_mask = struct.atom.pad_mask
-    struct.atom.ref_charge[pad_mask] = np.nan_to_num(
-        struct.atom.ref_charge[pad_mask], nan=0.0
+    struct.atom.ref_charge[struct.atom.pad_mask] = np.nan_to_num(
+        struct.atom.ref_charge[struct.atom.pad_mask], nan=0.0
     )
 
-    # Update holo coordinates (centering & NaN to zero)
+    # Update holo coordinates (centering while keeping NaN for unresolved atoms)
     struct.atom.label_coords[:] = do_centering(
         struct.atom.label_coords.reshape(-1, 3),
         struct.atom.resolved_mask.reshape(-1),

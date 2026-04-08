@@ -2,20 +2,21 @@ import dataclasses
 import itertools
 import logging
 from collections import defaultdict
-from functools import lru_cache
 from typing import Self
 
 import numpy as np
 
 import kfold.constants as C
-from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import Chain, RefStructure
 from kfold.data.utils.simulation.langevin_dynamics import LangevinDynamicsSimulator
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import compute_rmsd
 from kfold.utils.misc import spawn_rng
 
-from .apo_initialization import get_ambiguous_atoms_in_residue, get_molecule_symmetries
+
+def get_mask(coords: np.ndarray) -> np.ndarray:
+    """Get mask for valid coordinates: [*, 3] -> [*]."""
+    return np.isfinite(coords).all(axis=-1)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -24,41 +25,48 @@ class PriorSamplerConfig:
 
     Attributes
     ----------
+    chain_translation_scale : float
+        Scale of random translation augmentation for each chain (in Angstrom).
     use_ot_permutation : bool
         Whether to apply optimal transport-based permutation
-    translation_scale : float
-        Scale of random translation augmentation (in Angstrom).
+    align_for_permutation : bool
+        Whether to align coordinates to compute fitness for optimal transport
+        permutation. If False, the permutation is computed based on unaligned
+        coordinates (only centering).
     """
 
+    chain_translation_scale: float = 50.0  # Angstrom
     use_ot_permutation: bool = False
-    translation_scale: float = 1.0  # Angstrom
+    align_for_permutation: bool = False
 
     @classmethod
     def inference_mode(cls) -> Self:
-        """Get a PriorSampler instance configured for inference"""
-        return cls()
+        """Get a PriorSampler config configured for inference."""
+        return cls(
+            chain_translation_scale=50.0,
+            use_ot_permutation=False,
+        )
 
 
 class PriorSampler:
     """Class to populate and augment apo structures."""
 
-    def __init__(self, config: PriorSamplerConfig, ccd: CCD) -> None:
+    def __init__(self, config: PriorSamplerConfig) -> None:
         self.config: PriorSamplerConfig = config
-        self.ccd: CCD = ccd
+        self.logger = logging.getLogger("PriorSampler")
+
+        self.chain_translation_scale: float = config.chain_translation_scale
 
         self.use_ot_permutation: bool = config.use_ot_permutation
-        self.translation_scale: float = config.translation_scale
+        self.align_for_permutation: bool = config.align_for_permutation
 
         # Langevin dynamics simulator for relaxing missing atoms
         self.langevin_simulator = LangevinDynamicsSimulator.default()
 
-        # Logger
-        self.logger = logging.getLogger("PriorSampler")
-
     @classmethod
-    def inference_mode(cls, ccd: CCD) -> Self:
-        """Get a PriorSampler instance configured for inference"""
-        return cls(PriorSamplerConfig.inference_mode(), ccd)
+    def inference_mode(cls) -> Self:
+        """Get a PriorSampler instance configured for inference."""
+        return cls(PriorSamplerConfig.inference_mode())
 
     def __call__(
         self,
@@ -146,10 +154,15 @@ class PriorSampler:
     ) -> np.ndarray:
         """Sample a single prior coordinate set with augmentation and optional
         optimal-transport permutation."""
-        # Apply random augmentation to each chain
+        # Apply centering & random rotation to each chain
         prior_coords_list: list[np.ndarray] = [
-            self.apply_random_augmentation(chain_coords, rng)
-            for chain_coords in chain_apo_list
+            self.apply_random_rotation(coords, rng) for coords in chain_apo_list
+        ]
+        # Apply random translation to each chain
+        # TODO: we can consider more sophisticated augmentations here, such as
+        # each chain can be translated without overlapping with others.
+        prior_coords_list = [
+            self.apply_random_translation(coords, rng) for coords in prior_coords_list
         ]
 
         if self.use_ot_permutation:
@@ -208,12 +221,12 @@ class PriorSampler:
         )
         return prior_coords
 
-    def apply_random_augmentation(
+    def apply_random_rotation(
         self,
         coords: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        """Augment coordinates with random rotation/translation.
+        """Augment coordinates with centering & random rotation.
 
         Parameters
         ----------
@@ -228,17 +241,40 @@ class PriorSampler:
             Augmented structure coordinates of shape [Natom, 3].
         """
         assert coords.ndim == 2, "Apo coordinates must be of shape [Natom, 3]."
-        # Flatten
-        mask: np.ndarray = np.isfinite(coords).all(axis=-1)
+        mask = get_mask(coords)
         if not mask.any():
             return coords
-
-        # Apply random augmentation
         augmented_coords = center_random_augmentation(
-            coords, mask, augmentation=True, s_trans=self.translation_scale, rng=rng
+            coords, mask, s_trans=0.0, rng=rng, mask_to_zero=False
         )
+        return augmented_coords
 
-        augmented_coords[~mask] = np.nan
+    def apply_random_translation(
+        self,
+        coords: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Augment coordinates with random translation.
+
+        Parameters
+        ----------
+        coords : np.ndarray
+            Structure coordinates of shape [Natom, 3].
+        rng : np.random.Generator
+            Random number generator for stochastic operations.
+
+        Returns
+        -------
+        augmented_coords : np.ndarray
+            Augmented structure coordinates of shape [Natom, 3].
+        """
+        assert coords.ndim == 2, "Apo coordinates must be of shape [Natom, 3]."
+        scale = self.chain_translation_scale
+        if scale == 0.0:
+            return coords
+        v = rng.normal(size=(3,))
+        augmented_coords = coords + v * scale
+        # Skip NaN masking here since translation does not change NaN positions
         return augmented_coords
 
     def match_optimal_transport_permutation(
@@ -272,18 +308,6 @@ class PriorSampler:
             )
         except Exception as e:
             self.logger.error(f"Failed to find best chain permutation: {e}.")
-
-        # Second, residue-level permutation (e.g., flipping)
-        # TODO (SeonghwanSeo): Can we accelerate this?
-        # Currently, we replace this by apo-residue-permutation during apo initialization
-        # and ref_pos permutation during tokenization.
-        # try:
-        #     for c_i, chain in enumerate(struct.chains):
-        #         chain_coords = prior_coords_list[c_i]
-        #         self.find_best_residue_permutation(chain_coords, chain)
-        # except Exception as e:
-        #     self.logger.error(f"Failed to find best residue permutation: {e}.")
-
         return prior_coords_list
 
     def find_best_chain_permutation(
@@ -402,14 +426,14 @@ class PriorSampler:
         if not label_mask.any():
             # No resolved anchor atoms in label structure
             return prior_chain_coords
-
-        entity_order = [chain.entity_id for chain in perm_chains]
+        label_centers_masked = label_centers[label_mask]
+        label_centers_masked -= label_centers_masked.mean(axis=0)  # Center label anchors
 
         # === 5. Evaluate permutations === #
+        entity_order = [chain.entity_id for chain in perm_chains]
+        prior_centers = np.empty_like(label_centers)
         best_perm = None
         best_rmsd = float("inf")
-        prior_centers = np.empty_like(label_centers)
-        label_centers_masked = label_centers[label_mask]
         for perm in final_permutations:
             # Use a simpler way to track which index to take for each entity
             st = 0
@@ -419,12 +443,14 @@ class PriorSampler:
                 chain_coords = entity_anchor_coords[eid][swap_idx]
                 prior_centers[st : st + len(chain_coords)] = chain_coords
                 st += len(chain_coords)
-            # Eigenvalue-based rmsd computation to avoid memory leakage
+
+            # if align=True, eigenvalue-based rmsd computation to avoid memory leakage
+            # else, compute RMSD directly on unaligned coordinates
             rmsd = compute_rmsd(
                 prior_centers[label_mask],
                 label_centers_masked,
                 mask=None,
-                align=True,
+                align=self.align_for_permutation,
                 no_svd=True,
             )
             if rmsd < best_rmsd:
@@ -457,81 +483,3 @@ class PriorSampler:
             new_prior_chain_coords.append(next(group_iterators[chain.entity_id]))
 
         return new_prior_chain_coords
-
-    def find_best_residue_permutation(
-        self,
-        prior_coords: np.ndarray,
-        ref_chain: Chain,
-    ) -> None:
-        """Find the best residue permutation for symmetry correction.
-        Use intra-residue structure comparison to find the best permutation.
-
-        Parameters
-        ----------
-        prior_coords : np.ndarray
-            Prior coordinates of shape [N_atoms, 3].
-        ref_chain : Chain
-            Reference chain containing residue and atom information.
-        """
-
-        @lru_cache
-        def get_ref_comp(res_name: str) -> Component:
-            assert res_name in self.ccd, f"Residue name {res_name} not found in CCD."
-            return self.ccd[res_name]
-
-        if ref_chain.is_ion:
-            # Skip ions (single atom)
-            return
-
-        ccd_sequence: list[str] = ref_chain.get_ccd_sequence()
-        all_atom_names: list[str] = ref_chain.atom.name.tolist()
-
-        for res_i in range(ref_chain.num_residues):
-            res_name: str = ccd_sequence[res_i]
-            atom_st: int = ref_chain.residue.atom_starts[res_i]
-            atom_num: int = ref_chain.residue.num_atoms[res_i]
-            atom_end: int = atom_st + atom_num
-
-            if ref_chain.residue.is_standard[res_i]:
-                # Get ambiguous atom permutations for this standard residue
-                assert ref_chain.is_polymer, (
-                    "Only polymer chains are supported for standard residues."
-                )
-                perms = get_ambiguous_atoms_in_residue(res_name, extended=False)
-            elif res_name in self.ccd:
-                ref_comp: Component = get_ref_comp(res_name)
-                atom_names: list[str] = all_atom_names[atom_st:atom_end]
-                perms = get_molecule_symmetries(ref_comp, atom_names)
-            else:
-                perms = None
-
-            if perms is None or len(perms) <= 1:
-                # No ambiguous atoms for this residue
-                continue
-
-            # Find the best permutation
-            res_prior: np.ndarray = prior_coords[atom_st:atom_end]
-            res_label: np.ndarray = ref_chain.atom.coords[atom_st:atom_end]
-            m: np.ndarray = np.isfinite(res_label).all(-1)
-
-            if not m.any():
-                # No resolved atoms in this residue
-                continue
-
-            best_perm = None
-            min_rmsd = float("inf")
-            for perm in perms[:10]:
-                permuted_prior = res_prior[perm, :]
-                rmsd = compute_rmsd(
-                    permuted_prior[m], res_label[m], mask=None, align=True, no_svd=True
-                )
-                if rmsd < min_rmsd:
-                    min_rmsd, best_perm = rmsd, perm
-
-            if best_perm is not None and best_perm != list(range(len(best_perm))):
-                # Apply best permutation
-                res_prior[:, :] = res_prior[best_perm, :]
-            else:
-                pass
-
-        return

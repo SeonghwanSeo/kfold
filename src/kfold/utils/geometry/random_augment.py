@@ -143,15 +143,16 @@ def center_random_augmentation(
     else:
         assert isinstance(mask, torch.Tensor)
         assert isinstance(rng, torch.Generator | None)
-        return _center_random_augmentation_torch(
-            coords,
-            mask,
-            centering,
-            augmentation,
-            s_trans,
-            mask_to_zero,
-            rng,
-        )
+        with torch.no_grad(), torch.autocast(coords.device.type, enabled=False):
+            return _center_random_augmentation_torch(
+                coords,
+                mask,
+                centering,
+                augmentation,
+                s_trans,
+                mask_to_zero,
+                rng,
+            )
 
 
 def _center_random_augmentation_npy(
@@ -364,6 +365,9 @@ class CenterRandomAugmentation:
         self,
         coords: torch.Tensor,
         mask: torch.Tensor,
+        centering: bool | None = None,
+        augmentation: bool | None = None,
+        mask_to_zero: bool | None = None,
     ) -> torch.Tensor: ...
 
     @overload
@@ -373,12 +377,18 @@ class CenterRandomAugmentation:
         coords2: torch.Tensor,
         *others: torch.Tensor,
         mask: torch.Tensor,
+        centering: bool | None = None,
+        augmentation: bool | None = None,
+        mask_to_zero: bool | None = None,
     ) -> tuple[torch.Tensor, ...]: ...
 
     def __call__(  # type: ignore[override]
         self,
         *coords: torch.Tensor,
         mask: torch.Tensor,
+        centering: bool | None = None,
+        augmentation: bool | None = None,
+        mask_to_zero: bool | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         return self.augment(*coords, mask=mask)
 
@@ -387,6 +397,9 @@ class CenterRandomAugmentation:
         self,
         coords: torch.Tensor,
         mask: torch.Tensor,
+        centering: bool | None = None,
+        augmentation: bool | None = None,
+        mask_to_zero: bool | None = None,
     ) -> torch.Tensor: ...
 
     @overload
@@ -396,12 +409,18 @@ class CenterRandomAugmentation:
         coords2: torch.Tensor,
         *others: torch.Tensor,
         mask: torch.Tensor,
+        centering: bool | None = None,
+        augmentation: bool | None = None,
+        mask_to_zero: bool | None = None,
     ) -> tuple[torch.Tensor, ...]: ...
 
     def augment(  # type: ignore[override]
         self,
         *coords: torch.Tensor,
         mask: torch.Tensor,
+        centering: bool | None = None,
+        augmentation: bool | None = None,
+        mask_to_zero: bool | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
         """See Section 3.7 Algorithm 19 CentreRandomAugmentation
 
@@ -412,6 +431,27 @@ class CenterRandomAugmentation:
         mask : torch.Tensor
             A tensor of shape (..., L) representing the atom mask.
         """
+        with torch.no_grad(), torch.autocast(mask.device.type, enabled=False):
+            return self._augment(
+                *coords,
+                mask=mask,
+                centering=centering,
+                augmentation=augmentation,
+                mask_to_zero=mask_to_zero,
+            )
+
+    def _augment(
+        self,
+        *coords: torch.Tensor,
+        mask: torch.Tensor,
+        centering: bool | None = None,
+        augmentation: bool | None = None,
+        mask_to_zero: bool | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        centering = self.centering if centering is None else centering
+        augmentation = self.augmentation if augmentation is None else augmentation
+        mask_to_zero = self.mask_to_zero if mask_to_zero is None else mask_to_zero
+
         coords_list: list[torch.Tensor] = list(coords)
         # Check all input coords have the same batch size and number of atoms
         ref_coords = coords_list[0]
@@ -423,10 +463,10 @@ class CenterRandomAugmentation:
             )
 
         # Line 1
-        if self.centering:
+        if centering:
             coords_list = [do_centering(x, mask, mask_to_zero=False) for x in coords_list]
 
-        if self.augmentation:
+        if augmentation:
             # Line 2,4
             R = random_rotations_torch(
                 coords_shape[:-2], ref_coords.dtype, ref_coords.device
@@ -437,13 +477,13 @@ class CenterRandomAugmentation:
             # Line 3,4
             if self.s_trans > 0.0:
                 random_trans = torch.randn_like(ref_coords[..., 0:1, :]) * self.s_trans
-                coords_list = [x + random_trans for x in coords_list]
+                coords_list = [x.add_(random_trans) for x in coords_list]
 
         # Mask out
-        if self.mask_to_zero:
+        if mask_to_zero:
             # Use masked_fill to handle NaNs correctly
             mask_bool = mask.bool().unsqueeze(-1)
-            coords_list = [x.masked_fill(~mask_bool, 0.0) for x in coords_list]
+            coords_list = [x.masked_fill_(~mask_bool, 0.0) for x in coords_list]
 
         if len(coords) == 1:
             # Single tensor input, return tensor
@@ -451,3 +491,9 @@ class CenterRandomAugmentation:
         else:
             # Multiple tensor input, return list of tensors
             return tuple(coords_list)
+
+    def get_random_rotation(
+        self, shape: tuple[int, ...], dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
+        """Get a random rotation matrix of shape (..., 3, 3)"""
+        return random_rotations_torch(shape, dtype, device)

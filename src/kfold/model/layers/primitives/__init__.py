@@ -1,5 +1,4 @@
 from .activation import SwiGLU
-from .attention import attention
 from .dropout import DropoutColumnwise, DropoutRowwise
 from .linear import Linear, LinearNoBias
 from .normalization import AdaLN, LayerNorm
@@ -18,7 +17,6 @@ __all__ = [
     "LinearNoBias",
     "AdaLN",
     "LayerNorm",
-    "attention",
     "TriangleAttentionStartingNode",
     "TriangleAttentionEndingNode",
     "TriangleMultiplicationOutgoing",

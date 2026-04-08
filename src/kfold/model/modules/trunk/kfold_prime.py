@@ -42,8 +42,6 @@ class KFoldTrunkPrime(BaseTrunk):
             The number of triangle attention heads, by default 4
         dropout : float, optional
             The dropout rate, by default 0.25
-        tri_attn_chunk_threshold : int, optional
-            The threshold for chunking in triangle attention, by default 384
         """
 
         channel_s: int = 384
@@ -65,9 +63,6 @@ class KFoldTrunkPrime(BaseTrunk):
         # Proteina-style register tokens.
         num_register_tokens: int = 0
         register_token_init_std: float = 0.05
-
-        # other options
-        tri_attn_chunk_threshold: int = 384
 
     def __init__(self, cfg: Config, kernel_config=None):
         """Initialize the KFoldTrunkPrime module."""
@@ -111,7 +106,6 @@ class KFoldTrunkPrime(BaseTrunk):
             num_blocks=cfg.plm_module.num_blocks,
             dropout_plm=cfg.plm_module.dropout_plm,
             dropout_z=cfg.plm_module.dropout_z,
-            use_separate_projections=cfg.plm_module.use_separate_projections,
             use_qk_norm=cfg.plm_module.use_qk_norm,
             blocks_per_ckpt=cfg.plm_module.blocks_per_ckpt,
         )
@@ -142,7 +136,6 @@ class KFoldTrunkPrime(BaseTrunk):
             num_blocks=cfg.plm_module.num_blocks,
             dropout_plm=cfg.plm_module.dropout_plm,
             dropout_z=cfg.plm_module.dropout_z,
-            use_separate_projections=cfg.plm_module.use_separate_projections,
             use_qk_norm=cfg.plm_module.use_qk_norm,
             blocks_per_ckpt=cfg.plm_module.blocks_per_ckpt,
         )
@@ -182,39 +175,20 @@ class KFoldTrunkPrime(BaseTrunk):
         else:
             self.register_tokens = None
 
-        # Other options
-        self.chunk_threshold: int = cfg.tri_attn_chunk_threshold
-
-    def do_compile(self, mode: str = "default"):
+    def _compile(self, **kwargs):
         """Compile the trunk module."""
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
-        self.plm_module_prime = torch.compile(
-            self.plm_module_prime,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+        self.plm_module_prime = torch.compile(self.plm_module_prime, **kwargs)
         self.pairformer_module_prime = torch.compile(
-            self.pairformer_module_prime,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
-        self.plm_module_refine = torch.compile(
-            self.plm_module_refine,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+            self.pairformer_module_prime, **kwargs
+        )
+        self.plm_module_refine = torch.compile(self.plm_module_refine, **kwargs)
         self.pairformer_module_refine = torch.compile(
-            self.pairformer_module_refine,
-            mode=mode,
-            dynamic=False,
-            fullgraph=False,
-        )  # type: ignore
+            self.pairformer_module_refine, **kwargs
+        )
 
     def forward(
         self,
@@ -249,8 +223,6 @@ class KFoldTrunkPrime(BaseTrunk):
         z_aug: torch.Tensor
             The augmented pair representation for distogram prediction
         """
-        chunk_size_tri_attn = self._compute_chunk_size(s_inputs.shape[1])
-
         # Get PLM features
         for k in ["seq_emb", "seq_attn", "struct_emb"]:
             if k not in kwargs:
@@ -285,7 +257,6 @@ class KFoldTrunkPrime(BaseTrunk):
             s_plm=s_plm_prime,
             asym_id=asym_id,
             mask=mask,
-            chunk_size_tri_attn=chunk_size_tri_attn,
         )
 
         # === Refining loop with recycling === #
@@ -315,7 +286,6 @@ class KFoldTrunkPrime(BaseTrunk):
                     s_plm=s_plm,
                     asym_id=asym_id,
                     mask=mask,
-                    chunk_size_tri_attn=chunk_size_tri_attn,
                 )
 
         # Skip connection to s_trunk
@@ -335,7 +305,6 @@ class KFoldTrunkPrime(BaseTrunk):
         s_plm: torch.Tensor,
         asym_id: torch.Tensor,
         mask: torch.Tensor,
-        chunk_size_tri_attn: int | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.is_compiled and not self.training:
             pairformer_module = pairformer_module._orig_mod  # noqa: SLF001
@@ -346,14 +315,12 @@ class KFoldTrunkPrime(BaseTrunk):
             s_plm,
             asym_id,
             mask,
-            chunk_size_tri_attn=chunk_size_tri_attn,
             use_cuequiv_kernels=self.kernel_config.cuequivariance,
         )
         s, z = pairformer_module(
             s,
             z,
             mask=mask,
-            chunk_size_tri_attn=chunk_size_tri_attn,
             use_cuequiv_kernels=self.kernel_config.cuequivariance,
         )
         return s, z
@@ -412,13 +379,3 @@ class KFoldTrunkPrime(BaseTrunk):
         if R <= 0:
             return s_trunk, z_trunk, z_prime
         return s_trunk[:, R:], z_trunk[:, R:, R:], z_prime[:, R:, R:]
-
-    def _compute_chunk_size(self, num_tokens: int) -> int | None:
-        """Compute chunk size for triangle attention based on the number of tokens."""
-        if not self.training:
-            if num_tokens > self.chunk_threshold:
-                return 128
-            else:
-                return 512
-        else:
-            return None

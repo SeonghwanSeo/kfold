@@ -1,11 +1,10 @@
-# Started from code from https://github.com/jwohlwend/boltz, MIT License
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.layers.primitives import LinearNoBias
 
 
 class RelativePositionEncoding(nn.Module):
@@ -32,10 +31,15 @@ class RelativePositionEncoding(nn.Module):
         self.s_max: int = s_max
         self.dimension: int = 4 * (r_max + 1) + 2 * (s_max + 1) + 1
 
+    def forward(self, f_input: FoldingInput) -> torch.Tensor:
+        """See Section 3.1.2 Algorithm 3: Relative position encoding in the AF3 paper.
+        NOTE: Differ to AlphaFold3 official algorithm, its official algorithm does
+        not pass linear projection layer here.
+        """
+        return self.get_relative_position_encoding(f_input)
+
     @torch.no_grad()
-    def get_relative_position_encoding(
-        self, f_input: FoldingInput, dtype: torch.dtype = torch.float32
-    ) -> torch.Tensor:
+    def get_relative_position_encoding(self, f_input: FoldingInput) -> torch.Tensor:
         # All shape: [B, Lt]
         asym_id = f_input.token.asym_id
         entity_id = f_input.token.entity_id
@@ -62,7 +66,7 @@ class RelativePositionEncoding(nn.Module):
             2 * self.r_max + 1,
         )
         # Line 5
-        a_rel_pos = F.one_hot(d_residue, 2 * self.r_max + 2).to(dtype)
+        a_rel_pos = F.one_hot(d_residue, 2 * self.r_max + 2).float()
 
         # Line 6
         d_token = torch.clip(
@@ -76,7 +80,7 @@ class RelativePositionEncoding(nn.Module):
             2 * self.r_max + 1,
         )
         # Line 7
-        a_rel_token = F.one_hot(d_token, 2 * self.r_max + 2).to(dtype)
+        a_rel_token = F.one_hot(d_token, 2 * self.r_max + 2).float()
 
         # Line 8
         d_chain = torch.clip(
@@ -94,93 +98,60 @@ class RelativePositionEncoding(nn.Module):
             2 * self.s_max + 1,
         )
         # Line 9
-        a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2).to(dtype)
+        a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2).float()
 
         # Line 10 (concat)
         rel_position_encoding = torch.cat(
             [
                 a_rel_pos,
                 a_rel_token,
-                b_same_entity.unsqueeze(-1).to(dtype),
+                b_same_entity.float().unsqueeze(-1),
                 a_rel_chain,
             ],
             dim=-1,
         )
         return rel_position_encoding  # [B, L, L, D]
 
-    def forward(
-        self,
-        f_input: FoldingInput,
-        dtype: torch.dtype = torch.float32,
-        model_cache: dict | None = None,
-    ) -> torch.Tensor:
-        """See Section 3.1.2 Algorithm 3: Relative position encoding in the AF3 paper.
-        NOTE: Differ to AlphaFold3 official algorithm, its official algorithm does
-        not pass linear projection layer here.
-        """
-        if model_cache is not None:
-            cache_prefix = "relative_position_encoding"
-            if cache_prefix not in model_cache:
-                model_cache[cache_prefix] = {}
-            layer_cache = model_cache[cache_prefix]
-        else:
-            layer_cache = {}
 
-        if len(layer_cache) == 0:
-            rel_position_encoding = self.get_relative_position_encoding(f_input)
-            layer_cache["rel_pos_encoding"] = rel_position_encoding
-        else:
-            rel_position_encoding = layer_cache["rel_pos_encoding"]
-        return rel_position_encoding
-
-
-class AtomEmbedding(nn.Module):
-    """Atom embedding.
-    See Section 3.2 Algorithm 5 AtomAttentionEncoder: Line 1
+class FourierEmbedding(nn.Module):
+    """Fourier embedding layer.
+    Section 3.7 Algorithm 22 Fourier Embedding
     """
 
-    def __init__(self, channel_atom: int):
-        """Initialize the atom attention encoder.
+    def __init__(self, channel: int):
+        """Initialize the Fourier Embeddings.
 
         Parameters
         ----------
-        channel_atom : int
-            The atom single representation dimension.
+        channel : int
+            The fourier embedding dimension.
+        seed : int, optional
+            The random seed, by default 42
+
         """
         super().__init__()
-        num_atom_elements: int = C.NUM_ATOM_ELEMENTS
-        num_atom_name_chars: int = C.NUM_ATOM_NAME_CHARS
-        atom_name_dim = 4 * num_atom_name_chars
+        generator = torch.Generator()
+        generator.manual_seed(42)
 
-        # Atom feature embeddings
-        self.embed_atom_pos = LinearNoBias(3, channel_atom, init="default")
-        self.embed_atom_charge = LinearNoBias(1, channel_atom, init="default")
-        self.embed_atom_mask = LinearNoBias(1, channel_atom, init="default")
-        self.embed_atom_element = LinearNoBias(
-            num_atom_elements, channel_atom, init="default"
-        )
-        self.embed_atom_name_chars = LinearNoBias(
-            atom_name_dim, channel_atom, init="default"
-        )
+        # Line 1: Randomly generate weight/bias once before training
+        w = torch.randn(size=(1, channel), generator=generator)
+        b = torch.randn(size=(1, channel), generator=generator)
+        self.register_buffer("w", w, persistent=False)
+        self.register_buffer("b", b, persistent=False)
 
-    def forward(self, f_input: FoldingInput) -> torch.Tensor:
-        """Embed atom features.
-        Line 1:
-        c = LinearNoBias(concat(ref_pos, ref_charge, ref_mask, ref_element, ref_atom_name_chars)))
-        """  # noqa: E501
+    def forward(self, t_hat: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+        See Section 3.7 Algorithm 22 of AlphaFold3 paper.
 
-        atom_layout = f_input.atom
-        ref_pos = atom_layout.ref_pos
-        ref_charge = atom_layout.ref_charge
-        ref_mask = atom_layout.pad_mask
-        ref_element = atom_layout.ref_element
-        ref_atom_name_chars = atom_layout.ref_atom_name_chars
+        Parameters
+        ----------
+        t_hat : torch.Tensor
+            The input noise level. Shape (B, N,)
 
-        atom_feats = self.embed_atom_pos(ref_pos)
-        atom_feats = atom_feats + self.embed_atom_charge(ref_charge.unsqueeze(-1))
-        atom_feats = atom_feats + self.embed_atom_mask(ref_mask.float().unsqueeze(-1))
-        atom_feats = atom_feats + self.embed_atom_element(ref_element)
-        atom_feats = atom_feats + self.embed_atom_name_chars(
-            ref_atom_name_chars.flatten(-2)
-        )
-        return atom_feats
+        Returns
+        -------
+        torch.Tensor
+            The Fourier embeddings. Shape (B, N, channel)
+        """
+        # Line 2
+        return torch.cos((2 * math.pi) * t_hat[..., None] * self.w + self.b)

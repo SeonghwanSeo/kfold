@@ -170,6 +170,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self,
         config: DatasetConfig,
         ccd: CCD,
+        tokenizer: tokenization.Tokenizer,
+        featurizer: featurization.InputFeaturizer,
+        prior_sampler: prior_sampling.PriorSampler | None,
         return_symmetry: bool,
         return_structure: bool,
         safe_load: bool,
@@ -182,6 +185,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             Dataset configuration.
         ccd: CCD
             CCD database
+        tokenizer: tokenization.Tokenizer
+            Tokenizer for tokenizing structures.
+        featurizer: featurization.InputFeaturizer
+            Featurizer for featurizing tokenized structures.
+        prior_sampler: prior_sampling.PriorSampler | None
+            Prior sampler for sampling prior coordinates (optional).
         return_symmetry : bool
             Whether to return symmetry information.
         return_structure : bool
@@ -225,22 +234,10 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.apo_initializer = apo_initialization.ApoInitializer(
             config.apo_init, self.ccd
         )
-        self.tokenizer = tokenization.Tokenizer(
-            self.ccd, mode="train" if train else "val"
-        )
-        self.featurizer = featurization.InputFeaturizer()
-
-        if config.prior_sampler is not None:
-            # For diffusion bridge model, we may want to sample prior structures
-            # from apo structures with ot-permutation.
-            self.prior_sampler = prior_sampling.PriorSampler(
-                config.prior_sampler, self.ccd
-            )
-            self.num_priors = 16 if train else 5
-        else:
-            # For regular edm, we don't need to sample prior structures since
-            # the prior distribution is gaussian.
-            self.prior_sampler = None
+        self.tokenizer: tokenization.Tokenizer = tokenizer
+        self.featurizer: featurization.InputFeaturizer = featurizer
+        self.prior_sampler: prior_sampling.PriorSampler | None = prior_sampler
+        self.num_priors: int = 4 if train else 5  # default number of prior samples
 
         # Additional setup can be done in subclasses
         self.setup()
@@ -368,24 +365,21 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        return self.tokenizer(ref_struct, rng)
+        return self.tokenizer(ref_struct, rng, num_priors=self.num_priors)
 
     def sample_prior_coords(
         self,
         ref_struct: RefStructure,
         tokenized: TokenizedStructure,
-        num_priors: int,
         rng: np.random.Generator,
     ) -> None:
         """Populate the prior coordinates for the given reference structure."""
+        num_priors = self.num_priors
         if self.prior_sampler is not None:
-            prior_coords = np.full(
-                (tokenized.num_tokens, 24, num_priors, 3), np.nan, dtype=np.float32
-            )
-            prior_coords[tokenized.atom.pad_mask] = self.prior_sampler(
-                ref_struct, num_priors, rng=rng
-            ).transpose(1, 0, 2)
-            tokenized.atom.prior_coords = prior_coords
+            prior_coords = self.prior_sampler(ref_struct, num_priors, rng)
+            prior_coords = prior_coords.transpose(1, 0, 2)
+            mask = tokenized.atom.pad_mask
+            tokenized.atom.prior_coords[mask] = prior_coords
 
     # === Optional to-override in subclasses === #
     def extract_substructure(
@@ -418,13 +412,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         return self.featurizer(tokenized)
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
-        """Pad the folding input to multiple of 32 for LocalAtomAttention."""
+        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
         # Pad num_tokens for CUDA efficiency.
-        num_tokens = next_multiple(f_input.num_tokens, 16)
+        num_tokens = next_multiple(f_input.num_tokens, 32)
         # Pad num_seq_tokens for CUDA efficiency.
         num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 64)
         # Pad num_atoms for local attention.
-        num_atoms = next_multiple(f_input.num_atoms, 32)
+        num_atoms = next_multiple(f_input.num_atoms, 64)
         return f_input.pad(
             max_tokens=num_tokens,
             max_atoms=num_atoms,
@@ -499,7 +493,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         tokenized: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
 
         # Sample prior coordinates for diffusion bridge model (in-place)
-        self.sample_prior_coords(ref_struct, tokenized, self.num_priors, rng)
+        self.sample_prior_coords(ref_struct, tokenized, rng)
 
         # Populate structure tokens for apo structure (in-place)
         self.populate_structure_tokens(tokenized, apo_lookup, rng)
@@ -676,6 +670,9 @@ class TrainingDataset(SafeLoadingDataset):
         self,
         config: TrainingDatasetConfig,
         ccd: CCD,
+        tokenizer: tokenization.Tokenizer,
+        featurizer: featurization.InputFeaturizer,
+        prior_sampler: prior_sampling.PriorSampler | None,
         safe_load: bool,
         max_chains: int,
         max_tokens: int,
@@ -688,6 +685,12 @@ class TrainingDataset(SafeLoadingDataset):
             Dataset configuration.
         ccd: CCD
             CCD database
+        tokenizer: tokenization.Tokenizer
+            Tokenizer for tokenizing structures.
+        featurizer: featurization.InputFeaturizer
+            Featurizer for featurizing tokenized structures.
+        prior_sampler: prior_sampling.PriorSampler | None
+            Prior sampler for sampling prior coordinates (optional).
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
@@ -705,6 +708,9 @@ class TrainingDataset(SafeLoadingDataset):
         super().__init__(
             config,
             ccd,
+            tokenizer,
+            featurizer,
+            prior_sampler,
             return_symmetry=False,
             return_structure=False,
             safe_load=safe_load,
@@ -882,6 +888,9 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         self,
         configs: list[TrainingDatasetConfig],
         ccd: CCD,
+        tokenizer: tokenization.Tokenizer,
+        featurizer: featurization.InputFeaturizer,
+        prior_sampler: prior_sampling.PriorSampler | None,
         max_chains: int,
         max_tokens: int,
         max_sequence_tokens: int,
@@ -894,6 +903,12 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             List of dataset configurations.
         ccd: CCD
             CCD database
+        tokenizer: tokenization.Tokenizer
+            Tokenizer for tokenizing structures.
+        featurizer: featurization.InputFeaturizer
+            Featurizer for featurizing tokenized structures.
+        prior_sampler: prior_sampling.PriorSampler | None
+            Prior sampler for sampling prior coordinates (optional).
         max_chains : int
             Maximum number of chains per sample.
         max_tokens : int
@@ -915,6 +930,9 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
             TrainingDataset(
                 config,
                 ccd,
+                tokenizer,
+                featurizer,
+                prior_sampler,
                 safe_load,
                 max_chains,
                 max_tokens,
@@ -951,6 +969,9 @@ class ValidationDataset(SafeLoadingDataset):
         self,
         config: ValidationDatasetConfig,
         ccd: CCD,
+        tokenizer: tokenization.Tokenizer,
+        featurizer: featurization.InputFeaturizer,
+        prior_sampler: prior_sampling.PriorSampler | None,
         safe_load: bool = True,
     ) -> None:
         """
@@ -964,6 +985,9 @@ class ValidationDataset(SafeLoadingDataset):
         super().__init__(
             config,
             ccd,
+            tokenizer,
+            featurizer,
+            prior_sampler,
             return_symmetry=True,
             return_structure=True,
             safe_load=safe_load,

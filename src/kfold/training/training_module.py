@@ -46,6 +46,7 @@ class TrainConfig:
     name: str
     out_dir: str
     seed: int
+    compile: "CompileConfig"
     training: "TrainingConfig"
     validation: "ValidationConfig"
     optimizer: "OptimizerConfig"
@@ -133,6 +134,13 @@ class LossConfig(_Config):
     confidence_loss: Any
 
 
+@dataclasses.dataclass(kw_only=True)
+class CompileConfig(_Config):
+    enabled: bool = False
+    mode: str = "default"
+    dynamic: bool = False
+
+
 class KFoldTrainingModule(pl.LightningModule):
     def __init__(self, config: DictConfig):
         super().__init__()
@@ -148,6 +156,7 @@ class KFoldTrainingModule(pl.LightningModule):
             self.config.optimizer
         )
         self.loss_config: LossConfig = LossConfig.from_dict(self.config.loss)
+        self.compile_config: CompileConfig = CompileConfig.from_dict(self.config.compile)
 
         # Save hyperparameters
         self.save_hyperparameters(to_dict(self.global_config))
@@ -165,6 +174,12 @@ class KFoldTrainingModule(pl.LightningModule):
         model_config: KFoldConfig = self.global_config.model
         model_cls = MAIN_MODULE[model_config._class_]
         self.model: KFold = model_cls(model_config)
+
+        # Compile
+        if self.compile_config.enabled:
+            self.model.do_compile(
+                mode=self.compile_config.mode, dynamic=self.compile_config.dynamic
+            )
 
         # Freeze parts of the model if needed
         self.freeze_submodules()
@@ -250,7 +265,7 @@ class KFoldTrainingModule(pl.LightningModule):
     def setup_losses(self):
         """Setup loss functions for training"""
         loss_config = self.loss_config
-        self.loss_weights = loss_config.weights
+        self.loss_weights: dict[str, float] = loss_config.weights
 
         if self.train_structure_module:
             # Distogram loss
@@ -332,7 +347,7 @@ class KFoldTrainingModule(pl.LightningModule):
         f_input: FoldingInput,
         num_recycles: int = 3,
         num_steps: int = 20,
-        num_diffusion_samples: int = 1,
+        num_samples: int = 1,
         diffusion_batch_size: int = 48,
         mode: str = "train",
     ) -> dict[str, dict[str, torch.Tensor]]:
@@ -341,7 +356,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 f_input,
                 num_recycles=num_recycles,
                 num_steps=num_steps,
-                num_diffusion_samples=num_diffusion_samples,
+                num_samples=num_samples,
                 diffusion_batch_size=diffusion_batch_size,
                 train_structure_module=self.train_structure_module,
                 train_confidence_module=self.train_confidence_head,
@@ -353,7 +368,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 f_input,
                 num_recycles=num_recycles,
                 num_steps=num_steps,
-                num_diffusion_samples=num_diffusion_samples,
+                num_samples=num_samples,
                 return_traj=return_traj,
             )
             return {"sample": dict_out}
@@ -379,7 +394,7 @@ class KFoldTrainingModule(pl.LightningModule):
             f_input=f_input,
             num_recycles=num_recycles,
             num_steps=training_config.num_steps,
-            num_diffusion_samples=training_config.num_diffusion_samples,
+            num_samples=training_config.num_diffusion_samples,
             diffusion_batch_size=training_config.diffusion_batch_size,
             mode="train",
         )
@@ -445,9 +460,10 @@ class KFoldTrainingModule(pl.LightningModule):
                         "distogram_loss"
                     ]
 
+                diffusion_out = model_output["diffusion"]
                 diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
-                    x_pred=model_output["diffusion"]["denoised_atom_coords"],
-                    x_true=model_output["diffusion"]["true_atom_coords"],
+                    x_pred=diffusion_out["x_0_hat"],
+                    x_true=diffusion_out["x_gt"],
                     per_sample_weights=model_output["diffusion"]["loss_weights"],
                     f_input=f_input,
                 )
@@ -491,7 +507,7 @@ class KFoldTrainingModule(pl.LightningModule):
         dataloader_idx: int = 0,
     ):
         val_config = self.validation_config
-        num_diffusion_samples = val_config.num_diffusion_samples
+        num_samples = val_config.num_diffusion_samples
 
         f_input, full_struct_list = batch
         assert f_input.batch_size == 1, "Validation batch size should be 1"
@@ -503,7 +519,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 f_input=f_input,
                 num_recycles=val_config.num_recycles,
                 num_steps=val_config.num_steps,
-                num_diffusion_samples=num_diffusion_samples,
+                num_samples=num_samples,
                 mode="validation",
             )
             sample_out = out["sample"]
@@ -518,7 +534,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 raise e
 
         # Remove padding atoms
-        assert sample_coords.shape[:2] == (1, num_diffusion_samples), (
+        assert sample_coords.shape[:2] == (1, num_samples), (
             "Expected sample_coords shape is (1, Nsample, Natom, 3)."
         )
         num_atoms: int = ref_struct.num_atoms
@@ -541,7 +557,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     "for symmetry correction during validation."
                 )
             symmetry_dict = struct_info.get("symmetry", None)
-            for i in range(num_diffusion_samples):
+            for i in range(num_samples):
                 pred_coords_i = sample_coords[i]  # [Natom, 3]
                 struct_i = validation_metrics.get_aligned_structure(
                     ref_struct,
@@ -594,7 +610,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 self.writer.write(ref_struct, save_dir / f"{name}-apo.cif", save_apo=True)
 
                 # Save predicted structures and metrics
-                for i in range(num_diffusion_samples):
+                for i in range(num_samples):
                     prefix = str(save_dir / f"{name}-sample{i}")
                     self.save_structure_and_metrics(
                         ref_struct=ref_struct_aligned[i],
@@ -690,14 +706,25 @@ class KFoldTrainingModule(pl.LightningModule):
             A dictionary containing loss metrics.
         """
         metrics: dict[str, torch.Tensor] = {}
+        alpha_chain_com = self.loss_weights["chain_com"]
+        alpha_bond = self.loss_weights["bond"]
+        alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
 
         # Equations 3-4
-        L_mse = self.weighted_mse_loss(x_pred, x_true, f_input)  # [B, Nsample]
+        L_mse, L_chain_com = self.weighted_mse_loss(
+            x_pred, x_true, f_input, compute_chain_com_loss=alpha_chain_com > 0
+        )
         L_mse_weighted = L_mse * per_sample_weights  # [B, Nsample]
         metrics["mse_loss"] = L_mse_weighted.detach().mean()
 
+        if alpha_chain_com > 0:
+            assert L_chain_com is not None
+            L_chain_com_weighted = L_chain_com * per_sample_weights  # [B, Nsample]
+            metrics["chain_com_loss"] = L_chain_com_weighted.detach().mean()
+        else:
+            L_chain_com_weighted = None
+
         # Equation 5
-        alpha_bond = self.loss_weights["bond"]
         if alpha_bond > 0:
             L_bond = self.bond_loss(x_pred, x_true, f_input)
             L_bond_weighted = L_bond * per_sample_weights  # [B, Nsample]
@@ -706,17 +733,20 @@ class KFoldTrainingModule(pl.LightningModule):
             L_bond_weighted = None
 
         # Algorithm 27
-        alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
         if alpha_smooth_lddt > 0:
-            L_smooth_lddt = self.smooth_lddt_loss(x_pred, x_true, f_input)
+            L_smooth_lddt = self.smooth_lddt_loss(x_pred, x_true, f_input)  # [B, Nsample]
             metrics["smooth_lddt_loss"] = L_smooth_lddt.detach().mean()
         else:
             L_smooth_lddt = None
 
         # Equation 6
         # NOTE: per-sample weights are already applied in L_mse and L_bond
-        # L_diff = loss_weights(L_mse + α_bond * L_bond) + L_smooth_lddt
+        # L_diff = loss_weights(L_mse + α_com * L_com + α_bond * L_bond) + L_smooth_lddt
         L_diffusion_per_sample = L_mse_weighted
+        if L_chain_com_weighted is not None:
+            L_diffusion_per_sample = (
+                L_diffusion_per_sample + alpha_chain_com * L_chain_com_weighted
+            )
         if L_bond_weighted is not None:
             L_diffusion_per_sample = L_diffusion_per_sample + alpha_bond * L_bond_weighted
         if L_smooth_lddt is not None:
@@ -733,6 +763,8 @@ class KFoldTrainingModule(pl.LightningModule):
                 "mse_loss": L_mse_weighted.detach(),
                 "diffusion_loss": L_diffusion_per_sample.detach(),
             }
+            if L_chain_com_weighted is not None:
+                payload["chain_com_loss"] = L_chain_com_weighted.detach()
             if L_bond_weighted is not None:
                 payload["bond_loss"] = L_bond_weighted.detach()
             if L_smooth_lddt is not None:
@@ -990,7 +1022,7 @@ class KFoldTrainingModule(pl.LightningModule):
         name: str = ref_struct.id
 
         assert traj.ndim == 4, "Trajectory must be of shape (Nsample, Nframe, Natom, 3)"
-        num_samples: int = traj.shape[1]
+        num_samples: int = traj.shape[0]
 
         # Remove padding atoms
         num_atoms: int = ref_struct.num_atoms
@@ -1001,4 +1033,4 @@ class KFoldTrainingModule(pl.LightningModule):
             # Save trajectory
             traj_i = traj[i]
             save_path = save_dir / f"{name}-sample-{i}-traj.{format}"
-            self.writer.write_trajectory(ref_struct, traj_i, save_path)
+            self.writer.write_trajectory(ref_struct, traj_i, save_path, align=True)

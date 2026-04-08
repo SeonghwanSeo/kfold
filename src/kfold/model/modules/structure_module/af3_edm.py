@@ -1,14 +1,16 @@
 import math
+from typing import TypeVar
 
 import torch
-import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.score_model.base import BaseScoreModel
+from kfold.model.modules.score_model.af3_diffusion import AF3DiffusionModule
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
 from .base import BaseEDM
+
+_ScalarOrTensor = TypeVar("_ScalarOrTensor", float, torch.Tensor)
 
 
 @STRUCTURE_MODULE.register()
@@ -22,8 +24,6 @@ class AF3SampleDiffusion(BaseEDM):
 
         Parameters
         ----------
-        num_steps : int, optional
-            The number of sampling steps, by default 200.
         sigma_min : float, optional
             The minimum sigma value, by default 0.0004.
         sigma_max : float, optional
@@ -44,12 +44,8 @@ class AF3SampleDiffusion(BaseEDM):
             The noise scale, by default 1.003.
         step_scale : float, optional
             The step scale, by default 1.5.
-        coordinate_augmentation : bool, optional
-            Whether to use coordinate augmentation, by default True.
-            This may be useful for non-equivariant score models.
         """
 
-        num_steps: int = 200
         sigma_min: float = 0.0004
         sigma_max: float = 160.0
         sigma_data: float = 16.0
@@ -60,29 +56,39 @@ class AF3SampleDiffusion(BaseEDM):
         gamma_min: float = 1.0
         noise_scale: float = 1.003
         step_scale: float = 1.5
-        coordinate_augmentation: bool = True
 
-    def __init__(self, cfg: Config, score_model: BaseScoreModel):
+    def __init__(self, cfg: Config, score_model: AF3DiffusionModule):
         """Initialize the atom diffusion module."""
         super().__init__(cfg, score_model)
+        self.score_model: AF3DiffusionModule = score_model
         self.sigma_min: float = cfg.sigma_min
         self.sigma_max: float = cfg.sigma_max
         self.sigma_data: float = cfg.sigma_data
         self.rho: int = cfg.rho
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
-        self.num_steps: int = cfg.num_steps
         self.gamma_0: float = cfg.gamma_0
         self.gamma_min: float = cfg.gamma_min
         self.noise_scale: float = cfg.noise_scale
         self.step_scale: float = cfg.step_scale
-        self.coordinate_augmentation: bool = cfg.coordinate_augmentation
+        self.random_augmentation = CenterRandomAugmentation()
 
-        self.random_augmentation = CenterRandomAugmentation(
-            centering=True,
-            augmentation=self.coordinate_augmentation,
-            s_trans=1.0,  # not used when augmentation is False
-        )
+    # === EDM diffusion coefficients === #
+    def c_skip(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
+        return (self.sigma_data**2) / (sigma**2 + self.sigma_data**2)
+
+    def c_out(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
+        _sqrt = lambda x: math.sqrt(x) if isinstance(x, float) else torch.sqrt(x)  # noqa
+        return sigma * self.sigma_data / _sqrt(self.sigma_data**2 + sigma**2)
+
+    def c_in(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
+        _sqrt = lambda x: math.sqrt(x) if isinstance(x, float) else torch.sqrt(x)  # noqa
+        return 1 / _sqrt(sigma**2 + self.sigma_data**2)
+
+    def c_noise(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
+        _log = lambda x: math.log(x) if isinstance(x, float) else torch.log(x)  # noqa
+        _clip = lambda x, v: max(x, v) if isinstance(x, float) else x.clamp(v)  # noqa
+        return _log(_clip(sigma / self.sigma_data, 1e-20)) * 0.25
 
     def apply_random_augmentation(
         self, coords: torch.Tensor, mask: torch.Tensor
@@ -90,96 +96,63 @@ class AF3SampleDiffusion(BaseEDM):
         """Apply random augmentation to coordinates."""
         return self.random_augmentation(coords, mask=mask)
 
-    # === EDM diffusion coefficients === #
-    def c_skip(self, sigma: torch.Tensor) -> torch.Tensor:
-        return (self.sigma_data**2) / (sigma**2 + self.sigma_data**2)
-
-    def c_out(self, sigma: torch.Tensor) -> torch.Tensor:
-        return sigma * self.sigma_data / torch.sqrt(self.sigma_data**2 + sigma**2)
-
-    def c_in(self, sigma: torch.Tensor) -> torch.Tensor:
-        return 1 / torch.sqrt(sigma**2 + self.sigma_data**2)
-
-    def c_noise(self, sigma: torch.Tensor) -> torch.Tensor:
-        return (sigma / self.sigma_data).clamp(1e-20).log() * 0.25
-
-    def sample_prior(
+    # ============================================================
+    # For model training
+    # ============================================================
+    def forward_train(
         self,
-        f_input: FoldingInput,
-        num_diffusion_samples: int = 1,
-        label_coords: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Sample from the prior distribution."""
-        B = f_input.batch_size
-        N = num_diffusion_samples
-        La = f_input.num_atoms
-        return torch.randn((B, N, La, 3), device=f_input.device)
-
-    # === For model training === #
-    def forward_model(
-        self,
-        x_noisy: torch.Tensor,
-        t_hat: torch.Tensor | float,
+        x_t: torch.Tensor,
+        t_hat: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        model_cache=None,
-        prior_coords: torch.Tensor | None = None,
+        **kwargs,
     ) -> torch.Tensor:
         """Forward pass through the score model.
         See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3 paper.
 
         Parameters
         ----------
-        x_noisy : torch.Tensor
-            Noisy atom coordinates. Shape (B, N, L, 3).
-        t_hat : torch.Tensor | float
+        x_t : torch.Tensor
+            Noisy atom coordinates. Shape (B, N, La, 3).
+        t_hat : torch.Tensor
             Diffusion noise level (or sigmas of EDM). Shape (B, N).
         f_input : FoldingInput
             FoldingInput object containing model inputs.
         s_inputs : torch.Tensor
-            Input sequence embeddings. Shape (B, L, c_s).
+            Input sequence embeddings. Shape (B, Lt, c_s).
         s_trunk : torch.Tensor
-            Trunk sequence embeddings. Shape (B, L, c_s).
+            Trunk sequence embeddings. Shape (B, Lt, c_s).
         z_trunk : torch.Tensor
-            Trunk pairwise embeddings. Shape (B, L, L, c_z).
-        model_cache : optional
-            Model cache for efficiency.
+            Trunk pairwise embeddings. Shape (B, Lt, Lt, c_z).
 
         Returns
         -------
-        x_out : torch.Tensor
-            Denoised atom coordinates. Shape (B, N, L, 3).
+        x_0_hat : torch.Tensor
+            Denoised atom coordinates. Shape (B, N, La, 3).
         """
-        if not isinstance(t_hat, torch.Tensor):
-            t_hat = torch.full(
-                x_noisy.shape[:2], t_hat, device=x_noisy.device, dtype=x_noisy.dtype
-            )  # [B, N]
-        t_hat_reshaped = t_hat[..., None, None]  # [B, N, 1, 1]
+        c_in = self.c_in(t_hat)  # [B, N]
+        c_noise = self.c_noise(t_hat)  # [B, N]
+        c_skip = self.c_skip(t_hat)  # [B, N]
+        c_out = self.c_out(t_hat)  # [B, N]
 
         # Line 2 of Algorithm 20
-        r_noisy = self.c_in(t_hat_reshaped) * x_noisy
+        r_noisy = c_in[..., None, None] * x_t  # [B, N, La, 3]
 
-        # Line 8 of Algorithm 21
-        c_noise = self.c_noise(t_hat)  # [B, N]
-
-        r_update = self.score_model(
+        r_update = self.score_model.train_step(
+            f_input=f_input,
             r_noisy=r_noisy,  # [B, N, La, 3]
             c_noise=c_noise,  # [B, N]
-            f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
             z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
-            model_cache=model_cache,
         )
 
         # Line 8 of Algorithm 20
-        x_out = (
-            self.c_skip(t_hat_reshaped) * x_noisy
-            + self.c_out(t_hat_reshaped) * r_update  # [B, N, La, 3]
-        )
-        return x_out
+        with torch.autocast(device_type=c_skip.device.type, dtype=torch.float32):
+            x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
+        return x_0_hat
 
     def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
         """Compute loss weights based on noise levels t_hat.
@@ -191,29 +164,21 @@ class AF3SampleDiffusion(BaseEDM):
         """
         return (t_hat**2 + self.sigma_data**2) / ((t_hat * self.sigma_data) ** 2)
 
-    def sample_noise_level(
-        self,
-        batch_size: int,
-        num_diffusion_samples: int,
-        device: torch.device | None = None,
-    ) -> torch.Tensor:
+    def sample_noise_level(self, shape: tuple, device: torch.device) -> torch.Tensor:
         """Sample from the prior distribution.
         Return shape: [B, N, La, 3], where N is number of diffusion samples
         and La is number of atoms.
         """
-
         # See Section 3.7 of AlphaFold3 paper.
         # t_hat = sigma_data * exp(-1.2 + 1.5 * N(0, 1)),
         # where -1.2 is P_mean and 1.5 is P_std.
-        shape = (batch_size, num_diffusion_samples)
-        return self.sigma_data * torch.exp(
-            self.P_mean + self.P_std * torch.randn(shape, device=device)
-        )
+        normal = torch.randn(shape, dtype=torch.float32, device=device)
+        return self.sigma_data * torch.exp(self.P_mean + self.P_std * normal)
 
     def interpolate(
         self,
-        noise_coords: torch.Tensor,
-        label_coords: torch.Tensor,
+        x_0: torch.Tensor,
+        x_T: torch.Tensor,
         t_hat: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
@@ -221,151 +186,206 @@ class AF3SampleDiffusion(BaseEDM):
 
         EDM equation:
         sigma = t_hat
-        x_noised = x_label + sigma * noise
+        x_t = x_0 + sigma * noise
         where noise ~ N(0, I)
-
-        We may want to perform kabsch alignment here before interpolation.
 
         Parameters
         ----------
-        noise_coords : torch.Tensor
-            The noisy coordinates. Shape (B, N, La, 3).
-        label_coords : torch.Tensor
+        x_0 : torch.Tensor
             The label coordinates. Shape (B, N, La, 3).
+        x_T : torch.Tensor
+            The noise. Shape (B, N, La, 3).
         sigma : torch.Tensor
             The sigma values. Shape (B, N).
         mask : torch.Tensor
             The atom mask. Shape (B, La).
         """
-        noised_atom_coords = (
-            label_coords + t_hat[:, :, None, None] * noise_coords
-        )  # (B, N, Latom, 3)
-        return noised_atom_coords
+        noise = x_T
+        sigma = t_hat
+        x_t = x_0 + sigma[:, :, None, None] * noise
+        x_t.masked_fill_(~mask[:, None, :, None], 0.0)  # apply atom mask
+        return x_t
 
-    # === For sampling === #
+    # ============================================================
+    # For inference
+    # ============================================================
     def sample_structure(
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        num_steps: int | None = None,
-        num_diffusion_samples: int = 1,
-        max_parallel_samples: int | None = None,
+        num_steps: int = 200,
+        num_samples: int = 1,
+        chunk_size: int | None = None,
         return_traj: bool = False,
     ) -> dict[str, torch.Tensor]:
         """Sample structures via diffusion sampling.
         See Section 3.7: Algorithm 18 of AlphaFold3 paper.
         """
-
-        sample_out: dict[str, torch.Tensor] = {}
-        traj: list[torch.Tensor] = []
-
-        if num_steps is None:
-            num_steps = self.num_steps
-
-        if max_parallel_samples is None:
-            max_parallel_samples = num_diffusion_samples
-
-        model_cache = {}
+        model = self.score_model
 
         # Get noise schedule
-        sigmas = self.get_sampling_schedule(num_steps=num_steps, device=s_inputs.device)
-        gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
-        sigmas, gammas = sigmas.tolist(), gammas.tolist()
-
-        # NOTE: for sampling, there is no unresolved atoms.
-        # Therefore, we can use pad_mask here.
-        atom_mask = f_input.atom.pad_mask.unsqueeze(1)  # (B, 1, Latom)
+        sigmas: list[float] = self.get_sampling_schedule(num_steps)
+        gammas: list[float] = [
+            self.gamma_0 if s > self.gamma_min else 0.0 for s in sigmas
+        ]
 
         # Line 1
-        init_sigma = sigmas[0]
-        prior_coords = self.sample_prior(
-            f_input, num_diffusion_samples
-        )  # (B, N, Latom, 3)
-        atom_coords: torch.Tensor = init_sigma * prior_coords  # (B, N, Latom, 3)
-        start_coords = atom_coords
+        sigma_0 = sigmas[0]
+        x: torch.Tensor = sigma_0 * self.sample_prior(f_input, num_samples)
+        mask: torch.Tensor = f_input.atom.pad_mask.unsqueeze(1)  # (B, 1, Latom)
+        x.masked_fill_(~mask[:, :, :, None], 0.0)  # apply atom mask
 
-        if return_traj:
-            traj.append(atom_coords.cpu())  # Move to cpu to save memory
+        # Compute time-independent variables
+        z = model.get_pair_conditioning(f_input, z_trunk)
+        q, c, p = model.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        pair_bias = model.get_pair_bias(z)
+        del z_trunk, z  # Free up memory for large LxL tensors
+
+        def run_step(x_t: torch.Tensor, t_hat: float) -> torch.Tensor:
+            c_noise = torch.tensor(self.c_noise(t_hat), device=s_inputs.device)
+            s = model.get_single_conditioning(s_inputs, s_trunk, c_noise.view(1, 1))
+            return self.inference_step(
+                f_input=f_input,
+                x_t=x_t,
+                t_hat=t_hat,
+                q=q,
+                c=c,
+                p=p,
+                s=s,
+                pair_bias=pair_bias,
+                chunk_size=chunk_size,
+            )
 
         # Line 2: gradually denoise
-        for step_idx in range(1, num_steps):
+        traj: list[torch.Tensor] = []
+        for step_idx in range(1, num_steps + 1):
+            if return_traj:
+                traj.append(x.cpu())  # Move to cpu to save memory
+
             # Line 3
-            atom_coords = self.random_augmentation(atom_coords, mask=atom_mask)
+            x = self.random_augmentation(x, mask=mask)
 
             # Line 4
-            sigma_tm, sigma_t, gamma = (
-                sigmas[step_idx - 1],
-                sigmas[step_idx],
-                gammas[step_idx],
-            )
+            sigma_tm = sigmas[step_idx - 1]
+            sigma_t = sigmas[step_idx]
+            gamma = gammas[step_idx]
 
             # Line 5
             t_hat: float = sigma_tm * (1 + gamma)
 
             # Line 6
             noise_var: float = self.noise_scale**2 * (t_hat**2 - sigma_tm**2)
-            eps = math.sqrt(noise_var) * torch.randn_like(atom_coords)
+            eps = math.sqrt(noise_var) * torch.randn_like(x)
+            eps.masked_fill_(~mask[:, :, :, None], 0.0)  # apply atom mask
 
             # Line 7
-            atom_coords_noisy = atom_coords + eps
+            x_noisy = x + eps
 
             # Line 8
-            # Process in chunks for memory efficiency
-            atom_coords_denoised = torch.zeros_like(atom_coords_noisy)
-            for st in range(0, num_diffusion_samples, max_parallel_samples):
-                end = min(st + max_parallel_samples, num_diffusion_samples)
-                atom_coords_denoised[:, st:end] = self.forward_model(
-                    x_noisy=atom_coords_noisy[:, st:end],
-                    t_hat=t_hat,
-                    f_input=f_input,
-                    s_inputs=s_inputs,
-                    s_trunk=s_trunk,
-                    z_trunk=z_trunk,
-                    model_cache=model_cache,
-                )
+            x_denoised = run_step(x_noisy, t_hat)
 
             # Line 9
-            delta_coords = (atom_coords_noisy - atom_coords_denoised) / t_hat
+            delta = (x_noisy - x_denoised) / t_hat
 
             # line 10
             dt = sigma_t - t_hat
 
             # Line 11
-            atom_coords = atom_coords_noisy + self.step_scale * dt * delta_coords
+            x = x_noisy + self.step_scale * dt * delta
 
-            if return_traj:
-                traj.append(atom_coords.cpu())  # Move to cpu to save memory
-
-        sample_out["init_coordinates"] = start_coords
-        sample_out["sample_coordinates"] = atom_coords
+        sample_out: dict[str, torch.Tensor] = {
+            "sample_coordinates": x,
+        }
         if return_traj:
+            traj.append(x.cpu())  # Move to cpu to save memory
             sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Latom, 3)
 
         return sample_out
 
-    def get_sampling_schedule(
-        self,
-        num_steps: int | None = None,
-        device: torch.device | None = None,
-    ) -> torch.Tensor:
-        """Get the noise schedule for diffusion sampling."""
-
-        if num_steps is None:
-            num_steps = self.num_steps
-
+    def get_sampling_schedule(self, num_steps: int) -> list[float]:
+        """Get the noise schedule for diffusion sampling as a Python list."""
         inv_rho = 1 / self.rho
+        sigma_max_pow = self.sigma_max**inv_rho
+        sigma_min_pow = self.sigma_min**inv_rho
 
-        steps = torch.arange(num_steps, dtype=torch.float32, device=device)
-        sigmas = (
-            self.sigma_max**inv_rho
-            + steps
-            / (num_steps - 1)
-            * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
-        ) ** self.rho
+        sigmas: list[float] = []
+        for i in range(num_steps):
+            # Linearly interpolate in the noise space (rho-domain)
+            step_ratio = i / max((num_steps - 1), 1)
+            interpolated = sigma_max_pow + step_ratio * (sigma_min_pow - sigma_max_pow)
+            # Scale and transform back
+            sigma = (interpolated**self.rho) * self.sigma_data
+            sigmas.append(float(sigma))
 
-        sigmas = sigmas * self.sigma_data
-
-        sigmas = F.pad(sigmas, (0, 1), value=0.0)  # last step is sigma value of 0.
+        # Last step is sigma value of 0.
+        sigmas.append(0.0)
         return sigmas
+
+    def inference_step(
+        self,
+        f_input: FoldingInput,
+        x_t: torch.Tensor,
+        t_hat: float,
+        q: torch.Tensor,
+        c: torch.Tensor,
+        p: torch.Tensor,
+        s: torch.Tensor,
+        pair_bias: torch.Tensor,
+        chunk_size: int | None = None,
+    ) -> torch.Tensor:
+        """Forward pass through the score model.
+        See Section 3.7: Diffusion Module, Algorithm 20 of AlphaFold3 paper.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+        x_t : torch.Tensor
+            Noisy atom coordinates. Shape (B, N, L, 3).
+        t_hat : float
+            Diffusion noise level (or sigmas of EDM).
+        q : torch.Tensor
+            The atom single representation, shape [B, La, c_atom].
+        c : torch.Tensor
+            The atom single conditioning, shape [B, La, c_atom].
+        p : torch.Tensor
+            The atom pair representation, shape [B, La, La, c_atompair].
+        s : torch.Tensor
+            Single conditioning. Shape (B, 1, L, c_s), broadcast to (B, N, L, c_s).
+        pair_bias : torch.Tensor
+            The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
+
+        Returns
+        -------
+        x_out : torch.Tensor
+            Denoised atom coordinates. Shape (B, N, L, 3).
+        """
+        # Line 2 of Algorithm 20
+        r_noisy = self.c_in(t_hat) * x_t
+
+        def _step(_r: torch.Tensor) -> torch.Tensor:
+            return self.score_model.step(
+                _r,  # [B, N, L, 3]
+                q,  # [B, La, c_atom]
+                c,  # [B, La, c_atom]
+                p,  # [B, La, La, c_atompair]
+                f_input.atom.token_index,  # [B, La]
+                f_input.atom.pad_mask,  # [B, La]
+                s,  # [B, 1, L, c_s], broadcast to [B, N, L, c_s]
+                pair_bias,  # [B, Nblock, H, Lt, Lt]
+                f_input.token.pad_mask,  # [B, L]
+            )
+
+        if chunk_size is None:
+            r_update = _step(r_noisy)
+        else:
+            r_update = torch.zeros_like(r_noisy)
+            for st in range(0, r_noisy.shape[1], chunk_size):
+                end = min(st + chunk_size, r_noisy.shape[1])
+                r_update[:, st:end] = _step(r_noisy[:, st:end])
+
+        # Line 8 of Algorithm 20
+        x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update
+        return x_out

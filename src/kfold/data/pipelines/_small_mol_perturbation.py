@@ -21,7 +21,6 @@ class SmallMolPerturbationConfig:
     langevin_k_bond: float = 50.0
     langevin_k_angle: float = 10.0
     langevin_temperature: float = 1.0
-    recenter: bool = True
 
 
 class SmallMolPerturbation:
@@ -202,14 +201,18 @@ class SmallMolPerturbation:
         ref_center: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray:
+        if not mask.any():
+            return coords
+
         out = coords.astype(np.float32, copy=True)
         noise = rng.normal(scale=self.config.gaussian_sigma, size=out.shape).astype(
             np.float32
         )
         out[mask] = out[mask] + noise[mask]
-        if self.config.recenter and mask.any():
-            center = out[mask].mean(axis=0)
-            out[mask] = out[mask] - center + ref_center
+
+        # Recenter the noisy coordinates
+        center = out[mask].mean(axis=0)
+        out[mask] = out[mask] - center + ref_center
         return out
 
     def _sample_gaussian_init(
@@ -219,15 +222,18 @@ class SmallMolPerturbation:
         rng: np.random.Generator,
         ref_center: np.ndarray,
     ) -> np.ndarray:
-        out = coords.astype(np.float32, copy=True)
-        noise = rng.normal(scale=self.config.gaussian_sigma, size=out.shape).astype(
+        if not mask.any():
+            return coords
+        coords = coords.astype(np.float32, copy=True)
+        noise = rng.normal(scale=self.config.gaussian_sigma, size=coords.shape).astype(
             np.float32
         )
-        out[mask] = noise[mask]
-        if self.config.recenter and mask.any():
-            center = out[mask].mean(axis=0)
-            out[mask] = out[mask] - center + ref_center
-        return out
+        coords[mask] = noise[mask]
+
+        # Recenter the noisy coordinates
+        center = coords[mask].mean(axis=0)
+        coords[mask] = coords[mask] - center + ref_center
+        return coords
 
     def _run_langevin(
         self,
@@ -240,6 +246,9 @@ class SmallMolPerturbation:
         ref_center: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray:
+        if not mask.any():
+            return coords
+
         out = coords.astype(np.float32, copy=True)
         noise_scale = math.sqrt(
             2.0 * self.config.langevin_temperature * self.config.langevin_dt
@@ -250,7 +259,8 @@ class SmallMolPerturbation:
             noise = rng.normal(scale=noise_scale, size=out.shape).astype(np.float32)
             out = out - self.config.langevin_dt * grad + noise
             out[~mask] = coords[~mask]
-        if self.config.recenter and mask.any():
-            center = out[mask].mean(axis=0)
-            out[mask] = out[mask] - center + ref_center
+
+        # Recenter the final coordinates
+        center = out[mask].mean(axis=0)
+        out[mask] = out[mask] - center + ref_center
         return out

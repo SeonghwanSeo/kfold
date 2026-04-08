@@ -20,9 +20,6 @@ class KernelConfig:
 @dataclasses.dataclass(kw_only=True)
 class BaseFoldingModelConfig:
     _class_: str = "BaseFoldingModel"
-    compile_trunk: bool = False
-    compile_score_model: bool = False
-    compile_mode: str = "default"
     kernel: KernelConfig
     input_embedder: BaseConfig
     trunk: BaseConfig
@@ -66,26 +63,20 @@ class BaseFoldingModel(torch.nn.Module):
         #     Registry.instantiate(config.confidence_head)
         # )
 
-        # Compile submodules
-        compile_trunk = getattr(config, "compile_trunk", False)
-        compile_score_model = getattr(config, "compile_score_model", False)
-        compile_mode = getattr(config, "compile_mode", "default")
-        self.trunk.compile(compile_trunk, compile_mode)
-        self.score_model.compile(compile_score_model, compile_mode)
-
-    def cast_to_bf16(self) -> Self:
-        """Cast model parameters to bfloat16 for faster inference."""
-        self.input_embedder = self.input_embedder.to(torch.bfloat16)
-        self.trunk = self.trunk.to(torch.bfloat16)
-        self.distogram_head = self.distogram_head.to(torch.bfloat16)
-        return self
+    def do_compile(self, mode: str = "default", dynamic: bool = False):
+        """Compile the trunk and score model."""
+        kwargs = {"mode": mode, "dynamic": dynamic}
+        self.trunk.do_compile(**kwargs)
+        self.score_model.do_compile(**kwargs)
+        # self.input_embedder = torch.compile(self.input_embedder, *kwargs)
+        # self.distogram_head = torch.compile(self.distogram_head, *kwargs)
 
     def forward(
         self,
         f_input: FoldingInput,
         num_recycles: int = 3,
         num_steps: int = 20,
-        num_diffusion_samples: int = 1,
+        num_samples: int = 1,
         diffusion_batch_size: int = 48,
         sample_structures: bool = True,
         train_structure_module: bool = True,
@@ -105,7 +96,7 @@ class BaseFoldingModel(torch.nn.Module):
         num_steps : int
             Number of diffusion steps to sample structures:
             Used for validation and confidence module training.
-        num_diffusion_samples : int
+        num_samples : int
             Number of diffusion samples to sample structures for
             confidence module training.
 
@@ -158,12 +149,6 @@ class BaseFoldingModel(torch.nn.Module):
                 "sample_structures must be True to provide sampled structures."
             )
 
-        if not train_structure_module:
-            # Set trunk and structure module to eval mode
-            self.input_embedder.eval()
-            self.trunk.eval()
-            self.score_model.eval()
-
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
@@ -189,17 +174,14 @@ class BaseFoldingModel(torch.nn.Module):
             # are stored in the model cache, which may lead to unexpected bugs with
             # diffusion module training. Instead, we construct cache inside
             # sample_structure method if necessary.
-            self.score_model.eval()
-            with torch.no_grad(), torch.autocast("cuda", dtype=torch.float32):
-                coordinates = self.structure_module.sample_structure(
-                    f_input=f_input,
-                    s_inputs=s_inputs.detach(),
-                    s_trunk=s_trunk.detach(),
-                    z_trunk=z_trunk.detach(),
-                    num_steps=num_steps,
-                    num_diffusion_samples=num_diffusion_samples,
-                    max_parallel_samples=None,
-                )["sample_coordinates"]  # [B, N_samples, Ltoken, 3]
+            coordinates = self.structure_module.sample_structure(
+                f_input=f_input,
+                s_inputs=s_inputs.detach(),
+                s_trunk=s_trunk.detach(),
+                z_trunk=z_trunk.detach(),
+                num_steps=num_steps,
+                num_samples=num_samples,
+            )["sample_coordinates"]  # [B, N_samples, Ltoken, 3]
             dict_out["sample"] = {
                 "coordinates": coordinates,
             }
@@ -212,15 +194,13 @@ class BaseFoldingModel(torch.nn.Module):
 
         if train_structure_module:
             # Diffusion head
-            self.score_model.train()
-            with torch.autocast("cuda", dtype=torch.float32):
-                dict_out["diffusion"] = self.structure_module.training_step(
-                    f_input,
-                    s_inputs,
-                    s_trunk,
-                    z_trunk,
-                    diffusion_batch_size,
-                )
+            dict_out["diffusion"] = self.structure_module.training_step(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                diffusion_batch_size,
+            )
 
         if train_confidence_module:
             # TODO: implement confidence prediction with mini-rollout
@@ -236,7 +216,7 @@ class BaseFoldingModel(torch.nn.Module):
         f_input: FoldingInput,
         num_recycles: int = 10,
         num_steps: int = 200,
-        num_diffusion_samples: int = 5,
+        num_samples: int = 5,
         return_traj: bool = False,
     ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
         """Forward pass of KFold model for model training.
@@ -249,7 +229,7 @@ class BaseFoldingModel(torch.nn.Module):
             Number of recycling cycles in trunk.
         num_steps : int
             Number of diffusion steps for training.
-        num_diffusion_samples : int
+        num_samples : int
             Number of diffusion samples for training.
         return_traj : bool, optional
             Whether to return sampling trajectories.
@@ -297,18 +277,17 @@ class BaseFoldingModel(torch.nn.Module):
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
         st = time.time()
-        with torch.autocast("cuda", dtype=torch.float32):
-            dict_out.update(
-                self.structure_module.sample_structure(
-                    f_input,
-                    s_inputs,
-                    s_trunk,
-                    z_trunk,
-                    num_steps,
-                    num_diffusion_samples,
-                    return_traj=return_traj,
-                )
+        dict_out.update(
+            self.structure_module.sample_structure(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                num_steps,
+                num_samples,
+                return_traj=return_traj,
             )
+        )
         et = time.time()
         time_logs["diffusion_head"] = et - st
 
@@ -363,16 +342,23 @@ class BaseFoldingModel(torch.nn.Module):
         strict: bool = True,
     ) -> Self:
         """Load model from checkpoint."""
+        from omegaconf import OmegaConf
+
         from kfold.config import load_config
 
         # Load model config
-        config = load_config(config_path, override_args=override_args)
+        config = load_config(config_path)
         if "model" in config:
             # Get model config if wrapped in a higher-level config
             config = config.model
 
+        if override_args is not None:
+            # Override specific arguments in the config
+            overrides = OmegaConf.from_dotlist(override_args)
+            config = OmegaConf.merge(config, overrides)
+
         # Initialize model
-        model: torch.nn.Module = cls(config)
+        model = cls(config)
 
         # Load checkpoint
         ckpt = torch.load(ckpt_path, map_location="cpu")

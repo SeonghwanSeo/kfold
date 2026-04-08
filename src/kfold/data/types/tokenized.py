@@ -33,7 +33,7 @@ def full_nan(shape: tuple[int, ...]) -> np.ndarray:
 
 
 # === Tokenized data structures === #
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass(kw_only=True, frozen=True)
 class ChainArray(PlainLayout[np.ndarray]):
     """Chain information.
 
@@ -151,7 +151,7 @@ class ChainArray(PlainLayout[np.ndarray]):
                 )
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass(kw_only=True, frozen=True)
 class TokenArray(PlainLayout[np.ndarray]):
     """Token information.
 
@@ -278,7 +278,7 @@ class TokenArray(PlainLayout[np.ndarray]):
                 )
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass(kw_only=True, frozen=True)
 class AtomArray(PlainLayout[np.ndarray]):
     """Atom information.
 
@@ -406,10 +406,7 @@ class AtomArray(PlainLayout[np.ndarray]):
                         f"AtomArray field '{field.name}' contains no negative values "
                         f"in the padded region."
                     )
-            elif field.name in (
-                "ref_charge",
-                "prior_coords",
-            ):
+            elif field.name in ["ref_charge"]:
                 if not np.all(np.isfinite(array[pad_mask])):
                     raise ValueError(
                         f"AtomArray field '{field.name}' contains NaN or Inf values."
@@ -421,7 +418,7 @@ class AtomArray(PlainLayout[np.ndarray]):
                     )
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass(kw_only=True, frozen=True)
 class BondArray(PlainLayout[np.ndarray]):
     """Bond information.
 
@@ -479,7 +476,7 @@ class BondArray(PlainLayout[np.ndarray]):
                 )
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass(kw_only=True, frozen=True)
 class SequenceArray(PlainLayout[np.ndarray]):
     """Full sequence information for sequence embedding.
 
