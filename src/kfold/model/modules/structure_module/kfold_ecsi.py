@@ -80,9 +80,14 @@ class SICoeffs:
     # Compute \epsilon = \eta (\gamma \dot{\gamma} - \dot{\alpha}/\alpha \gamma^2)
     def eps(self, t: _T) -> _T:
         eta = self.eta
-        alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
-        gamma, gamma_dot = self.gamma(t), self.gamma_deriv(t)
-        return eta * (gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2)  # type: ignore
+        # Detailed formula for \epsilon_t:
+        # alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
+        # gamma, gamma_dot = self.gamma(t), self.gamma_deriv(t)
+        # eps = eta * (gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2)
+
+        # Optimized formula
+        eps = eta * (self.gamma_max**2 / 8) * self.power * t ** (self.power - 1)
+        return eps  # type: ignore
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -135,8 +140,8 @@ class SamplingConfig:
     time_max: float = 0.9999
     eta: float = 1.0  # global stochasticity scale
     align_x_0_hat_to_x_t: bool = True
-    churn_factor: float = 0.08
-    churn_end_time: float = 0.75
+    churn_factor: float = 0.1
+    churn_end_time: float = 0.7
     schedule: SamplingScheduleConfig = dataclasses.field(
         default_factory=SamplingScheduleConfig
     )
@@ -676,7 +681,7 @@ class KFoldECSI(BaseECSI):
                 x_0_hat = do_centering(x_0_hat, mask)
 
             # Update x_t
-            x_t = self._update_step(x_noisy, x_0_hat, x_T, x_T, mask, t, t_next)
+            x_t = self._update_step(x_noisy, x_0_hat, x_T, mask, t, t_next)
 
         append_traj(x_t)
 
@@ -768,9 +773,6 @@ class KFoldECSI(BaseECSI):
         x_out = c_skip * x_t + c_out * r_update
         return x_out
 
-    # ============================================================
-    # Sampling schedule
-    # ============================================================
     def get_sampling_schedule(self, num_steps: int) -> list[float]:
         r"""Get the time schedule for diffusion sampling.
 
@@ -832,59 +834,83 @@ class KFoldECSI(BaseECSI):
             # No churn applied before or at churn_end
             return x_t, t
 
+        dt = (1 - t) * self.sampling.churn_factor
+
         alpha_t: float = self.si_coeffs.alpha(t)
         beta_t: float = self.si_coeffs.beta(t)
         alpha_dot: float = self.si_coeffs.alpha_deriv(t)
         beta_dot: float = self.si_coeffs.beta_deriv(t)
         eps: float = self.si_coeffs.eps(t)
 
-        # Compute forward-pinned churn time step
-        dt = (1 - t) * self.sampling.churn_factor
+        # Forward-pinned churn step
+        noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
+
         f_t = alpha_dot / alpha_t
         s_t = beta_dot - f_t * beta_t
-        x_tm = x_t + (f_t * x_t + s_t * x_T) * dt
-        t += dt
+        drift = f_t * x_t + s_t * x_T
 
-        # Euler update with forward-pinned noise
-        noise = torch.randn_like(x_tm)
-        noise.masked_fill_(~mask[..., None], 0.0)
-        x_tm = x_tm + (_sqrt(2 * eps) * (dt**0.5)) * noise
-        return x_tm, t
+        x_tm = x_t + drift * dt + _sqrt(2 * eps * dt) * noise
+        tm = t + dt
+
+        return x_tm, tm
 
     def _update_step(
         self,
         x_t: torch.Tensor,
         x_0_hat: torch.Tensor,
         x_T: torch.Tensor,
-        x_N: torch.Tensor,
         mask: torch.Tensor,
         t: float,
         t_next: float,
+        mode: str = "ode",  # 'ode' or 'sde'
+        ode_type: str = "si",  # 'si' or 'ecsi'
     ) -> torch.Tensor:
         """SDE step for ECSI sampling.
         See Algorithm 1 of ECSI paper.
+
+        Parameters
+        ----------
+        x_t : torch.Tensor
+            Current coordinates at time t. Shape (*, Natom, 3).
+        x_0_hat : torch.Tensor
+            Denoised coordinates predicted by the score model. Shape (*, Natom, 3).
+        x_T : torch.Tensor
+            Prior (apo) coordinates. Shape (*, Natom, 3).
+        mask : torch.Tensor
+            Atom mask. Shape (B, Natom).
+        t : float
+            Current time value.
+        t_next : float
+            Next time value after the update step.
+        mode : str, optional
+            Update mode: 'sde' or 'ode'
+        ode_type : str, optional
+            Type of ODE update: 'si' or 'ecsi'.
+
         """
         C = self.si_coeffs
         alpha_t, alpha_dot = C.alpha(t), C.alpha_deriv(t)
         beta_t, beta_dot = C.beta(t), C.beta_deriv(t)
-        gamma_t, gamma_dot = C.gamma(t), C.gamma_deriv(t)
 
-        # Line 5
-        # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
-        z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_N) / _clip(gamma_t)
-
-        if False and t > self.sampling.churn_end_time:
+        if mode == "sde":
+            # SDE update
+            gamma_t, gamma_dot = C.gamma(t), C.gamma_deriv(t)
             eps: float = C.eps(t)
+
+            x_N = x_T  # For clarity with the paper's notation.
+
+            # Line 5
+            # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
+            z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_N) / _clip(gamma_t)
 
             # Line 7: Sample noise for SDE step
             # \bar{z} ~ N(0, I)
-            z_bar = torch.randn_like(x_t)
-            z_bar.masked_fill_(~mask[..., None], 0.0)
+            noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
 
             # Line 8: Compute drift term
             # d = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_N
             #     + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
-            d = (
+            drift = (
                 alpha_dot * x_0_hat
                 + beta_dot * x_N
                 + (gamma_dot + eps / _clip(gamma_t)) * z_hat
@@ -892,10 +918,19 @@ class KFoldECSI(BaseECSI):
 
             # Line 9: Euler-Maruyama update
             dt = t - t_next
-            x_upd = x_t - d * dt + _sqrt(2 * eps * dt) * z_bar
+            x_upd = x_t - drift * dt + _sqrt(2 * eps * dt) * noise
         else:
-            alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
-            c_skip = beta_tm / beta_t
-            c_update = alpha_tm - alpha_t * c_skip
-            x_upd = c_skip * x_t + c_update * x_0_hat
+            # ODE update
+            if ode_type == "si":
+                # SI ODE update
+                alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
+                c_skip = beta_tm / beta_t
+                c_update = alpha_tm - alpha_t * c_skip
+                x_upd = c_skip * x_t + c_update * x_0_hat
+            else:
+                # ECSI ODE update (no skip connection)
+                alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
+                gamma_t, gamma_tm = C.gamma(t), C.gamma(t_next)
+                z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_T) / _clip(gamma_t)
+                x_upd = alpha_tm * x_0_hat + beta_tm * x_T + gamma_tm * z_hat
         return x_upd

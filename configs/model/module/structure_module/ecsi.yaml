@@ -15,8 +15,8 @@ sampling:
   time_max: 0.9999
   align_x_0_hat_to_x_t: true
   eta: 1.0
-  churn_factor: 0.08
-  churn_end_time: 0.75
+  churn_factor: 0.1
+  churn_end_time: 0.7
   schedule:
     churn_fraction: 0.4
     churn_power: 1.0
