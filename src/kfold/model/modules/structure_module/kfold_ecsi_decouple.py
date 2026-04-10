@@ -455,9 +455,8 @@ class KFoldECSI_Decoupling(base_ecsi.KFoldECSI):
                 traj.append(x_t.cpu())
 
         # Sampling loop
+        append_traj(x_t)
         for step_idx in range(num_steps):
-            append_traj(x_t)
-
             # Apply random augmentation
             x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask)
 
@@ -480,8 +479,7 @@ class KFoldECSI_Decoupling(base_ecsi.KFoldECSI):
 
             # Update x_t
             x_t = self._update_step(x_noisy, x_0_hat, x_T, decomposer, t, t_next)
-
-        append_traj(x_t)
+            append_traj(x_t)
 
         sample_out: dict[str, torch.Tensor] = {}
         sample_out["init_coordinates"] = x_T
