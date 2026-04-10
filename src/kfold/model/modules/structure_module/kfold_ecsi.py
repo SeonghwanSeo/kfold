@@ -56,33 +56,38 @@ class SICoeffs:
     eta: float
 
     def alpha(self, t: _T) -> _T:
-        return 1.0 - _clip(t) ** self.power  # type: ignore
+        return 1.0 - t**self.power  # type: ignore
 
     def alpha_deriv(self, t: _T) -> _T:
-        return -self.power * (_clip(t) ** (self.power - 1))  # type: ignore
+        return -self.power * (t ** (self.power - 1))  # type: ignore
 
     def beta(self, t: _T) -> _T:
-        return _clip(t) ** self.power  # type: ignore
+        return t**self.power  # type: ignore
 
     def beta_deriv(self, t: _T) -> _T:
-        return self.power * _clip(t) ** (self.power - 1)  # type: ignore
+        return self.power * t ** (self.power - 1)  # type: ignore
 
     def gamma(self, t: _T) -> _T:
-        t_pow = _clip(t) ** self.power
-        return 0.5 * self.gamma_max * (t_pow * (1 - t_pow)) ** 0.5  # type: ignore
+        t_pow = t**self.power
+        return 0.5 * self.gamma_max * _sqrt(t_pow * (1 - t_pow))  # type: ignore
 
     def gamma_deriv(self, t: _T) -> _T:
-        t_pow = _clip(t) ** self.power
-        denom = (t_pow * (1 - t_pow)) ** 0.5
+        t_pow = t**self.power
         coeff = self.power * t ** (self.power - 1)
+        denom = _sqrt(t_pow * (1 - t_pow))  # type: ignore
         return (self.gamma_max / 4) * coeff * (1 - 2 * t_pow) / _clip(denom)  # type: ignore
 
     # Compute \epsilon = \eta (\gamma \dot{\gamma} - \dot{\alpha}/\alpha \gamma^2)
     def eps(self, t: _T) -> _T:
         eta = self.eta
-        alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
-        gamma, gamma_dot = self.gamma(t), self.gamma_deriv(t)
-        return eta * (gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2)  # type: ignore
+        # Detailed formula for \epsilon_t:
+        # alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
+        # gamma, gamma_dot = self.gamma(t), self.gamma_deriv(t)
+        # eps = eta * (gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2)
+
+        # Optimized formula
+        eps = eta * (self.gamma_max**2 / 8) * self.power * t ** (self.power - 1)
+        return eps  # type: ignore
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -95,18 +100,17 @@ class SamplingScheduleConfig:
 
     In solver-progress space, phase-power allocates steps across two regions:
 
-      sde   : solver progress in [0, 1 - ode_fraction]
-      tail  : solver progress in (1 - ode_fraction, 1]
+      head : solver progress in [0, churn_fraction]
+      tail  : solver progress in (churn_fraction, 1]
 
-    Higher `sde_power` concentrates more steps near `time_max`.
+    Higher `churn_power` concentrates more steps near `time_max`.
     Higher `ode_power` makes the late tail flatter near `t = 0`.
     These fields decide where the solver spends steps, not which dynamics branch is used.
     """
 
-    global_u_power: float = 1.0
-    ode_fraction: float = 0.3
-    sde_power: float = 1.5
-    ode_power: float = 2.6
+    churn_fraction: float = 0.4
+    churn_power: float = 1.0
+    ode_power: float = 2.0
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -117,25 +121,18 @@ class SamplingConfig:
 
       1. Prior initialization
          - start from sampled prior `x_T`
-         - if `perturb_x_t`, add endpoint noise with `endpoint_perturb_scale`
 
       2. Early high-time region (`t > churn_end_time`)
          - Apply the forward-pinned churn substep
 
-      3. Middle stochastic region (`ode_start_time < t <= churn_end_time`)
-         - use the expanded ECSI SDE update
-         - stochasticity is controlled by `eta`.
-
-      4. Late deterministic region (`t <= ode_start_time`)
+      4. Late deterministic region (`t <= churn_end_time`)
          - switch to the SI ODE update
          - no diffusion noise is added in this branch
 
     Parameter groups:
       - horizon: `steps`, `time_min`, `time_max`
       - stochasticity: `eta`.
-      - endpoint handling: `perturb_x_t`, `endpoint_perturb_scale`
       - early churn: `churn_end_time`, `churn_factor`
-      - late ODE switch: `ode_start_time`
       - time allocation across steps: `schedule`
     """
 
@@ -143,13 +140,8 @@ class SamplingConfig:
     time_max: float = 0.9999
     eta: float = 1.0  # global stochasticity scale
     align_x_0_hat_to_x_t: bool = True
-    perturb_x_t: bool = True
-    endpoint_perturb_scale: float = 0.1
-    # Early-stage Pinned churn
-    churn_end_time: float = 0.7  # 1.0 to disable
-    churn_factor: float = 3.0
-    # Late-stage ODE switch
-    ode_start_time: float = 0.6
+    churn_factor: float = 0.1
+    churn_end_time: float = 0.7
     schedule: SamplingScheduleConfig = dataclasses.field(
         default_factory=SamplingScheduleConfig
     )
@@ -249,8 +241,6 @@ class KFoldECSI(BaseECSI):
         configuration.
         """
         super().__init__(cfg, score_model)
-        self.__validate_config(cfg)
-
         self.score_model: ECSIDiffusionModule = score_model
         self.sampling: SamplingConfig = cfg.sampling
         self.train_time_sampling: TrainTimeSamplingConfig = cfg.train_time_sampling
@@ -274,28 +264,6 @@ class KFoldECSI(BaseECSI):
                 centering=False, s_trans=0.0
             )
 
-    @staticmethod
-    def __validate_config(config: Config) -> None:
-        """Validate and normalize runtime config used by ECSI."""
-        sampling_cfg = config.sampling
-        if sampling_cfg.time_max <= sampling_cfg.time_min:
-            raise ValueError("sampling.time_max must be > sampling.time_min")
-        if not (
-            sampling_cfg.time_min
-            < sampling_cfg.ode_start_time
-            < sampling_cfg.churn_end_time
-            < sampling_cfg.time_max
-        ):
-            raise ValueError(
-                "sampling requires time_min < ode_time < churn_until_time < time_max"
-            )
-
-        train_time_cfg = config.train_time_sampling
-        if train_time_cfg.schedule not in {"logit_normal", "uniform", "beta"}:
-            raise ValueError(
-                "train_time_sampling.schedule must be one of logit_normal, uniform, beta"
-            )
-
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(self, t: _T) -> tuple[_T, _T, _T]:
         """Compute bridge diffusion scalings for ECSI.
@@ -309,70 +277,60 @@ class KFoldECSI(BaseECSI):
 
         Returns
         -------
+        c_in : float | torch.Tensor
+            Input scaling coefficient.
         c_skip : float | torch.Tensor
             Skip connection coefficient.
         c_out : float | torch.Tensor
             Output scaling coefficient.
-        c_in : float | torch.Tensor
-            Input scaling coefficient.
         """
         alpha_t = self.si_coeffs.alpha(t)
         beta_t = self.si_coeffs.beta(t)
         gamma_t = self.si_coeffs.gamma(t)
+        sigma_0 = self.sigma_data
+        sigma_T = self.sigma_data_end
+        sigma_0T = self.cov_xy
 
-        sigma_data = self.sigma_data
-        sigma_data_end = self.sigma_data_end
-        cov_xy = self.cov_xy
-
-        # Total variance A (adapted from DDBM Eq. 81)
-        # A = \alpha_t^2 \sigma_0^2 + \beta_t^2 \sigma_T^2
-        #   + 2 \alpha_t \beta_t \sigma_{0T} + \gamma_t^2
-        A = _clip(
-            alpha_t**2 * sigma_data**2
-            + beta_t**2 * sigma_data_end**2
-            + 2 * alpha_t * beta_t * cov_xy
-            + gamma_t**2
+        c_in = 1 / _clip(
+            _sqrt(
+                (alpha_t * sigma_0) ** 2
+                + (beta_t * sigma_T) ** 2
+                + 2 * alpha_t * beta_t * sigma_0T
+                + gamma_t**2
+            )
         )
-
-        # c_in: input normalization
-        c_in = 1 / A**0.5
-
-        # c_skip: skip connection weight
-        c_skip = (alpha_t * sigma_data**2 + beta_t * cov_xy) / A
-
-        # c_out: output scaling
-        numerator_out = _sqrt(
-            beta_t**2 * (sigma_data**2 * sigma_data_end**2 - cov_xy**2)
-            + gamma_t**2 * sigma_data**2
+        c_skip = (alpha_t * sigma_0**2 + beta_t * sigma_0T) * (c_in**2)
+        c_out = (
+            _sqrt(
+                (beta_t * sigma_0 * sigma_T) ** 2
+                - (beta_t * sigma_0T) ** 2
+                + gamma_t**2 * sigma_0**2
+            )
+            * c_in
         )
-
-        c_out = c_in * numerator_out
         if isinstance(c_out, torch.Tensor):
-            c_skip, c_out, c_in = c_skip.float(), c_out.float(), c_in.float()
-        return c_skip, c_out, c_in
-
-    def c_skip(self, t: _T) -> _T:
-        r"""Skip connection coefficient for ECSI preconditioning."""
-        c_skip, _, _ = self._get_bridge_scalings(t)
-        return c_skip
-
-    def c_out(self, t: _T) -> _T:
-        r"""Output scaling coefficient for ECSI preconditioning."""
-        _, c_out, _ = self._get_bridge_scalings(t)
-        return c_out
+            c_in, c_skip, c_out = c_in.float(), c_skip.float(), c_out.float()
+        return c_in, c_skip, c_out
 
     def c_in(self, t: _T) -> _T:
-        r"""Input scaling coefficient for ECSI preconditioning."""
-        _, _, c_in = self._get_bridge_scalings(t)
-        return c_in
+        """Input scaling coefficient for ECSI preconditioning."""
+        return self._get_bridge_scalings(t)[0]
+
+    def c_skip(self, t: _T) -> _T:
+        """Skip connection coefficient for ECSI preconditioning."""
+        return self._get_bridge_scalings(t)[1]
+
+    def c_out(self, t: _T) -> _T:
+        """Output scaling coefficient for ECSI preconditioning."""
+        return self._get_bridge_scalings(t)[2]
 
     def c_noise(self, t: _T) -> _T:
-        r"""Noise level conditioning coefficient.
-
-        Maps t to a conditioning value for the network.
-        Uses log-scaling similar to EDM.
-        """
+        """Noise level conditioning coefficient."""
         return 0.25 * _log(t)
+
+    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
+        """ECSI training loss weights"""
+        return 1 / self.c_out(t_hat).pow_(2).clamp_(min=1e-8)
 
     # ============================================================
     # For training
@@ -458,7 +416,7 @@ class KFoldECSI(BaseECSI):
             Denoised atom coordinates. Shape (B, N, Natom, 3).
         """
         assert x_T is not None, "x_T must be provided for ECSI"
-        c_skip, c_out, c_in = self._get_bridge_scalings(t_hat)  # [B, N]
+        c_in, c_skip, c_out = self._get_bridge_scalings(t_hat)  # [B, N]
         c_noise = self.c_noise(t_hat)  # [B, N]
 
         # Input preconditioning: r_noisy = c_in * x_t, r_T = x_T / sigma_data_end
@@ -481,15 +439,6 @@ class KFoldECSI(BaseECSI):
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
         x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
         return x_0_hat
-
-    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
-        r"""Compute loss weights based on time t_hat.
-
-        Uses Karras-style weighting: w(t) = 1 / c_{out}(t)^2
-        """
-        c_out = self.c_out(t_hat)
-        weights = 1 / c_out.pow(2).clamp(min=1e-8)
-        return weights
 
     def sample_noise_level(
         self, shape: tuple[int, ...], device: torch.device
@@ -669,7 +618,7 @@ class KFoldECSI(BaseECSI):
         \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / \gamma_t
         \epsilon_t = \eta (\gamma_t \dot{\gamma}_t - \dot{\alpha}_t/\alpha_t \gamma_t^2)
         """
-        model = self.score_model
+        model: ECSIDiffusionModule = self.score_model
 
         # Get time schedule (from t_max toward t_min)
         times = self.get_sampling_schedule(num_steps)
@@ -678,10 +627,6 @@ class KFoldECSI(BaseECSI):
         x_T = self.sample_prior(f_input, num_samples)  # (B, N, Natom, 3)
         x_t = x_T.clone()
         mask = f_input.atom.pad_mask[..., None, :]  # (B, 1, Natom)
-
-        if self.sampling.perturb_x_t:
-            x_t = self._apply_endpoint_perturbation(x_t, mask)
-        x_churn_target = x_t.clone()
 
         # Compute time-independent variables
         z = model.get_pair_conditioning(f_input, z_trunk)
@@ -711,47 +656,32 @@ class KFoldECSI(BaseECSI):
             if return_traj:
                 traj.append(x_t.cpu())
 
-        # Time schedule and branch control parameters
-        churn_end_time: float = self.sampling.churn_end_time
-        ode_start_time: float = self.sampling.ode_start_time
-
         # Sampling loop
+        append_traj(x_t)
         for step_idx in range(num_steps):
-            append_traj(x_t)
-
             # Apply random augmentation
-            x_t, x_T, x_churn_target = self.random_augmentation(
-                x_t, x_T, x_churn_target, mask=mask
-            )
+            x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask)
 
             t = times[step_idx]
             t_next = times[step_idx + 1]
-            dt = t_next - t  # negative since t decreases
 
-            if churn_end_time < t:
-                # Early-stage forward-pinned churn.
-                x_t, t = self._apply_forward_pinned_churn(x_t, x_churn_target, t, t_next)
-                dt = t_next - t
+            # Early-stage forward-pinned churn.
+            x_noisy, t = self._apply_forward_pinned_churn(x_t, x_T, mask, t)
 
             # Get denoised prediction \hat{x}_0
-            x_0_hat = run_step(x_t, t)
+            x_0_hat = run_step(x_noisy, t)
 
             if self.sampling.align_x_0_hat_to_x_t:
                 # Rigidly align x_0_hat to x_t before centering.
-                x_0_hat = rigid_align(x_0_hat, x_t, mask)
+                x_0_hat = rigid_align(x_0_hat, x_noisy, mask)
 
             if self.align_mode == NO_ALIGN:
                 # version 1: center x_0_hat after alignment.
                 x_0_hat = do_centering(x_0_hat, mask)
 
-            if t > ode_start_time:
-                # Early/Mid-stage stochastic SI SDE update.
-                x_t = self._sde_step(x_t, x_0_hat, x_T, mask, t, dt)
-            else:
-                # Late-stage deterministic ODE update.
-                x_t = self._ode_step(x_t, x_0_hat, mask, t, dt)
-
-        append_traj(x_t)
+            # Update x_t
+            x_t = self._update_step(x_noisy, x_0_hat, x_T, mask, t, t_next)
+            append_traj(x_t)
 
         sample_out: dict[str, torch.Tensor] = {}
         sample_out["init_coordinates"] = x_T
@@ -807,8 +737,10 @@ class KFoldECSI(BaseECSI):
         atom_mask = f_input.atom.pad_mask  # [B, Natom]
         token_mask = f_input.token.pad_mask  # [B, L]
 
+        c_in, c_skip, c_out = self._get_bridge_scalings(t_hat)  # [B, N]
+
         # Input preconditioning: r_noisy = c_in * x_t
-        r_noisy = self.c_in(t_hat) * x_t
+        r_noisy = c_in * x_t
 
         # End-point conditioning: r_T = x_T / sigma_data_end
         r_T = x_T / self.sigma_data_end  # [B, N, L, 3]
@@ -836,12 +768,9 @@ class KFoldECSI(BaseECSI):
                 r_update[:, st:end] = _step(r_noisy[:, st:end])
 
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
-        x_out = self.c_skip(t_hat) * x_t + self.c_out(t_hat) * r_update
+        x_out = c_skip * x_t + c_out * r_update
         return x_out
 
-    # ============================================================
-    # Sampling schedule
-    # ============================================================
     def get_sampling_schedule(self, num_steps: int) -> list[float]:
         r"""Get the time schedule for diffusion sampling.
 
@@ -860,138 +789,146 @@ class KFoldECSI(BaseECSI):
         sampling = self.sampling
         time_max = sampling.time_max
         time_min = sampling.time_min
-        ode_time = sampling.ode_start_time
+        ode_st = sampling.churn_end_time
         total_scale = time_max - time_min
 
         schedule = self.sampling.schedule
-        global_u_power = schedule.global_u_power
-
         ode_power = schedule.ode_power
-
-        ode_unit = (ode_time - time_min) / total_scale
-        ode_u = ode_unit**global_u_power
+        churn_power = schedule.churn_power
+        churn_fraction = schedule.churn_fraction
+        ode_fraction = 1.0 - churn_fraction
 
         s = np.linspace(0, 1, num_steps)
-        sde_fraction = 1.0 - schedule.ode_fraction
-        ode_fraction = schedule.ode_fraction
-        sde_mask = s <= sde_fraction
-        ode_mask = s > sde_fraction
+        churn_mask = s <= churn_fraction
+        ode_mask = s > churn_fraction
+
+        ode_u = (ode_st - time_min) / total_scale
 
         u = np.zeros_like(s)
-        if sde_mask.any():
-            progress = s[sde_mask] / _clip(sde_fraction)
-            _u = 1.0 - (1.0 - ode_u) * progress**schedule.sde_power
-            u[sde_mask] = _u
+        if churn_mask.any():
+            progress = s[churn_mask] / _clip(churn_fraction)
+            _u = 1.0 - (1.0 - ode_u) * progress**churn_power
+            u[churn_mask] = _u
         if ode_mask.any():
             progress = (1.0 - s[ode_mask]) / _clip(ode_fraction)
             _u = ode_u * progress**ode_power
             u[ode_mask] = _u
+        t_unit = u.clip(0.0, 1.0)
 
-        t_unit = u.clip(0.0, 1.0) ** (1.0 / global_u_power)
         times = time_min + total_scale * t_unit
         times = times.tolist()
         # Append time=0.0 at the end to ensure the final step reaches t=0.
         times.append(0.0)
         return times
 
-    # ============================================================
-    # Sampling utilities
-    # ============================================================
-    def _apply_endpoint_perturbation(
-        self, x: torch.Tensor, mask: torch.Tensor
-    ) -> torch.Tensor:
-        noise = torch.randn_like(x) * self.sampling.endpoint_perturb_scale
-        noise.masked_fill_(~mask[..., None], 0.0)
-        return x + noise
-
     def _apply_forward_pinned_churn(
         self,
         x_t: torch.Tensor,
-        x_churn_target: torch.Tensor,
+        x_T: torch.Tensor,
+        mask: torch.Tensor,
         t: float,
-        t_next: float,
     ) -> tuple[torch.Tensor, float]:
         if t <= self.sampling.churn_end_time:
             # No churn applied before or at churn_end
             return x_t, t
 
-        dt = abs(t_next - t)
-        dt_churn = self.sampling.churn_factor * dt
-        if t + dt_churn >= self.sampling.time_max:
-            # Do not apply churn
-            return x_t, t
+        dt = (1 - t) * self.sampling.churn_factor
 
         alpha_t: float = self.si_coeffs.alpha(t)
         beta_t: float = self.si_coeffs.beta(t)
         alpha_dot: float = self.si_coeffs.alpha_deriv(t)
         beta_dot: float = self.si_coeffs.beta_deriv(t)
-        gamma = self.si_coeffs.gamma(t)
-        gamma_dot = self.si_coeffs.gamma_deriv(t)
+        eps: float = self.si_coeffs.eps(t)
+
+        # Forward-pinned churn step
+        noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
 
         f_t = alpha_dot / alpha_t
         s_t = beta_dot - f_t * beta_t
-        g = _sqrt(2 * (gamma * gamma_dot - f_t * gamma**2))
+        drift = f_t * x_t + s_t * x_T
 
-        # Sample noise
-        noise = torch.randn_like(x_t)
+        x_tm = x_t + drift * dt + _sqrt(2 * eps * dt) * noise
+        tm = t + dt
 
-        # Euler update with forward-pinned noise
-        mean = x_t + (f_t * x_t + s_t * x_churn_target) * dt_churn
-        x_t = mean + g * noise * (dt_churn**0.5)
-        t += dt_churn
-        return x_t, t
+        return x_tm, tm
 
-    def _sde_step(
+    def _update_step(
         self,
         x_t: torch.Tensor,
         x_0_hat: torch.Tensor,
         x_T: torch.Tensor,
         mask: torch.Tensor,
         t: float,
-        dt: float,
+        t_next: float,
+        mode: str = "ode",  # 'ode' or 'sde'
+        ode_type: str = "si",  # 'si' or 'ecsi'
     ) -> torch.Tensor:
-        si_coeffs = self.si_coeffs
-        alpha_t: float = si_coeffs.alpha(t)
-        beta_t: float = si_coeffs.beta(t)
-        alpha_dot: float = si_coeffs.alpha_deriv(t)
-        beta_dot: float = si_coeffs.beta_deriv(t)
-        gamma: float = si_coeffs.gamma(t)
-        gamma_dot: float = si_coeffs.gamma_deriv(t)
-        eps: float = si_coeffs.eps(t)
+        """SDE step for ECSI sampling.
+        See Algorithm 1 of ECSI paper.
 
-        # Compute \hat{z}_t
-        # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
-        raw_z = x_t - alpha_t * x_0_hat - beta_t * x_T
-        base_z = raw_z / gamma
+        Parameters
+        ----------
+        x_t : torch.Tensor
+            Current coordinates at time t. Shape (*, Natom, 3).
+        x_0_hat : torch.Tensor
+            Denoised coordinates predicted by the score model. Shape (*, Natom, 3).
+        x_T : torch.Tensor
+            Prior (apo) coordinates. Shape (*, Natom, 3).
+        mask : torch.Tensor
+            Atom mask. Shape (B, Natom).
+        t : float
+            Current time value.
+        t_next : float
+            Next time value after the update step.
+        mode : str, optional
+            Update mode: 'sde' or 'ode'
+        ode_type : str, optional
+            Type of ODE update: 'si' or 'ecsi'.
 
-        # Compute drift b(t)
-        # b(t) = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_T
-        #        + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
-        drift = (alpha_dot * x_0_hat + beta_dot * x_T) + (
-            (gamma_dot + eps / gamma) * base_z
-        )
+        """
+        C = self.si_coeffs
+        alpha_t, alpha_dot = C.alpha(t), C.alpha_deriv(t)
+        beta_t, beta_dot = C.beta(t), C.beta_deriv(t)
 
-        # === Euler-Maruyama update ===
-        # Compute noise
-        noise = torch.randn_like(x_t)
-        noise_scale = abs(2 * eps * dt) ** 0.5
-        x_update = x_t + drift * dt + noise_scale * noise
-        x_update.masked_fill_(~mask[..., None], 0.0)
-        return x_update
+        if mode == "sde":
+            # SDE update
+            gamma_t, gamma_dot = C.gamma(t), C.gamma_deriv(t)
+            eps: float = C.eps(t)
 
-    def _ode_step(
-        self,
-        x_t: torch.Tensor,
-        x_0_hat: torch.Tensor,
-        mask: torch.Tensor,
-        t: float,
-        dt: float,
-    ) -> torch.Tensor:
-        coeffs = self.si_coeffs
-        alpha, beta = coeffs.alpha(t), coeffs.beta(t)
-        alpha_next, beta_next = coeffs.alpha(t + dt), coeffs.beta(t + dt)
-        c_skip: float = beta_next / beta
-        c_update: float = alpha_next - alpha * c_skip
-        x_update = c_skip * x_t + c_update * x_0_hat
-        x_update.masked_fill_(~mask[..., None], 0.0)
-        return x_update
+            x_N = x_T  # For clarity with the paper's notation.
+
+            # Line 5
+            # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
+            z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_N) / _clip(gamma_t)
+
+            # Line 7: Sample noise for SDE step
+            # \bar{z} ~ N(0, I)
+            noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
+
+            # Line 8: Compute drift term
+            # d = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_N
+            #     + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
+            drift = (
+                alpha_dot * x_0_hat
+                + beta_dot * x_N
+                + (gamma_dot + eps / _clip(gamma_t)) * z_hat
+            )
+
+            # Line 9: Euler-Maruyama update
+            dt = t - t_next
+            x_upd = x_t - drift * dt + _sqrt(2 * eps * dt) * noise
+        else:
+            # ODE update
+            if ode_type == "si":
+                # SI ODE update
+                alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
+                c_skip = beta_tm / beta_t
+                c_update = alpha_tm - alpha_t * c_skip
+                x_upd = c_skip * x_t + c_update * x_0_hat
+            else:
+                # ECSI ODE update (no skip connection)
+                alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
+                gamma_t, gamma_tm = C.gamma(t), C.gamma(t_next)
+                z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_T) / _clip(gamma_t)
+                x_upd = alpha_tm * x_0_hat + beta_tm * x_T + gamma_tm * z_hat
+        return x_upd

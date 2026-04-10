@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint",
         type=str,
+        required=True,
         help="Path to a checkpoint file for validation.",
     )
     parser.add_argument(
@@ -68,8 +69,6 @@ def validate(args) -> None:
     # Set random seed
     pl.seed_everything(cfg.train.seed, workers=False)
 
-    if args.checkpoint is None:
-        print("No checkpoint path provided for validation.")
     if args.num_gpus is not None:
         cfg.train.trainer.devices = args.num_gpus
     else:
@@ -84,7 +83,9 @@ def validate(args) -> None:
         cfg.train.data.safe_load = False
         cfg.train.data.num_workers = 0
 
-    model_module = KFoldTrainingModule(cfg)
+    model_module = KFoldTrainingModule.load_from_checkpoint(
+        args.checkpoint, config=cfg, weights_only=True
+    )
     data_module = TrainingDataModule(cfg.train.data)
 
     if args.num_val_entries is not None:
@@ -119,12 +120,7 @@ def validate(args) -> None:
         limit_val_batches=5 if args.debug else None,
         enable_checkpointing=False,
     )
-
-    trainer.validate(
-        model_module,
-        datamodule=data_module,
-        ckpt_path=args.checkpoint,
-    )
+    trainer.validate(model_module, datamodule=data_module)
 
 
 if __name__ == "__main__":
