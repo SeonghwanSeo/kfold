@@ -23,11 +23,6 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Path to a checkpoint file for validation.",
     )
-    parser.add_argument(
-        "--num_gpus",
-        type=int,
-        help="Number of GPUs to use for training.",
-    )
     parser.add_argument("--save_dir", type=str, help="Directory path to save structure")
     parser.add_argument(
         "--num_steps",
@@ -69,10 +64,6 @@ def validate(args) -> None:
     # Set random seed
     pl.seed_everything(cfg.train.seed, workers=False)
 
-    if args.num_gpus is not None:
-        cfg.train.trainer.devices = args.num_gpus
-    else:
-        cfg.train.trainer.devices = "auto"
     cfg.train.validation.num_steps = args.num_steps
     cfg.train.validation.num_recycles = args.num_recycles
     cfg.train.validation.save_predictions = args.save_dir is not None
@@ -84,7 +75,7 @@ def validate(args) -> None:
         cfg.train.data.num_workers = 0
 
     model_module = KFoldTrainingModule.load_from_checkpoint(
-        args.checkpoint, config=cfg, weights_only=True
+        args.checkpoint, map_location="cpu", config=cfg, weights_only=True
     )
     data_module = TrainingDataModule(cfg.train.data)
 
@@ -116,10 +107,12 @@ def validate(args) -> None:
         devices=cfg.train.trainer.devices,
         accelerator=cfg.train.trainer.accelerator,
         precision=cfg.train.trainer.precision,
+        strategy=cfg.train.trainer.strategy,
         deterministic=True,
         limit_val_batches=5 if args.debug else None,
         enable_checkpointing=False,
     )
+
     trainer.validate(model_module, datamodule=data_module)
 
 
