@@ -19,6 +19,8 @@ sequences:
   - ligand:
       id: "D"
       ccd: ["GLY", "TYR"] # multi-residue ligand
+bonds:
+  - [["A", 10, "CA"], ["D", 1, "C1"]]
 ```
 
 ```json
@@ -198,6 +200,10 @@ class Query:
     sequences: list[ProteinSequence | DNASequence | RNASequence | LigandSequence] = (
         dataclasses.field(default_factory=list)
     )
+    # list of bonds between chains, specified as tuples of (chain_id, res_idx, atom_name)
+    bonds: list[tuple[tuple[str, int, str], tuple[str, int, str]]] = dataclasses.field(
+        default_factory=list
+    )
     seed: int = 0  # Default seed, overridden to command line argument
     yaml: str  # Original YAML content
 
@@ -306,9 +312,25 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
 
     validate_input_sequences(json_or_yaml_path, sequences, ccd=ccd)
 
+    bonds: list[tuple[tuple[str, int, str], tuple[str, int, str]]] = []
+    if "bonds" in input_dict:
+        for bond in input_dict["bonds"]:
+            if len(bond) != 2:
+                raise ValueError(
+                    f"Each bond entry must contain exactly two atoms: {bond}"
+                )
+            atom1, atom2 = bond
+            if len(atom1) != 3 or len(atom2) != 3:
+                raise ValueError(
+                    f"Each atom in bond entry must be specified as "
+                    f"(chain_id, res_idx, atom_name): {bond}"
+                )
+            bonds.append((tuple(atom1), tuple(atom2)))
+
     return Query(
         name=name,
-        sequences=sequences,  # type: ignore[arg-type]
+        sequences=sequences,  # type: ignore
+        bonds=bonds,
         yaml=yaml.safe_dump(input_dict),
     )
 
