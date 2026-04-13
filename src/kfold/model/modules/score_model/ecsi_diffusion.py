@@ -1,16 +1,15 @@
-from kfold.model.layers.alphafold3.diffusion import DiffusionModule
-from kfold.utils.registry import SCORE_MODEL
+from kfold.model.layers.alphafold3.diffusion import DiffusionStack
+from kfold.utils.registry import SCORE_MODEL, BaseConfig
 
-from .af3_diffusion import AF3DiffusionModule
-from .base import BaseScoreModel
+from .base import AF3StyleDiffusionModule
 
 
 @SCORE_MODEL.register()
-class ECSIDiffusionModule(AF3DiffusionModule):
-    """Diffusion score model with apo structure conditioning."""
+class ECSIDiffusionModule(AF3StyleDiffusionModule):
+    """Diffusion score model with end-point conditioning"""
 
-    class Config(AF3DiffusionModule.Config):
-        """Configuration for the apo-conditioned diffusion module.
+    class Config(BaseConfig):
+        """Initialize the diffusion module.
 
         Parameters
         ----------
@@ -38,9 +37,21 @@ class ECSIDiffusionModule(AF3DiffusionModule):
             The number of blocks per checkpoint, by default None.
         """
 
+        channel_s: int = 384
+        channel_z: int = 128
+        channel_atom: int = 128
+        channel_atompair: int = 16
+        atom_encoder_blocks: int = 3
+        atom_encoder_heads: int = 4
+        token_transformer_blocks: int = 24
+        token_transformer_heads: int = 16
+        atom_decoder_blocks: int = 3
+        atom_decoder_heads: int = 4
+        blocks_per_ckpt: int | None = None
+
     def __init__(self, cfg: Config, kernel_config):
-        BaseScoreModel.__init__(self, cfg, kernel_config)
-        self.diffusion_stack = DiffusionModule(
+        super().__init__(cfg, kernel_config)
+        self.diffusion_stack = DiffusionStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,

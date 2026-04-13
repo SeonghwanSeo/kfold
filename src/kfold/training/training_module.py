@@ -566,7 +566,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     symmetry_dict=symmetry_dict,
                 )
                 metric_i = validation_metrics.compute_validation_metric(
-                    struct_i, pred_coords_i, align=False
+                    struct_i, pred_coords_i
                 )
                 ref_struct_aligned.append(struct_i)
                 sample_metrics.append(metric_i)

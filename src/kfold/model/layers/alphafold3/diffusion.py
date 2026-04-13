@@ -147,7 +147,7 @@ class SingleConditioning(nn.Module):
 
 
 # === Main Diffusion Score Model === #
-class DiffusionModule(nn.Module):
+class DiffusionStack(nn.Module):
     """AF3 Diffusion module
     Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
     """

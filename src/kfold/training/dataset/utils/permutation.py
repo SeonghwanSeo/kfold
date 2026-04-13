@@ -61,9 +61,6 @@ def get_aligned_true_coords(
             align_local_coords=True,
             deepcopy=False,
         )
-    else:
-        # Deepcopy the reference structure
-        ref_struct = ref_struct.clone()
 
     # Create aligned coordinates
     dev = pred_coords.device
