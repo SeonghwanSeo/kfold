@@ -1,28 +1,29 @@
 _registry_: "structure_module"
 _class_: "KFoldECSI"
 
+# Diffusion path design
 align: true
 
-gamma_max: 24
-time_power: 2.0
-
+# ECSI preconditioning
 sigma_data: 16.0
 sigma_data_end: 66.0
 cov_xy: 128.0
 
-sampling:
-  time_min: 0.0001
-  time_max: 0.9999
-  align_x_0_hat_to_x_t: true
-  eta: 1.0
-  churn_factor: 0.1
-  churn_end_time: 0.7
-  schedule:
-    churn_fraction: 0.4
-    churn_power: 1.0
-    ode_power: 2.0
+# ECSI coefficients
+time_min: 0.0001
+time_max: 0.9999
+gamma_max: 24
+time_power: 2.0
+eta: 1.0
 
-train_time_sampling:
-  schedule: "logit_normal"
-  logit_normal_param: [-0.8, 2.0]
-  beta_param: [0.5, 0.5]
+# Inference time schedule
+align_x_0_hat_to_x_t: true
+churn_factor: 0.1
+churn_end_time: 0.7
+churn_step_fraction: 0.4
+churn_step_power: 1.0
+ode_step_power: 2.0
+
+# Training time schedule
+P_mean: -0.8
+P_std: 2.0

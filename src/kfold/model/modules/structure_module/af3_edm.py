@@ -6,15 +6,16 @@ import torch
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.af3_diffusion import AF3DiffusionModule
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation
+from kfold.utils.misc import expand_dim
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseEDM
+from .base import BaseStructureModule
 
 _ScalarOrTensor = TypeVar("_ScalarOrTensor", float, torch.Tensor)
 
 
 @STRUCTURE_MODULE.register()
-class AF3SampleDiffusion(BaseEDM):
+class AF3SampleDiffusion(BaseStructureModule):
     """Atom diffusion module used in AlphaFold3.
     See Section 3.7 Algorithm 18: SampleDiffusion in the AF3 paper.
     """
@@ -30,7 +31,7 @@ class AF3SampleDiffusion(BaseEDM):
             The maximum sigma value, by default 160.0.
         sigma_data : float, optional
             The standard deviation of the data distribution, by default 16.0.
-        rho : int, optional
+        rho : float, optional
             The rho value, by default 7.
         P_mean : float, optional
             The mean value of P, by default -1.2.
@@ -49,7 +50,7 @@ class AF3SampleDiffusion(BaseEDM):
         sigma_min: float = 0.0004
         sigma_max: float = 160.0
         sigma_data: float = 16.0
-        rho: int = 7
+        rho: float = 7
         P_mean: float = -1.2
         P_std: float = 1.5
         gamma_0: float = 0.8
@@ -64,7 +65,7 @@ class AF3SampleDiffusion(BaseEDM):
         self.sigma_min: float = cfg.sigma_min
         self.sigma_max: float = cfg.sigma_max
         self.sigma_data: float = cfg.sigma_data
-        self.rho: int = cfg.rho
+        self.rho: float = cfg.rho
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
         self.gamma_0: float = cfg.gamma_0
@@ -74,35 +75,69 @@ class AF3SampleDiffusion(BaseEDM):
         self.random_augmentation = CenterRandomAugmentation()
 
     # === EDM diffusion coefficients === #
-    def c_skip(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
-        return (self.sigma_data**2) / (sigma**2 + self.sigma_data**2)
+    def c_skip(self, t_hat: _ScalarOrTensor) -> _ScalarOrTensor:
+        return (self.sigma_data**2) / (t_hat**2 + self.sigma_data**2)  # type: ignore
 
-    def c_out(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
+    def c_out(self, t_hat: _ScalarOrTensor) -> _ScalarOrTensor:
         _sqrt = lambda x: math.sqrt(x) if isinstance(x, float) else torch.sqrt(x)  # noqa
-        return sigma * self.sigma_data / _sqrt(self.sigma_data**2 + sigma**2)
+        return t_hat * self.sigma_data / _sqrt(self.sigma_data**2 + t_hat**2)
 
-    def c_in(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
+    def c_in(self, t_hat: _ScalarOrTensor) -> _ScalarOrTensor:
         _sqrt = lambda x: math.sqrt(x) if isinstance(x, float) else torch.sqrt(x)  # noqa
-        return 1 / _sqrt(sigma**2 + self.sigma_data**2)
+        return 1 / _sqrt(t_hat**2 + self.sigma_data**2)
 
-    def c_noise(self, sigma: _ScalarOrTensor) -> _ScalarOrTensor:
+    def c_noise(self, t_hat: _ScalarOrTensor) -> _ScalarOrTensor:
         _log = lambda x: math.log(x) if isinstance(x, float) else torch.log(x)  # noqa
         _clip = lambda x, v: max(x, v) if isinstance(x, float) else x.clamp(v)  # noqa
-        return _log(_clip(sigma / self.sigma_data, 1e-20)) * 0.25
+        return _log(_clip(t_hat / self.sigma_data, 1e-20)) * 0.25
 
-    def apply_random_augmentation(
-        self, coords: torch.Tensor, mask: torch.Tensor
-    ) -> torch.Tensor:
-        """Apply random augmentation to coordinates."""
-        return self.random_augmentation(coords, mask=mask)
+    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
+        return 1 / self.c_out(t_hat) ** 2
 
     # ============================================================
     # For model training
     # ============================================================
+    def training_step(
+        self,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        s_trunk: torch.Tensor,
+        z_trunk: torch.Tensor,
+        diffusion_batch_size: int,
+    ) -> dict[str, torch.Tensor]:
+        """Perform a single training step for the structure module.
+        See Section 5 of EDM paper.
+        """
+        with torch.autocast(f_input.device.type, enabled=False):
+            train_input = self.sample_train_input(f_input, diffusion_batch_size)
+
+        t_hat = train_input["t_hat"]  # [B, N]
+        x_0 = train_input["x_0"]  # [B, N, La, 3]
+        x_t = train_input["x_t"]  # [B, N, La, 3]
+
+        x_0_hat = self.forward_train(
+            x_t=x_t,  # [B, N, La, 3]
+            t=t_hat,  # [B, N]
+            f_input=f_input,
+            s_inputs=s_inputs,  # [B, Lt, c_s]
+            s_trunk=s_trunk,  # [B, Lt, c_s]
+            z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
+        )  # [B, N, La, 3]
+
+        loss_weights = self.loss_weights(t_hat)  # [B, N]
+
+        return {
+            "t_hat": t_hat,
+            "x_t": x_t,
+            "x_0_hat": x_0_hat,
+            "x_gt": x_0,
+            "loss_weights": loss_weights,
+        }
+
     def forward_train(
         self,
         x_t: torch.Tensor,
-        t_hat: torch.Tensor,
+        t: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
@@ -116,7 +151,7 @@ class AF3SampleDiffusion(BaseEDM):
         ----------
         x_t : torch.Tensor
             Noisy atom coordinates. Shape (B, N, La, 3).
-        t_hat : torch.Tensor
+        t : torch.Tensor
             Diffusion noise level (or sigmas of EDM). Shape (B, N).
         f_input : FoldingInput
             FoldingInput object containing model inputs.
@@ -132,10 +167,12 @@ class AF3SampleDiffusion(BaseEDM):
         x_0_hat : torch.Tensor
             Denoised atom coordinates. Shape (B, N, La, 3).
         """
-        c_in = self.c_in(t_hat)  # [B, N]
-        c_noise = self.c_noise(t_hat)  # [B, N]
-        c_skip = self.c_skip(t_hat)  # [B, N]
-        c_out = self.c_out(t_hat)  # [B, N]
+        c_in, c_noise, c_skip, c_out = (
+            self.c_in(t),
+            self.c_noise(t),
+            self.c_skip(t),
+            self.c_out(t),
+        )
 
         # Line 2 of Algorithm 20
         r_noisy = c_in[..., None, None] * x_t  # [B, N, La, 3]
@@ -150,19 +187,8 @@ class AF3SampleDiffusion(BaseEDM):
         )
 
         # Line 8 of Algorithm 20
-        with torch.autocast(device_type=c_skip.device.type, dtype=torch.float32):
-            x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
+        x_0_hat = c_skip[..., None, None] * x_t + c_out[..., None, None] * r_update
         return x_0_hat
-
-    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
-        """Compute loss weights based on noise levels t_hat.
-        See Section 3.7.1 Equation 6 of AlphaFold3 paper.
-
-        NOTE: We replace `+` with `*` in the denominator compared to the AlphaFold3 paper.
-        This matches the implementation in Boltz1, Protenix, and Openfold-3, and provides
-        better training stability.
-        """
-        return (t_hat**2 + self.sigma_data**2) / ((t_hat * self.sigma_data) ** 2)
 
     def sample_noise_level(self, shape: tuple, device: torch.device) -> torch.Tensor:
         """Sample from the prior distribution.
@@ -170,41 +196,50 @@ class AF3SampleDiffusion(BaseEDM):
         and La is number of atoms.
         """
         # See Section 3.7 of AlphaFold3 paper.
-        # t_hat = sigma_data * exp(-1.2 + 1.5 * N(0, 1)),
-        # where -1.2 is P_mean and 1.5 is P_std.
         normal = torch.randn(shape, dtype=torch.float32, device=device)
         return self.sigma_data * torch.exp(self.P_mean + self.P_std * normal)
 
-    def interpolate(
+    def sample_train_input(
         self,
-        x_0: torch.Tensor,
-        x_T: torch.Tensor,
-        t_hat: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """Interpolate between noise and label coordinates.
-
-        EDM equation:
-        sigma = t_hat
-        x_t = x_0 + sigma * noise
-        where noise ~ N(0, I)
+        f_input: FoldingInput,
+        diffusion_batch_size: int,
+    ) -> dict[str, torch.Tensor]:
+        """Sample training inputs for the structure module.
 
         Parameters
         ----------
-        x_0 : torch.Tensor
-            The label coordinates. Shape (B, N, La, 3).
-        x_T : torch.Tensor
-            The noise. Shape (B, N, La, 3).
-        sigma : torch.Tensor
-            The sigma values. Shape (B, N).
-        mask : torch.Tensor
-            The atom mask. Shape (B, La).
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+        diffusion_batch_size : int
+            The number of samples to generate for training.
+
+        Returns
+        -------
+        dict[str, torch.Tensor]
+            A dictionary containing the x_0, x_t, and related representations.
         """
-        noise = x_T
-        sigma = t_hat
-        x_t = x_0 + sigma[:, :, None, None] * noise
-        x_t.masked_fill_(~mask[:, None, :, None], 0.0)  # apply atom mask
-        return x_t
+        num_samples = diffusion_batch_size
+        t_hat = self.sample_noise_level((f_input.batch_size, num_samples), f_input.device)
+
+        # === Sample x_0 from label === #
+        x_label = f_input.atom.label_coords  # [B, Natom, 3]
+        x_label_mask = f_input.atom.resolved_mask  # [B, Natom]
+        # repeat holo coords
+        x_0 = expand_dim(x_label, num_samples, dim=-3)  # [B, N, Natom, 3]
+        x_0_mask = x_label_mask.unsqueeze(-2)  # [B, 1, Natom]
+        # Apply centering/coordinate augmentation
+        x_0 = self.random_augmentation(x_0, mask=x_0_mask)
+
+        # === Sample x_t by adding noise to x_0 === #
+        noise = torch.randn_like(x_0)
+        x_t = x_0 + t_hat[:, :, None, None] * noise
+        x_t_mask = f_input.atom.pad_mask.unsqueeze(1)  # (B, 1, Latom)
+        x_t.masked_fill_(~x_t_mask[..., None], 0.0)  # apply atom mask
+        return {
+            "t_hat": t_hat,
+            "x_0": x_0,
+            "x_t": x_t,
+        }
 
     # ============================================================
     # For inference
@@ -247,15 +282,7 @@ class AF3SampleDiffusion(BaseEDM):
             c_noise = torch.tensor(self.c_noise(t_hat), device=s_inputs.device)
             s = model.get_single_conditioning(s_inputs, s_trunk, c_noise.view(1, 1))
             return self.inference_step(
-                f_input=f_input,
-                x_t=x_t,
-                t_hat=t_hat,
-                q=q,
-                c=c,
-                p=p,
-                s=s,
-                pair_bias=pair_bias,
-                chunk_size=chunk_size,
+                f_input, x_t, t_hat, q, c, p, s, pair_bias, chunk_size
             )
 
         # Line 2: gradually denoise
@@ -303,6 +330,16 @@ class AF3SampleDiffusion(BaseEDM):
             sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Latom, 3)
 
         return sample_out
+
+    def sample_prior(self, f_input: FoldingInput, num_samples: int) -> torch.Tensor:
+        """Sample from the prior distribution."""
+        B = f_input.batch_size
+        N = num_samples
+        La = f_input.num_atoms
+        mask = f_input.atom.pad_mask
+        x = torch.randn((B, N, La, 3), device=f_input.device, dtype=torch.float32)
+        x.masked_fill_(~mask[:, None, :, None], 0.0)
+        return x
 
     def get_sampling_schedule(self, num_steps: int) -> list[float]:
         """Get the noise schedule for diffusion sampling as a Python list."""

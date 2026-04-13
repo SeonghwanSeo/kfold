@@ -24,7 +24,7 @@ from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.misc import expand_dim
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseECSI
+from .base import BaseStructureModule
 
 RIGID_ALIGN = 0  # conduct centering ; kabsch align
 NO_ALIGN = 1  # no centering; no kabsch align
@@ -47,7 +47,7 @@ def _log(t: _T) -> _T:
 
 
 # === Main ECSI module implementation === #
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass
 class SICoeffs:
     """Stochastic interpolant coefficient helper for ECSI."""
 
@@ -90,87 +90,8 @@ class SICoeffs:
         return eps  # type: ignore
 
 
-@dataclasses.dataclass(kw_only=True)
-class SamplingScheduleConfig:
-    """Maps normalized solver progress to reverse-time sampling time.
-
-    Reverse-time sampling itself runs in time-space from `t = time_max` down to `0`.
-    Internally, the scheduler first parameterizes solver progress with
-    `s in [0, 1]`, then maps that progress to actual sampling time `t`.
-
-    In solver-progress space, phase-power allocates steps across two regions:
-
-      head : solver progress in [0, churn_fraction]
-      tail  : solver progress in (churn_fraction, 1]
-
-    Higher `churn_power` concentrates more steps near `time_max`.
-    Higher `ode_power` makes the late tail flatter near `t = 0`.
-    These fields decide where the solver spends steps, not which dynamics branch is used.
-    """
-
-    churn_fraction: float = 0.4
-    churn_power: float = 1.0
-    ode_power: float = 2.0
-
-
-@dataclasses.dataclass(kw_only=True)
-class SamplingConfig:
-    """Controls how reverse-time ECSI sampling proceeds.
-
-    Timeline in time-space (`t: time_max -> 0`):
-
-      1. Prior initialization
-         - start from sampled prior `x_T`
-
-      2. Early high-time region (`t > churn_end_time`)
-         - Apply the forward-pinned churn substep
-
-      4. Late deterministic region (`t <= churn_end_time`)
-         - switch to the SI ODE update
-         - no diffusion noise is added in this branch
-
-    Parameter groups:
-      - horizon: `steps`, `time_min`, `time_max`
-      - stochasticity: `eta`.
-      - early churn: `churn_end_time`, `churn_factor`
-      - time allocation across steps: `schedule`
-    """
-
-    time_min: float = 0.0001
-    time_max: float = 0.9999
-    eta: float = 1.0  # global stochasticity scale
-    align_x_0_hat_to_x_t: bool = True
-    churn_factor: float = 0.1
-    churn_end_time: float = 0.7
-    schedule: SamplingScheduleConfig = dataclasses.field(
-        default_factory=SamplingScheduleConfig
-    )
-
-
-@dataclasses.dataclass(kw_only=True)
-class TrainTimeSamplingConfig:
-    """Configuration for train-time sampling of `t_hat`.
-
-    Parameters
-    ----------
-    schedule : str
-        The sampling distribution for `t_hat` during training. Options:
-        - 'logit_normal': sample from `sigmoid(N(mu, sigma))` distribution.
-        - 'uniform': sample uniformly from [0, 1].
-        - 'beta': sample from `Beta(alpha, beta)` distribution.
-    logit_normal_param : tuple[float, float], optional
-        Mean and standard deviation of the underlying normal distribution.
-    beta_param : tuple[float, float], optional
-        Alpha and Beta parameter of the Beta distribution.
-    """
-
-    schedule: str = "logit_normal"
-    logit_normal_param: tuple[float, float] = (-1.2, 1.5)
-    beta_param: tuple[float, float] = (0.5, 0.5)
-
-
 @STRUCTURE_MODULE.register()
-class KFoldECSI(BaseECSI):
+class KFoldECSI(BaseStructureModule):
     r"""Endpoint-Conditioned Stochastic Interpolant module for structure prediction.
 
     Implements the ECSI framework from "Exploring the Design Space of Diffusion Bridge
@@ -188,6 +109,10 @@ class KFoldECSI(BaseECSI):
 
     Reference:
     - ECSI: Zhang et al., "Exploring the Design Space of Diffusion Bridge Models"
+
+    NOTE: We design our own stochastic sampler for structure prediction.
+    While ECSI uses a stochastic sampler with SDE formulation, we design similar sampler
+    to EDM with churn & ODE formulation.
     """
 
     class Config(BaseConfig):
@@ -195,42 +120,78 @@ class KFoldECSI(BaseECSI):
 
         Parameters
         ----------
+        # Diffusion path design
         align: bool
             Whether to apply Kabsch alignment of x_0 to x_T during training.
-        gamma_max : float, optional
-            Shared base bridge maximum used by `gamma(t)`.
-        time_power : float, optional
-            Shared exponent `k` for the route coefficients
-            `alpha_t = 1 - t^k`, `beta_t = t^k`, and the base gamma schedule.
-        sigma_data : float, optional
+
+        # ECSI preconditioning parameters
+        sigma_data : float
             Effective target-coordinate scale used in ECSI preconditioning.
-        sigma_data_end : float, optional
+        sigma_data_end : float
             Effective source-coordinate scale used in ECSI preconditioning.
-        cov_xy : float, optional
+        cov_xy : float
             Cross-covariance term between source and target coordinates used by
             the bridge preconditioning formulas.
-        sampling : SamplingConfig, optional
-            Reverse-time rollout configuration including stochasticity, endpoint
-            perturbation, late ODE switching, and the nested step-allocation
-            schedule.
-        train_time_sampling : TrainTimeSamplingConfig, optional
-            Training-time sampling policy for `t_hat`, including the optional
-            Uniform mixture applied to the Beta branch.
+
+        # ECSI coefficients
+        time_min: float
+            Minimum time value for training/inference.
+        time_max: float
+            Maximum time value for training/inference.
+        gamma_max : float
+            Shared base bridge maximum used by `gamma(t)`.
+        time_power : float
+            Shared exponent `k` for the route coefficients
+            `alpha_t = 1 - t^k`, `beta_t = t^k`, and the base gamma schedule.
+        eta : float
+            Stochasticity control parameter for ECSI sampling.
+
+        # Inference sampling parameters
+        align_x_0_hat_to_x_t : bool
+            Whether to rigidly align the predicted x_0_hat to x_t at each sampling step.
+        churn_factor : float
+            The factor controlling the magnitude of forward-pinned churn noise.
+        churn_end_time : float
+            The time value at which to end forward-pinned churn.
+
+        # Inference time scheduling parameters
+        churn_step_fraction : float
+            The fraction of the total sampling steps to apply churn.
+        churn_step_power : float
+            The exponent controlling the time schedule for churn steps.
+        ode_step_power : float
+            The exponent controlling the time schedule for ODE steps.
+
+        # Training time scheduling
+        P_mean : float
+            Mean of the noise level sampling distribution in training.
+        P_std : float
+            Standard deviation of the noise level sampling distribution in training.
         """
 
         align: bool = True
-
-        gamma_max: float = 24.0
-        time_power: float = 2.0
 
         sigma_data: float = 16.0
         sigma_data_end: float = 66.0  # 16 + 50 translations
         cov_xy: float = 128.0
 
-        sampling: SamplingConfig = dataclasses.field(default_factory=SamplingConfig)
-        train_time_sampling: TrainTimeSamplingConfig = dataclasses.field(
-            default_factory=TrainTimeSamplingConfig
-        )
+        time_min: float = 0.0001
+        time_max: float = 0.9999
+        gamma_max: float = 24.0
+        time_power: float = 2.0
+        eta: float = 1.0
+
+        # Inference sampling
+        align_x_0_hat_to_x_t: bool = True
+        churn_factor: float = 0.1
+        churn_end_time: float = 0.7
+        churn_step_fraction: float = 0.4
+        churn_step_power: float = 1.0
+        ode_step_power: float = 2.0
+
+        # Train time scheduling
+        P_mean: float = -0.8
+        P_std: float = 2.0
 
     def __init__(self, cfg: Config, score_model: ECSIDiffusionModule):
         """Initialize the ECSI module.
@@ -241,20 +202,32 @@ class KFoldECSI(BaseECSI):
         configuration.
         """
         super().__init__(cfg, score_model)
+        self.cfg = cfg
         self.score_model: ECSIDiffusionModule = score_model
-        self.sampling: SamplingConfig = cfg.sampling
-        self.train_time_sampling: TrainTimeSamplingConfig = cfg.train_time_sampling
 
+        self.align_mode = RIGID_ALIGN if cfg.align else NO_ALIGN
+
+        # ECSI preconditioning parameters
         self.sigma_data: float = cfg.sigma_data
         self.sigma_data_end: float = cfg.sigma_data_end
         self.cov_xy: float = cfg.cov_xy
 
-        self.si_coeffs = SICoeffs(
-            gamma_max=cfg.gamma_max,
-            power=cfg.time_power,
-            eta=cfg.sampling.eta,
-        )
-        self.align_mode = RIGID_ALIGN if cfg.align else NO_ALIGN
+        # ECSI coefficients
+        self.coeff = SICoeffs(cfg.gamma_max, cfg.time_power, cfg.eta)
+        self.time_min: float = cfg.time_min
+        self.time_max: float = cfg.time_max
+
+        # Train time scheduling
+        self.P_mean: float = cfg.P_mean
+        self.P_std: float = cfg.P_std
+
+        # Inference time sampling
+        self.align_x_0_hat_to_x_t: bool = cfg.align_x_0_hat_to_x_t
+        self.churn_factor: float = cfg.churn_factor
+        self.churn_end_time: float = cfg.churn_end_time
+        self.churn_step_fraction: float = cfg.churn_step_fraction
+        self.churn_step_power: float = cfg.churn_step_power
+        self.ode_step_power: float = cfg.ode_step_power
 
         # NOTE: centering should be disabled.
         if self.align_mode == RIGID_ALIGN:
@@ -284,12 +257,9 @@ class KFoldECSI(BaseECSI):
         c_out : float | torch.Tensor
             Output scaling coefficient.
         """
-        alpha_t = self.si_coeffs.alpha(t)
-        beta_t = self.si_coeffs.beta(t)
-        gamma_t = self.si_coeffs.gamma(t)
-        sigma_0 = self.sigma_data
-        sigma_T = self.sigma_data_end
-        sigma_0T = self.cov_xy
+        C = self.coeff
+        alpha_t, beta_t, gamma_t = C.alpha(t), C.beta(t), C.gamma(t)
+        sigma_0, sigma_T, sigma_0T = self.sigma_data, self.sigma_data_end, self.cov_xy
 
         c_in = 1 / _clip(
             _sqrt(
@@ -328,9 +298,9 @@ class KFoldECSI(BaseECSI):
         """Noise level conditioning coefficient."""
         return 0.25 * _log(t)
 
-    def loss_weights(self, t_hat: torch.Tensor) -> torch.Tensor:
+    def loss_weights(self, t: torch.Tensor) -> torch.Tensor:
         """ECSI training loss weights"""
-        return 1 / self.c_out(t_hat).pow_(2).clamp_(min=1e-8)
+        return 1 / self.c_out(t).pow_(2).clamp_(min=1e-8)
 
     # ============================================================
     # For training
@@ -341,27 +311,23 @@ class KFoldECSI(BaseECSI):
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z_trunk: torch.Tensor,
-        diffusion_batch_size: int = 1,
+        diffusion_batch_size: int,
     ) -> dict[str, torch.Tensor]:
         """Perform a single training step for the structure module.
         See Section 5 of EDM paper.
         """
-        batch_size = f_input.batch_size  # =B
-        num_samples = diffusion_batch_size  # =N
-        mask = f_input.atom.pad_mask  # [B, Natom]
-        device = f_input.device
+        # Sample x
+        with torch.autocast(f_input.device.type, enabled=False):
+            train_input = self.sample_train_input(f_input, diffusion_batch_size)
 
-        t_hat = self.sample_noise_level((batch_size, num_samples), device)  # [B, N]
-
-        # Sample xT from label
-        x_0, x_T = self.sample_x_0_and_x_T(f_input, num_samples)  # [B, N, Natom, 3]
-
-        # Sample xt via interpolation
-        x_t = self.interpolate(x_0, x_T, t_hat, mask)  # [B, N, Natom, 3]
+        t = train_input["t"]  # [B, N]
+        x_0 = train_input["x_0"]  # [B, N, Natom, 3]
+        x_t = train_input["x_t"]  # [B, N, Natom, 3]
+        x_T = train_input["x_T"]  # [B, N, Natom, 3]
 
         x_0_hat = self.forward_train(
             x_t=x_t,  # [B, N, Natom, 3]
-            t_hat=t_hat,  # [B, N]
+            t=t,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
             s_trunk=s_trunk,  # [B, Lt, c_s]
@@ -369,10 +335,10 @@ class KFoldECSI(BaseECSI):
             x_T=x_T,  # [B, N, Natom, 3]
         )  # [B, N, Natom, 3]
 
-        loss_weights = self.loss_weights(t_hat)  # [B, N]
+        loss_weights = self.loss_weights(t)  # [B, N]
 
         return {
-            "t_hat": t_hat,
+            "t": t,
             "x_t": x_t,
             "x_T": x_T,
             "x_0_hat": x_0_hat,
@@ -383,7 +349,7 @@ class KFoldECSI(BaseECSI):
     def forward_train(
         self,
         x_t: torch.Tensor,
-        t_hat: torch.Tensor,
+        t: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
@@ -397,7 +363,7 @@ class KFoldECSI(BaseECSI):
         ----------
         x_t : torch.Tensor
             Noisy atom coordinates. Shape (B, N, L, 3).
-        t_hat : torch.Tensor
+        t : torch.Tensor
             Time values. Shape (B, N).
         f_input : FoldingInput
             FoldingInput object containing model inputs.
@@ -416,8 +382,8 @@ class KFoldECSI(BaseECSI):
             Denoised atom coordinates. Shape (B, N, Natom, 3).
         """
         assert x_T is not None, "x_T must be provided for ECSI"
-        c_in, c_skip, c_out = self._get_bridge_scalings(t_hat)  # [B, N]
-        c_noise = self.c_noise(t_hat)  # [B, N]
+        c_in, c_skip, c_out = self._get_bridge_scalings(t)  # [B, N]
+        c_noise = self.c_noise(t)  # [B, N]
 
         # Input preconditioning: r_noisy = c_in * x_t, r_T = x_T / sigma_data_end
         r_noisy = c_in[:, :, None, None] * x_t  # [B, N, Natom, 3]
@@ -453,60 +419,50 @@ class KFoldECSI(BaseECSI):
         t : torch.Tensor
             Time values. Shape (B, N).
         """
-        schedule = self.train_time_sampling.schedule
-        match schedule:
-            case "logit_normal":
-                mu, sigma = self.train_time_sampling.logit_normal_param
-                x = torch.randn(shape, device=device)
-                t = torch.sigmoid(mu + sigma * x)
-            case "uniform":
-                # Uniform sampling
-                t = torch.rand(shape, device=device)
-            case "beta":
-                # Beta sampling branch.
-                alpha, beta = self.train_time_sampling.beta_param
-                m = torch.distributions.Beta(alpha, beta)
-                t = m.sample(shape).to(device)
-            case _:
-                raise ValueError(f"Unsupported train_time_sampling.schedule: {schedule}")
+        z = torch.randn(shape, device=device)
+        t = torch.sigmoid(self.P_mean + self.P_std * z)
+
         # Scale to [sampling_time_min, sampling_time_max]
-        t = self.sampling.time_min + (self.sampling.time_max - self.sampling.time_min) * t
+        t = self.time_min + (self.time_max - self.time_min) * t
         return t
 
-    def sample_x_0_and_x_T(
-        self, f_input: FoldingInput, num_samples: int = 1
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample label structures from input for model training.
+    def sample_train_input(
+        self,
+        f_input: FoldingInput,
+        diffusion_batch_size: int,
+    ) -> dict[str, torch.Tensor]:
+        """Sample training inputs for the structure module.
 
         Parameters
         ----------
         f_input : FoldingInput
             FoldingInput object containing model inputs.
-        num_samples : int, optional
-            Number of diffusion samples(N) to generate, by default 1.
+        diffusion_batch_size : int
+            The number of samples to generate for training.
 
         Returns
         -------
-        holo_coords : torch.Tensor
-            Sampled holo coordinates. Shape (B, N, L, 3),
-            where N is number of diffusion samples and L is the number of atoms.
+        dict[str, torch.Tensor]
+            A dictionary containing the x_0, x_t, and related representations.
         """
+        num_samples = diffusion_batch_size
+        t = self.sample_noise_level((f_input.batch_size, num_samples), f_input.device)
+
         x_holo = f_input.atom.label_coords  # [B, L, 3]
-        x_holo_mask = f_input.atom.resolved_mask  # [B, L]
-        x_apo = f_input.atom.prior_coords  # [B, Natom, Nprior, 3]
-        x_apo_mask = f_input.atom.pad_mask  # [B, L]
+        holo_mask = f_input.atom.resolved_mask  # [B, L]
+        x_apo = f_input.atom.prior_coords.permute(0, 2, 1, 3)  # [B, Nprior, L, 3]
+        apo_mask = f_input.atom.pad_mask  # [B, L]
 
         # repeat holo coords
         x_0 = expand_dim(x_holo, num_samples, dim=-3)  # [B, N, L, 3]
-        x_0_mask = x_holo_mask.unsqueeze(-2)  # [B, 1, L]
+        x_0_mask = holo_mask.unsqueeze(-2)  # [B, 1, L]
 
         # Sample from prior coordinates
         # If num_diffusion_samples > num_prior, cycle through prior coords
-        num_prior = x_apo.shape[-2]
+        num_prior = x_apo.shape[-3]
         idx = [i % num_prior for i in range(num_samples)]
-        x_T = x_apo[:, :, idx, :]  # [B, Natom, N, 3]
-        x_T = x_T.permute(0, 2, 1, 3)  # [B, N, Natom, 3]
-        x_T_mask = x_apo_mask.unsqueeze(-2)  # [B, 1, Natom]
+        x_T = x_apo[:, idx, :, :]  # [B, N, L, 3]
+        x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Apply centering/coordinate augmentation
         if self.align_mode == RIGID_ALIGN:
@@ -516,79 +472,24 @@ class KFoldECSI(BaseECSI):
             x_0, x_T = self.random_augmentation(
                 x_0, x_T, mask=x_0_mask, mask_to_zero=False
             )
+
+        # Interpolate with noise
+        C = self.coeff
+        _t = t[:, :, None, None]
+        alpha_t, beta_t, gamma_t = C.alpha(_t), C.beta(_t), C.gamma(_t)
+        noise = torch.randn_like(x_0)
+        x_t = alpha_t * x_0 + beta_t * x_T + gamma_t * noise
+
         x_0.masked_fill_(~x_0_mask[..., None], 0.0)
         x_T.masked_fill_(~x_T_mask[..., None], 0.0)
+        x_t.masked_fill_(~x_T_mask[..., None], 0.0)
 
-        return x_0, x_T
-
-    def sample_prior(self, f_input: FoldingInput, num_samples: int) -> torch.Tensor:
-        """Sample xT (prior) coordinates for ECSI sampling.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            FoldingInput object containing model inputs.
-        num_samples : int
-            Number of diffusion samples
-
-        Returns
-        -------
-        xT : torch.Tensor
-            prior coordinates. Shape (B, N, Natom, 3).
-
-        """
-        # Sample from prior coordinates
-        # If num_diffusion_samples > num_prior, cycle through prior coords
-        all_prior_coords = f_input.atom.prior_coords  # [B, Natom, Nprior, 3]
-        num_prior = all_prior_coords.shape[-2]
-        idx = [i % num_prior for i in range(num_samples)]
-        xT = all_prior_coords[:, :, idx, :]  # [B, Natom, N, 3]
-        xT = xT.permute(0, 2, 1, 3)  # [B, N, Natom, 3]
-
-        # Apply random augmentation to prior coords without centering.
-        mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
-        xT = self.random_augmentation(xT, mask=mask)
-        return xT
-
-    def interpolate(
-        self,
-        x_0: torch.Tensor,
-        x_T: torch.Tensor,
-        t_hat: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> torch.Tensor:
-        r"""Interpolate between x_0 and x_T using ECSI bridge.
-
-        Samples from the bridge distribution:
-        x_t = \alpha_t x_0 + \beta_t x_T + \gamma_t z, where z ~ N(0, I)
-
-        Parameters
-        ----------
-        x_0 : torch.Tensor
-            The target (holo) coordinates x_0. Shape (B, N, Natom, 3).
-        x_T : torch.Tensor
-            The source (apo) coordinates x_T. Shape (B, N, Natom, 3).
-        t_hat : torch.Tensor
-            Time values. Shape (B, N).
-        mask : torch.Tensor
-            The atom mask. Shape (B, Natom).
-
-        Returns
-        -------
-        x_t : torch.Tensor
-            Bridge-sampled coordinates x_t. Shape (B, N, Natom, 3).
-        """
-        B, N, Natom, _ = x_0.shape
-        t_expanded = t_hat[:, :, None, None]
-        alpha_t = self.si_coeffs.alpha(t_expanded)
-        beta_t = self.si_coeffs.beta(t_expanded)
-        gamma = self.si_coeffs.gamma(t_expanded)
-
-        # Add noise
-        noise = torch.randn_like(x_0)
-        _mu = alpha_t * x_0 + beta_t * x_T
-        x_t = _mu + gamma * noise
-        return x_t
+        return {
+            "t": t,
+            "x_0": x_0,
+            "x_t": x_t,
+            "x_T": x_T,
+        }
 
     # ============================================================
     # For inference
@@ -634,20 +535,11 @@ class KFoldECSI(BaseECSI):
         pair_bias = model.get_pair_bias(z)
         del z_trunk, z  # Free up memory for large LxL tensors
 
-        def run_step(x_t: torch.Tensor, t_hat: float) -> torch.Tensor:
-            c_noise = torch.tensor(self.c_noise(t_hat), device=s_inputs.device)
+        def run_step(x_t: torch.Tensor, t: float) -> torch.Tensor:
+            c_noise = torch.tensor(self.c_noise(t), device=s_inputs.device)
             s = model.get_single_conditioning(s_inputs, s_trunk, c_noise.view(1, 1))
             return self.inference_step(
-                f_input=f_input,
-                x_t=x_t,
-                x_T=x_T,
-                t_hat=t_hat,
-                q=q,
-                c=c,
-                p=p,
-                s=s,
-                pair_bias=pair_bias,
-                chunk_size=chunk_size,
+                f_input, x_t, x_T, t, q, c, p, s, pair_bias, chunk_size
             )
 
         traj: list[torch.Tensor] = []
@@ -671,7 +563,7 @@ class KFoldECSI(BaseECSI):
             # Get denoised prediction \hat{x}_0
             x_0_hat = run_step(x_noisy, t)
 
-            if self.sampling.align_x_0_hat_to_x_t:
+            if self.align_x_0_hat_to_x_t:
                 # Rigidly align x_0_hat to x_t before centering.
                 x_0_hat = rigid_align(x_0_hat, x_noisy, mask)
 
@@ -691,12 +583,40 @@ class KFoldECSI(BaseECSI):
 
         return sample_out
 
+    def sample_prior(self, f_input: FoldingInput, num_samples: int) -> torch.Tensor:
+        """Sample xT (prior) coordinates for ECSI sampling.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+        num_samples : int
+            Number of diffusion samples
+
+        Returns
+        -------
+        x_T : torch.Tensor
+            prior coordinates. Shape (B, N, Natom, 3).
+        """
+        x_apo = f_input.atom.prior_coords.permute(0, 2, 1, 3)  # [B, Nprior, L, 3]
+        apo_mask = f_input.atom.pad_mask  # [B, L]
+
+        # If num_diffusion_samples > num_prior, cycle through prior coords
+        num_prior = x_apo.shape[-2]
+        idx = [i % num_prior for i in range(num_samples)]
+        x_T = x_apo[:, idx, :, :]  # [B, N, L, 3]
+        x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, L]
+
+        # Apply random augmentation to prior coords
+        x_T = self.random_augmentation(x_T, mask=x_T_mask)
+        return x_T
+
     def inference_step(
         self,
         f_input: FoldingInput,
         x_t: torch.Tensor,
         x_T: torch.Tensor,
-        t_hat: float,
+        t: float,
         q: torch.Tensor,
         c: torch.Tensor,
         p: torch.Tensor,
@@ -715,8 +635,8 @@ class KFoldECSI(BaseECSI):
             Noisy atom coordinates. Shape (B, N, L, 3).
         x_T : torch.Tensor
             Prior (apo) coordinates. Shape (B, N, L, 3).
-        t_hat : float
-            Diffusion noise level (or sigmas of EDM).
+        t : float
+            Diffusion time value for the current step, in range [0, 1].
         q : torch.Tensor
             The atom single representation, shape [B, Natom, c_atom].
         c : torch.Tensor
@@ -737,7 +657,7 @@ class KFoldECSI(BaseECSI):
         atom_mask = f_input.atom.pad_mask  # [B, Natom]
         token_mask = f_input.token.pad_mask  # [B, L]
 
-        c_in, c_skip, c_out = self._get_bridge_scalings(t_hat)  # [B, N]
+        c_in, c_skip, c_out = self._get_bridge_scalings(t)  # [B, N]
 
         # Input preconditioning: r_noisy = c_in * x_t
         r_noisy = c_in * x_t
@@ -786,16 +706,14 @@ class KFoldECSI(BaseECSI):
         times : list[float]
             Time schedule. Shape (num_steps + 1,), from t_max to 0.
         """
-        sampling = self.sampling
-        time_max = sampling.time_max
-        time_min = sampling.time_min
-        ode_st = sampling.churn_end_time
+        time_max = self.time_max
+        time_min = self.time_min
+        ode_st = self.churn_end_time
         total_scale = time_max - time_min
 
-        schedule = self.sampling.schedule
-        ode_power = schedule.ode_power
-        churn_power = schedule.churn_power
-        churn_fraction = schedule.churn_fraction
+        ode_power = self.ode_step_power
+        churn_power = self.churn_step_power
+        churn_fraction = self.churn_step_fraction
         ode_fraction = 1.0 - churn_fraction
 
         s = np.linspace(0, 1, num_steps)
@@ -828,17 +746,16 @@ class KFoldECSI(BaseECSI):
         mask: torch.Tensor,
         t: float,
     ) -> tuple[torch.Tensor, float]:
-        if t <= self.sampling.churn_end_time:
+        if t <= self.churn_end_time:
             # No churn applied before or at churn_end
             return x_t, t
 
-        dt = (1 - t) * self.sampling.churn_factor
+        dt = (1 - t) * self.churn_factor
 
-        alpha_t: float = self.si_coeffs.alpha(t)
-        beta_t: float = self.si_coeffs.beta(t)
-        alpha_dot: float = self.si_coeffs.alpha_deriv(t)
-        beta_dot: float = self.si_coeffs.beta_deriv(t)
-        eps: float = self.si_coeffs.eps(t)
+        C = self.coeff
+        alpha_t, beta_t = C.alpha(t), C.beta(t)
+        alpha_dot, beta_dot = C.alpha_deriv(t), C.beta_deriv(t)
+        eps: float = C.eps(t)
 
         # Forward-pinned churn step
         noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
@@ -886,7 +803,7 @@ class KFoldECSI(BaseECSI):
             Type of ODE update: 'si' or 'ecsi'.
 
         """
-        C = self.si_coeffs
+        C = self.coeff
         alpha_t, alpha_dot = C.alpha(t), C.alpha_deriv(t)
         beta_t, beta_dot = C.beta(t), C.beta_deriv(t)
 
