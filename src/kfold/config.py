@@ -10,7 +10,6 @@ from kfold.utils.registry import Registry
 def load_config(
     path: str | Path,
     override_args: list[str] | None = None,
-    override_registry_defaults: bool = True,
 ) -> DictConfig:
     """
     Load a configuration file from the given path with recursive _yaml_ inheritance.
@@ -60,7 +59,7 @@ def _resolve_yaml_inheritance(config: DictConfig, base_path: Path) -> DictConfig
             # Check if current dict has _yaml_ and resolve it first
             if "_yaml_" in obj:
                 yaml_path = base_path / obj.pop("_yaml_")
-                base_config = load_config(yaml_path, override_registry_defaults=False)
+                base_config = load_config(yaml_path)
                 obj = OmegaConf.merge(base_config, obj)
                 obj = OmegaConf.to_container(obj, resolve=True)
 

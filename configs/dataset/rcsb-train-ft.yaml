@@ -2,11 +2,6 @@
 _yaml_: "default-train.yaml"
 
 name: rcsb-train
-weight: 1.0
-
-# Data paths
-data_path: <DATA_PATH_PLACEHOLDER>
-seed: null # should be null for data augmentation
 
 sampler:
   _registry_: "data_sampler"
@@ -18,9 +13,9 @@ sampler:
 cropper:
   _registry_: "data_cropper"
   _class_: AlphaFold3Cropper
-  w_contiguous: 0.1
-  w_spatial: 0.3
-  w_spatial_interface: 0.6
+  w_contiguous: 0.2
+  w_spatial: 0.4
+  w_spatial_interface: 0.4
 
 apo_init:
   protein_perturbation:
