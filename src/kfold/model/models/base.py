@@ -152,9 +152,7 @@ class BaseFoldingModel(torch.nn.Module):
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
-        embed_out = self.input_embedder(f_input)
-        s_inputs, s_init, z_init = embed_out[:3]
-        extra_embed_args = embed_out[3:]
+        s_inputs, s_init, z_init = self.input_embedder(f_input)
 
         # Trunk with recycling
         trunk_out = self.trunk(
@@ -163,7 +161,6 @@ class BaseFoldingModel(torch.nn.Module):
             z_init,
             f_input,
             num_recycles,
-            *extra_embed_args,
         )
         s_trunk = trunk_out["s_trunk"]
         z_trunk = trunk_out["z_trunk"]

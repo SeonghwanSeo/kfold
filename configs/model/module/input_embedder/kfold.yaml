@@ -6,8 +6,6 @@ channel_atom: 128
 channel_atompair: 16
 atom_encoder_blocks: 3
 atom_encoder_heads: 4
-max_relative_token: 32
-max_relative_chain: 2
 
 # Apo-specific configs
 apo_min_dist: 2.0
