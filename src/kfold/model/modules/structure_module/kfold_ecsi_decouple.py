@@ -30,7 +30,7 @@ from typing import TypeVar
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.score_model.ecsi_diffusion import ECSIDiffusionModule
+from kfold.model.modules.score_model.base import AF3StyleDiffusionModule
 from kfold.utils.geometry.random_augment import do_centering
 from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.misc import expand_dim
@@ -209,7 +209,7 @@ class KFoldECSI_Decoupling(base_ecsi.KFoldECSI):
         gamma_scale_com_tentacle: float = 0.5  # Tangential noise scale for COM
         gamma_scale_com_radial: float = 0.5  # Radial noise scale for COM
 
-    def __init__(self, cfg: Config, score_model: ECSIDiffusionModule):
+    def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the ECSI module.
 
         The constructor copies the high-level config fields onto runtime

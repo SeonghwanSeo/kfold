@@ -4,7 +4,7 @@ from typing import TypeVar
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.score_model.af3_diffusion import AF3DiffusionModule
+from kfold.model.modules.score_model.base import AF3StyleDiffusionModule
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.misc import expand_dim
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
@@ -58,10 +58,10 @@ class AF3SampleDiffusion(BaseStructureModule):
         noise_scale: float = 1.003
         step_scale: float = 1.5
 
-    def __init__(self, cfg: Config, score_model: AF3DiffusionModule):
+    def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the atom diffusion module."""
         super().__init__(cfg, score_model)
-        self.score_model: AF3DiffusionModule = score_model
+        self.score_model: AF3StyleDiffusionModule = score_model
         self.sigma_min: float = cfg.sigma_min
         self.sigma_max: float = cfg.sigma_max
         self.sigma_data: float = cfg.sigma_data

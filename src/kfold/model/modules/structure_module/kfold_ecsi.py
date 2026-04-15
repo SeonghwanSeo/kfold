@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.score_model.ecsi_diffusion import ECSIDiffusionModule
+from kfold.model.modules.score_model.base import AF3StyleDiffusionModule
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
 from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.misc import expand_dim
@@ -193,7 +193,7 @@ class KFoldECSI(BaseStructureModule):
         P_mean: float = -0.8
         P_std: float = 2.0
 
-    def __init__(self, cfg: Config, score_model: ECSIDiffusionModule):
+    def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the ECSI module.
 
         The constructor copies the high-level config fields onto runtime
@@ -203,7 +203,7 @@ class KFoldECSI(BaseStructureModule):
         """
         super().__init__(cfg, score_model)
         self.cfg = cfg
-        self.score_model: ECSIDiffusionModule = score_model
+        self.score_model: AF3StyleDiffusionModule = score_model
 
         self.align_mode = RIGID_ALIGN if cfg.align else NO_ALIGN
 
@@ -519,7 +519,7 @@ class KFoldECSI(BaseStructureModule):
         \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / \gamma_t
         \epsilon_t = \eta (\gamma_t \dot{\gamma}_t - \dot{\alpha}_t/\alpha_t \gamma_t^2)
         """
-        model: ECSIDiffusionModule = self.score_model
+        model: AF3StyleDiffusionModule = self.score_model
 
         # Get time schedule (from t_max toward t_min)
         times = self.get_sampling_schedule(num_steps)
