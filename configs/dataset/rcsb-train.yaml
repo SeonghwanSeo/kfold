@@ -1,12 +1,7 @@
 # RCSB training dataset configuration.
 _yaml_: "default-train.yaml"
 
-name: rcsb-train
-weight: 1.0
-
-# Data paths
-data_path: <DATA_PATH_PLACEHOLDER>
-seed: null # should be null for data augmentation
+name: rcsb
 
 sampler:
   _registry_: "data_sampler"

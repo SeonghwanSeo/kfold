@@ -1,10 +1,13 @@
 """Section 3.7 Diffusion Module in the AF3 paper."""
 
+from functools import partial
+
 import torch
 import torch.nn as nn
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
+from kfold.utils.tensor import add
 
 from .atom_transformer import AtomAttentionDecoder, AtomAttentionEncoder, AtomEmbedder
 from .diffusion_transformer import CachedGlobalTransformerStack
@@ -40,7 +43,7 @@ class PairConditioning(nn.Module):
         """
         super().__init__()
         # Pair representation conditioning
-        self.rel_pos_encoding = RelativePositionEncoding()
+        self.rel_pos_encoding = RelativePositionEncoding(32, 2)
         rel_pos_dim = self.rel_pos_encoding.dimension
 
         self.layernorm = LayerNorm(channel_z + rel_pos_dim, create_offset=False)
@@ -64,8 +67,10 @@ class PairConditioning(nn.Module):
         z : torch.Tensor
             Tensor of shape (B, Lt, Lt, c_z) containing conditioned pair embeddings.
         """
+        _add = partial(add, inplace=not self.training)
+
         # Line 1
-        rel_pos_feats = self.rel_pos_encoding(f_input).to(z_trunk.dtype)
+        rel_pos_feats = self.rel_pos_encoding(f_input, z_trunk.dtype)
         z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
 
         # Line 2
@@ -73,7 +78,7 @@ class PairConditioning(nn.Module):
 
         # Line 3-5
         for transition in self.transitions:
-            z = z + transition(z)
+            z = _add(z, transition(z))
 
         return z
 
@@ -123,6 +128,8 @@ class SingleConditioning(nn.Module):
         s : torch.Tensor
             Tensor of shape (B, N, Lt, c_s) containing conditioned single embeddings.
         """
+        _add = partial(add, inplace=not self.training)
+
         # Line 6
         s = torch.cat((s_trunk, s_inputs), dim=-1)  # [B, Lt, 2*c_s]
 
@@ -140,7 +147,7 @@ class SingleConditioning(nn.Module):
 
         # Line 10-12
         for transition in self.transitions:
-            s = transition(s) + s
+            s = _add(s, transition(s))
 
         # Line 13
         return s

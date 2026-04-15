@@ -33,10 +33,6 @@ class AF3InputEmbedder(BaseInputEmbedder):
             The atom encoder blocks.
         atom_encoder_heads: int,
             The atom encoder heads.
-        max_relative_token : int
-            The maximum relative residue distance for relative position encoding.
-        max_relative_chain : int
-            The maximum relative chain distance for relative position encoding.
         """
 
         channel_s: int = 384
@@ -45,8 +41,6 @@ class AF3InputEmbedder(BaseInputEmbedder):
         channel_atompair: int = 16
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
-        max_relative_token: int = 32
-        max_relative_chain: int = 2
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
@@ -70,12 +64,8 @@ class AF3InputEmbedder(BaseInputEmbedder):
         self.linear_z_init1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         self.linear_z_init2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         # Line 4
-        self.relative_pos_encoding = RelativePositionEncoding(
-            r_max=cfg.max_relative_token, s_max=cfg.max_relative_chain
-        )
-        self.linear_pos = LinearNoBias(
-            self.relative_pos_encoding.dimension, cfg.channel_z
-        )
+        self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
+        self.linear_rel_pos = LinearNoBias(self.rel_pos_encoding.dimension, cfg.channel_z)
         # Line 5
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
 
@@ -102,6 +92,8 @@ class AF3InputEmbedder(BaseInputEmbedder):
             Tensor of shape (B, L, L, C_s) containing initial pair representation
             before trunk.
         """
+        inplace = not self.training
+        add = (lambda x, y: x.add_(y)) if inplace else (lambda x, y: x + y)  # noqa
 
         # Line 1
         s_inputs = self.input_embedder(f_input)  # [B, L, c_s]
@@ -115,46 +107,47 @@ class AF3InputEmbedder(BaseInputEmbedder):
             self.linear_z_init1(s_inputs)[:, None, :, :]
             + self.linear_z_init2(s_inputs)[:, :, None, :]
         )  # [B, L, L, c_z]
+        dtype = z_init.dtype
 
         # Line 4
-        rel_feat = self.relative_pos_encoding(f_input, s_init.dtype)
-        z_init = z_init + self.linear_pos(rel_feat)  # [B, L, c_z]
+        z_init = add(z_init, self.linear_rel_pos(self.rel_pos_encoding(f_input, dtype)))
 
         # Line 5
-        z_init = z_init + self.linear_bond(
-            self.get_adjacency_matrix(
-                f_input.bond.token_index, f_input.num_tokens, f_input.bond.pad_mask
-            ).unsqueeze(-1)  # [B, L, L, 1]
-        )  # [B, L, L, c_z]
+        z_init = add(z_init, self.linear_bond(self.get_adj(f_input, dtype).unsqueeze(-1)))
 
         return s_inputs, s_init, z_init
 
-    def get_adjacency_matrix(
-        self, bond_index: torch.Tensor, num_tokens: int, mask: torch.Tensor
+    def get_adj(
+        self, f_input: FoldingInput, dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
-        """Get the adjacency bond matrix from the input features."""
+        """Get the adjacency bond matrix from the input features.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+
+        Returns
+        -------
+        adj : torch.Tensor
+            Tensor of shape (B, L, L) containing the adjacency matrix.
+        """
+        bond_index = f_input.bond.token_index  # [B, num_bonds, 2]
+        mask = f_input.bond.pad_mask  # [B, num_bonds]
+
+        B, L = f_input.batch_size, f_input.num_tokens
+        dev = f_input.device
 
         # Masking; (0, 0) is padding index
-        bond_index = bond_index * mask.unsqueeze(-1)
+        bond_index = bond_index.masked_fill(~mask[..., None], 0)
 
+        # Create adjacency matrix
         src, dst = bond_index[:, :, 0], bond_index[:, :, 1]
-
-        batch_size = bond_index.shape[0]
-        adj = torch.zeros(
-            (batch_size, num_tokens, num_tokens),
-            device=bond_index.device,
-            dtype=torch.float32,
-        )
-
-        batch_indices = (
-            torch.arange(batch_size, device=bond_index.device)
-            .unsqueeze(-1)
-            .expand_as(src)
-        )
-
-        adj[batch_indices, src, dst] = 1.0
-        adj[batch_indices, dst, src] = 1.0  # undirected
+        adj = torch.zeros((B, L, L), device=dev, dtype=dtype)
+        b_idc = torch.arange(B, device=dev).unsqueeze(-1)
+        adj[b_idc, src, dst] = 1.0
+        adj[b_idc, dst, src] = 1.0  # undirected
 
         # Padding is always located at index (0,)
-        adj[:, 0, 0] = 0
+        adj[:, 0, 0] = 0.0
         return adj

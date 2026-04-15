@@ -1,10 +1,8 @@
 # Default dataset configuration for validation.
 _yaml_: "default.yaml"
 
-# Data paths
-data_path: <DATA_PATH_PLACEHOLDER>
-seed: 42 # fixed seed for validation
+# fixed seed for validation
+seed: 42
 
 apo_init:
   prob_perturbation: 0.0
-  use_cached_conformer_only: true

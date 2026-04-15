@@ -75,10 +75,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             The atom encoder blocks.
         atom_encoder_heads: int
             The atom encoder heads.
-        max_relative_token : int
-            The maximum relative residue distance for relative position encoding.
-        max_relative_chain : int
-            The maximum relative chain distance for relative position encoding.
 
         # Apo-related parameters
         apo_min_dist : float
@@ -95,8 +91,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         channel_atompair: int = 16
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
-        max_relative_token: int = 32
-        max_relative_chain: int = 2
         # Apo-related parameters
         apo_num_bins: int = 48
         apo_min_dist: float = 2.0
@@ -121,12 +115,8 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         self.linear_s_init = LinearNoBias(cfg.channel_s, cfg.channel_s)
         self.linear_z_init1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         self.linear_z_init2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
-        self.relative_pos_encoding = RelativePositionEncoding(
-            r_max=cfg.max_relative_token, s_max=cfg.max_relative_chain
-        )
-        self.linear_rel_pos = LinearNoBias(
-            self.relative_pos_encoding.dimension, cfg.channel_z
-        )
+        self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
+        self.linear_rel_pos = LinearNoBias(self.rel_pos_encoding.dimension, cfg.channel_z)
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
 
         # Apo-related
@@ -159,6 +149,8 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             Tensor of shape (B, L, L, C_z) containing initial pair representation
             before trunk.
         """
+        inplace = not self.training
+        add = (lambda x, y: x.add_(y)) if inplace else (lambda x, y: x + y)  # noqa
 
         # Get input single representation
         s_inputs = self.input_embedder(f_input)  # [B, L, c_s]
@@ -168,27 +160,64 @@ class KFoldInputEmbedder(BaseInputEmbedder):
 
         # Get initial pair representation
         z_init = (
-            self.linear_z_init1(s_inputs)[:, None, :, :]
-            + self.linear_z_init2(s_inputs)[:, :, None, :]
+            self.linear_z_init1(s_inputs)[..., None, :, :]
+            + self.linear_z_init2(s_inputs)[..., :, None, :]
         )  # [B, L, L, c_z]
+        dtype = z_init.dtype
 
         # Add relative positional encoding
-        rel_feat = self.relative_pos_encoding(f_input)
-        z_init = z_init + self.linear_rel_pos(rel_feat)  # [B, L, L, c_z]
+        z_init = add(z_init, self.linear_rel_pos(self.rel_pos_encoding(f_input, dtype)))
 
         # Add bond adjacency matrix
-        z_init = z_init + self.linear_bond(
-            self.get_adjacency_matrix(
-                f_input.bond.token_index, f_input.num_tokens, f_input.bond.pad_mask
-            ).unsqueeze(-1)  # [B, L, L, 1]
-        )  # [B, L, L, c_z]
+        z_init = add(z_init, self.linear_bond(self.get_adj(f_input, dtype).unsqueeze(-1)))
 
         # Add apo distance embedding
-        z_init = z_init + self.get_apo_embedding(f_input)  # [B, L, L, c_z]
+        z_init = add(z_init, self.linear_apo_pdist(self.get_apo_distmap(f_input, dtype)))
 
         return s_inputs, s_init, z_init
 
-    def get_apo_embedding(self, f_input: FoldingInput) -> torch.Tensor:
+    def get_adj(
+        self,
+        f_input: FoldingInput,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
+        """Get the adjacency bond matrix from the input features.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            FoldingInput object containing model inputs.
+
+        Returns
+        -------
+        adj : torch.Tensor
+            Tensor of shape (B, L, L) containing the adjacency matrix.
+        """
+        bond_index = f_input.bond.token_index  # [B, num_bonds, 2]
+        mask = f_input.bond.pad_mask  # [B, num_bonds]
+
+        B, L = f_input.batch_size, f_input.num_tokens
+        dev = f_input.device
+
+        # Masking; (0, 0) is padding index
+        bond_index = bond_index.masked_fill(~mask[..., None], 0)
+
+        # Create adjacency matrix
+        src, dst = bond_index[:, :, 0], bond_index[:, :, 1]
+        adj = torch.zeros((B, L, L), device=dev, dtype=dtype)
+        b_idc = torch.arange(B, device=dev).unsqueeze(-1)
+        adj[b_idc, src, dst] = 1.0
+        adj[b_idc, dst, src] = 1.0  # undirected
+
+        # Padding is always located at index (0,)
+        adj[:, 0, 0] = 0.0
+        return adj
+
+    def get_apo_distmap(
+        self,
+        f_input: FoldingInput,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor:
         """Get apo embedding for the input features.
 
         Parameters
@@ -198,59 +227,26 @@ class KFoldInputEmbedder(BaseInputEmbedder):
 
         Returns
         -------
-        z_apo : torch.Tensor
-            Pair representation containing apo information. Shape: (B, L, L, c_z)
+        rbf_distmap : torch.Tensor
+            Tensor of shape (B, L, L, num_bins) containing RBF-encoded apo distance map.
         """
-        batch_index = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
         # Extract apo C-beta coordinates and mask
+        b_idx = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
         repr_index = f_input.token.repr_index
-        apo_coords = f_input.atom.apo_coords[batch_index, repr_index]  # [B, L, 3]
-        mask = f_input.atom.apo_mask[batch_index, repr_index]  # [B, L]
-        pair_mask = mask[:, :, None] & mask[:, None, :]
+        coords = f_input.atom.apo_coords[b_idx, repr_index]  # [B, L, 3]
+        mask = f_input.atom.apo_mask[b_idx, repr_index]  # [B, L]
 
+        # Create pairwise mask for valid apo coordinates
+        pair_mask = mask[:, :, None] & mask[:, None, :]
         # Chain identity mask (no inter-chain apo distances)
         asym_id = f_input.token.asym_id  # [B, L]
         chain_mask = asym_id[:, :, None] == asym_id[:, None, :]
+        pair_mask &= chain_mask
 
-        pair_mask = pair_mask & chain_mask
+        with torch.autocast(f_input.device.type, enabled=False):
+            # Compute pairwise distance map and apply RBF encoding
+            pdist = (coords[..., :, None, :] - coords[..., None, :, :]).norm(dim=-1)
+            distmap = self.distmap(pdist).to(dtype)  # [B, L, L, num_bins]
+            distmap.masked_fill_(~pair_mask[..., None], 0.0)  # mask out invalid pairs
 
-        # Pair representation: pairwise distance RBF
-        with torch.autocast(apo_coords.device.type, enabled=False), torch.no_grad():
-            diff = apo_coords[..., :, None, :] - apo_coords[..., None, :, :]
-            pdist = torch.norm(diff, dim=-1)  # [B, L, L]
-            pdist_map = self.distmap(pdist)  # [B, L, L, num_bin]
-        pdist_map = pdist_map * pair_mask.unsqueeze(-1)  # apply mask
-
-        z_apo = self.linear_apo_pdist(pdist_map)  # [B, L, L, c_z]
-
-        return z_apo
-
-    def get_adjacency_matrix(
-        self, bond_index: torch.Tensor, num_tokens: int, mask: torch.Tensor
-    ) -> torch.Tensor:
-        """Get the adjacency bond matrix from the input features."""
-
-        # Masking; (0, 0) is padding index
-        bond_index = bond_index * mask.unsqueeze(-1)
-
-        src, dst = bond_index[:, :, 0], bond_index[:, :, 1]
-
-        batch_size = bond_index.shape[0]
-        adj = torch.zeros(
-            (batch_size, num_tokens, num_tokens),
-            device=bond_index.device,
-            dtype=torch.float32,
-        )
-
-        batch_indices = (
-            torch.arange(batch_size, device=bond_index.device)
-            .unsqueeze(-1)
-            .expand_as(src)
-        )
-
-        adj[batch_indices, src, dst] = 1.0
-        adj[batch_indices, dst, src] = 1.0  # undirected
-
-        # Padding is always located at index (0,)
-        adj[:, 0, 0] = 0
-        return adj
+        return distmap
