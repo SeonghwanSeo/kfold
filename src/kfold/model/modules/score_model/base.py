@@ -86,6 +86,27 @@ class AF3StyleDiffusionModule(BaseScoreModel):
             return self.diffusion_stack._orig_mod
         return self.diffusion_stack
 
+    def drop_conditioning(
+        self, s_trunk: torch.Tensor, z_trunk: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Drop the conditioning for training step.
+
+        Parameters
+        ----------
+        s_trunk : torch.Tensor
+            The trunk single representation, shape [B, Lt, c_s].
+        z_trunk : torch.Tensor
+            The trunk pair representation, shape [B, Lt, Lt, c_z].
+
+        Returns
+        -------
+        s_trunk : torch.Tensor
+            The dropped trunk single representation, shape [B, Lt, c_s].
+        z_trunk : torch.Tensor
+            The dropped trunk pair representation, shape [B, Lt, Lt, c_z].
+        """
+        return s_trunk, z_trunk
+
     def train_step(
         self,
         f_input: FoldingInput,
@@ -126,6 +147,7 @@ class AF3StyleDiffusionModule(BaseScoreModel):
         # no speedup during training. On the other hand, torch.compile provides
         # significant speedup during training. Therefore, we disable kernels
         # to optimize computational graph with torch.compile.
+        s_trunk, z_trunk = self.drop_conditioning(s_trunk, z_trunk)
         return self.diffusion_stack(
             f_input,
             r_noisy,

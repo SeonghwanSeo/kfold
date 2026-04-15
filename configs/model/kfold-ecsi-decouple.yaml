@@ -23,7 +23,8 @@ structure_module:
   _yaml_: "module/structure_module/ecsi-decouple.yaml"
 
 score_model:
-  _yaml_: "module/score_model/ecsi.yaml"
+  _yaml_: "module/score_model/af3.yaml"
+  channel_coords: 6
 
 distogram_head:
   _yaml_: "module/distogram_head/af3.yaml"

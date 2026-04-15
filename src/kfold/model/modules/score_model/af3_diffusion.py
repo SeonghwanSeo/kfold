@@ -1,3 +1,5 @@
+import torch
+
 from kfold.model.layers.alphafold3.diffusion import DiffusionStack
 from kfold.utils.registry import SCORE_MODEL, BaseConfig
 
@@ -23,6 +25,8 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
             The atom single representation dimension.
         channel_atompair : int
             The atom pair representation dimension.
+        channel_coords : int
+            The coordinate dimension, default to 3 for (x, y, z).
         atom_encoder_blocks : int, optional
             The number of blocks of the atom encoder, by default 3.
         atom_encoder_heads : int, optional
@@ -35,6 +39,8 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
             The number of blocks of the atom decoder, by default 3.
         atom_decoder_heads : int, optional
             The number of heads in the atom decoder, by default 4.
+        conditioning_drop_rate : float, optional
+            The drop rate of conditioning during training, by default 0.0.
         blocks_per_ckpt : int | None, optional
             The number of blocks per checkpoint, by default None.
         """
@@ -43,12 +49,14 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
         channel_z: int = 128
         channel_atom: int = 128
         channel_atompair: int = 16
+        channel_coords: int = 3
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
         token_transformer_blocks: int = 24
         token_transformer_heads: int = 16
         atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
+        conditioning_drop_rate: float = 0.0
         blocks_per_ckpt: int | None = None
 
     def __init__(self, cfg: Config, kernel_config):
@@ -58,7 +66,7 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
-            channel_coords=3,
+            channel_coords=cfg.channel_coords,
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
             token_transformer_blocks=cfg.token_transformer_blocks,
@@ -67,3 +75,32 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
             atom_decoder_heads=cfg.atom_decoder_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
+        self.drop_rate: float = cfg.conditioning_drop_rate
+        assert 0.0 <= self.drop_rate < 1.0, "Conditioning drop rate must be in [0, 1)."
+
+    def drop_conditioning(
+        self, s_trunk: torch.Tensor, z_trunk: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Drop the conditioning for training step.
+
+        Parameters
+        ----------
+        s_trunk : torch.Tensor
+            The trunk single representation, shape [B, Lt, c_s].
+        z_trunk : torch.Tensor
+            The trunk pair representation, shape [B, Lt, c_z].
+
+        Returns
+        -------
+        s_trunk : torch.Tensor
+            The dropped trunk single representation, shape [B, Lt, c_s].
+        z_trunk : torch.Tensor
+            The dropped trunk pair representation, shape [B, Lt, c_z].
+        """
+        drop_rate = self.drop_rate
+        if drop_rate > 0.0:
+            mask = torch.rand(s_trunk.shape[0], device=s_trunk.device) < drop_rate
+            use_conditioning = (~mask).to(z_trunk.dtype)[:, None, None]
+            s_trunk = s_trunk * use_conditioning
+            z_trunk = z_trunk * use_conditioning
+        return s_trunk, z_trunk
