@@ -17,7 +17,7 @@ from kfold.model.layers.primitives import (
 )
 from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
-from kfold.utils.tensor import add
+from kfold.utils.torch import add
 
 from .attention_pair_bias import SelfAttentionPairBias
 from .transition import Transition
@@ -232,7 +232,7 @@ class PairformerBlock(nn.Module):
                 s=None,
                 pair_bias=pair_bias,  # [B, H, L, L]
                 mask=single_mask,  # [B, L]
-                use_kernels=use_cuequiv_kernels,
+                use_kernels=False,
             ),
         )
 

@@ -1,12 +1,12 @@
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from . import initialize
 
 
-class Linear(nn.Linear):
-    """A linear layer with various initialization methods.
-    Starting from https://github.com/aqlaboratory/openfold-3
-    """
+class Linear(nn.Module):
+    """A linear layer with various initialization methods."""
 
     def __init__(
         self,
@@ -14,11 +14,40 @@ class Linear(nn.Linear):
         out_features: int,
         bias: bool = True,
         init: str = "default",
+        precision: str | int | torch.dtype | None = None,
     ):
-        super().__init__(in_features, out_features, bias)
+        super().__init__()
 
-        # Before initialization, set bias to zero if it exists
+        self.weight = nn.Parameter(torch.empty((out_features, in_features)))
         if bias:
+            self.bias = nn.Parameter(torch.empty(out_features))
+        else:
+            self.register_parameter("bias", None)
+
+        self.reset_parameters(init)
+
+        if isinstance(precision, str):
+            assert precision in {"float16", "bfloat16", "float32"}, (
+                f"Unsupported precision string: {precision}. "
+                "Supported values are 'float16', 'bfloat16', and 'float32'."
+            )
+            precision = getattr(torch, precision)
+        elif isinstance(precision, int):
+            if precision == 16:
+                precision = torch.float16
+            elif precision == 32:
+                precision = torch.float32
+            else:
+                raise ValueError(
+                    f"Unsupported precision integer: {precision}. "
+                    "Supported values are 16 and 32."
+                )
+
+        self.precision: torch.dtype | None = precision
+
+    def reset_parameters(self, init: str) -> None:
+        # Before initialization, set bias to zero if it exists
+        if self.bias is not None:
             initialize.zero_init_(self.bias)
 
         if init == "default":
@@ -51,9 +80,37 @@ class Linear(nn.Linear):
         else:
             raise ValueError(f"Unknown initialization method: {init}")
 
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if self.precision is not None:
+            d = self.precision
+            out_d = input.dtype
+            if torch.is_autocast_enabled():
+                out_d = torch.get_autocast_dtype(input.device.type)
+
+            weight = self.weight.to(d)
+            bias = self.bias.to(d) if self.bias is not None else None
+            with torch.autocast(input.device.type, dtype=d):
+                out = F.linear(input.to(d), weight, bias)
+
+            return out.to(out_d)
+
+        return F.linear(input, self.weight, self.bias)
+
 
 class LinearNoBias(Linear):
     """A linear layer without bias term."""
 
-    def __init__(self, in_features: int, out_features: int, init: str = "default"):
-        super().__init__(in_features, out_features, bias=False, init=init)
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        init: str = "default",
+        precision: str | int | torch.dtype | None = None,
+    ):
+        super().__init__(
+            in_features,
+            out_features,
+            bias=False,
+            init=init,
+            precision=precision,
+        )

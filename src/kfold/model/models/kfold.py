@@ -189,8 +189,8 @@ class KFold(BaseFoldingModel):
             seq_attn=seq_attn,
             struct_emb=struct_emb,
         )
-        s_trunk = trunk_out["s_trunk"]
-        z_trunk = trunk_out["z_trunk"]
+        s_trunk = trunk_out.pop("s_trunk").float()
+        z_trunk = trunk_out.pop("z_trunk").float()
 
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.
@@ -303,6 +303,7 @@ class KFold(BaseFoldingModel):
         et = time.time()
         s_trunk = trunk_out["s_trunk"].float()
         z_trunk = trunk_out["z_trunk"].float()
+        del trunk_out
         time_logs["trunk"] = et - st
 
         dict_out = {
@@ -313,7 +314,6 @@ class KFold(BaseFoldingModel):
             "s_trunk": s_trunk,
             "z_trunk": z_trunk,
         }
-        del trunk_out
 
         # Distogram head
         st = time.time()

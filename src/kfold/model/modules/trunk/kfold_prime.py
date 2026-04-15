@@ -11,7 +11,7 @@ from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.kfold.plm_module import PLMEmbedder, PLMModule
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
-from kfold.utils.tensor import add
+from kfold.utils.torch import add
 
 from .base import BaseTrunk
 from .kfold_trunk import PairformerConfig, PLMModuleConfig
@@ -262,7 +262,7 @@ class KFoldTrunkPrime(BaseTrunk):
         )
 
         # === Refining loop with recycling === #
-        s, z = s_prime, z_prime
+        s, z = s_prime.clone(), z_prime.clone()
         s_plm = self.plm_embedder_refine(s_inputs, plm_input)
         s_bias = self.linear_s_prime(self.layernorm_s_prime(s_prime))
         z_bias = self.linear_z_prime(self.layernorm_z_prime(z_prime))

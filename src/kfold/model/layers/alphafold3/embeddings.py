@@ -38,8 +38,7 @@ class RelativePositionEncoding(nn.Module):
         NOTE: Differ to AlphaFold3 official algorithm, its official algorithm does
         not pass linear projection layer here.
         """
-        with torch.no_grad():
-            return self.get_relative_position_encoding(f_input, dtype)
+        return self.get_relative_position_encoding(f_input, dtype)
 
     def get_relative_position_encoding(
         self, f_input: FoldingInput, dtype: torch.dtype = torch.float32

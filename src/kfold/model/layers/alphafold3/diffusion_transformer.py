@@ -23,7 +23,7 @@ import torch.nn as nn
 from kfold.model.layers.primitives import AdaLN, LayerNorm, Linear, LinearNoBias, SwiGLU
 from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
-from kfold.utils.tensor import add
+from kfold.utils.torch import add
 
 from .attention_pair_bias import CrossAttentionPairBias, SelfAttentionPairBias
 from .utils import build_atom_to_qk_fn
@@ -426,7 +426,7 @@ class LocalTransformerStack(nn.Module):
         s : torch.Tensor
             The single conditioning tensor (*, L, c_s)
         z : torch.Tensor
-            The pair representation tensor (*, Lq, Lk, c_z)
+            The pair conditioning tensor (*, Lq, Lk, c_z)
         mask : torch.Tensor
             The attention mask tensor (*, L)
 
