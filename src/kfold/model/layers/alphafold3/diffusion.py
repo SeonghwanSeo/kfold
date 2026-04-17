@@ -7,7 +7,7 @@ import torch.nn as nn
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
-from kfold.utils.tensor import add
+from kfold.utils.torch import add
 
 from .atom_transformer import AtomAttentionDecoder, AtomAttentionEncoder, AtomEmbedder
 from .diffusion_transformer import CachedGlobalTransformerStack
@@ -46,8 +46,9 @@ class PairConditioning(nn.Module):
         self.rel_pos_encoding = RelativePositionEncoding(32, 2)
         rel_pos_dim = self.rel_pos_encoding.dimension
 
-        self.layernorm = LayerNorm(channel_z + rel_pos_dim, create_offset=False)
-        self.linear = LinearNoBias(channel_z + rel_pos_dim, channel_z, init="default")
+        in_channel = channel_z + rel_pos_dim
+        self.layernorm = LayerNorm(in_channel, create_offset=False)
+        self.linear = LinearNoBias(in_channel, channel_z, init="default", precision=32)
         self.transitions = nn.ModuleList(
             [Transition(channel_z, expansion_factor=2) for _ in range(2)]
         )
@@ -72,9 +73,10 @@ class PairConditioning(nn.Module):
         # Line 1
         rel_pos_feats = self.rel_pos_encoding(f_input, z_trunk.dtype)
         z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
+        del rel_pos_feats, z_trunk
 
         # Line 2
-        z = self.linear(self.layernorm(z))  # [B, Lt, Lt, c_z]
+        z = self.linear(self.layernorm(z.float()))  # [B, Lt, Lt, c_z]
 
         # Line 3-5
         for transition in self.transitions:
@@ -101,9 +103,11 @@ class SingleConditioning(nn.Module):
         super().__init__()
         self.fourier_embed = FourierEmbedding(dim_fourier)
         self.layernorm_fourier = LayerNorm(dim_fourier, create_offset=False)
-        self.linear_fourier = LinearNoBias(dim_fourier, channel_s, init="default")
+        self.linear_fourier = LinearNoBias(
+            dim_fourier, channel_s, init="default", precision=32
+        )
         self.layernorm = LayerNorm(channel_s * 2, create_offset=False)
-        self.linear = LinearNoBias(channel_s * 2, channel_s, init="default")
+        self.linear = LinearNoBias(channel_s * 2, channel_s, init="default", precision=32)
         self.transitions = nn.ModuleList(
             [Transition(channel_s, expansion_factor=2) for _ in range(2)]
         )
@@ -134,12 +138,12 @@ class SingleConditioning(nn.Module):
         s = torch.cat((s_trunk, s_inputs), dim=-1)  # [B, Lt, 2*c_s]
 
         # Line 7
-        s = self.linear(self.layernorm(s))  # [B, Lt, c_s]
+        s = self.linear(self.layernorm(s.float()))  # [B, Lt, c_s]
 
         # Line 8:
         # NOTE: 1/4 log(t_hat / sigma_data) is computed outside of this class.
         # See StructureModule for more details.
-        fourier_embed = self.fourier_embed(c_noise)  # [B, N, d_fourier]
+        fourier_embed = self.fourier_embed(c_noise.float())  # [B, N, d_fourier]
 
         # Line 9
         fourier_embed = self.linear_fourier(self.layernorm_fourier(fourier_embed))
@@ -232,7 +236,6 @@ class DiffusionStack(nn.Module):
             use_structure=True,
         )
         self.atom_attention_encoder = AtomAttentionEncoder(
-            channel_s=channel_s,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             channel_token=channel_token,
@@ -244,10 +247,12 @@ class DiffusionStack(nn.Module):
 
         # === Full token-level attention === #
         self.layernorm_s = LayerNorm(channel_s, create_offset=False)
-        self.linear_s_to_a = LinearNoBias(channel_s, channel_token, init="final")
+        self.linear_s_to_a = LinearNoBias(
+            channel_s, channel_token, init="final", precision=32
+        )
         self.layernorm_z = LayerNorm(channel_z, create_offset=False)
         self.linear_z_to_bias = LinearNoBias(
-            channel_z, token_transformer_blocks * token_transformer_heads
+            channel_z, token_transformer_blocks * token_transformer_heads, precision=32
         )
 
         self.token_transformer = CachedGlobalTransformerStack(
@@ -313,7 +318,7 @@ class DiffusionStack(nn.Module):
         # Line 1: Diffusion conditioning
         s = self.get_single_conditioning(s_inputs, s_trunk, c_noise)  # [B, N, Lt, c_s]
         z = self.get_pair_conditioning(f_input, z_trunk)  # [B, Lt, Lt, c_z]
-        q, c, p = self.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        q, c, p = self.get_atom_embeddings(f_input, s_trunk, z)
         pair_bias = self.get_pair_bias(z)  # [B, Nblock, H, Lt, Lt]
         r_update = self.step(
             r_noisy,
@@ -371,7 +376,7 @@ class DiffusionStack(nn.Module):
         pair_bias = self.linear_z_to_bias(self.layernorm_z(z)).view(B, L, L, N, H)
         pair_bias = pair_bias.permute(0, 3, 4, 1, 2)  # [B, N, H, L, L]
         pair_bias = pair_bias.contiguous()
-        return pair_bias
+        return pair_bias.to(torch.float32)
 
     def get_single_conditioning(
         self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, c_noise: torch.Tensor
@@ -394,12 +399,11 @@ class DiffusionStack(nn.Module):
         s : torch.Tensor
             The single conditioning, shape [B, N, Lt, c_s].
         """
-        return self.single_conditioning(s_inputs, s_trunk, c_noise)
+        return self.single_conditioning(s_inputs, s_trunk, c_noise).to(torch.float32)
 
     def get_atom_embeddings(
         self,
         f_input: FoldingInput,
-        s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -426,7 +430,8 @@ class DiffusionStack(nn.Module):
         p : torch.Tensor
             The atom pair representation, shape [B, La, La, c_atompair].
         """
-        return self.atom_embedder(f_input, s_trunk, z)
+        q, c, p = self.atom_embedder(f_input, s_trunk, z)
+        return q, c, p
 
     def step(
         self,
@@ -505,6 +510,7 @@ class DiffusionStack(nn.Module):
             mask=atom_mask,  # [B, 1, La]
             num_tokens=token_mask.shape[-1],
         )
+        del q, c, p, r_noisy
 
         # Shape:
         # - a: [B, N, Lt, c_token]
@@ -514,7 +520,7 @@ class DiffusionStack(nn.Module):
 
         # === Full attention on token-level === #
         # Line 4
-        a = a.float()  # Convert to float32 for stability in residual connection.
+        a = a.float()  # Convert to float32 for stability.
         a = a + self.linear_s_to_a(self.layernorm_s(s))  # [B, N, Lt, c_token]
 
         # Line 5

@@ -32,9 +32,9 @@ class LayerNorm(nn.Module):
     def forward(self, x) -> torch.Tensor:
         d = x.dtype
         if d is torch.bfloat16:
-            with torch.autocast("cuda", enabled=False):
-                weight = self.weight.to(dtype=d) if self.weight is not None else None
-                bias = self.bias.to(dtype=d) if self.bias is not None else None
+            with torch.autocast(x.device.type, enabled=False):
+                weight = self.weight.to(d) if self.weight is not None else None
+                bias = self.bias.to(d) if self.bias is not None else None
                 out = nn.functional.layer_norm(
                     input=x,
                     normalized_shape=(self.normalized_shape,),

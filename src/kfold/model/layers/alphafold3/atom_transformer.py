@@ -46,7 +46,7 @@ class AtomEmbedder(nn.Module):
         """
         super().__init__()
         # Embeddings atom features `c`
-        self.embed_atom_pos = LinearNoBias(3, channel_atom, init="default")
+        self.embed_atom_pos = LinearNoBias(3, channel_atom, init="default", precision=32)
         self.embed_atom_charge = LinearNoBias(1, channel_atom, init="default")
         self.embed_atom_mask = LinearNoBias(1, channel_atom, init="default")
         self.embed_atom_element = LinearNoBias(128, channel_atom, init="default")
@@ -54,7 +54,9 @@ class AtomEmbedder(nn.Module):
 
         # Embeddings for atom pair features `p`
         # Reference position embeddings
-        self.embed_ref_offset = LinearNoBias(3, channel_atompair, init="default")
+        self.embed_ref_offset = LinearNoBias(
+            3, channel_atompair, init="default", precision=32
+        )
         self.embed_ref_inv_dist = LinearNoBias(1, channel_atompair, init="default")
         self.embed_ref_mask = LinearNoBias(1, channel_atompair, init="default")
 
@@ -66,11 +68,11 @@ class AtomEmbedder(nn.Module):
             )
             self.linear_s_to_c = nn.Sequential(
                 LayerNorm(channel_s, create_offset=False),
-                LinearNoBias(channel_s, channel_atom, init="final"),
+                LinearNoBias(channel_s, channel_atom, init="final", precision=32),
             )
             self.linear_z_to_p = nn.Sequential(
                 LayerNorm(channel_z, create_offset=False),
-                LinearNoBias(channel_z, channel_atompair, init="final"),
+                LinearNoBias(channel_z, channel_atompair, init="final", precision=32),
             )
         else:
             assert channel_z is None, "channel_z must be None if use_structure is False"
@@ -145,8 +147,8 @@ class AtomEmbedder(nn.Module):
             assert s_trunk is not None and z is not None
             token_index = f_input.atom.token_index  # [B, La]
             # Line 9-10
-            c = self.add_trunk_single_representation(c, s_trunk, token_index)
-            p = self.add_trunk_pair_conditioning(p, z, token_index, to_qk)
+            c = c + self.get_trunk_single_representation(s_trunk, token_index)
+            p = p + self.get_trunk_pair_conditioning(z, token_index, to_qk)
         else:
             assert s_trunk is None and z is None
 
@@ -202,9 +204,8 @@ class AtomEmbedder(nn.Module):
         p = p * v
         return p
 
-    def add_trunk_single_representation(
+    def get_trunk_single_representation(
         self,
-        c: torch.Tensor,
         s_trunk: torch.Tensor,
         token_index: torch.Tensor,
     ) -> torch.Tensor:
@@ -212,8 +213,6 @@ class AtomEmbedder(nn.Module):
 
         Parameters
         ----------
-        c: torch.Tensor
-            The atom single conditioning, shape [*, La, c_atom].
         s_trunk: torch.Tensor
             The trunk single representation, shape [*, Lt, c_s].
         token_index: torch.Tensor
@@ -224,13 +223,11 @@ class AtomEmbedder(nn.Module):
         c: torch.Tensor
             The updated atom single conditioning, shape [*, La, c_atom].
         """
-        s_trunk = self.linear_s_to_c(s_trunk)  # [*, Lt, c_atom]
-        s_to_c = broadcast_tokens_to_atoms(s_trunk, token_index)  # [*, La, c_atom]
-        return c + s_to_c  # [*, La, c_atom]
+        cond = self.linear_s_to_c(s_trunk.float())  # [*, Lt, c_atom]
+        return broadcast_tokens_to_atoms(cond, token_index)  # [*, La, c_atom]
 
-    def add_trunk_pair_conditioning(
+    def get_trunk_pair_conditioning(
         self,
-        p: torch.Tensor,
         z: torch.Tensor,
         token_index: torch.Tensor,
         to_qk: Callable,
@@ -251,33 +248,30 @@ class AtomEmbedder(nn.Module):
             The updated atom pair representation, shape [*, W, Lq, Lk, c_atompair].
         """
         batch_shape = z.shape[:-3]  # [*]
-        W, Lq, Lk = p.shape[-4:-1]
+        B = math.prod(batch_shape)
 
         # 1. Project Trunk features
         # [*, Lt, Lt, c_z] -> [*, Lt, Lt, c_atompair]
-        z_to_p = self.linear_z_to_p(z)
+        cond = self.linear_z_to_p(z.float())
 
-        # 2. Get Windowed Indices
-        # [*, La] -> [*, W, Lq], [*, W, Lk]
-        idx_q, idx_k = to_qk(token_index, dim=-1)
-        idx_q = idx_q.expand(*batch_shape, W, Lq)
-        idx_k = idx_k.expand(*batch_shape, W, Lk)
+        # 2. Token pair embedding to atom pair representation
+        # [*, Ntoken, c_atom_pair] -> [*, W, Lq, Lk, c_atompair]
+        b_idx = torch.arange(B, device=z.device)
 
         # NOTE: safe indexing: Although the pad value of token_index is 0,
         # we clamp indices to be at least 0 to avoid run-time error.
-        idx_q, idx_k = idx_q.clamp(min=0), idx_k.clamp(min=0)
+        token_index = token_index.view(B, -1)  # [B, La]
+        token_index = token_index.clamp(min=0)  # [B, La]
+        # [B, La] -> [B, W, Lq], [B, W, Lk]
+        q_idx, k_idx = to_qk(token_index, dim=-1)
 
-        # 3. Token pair embedding to atom pair representation
-        # [*, Ntoken, c_atom_pair] -> [*, W, Lq, Lk, c_atompair]
-        B = math.prod(batch_shape)
-        batch_indices = torch.arange(B, device=p.device)
-        z_to_p = z_to_p.flatten(0, -4)  # [B, Lt, Lt, c_atompair]
-        z_to_p = z_to_p[
-            batch_indices.view(B, 1, 1, 1),  # [B, 1, 1, 1]
-            idx_q.view(B, W, Lq, 1),
-            idx_k.view(B, W, 1, Lk),
+        cond = cond.flatten(0, -4)  # [B, Lt, Lt, c_atompair]
+        cond = cond[
+            b_idx.view(B, 1, 1, 1),
+            q_idx[..., :, None],
+            k_idx[..., None, :],
         ].unflatten(0, batch_shape)  # [*, W, Lq, Lk, c_atompair]
-        return p + z_to_p
+        return cond
 
 
 class AtomAttentionEncoder(nn.Module):
@@ -287,7 +281,6 @@ class AtomAttentionEncoder(nn.Module):
 
     def __init__(
         self,
-        channel_s: int,  # 384 in AF3
         channel_atom: int,  # 128 in AF3
         channel_atompair: int,  # 16 in AF3
         channel_token: int,  # 384 (InputEmbedder) or 768 (Diffusion) in AF3
@@ -300,8 +293,6 @@ class AtomAttentionEncoder(nn.Module):
 
         Parameters
         ----------
-        channel_s : int
-            The single representation dimension.
         channel_atom : int
             The atom single representation dimension.
         channel_atompair : int
@@ -319,7 +310,7 @@ class AtomAttentionEncoder(nn.Module):
         self.use_structure: bool = use_structure
         if use_structure:
             self.linear_r_to_q = LinearNoBias(
-                channel_coords, channel_atom, init="default"
+                channel_coords, channel_atom, init="default", precision=32
             )
         self.transformer = LocalTransformerStack(
             channel_a=channel_atom,
@@ -351,7 +342,7 @@ class AtomAttentionEncoder(nn.Module):
         c : torch.Tensor
             The atom single conditioning, shape [*, La, c_atom].
         p : torch.Tensor
-            The atom pair representation, shape [*, W, Lq, Lk, c_atompair].
+            The atom pair conditioning, shape [*, W, Lq, Lk, c_atompair].
         token_index : torch.Tensor
             The token index for each atom, shape [*, La].
         mask : torch.Tensor
@@ -370,7 +361,7 @@ class AtomAttentionEncoder(nn.Module):
         c_skip : torch.Tensor
             The atom single conditioning before atom transformer, for skip connection.
         p_skip : torch.Tensor
-            The atom pair representation before atom transformer, for skip connection.
+            The atom pair conditioning before atom transformer, for skip connection.
         """
         if self.use_structure:
             # Line 11: Add noise position
@@ -433,7 +424,7 @@ class AtomAttentionDecoder(nn.Module):
             num_heads=num_heads,
         )
         self.layernorm_q = LayerNorm(channel_atom, create_offset=False)
-        self.linear_q_to_r = LinearNoBias(channel_atom, 3, init="final")
+        self.linear_q_to_r = LinearNoBias(channel_atom, 3, init="final", precision=32)
 
     def forward(
         self,
@@ -477,5 +468,5 @@ class AtomAttentionDecoder(nn.Module):
         q = self.transformer(q, c_skip, p_skip, mask)
 
         # Line 3: Project atom representation to updated coordinates
-        r_update = self.linear_q_to_r(self.layernorm_q(q))  # [*, N, La, 3]
+        r_update = self.linear_q_to_r(self.layernorm_q(q.float()))  # [*, N, La, 3]
         return r_update

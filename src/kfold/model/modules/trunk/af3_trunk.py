@@ -4,7 +4,7 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
-from kfold.utils.tensor import add
+from kfold.utils.torch import add
 
 from .base import BaseTrunk
 

@@ -41,7 +41,9 @@ class AtomEmbedderWithApo(AtomEmbedder):
             channel_s, channel_z, channel_atom, channel_atompair, use_structure
         )
         # Apo position embeddings
-        self.embed_apo_offset = LinearNoBias(3, channel_atompair, init="default")
+        self.embed_apo_offset = LinearNoBias(
+            3, channel_atompair, init="default", precision=32
+        )
         self.embed_apo_inv_dist = LinearNoBias(1, channel_atompair, init="default")
         self.embed_apo_mask = LinearNoBias(1, channel_atompair, init="default")
 
@@ -60,7 +62,7 @@ class AtomEmbedderWithApo(AtomEmbedder):
             The atom pair representation, shape [B, W, Lq, Lk, c_atompair]
         """
         p = super().embed_atom_pairs(f_input, to_qk)  # [B, W, Lq, Lk, c_atompair]
-        p = p + self.apo_embedding(f_input, to_qk)
+        p = p + self.apo_embedding(f_input, to_qk).to(p.dtype)
         return p
 
     def apo_embedding(self, f_input: FoldingInput, to_qk: Callable) -> torch.Tensor:

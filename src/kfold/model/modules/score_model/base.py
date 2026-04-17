@@ -205,7 +205,6 @@ class AF3StyleDiffusionModule(BaseScoreModel):
     def get_atom_embeddings(
         self,
         f_input: FoldingInput,
-        s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -216,8 +215,6 @@ class AF3StyleDiffusionModule(BaseScoreModel):
         ----------
         f_input : FoldingInput
             The folding input.
-        s_inputs : torch.Tensor
-            The input single representation, shape [B, Lt, c_s].
         s_trunk : torch.Tensor
             The trunk single representation, shape [B, Lt, c_s].
         z : torch.Tensor
@@ -232,7 +229,7 @@ class AF3StyleDiffusionModule(BaseScoreModel):
         p : torch.Tensor
             The atom pair representation, shape [B, La, La, c_atompair].
         """
-        return self._diffusion_stack.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        return self._diffusion_stack.get_atom_embeddings(f_input, s_trunk, z)
 
     def get_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
         """Get the pair bias for the token transformer.

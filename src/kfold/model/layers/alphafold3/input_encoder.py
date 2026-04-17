@@ -19,7 +19,6 @@ class InputFeatureEmbedder(torch.nn.Module):
         channel_atompair: int = 16,
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
-        blocks_per_ckpt: int | None = None,
     ) -> None:
         """Initialize the Input feature embedding module.
 
@@ -46,7 +45,6 @@ class InputFeatureEmbedder(torch.nn.Module):
             use_structure=False,
         )
         self.encoder = AtomAttentionEncoder(
-            channel_s=channel_s,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             channel_token=channel_s,

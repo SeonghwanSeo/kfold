@@ -11,7 +11,7 @@ from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.kfold.plm_module import PLMEmbedder, PLMModule
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
-from kfold.utils.tensor import add
+from kfold.utils.torch import add
 
 from .base import BaseTrunk
 
