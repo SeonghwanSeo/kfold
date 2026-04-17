@@ -88,19 +88,19 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
         s_trunk : torch.Tensor
             The trunk single representation, shape [B, Lt, c_s].
         z_trunk : torch.Tensor
-            The trunk pair representation, shape [B, Lt, c_z].
+            The trunk pair representation, shape [B, Lt, Lt, c_z].
 
         Returns
         -------
         s_trunk : torch.Tensor
             The dropped trunk single representation, shape [B, Lt, c_s].
         z_trunk : torch.Tensor
-            The dropped trunk pair representation, shape [B, Lt, c_z].
+            The dropped trunk pair representation, shape [B, Lt, Lt, c_z].
         """
         drop_rate = self.drop_rate
         if drop_rate > 0.0:
             mask = torch.rand(s_trunk.shape[0], device=s_trunk.device) < drop_rate
-            use_conditioning = (~mask).to(z_trunk.dtype)[:, None, None]
-            s_trunk = s_trunk * use_conditioning
-            z_trunk = z_trunk * use_conditioning
+            use_conditioning = (~mask).to(z_trunk.dtype)  # [B,]
+            s_trunk = s_trunk * use_conditioning[:, None, None]
+            z_trunk = z_trunk * use_conditioning[:, None, None, None]
         return s_trunk, z_trunk
