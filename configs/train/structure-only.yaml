@@ -2,7 +2,3 @@ _yaml_: "full.yaml"
 
 training:
   train_confidence_head: false
-
-loss:
-  weights:
-    confidence: 0.0

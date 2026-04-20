@@ -21,3 +21,6 @@ score_model:
 
 distogram_head:
   _yaml_: "module/prediction_head/distogram_head.yaml"
+
+confidence_head:
+  _yaml_: "module/prediction_head/confidence_head.yaml"

@@ -1,5 +1,7 @@
 """Tokenization pipeline for structures."""
 
+import math
+
 import numpy as np
 from rdkit import Chem
 
@@ -9,6 +11,9 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 from kfold.utils.misc import spawn_rng
+
+COLLISION_ANGLE_CUTOFF = math.cos(math.radians(25))  # 25 degree
+DETERMINISTIC_FRAME_SEED = 20000106
 
 
 def get_mask(coords: np.ndarray) -> np.ndarray:
@@ -135,7 +140,6 @@ def tokenize_structure(
     # ==================================================
     # Estimate sizes
     # ==================================================
-    num_chains = len(input.chains)
     chain_token_st: dict[int, int] = {}
     chain_atom_st: dict[int, int] = {}
     token_offset = 0
@@ -201,8 +205,7 @@ def tokenize_structure(
     # ==================================================
     # Fill chain structures
     # ==================================================
-    for chain_i in range(num_chains):
-        chain = input.chains[chain_i]
+    for chain_i, chain in enumerate(input.chains):
         # Insert chain info
         struct.chain.chain_type[chain_i] = chain.chain_type
         struct.chain.entity_id[chain_i] = chain.entity_id
@@ -284,7 +287,6 @@ def tokenize_structure(
             res_name: C.ResidueName = C.residue.get_residue_name_with_unk(ccd_name, ctype)
             restype: int = res_name.value
             is_res_standard = chain.residue.is_standard[res_i]
-            comp: Component = ccd_components[(asym_id, res_idx)]
 
             # Get atom info
             atom_names = all_atom_names[chain.residue.get_atom_slice(res_idx)]
@@ -292,6 +294,7 @@ def tokenize_structure(
 
             if is_res_standard:
                 # Standard protein/dna/rna residues (including ambiguous residues)
+                assert ctype.is_polymer, "Only polymer residues can be standard."
                 center_atom_idx: int = C.atom.CENTER_ATOM_INDEX[res_name]
                 repr_atom_index: int = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
                 struct.token.chain_type[g_tok_i] = chain_type_i
@@ -353,9 +356,7 @@ def tokenize_structure(
     # ==================================================
     g_tok_i = 0
     for chain in input.chains:
-        ctype = chain.ctype
         asym_id = chain.asym_id
-        ccd_sequence: list[str] = ccd_sequence_dict[asym_id]
         all_atom_names: list[str] = all_atom_dict[asym_id]
 
         token_st: int = chain_token_st[asym_id]
@@ -412,6 +413,10 @@ def tokenize_structure(
                     f" (g_tok_i={g_tok_i}, natoms={natoms})"
                 )
                 struct.atom.ref_pos[g_tok_i, :natoms, :] = ref_pos
+                # Set atom types for standard residues
+                struct.atom.atom_type[g_tok_i, :natoms] = [
+                    C.atom.atom_name_to_index[C.AtomName(an)] for an in atom_names
+                ]
                 g_tok_i += 1
             else:
                 # Non-standard residue (multiple tokens, one per atom)
@@ -421,6 +426,8 @@ def tokenize_structure(
                 st = g_tok_i
                 end = g_tok_i + natoms
                 struct.atom.ref_pos[st:end, 0, :] = ref_pos
+                # Set single-token atom types for non-standard residues
+                struct.atom.atom_type[st:end, 0] = C.atom.num_atom_types
                 g_tok_i += natoms
 
     # Update atom masks at once
@@ -444,8 +451,7 @@ def tokenize_structure(
     # ==================================================
     # First iterate intra-chain bonds
     g_bond_i = 0
-    for chain_i in range(num_chains):
-        chain = input.chains[chain_i]
+    for chain in input.chains:
         asym_id = chain.asym_id
         for bond_i in range(chain.num_bonds):
             ridx1, ridx2 = chain.bond.residue_index[bond_i]
@@ -510,6 +516,110 @@ def tokenize_structure(
 
         # Update global bond index
         g_bond_i += 1
+
+    # ==================================================
+    # Fill frame information
+    # ==================================================
+    g_tok_i = 0
+    for chain in input.chains:
+        ctype = chain.ctype
+        asym_id = chain.asym_id
+        all_atom_names: list[str] = all_atom_dict[asym_id]
+
+        if ctype.is_polymer:
+            a_n, b_n, c_n = map(str, C.atom.CHAIN_FRAME_ATOMS[ctype])
+
+        # Iterate residues in the chain and fill token and some atom info
+        for res_i in range(chain.num_residues):
+            res_idx = res_i + 1  # 1-based index
+            atom_names = all_atom_names[chain.residue.get_atom_slice(res_idx)]
+            natoms = len(atom_names)
+            if ctype.is_polymer:
+                if not all(an in atom_names for an in (a_n, b_n, c_n)):
+                    # If any of the frame atoms are missing, skip frame assignment
+                    a_i = b_i = c_i = -1
+                else:
+                    # Set frame token/atom index
+                    a_i, b_i, c_i = map(lambda v: atom_names.index(v), (a_n, b_n, c_n))
+
+                if chain.residue.is_standard[res_i]:
+                    if a_i == -1:
+                        a_ti = b_ti = c_ti = -1
+                        a_ai = b_ai = c_ai = -1
+                    else:
+                        a_ti, b_ti, c_ti = g_tok_i, g_tok_i, g_tok_i
+                        a_ai, b_ai, c_ai = a_i, b_i, c_i
+                    struct.token.frame_token_index[g_tok_i] = (a_ti, b_ti, c_ti)
+                    struct.token.frame_atom_index[g_tok_i] = (a_ai, b_ai, c_ai)
+                    g_tok_i += 1
+                else:
+                    # For non-standard polymer residues, one atoms per token.
+                    st, end = g_tok_i, g_tok_i + natoms
+                    if a_i == -1:
+                        a_ti = b_ti = c_ti = -1
+                        a_ai = b_ai = c_ai = -1
+                    else:
+                        a_ti, b_ti, c_ti = st + a_i, st + b_i, st + c_i
+                        a_ai, b_ai, c_ai = 0, 0, 0
+                    struct.token.frame_token_index[st:end] = (a_ti, b_ti, c_ti)
+                    struct.token.frame_atom_index[st:end] = (a_ai, b_ai, c_ai)
+                    g_tok_i += natoms
+            else:
+                # For ligand, use the closest atoms for each atom (=token)
+                st, end = g_tok_i, g_tok_i + natoms
+
+                if train:
+                    ref_pos = struct.atom.ref_pos[st:end, 0, :]
+                else:
+                    # For inference, define deterministic reference conformer.
+                    ref_comp: Component = ccd_components[(asym_id, res_idx)]
+                    atom_indices: list[int] = ref_comp.get_atom_indices(atom_names)
+
+                    _rng = np.random.default_rng(DETERMINISTIC_FRAME_SEED)
+                    ref_pos: np.ndarray = ref_comp.get_ref_conformer(_rng, False)
+                    ref_pos = ref_pos[atom_indices, :]
+
+                ref_mask = struct.atom.ref_mask[st:end, 0]
+                if ref_mask.sum() < 3:
+                    # If less than 3 valid ref atoms, skip frame assignment.
+                    struct.token.frame_token_index[st:end] = -1
+                    struct.token.frame_atom_index[st:end] = -1
+                    g_tok_i += natoms
+                    continue
+
+                for i in range(natoms):
+                    if not ref_mask[i]:
+                        # If the atom itself is invalid, skip frame assignment.
+                        a_ti = b_ti = c_ti = -1
+                        a_ai = b_ai = c_ai = -1
+                    else:
+                        # Find the closest atoms to the current atom.
+                        b_x = ref_pos[i]  # (3,)
+                        dists = np.linalg.norm(ref_pos - b_x, axis=-1)
+                        dists[i] = np.inf  # Mask out itself
+                        dists[~ref_mask] = np.inf  # Mask out invalid atoms
+
+                        # Get the indices of the two closest atoms (a and c)
+                        a_i, c_i = np.argsort(dists)[:2]
+                        a_x, c_x = ref_pos[a_i], ref_pos[c_i]
+
+                        # Check these three atoms are not collinear (<25 degree)
+                        v_ab = a_x - b_x
+                        v_cb = c_x - b_x
+                        cos_angle = np.dot(v_ab, v_cb) / (
+                            np.linalg.norm(v_ab) * np.linalg.norm(v_cb) + 1e-8
+                        )
+                        if abs(cos_angle) > COLLISION_ANGLE_CUTOFF:
+                            # If collinear, skip frame assignment for this atom.
+                            a_ti = b_ti = c_ti = -1
+                            a_ai = b_ai = c_ai = -1
+                        else:
+                            # Otherwise, assign frame tokens/atoms.
+                            a_ti, b_ti, c_ti = st + a_i, g_tok_i, st + c_i
+                            a_ai, b_ai, c_ai = 0, 0, 0
+                    struct.token.frame_token_index[g_tok_i] = (a_ti, b_ti, c_ti)
+                    struct.token.frame_atom_index[g_tok_i] = (a_ai, b_ai, c_ai)
+                    g_tok_i += 1
 
     # Sanity check
     struct.validate()

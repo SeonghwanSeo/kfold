@@ -152,7 +152,18 @@ loss:
       use_kernel: true # Use triton kernel for LDDT calculation.
 
   # Confidence loss
-  confidence_loss: {}
+  confidence_loss:
+    plddt_loss:
+        num_bins: 50
+    pae_loss:
+      min_dist: 0.0
+      max_dist: 32.0
+      num_bins: 64
+    pde_loss:
+      min_dist: 0.0
+      max_dist: 32.0
+      num_bins: 64
+    experimentally_resolved_loss: {}
 
 wandb:
   use: false

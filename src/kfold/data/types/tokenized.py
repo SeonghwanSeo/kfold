@@ -184,6 +184,10 @@ class TokenArray(PlainLayout[np.ndarray]):
         Center atom index of shape [L,], used for center calculations.
     repr_index: np.ndarray (int)
         Representative atom index of shape [L,], used for distogram calculations.
+    frame_token_index: np.ndarray (int)
+        Frame token indices of shape [L, 3], used for frame calculations.
+    frame_atom_index: np.ndarray (int)
+        Frame atom indices of shape [L, 3], used for frame calculations.
 
     Cached Properties
     -----------------
@@ -209,6 +213,8 @@ class TokenArray(PlainLayout[np.ndarray]):
     seq_token_index: np.ndarray  # [L,], int
     center_index: np.ndarray  # [L,], int
     repr_index: np.ndarray  # [L,], int
+    frame_token_index: np.ndarray  # [L, 3], int
+    frame_atom_index: np.ndarray  # [L, 3], int
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
@@ -227,8 +233,23 @@ class TokenArray(PlainLayout[np.ndarray]):
         check_array(
             self.residue_index, name="residue_index", dtype=np.integer, shape=shape
         )
+        check_array(
+            self.seq_token_index, name="seq_token_index", dtype=np.integer, shape=shape
+        )
         check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
         check_array(self.repr_index, name="repr_index", dtype=np.integer, shape=shape)
+        check_array(
+            self.frame_token_index,
+            name="frame_token_index",
+            dtype=np.integer,
+            shape=(*shape, 3),
+        )
+        check_array(
+            self.frame_atom_index,
+            name="frame_atom_index",
+            dtype=np.integer,
+            shape=(*shape, 3),
+        )
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -254,28 +275,30 @@ class TokenArray(PlainLayout[np.ndarray]):
     def get_empty(cls, num_tokens: int) -> Self:
         """Get an empty TokenArray with the specified number of tokens."""
         return cls(
-            token_index=full_minus_one((num_tokens,)),
-            residue_index=full_minus_one((num_tokens,)),
-            seq_token_index=full_minus_one((num_tokens,)),
-            res_type=full_minus_one((num_tokens,)),
             chain_type=full_minus_one((num_tokens,)),
             entity_id=full_minus_one((num_tokens,)),
             asym_id=full_minus_one((num_tokens,)),
             sym_id=full_minus_one((num_tokens,)),
+            res_type=full_minus_one((num_tokens,)),
             num_atoms=full_minus_one((num_tokens,)),
+            is_standard=full_false((num_tokens,)),
+            token_index=full_minus_one((num_tokens,)),
+            residue_index=full_minus_one((num_tokens,)),
+            seq_token_index=full_minus_one((num_tokens,)),
             center_index=full_minus_one((num_tokens,)),
             repr_index=full_minus_one((num_tokens,)),
-            is_standard=full_false((num_tokens,)),
+            frame_token_index=full_minus_one((num_tokens, 3)),
+            frame_atom_index=full_minus_one((num_tokens, 3)),
         )
 
     def validate(self) -> None:
         """Perform sanity checks on the ResidueArray."""
         for field in dataclasses.fields(self):
-            array = getattr(self, field.name)
-            if np.any(array < 0) and field.name not in ["is_standard"]:
-                raise ValueError(
-                    f"TokenArray field '{field.name}' contains negative values."
-                )
+            fname = field.name
+            if fname in ["is_standard", "frame_token_index", "frame_atom_index"]:
+                continue
+            if np.any(getattr(self, fname) < 0):
+                raise ValueError(f"TokenArray field '{fname}' contains negative values.")
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -286,6 +309,8 @@ class AtomArray(PlainLayout[np.ndarray]):
 
     Attributes
     ----------
+    atom_type: np.ndarray (int)
+        Atom types of shape [Ntoken, 24], indicating the type of each atom.
     ref_atom_name_chars: np.ndarray (int)
         Encoded atom name of shape [Ntoken, 24, 4].
     ref_element: np.ndarray (int)
@@ -314,6 +339,7 @@ class AtomArray(PlainLayout[np.ndarray]):
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
     """
 
+    atom_type: np.ndarray  # [Ntoken, 24], int
     ref_atom_name_chars: np.ndarray  # [Ntoken, 24, 4], int
     ref_element: np.ndarray  # [Ntoken, 24], int
     ref_charge: np.ndarray  # [Ntoken, 24], float
@@ -332,6 +358,7 @@ class AtomArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
+        check_array(self.atom_type, name="atom_type", dtype=np.integer, shape=shape)
         check_array(
             self.ref_atom_name_chars,
             name="ref_atom_name_chars",
@@ -368,6 +395,7 @@ class AtomArray(PlainLayout[np.ndarray]):
         num_atoms = C.MAX_NUM_ATOMS_PER_TOKEN
         shape = (num_tokens, num_atoms)
         return cls(
+            atom_type=full_minus_one(shape),
             ref_atom_name_chars=full_minus_one((*shape, 4)),
             ref_element=full_minus_one(shape),
             ref_charge=full_nan(shape),

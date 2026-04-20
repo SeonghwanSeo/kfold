@@ -323,7 +323,7 @@ class AF3SampleDiffusion(BaseStructureModule):
             x = x_noisy + self.step_scale * dt * delta
 
         sample_out: dict[str, torch.Tensor] = {
-            "sample_coordinates": x,
+            "coordinates": x,
         }
         if return_traj:
             traj.append(x.cpu())  # Move to cpu to save memory

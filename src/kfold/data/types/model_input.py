@@ -86,7 +86,6 @@ class ChainTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
-        # value: PAD_IDX means padding
         pad_values = {
             "chain_type": -1,
             "entity_id": -1,
@@ -160,12 +159,16 @@ class TokenTensor(TensorLayout):
         Center indices of shape [Ntoken,], Cα
     repr_index: torch.Tensor (long)
         Representative atom indices of shape [Ntoken,], Cβ
-    frames_index: torch.Tensor (long)
+    frame_index: torch.Tensor (long)
         Frame indices of shape [Ntoken, 3].
-    frames_mask: torch.Tensor (bool)
+    frame_mask: torch.Tensor (bool)
         Boolean tensor of shape [Ntoken,], indicating whether token's frame is resolved.
     pad_mask: torch.Tensor (bool)
         Mask tensor of shape [Ntoken,], indicating valid tokens.
+    is_standard: torch.Tensor (bool)
+        Boolean tensor of shape [Ntoken,], indicating whether the token is standard.
+    num_atoms: torch.Tensor (long)
+        Number of atoms per token of shape [Ntoken,].
     pocket_contact_type: torch.Tensor (long)
         Pocket contact types of shape [Ntoken,], indicating pocket contact information.
 
@@ -191,9 +194,11 @@ class TokenTensor(TensorLayout):
     seq_token_index: torch.Tensor  # [Ntoken,], long
     center_index: torch.Tensor  # [Ntoken,], long
     repr_index: torch.Tensor  # [Ntoken,], long
-    frames_index: torch.Tensor  # [Ntoken, 3], long
-    frames_mask: torch.Tensor  # [Ntoken,], bool
+    frame_index: torch.Tensor  # [Ntoken, 3], long
+    frame_mask: torch.Tensor  # [Ntoken,], bool
     pad_mask: torch.Tensor  # [Ntoken,], bool
+    is_standard: torch.Tensor  # [Ntoken,], bool
+    num_atoms: torch.Tensor  # [Ntoken,], long
     pocket_contact_type: torch.Tensor  # [Ntoken,], bool
 
     # For model training
@@ -235,10 +240,12 @@ class TokenTensor(TensorLayout):
             self.center_index, name="center_index", dtype=torch.long, shape=shape
         )
         check_tensor(
-            self.frames_index, name="frames_index", dtype=torch.long, shape=(*shape, 3)
+            self.frame_index, name="frame_index", dtype=torch.long, shape=(*shape, 3)
         )
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.frames_mask, name="frames_mask", dtype=torch.bool, shape=shape)
+        check_tensor(self.frame_mask, name="frame_mask", dtype=torch.bool, shape=shape)
+        check_tensor(self.is_standard, name="is_standard", dtype=torch.bool, shape=shape)
+        check_tensor(self.num_atoms, name="num_atoms", dtype=torch.long, shape=shape)
         check_tensor(
             self.pocket_contact_type,
             name="pocket_contact_type",
@@ -290,8 +297,9 @@ class TokenTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
-        # value: PAD_IDX means padding
         pad_values = {
+            "is_standard": False,
+            "num_atoms": -1,
             "token_index": -1,
             "org_token_index": -1,
             "seq_token_index": -1,
@@ -303,8 +311,8 @@ class TokenTensor(TensorLayout):
             "residue_index": -1,
             "repr_index": -1,
             "center_index": -1,
-            "frames_index": -1,
-            "frames_mask": False,
+            "frame_index": -1,
+            "frame_mask": False,
             "pad_mask": False,
             "pocket_contact_type": 0,
             # For model training
@@ -334,6 +342,8 @@ class AtomTensor(TensorLayout):
 
     Attributes
     ----------
+    atom_type: np.ndarray (int)
+        Atom types of shape [Natom,], indicating the type of each atom.
     ref_atom_name_chars: torch.Tensor (float32)
         Encoded atom name of shape [Natom, 4, 64].
         One-hot vector
@@ -368,6 +378,7 @@ class AtomTensor(TensorLayout):
         Boolean mask of shape [Natom,] indicating atoms to be resolved.
     """
 
+    atom_type: torch.Tensor  # [Natom,], long
     ref_atom_name_chars: torch.Tensor  # [Natom, 4, 64], float32
     ref_element: torch.Tensor  # [Natom, 128], float32
     ref_charge: torch.Tensor  # [Natom,], float32
@@ -395,6 +406,7 @@ class AtomTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
+        check_tensor(self.atom_type, name="atom_type", dtype=torch.long, shape=shape)
         check_tensor(
             self.ref_atom_name_chars,
             name="ref_atom_name_chars",
@@ -443,10 +455,10 @@ class AtomTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
-        # value: PAD_IDX means padding
         pad_values = {
-            "ref_atom_name_chars": 0.0,  # max value for atom_name encoding
-            "ref_element": 0.0,  # max value for element encoding
+            "atom_type": 0,
+            "ref_atom_name_chars": 0.0,
+            "ref_element": 0.0,
             "ref_charge": 0.0,
             "ref_pos": 0.0,
             "ref_mask": False,
@@ -683,7 +695,6 @@ class SequenceTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
-        # value: PAD_IDX means padding
         pad_values = {
             "chain_type": -1,
             "entity_id": -1,

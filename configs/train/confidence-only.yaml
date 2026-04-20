@@ -1,0 +1,6 @@
+_yaml_: "full.yaml"
+
+training:
+  train_trunk: false
+  train_distogram_head: false
+  train_structure_module: false

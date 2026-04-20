@@ -73,3 +73,61 @@ def pad_dim(
     shape[dim] = max_len - current_len
     pad_tensor = torch.full(shape, pad_value, dtype=tensor.dtype, device=tensor.device)
     return torch.cat([tensor, pad_tensor], dim=dim)
+
+
+def get_one_hot_from_boundaries(
+    tensor: torch.Tensor, bounds: torch.Tensor
+) -> torch.Tensor:
+    """Get one-hot encoding of a tensor based on the provided boundaries.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        The input tensor to be one-hot encoded of shape (*,).
+    bounds : torch.Tensor
+        A tensor containing the boundaries of the bins for one-hot encoding
+        of shape (num_bins - 1,).
+
+    Returns
+    -------
+    torch.Tensor
+        A one-hot encoded tensor of shape (*, num_bins).
+    """
+    num_bins = bounds.shape[0] + 1
+    indices = (tensor[..., None] > bounds).sum(dim=-1).long()
+    return torch.nn.functional.one_hot(indices, num_classes=num_bins)
+
+
+def get_one_hot_from_bins(
+    tensor: torch.Tensor, bin_centers: torch.Tensor
+) -> torch.Tensor:
+    """Get one-hot encoding of a tensor based on the provided bins.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        The input tensor to be one-hot encoded of shape (*,).
+    bin_centers : torch.Tensor
+        A tensor containing the centers of the bins for one-hot encoding
+        of shape (num_bins,).
+
+    Returns
+    -------
+    torch.Tensor
+        A one-hot encoded tensor of shape (*, num_bins).
+    """
+    num_bins = bin_centers.shape[0]
+    d = torch.abs(tensor[..., None] - bin_centers)  # [*, num_bins]
+    indices = d.argmin(dim=-1)  # [*]
+    return torch.nn.functional.one_hot(indices, num_classes=num_bins)
+
+
+def get_context_dtype(device_type: str | None = None) -> torch.dtype:
+    """Get the current context dtype for autocast."""
+    if device_type is None:
+        device_type = "cuda" if torch.cuda.is_available() else "cpu"
+
+    if torch.is_autocast_enabled(device_type):
+        return torch.get_autocast_gpu_dtype()
+    else:
+        return torch.float32

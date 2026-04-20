@@ -26,7 +26,7 @@ class BaseFoldingModelConfig:
     score_model: BaseConfig
     structure_module: BaseConfig
     distogram_head: BaseConfig
-    # confidence_head: Baseconfig
+    confidence_head: BaseConfig
 
 
 @MAIN_MODULE.register()
@@ -56,20 +56,20 @@ class BaseFoldingModel(torch.nn.Module):
         )
 
         # Heads
-        self.distogram_head: submodules.distogram_head.BaseDistogramHead = (
+        self.distogram_head: submodules.prediction_head.DistogramHead = (
             Registry.instantiate(config.distogram_head)
         )
-        # self.confidence_head: submodules.confidence_head.BaseConfidenceHead = (
-        #     Registry.instantiate(config.confidence_head)
-        # )
+
+        self.confidence_head: submodules.prediction_head.ConfidenceHead = (
+            Registry.instantiate(config.confidence_head, kernel_config=kernel_config)
+        )
 
     def do_compile(self, mode: str = "default", dynamic: bool = False):
         """Compile the trunk and score model."""
         kwargs = {"mode": mode, "dynamic": dynamic}
         self.trunk.do_compile(**kwargs)
         self.score_model.do_compile(**kwargs)
-        # self.input_embedder = torch.compile(self.input_embedder, *kwargs)
-        # self.distogram_head = torch.compile(self.distogram_head, *kwargs)
+        self.confidence_head.do_compile(**kwargs)
 
     def forward(
         self,
@@ -78,7 +78,6 @@ class BaseFoldingModel(torch.nn.Module):
         num_steps: int = 20,
         num_samples: int = 1,
         diffusion_batch_size: int = 48,
-        sample_structures: bool = True,
         train_structure_module: bool = True,
         train_confidence_module: bool = True,
     ) -> dict[str, dict[str, torch.Tensor]]:
@@ -104,8 +103,6 @@ class BaseFoldingModel(torch.nn.Module):
         diffusion_batch_size : int
             Batch size for diffusion training step.
 
-        sample_structures : bool, optional
-            Whether to sample structures for confidence module training,
         train_structure_module : bool, optional
             Whether to train structure module, by default True
         train_confidence_module : bool, optional
@@ -114,11 +111,6 @@ class BaseFoldingModel(torch.nn.Module):
         Returns
         -------
         model_out : dict[str, torch.Tensor]
-
-            # When sample_structures is True:
-            - sample:
-                - coordinates: [B, N_samples, Ltoken, 3]
-                    Sampled atom coordinates
 
             # For structure module training (distogram, diffusion)
             - distogram:
@@ -137,17 +129,21 @@ class BaseFoldingModel(torch.nn.Module):
                     Ground truth atom coordinates
 
             # For confidence module training
+            - sample:
+                - coordinates: [B, N_samples, Ltoken, 3]
+                    Sampled atom coordinates
             - confidence:
-                # TODO
+                - pae_logits: [B, Ltoken, Ltoken, Dp]
+                    Predicted aligned error logits
+                - pde_logits: [B, Ltoken, Dp]
+                    Predicted distance error logits
+                - plddt_logits: [B, Latom, Dp]
+                    Predicted lDDT logits
+                - experimental_resolved_logits: [B, Latom, 2]
+                    Predicted experimental resolved logits
         """
         # Ensure batched input
         f_input = self.ensure_batched_input(f_input, do_warning=True)
-
-        if train_confidence_module:
-            assert sample_structures, (
-                "To train confidence module, "
-                "sample_structures must be True to provide sampled structures."
-            )
 
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
@@ -165,31 +161,11 @@ class BaseFoldingModel(torch.nn.Module):
         s_trunk = trunk_out["s_trunk"]
         z_trunk = trunk_out["z_trunk"]
 
-        if sample_structures:
-            # Sample structures with Diffusion mini-rollout.
-            # NOTE: We do not pass cache here to prevent that detached tensors
-            # are stored in the model cache, which may lead to unexpected bugs with
-            # diffusion module training. Instead, we construct cache inside
-            # sample_structure method if necessary.
-            coordinates = self.structure_module.sample_structure(
-                f_input=f_input,
-                s_inputs=s_inputs.detach(),
-                s_trunk=s_trunk.detach(),
-                z_trunk=z_trunk.detach(),
-                num_steps=num_steps,
-                num_samples=num_samples,
-            )["sample_coordinates"]  # [B, N_samples, Ltoken, 3]
-            dict_out["sample"] = {
-                "coordinates": coordinates,
-            }
-
         if train_structure_module:
             # Distogram head
             dict_out["distogram"] = {
                 "logits": self.distogram_head(z_trunk),
             }
-
-        if train_structure_module:
             # Diffusion head
             dict_out["diffusion"] = self.structure_module.training_step(
                 f_input,
@@ -200,11 +176,37 @@ class BaseFoldingModel(torch.nn.Module):
             )
 
         if train_confidence_module:
-            # TODO: implement confidence prediction with mini-rollout
-            coordinates = dict_out["sample"]["coordinates"]
-            s_trunk_detached = s_trunk.detach()  # noqa
-            z_trunk_detached = z_trunk.detach()  # noqa
-            raise NotImplementedError("Confidence module is not implemented yet.")
+            # Sample structures with diffusion mini-rollout.
+            s_inputs_detached = s_inputs.detach()
+            s_trunk_detached = s_trunk.detach()
+            z_trunk_detached = z_trunk.detach()
+            with torch.no_grad():
+                coordinates = self.structure_module.sample_structure(
+                    f_input=f_input,
+                    s_inputs=s_inputs_detached,
+                    s_trunk=s_trunk_detached,
+                    z_trunk=z_trunk_detached,
+                    num_steps=num_steps,
+                    num_samples=num_samples,
+                )["coordinates"]  # [B, N_samples, Latom, 3]
+            dict_out["sample"] = {
+                "coordinates": coordinates,
+            }
+            pae_logits, pde_logits, plddt_logits, experimental_resolved_logits = (
+                self.confidence_head(
+                    f_input,
+                    s_inputs_detached,
+                    s_trunk_detached,
+                    z_trunk_detached,
+                    coordinates,
+                )
+            )
+            dict_out["confidence"] = {
+                "pae_logits": pae_logits,
+                "pde_logits": pde_logits,
+                "plddt_logits": plddt_logits,
+                "experimental_resolved_logits": experimental_resolved_logits,
+            }
 
         return dict_out
 
@@ -288,7 +290,18 @@ class BaseFoldingModel(torch.nn.Module):
         et = time.time()
         time_logs["diffusion_head"] = et - st
 
-        # TODO: Confidence head
+        st = time.time()
+        dict_out.update(
+            self.confidence_head.forward_inference(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                dict_out["coordinates"],
+            )
+        )
+        et = time.time()
+        time_logs["confidence_head"] = et - st
 
         # If the input was not batched, remove the batch dimension
         if not return_batched_output:
