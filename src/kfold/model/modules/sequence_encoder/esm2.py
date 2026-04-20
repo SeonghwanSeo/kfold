@@ -11,21 +11,20 @@ from .base import BaseSequenceEncoder
 @SEQUENCE_ENCODER.register()
 class ESM2(BaseSequenceEncoder):
     class Config(BaseSequenceEncoder.Config):
-        """Configuration for ESM-O sequence encoder.
+        """Configuration for ESM-2 sequence encoder.
 
         Attributes
         ----------
         path: str
             Path to pretrained weights.
+        vocab_size: int
+            Size of the input token vocabulary.
         d_model: int
-            Dimension of token embeddings and transformer hidden states.
+            Dimension of model hidden states and embeddings.
         n_heads: int
             Number of attention heads in the transformer.
         n_layers: int
             Number of transformer layers.
-        return_attn: bool
-            Whether to return attention weights from the transformer.
-
         """
 
         path: str  # Path to pretrained weights.
@@ -108,7 +107,6 @@ class ESM2(BaseSequenceEncoder):
             Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
             where N is number of layers and H is number of heads.
         """
-        # NOTE: ESMC uses bfloat16 for inference.
         with torch.no_grad():
             return self.forward_attn(f_input)
 

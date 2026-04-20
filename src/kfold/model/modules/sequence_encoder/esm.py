@@ -20,15 +20,14 @@ class ESMO(BaseSequenceEncoder):
         ----------
         path: str
             Path to pretrained weights.
+        vocab_size: int
+            Size of the input token vocabulary.
         d_model: int
-            Dimension of token embeddings and transformer hidden states.
+            Dimension of model hidden states and embeddings.
         n_heads: int
             Number of attention heads in the transformer.
         n_layers: int
             Number of transformer layers.
-        return_attn: bool
-            Whether to return attention weights from the transformer.
-
         """
 
         path: str  # Path to pretrained weights.
