@@ -1,18 +1,15 @@
-from __future__ import annotations
-
 import torch
-import torch.nn as nn
 
-from kfold.constants.sequence import MASK_TOKEN_INDEX
+from kfold.constants.sequence import MASK_TOKEN_INDEX, PAD_TOKEN_INDEX, UNK_TOKEN_INDEX
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.layers.esm.esmc import RegressionHead, TransformerStack
+from kfold.model.layers.esm.esm2 import RobertaLMHead, TransformerLayer
 from kfold.utils.registry import SEQUENCE_ENCODER
 
 from .base import BaseSequenceEncoder
 
 
 @SEQUENCE_ENCODER.register()
-class ESMO(BaseSequenceEncoder):
+class ESM2(BaseSequenceEncoder):
     class Config(BaseSequenceEncoder.Config):
         """Configuration for ESM-O sequence encoder.
 
@@ -32,42 +29,55 @@ class ESMO(BaseSequenceEncoder):
         """
 
         path: str  # Path to pretrained weights.
-        vocab_size: int = 64
-        d_model: int = 1152
-        n_heads: int = 18
+        vocab_size: int = 33
+        d_model: int = 2560
+        n_heads: int = 40
         n_layers: int = 36
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
-        self.cfg: ESMO.Config = cfg
+        self.cfg: ESM2.Config = cfg
 
-        # Create model components
-        self.embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
-        self.transformer = TransformerStack(cfg.d_model, cfg.n_heads, cfg.n_layers)
-        self.sequence_head = RegressionHead(cfg.d_model, cfg.vocab_size)
+        self.vocab_size: int = cfg.vocab_size
+        self.unk_idx: int = UNK_TOKEN_INDEX
+        self.mask_idx: int = MASK_TOKEN_INDEX
+        self.pad_idx: int = PAD_TOKEN_INDEX
+
+        self.embed_tokens = torch.nn.Embedding(
+            cfg.vocab_size, cfg.d_model, padding_idx=self.pad_idx
+        )
+        self.layers = torch.nn.ModuleList(
+            [
+                TransformerLayer(
+                    d_model=cfg.d_model,
+                    n_heads=cfg.n_heads,
+                    expansion_ratio=4,
+                )
+                for _ in range(cfg.n_layers)
+            ]
+        )
+        self.emb_layer_norm_after = torch.nn.LayerNorm(cfg.d_model)
+        self.lm_head = RobertaLMHead(
+            cfg.d_model, cfg.vocab_size, self.embed_tokens.weight
+        )
 
         # Load pretrained weights
-        state_dict = torch.load(cfg.path, map_location="cpu")
+        state_dict = torch.load(cfg.path, "cpu", weights_only=False)["model"]
+        state_dict = {
+            k.removeprefix("encoder.").removeprefix("sentence_encoder."): v
+            for k, v in state_dict.items()
+        }
+        state_dict = {k: v for k, v in state_dict.items() if "inv_freq" not in k}
         self.load_state_dict(state_dict)
         del state_dict
 
         # Remove sequence head since we only need sequence representations.
-        del self.sequence_head
-
-        # Convert to bfloat16
-        self.embed = self.embed.to(torch.bfloat16)
-        self.transformer = self.transformer.to(torch.bfloat16)
+        del self.lm_head
 
         # Set to eval mode
         self.eval()
         for param in self.parameters():
             param.requires_grad = False
-
-        # NOTE (Seonghwan): Inspired by AF3's MSA sampling, we can mask out some
-        # tokens to introduce stochasticity during inference. This can be used to
-        # generate multiple diverse predictions for the same input by adjusting
-        # the evolutionary signal.
-        self.mask_token_id: int = MASK_TOKEN_INDEX
 
     @property
     def n_layers(self) -> int:
@@ -99,10 +109,7 @@ class ESMO(BaseSequenceEncoder):
             where N is number of layers and H is number of heads.
         """
         # NOTE: ESMC uses bfloat16 for inference.
-        with (
-            torch.autocast(f_input.device.type, dtype=torch.bfloat16),
-            torch.no_grad(),
-        ):
+        with torch.no_grad():
             return self.forward_attn(f_input)
 
     def prepare_emb_mask(self, f_input: FoldingInput) -> torch.Tensor:
@@ -150,17 +157,25 @@ class ESMO(BaseSequenceEncoder):
         seq_token_idx = f_input.token.seq_token_index
         B, L = seq_token_idx.shape
 
-        # === MLM masking === #
-        input_ids = input_ids.masked_fill(mlm_mask, self.mask_token_id)
+        # === MLM masking ===
+        input_ids = input_ids.masked_fill(mlm_mask, self.mask_idx)
+        input_ids[~f_input.sequence.is_protein] = self.unk_idx
 
-        # === Forward pass === #
-        x = self.embed(input_ids)
+        # === Forward pass ===
+        x = self.embed_tokens(input_ids)
+        is_masked = input_ids == self.mask_idx
+        is_padding = input_ids == self.pad_idx
+        x.masked_fill_(is_masked.unsqueeze(-1), 0.0)
+
+        # Scaling
+        mask_ratio_train = 0.15 * 0.8
+        mask_ratio_observed = (is_masked.sum(-1) / (~is_padding).sum(-1)).to(x.dtype)
+        x *= (1 - mask_ratio_train) / (1 - mask_ratio_observed)[:, None, None]
 
         b_idcs = torch.arange(B, device=device)
-        attn_out = torch.empty((B, L, L, N, H), dtype=dtype, device=device)
-        for i, block in enumerate(self.transformer.blocks):
-            x, attn_weights = block(x, seq_id, pos_id)
-
+        attn_out = torch.empty((B, L, L, N, H), device=device, dtype=dtype)
+        for i, layer in enumerate(self.layers):
+            x, attn_weights = layer(x, seq_id, pos_id)
             # [B, n_heads, seq_len, seq_len] -> [B, n_heads, n_tokens, n_tokens]
             _attn = attn_weights[
                 b_idcs[:, None, None],  # [B, 1, 1]
@@ -168,11 +183,11 @@ class ESMO(BaseSequenceEncoder):
                 seq_token_idx[:, :, None],  # [B, 1, n_tokens]
                 seq_token_idx[:, None, :],  # [B, n_tokens, 1]
             ]
-            attn_out[:, :, :, i, :] = _attn
+            attn_out[:, :, :, i, :] = _attn.to(dtype)
             del attn_weights
 
-        x = x[b_idcs[:, None], seq_token_idx]  # [B, n_tokens, d_model]
-        x_out = self.transformer.norm(x).to(dtype)
+        x = x[b_idcs[:, None], seq_token_idx]  # [B, n_tokens, D]
+        x_out = self.emb_layer_norm_after(x).to(dtype)
         del x
 
         # Flatten attention output to shape [B, Ntoken, Ntoken, N*H]
