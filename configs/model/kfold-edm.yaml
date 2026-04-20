@@ -26,4 +26,4 @@ score_model:
   _yaml_: "module/score_model/af3.yaml"
 
 distogram_head:
-  _yaml_: "module/distogram_head/af3.yaml"
+  _yaml_: "module/prediction_head/distogram_head.yaml"
