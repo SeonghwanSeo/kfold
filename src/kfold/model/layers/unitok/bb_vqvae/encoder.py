@@ -55,7 +55,7 @@ def knn_graph(
 
 
 class VanillaStructureTokenEncoder(nn.Module):
-    def __init__(self, d_model, n_heads, v_heads, n_layers, d_out, n_codes):
+    def __init__(self, d_model, n_heads, v_heads, n_layers, d_out):
         super().__init__()
         self.transformer = VanillaGeometricEncoderStack(
             d_model, n_heads, v_heads, n_layers

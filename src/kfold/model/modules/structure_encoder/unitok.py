@@ -22,8 +22,6 @@ class UniTok(BaseStructureEncoder):
             Number of attention heads in the transformer.
         n_layers: int
             Number of transformer layers.
-        return_attn: bool
-            Whether to return attention weights from the transformer.
 
         """
 
@@ -31,12 +29,10 @@ class UniTok(BaseStructureEncoder):
         d_model: int = 1536
         n_heads: int = 24
         n_layers: int = 30
-        return_attn: bool = False
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         self.cfg: UniTok.Config = cfg
-        self.return_attn: bool = cfg.return_attn
 
         # Create model components
         # NOTE: this is hard-coded
@@ -57,14 +53,6 @@ class UniTok(BaseStructureEncoder):
         # Freeze parameters since we are only doing inference.
         for param in self.parameters():
             param.requires_grad = False
-
-    @property
-    def d_attn(self) -> int:
-        cfg = self.cfg
-        if not cfg.return_attn:
-            return 0
-        else:
-            return self.cfg.n_heads * self.cfg.n_layers
 
     def tokenize(
         self, aatypes: torch.Tensor, coords: torch.Tensor
@@ -116,7 +104,7 @@ class UniTok(BaseStructureEncoder):
         fa_struct_id = self.fa_tok.tokenize_batch(aatypes, coords)
         return bb_struct_id, fa_struct_id
 
-    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def forward(self, f_input: FoldingInput) -> torch.Tensor:
         """Forward pass of sequence representation module.
 
         Parameters
@@ -129,18 +117,12 @@ class UniTok(BaseStructureEncoder):
         x_token: torch.Tensor
             Tensor of shape (B, Ntoken, D) containing sequence representations,
             where Ntoken is the number of tokens and D is the model dimension.
-        attention: torch.Tensor | None
-            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
-            where N is number of layers and H is number of heads.
         """
         with (
             torch.autocast(enabled=True, device_type="cuda", dtype=torch.bfloat16),
             torch.no_grad(),
         ):
-            if self.return_attn:
-                return self.forward_attn(f_input)
-            else:
-                return self.forward_no_attn(f_input), None
+            return self.forward_no_attn(f_input)
 
     def forward_no_attn(self, f_input: FoldingInput) -> torch.Tensor:
         """Forward pass of sequence representation module.
@@ -196,21 +178,3 @@ class UniTok(BaseStructureEncoder):
         token_mask = pad_mask & f_input.token.is_protein
         x.masked_fill_(~token_mask[..., None], 0.0)
         return x
-
-    def forward_attn(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass of sequence representation module.
-
-        Parameters
-        ----------
-        f_input: FoldingInput
-            The input features
-
-        Returns
-        -------
-        x_token: torch.Tensor
-            Tensor of shape (B, Ntoken, D) containing sequence representations.
-        attention: torch.Tensor
-            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
-            where N is number of layers and H is number of heads.
-        """
-        raise NotImplementedError("Attention weights not implemented for UniTok.")

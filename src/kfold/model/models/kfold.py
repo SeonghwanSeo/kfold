@@ -173,7 +173,7 @@ class KFold(BaseFoldingModel):
 
         # Get sequence and structure embeddings
         seq_emb, seq_attn = self.sequence_encoder(f_input)
-        struct_emb, _ = self.structure_encoder(f_input)
+        struct_emb = self.structure_encoder(f_input)
 
         # Trunk with recycling
         trunk_out = self.trunk(
@@ -287,7 +287,7 @@ class KFold(BaseFoldingModel):
 
         # Structure encoder
         st = time.time()
-        struct_emb, _ = self.structure_encoder(f_input)
+        struct_emb = self.structure_encoder(f_input)
         et = time.time()
         time_logs["structure_encoder"] = et - st
 

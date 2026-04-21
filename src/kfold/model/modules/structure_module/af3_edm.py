@@ -45,6 +45,8 @@ class AF3SampleDiffusion(BaseStructureModule):
             The noise scale, by default 1.003.
         step_scale : float, optional
             The step scale, by default 1.5.
+        conditioning_drop_rate : float, optional
+            The drop rate of conditioning during training, by default 0.0.
         """
 
         sigma_min: float = 0.0004
@@ -57,6 +59,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         gamma_min: float = 1.0
         noise_scale: float = 1.003
         step_scale: float = 1.5
+        conditioning_drop_rate: float = 0.0
 
     def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the atom diffusion module."""
@@ -73,6 +76,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         self.noise_scale: float = cfg.noise_scale
         self.step_scale: float = cfg.step_scale
         self.random_augmentation = CenterRandomAugmentation()
+        self.conditioning_drop_rate: float = cfg.conditioning_drop_rate
 
     # === EDM diffusion coefficients === #
     def c_skip(self, t_hat: _ScalarOrTensor) -> _ScalarOrTensor:
@@ -114,6 +118,13 @@ class AF3SampleDiffusion(BaseStructureModule):
         t_hat = train_input["t_hat"]  # [B, N]
         x_0 = train_input["x_0"]  # [B, N, La, 3]
         x_t = train_input["x_t"]  # [B, N, La, 3]
+
+        drop_rate = self.conditioning_drop_rate
+        if drop_rate > 0.0:
+            mask = torch.rand(s_trunk.shape[0], device=s_trunk.device) < drop_rate
+            use_conditioning = (~mask).to(z_trunk.dtype)  # [B,]
+            s_trunk = s_trunk * use_conditioning[:, None, None]
+            z_trunk = z_trunk * use_conditioning[:, None, None, None]
 
         x_0_hat = self.forward_train(
             x_t=x_t,  # [B, N, La, 3]

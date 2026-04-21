@@ -8,18 +8,28 @@ from kfold.utils.registry import SEQUENCE_ENCODER, BaseConfig
 
 @SEQUENCE_ENCODER.register()
 class BaseSequenceEncoder(torch.nn.Module, ABC):
-    class Config(BaseConfig):
-        return_attn: bool = False
+    class Config(BaseConfig): ...
 
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
-        self.return_attn: bool = cfg.return_attn
+
+    @property
+    @abstractmethod
+    def n_layers(self) -> int: ...
+
+    @property
+    @abstractmethod
+    def n_heads(self) -> int: ...
+
+    @property
+    @abstractmethod
+    def d_model(self) -> int: ...
 
     @property
     def d_attn(self) -> int:
-        """Dimension of attention weights returned by the sequence encoder."""
-        raise NotImplementedError("Subclasses must implement d_attn property.")
+        """Dimension of attention weights."""
+        return self.n_layers * self.n_heads
 
     @abstractmethod
     def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:

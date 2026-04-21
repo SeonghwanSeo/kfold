@@ -84,8 +84,8 @@ class AtomEmbedderWithApo(AtomEmbedder):
 
         # Mask with chain identity (Apo structure is defined per chain)
         asym_id = broadcast_tokens_to_atoms(
-            f_input.token.asym_id.unsqueeze(-1), f_input.atom.token_index
-        ).squeeze(-1)  # [B, La]
+            f_input.token.asym_id, f_input.atom.token_index
+        )  # [B, La]
         asym_id_q, asym_id_k = to_qk(asym_id, dim=-1)
         v &= asym_id_q[..., :, None] == asym_id_k[..., None, :]  # [B, W, Lq, Lk]
 
@@ -94,8 +94,8 @@ class AtomEmbedderWithApo(AtomEmbedder):
         # continuous. To capture local geometry, we only consider atoms from residues
         # that are within 5 residues in sequence.
         residue_idx = broadcast_tokens_to_atoms(
-            f_input.token.residue_index.unsqueeze(-1), f_input.atom.token_index
-        ).squeeze(-1)  # [B, La]
+            f_input.token.residue_index, f_input.atom.token_index
+        )  # [B, La]
         residx_q, residx_k = to_qk(residue_idx, dim=-1)
         v &= abs(residx_q[..., :, None] - residx_k[..., None, :]) <= 5
 
@@ -106,14 +106,15 @@ class AtomEmbedderWithApo(AtomEmbedder):
         apo_pos_q, apo_pos_k = to_qk(f_input.atom.apo_coords, dim=-2)
         with torch.autocast(v.device.type, enabled=False):
             # NOTE: (SeonghwanSeo) Since apo structure is much larger than ref_pos,
-            # d_inv is adopted instead of d_inv_sq for better representation.
+            # We use d_inv and d_offset_sqrt instead of dsq_inv and d_offset
+            # to get better dynamic range and numerical stability.
             # Shape: [B, W, Lq, Lk, 3], [B, W, Lq, Lk, 1]
             apo_d_offset = apo_pos_q[..., :, None, :] - apo_pos_k[..., None, :, :]
+            apo_d_offset_sqrt = apo_d_offset / (apo_d_offset.abs().sqrt() + 1e-8)
             apo_d_inv = 1.0 / (1.0 + apo_d_offset.norm(dim=-1, keepdim=True))
-            apo_d_offset = apo_d_offset * apo_d_inv.sqrt()  # scale offsets
 
         # Shape: [B, W, Lq, Lk, c_atompair]
-        p = self.embed_apo_offset(apo_d_offset)
+        p = self.embed_apo_offset(apo_d_offset_sqrt)
         p = p + self.embed_apo_inv_dist(apo_d_inv)
         p = p + self.embed_apo_mask(v)
         p = p * v
