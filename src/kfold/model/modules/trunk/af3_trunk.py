@@ -64,7 +64,7 @@ class AF3PairformerTrunk(BaseTrunk):
             raise NotImplementedError("MSA Module is not implemented yet")
 
         # Pairformer stack
-        self.pairformer_module: PairformerStack = PairformerStack(
+        self.pairformer_stack: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             num_heads_attn=cfg.num_heads_attn,
@@ -85,13 +85,13 @@ class AF3PairformerTrunk(BaseTrunk):
         # NOTE: you should compile the submodules inside the trunk
         # since the computation graph is changed depending on the
         # number of recycling steps.
-        self.pairformer_module = torch.compile(self.pairformer_module, **kwargs)
+        self.pairformer_stack = torch.compile(self.pairformer_stack, **kwargs)
 
-    def get_pairformer_module(self, no_compile: bool = False) -> PairformerStack:
+    def get_pairformer_stack(self, no_compile: bool = False) -> PairformerStack:
         if self.is_compiled and no_compile:
-            return self.pairformer_module._orig_mod  # type: ignore
+            return self.pairformer_stack._orig_mod  # type: ignore
         else:
-            return self.pairformer_module
+            return self.pairformer_stack
 
     def forward(
         self,
@@ -130,18 +130,19 @@ class AF3PairformerTrunk(BaseTrunk):
         mask = f_input.token.pad_mask
 
         # Revert to uncompiled version for validation
-        pairformer_module: PairformerStack = self.get_pairformer_module(not self.training)
+        pairformer_stack: PairformerStack = self.get_pairformer_stack(not self.training)
 
         # Line 7-14
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
+            _inplace = not enable_grad
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Line 8
-                z = add(self.linear_z(self.layernorm_z(z)), z_init, enable_grad)
+                z = add(self.linear_z(self.layernorm_z(z)), z_init, _inplace)
 
                 # Line 9: TemplateEmbedder
                 if self.use_template:
@@ -152,10 +153,10 @@ class AF3PairformerTrunk(BaseTrunk):
                     raise NotImplementedError("MSA Module is not implemented yet")
 
                 # Line 11
-                s = add(self.linear_s(self.layernorm_s(s)), s_init, enable_grad)
+                s = add(self.linear_s(self.layernorm_s(s)), s_init, _inplace)
 
                 # Line 12
-                s, z = pairformer_module(
+                s, z = pairformer_stack(
                     s, z, mask, use_cuequiv_kernels=self.kernel_config.cuequivariance
                 )
 

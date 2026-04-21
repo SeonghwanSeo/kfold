@@ -106,7 +106,7 @@ class KFoldTrunk(BaseTrunk):
         )
 
         # === PLM Module === #
-        self.plm_embedder_refine: PLMEmbedder = PLMEmbedder(
+        self.plm_embedder: PLMEmbedder = PLMEmbedder(
             channel_s_input=cfg.channel_s,
             channel_plm_input=channel_plm_input,
             channel_plm=cfg.channel_plm,
@@ -124,7 +124,7 @@ class KFoldTrunk(BaseTrunk):
         )
 
         # === Pairformer Module === #
-        self.pairformer_module: PairformerStack = PairformerStack(
+        self.pairformer_stack: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             num_heads_attn=cfg.pairformer.num_heads_attn,
@@ -157,7 +157,7 @@ class KFoldTrunk(BaseTrunk):
     def _compile(self, **kwargs):
         """Compile the trunk module."""
         self.plm_module = torch.compile(self.plm_module, **kwargs)
-        self.pairformer_module = torch.compile(self.pairformer_module, **kwargs)
+        self.pairformer_stack = torch.compile(self.pairformer_stack, **kwargs)
 
     def get_plm_module(self, no_compile: bool = False) -> PLMModule:
         """Get the PLMModule."""
@@ -165,11 +165,11 @@ class KFoldTrunk(BaseTrunk):
             return self.plm_module._orig_mod  # type: ignore
         return self.plm_module
 
-    def get_pairformer_module(self, no_compile: bool = False) -> PairformerStack:
+    def get_pairformer_stack(self, no_compile: bool = False) -> PairformerStack:
         """Get the PairformerStack."""
         if self.is_compiled and no_compile:
-            return self.pairformer_module._orig_mod  # type: ignore
-        return self.pairformer_module
+            return self.pairformer_stack._orig_mod  # type: ignore
+        return self.pairformer_stack
 
     def forward(  # type: ignore
         self,
@@ -235,17 +235,18 @@ class KFoldTrunk(BaseTrunk):
         # === Main trunk iteration with recycling === #
         s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
-        s_plm = self.plm_embedder_refine(s_inputs, plm_input)
+        s_plm = self.plm_embedder(s_inputs, plm_input)
 
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
+            _inplace = not enable_grad
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Recycling
-                s = add(self.linear_s(self.layernorm_s(s)), s_init, enable_grad)
-                z = add(self.linear_z(self.layernorm_z(z)), z_init, enable_grad)
+                s = add(self.linear_s(self.layernorm_s(s)), s_init, _inplace)
+                z = add(self.linear_z(self.layernorm_z(z)), z_init, _inplace)
 
                 # Run trunk
                 s, z = self._run_trunk(s, z, s_plm, asym_id, mask)
@@ -270,12 +271,12 @@ class KFoldTrunk(BaseTrunk):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run trunk body"""
         # Revert to uncompiled version for validation
-        pairformer_module = self.get_pairformer_module(not self.training)
+        pairformer_stack = self.get_pairformer_stack(not self.training)
         plm_module = self.get_plm_module(not self.training)
 
         use_cuequiv_kernels = self.kernel_config.cuequivariance
         z = plm_module(z, s_plm, asym_id, mask, use_cuequiv_kernels=use_cuequiv_kernels)
-        s, z = pairformer_module(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
+        s, z = pairformer_stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
         return s, z
 
     # === Proteina-style register tokens === #

@@ -30,8 +30,7 @@ class Quantizer(nn.Module):
         return w, wT
 
     def indices2embedding(self, indices: torch.IntTensor) -> torch.Tensor:
-        z_q = self.codebook.weight[indices]
-        return z_q
+        return self.codebook.weight[indices]
 
     def forward(self, z: torch.Tensor):
         """

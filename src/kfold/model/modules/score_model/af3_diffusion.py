@@ -1,5 +1,3 @@
-import torch
-
 from kfold.model.layers.alphafold3.diffusion import DiffusionStack
 from kfold.utils.registry import SCORE_MODEL, BaseConfig
 
@@ -39,8 +37,6 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
             The number of blocks of the atom decoder, by default 3.
         atom_decoder_heads : int, optional
             The number of heads in the atom decoder, by default 4.
-        conditioning_drop_rate : float, optional
-            The drop rate of conditioning during training, by default 0.0.
         blocks_per_ckpt : int | None, optional
             The number of blocks per checkpoint, by default None.
         """
@@ -56,7 +52,6 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
         token_transformer_heads: int = 16
         atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
-        conditioning_drop_rate: float = 0.0
         blocks_per_ckpt: int | None = None
 
     def __init__(self, cfg: Config, kernel_config):
@@ -75,32 +70,3 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
             atom_decoder_heads=cfg.atom_decoder_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
-        self.drop_rate: float = cfg.conditioning_drop_rate
-        assert 0.0 <= self.drop_rate < 1.0, "Conditioning drop rate must be in [0, 1)."
-
-    def drop_conditioning(
-        self, s_trunk: torch.Tensor, z_trunk: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Drop the conditioning for training step.
-
-        Parameters
-        ----------
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
-        z_trunk : torch.Tensor
-            The trunk pair representation, shape [B, Lt, Lt, c_z].
-
-        Returns
-        -------
-        s_trunk : torch.Tensor
-            The dropped trunk single representation, shape [B, Lt, c_s].
-        z_trunk : torch.Tensor
-            The dropped trunk pair representation, shape [B, Lt, Lt, c_z].
-        """
-        drop_rate = self.drop_rate
-        if drop_rate > 0.0:
-            mask = torch.rand(s_trunk.shape[0], device=s_trunk.device) < drop_rate
-            use_conditioning = (~mask).to(z_trunk.dtype)  # [B,]
-            s_trunk = s_trunk * use_conditioning[:, None, None]
-            z_trunk = z_trunk * use_conditioning[:, None, None, None]
-        return s_trunk, z_trunk

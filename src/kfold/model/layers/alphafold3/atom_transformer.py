@@ -195,11 +195,11 @@ class AtomEmbedder(nn.Module):
         ref_pos_q, ref_pos_k = to_qk(ref_pos, dim=-2)  # [B, W, Lq|Lk, 3]
         # Shape: [B, W, Lq, Lk, 3], [B, W, Lq, Lk, 1]
         ref_d_offset = ref_pos_q[..., :, None, :] - ref_pos_k[..., None, :, :]
-        ref_dsq_inv = 1.0 / (1.0 + ref_d_offset.pow(2).sum(-1, keepdim=True))
+        ref_dsq_inv = 1.0 / (1.0 + ref_d_offset.pow(2).sum(-1))
 
         # Shape: [B, W, Lq, Lk, c_atompair]
         p = self.embed_ref_offset(ref_d_offset)
-        p = p + self.embed_ref_inv_dist(ref_dsq_inv)
+        p = p + self.embed_ref_inv_dist(ref_dsq_inv.unsqueeze(-1))
         p = p + self.embed_ref_mask(v)
         p = p * v
         return p

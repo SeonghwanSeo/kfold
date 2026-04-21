@@ -104,7 +104,7 @@ class KFoldTrunkPrime(BaseTrunk):
             blocks_per_ckpt=cfg.plm_module.blocks_per_ckpt,
         )
         # Pairformer module
-        self.pairformer_module_prime: PairformerStack = PairformerStack(
+        self.pairformer_stack_prime: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             num_heads_attn=cfg.pairformer.num_heads_attn,
@@ -134,7 +134,7 @@ class KFoldTrunkPrime(BaseTrunk):
             blocks_per_ckpt=cfg.plm_module.blocks_per_ckpt,
         )
         # Pairformer module
-        self.pairformer_module_refine: PairformerStack = PairformerStack(
+        self.pairformer_stack_refine: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             num_heads_attn=cfg.pairformer.num_heads_attn,
@@ -181,12 +181,10 @@ class KFoldTrunkPrime(BaseTrunk):
         # number of recycling steps. Thus, compile the sub module
         # instead of the whole trunk module.
         self.plm_module_prime = torch.compile(self.plm_module_prime, **kwargs)
-        self.pairformer_module_prime = torch.compile(
-            self.pairformer_module_prime, **kwargs
-        )
+        self.pairformer_stack_prime = torch.compile(self.pairformer_stack_prime, **kwargs)
         self.plm_module_refine = torch.compile(self.plm_module_refine, **kwargs)
-        self.pairformer_module_refine = torch.compile(
-            self.pairformer_module_refine, **kwargs
+        self.pairformer_stack_refine = torch.compile(
+            self.pairformer_stack_refine, **kwargs
         )
 
     def forward(  # type: ignore
@@ -253,7 +251,7 @@ class KFoldTrunkPrime(BaseTrunk):
         s_plm_prime = self.plm_embedder_prime(s_inputs, plm_input)
         s_prime, z_prime = self._run_trunk(
             plm_module=self.plm_module_prime,
-            pairformer_module=self.pairformer_module_prime,
+            pairformer_stack=self.pairformer_stack_prime,
             s=s_init,
             z=z_init,
             s_plm=s_plm_prime,
@@ -269,20 +267,21 @@ class KFoldTrunkPrime(BaseTrunk):
 
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
+            _inplace = not enable_grad
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Recycle linear pass
-                s = add(s, s_bias, enable_grad)
-                z = add(z, z_bias, enable_grad)
-                s = add(self.linear_s(self.layernorm_s(s)), s_init, enable_grad)
-                z = add(self.linear_z(self.layernorm_z(z)), z_init, enable_grad)
+                s = add(s, s_bias, _inplace)
+                z = add(z, z_bias, _inplace)
+                s = add(self.linear_s(self.layernorm_s(s)), s_init, _inplace)
+                z = add(self.linear_z(self.layernorm_z(z)), z_init, _inplace)
 
                 # Trunk
                 s, z = self._run_trunk(
                     plm_module=self.plm_module_refine,
-                    pairformer_module=self.pairformer_module_refine,
+                    pairformer_stack=self.pairformer_stack_refine,
                     s=s,
                     z=z,
                     s_plm=s_plm,
@@ -301,7 +300,7 @@ class KFoldTrunkPrime(BaseTrunk):
     def _run_trunk(
         self,
         plm_module: PLMModule,
-        pairformer_module: PairformerStack,
+        pairformer_stack: PairformerStack,
         s: torch.Tensor,
         z: torch.Tensor,
         s_plm: torch.Tensor,
@@ -309,7 +308,7 @@ class KFoldTrunkPrime(BaseTrunk):
         mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.is_compiled and not self.training:
-            pairformer_module = pairformer_module._orig_mod  # noqa: SLF001
+            pairformer_stack = pairformer_stack._orig_mod  # noqa: SLF001
             plm_module = plm_module._orig_mod  # noqa: SLF001
 
         z = plm_module(
@@ -319,7 +318,7 @@ class KFoldTrunkPrime(BaseTrunk):
             mask,
             use_cuequiv_kernels=self.kernel_config.cuequivariance,
         )
-        s, z = pairformer_module(
+        s, z = pairformer_stack(
             s,
             z,
             mask,

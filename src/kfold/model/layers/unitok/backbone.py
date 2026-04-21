@@ -107,7 +107,7 @@ class UniTokBackbone(nn.Module):
         x = self.fuse_layer(torch.cat([x_seq, x_bb, x_fa], dim=-1))  # [B, L, dim]
 
         token_identifier = torch.zeros((B, L), device=x.device, dtype=torch.long)
-        x = x + self.token_type_embedding(token_identifier)
+        x += self.token_type_embedding(token_identifier)
 
         for layer in self.encoder:
             x = layer(x, seq_id=seq_id, pos_id=pos_id)

@@ -24,11 +24,7 @@ class BaseScoreModel(torch.nn.Module, ABC):
         self.is_compiled = True
 
     def _compile(self, **kwargs):
-        """Compile the trunk module."""
-        # NOTE: you should compile the submodules inside the trunk
-        # since the computation graph is changed depending on the
-        # number of recycling steps. Thus, compile the sub module
-        # instead of the whole trunk module.
+        """Compile the score model."""
         raise NotImplementedError("do_compile method is not implemented yet.")
 
     @abstractmethod
@@ -76,7 +72,7 @@ class AF3StyleDiffusionModule(BaseScoreModel):
     """AF3-style Diffusion module"""
 
     def _compile(self, **kwargs):
-        """Compile the trunk module."""
+        """Compile the diffusion stack."""
         self.diffusion_stack = torch.compile(self.diffusion_stack, **kwargs)
 
     @property
@@ -85,27 +81,6 @@ class AF3StyleDiffusionModule(BaseScoreModel):
         if self.is_compiled:
             return self.diffusion_stack._orig_mod
         return self.diffusion_stack
-
-    def drop_conditioning(
-        self, s_trunk: torch.Tensor, z_trunk: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Drop the conditioning for training step.
-
-        Parameters
-        ----------
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
-        z_trunk : torch.Tensor
-            The trunk pair representation, shape [B, Lt, Lt, c_z].
-
-        Returns
-        -------
-        s_trunk : torch.Tensor
-            The dropped trunk single representation, shape [B, Lt, c_s].
-        z_trunk : torch.Tensor
-            The dropped trunk pair representation, shape [B, Lt, Lt, c_z].
-        """
-        return s_trunk, z_trunk
 
     def train_step(
         self,
@@ -143,11 +118,6 @@ class AF3StyleDiffusionModule(BaseScoreModel):
             The denoised atom positions, shape [B, N, La, 3].
         """
         # NOTE (SeonghwanSeo): cuEquiv uses pytorch fallback for short sequences.
-        # Since training crop size triggers this fallback, the kernels provide
-        # no speedup during training. On the other hand, torch.compile provides
-        # significant speedup during training. Therefore, we disable kernels
-        # to optimize computational graph with torch.compile.
-        s_trunk, z_trunk = self.drop_conditioning(s_trunk, z_trunk)
         return self.diffusion_stack(
             f_input,
             r_noisy,
