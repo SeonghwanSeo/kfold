@@ -14,7 +14,7 @@ def broadcast_tokens_to_atoms(x: torch.Tensor, token_index: torch.Tensor) -> tor
     Parameters
     ----------
     x: torch.Tensor
-        Token features of shape (*, Ntoken, D)
+        Token features of shape (*, Ntoken) or (*, Ntoken, D)
     token_index: torch.Tensor
         Tensor of shape (*, Natom) mapping each atom to a token index.
 
@@ -23,6 +23,8 @@ def broadcast_tokens_to_atoms(x: torch.Tensor, token_index: torch.Tensor) -> tor
     x_atom: torch.Tensor
         Atom features of shape (*, Natom, D)
     """
+    if x.ndim == token_index.ndim:
+        return broadcast_tokens_to_atoms(x.unsqueeze(-1), token_index).squeeze(-1)
 
     # Expand indices to match the input dimensions.
     gather_shape = list(x.shape)

@@ -18,6 +18,7 @@ from kfold.model.layers.primitives import (
 )
 from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
+from kfold.utils.torch import add
 
 
 class PairwiseProdDiff(nn.Module):
@@ -28,19 +29,30 @@ class PairwiseProdDiff(nn.Module):
     def __init__(self, c_in: int, c_out: int) -> None:
         super().__init__()
         assert c_out % 2 == 0, "c_out must be even."
-        c_hidden = c_out // 2
-        self.layernorm = LayerNorm(c_in, create_offset=False)
-        self.linear_in = Linear(c_in, c_hidden * 2, init="default")
-        self.linear_out = Linear(c_hidden * 2, c_out, init="final")
+        self.c_in: int = c_in
+        self.c_out: int = c_out
+        self.c_hid: int = c_out // 2
 
-    def forward(self, s: torch.Tensor) -> torch.Tensor:
-        """Compute pairwise embeddings from single representations using
-        element-wise differences and products.
+        self.layernorm = LayerNorm(c_in)
+        self.linear_in = LinearNoBias(c_in, 2 * c_out, init="default")
+        self.linear_out = Linear(2 * c_out, c_out, init="final")
+
+    def forward(
+        self,
+        s: torch.Tensor,
+        intra_mask: torch.Tensor,
+        inter_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute pairwise embeddings from single embeddings.
 
         Parameters
         ----------
         s : torch.Tensor
             The single representation (*, L, c_in).
+        intra_mask : torch.Tensor
+            The intra-chain mask of shape (*, L, L).
+        inter_mask : torch.Tensor
+            The inter-chain mask of shape (*, L, L).
 
         Returns
         -------
@@ -48,15 +60,19 @@ class PairwiseProdDiff(nn.Module):
             The output tensor (*, L, L, c_out).
         """
         s = self.layernorm(s)  # (*, L, c_in)
-        s_i, s_j = self.linear_in(s).chunk(2, dim=-1)  # 2 * (*, L, c_hid)
-        s_i = s_i.unsqueeze(-2)  # (*, L, 1, c_hidden)
-        s_j = s_j.unsqueeze(-3)  # (*, 1, L, c_hidden)
+        s_i, s_j = self.linear_in(s).chunk(2, dim=-1)  # 2 * (*, L, 2*c_hid)
+
+        dim = self.c_hid
+        s_i = s_i[..., :, None, :].unflatten(-1, (2, dim))  # (*, L, 1, 2, c_hid)
+        s_j = s_j[..., None, :, :].unflatten(-1, (2, dim))  # (*, 1, L, 2, c_hid)
 
         # Combine Diff (Asymmetry) and Prod (Correlation)
-        # NOTE: summation is derived from production operation with linear bias
-        # (W1(s_i) + b1) * (W2(s_j) + b2)
-        #   = W1(s_i)W2(s_j) + b1*W2(s_j) + b2*W1(s_i) + b1*b2
-        z = torch.cat([s_i - s_j, s_i * s_j], dim=-1)  # (*, L, L, c_hidden * 2)
+        z = torch.cat([s_i - s_j, s_i * s_j], dim=-1)  # (*, L, L, 2, c_out)
+
+        # Apply masks
+        mask = torch.stack([intra_mask, inter_mask], dim=-1)  # (*, L, L, 2)
+        z = z * mask.to(z.dtype)[..., None]  # (*, L, L, 2, c_out)
+        z = z.flatten(-2, -1)  # (*, L, L, 2*c_out)
 
         z = self.linear_out(z)  # (*, L, L, c_out)
         return z
@@ -64,7 +80,7 @@ class PairwiseProdDiff(nn.Module):
 
 class PLMEmbedder(nn.Module):
     """
-    Separated embedder of PLMModule to avoid redundant computation across recyling steps.
+    Separated embedder of PLMModule to avoid redundant computation across recycling steps.
     """
 
     def __init__(
@@ -203,17 +219,12 @@ class PLMBlock(nn.Module):
         self.channel_z: int = channel_z
         self.channel_plm: int = channel_plm
 
-        self.pairwise_proj_intra = PairwiseProdDiff(channel_plm, channel_z)
-        self.pairwise_proj_inter = PairwiseProdDiff(channel_plm, channel_z)
+        self.pairwise_proj = PairwiseProdDiff(channel_plm, channel_z)
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
-        self.tri_att_start = TriangleAttentionStartingNode(
-            channel_z, num_heads_tri_attn, inf=1e9
-        )
-        self.tri_att_end = TriangleAttentionEndingNode(
-            channel_z, num_heads_tri_attn, inf=1e9
-        )
+        self.tri_att_start = TriangleAttentionStartingNode(channel_z, num_heads_tri_attn)
+        self.tri_att_end = TriangleAttentionEndingNode(channel_z, num_heads_tri_attn)
 
         self.transition_z = Transition(channel_z, expansion_factor=4)
 
@@ -269,54 +280,50 @@ class PLMBlock(nn.Module):
         z : torch.Tensor
             The updated pair representations
         """
+        _add = partial(add, inplace=not self.training)
+
         # Step 1: single to pair
-        z = z + self.pairwise_proj_intra(s_plm) * intra_mask[..., None]
-        z = z + self.pairwise_proj_inter(s_plm) * inter_mask[..., None]
+        z = _add(z, self.pairwise_proj(s_plm, intra_mask, inter_mask))
 
         # Step 2: pair to single
         if not self.is_last_block:
             pair_bias = self.proj_z_to_bias(z)  # [*, L, L, H]
             pair_bias = permute_final_dims(pair_bias, (2, 0, 1))  # [*, H, L, L]
-            s_plm = s_plm + self.dropout_plm(
+            s_plm = s_plm + self.dropout_plm(  # Avoid in-place modification.
                 self.attention(
                     a=s_plm,  # [*, L, C_plm]
                     s=None,
                     pair_bias=pair_bias,  # [*, H, L, L]
                     mask=mask,  # [*, L]
-                    use_kernels=False,
                 )
             )
-            s_plm = s_plm + self.transition_plm(s_plm)  # [*, L, C_plm]
+            s_plm = _add(s_plm, self.transition_plm(s_plm))
 
         # Step 3: pair to pair
-        z = z + self.dropout_rowwise_z(
-            self.tri_mul_out(
-                z,
-                pair_mask,
-                use_kernels=use_cuequiv_kernels,
-            )
+        z = _add(
+            z,
+            self.dropout_rowwise_z(
+                self.tri_mul_out(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
         )
-        z = z + self.dropout_rowwise_z(
-            self.tri_mul_in(
-                z,
-                mask=pair_mask,
-                use_kernels=use_cuequiv_kernels,
-            )
+        z = _add(
+            z,
+            self.dropout_rowwise_z(
+                self.tri_mul_in(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
         )
-        z = z + self.dropout_rowwise_z(
-            self.tri_att_start(
-                z,
-                mask=pair_mask,
-                use_kernels=use_cuequiv_kernels,
-            )
+        z = _add(
+            z,
+            self.dropout_rowwise_z(
+                self.tri_att_start(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
         )
-        z = z + self.dropout_columnwise_z(
-            self.tri_att_end(
-                z,
-                mask=pair_mask,
-                use_kernels=use_cuequiv_kernels,
-            )
+        z = _add(
+            z,
+            self.dropout_columnwise_z(
+                self.tri_att_end(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
         )
-        z = z + self.transition_z(z)
+        z = _add(z, self.transition_z(z))
 
         return s_plm, z

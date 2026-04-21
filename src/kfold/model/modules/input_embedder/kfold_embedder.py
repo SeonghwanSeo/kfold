@@ -23,16 +23,16 @@ class RBF(torch.nn.Module):
     """
 
     def __init__(
-        self, d_min: float = 2.0, d_max: float = 49.0, num_bins: int = 48
+        self, d_min: float = 2.00, d_max: float = 50.75, num_bins: int = 40
     ) -> None:
         super().__init__()
         self.d_min: float = d_min
         self.d_max: float = d_max
-        self.d_sigma: float = (d_max - d_min) / num_bins
+        self.d_sigma: float = (d_max - d_min) / (num_bins - 2)
         self.register_buffer(
-            "d_mu", torch.linspace(d_min, d_max, num_bins), persistent=False
+            "d_mu", torch.linspace(d_min, d_max, num_bins - 1), persistent=False
         )
-        self.num_bins: int = num_bins + 1
+        self.num_bins: int = num_bins
 
     def forward(self, dist: torch.Tensor) -> torch.Tensor:
         """Forward pass of RBF encoding.

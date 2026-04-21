@@ -27,20 +27,17 @@ class Linear(nn.Module):
         self.reset_parameters(init)
 
         if isinstance(precision, str):
-            assert precision in {"float16", "bfloat16", "float32"}, (
+            assert precision in {"bfloat16", "float32"}, (
                 f"Unsupported precision string: {precision}. "
-                "Supported values are 'float16', 'bfloat16', and 'float32'."
+                "Supported values are 'bfloat16' and 'float32'."
             )
             precision = getattr(torch, precision)
         elif isinstance(precision, int):
-            if precision == 16:
-                precision = torch.float16
-            elif precision == 32:
+            if precision == 32:
                 precision = torch.float32
             else:
                 raise ValueError(
-                    f"Unsupported precision integer: {precision}. "
-                    "Supported values are 16 and 32."
+                    f"Unsupported precision integer: {precision}. Supported values is 32."
                 )
 
         self.precision: torch.dtype | None = precision
