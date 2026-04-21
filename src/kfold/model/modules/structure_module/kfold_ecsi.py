@@ -521,7 +521,7 @@ class KFoldECSI(BaseStructureModule):
         # Sample chain-wise COM noise
         num_chains = f_input.num_chains
         asym_id = f_input.token.asym_id  # [B, Ntoken]
-        token_mask = f_input.token.pad_mask  # [B, Natom]
+        token_mask = f_input.token.pad_mask  # [B, Ntoken]
         atom_mask = f_input.atom.pad_mask  # [B, Natom]
         chain_id = torch.zeros_like(asym_id)
         for b_i in range(batch_size):

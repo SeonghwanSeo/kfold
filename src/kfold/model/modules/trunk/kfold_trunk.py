@@ -239,13 +239,14 @@ class KFoldTrunk(BaseTrunk):
 
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
+            _inplace = not enable_grad
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Recycling
-                s = add(self.linear_s(self.layernorm_s(s)), s_init, enable_grad)
-                z = add(self.linear_z(self.layernorm_z(z)), z_init, enable_grad)
+                s = add(self.linear_s(self.layernorm_s(s)), s_init, _inplace)
+                z = add(self.linear_z(self.layernorm_z(z)), z_init, _inplace)
 
                 # Run trunk
                 s, z = self._run_trunk(s, z, s_plm, asym_id, mask)

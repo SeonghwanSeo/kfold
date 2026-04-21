@@ -135,13 +135,14 @@ class AF3PairformerTrunk(BaseTrunk):
         # Line 7-14
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
+            _inplace = not enable_grad
 
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Line 8
-                z = add(self.linear_z(self.layernorm_z(z)), z_init, enable_grad)
+                z = add(self.linear_z(self.layernorm_z(z)), z_init, _inplace)
 
                 # Line 9: TemplateEmbedder
                 if self.use_template:
@@ -152,7 +153,7 @@ class AF3PairformerTrunk(BaseTrunk):
                     raise NotImplementedError("MSA Module is not implemented yet")
 
                 # Line 11
-                s = add(self.linear_s(self.layernorm_s(s)), s_init, enable_grad)
+                s = add(self.linear_s(self.layernorm_s(s)), s_init, _inplace)
 
                 # Line 12
                 s, z = pairformer_stack(
