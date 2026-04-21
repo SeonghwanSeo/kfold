@@ -171,6 +171,12 @@ class KFoldECSI(BaseStructureModule):
         # Training parameters
         conditioning_drop_rate : float, optional
             The drop rate of conditioning during training, by default 0.0.
+
+        # Training interpolation noise parameters
+        train_com_noise_scale : float
+            The scale of the chain-wise COM noise added during training.
+        train_com_noise_time_threshold : float
+            The time threshold to apply chain-wise COM noise during training.
         """
 
         align: bool = True
@@ -199,6 +205,10 @@ class KFoldECSI(BaseStructureModule):
 
         # Training parameters
         conditioning_drop_rate: float = 0.0
+
+        # Training interpolation noise parameters
+        train_com_noise_scale: float = 1.0
+        train_com_noise_time_threshold: float = 0.3
 
     def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the ECSI module.
@@ -238,6 +248,10 @@ class KFoldECSI(BaseStructureModule):
         self.churn_step_fraction: float = cfg.churn_step_fraction
         self.churn_step_power: float = cfg.churn_step_power
         self.ode_step_power: float = cfg.ode_step_power
+
+        # Training interpolation noise parameters
+        self.train_com_noise_scale: float = cfg.train_com_noise_scale
+        self.train_com_noise_time_threshold: float = cfg.train_com_noise_time_threshold
 
         # NOTE: centering should be disabled.
         if self.align_mode == RIGID_ALIGN:
@@ -462,23 +476,26 @@ class KFoldECSI(BaseStructureModule):
         dict[str, torch.Tensor]
             A dictionary containing the x_0, x_t, and related representations.
         """
+        batch_size = f_input.batch_size
         num_samples = diffusion_batch_size
-        t = self.sample_noise_level((f_input.batch_size, num_samples), f_input.device)
+        device = f_input.device
+        t = self.sample_noise_level((batch_size, num_samples), device)
 
-        x_holo = f_input.atom.label_coords  # [B, L, 3]
-        holo_mask = f_input.atom.resolved_mask  # [B, L]
-        x_apo = f_input.atom.prior_coords.permute(0, 2, 1, 3)  # [B, Nprior, L, 3]
-        apo_mask = f_input.atom.pad_mask  # [B, L]
+        # === Prepare x_0 and x_T === #
+        x_holo = f_input.atom.label_coords  # [B, Natom, 3]
+        holo_mask = f_input.atom.resolved_mask  # [B, Natom]
+        x_apo = f_input.atom.prior_coords.permute(0, 2, 1, 3)  # [B, Nprior, Natom, 3]
+        apo_mask = f_input.atom.pad_mask  # [B, Natom]
 
-        # repeat holo coords
-        x_0 = expand_dim(x_holo, num_samples, dim=-3)  # [B, N, L, 3]
-        x_0_mask = holo_mask.unsqueeze(-2)  # [B, 1, L]
+        # Repeat holo coords
+        x_0 = expand_dim(x_holo, num_samples, dim=-3)  # [B, N, Natom, 3]
+        x_0_mask = holo_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Sample from prior coordinates
         # If num_diffusion_samples > num_prior, cycle through prior coords
         num_prior = x_apo.shape[-3]
         idx = [i % num_prior for i in range(num_samples)]
-        x_T = x_apo[:, idx, :, :]  # [B, N, L, 3]
+        x_T = x_apo[:, idx, :, :]  # [B, N, Natom, 3]
         x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Apply centering/coordinate augmentation
@@ -490,13 +507,44 @@ class KFoldECSI(BaseStructureModule):
                 x_0, x_T, mask=x_0_mask, mask_to_zero=False
             )
 
-        # Interpolate with noise
+        # === Interpolate to get x_t === #
         C = self.coeff
         _t = t[:, :, None, None]
         alpha_t, beta_t, gamma_t = C.alpha(_t), C.beta(_t), C.gamma(_t)
-        noise = torch.randn_like(x_0)
-        x_t = alpha_t * x_0 + beta_t * x_T + gamma_t * noise
 
+        gamma_t_com = self.train_com_noise_scale * gamma_t
+        gamma_t_com[_t < self.train_com_noise_time_threshold] = 0.0
+
+        # Sample noise
+        noise = torch.randn_like(x_0)
+
+        # Sample chain-wise COM noise
+        num_chains = f_input.num_chains
+        asym_id = f_input.token.asym_id  # [B, Ntoken]
+        token_mask = f_input.token.pad_mask  # [B, Natom]
+        atom_mask = f_input.atom.pad_mask  # [B, Natom]
+        chain_id = torch.zeros_like(asym_id)
+        for b_i in range(batch_size):
+            asym_id_i = asym_id[b_i]
+            mask_i = token_mask[b_i]
+            uniq_id = torch.sort(torch.unique(asym_id_i[mask_i]))[0]
+            for c_i, a_i in enumerate(uniq_id, start=1):
+                chain_id[b_i, asym_id_i == a_i] = c_i  # [B, Ntoken]
+
+        b_i = torch.arange(batch_size, device=device)[:, None]
+        t_i = f_input.atom.token_index  # [B, Natom]
+        chain_id = chain_id[b_i, t_i]  # [B, Natom]
+        chain_id[~atom_mask] = 0  # Set pad atoms to chain_id 0
+
+        chain_id = chain_id[:, None, :, None].expand(x_0.shape)
+        noise_com = torch.randn(
+            (batch_size, num_samples, num_chains + 1, 3), device=device
+        ).gather(-2, chain_id)  # [B, N, Natom, 3]
+
+        # ECSI interpolation with noises.
+        x_t = alpha_t * x_0 + beta_t * x_T + gamma_t * noise + gamma_t_com * noise_com
+
+        # Mask out unresolved/pad atoms.
         x_0.masked_fill_(~x_0_mask[..., None], 0.0)
         x_T.masked_fill_(~x_T_mask[..., None], 0.0)
         x_t.masked_fill_(~x_T_mask[..., None], 0.0)
