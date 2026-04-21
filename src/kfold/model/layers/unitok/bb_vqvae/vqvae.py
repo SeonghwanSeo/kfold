@@ -51,7 +51,6 @@ class VQVAE_EncoderOnly(torch.nn.Module):
             v_heads=config.encoder.v_heads,
             n_layers=config.encoder.n_layers,
             d_out=config.encoder.d_out,
-            n_codes=config.quantizer.codebook_size,
         )
         assert self.quantizer.codebook_embed_size == self.encoder.d_out
 
