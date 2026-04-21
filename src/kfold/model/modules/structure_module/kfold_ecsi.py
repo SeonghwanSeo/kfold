@@ -167,6 +167,10 @@ class KFoldECSI(BaseStructureModule):
             Mean of the noise level sampling distribution in training.
         P_std : float
             Standard deviation of the noise level sampling distribution in training.
+
+        # Training parameters
+        conditioning_drop_rate : float, optional
+            The drop rate of conditioning during training, by default 0.0.
         """
 
         align: bool = True
@@ -192,6 +196,9 @@ class KFoldECSI(BaseStructureModule):
         # Train time scheduling
         P_mean: float = -0.8
         P_std: float = 2.0
+
+        # Training parameters
+        conditioning_drop_rate: float = 0.0
 
     def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the ECSI module.
@@ -220,6 +227,9 @@ class KFoldECSI(BaseStructureModule):
         # Train time scheduling
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
+
+        # Training parameters
+        self.conditioning_drop_rate: float = cfg.conditioning_drop_rate
 
         # Inference time sampling
         self.align_x_0_hat_to_x_t: bool = cfg.align_x_0_hat_to_x_t
@@ -324,6 +334,13 @@ class KFoldECSI(BaseStructureModule):
         x_0 = train_input["x_0"]  # [B, N, Natom, 3]
         x_t = train_input["x_t"]  # [B, N, Natom, 3]
         x_T = train_input["x_T"]  # [B, N, Natom, 3]
+
+        drop_rate = self.conditioning_drop_rate
+        if drop_rate > 0.0:
+            mask = torch.rand(s_trunk.shape[0], device=s_trunk.device) < drop_rate
+            use_conditioning = (~mask).to(z_trunk.dtype)  # [B,]
+            s_trunk = s_trunk * use_conditioning[:, None, None]
+            z_trunk = z_trunk * use_conditioning[:, None, None, None]
 
         x_0_hat = self.forward_train(
             x_t=x_t,  # [B, N, Natom, 3]

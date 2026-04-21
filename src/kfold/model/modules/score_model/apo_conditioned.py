@@ -25,5 +25,3 @@ class ApoConditionedDiffusionModule(AF3DiffusionModule):
             atom_decoder_heads=cfg.atom_decoder_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
-        self.drop_rate: float = cfg.conditioning_drop_rate
-        assert 0.0 <= self.drop_rate < 1.0, "Conditioning drop rate must be in [0, 1)."

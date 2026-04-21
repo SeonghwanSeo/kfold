@@ -10,3 +10,6 @@ gamma_0: 0.8
 gamma_min: 1.0
 noise_scale: 1.003
 step_scale: 1.5
+
+# Training preconditioning
+conditioning_drop_rate: 0.2
