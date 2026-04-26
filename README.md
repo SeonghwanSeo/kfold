@@ -5,7 +5,7 @@
 
 ### Project sturcture
 
-Please read [`DEVELOPER_GUIDE.md`](./docs/DEVELOPER_GUIDE.md).
+Please read [`DEVELOPER_GUIDE.md`](./docs/developers/DEVELOPER_GUIDE.md).
 
 ### Formatting and Linting
 
@@ -78,7 +78,7 @@ python scripts/inference_multigpu.py \
 
 ### Training
 
-See [`docs/TRAINING_GUIDE.md`](./docs/TRAINING_GUIDE.md) for detailed training instructions.
+See [`TRAINING_GUIDE.md`](./docs/developers/TRAINING_GUIDE.md) for detailed training instructions.
 
 ```bash
 python ./scripts/train.py -h
@@ -95,4 +95,4 @@ python ./scripts/train.py --config ./configs/train-af3.yaml --wandb --num_gpus .
 
 ### Evaluation
 
-See [`docs/EVALUATION_GUIDE.md`](./docs/EVALUATION_GUIDE.md) for detailed evaluation instructions.
+See [`EVALUATION_GUIDE.md`](./docs/developers/EVALUATION_GUIDE.md) for detailed evaluation instructions.
