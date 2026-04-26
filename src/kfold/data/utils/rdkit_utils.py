@@ -107,6 +107,16 @@ def compute_molecule_symmetry(
             permutations.append(list(perm))
     if len(permutations) <= 1:
         return ()  # No symmetry found
+
+    # Ensure the original order is the first permutation
+    org_perm = list(range(len(permutations[0])))
+    if org_perm != permutations[0]:
+        # Ensure the original order is the first permutation
+        if org_perm in permutations:
+            permutations.remove(org_perm)
+        permutations.insert(0, org_perm)
+        permutations = permutations
+
     return tuple(permutations)
 
 

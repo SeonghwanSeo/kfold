@@ -360,6 +360,8 @@ class AtomTensor(TensorLayout):
         this reference conformer.
     token_index: torch.Tensor (long)
         Token indices mapping atoms to their parent tokens of shape [Natom,].
+    atom_index: torch.Tensor (long)
+        Atom indices of shape [Natom,]. Starting from 0 for each chain.
     apo_coords: torch.Tensor (float32)
         Apo (unbound) state coordinates of shape [Natom, 3],
     prior_coords: torch.Tensor (float32)
@@ -386,6 +388,7 @@ class AtomTensor(TensorLayout):
     ref_mask: torch.Tensor  # [Natom,], bool
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
+    atom_index: torch.Tensor  # [Natom,], long
     apo_coords: torch.Tensor  # [Natom, 3], float32
     prior_coords: torch.Tensor  # [Natom, Nprior, 3], float32
     apo_mask: torch.Tensor  # [Natom,], bool
@@ -423,6 +426,7 @@ class AtomTensor(TensorLayout):
             self.ref_space_uid, name="ref_space_uid", dtype=torch.long, shape=shape
         )
         check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
+        check_tensor(self.atom_index, name="atom_index", dtype=torch.long, shape=shape)
         check_tensor(
             self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, 3)
         )
@@ -464,6 +468,7 @@ class AtomTensor(TensorLayout):
             "ref_mask": False,
             "ref_space_uid": -1,
             "token_index": 0,
+            "atom_index": 0,
             "prior_coords": 0.0,
             "apo_coords": 0.0,
             "apo_mask": False,

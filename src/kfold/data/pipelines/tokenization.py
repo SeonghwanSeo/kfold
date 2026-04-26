@@ -367,6 +367,9 @@ def tokenize_structure(
         pad_mask = struct.atom.pad_mask[token_st:token_end]  # (chain_tokens, 24)
         assert pad_mask.sum() == chain.num_atoms, "Number of valid atoms does not match"
 
+        # Insert atom index
+        struct.atom.atom_index[token_st:token_end][pad_mask] = np.arange(chain.num_atoms)
+
         # Insert ground-truth coordinates
         struct.atom.label_coords[token_st:token_end][pad_mask] = chain.atom.coords
 

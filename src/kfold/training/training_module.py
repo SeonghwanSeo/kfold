@@ -119,7 +119,6 @@ class ValidationConfig(_Config):
     num_diffusion_samples: int = 5
     return_traj: bool = False
     traj_format: str = "cif"
-    symmetry_correction: bool = True
     # Validation output logging
     save_predictions: bool = False
 
@@ -533,6 +532,7 @@ class KFoldTrainingModule(pl.LightningModule):
         assert f_input.batch_size == 1, "Validation batch size should be 1"
         struct_info = full_struct_list[0]
         ref_struct: RefStructure = struct_info["structure"]
+        symmetry_dict: dict = struct_info["symmetry"]
 
         try:
             out = self(
@@ -571,18 +571,11 @@ class KFoldTrainingModule(pl.LightningModule):
         sample_metrics: list[dict[str, Any]] = []
         with torch.autocast("cuda", torch.float32):
             # Permute predicted and true coordinates to align
-            if val_config.symmetry_correction:
-                assert "symmetry" in struct_info, (
-                    "symmetry_dict must be provided in struct_info "
-                    "for symmetry correction during validation."
-                )
-            symmetry_dict = struct_info.get("symmetry", None)
             for i in range(num_samples):
                 pred_coords_i = sample_coords[i]  # [Natom, 3]
-                struct_i = validation_metrics.get_aligned_structure(
+                struct_i = validation_metrics.get_aligned_gt_structure(
                     ref_struct,
                     pred_coords_i,
-                    find_best_permutation=val_config.symmetry_correction,
                     symmetry_dict=symmetry_dict,
                 )
                 metric_i = validation_metrics.compute_validation_metric(

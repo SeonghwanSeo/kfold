@@ -10,7 +10,7 @@ import torch
 import kfold.constants as C
 from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import RefStructure
-from kfold.training.dataset.utils.permutation import get_aligned_true_coords
+from kfold.training.utils.permutation_alignment import align_val
 from kfold.utils.geometry.rigid_align import rigid_align
 
 logger = logging.getLogger(__name__)
@@ -71,11 +71,10 @@ def norm_key(k1: _T, k2: _T) -> tuple[_T, _T]:
 # ============================================================
 # Symmetry correction for accurate metric computation
 # ============================================================
-def get_aligned_structure(
+def get_aligned_gt_structure(
     ref_struct: RefStructure,
     pred_coords: torch.Tensor,
-    find_best_permutation: bool = True,
-    symmetry_dict: dict | None = None,
+    symmetry_dict: dict,
 ) -> RefStructure:
     """Get the best matching true coordinates to the predicted coordinates.
     Chain permutation and atom swaps.
@@ -88,7 +87,7 @@ def get_aligned_structure(
         Predicted atom coordinates, Shape of [Natom, 3]
     find_best_permutation : bool, optional
         Whether to find the best permutation (default: True).
-    symmetry_dict : dict (optional)
+    symmetry_dict : dict
         The dictionary containing symmetry information:
 
     Returns
@@ -96,9 +95,7 @@ def get_aligned_structure(
     ref_struct_aligned: RefStructure
         The reference structure with permuted ground truth coordinates.
     """
-    return get_aligned_true_coords(
-        ref_struct, pred_coords, find_best_permutation, symmetry_dict
-    )  # [Nsample, Natom, 3]
+    return align_val.get_aligned_gt_structure(ref_struct, pred_coords, symmetry_dict)
 
 
 # ============================================================

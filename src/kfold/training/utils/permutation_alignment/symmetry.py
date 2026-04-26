@@ -1,8 +1,6 @@
-"""Symmetry-related utilities for validation metrics."""
-
-import itertools
-import math
+import logging
 from collections import defaultdict
+from collections.abc import Sequence
 from functools import lru_cache
 from typing import Any
 
@@ -12,17 +10,16 @@ import kfold.constants as C
 from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import Chain, RefStructure
 
-AtomPermutation = list[int]
-ChainPermutation = list[int]
-ResidueSymmetry = list[AtomPermutation] | None
+ChainGroup = tuple[int, ...]
+ChainSymmetry = list[ChainGroup]
+ResidueSymmetry = np.ndarray | None  # [num_permutations, num_atoms]
+
+__all__ = ["get_symmetries"]
+
+logger = logging.getLogger(__name__)
 
 
-def get_symmetries(
-    ref_struct: RefStructure,
-    ccd: CCD,
-    max_chain_permutations: int = 1000,
-    rng: np.random.Generator | None = None,
-) -> dict[str, Any]:
+def get_symmetries(ref_struct: RefStructure, ccd: CCD) -> dict[str, Any]:
     """Get the symmetries of the complex structure.
 
     Parameters
@@ -31,8 +28,6 @@ def get_symmetries(
         The reference structure.
     ccd : CCD
         The CCD database.
-    max_chain_permutations : int, optional
-        The maximum number of chain permutations to consider, by default 1000.
 
     Returns
     -------
@@ -40,33 +35,41 @@ def get_symmetries(
         A dictionary containing the symmetries of amino acids and ligands.
 
     """
-    rng = rng or np.random.default_rng()
     return {
-        "chain": get_chain_permutations(ref_struct, rng, max_chain_permutations),
+        "chain": get_chain_symmetries(ref_struct),
         "residue": get_residue_symmetries(ref_struct, ccd),
     }
 
 
-def get_chain_permutations(
-    ref_struct: RefStructure,
-    rng: np.random.Generator,
-    max_permutations: int = 1000,
-) -> list[list[int]]:
-    """Get possible alternative atom coordinates based on chain symmetries.
+def get_chain_symmetries(ref_struct: RefStructure) -> dict[str, ChainSymmetry]:
+    """Get possible groups of chain asym_ids that can be permuted among each other.
 
     Parameters
     ----------
     ref_struct : RefStructure
         The reference structure.
-    rng : np.random.Generator
-        The random number generator.
-    max_permutations : int, optional
-        The maximum number of chain permutations to consider, by default 1000.
 
     Returns
     -------
-    list[list[int]]
-        A list of chain asym_ids.
+    dict[str, list[tuple[int, ...]]]
+        A dictionary of groups of chain asym_ids that can be permuted among each other.
+        The first entry of each group is the representative, and later entries are
+        covalently linked ligands to the representative polymer chain.
+
+        e.g.,
+        Input:
+          - 1, 5: same entity polymers
+          - 2, 6: same entity ligands, covalently linked to 1, 5, respectively
+          - 3, 4: same entity polymers
+          - 7: an unique polymer
+          - 8: an unique ligand
+        Output:
+        {
+          symid1: [(1, 2), (5, 6)],
+          symid2: [(3,), (4,)],
+          symid3: [(7,)]
+          symid4: [(8,)]
+        }
     """
     # === Get available chain permutations === #
     groups: dict[int, list[Chain]] = {}  # Covalently connected chain groups
@@ -107,102 +110,14 @@ def get_chain_permutations(
             groups[c.asym_id] = [c]
             visited.add(c.asym_id)
 
-    # Collect swappable chains
-    swappable_bucket: dict[str, list[int]] = defaultdict(list)  # bucket_id to asym_ids
-    for asym_id, g in groups.items():
-        bucket_id: str = ":".join(f"{c.entity_id}-{c.num_atoms}" for c in g)
-        swappable_bucket[bucket_id].append(asym_id)
+    # Collect swappable chain groups
+    swappable_groups: dict[str, list[tuple[int, ...]]] = defaultdict(list)
+    for _, chain_list in groups.items():
+        sym_id: str = ":".join(f"{c.entity_id}-{c.num_atoms}" for c in chain_list)
+        group_asym_ids = tuple(c.asym_id for c in chain_list)
+        swappable_groups[sym_id].append(group_asym_ids)
 
-    # Filter out non-swappable groups
-    swappable_bucket = {k: v for k, v in swappable_bucket.items() if len(v) > 1}
-    if len(swappable_bucket) == 0:
-        # No symmetries
-        return [[c.asym_id for c in ref_struct.chains]]  # Identity only
-
-    # === Create Permutations === #
-    # Prepare data for permutation generation
-    sorted_bucket_keys = sorted(swappable_bucket.keys())
-    bucket_anchors_list = [swappable_bucket[k] for k in sorted_bucket_keys]
-
-    # Calculate total complexity
-    total_perms = 1
-    for anchors in bucket_anchors_list:
-        total_perms *= math.factorial(len(anchors))
-
-    anchor_mappings: list[dict[int, int]] = []
-
-    if total_perms <= max_permutations:
-        # Exhaustive Search
-        # Generate all permutations for each bucket
-        per_bucket_perms = [
-            list(itertools.permutations(anchors)) for anchors in bucket_anchors_list
-        ]
-        # Combine them
-        for combination in itertools.product(*per_bucket_perms):
-            mapping: dict[int, int] = {}
-            for original_anchors, permuted_anchors in zip(
-                bucket_anchors_list, combination, strict=True
-            ):
-                for old_anchor, new_anchor in zip(
-                    original_anchors, permuted_anchors, strict=True
-                ):
-                    mapping[old_anchor] = new_anchor
-            anchor_mappings.append(mapping)
-    else:
-        # Random Sampling
-        # 1. Always include identity
-        identity_map = {}
-        for anchors in bucket_anchors_list:
-            for a in anchors:
-                identity_map[a] = a
-        anchor_mappings.append(identity_map)
-
-        # 2. Track unique permutations via signature
-        seen_sigs = set()
-        # Signature is tuple of values sorted by keys
-        all_swappable_keys = sorted(identity_map.keys())
-        sig = tuple(identity_map[k] for k in all_swappable_keys)
-        seen_sigs.add(sig)
-
-        # 3. Sample
-        for _ in range(max_permutations * 10):
-            mapping = {}
-            for anchors in bucket_anchors_list:
-                perm = list(anchors)
-                rng.shuffle(perm)
-                for old_anchor, new_anchor in zip(anchors, perm, strict=True):
-                    mapping[old_anchor] = new_anchor
-
-            sig = tuple(mapping[k] for k in all_swappable_keys)
-            if sig not in seen_sigs:
-                seen_sigs.add(sig)
-                anchor_mappings.append(mapping)
-            if len(anchor_mappings) >= max_permutations:
-                break
-
-    # === Expand to full chain mappings === #
-    final_results: list[dict[int, int]] = []
-
-    for anchor_map in anchor_mappings:
-        full_mapping: dict[int, int] = {}
-        # Iterate over all defined groups (anchors)
-        for anchor_id, chain_list in groups.items():
-            # If anchor is swappable, get its target; otherwise it maps to itself
-            target_anchor_id = anchor_map.get(anchor_id, anchor_id)
-            target_chain_list = groups[target_anchor_id]
-            # Map each chain in the group to the corresponding chain in the target group
-            for old_c, new_c in zip(chain_list, target_chain_list, strict=True):
-                old_id, new_id = old_c.asym_id, new_c.asym_id
-                if old_id != new_id:
-                    full_mapping[old_id] = new_id
-        if len(full_mapping) > 0:
-            final_results.append(full_mapping)
-    final_results.sort(key=lambda x: sorted(x.items()))
-    final_results = [{}] + final_results  # Always include identity mapping
-    return [
-        [mapping.get(c.asym_id, c.asym_id) for c in ref_struct.chains]
-        for mapping in final_results
-    ]
+    return dict(swappable_groups)
 
 
 @lru_cache(32)
@@ -219,23 +134,38 @@ def get_standard_residue_permutations(res_name: str) -> ResidueSymmetry:
     assert set(src_indices).isdisjoint(set(dst_indices)), (
         "Overlapping ambiguous atom indices."
     )
-    original_perm = list(range(len(residue_atoms)))
+    # original_perm = list(range(len(residue_atoms)))
+    original_perm = np.arange(len(residue_atoms), dtype=np.int32)
     swap_perm = original_perm.copy()
     for s_idx, d_idx in zip(src_indices, dst_indices, strict=True):
         swap_perm[s_idx] = d_idx
         swap_perm[d_idx] = s_idx
     # Hack: there is only up to 2 symmetries per standard residue
-    return [original_perm, swap_perm]
+    return np.stack([original_perm, swap_perm], axis=0)
 
 
 def get_component_permutations(
-    comp: Component, valid_atoms: list[str]
+    comp: Component,
+    valid_atoms: list[str],
+    max_permutations: int = 1000,
 ) -> ResidueSymmetry:
     """Get molecule's symmetries from ccd."""
-    symmetries = comp.symmetries
-    if symmetries is None or len(symmetries) <= 1:
+    permutations: Sequence[list[int]] | None = comp.symmetries
+    if permutations is None or len(permutations) <= 1:
         # No symmetries
         return None
+
+    # Limit the number of permutations
+    permutations = list(permutations[:max_permutations])
+    org_perm = list(range(comp.num_atoms))
+    if org_perm != permutations[0]:
+        # Ensure the original order is the first permutation
+        if org_perm in permutations:
+            permutations.remove(org_perm)
+        permutations.insert(0, org_perm)
+        # Limit the number of permutations again after adding original order
+        permutations = permutations[:max_permutations]
+
     if len(valid_atoms) == comp.num_atoms:
         # All atoms are present, no need to filter
         assert list(valid_atoms) == list(comp.names), (
@@ -243,7 +173,8 @@ def get_component_permutations(
             f"input: {valid_atoms}\n"
             f"comp:  {comp.names}"
         )
-        return list(symmetries)
+        return np.array(permutations, dtype=np.int32)
+
     # Some residues (e.g., non-standard amino acids) have non-leaving atoms only.
     # Create ref-index to mol-index mapping
     name_to_index: dict[str, int] = comp.get_atom_index_map()
@@ -251,8 +182,8 @@ def get_component_permutations(
         name_to_index[name]: i for i, name in enumerate(valid_atoms)
     }
     valid_atom_indices: set[int] = set(ref_to_mol_map.keys())
-    all_perms: list[AtomPermutation] = []
-    for perm in symmetries:
+    all_perms: list[np.ndarray] = []
+    for perm in permutations:
         # Example perm for 4-atom molecules: [0, 2, 1, 3] (swapping atom 1 and 2)
         swapped_atoms = set(i for i, j in enumerate(perm) if i != j)
         if len(swapped_atoms - valid_atom_indices) > 0:
@@ -264,17 +195,19 @@ def get_component_permutations(
                 i = ref_to_mol_map[ref_i]
                 j = ref_to_mol_map[ref_j]
                 sym_dict[i] = j
-        all_perms.append([sym_dict.get(i, i) for i in range(len(valid_atoms))])
+        perm = [sym_dict.get(i, i) for i in range(len(valid_atoms))]
+        all_perms.append(np.array(perm, dtype=np.int32))
     if len(all_perms) <= 1:
         # No symmetries found
         return None
-    return all_perms
+    return np.stack(all_perms, axis=0)
 
 
 def get_residue_symmetries(
     ref_struct: RefStructure,
     ccd: CCD,
-) -> list[ResidueSymmetry]:
+    max_permutations: int = 1000,
+) -> dict[int, list[ResidueSymmetry]]:
     """Return the residue symmetries
 
     Parameters
@@ -286,12 +219,15 @@ def get_residue_symmetries(
 
     Returns
     -------
-    list[ResidueSymmetry]
-        A list of residue symmetries in the complex.
+    dict[list[ResidueSymmetry]]
+        A dictionary of residue symmetries, where each key is a chain asym_id.
+        Each symmetry is represented as a list of atom index permutations,
+        or None if there is no symmetry for that residue.
     """
     component_cache: dict[str, Component] = {}
-    permutations: list[ResidueSymmetry] = []
+    permutations: dict[int, list[ResidueSymmetry]] = {}
     for chain in ref_struct.chains:
+        chain_perms: list[ResidueSymmetry] = []
         ccd_sequences: list[str] = chain.get_ccd_sequence()
         for res_i in range(chain.num_residues):
             res_idx = res_i + 1  # 1-based index
@@ -307,6 +243,9 @@ def get_residue_symmetries(
                     res_perms = None
                 else:
                     ref_mol = component_cache.setdefault(res_name, ccd[res_name])
-                    res_perms = get_component_permutations(ref_mol, valid_atoms)
-            permutations.append(res_perms)
+                    res_perms = get_component_permutations(
+                        ref_mol, valid_atoms, max_permutations
+                    )
+            chain_perms.append(res_perms)
+        permutations[chain.asym_id] = chain_perms
     return permutations

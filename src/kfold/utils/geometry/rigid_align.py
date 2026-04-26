@@ -629,10 +629,48 @@ def weighted_rigid_align_torch(
     return aligned_coords.to(original_dtype)
 
 
+@overload
+def get_rigid_transform(
+    coords: np.ndarray,
+    target: np.ndarray,
+    weights: np.ndarray | None,
+    eps: float = 1e-8,
+) -> tuple[np.ndarray, np.ndarray]: ...
+
+
+@overload
+def get_rigid_transform(
+    coords: torch.Tensor,
+    target: torch.Tensor,
+    weights: torch.Tensor | None,
+    eps: float = 1e-8,
+) -> tuple[torch.Tensor, torch.Tensor]: ...
+
+
+def get_rigid_transform(
+    coords: np.ndarray | torch.Tensor,
+    target: np.ndarray | torch.Tensor,
+    weights: np.ndarray | torch.Tensor | None,
+    eps: float = 1e-8,
+) -> tuple[np.ndarray | torch.Tensor, np.ndarray | torch.Tensor]:
+    """
+    Dispatch function to compute rigid transform for either NumPy or PyTorch inputs.
+    """
+    if isinstance(coords, np.ndarray):
+        return get_rigid_transform_numpy(coords, target, weights, eps)
+    elif isinstance(coords, torch.Tensor):
+        return get_rigid_transform_torch(coords, target, weights, eps)
+    else:
+        raise TypeError(
+            f"Unsupported array type: {type(coords)}. "
+            "Expected np.ndarray or torch.Tensor."
+        )
+
+
 def get_rigid_transform_torch(
     coords: torch.Tensor,
     target: torch.Tensor,
-    weights: torch.Tensor,
+    weights: torch.Tensor | None,
     eps: float = 1e-8,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -658,6 +696,9 @@ def get_rigid_transform_torch(
     """
     device = coords.device
     original_dtype = coords.dtype
+
+    if weights is None:
+        weights = torch.ones(coords.shape[:-1], dtype=coords.dtype, device=device)
 
     if not weights.any():
         # If there are no valid atoms, return identity transform

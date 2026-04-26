@@ -311,6 +311,8 @@ class AtomArray(PlainLayout[np.ndarray]):
     ----------
     atom_type: np.ndarray (int)
         Atom types of shape [Ntoken, 24], indicating the type of each atom.
+    atom_index: np.ndarray (int)
+        Atom indices of shape [Ntoken, 24], starting from 0 for each chain.
     ref_atom_name_chars: np.ndarray (int)
         Encoded atom name of shape [Ntoken, 24, 4].
     ref_element: np.ndarray (int)
@@ -340,6 +342,7 @@ class AtomArray(PlainLayout[np.ndarray]):
     """
 
     atom_type: np.ndarray  # [Ntoken, 24], int
+    atom_index: np.ndarray  # [Ntoken, 24], int
     ref_atom_name_chars: np.ndarray  # [Ntoken, 24, 4], int
     ref_element: np.ndarray  # [Ntoken, 24], int
     ref_charge: np.ndarray  # [Ntoken, 24], float
@@ -359,6 +362,7 @@ class AtomArray(PlainLayout[np.ndarray]):
     def __post_init__(self):
         shape = self.layout_shape
         check_array(self.atom_type, name="atom_type", dtype=np.integer, shape=shape)
+        check_array(self.atom_index, name="atom_index", dtype=np.integer, shape=shape)
         check_array(
             self.ref_atom_name_chars,
             name="ref_atom_name_chars",
@@ -396,6 +400,7 @@ class AtomArray(PlainLayout[np.ndarray]):
         shape = (num_tokens, num_atoms)
         return cls(
             atom_type=full_minus_one(shape),
+            atom_index=full_minus_one(shape),
             ref_atom_name_chars=full_minus_one((*shape, 4)),
             ref_element=full_minus_one(shape),
             ref_charge=full_nan(shape),
