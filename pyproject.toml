@@ -1,18 +1,32 @@
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "kfold"
-version = "0.2.0"
-description = "K-Fold"
+version = "0.0.1"
+authors = [
+  { name = "Your Name", email = "your.email@example.com" }
+]
+description = "K-Fold Bio Foundation Model"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = { text = "APACHE LICENSE, VERSION 2.0" }
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 dependencies = [
   # core dependencies
   "torch",
   "numpy",
+
   # additional dependencies
   "tqdm",
   "scipy",
@@ -20,15 +34,14 @@ dependencies = [
   "rdkit",
   "einops",
   "gemmi",
-]
 
-[project.optional-dependencies]
-cuequiv = [
-  "torch>=2.7.0",
+  # cuequivariance
   "cuequivariance_torch>=0.6.0",
   "cuequivariance_ops_cu12>=0.6.0",
   "cuequivariance_ops_torch_cu12>=0.6.0",
 ]
+
+[project.optional-dependencies]
 dev = ["pre-commit", "pytest"]
 train = [
   'lightning', # for training loop

@@ -233,8 +233,8 @@ class InputDataPipeline:
         # Collect bonded atoms
         chain_bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
         for (chain_id1, res_idx1, atom1), (chain_id2, res_idx2, atom2) in input.bonds:
-            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1.upper())
-            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2.upper())
+            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
+            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
 
         # TODO: add constraints if needed (covalent ligands)
         # This should be conducted here to property assign
@@ -508,6 +508,11 @@ class InputDataPipeline:
                 assert seq.smiles is not None, (
                     "Either CCD code or SMILES must be provided."
                 )
+                if bonded_atoms is not None and len(bonded_atoms) > 0:
+                    raise ValueError(
+                        "Covalent bonds are not supported for ligand sequences "
+                        "without CCD codes."
+                    )
                 # NOTE: Using "LIG" as a placeholder code for ligands from SMILES
                 # This will be replaced later during mmcif writing.
                 code = f"LIG{entity_id}"
@@ -517,7 +522,6 @@ class InputDataPipeline:
                     ccd_sequences=[code],
                     smiles=seq.smiles,
                     ccd=self.ccd,
-                    bonded_atoms=bonded_atoms,
                 )
         else:
             raise ValueError(f"Unsupported sequence type: {type(seq)}")

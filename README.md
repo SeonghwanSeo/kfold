@@ -1,67 +1,98 @@
-# K-Fold
+# K-Fold Bio Foundation Co-Folding Model
 
-K-Fold is a biomolecular foundation model for high-accuracy structure prediction of biomolecular complexes.
-K-Fold leverages pre-trained sequence encoders and structure encoders to achieve high fidelity **without Multiple Sequence Alignments (MSAs)**.
-By incorporating an **apo-to-holo diffusion bridge**, K-Fold models the transition from unbound to bound states, serving as a unified and extensible research tool for the computational biology community.
 
----
+## \[IMPORTANT\] Notice for Everyone: Development Guidelines
 
-## Installation
+### Project sturcture
 
-K-Fold requires Python 3.11+.
+Please read [`DEVELOPER_GUIDE.md`](./docs/DEVELOPER_GUIDE.md).
+
+### Formatting and Linting
+
+To ensure code quality and consistency, please run the following commands after [Installation](#installation):
 
 ```bash
-# Clone the repository
-git clone https://github.com/wykim-lab/kfold.git
-cd kfold
+pre-commit install
+```
 
-# Install with cuequivariance kernels
-pip install -e '.[cuequiv]'
+## Quick Start
 
-# Install in editable mode with training/dev dependencies
+### Installation
+
+```bash
 pip install -e '.[train,dev]'
 pre-commit install
 ```
 
-## Inference
-
-K-Fold takes a YAML or JSON input file defining the molecular entities and their sequences/apo structures.
+### Inference
 
 ```bash
 # Single-GPU Inference
 python scripts/inference.py \
-  --config configs/model/kfold-ecsi.yaml \
-  --checkpoint path/to/model.ckpt \
-  --input examples/casp15_h1106.yaml \
-  --out_dir ./results/
+  --config <CONFIG_PATH> \
+  --checkpoint <CKPT_PATH> \
+  --input <INPUT_YAML_PATH_OR_DIR> \
+  --out_dir ./inference_results/ \
+  --num_recycles 10 \
+  --num_steps 200 \
+  --num_samples 5
+
+# Multi-GPU Inference
+python scripts/inference_multigpu.py \
+  --config <CONFIG_PATH> \
+  --checkpoint <CKPT_PATH> \
+  --input <INPUT_YAML_PATH_OR_DIR> \
+  --out_dir ./inference_results/ \
+  --num_gpus 8
 ```
 
-For detailed instructions on input formats (SMILES, CCD, apo paths) and multi-GPU execution, see the **[Inference Guide](docs/inference.md)**.
+- `CONFIG_PATH`: Path to the model configuration file (YAML format).
+- `CKPT_PATH`: Path to the trained model checkpoint file.
+- `INPUT_YAML_PATH_OR_DIR`: Path to the input single YAML file or directory containing multiple YAML files.
+- `OUTPUT_DIR`: Directory where the inference results will be saved (default: `./inference_results/`).
+- `num_recycles`: Number of recycling iterations during inference (default: 10).
+- `num_steps`: Number of optimization steps during inference (default: 200).
+- `num_samples`: Number of samples to generate for each input (default: 5).
 
-> Future Work
-> - **Automatic Apo Prediction**: Automatically call ESMFold to generate protein apo structures if not provided in the query.
-> - **Improved Folding Model**: Develop and integrate a superior protein folding model to provide high-quality apo structures automatically.
+#### Single-GPU Inference Example
 
----
-
-## Training & Development
-
-K-Fold is designed to be highly extensible for structural biology research.
-
-- **Development Guidelines**: See **[Developer Guide](docs/developers/DEVELOPER_GUIDE.md)** for project structure and coding standards.
-- **Training**: Detailed instructions for dataset preparation and training loops are available in the **[Training Guide](docs/developers/TRAINING_GUIDE.md)**.
-- **Implementation Notes**: For details on AF3 algorithm reproduction and K-Fold specific modifications, see **[Development Note](docs/developers/DEVELOPMENT_NOTE.md)**.
-
----
-
-## License
-
-This project is licensed under the terms of the Apache 2.0 license. See `LICENSE` for more details.
-
-## Citation
-
-If you use K-Fold in your research, please cite:
-
-```text
-(TODO: Add citation here)
+```bash
+python scripts/inference.py \
+  --config <CONFIG_PATH> \
+  --checkpoint <CKPT_PATH> \
+  --input ./examples/queries/casp15_h1106.yaml \
+  --out_dir ./out/
 ```
+
+#### Multi-GPU Inference Example
+
+```bash
+python scripts/inference_multigpu.py \
+  --config <CONFIG_PATH> \
+  --checkpoint <CKPT_PATH> \
+  --input ./examples/queries/ \
+  --out_dir ./out/
+```
+
+**TODO**
+
+### Training
+
+See [`docs/TRAINING_GUIDE.md`](./docs/TRAINING_GUIDE.md) for detailed training instructions.
+
+```bash
+python ./scripts/train.py -h
+
+# Run first with debug mode
+python ./scripts/train.py --config ./configs/train-af3-tiny.yaml --debug
+
+# If you want to skip validation, use --skip_val
+python ./scripts/train.py --config ./configs/train-af3-tiny.yaml --debug --skip_val
+
+# If everything works well, run full training
+python ./scripts/train.py --config ./configs/train-af3.yaml --wandb --num_gpus ...
+```
+
+### Evaluation
+
+See [`docs/EVALUATION_GUIDE.md`](./docs/EVALUATION_GUIDE.md) for detailed evaluation instructions.

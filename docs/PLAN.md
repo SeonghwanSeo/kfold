@@ -89,7 +89,6 @@ If the features listed below are completed, I will include the corresponding PR 
 - [x] Prepare our own validation set. - [#171](https://github.com/SeonghwanSeo/kfold/pull/171)
 - [x] Compute validation metrics with low-homology chains and interfaces only. - [#184](https://github.com/SeonghwanSeo/kfold/pull/184)
 - [x] Update model selection criteria as average of top5 and top1 LDDT. - [#184](https://github.com/SeonghwanSeo/kfold/pull/184)
-- [x] Implement **WeightedMSELoss**, **BondLoss**, and **SmoothLDDTLoss** for training.
 
 ### Inference
 - [x] Prepare data preparation pipeline for inference (from YAML config to `TokenizedStructure`) - [#113](https://github.com/SeonghwanSeo/kfold/pull/113)
