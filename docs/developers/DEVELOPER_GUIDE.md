@@ -72,13 +72,16 @@ It serves as a reference for developers and contributors working with the K-Fold
 
   - **`models/`**: Core K-Fold model implementations
     - `models/`: Main K-Fold model classes
-    - `modules/`: Submodules used in the K-Fold model (e.g., sequence encoder, ...)
+    - `modules/`: Submodules used in the K-Fold model (e.g., sequence encoder, structure module, ...)
     - `layers/`: Layer implementations for co-folding
-      - `primitives/`: Basic building blocks (e.g., linear, attention, ...)
-      - `alphafold3/`: Layers based on the Alphafold3 architecture
-      - `kfold/`: Custom layers specific to K-Fold architecture
+      - `primitives/`: Basic building blocks (linear, attention, triangle updates, AdaLN)
+      - `alphafold3/`: Layers based on the Alphafold3 architecture (pairformer, diffusion, embeddings)
+      - `kfold/`: Custom layers specific to K-Fold architecture (PLM module, ECSI modules)
 
   - **`training/`**: Training pipeline components (pytorch-lightning)
+    - `loss/`: Loss function implementations (WeightedMSE, BondLoss, SmoothLDDTLoss)
+    - `metrics/`: Validation metric implementations
+    - `training_module.py`: Main LightningModule implementation
 
 - **`scripts/`**: Utility scripts for data processing, training, and evaluation.
   - **`train.py`**: Script to train the K-Fold model.
@@ -90,7 +93,7 @@ It serves as a reference for developers and contributors working with the K-Fold
 
 ## Training Pipeline
 
-See [`docs/TRAINING_GUIDE.md`](TRAINING_GUIDE.md) for detailed instructions on preparing datasets and training the K-Fold model.
+See [`TRAINING_GUIDE.md`](TRAINING_GUIDE.md) for detailed instructions on preparing datasets and training the K-Fold model.
 
 ---
 
@@ -104,7 +107,7 @@ python scripts/inference.py --config <config_path> --checkpoint <checkpoint_path
 
 ### Benchmark
 
-See [`docs/EVALUATION_GUIDE.md`](EVALUATION_GUIDE.md) for detailed instructions on benchmarking the K-Fold model.
+(TODO: `EVALUATION_GUIDE.md` for detailed instructions on benchmarking the K-Fold model.)
 
 ---
 

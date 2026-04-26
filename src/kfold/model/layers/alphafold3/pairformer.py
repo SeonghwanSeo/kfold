@@ -17,6 +17,7 @@ from kfold.model.layers.primitives import (
 )
 from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
+from kfold.utils.torch import add
 
 from .attention_pair_bias import SelfAttentionPairBias
 from .transition import Transition
@@ -184,58 +185,58 @@ class PairformerBlock(nn.Module):
         """Perform the forward pass.
         See Section 3.6 Algorithm 20 Pairformer Stack
         """
+        _add = partial(add, inplace=not self.training)
 
         # Line 2
-        z = z + self.dropout_rowwise(
-            self.tri_mul_out(
-                z,
-                pair_mask,
-                use_kernels=use_cuequiv_kernels,
-            )
+        z = _add(
+            z,
+            self.dropout_rowwise(
+                self.tri_mul_out(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
         )
 
         # Line 3
-        z = z + self.dropout_rowwise(
-            self.tri_mul_in(
-                z,
-                mask=pair_mask,
-                use_kernels=use_cuequiv_kernels,
-            )
+        z = _add(
+            z,
+            self.dropout_rowwise(
+                self.tri_mul_in(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
         )
 
         # Line 4
-        z = z + self.dropout_rowwise(
-            self.tri_att_start(
-                z,
-                mask=pair_mask,
-                use_kernels=use_cuequiv_kernels,
-            )
+        z = _add(
+            z,
+            self.dropout_rowwise(
+                self.tri_att_start(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
         )
 
         # Line 5
-        z = z + self.dropout_columnwise(
-            self.tri_att_end(
-                z,
-                mask=pair_mask,
-                use_kernels=use_cuequiv_kernels,
-            )
+        z = _add(
+            z,
+            self.dropout_columnwise(
+                self.tri_att_end(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
         )
 
         # Line 6
-        z = z + self.transition_z(z)
+        z = _add(z, self.transition_z(z))
 
         # Line 7
         pair_bias = self.proj_z_to_bias(z)  # [B, L, L, H]
         pair_bias = permute_final_dims(pair_bias, (2, 0, 1))  # [B, H, L, L])
-        s = s + self.attention(
-            a=s,  # [B, L, C_s]
-            s=None,
-            pair_bias=pair_bias,  # [B, H, L, L]
-            mask=single_mask,  # [B, L]
-            use_kernels=use_cuequiv_kernels,
+        s = _add(
+            s,
+            self.attention(
+                a=s,  # [B, L, C_s]
+                s=None,
+                pair_bias=pair_bias,  # [B, H, L, L]
+                mask=single_mask,  # [B, L]
+                use_kernels=False,
+            ),
         )
 
         # Line 8
-        s = s + self.transition_s(s)
+        s = _add(s, self.transition_s(s))
 
         return s, z

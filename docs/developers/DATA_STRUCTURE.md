@@ -20,7 +20,7 @@ This document describes the data structure used in **K-Fold** for protein comple
 #### Preprocessing (mmCIF -> `RefStructure`)
 
 The preprocessing stage is performed once before training to convert raw mmCIF files into an array-based format for efficient loading during training.
-This processing is done using the functions defined in [`kfold.data.pipelines.cif_factory`](../src/kfold/data/pipelines/cif_factory.py).
+This processing is done using the functions defined in [`kfold.data.pipelines.cif_factory`](../../src/kfold/data/pipelines/cif_factory.py).
 
 In addition, the preprocessing stage also includes apo structure processing from `AFDB, ESMFold` output pdb files and apo tokenization for populating apo structure information into the model input features.
 1.  **PDB Parsing:** Extracts a protein sequence and an atom37 structure (`(L, 37, 3)`) from the PDB/mmCIF file and saves them in `LMDB` format on disk.
@@ -54,7 +54,7 @@ The inference stage starts by parsing a query file (YAML or JSON) that specifies
 
 ## Data Structure
 
-K-Fold provides high-level data structures for reference structures via `kfold.data.types.structure.RefStructure`. This contains chains, covalent connections, and metadata. See [here](../src/kfold/data/types/structure.py) for more details.
+K-Fold provides high-level data structures for reference structures via `kfold.data.types.structure.RefStructure`. This contains chains, covalent connections, and metadata. See [here](../../src/kfold/data/types/structure.py) for more details.
 
 ```python
 from kfold.data.types.metadata import Metadata
@@ -68,7 +68,7 @@ metadata: Metadata = ref_struct.metadata
 
 ## Tokenized Structure
 
-K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`. This contains sub-layouts for chain, residue, token, atom, and bond structures. See [here](../src/kfold/data/types/tokenized.py) for more details.
+K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`. This contains sub-layouts for chain, residue, token, atom, and bond structures. See [here](../../src/kfold/data/types/tokenized.py) for more details.
 
 ```python
 from kfold.data.types import tokenized
@@ -126,8 +126,9 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `ref_mask`            | `(Ntoken, 24)`    | Whether the atom is present in the reference conformer |
 | `apo_coords`          | `(Ntoken, 24, 3)` | Apo structure coordinates |
 | `apo_mask`            | `(Ntoken, 24)`    | Apo structure mask |
+| `prior_coords`        | `(Ntoken, 24, Np, 3)`| Prior coordinates (for ECSI) |
 | `pad_mask`            | `(Ntoken, 24)`    | Mask for valid atoms or padding |
-| `coords`              | `(Ntoken, 24, 3)` | Target coordinates for training |
+| `label_coords`        | `(Ntoken, 24, 3)` | Target coordinates for training |
 | `resolved_mask`       | `(Ntoken, 24)`    | Whether the atom is resolved |
 
 
@@ -157,7 +158,7 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 
 ## Model Input
 
-K-Fold provides high-level data structures for model input features via `kfold.data.types.model_input.FoldingInput`. This contains sub-layouts for atom, token, and bond features. See [here](../src/kfold/data/types/model_input.py) for more details.
+K-Fold provides high-level data structures for model input features via `kfold.data.types.model_input.FoldingInput`. This contains sub-layouts for atom, token, and bond features. See [here](../../src/kfold/data/types/model_input.py) for more details.
 
 ```python
 from kfold.data.types import model_input
@@ -207,6 +208,7 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `frames_index`    | `(Ntoken, 3)`   | Frame defining atom index, e.g., protein: (N, Cα, C) |
 | `frames_mask`     | `(Ntoken,)`     | Whether all frame atoms are resolved |
 | `pad_mask`        | `(Ntoken,)`     | Mask for valid tokens or padding |
+| `pocket_contact_type`| `(Ntoken,)`  | Pocket contact type |
 | `center_coords`   | `(Ntoken, 3)`   | Center atom coords (Cα, C1') |
 | `repr_coords`    | `(Ntoken, 3)`   | Representative atom coords (Cβ, C4/C2) |
 | `center_mask`     | `(Ntoken,)`     | Whether center atom is present |
@@ -224,6 +226,7 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `ref_space_uid`       | `(Natom,)`        | Reference atom unique ID |
 | `token_index`         | `(Natom,)`        | Token index to which the atom belongs |
 | `apo_coords`          | `(Natom, 3)`      | Apo structure coordinates |
+| `prior_coords`        | `(Natom, Np, 3)`  | Prior coordinates (for ECSI) |
 | `apo_mask`            | `(Natom,)`        | Apo structure mask |
 | `pad_mask`            | `(Natom,)`        | Mask for valid atoms or padding |
 | `label_coords`        | `(Natom, 3)`      | Target coordinates for training |

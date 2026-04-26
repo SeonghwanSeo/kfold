@@ -30,11 +30,11 @@ from typing import TypeVar
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.score_model.ecsi_diffusion import ECSIDiffusionModule
+from kfold.model.modules.score_model.base import AF3StyleDiffusionModule
 from kfold.utils.geometry.random_augment import do_centering
 from kfold.utils.geometry.rigid_align import rigid_align
-from kfold.utils.misc import expand_dim
 from kfold.utils.registry import STRUCTURE_MODULE
+from kfold.utils.torch import expand_dim
 
 from . import kfold_ecsi as base_ecsi
 
@@ -209,7 +209,7 @@ class KFoldECSI_Decoupling(base_ecsi.KFoldECSI):
         gamma_scale_com_tentacle: float = 0.5  # Tangential noise scale for COM
         gamma_scale_com_radial: float = 0.5  # Radial noise scale for COM
 
-    def __init__(self, cfg: Config, score_model: ECSIDiffusionModule):
+    def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the ECSI module.
 
         The constructor copies the high-level config fields onto runtime
@@ -375,7 +375,7 @@ class KFoldECSI_Decoupling(base_ecsi.KFoldECSI):
 
         # Compute time-independent variables
         z = model.get_pair_conditioning(f_input, z_trunk)
-        q, c, p = model.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        q, c, p = model.get_atom_embeddings(f_input, s_trunk, z)
         pair_bias = model.get_pair_bias(z)
         del z_trunk, z  # Free up memory for large LxL tensors
 

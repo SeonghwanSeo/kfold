@@ -23,6 +23,8 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
             The atom single representation dimension.
         channel_atompair : int
             The atom pair representation dimension.
+        channel_coords : int
+            The coordinate dimension, default to 3 for (x, y, z).
         atom_encoder_blocks : int, optional
             The number of blocks of the atom encoder, by default 3.
         atom_encoder_heads : int, optional
@@ -43,6 +45,7 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
         channel_z: int = 128
         channel_atom: int = 128
         channel_atompair: int = 16
+        channel_coords: int = 3
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
         token_transformer_blocks: int = 24
@@ -58,7 +61,7 @@ class AF3DiffusionModule(AF3StyleDiffusionModule):
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
-            channel_coords=3,
+            channel_coords=cfg.channel_coords,
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
             token_transformer_blocks=cfg.token_transformer_blocks,

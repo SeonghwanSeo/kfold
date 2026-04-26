@@ -32,7 +32,6 @@ class MultiheadAttention(nn.Module):
         self,
         d_model: int,
         num_heads: int,
-        dropout: float = 0.0,
         bias: bool = True,
         use_rotary_embeddings: bool = False,
     ):
@@ -40,7 +39,6 @@ class MultiheadAttention(nn.Module):
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
         self.d_model = d_model
         self.num_heads = num_heads
-        self.dropout = dropout
         self.d_head = d_model // num_heads
         self.scaling = self.d_head**-0.5
 
@@ -58,8 +56,7 @@ class MultiheadAttention(nn.Module):
         x: Tensor,
         seq_id: Tensor | None,
         pos_id: Tensor | None = None,
-        return_attn: bool = False,
-    ) -> tuple[Tensor, Tensor | None]:
+    ) -> torch.Tensor:
         """
         x: [B, L, D]
         seq_id: [B, L] (bool or int)
@@ -102,33 +99,11 @@ class MultiheadAttention(nn.Module):
         # k: [B, H, L, D_h]
         # v: [B, H, L, D_h]
         # attn_mask: [B, 1, L, L] or None
-
-        if return_attn:
-            # Compute attention weights
-            # [B, H, L, D_h] @ [B, H, D_h, L] -> [B, H, L, L]
-            q = q * self.scaling
-            attn = q @ k.transpose(-2, -1)
-
-            if attn_mask is not None:
-                # Apply attention mask if provided
-                attn = attn.masked_fill(~attn_mask, float("-inf"))
-
-            attn = F.softmax(attn, dim=-1).to(attn.dtype)
-            attn = F.dropout(attn, p=self.dropout, training=self.training)
-            out = attn @ v
-        else:
-            out = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=attn_mask,
-                dropout_p=self.dropout if self.training else 0.0,
-            )
-            attn = None
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
         out = out.transpose(-2, -3).contiguous().flatten(-2)
         out = self.out_proj(out)
-        return out, attn
+        return out
 
     def apply_feature_rotary(self, q: Tensor, k: Tensor, pos_id: Tensor):
         B, H, L, Dh = q.shape
@@ -200,7 +175,6 @@ class TransformerLayer(nn.Module):
             d_model=d_model,
             num_heads=n_heads,
             use_rotary_embeddings=use_rotary_embeddings,
-            dropout=0.1,
         )
 
         d_expanded = int(d_model * expansion_ratio)
@@ -215,11 +189,10 @@ class TransformerLayer(nn.Module):
         pos_id: torch.Tensor | None = None,
     ):
         r1 = self.self_attn_layer_norm(x)
-        r1, _ = self.self_attn(r1, seq_id, pos_id)
-        x = x + r1
+        r1 = self.self_attn(r1, seq_id, pos_id)
+        x += r1
 
         r2 = self.final_layer_norm(x)
-        r2 = gelu(self.fc1(r2))
-        r2 = self.fc2(r2)
-        x = x + r2
+        r2 = self.fc2(gelu(self.fc1(r2)))
+        x += r2
         return x

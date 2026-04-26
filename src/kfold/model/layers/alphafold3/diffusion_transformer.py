@@ -23,6 +23,7 @@ import torch.nn as nn
 from kfold.model.layers.primitives import AdaLN, LayerNorm, Linear, LinearNoBias, SwiGLU
 from kfold.model.layers.primitives.utils import permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
+from kfold.utils.torch import add
 
 from .attention_pair_bias import CrossAttentionPairBias, SelfAttentionPairBias
 from .utils import build_atom_to_qk_fn
@@ -212,12 +213,16 @@ class GlobalTransformerBlock(nn.Module):
         a : torch.Tensor
             The output single representation tensor (*, L, c_a)
         """
+        _add = partial(add, inplace=not self.training)
+
         # Line 2
         pair_bias = self.linear_z_to_bias(z)  # [*, L, L, H]
         pair_bias = permute_final_dims(pair_bias, (0, 3, 1, 2))  # [*, H, L, L]
-        a = a + self.attention(a, s, pair_bias, mask, use_kernels=use_cuequiv_kernels)
+        a = _add(
+            a, self.attention(a, s, pair_bias, mask, use_kernels=use_cuequiv_kernels)
+        )
         # Line 3
-        a = a + self.transition(a, s)
+        a = _add(a, self.transition(a, s))
         return a
 
 
@@ -353,10 +358,14 @@ class CachedGlobalTransformerBlock(nn.Module):
         a : torch.Tensor
             The output single representation tensor (*, L, c_a)
         """
+        _add = partial(add, inplace=not self.training)
+
         # Line 2
-        a = a + self.attention(a, s, pair_bias, mask, use_kernels=use_cuequiv_kernels)
+        a = _add(
+            a, self.attention(a, s, pair_bias, mask, use_kernels=use_cuequiv_kernels)
+        )
         # Line 3
-        a = a + self.transition(a, s)
+        a = _add(a, self.transition(a, s))
         return a
 
 
@@ -417,7 +426,7 @@ class LocalTransformerStack(nn.Module):
         s : torch.Tensor
             The single conditioning tensor (*, L, c_s)
         z : torch.Tensor
-            The pair representation tensor (*, Lq, Lk, c_z)
+            The pair conditioning tensor (*, Lq, Lk, c_z)
         mask : torch.Tensor
             The attention mask tensor (*, L)
 
@@ -503,12 +512,14 @@ class LocalTransformerBlock(nn.Module):
         a_q : torch.Tensor
             The output single representation tensor (*, Lq, c_a)
         """
+        _add = partial(add, inplace=not self.training)
+
         # Line 2
         # Create pair bias for local attention
         pair_bias = self.linear_z_to_bias(z)  # [*, Lq, Lk, H]
         pair_bias = permute_final_dims(pair_bias, (0, 3, 1, 2))  # [*, W, H, Lq, Lk]
         # Apply attention with pair bias
-        a_q = a_q + self.attention(a_q, a_k, s_q, s_k, pair_bias, mask)
+        a_q = _add(a_q, self.attention(a_q, a_k, s_q, s_k, pair_bias, mask))
         # Line 3
-        a_q = a_q + self.transition(a_q, s_q)
+        a_q = _add(a_q, self.transition(a_q, s_q))
         return a_q

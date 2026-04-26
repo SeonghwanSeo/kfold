@@ -106,7 +106,6 @@ class VanillaGeometricReasoningOriginalImpl(nn.Module):
         v_heads: int,
         num_vector_messages: int = 1,
         mask_and_zero_frameless: bool = True,
-        divide_residual_by_depth: bool = False,
         bias: bool = False,
     ):
         super().__init__()
@@ -172,7 +171,7 @@ class VanillaGeometricReasoningOriginalImpl(nn.Module):
             _s_q = max(0, attn_bias.size(2) - s_q)
             _s_k = max(0, attn_bias.size(3) - s_k)
             attn_bias = attn_bias[:, :, _s_q:, _s_k:]
-            attn_weight = attn_weight + attn_bias
+            attn_weight += attn_bias
         attn_weight = torch.softmax(attn_weight, dim=-1)
         attn_out = attn_weight.matmul(value)
         attn_out = (
@@ -188,7 +187,7 @@ class VanillaGeometricReasoningOriginalImpl(nn.Module):
             attn_out, "b s (h m) d -> b s (h m d)", m=self.num_vector_messages
         )
         if self.mask_and_zero_frameless:
-            attn_out = attn_out.masked_fill(~affine_mask[..., None], 0.0)
+            attn_out.masked_fill_(~affine_mask[..., None], 0.0)
         s = self.out_proj(attn_out)
         return s
 
@@ -233,14 +232,15 @@ class VanillaUnifiedTransformerBlock(nn.Module):
         self.scaling_factor = residue_scaling_factor
 
     def forward(self, x, attention_mask, frames, frames_mask):
+        inv_scaling = 1 / self.scaling_factor
         if self.use_plain_attn:
             r1 = self.attn(x, attention_mask)
-            x = x + r1 / self.scaling_factor
+            x.add_(r1, alpha=inv_scaling)
         if self.use_geom_attn:
             r2 = self.geom_attn(x, attention_mask, frames, frames_mask)
-            x = x + r2 / self.scaling_factor
-        r3 = self.ffn(x) / self.scaling_factor
-        x = x + r3
+            x.add_(r2, alpha=inv_scaling)
+        r3 = self.ffn(x)
+        x.add_(r3, alpha=inv_scaling)
         return x
 
 
@@ -288,7 +288,6 @@ class VanillaTransformerStack(nn.Module):
         affine=None,
         affine_mask=None,
     ):
-        *batch_dims, _ = x.shape
         for block in self.blocks:
             x = block(x, attention_mask, affine, affine_mask)
         return self.norm(x), x
@@ -308,7 +307,7 @@ class VanillaGeometricEncoderStack(VanillaTransformerStack):
                     expansion_ratio=4,
                     bias=True,
                 )
-                for i in range(n_layers)
+                for _ in range(n_layers)
             ]
         )
         self.norm = nn.Identity()

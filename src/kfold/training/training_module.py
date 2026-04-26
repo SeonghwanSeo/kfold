@@ -94,8 +94,8 @@ class TrainingConfig(_Config):
     # for structure model training
     diffusion_batch_size: int = 48
     # for confidence module training
-    num_steps: int = 20
-    num_diffusion_samples: int = 1
+    num_mini_rollout_steps: int = 20
+    num_mini_rollout_samples: int = 1
 
     # Logging: time-binned train losses (epoch-level)
     # If enabled, logs
@@ -393,8 +393,8 @@ class KFoldTrainingModule(pl.LightningModule):
         out: dict[str, torch.Tensor] = self(
             f_input=f_input,
             num_recycles=num_recycles,
-            num_steps=training_config.num_steps,
-            num_samples=training_config.num_diffusion_samples,
+            num_steps=training_config.num_mini_rollout_steps,
+            num_samples=training_config.num_mini_rollout_samples,
             diffusion_batch_size=training_config.diffusion_batch_size,
             mode="train",
         )

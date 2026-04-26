@@ -31,15 +31,18 @@ class RelativePositionEncoding(nn.Module):
         self.s_max: int = s_max
         self.dimension: int = 4 * (r_max + 1) + 2 * (s_max + 1) + 1
 
-    def forward(self, f_input: FoldingInput) -> torch.Tensor:
+    def forward(
+        self, f_input: FoldingInput, dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
         """See Section 3.1.2 Algorithm 3: Relative position encoding in the AF3 paper.
         NOTE: Differ to AlphaFold3 official algorithm, its official algorithm does
         not pass linear projection layer here.
         """
-        return self.get_relative_position_encoding(f_input)
+        return self.get_relative_position_encoding(f_input, dtype)
 
-    @torch.no_grad()
-    def get_relative_position_encoding(self, f_input: FoldingInput) -> torch.Tensor:
+    def get_relative_position_encoding(
+        self, f_input: FoldingInput, dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
         # All shape: [B, Lt]
         asym_id = f_input.token.asym_id
         entity_id = f_input.token.entity_id
@@ -66,7 +69,7 @@ class RelativePositionEncoding(nn.Module):
             2 * self.r_max + 1,
         )
         # Line 5
-        a_rel_pos = F.one_hot(d_residue, 2 * self.r_max + 2).float()
+        a_rel_pos = F.one_hot(d_residue, 2 * self.r_max + 2).to(dtype)
 
         # Line 6
         d_token = torch.clip(
@@ -80,7 +83,7 @@ class RelativePositionEncoding(nn.Module):
             2 * self.r_max + 1,
         )
         # Line 7
-        a_rel_token = F.one_hot(d_token, 2 * self.r_max + 2).float()
+        a_rel_token = F.one_hot(d_token, 2 * self.r_max + 2).to(dtype)
 
         # Line 8
         d_chain = torch.clip(
@@ -98,14 +101,14 @@ class RelativePositionEncoding(nn.Module):
             2 * self.s_max + 1,
         )
         # Line 9
-        a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2).float()
+        a_rel_chain = F.one_hot(d_chain, 2 * self.s_max + 2).to(dtype)
 
         # Line 10 (concat)
         rel_position_encoding = torch.cat(
             [
                 a_rel_pos,
                 a_rel_token,
-                b_same_entity.float().unsqueeze(-1),
+                b_same_entity.to(dtype).unsqueeze(-1),
                 a_rel_chain,
             ],
             dim=-1,

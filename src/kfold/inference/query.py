@@ -230,20 +230,27 @@ class Query:
             f.write(self.yaml)
 
 
-def normalize_apo_path(apo_path: str, input_dir: str | Path) -> str:
-    """Normalize the apo file path to be absolute based on the input directory.
+def resolve_apo_path(apo_path: str, input_dir: str | Path) -> str:
+    """Resolve the apo file path to be absolute based on the search priority.
+
+    Paths are resolved in the following priority:
+    1. Absolute Path: If an absolute path is provided, it is used directly.
+    2. Relative to CWD: If the path exists relative to the current working directory,
+        it is used.
+    3. Relative to Input File: If neither works, the path is resolved relative to the
+        input file directory.
 
     Parameters
     ----------
     apo_path : str
         The original apo file path from the input.
     input_dir : str | Path
-        The directory of the input file, used as the base for relative paths.
+        The directory of the input file, used as the fallback base for relative paths.
 
     Returns
     -------
-    normalized_path: str
-        The normalized absolute path to the apo file.
+    resolved_path: str
+        The resolved absolute path to the apo file.
     """
     apo_path: Path = Path(apo_path)
     if not apo_path.exists():
@@ -294,9 +301,9 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
         )
         chain_type, chain_info = next(iter(seq_dict.items()))
         if chain_type == "protein" and "apo" in chain_info:
-            # Normalize apo path to be absolute based on input file directory
+            # Resolve apo path to be absolute
             input_dir = Path(json_or_yaml_path).parent
-            chain_info["apo"] = normalize_apo_path(chain_info["apo"], input_dir)
+            chain_info["apo"] = resolve_apo_path(chain_info["apo"], input_dir)
         match chain_type:
             case "protein":
                 sequence = ProteinSequence(**chain_info)
@@ -319,13 +326,15 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
                 raise ValueError(
                     f"Each bond entry must contain exactly two atoms: {bond}"
                 )
-            atom1, atom2 = bond
-            if len(atom1) != 3 or len(atom2) != 3:
+            if len(bond[0]) != 3 or len(bond[1]) != 3:
                 raise ValueError(
                     f"Each atom in bond entry must be specified as "
                     f"(chain_id, res_idx, atom_name): {bond}"
                 )
-            bonds.append((tuple(atom1), tuple(atom2)))
+            (chain1, res_idx1, atom_name1), (chain2, res_idx2, atom_name2) = bond
+            # Convert atom names to uppercase for consistency (e.g. "ca" -> "CA")
+            atom_name1, atom_name2 = atom_name1.upper(), atom_name2.upper()
+            bonds.append(((chain1, res_idx1, atom_name1), (chain2, res_idx2, atom_name2)))
 
     return Query(
         name=name,

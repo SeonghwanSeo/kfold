@@ -24,11 +24,7 @@ class BaseScoreModel(torch.nn.Module, ABC):
         self.is_compiled = True
 
     def _compile(self, **kwargs):
-        """Compile the trunk module."""
-        # NOTE: you should compile the submodules inside the trunk
-        # since the computation graph is changed depending on the
-        # number of recycling steps. Thus, compile the sub module
-        # instead of the whole trunk module.
+        """Compile the score model."""
         raise NotImplementedError("do_compile method is not implemented yet.")
 
     @abstractmethod
@@ -76,7 +72,7 @@ class AF3StyleDiffusionModule(BaseScoreModel):
     """AF3-style Diffusion module"""
 
     def _compile(self, **kwargs):
-        """Compile the trunk module."""
+        """Compile the diffusion stack."""
         self.diffusion_stack = torch.compile(self.diffusion_stack, **kwargs)
 
     @property
@@ -122,10 +118,6 @@ class AF3StyleDiffusionModule(BaseScoreModel):
             The denoised atom positions, shape [B, N, La, 3].
         """
         # NOTE (SeonghwanSeo): cuEquiv uses pytorch fallback for short sequences.
-        # Since training crop size triggers this fallback, the kernels provide
-        # no speedup during training. On the other hand, torch.compile provides
-        # significant speedup during training. Therefore, we disable kernels
-        # to optimize computational graph with torch.compile.
         return self.diffusion_stack(
             f_input,
             r_noisy,
@@ -183,7 +175,6 @@ class AF3StyleDiffusionModule(BaseScoreModel):
     def get_atom_embeddings(
         self,
         f_input: FoldingInput,
-        s_inputs: torch.Tensor,
         s_trunk: torch.Tensor,
         z: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -194,8 +185,6 @@ class AF3StyleDiffusionModule(BaseScoreModel):
         ----------
         f_input : FoldingInput
             The folding input.
-        s_inputs : torch.Tensor
-            The input single representation, shape [B, Lt, c_s].
         s_trunk : torch.Tensor
             The trunk single representation, shape [B, Lt, c_s].
         z : torch.Tensor
@@ -210,7 +199,7 @@ class AF3StyleDiffusionModule(BaseScoreModel):
         p : torch.Tensor
             The atom pair representation, shape [B, La, La, c_atompair].
         """
-        return self._diffusion_stack.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        return self._diffusion_stack.get_atom_embeddings(f_input, s_trunk, z)
 
     def get_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
         """Get the pair bias for the token transformer.

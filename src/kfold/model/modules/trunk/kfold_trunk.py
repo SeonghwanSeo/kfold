@@ -4,12 +4,14 @@ import dataclasses
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.kfold.plm_module import PLMEmbedder, PLMModule
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
+from kfold.utils.torch import add
 
 from .base import BaseTrunk
 
@@ -55,8 +57,6 @@ class KFoldTrunk(BaseTrunk):
             The structure embedding size for the PLM module.
         channel_seq_attn : int
             The number of attention maps for the PLM module.
-        use_attn : bool
-            Whether to use attention in the PLM module.
         num_heads_attn : int, optional
             The number of attention heads, by default 16
         num_heads_tri_attn : int, optional
@@ -73,7 +73,6 @@ class KFoldTrunk(BaseTrunk):
         channel_seq_emb: int = 1152
         channel_struct_emb: int = 1536
         channel_seq_attn: int = 648
-        use_attn: bool = True
 
         # plm module
         plm_module: PLMModuleConfig = dataclasses.field(default_factory=PLMModuleConfig)
@@ -92,31 +91,24 @@ class KFoldTrunk(BaseTrunk):
         # === PLM feature processing layers === #
         self.layernorm_seq_emb = LayerNorm(cfg.channel_seq_emb, create_offset=False)
         self.layernorm_struct_emb = LayerNorm(cfg.channel_struct_emb, create_offset=False)
-        plm_input_dim = cfg.channel_seq_emb + cfg.channel_struct_emb
+        channel_plm_input = cfg.channel_seq_emb + cfg.channel_struct_emb
 
         # Projections from PLM features to trunk features.
-        # TODO: if we consider two separate plms for intra- and inter-chain attentions,
+        # NOTE (Seonghwan): LayerNorm is applied for scalability to sequence length,
+        # as the scale of attention maps is reduced by sequence length.
+        # TODO: If we consider two separate plms for intra- and inter-chain attentions,
         # we may want to have separate projections for s_plm and z_plm.
-        self.use_attn = cfg.use_attn
-        if self.use_attn:
-            # (Seonghwan) LayerNorm is applied for scalability to sequence length,
-            # as the scale of attention maps is reduced by sequence length.
-            self.proj_seq_attn_to_z_init = nn.Sequential(
-                LayerNorm(cfg.channel_seq_attn, create_offset=False),
-                LinearNoBias(cfg.channel_seq_attn, cfg.channel_z, init="relu"),
-                nn.ReLU(),
-                LinearNoBias(cfg.channel_z, cfg.channel_z, init="final"),
-            )
-
-        # For the skip connection from PLM features to s_trunk output.
-        self.proj_plm_to_s_trunk = LinearNoBias(
-            plm_input_dim, cfg.channel_s, init="final"
+        self.proj_seq_attn_to_z_init = nn.Sequential(
+            LayerNorm(cfg.channel_seq_attn, create_offset=False),
+            LinearNoBias(cfg.channel_seq_attn, cfg.channel_z, init="relu"),
+            nn.ReLU(),
+            LinearNoBias(cfg.channel_z, cfg.channel_z, init="final"),
         )
 
         # === PLM Module === #
-        self.plm_embedder_refine: PLMEmbedder = PLMEmbedder(
+        self.plm_embedder: PLMEmbedder = PLMEmbedder(
             channel_s_input=cfg.channel_s,
-            channel_plm_input=plm_input_dim,
+            channel_plm_input=channel_plm_input,
             channel_plm=cfg.channel_plm,
         )
         self.plm_module: PLMModule = PLMModule(
@@ -132,7 +124,7 @@ class KFoldTrunk(BaseTrunk):
         )
 
         # === Pairformer Module === #
-        self.pairformer_module: PairformerStack = PairformerStack(
+        self.pairformer_stack: PairformerStack = PairformerStack(
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             num_heads_attn=cfg.pairformer.num_heads_attn,
@@ -149,36 +141,46 @@ class KFoldTrunk(BaseTrunk):
         self.linear_s = LinearNoBias(cfg.channel_s, cfg.channel_s, init="final")
         self.linear_z = LinearNoBias(cfg.channel_z, cfg.channel_z, init="final")
 
+        # === Skip connection === #
+        self.proj_plm_to_s_trunk = LinearNoBias(
+            channel_plm_input, cfg.channel_s, init="final"
+        )
+
         # Proteina-style register tokens (learnable sequence-level registers).
         self.num_register_tokens: int = cfg.num_register_tokens
-        if self.num_register_tokens < 0:
-            raise ValueError("num_register_tokens must be >= 0")
-        if self.num_register_tokens > 0:
-            self.register_tokens = nn.Parameter(
-                torch.empty(self.num_register_tokens, cfg.channel_s)
-            )
-            nn.init.normal_(
-                self.register_tokens, mean=0.0, std=float(cfg.register_token_init_std)
-            )
+        if (n := self.num_register_tokens) > 0:
+            self.register_tokens = nn.Parameter(torch.empty(n, cfg.channel_s))
+            nn.init.normal_(self.register_tokens, 0.0, cfg.register_token_init_std)
         else:
             self.register_tokens = None
 
     def _compile(self, **kwargs):
         """Compile the trunk module."""
-        # NOTE: you should compile the submodules inside the trunk
-        # since the computation graph is changed depending on the
-        # number of recycling steps. Thus, compile the sub module
-        # instead of the whole trunk module.
         self.plm_module = torch.compile(self.plm_module, **kwargs)
-        self.pairformer_module = torch.compile(self.pairformer_module, **kwargs)
+        self.pairformer_stack = torch.compile(self.pairformer_stack, **kwargs)
 
-    def forward(
+    def get_plm_module(self, no_compile: bool = False) -> PLMModule:
+        """Get the PLMModule."""
+        if self.is_compiled and no_compile:
+            return self.plm_module._orig_mod  # type: ignore
+        return self.plm_module
+
+    def get_pairformer_stack(self, no_compile: bool = False) -> PairformerStack:
+        """Get the PairformerStack."""
+        if self.is_compiled and no_compile:
+            return self.pairformer_stack._orig_mod  # type: ignore
+        return self.pairformer_stack
+
+    def forward(  # type: ignore
         self,
         s_inputs: torch.Tensor,
         s_init: torch.Tensor,
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
+        seq_emb: torch.Tensor,
+        seq_attn: torch.Tensor,
+        struct_emb: torch.Tensor,
         **kwargs,
     ) -> dict[str, torch.Tensor]:
         """Perform the forward pass.
@@ -195,6 +197,13 @@ class KFoldTrunk(BaseTrunk):
             The input features.
         num_recycles : int
             The number of recycling steps.
+        seq_emb : torch.Tensor
+            Tensor of shape (B, L, channel_seq_emb) containing sequence embeddings.
+        seq_attn : torch.Tensor
+            Tensor of shape (B, L, L, channel_seq_attn) containing attention maps
+            from the sequence encoder.
+        struct_emb : torch.Tensor
+            Tensor of shape (B, L, channel_struct_emb) containing structure embeddings.
 
         Returns
         -------
@@ -203,58 +212,54 @@ class KFoldTrunk(BaseTrunk):
         z_trunk: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        # Get PLM features
-        for k in ["seq_emb", "seq_attn", "struct_emb"]:
-            if k not in kwargs:
-                raise ValueError(f"Missing required PLM feature: {k}")
-        seq_emb: torch.Tensor = kwargs["seq_emb"]
-        seq_attn: torch.Tensor = kwargs["seq_attn"]
-        struct_emb: torch.Tensor = kwargs["struct_emb"]
+        inplace = not self.training
 
+        # === Get PLM features === #
         seq_emb = self.layernorm_seq_emb(seq_emb)
         struct_emb = self.layernorm_struct_emb(struct_emb)
         plm_input = torch.cat([seq_emb, struct_emb], dim=-1)
+        del seq_emb, struct_emb  # free memory
 
-        if self.use_attn:
-            # Feed attention maps to initialize z_init.
-            z_init = z_init + self.proj_seq_attn_to_z_init(seq_attn)
+        # Add PLM attention maps.
+        z_init = add(z_init, self.proj_seq_attn_to_z_init(seq_attn), inplace)
         del seq_attn  # free memory
 
-        # === Proteina-style register tokens (optional) ===
         mask = f_input.token.pad_mask
         asym_id = f_input.token.asym_id
+
+        # === Proteina-style register tokens (optional) ===
         s_inputs, s_init, plm_input, z_init, asym_id, mask = self._extend_registers(
             s_inputs, s_init, plm_input, z_init, asym_id, mask
         )
 
-        # z_hat, s_hat = 0, 0
-        s_hat = torch.zeros_like(s_init)
-        z_hat = torch.zeros_like(z_init)
-        s_plm = self.plm_embedder_refine(s_inputs, plm_input)
+        # === Main trunk iteration with recycling === #
+        s = torch.zeros_like(s_init)
+        z = torch.zeros_like(z_init)
+        s_plm = self.plm_embedder(s_inputs, plm_input)
 
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
+            _inplace = not enable_grad
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
-                s = s_init + self.linear_s(self.layernorm_s(s_hat))
-                z = z_init + self.linear_z(self.layernorm_z(z_hat))
+                # Recycling
+                s = add(self.linear_s(self.layernorm_s(s)), s_init, _inplace)
+                z = add(self.linear_z(self.layernorm_z(z)), z_init, _inplace)
 
-                s_hat, z_hat = self._run_trunk(
-                    s=s,
-                    z=z,
-                    s_plm=s_plm,
-                    asym_id=asym_id,
-                    mask=mask,
-                )
+                # Run trunk
+                s, z = self._run_trunk(s, z, s_plm, asym_id, mask)
+
+        del s_init, z_init
 
         # Skip connection to s_trunk
-        s_hat = s_hat + self.proj_plm_to_s_trunk(plm_input)
+        s = add(s, self.proj_plm_to_s_trunk(plm_input), inplace)
 
-        # Remove register tokens before returning.
-        s_hat, z_hat = self._undo_registers(s_hat, z_hat)
-        return {"s_trunk": s_hat, "z_trunk": z_hat}
+        # === Revert register tokens === #
+        s, z = self._undo_registers(s, z)
+
+        return {"s_trunk": s, "z_trunk": z}
 
     def _run_trunk(
         self,
@@ -264,31 +269,17 @@ class KFoldTrunk(BaseTrunk):
         asym_id: torch.Tensor,
         mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Run trunk body"""
         # Revert to uncompiled version for validation
-        pairformer_module: PairformerStack
-        plm_module: PLMModule
-        if self.is_compiled and not self.training:
-            pairformer_module = self.pairformer_module._orig_mod  # noqa: SLF001
-            plm_module = self.plm_module._orig_mod  # noqa: SLF001
-        else:
-            pairformer_module = self.pairformer_module  # noqa: SLF001
-            plm_module = self.plm_module  # noqa: SLF001
+        pairformer_stack = self.get_pairformer_stack(not self.training)
+        plm_module = self.get_plm_module(not self.training)
 
-        z = plm_module(
-            z,
-            s_plm,
-            asym_id,
-            mask,
-            use_cuequiv_kernels=self.kernel_config.cuequivariance,
-        )
-        s, z = pairformer_module(
-            s,
-            z,
-            mask=mask,
-            use_cuequiv_kernels=self.kernel_config.cuequivariance,
-        )
+        use_cuequiv_kernels = self.kernel_config.cuequivariance
+        z = plm_module(z, s_plm, asym_id, mask, use_cuequiv_kernels=use_cuequiv_kernels)
+        s, z = pairformer_stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
         return s, z
 
+    # === Proteina-style register tokens === #
     def _extend_registers(
         self,
         s_inputs: torch.Tensor,
@@ -303,42 +294,25 @@ class KFoldTrunk(BaseTrunk):
         if R <= 0:
             return s_inputs, s_init, s_plm, z_init, asym_id, mask
 
-        device = s_init.device
+        # [B, L, ...] -> [B, R+L, ...]
+        s_inputs_pad = F.pad(s_inputs, (0, 0, R, 0))
+        s_plm_pad = F.pad(s_plm, (0, 0, R, 0))
+        asym_id_pad = F.pad(asym_id, (R, 0))  # asym_id is 1-based index.
+        mask_pad = F.pad(mask, (R, 0), value=True)
 
+        # [B, L, L, ...] -> [B, R+L, R+L, ...]
+        z_init_pad = F.pad(z_init, (0, 0, R, 0, R, 0))
+
+        # Add register tokens to the beginning of s_init.
         assert self.register_tokens is not None
-        B, L, _ = s_init.shape
-
-        s_inputs_pad = torch.zeros(
-            (B, L + R, s_inputs.shape[-1]), device=device, dtype=s_inputs.dtype
-        )
-        s_inputs_pad[:, R:] = s_inputs
-
-        s_plm_pad = torch.zeros(
-            (B, L + R, s_plm.shape[-1]), device=device, dtype=s_plm.dtype
-        )
-        s_plm_pad[:, R:] = s_plm
-
-        reg = self.register_tokens.to(device=device, dtype=s_init.dtype)
-        reg = reg.unsqueeze(0).expand(B, -1, -1)  # [B, R, C_s]
+        reg = self.register_tokens.to(s_init.dtype)
+        reg = reg.unsqueeze(0).expand(s_init.shape[0], -1, -1)  # [B, R, C_s]
         s_init_pad = torch.cat([reg, s_init], dim=1)  # [B, R+L, C_s]
 
-        z_pad = torch.zeros(
-            (B, L + R, L + R, z_init.shape[-1]), device=device, dtype=z_init.dtype
-        )
-        z_pad[:, R:, R:] = z_init
-
-        asym_id_pad = torch.zeros((B, L + R), device=device, dtype=asym_id.dtype)
-        asym_id_pad[:, R:] = asym_id
-
-        mask_pad = torch.ones((B, L + R), device=device, dtype=mask.dtype)
-        mask_pad[:, R:] = mask
-
-        return s_inputs_pad, s_init_pad, s_plm_pad, z_pad, asym_id_pad, mask_pad
+        return s_inputs_pad, s_init_pad, s_plm_pad, z_init_pad, asym_id_pad, mask_pad
 
     def _undo_registers(
-        self,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        self, s_trunk: torch.Tensor, z_trunk: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Remove register tokens from s/z outputs."""
         R = self.num_register_tokens

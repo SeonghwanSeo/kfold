@@ -4,10 +4,10 @@ from typing import TypeVar
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.score_model.af3_diffusion import AF3DiffusionModule
+from kfold.model.modules.score_model.base import AF3StyleDiffusionModule
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation
-from kfold.utils.misc import expand_dim
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
+from kfold.utils.torch import expand_dim
 
 from .base import BaseStructureModule
 
@@ -45,6 +45,8 @@ class AF3SampleDiffusion(BaseStructureModule):
             The noise scale, by default 1.003.
         step_scale : float, optional
             The step scale, by default 1.5.
+        conditioning_drop_rate : float, optional
+            The drop rate of conditioning during training, by default 0.0.
         """
 
         sigma_min: float = 0.0004
@@ -57,11 +59,12 @@ class AF3SampleDiffusion(BaseStructureModule):
         gamma_min: float = 1.0
         noise_scale: float = 1.003
         step_scale: float = 1.5
+        conditioning_drop_rate: float = 0.0
 
-    def __init__(self, cfg: Config, score_model: AF3DiffusionModule):
+    def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the atom diffusion module."""
         super().__init__(cfg, score_model)
-        self.score_model: AF3DiffusionModule = score_model
+        self.score_model: AF3StyleDiffusionModule = score_model
         self.sigma_min: float = cfg.sigma_min
         self.sigma_max: float = cfg.sigma_max
         self.sigma_data: float = cfg.sigma_data
@@ -73,6 +76,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         self.noise_scale: float = cfg.noise_scale
         self.step_scale: float = cfg.step_scale
         self.random_augmentation = CenterRandomAugmentation()
+        self.conditioning_drop_rate: float = cfg.conditioning_drop_rate
 
     # === EDM diffusion coefficients === #
     def c_skip(self, t_hat: _ScalarOrTensor) -> _ScalarOrTensor:
@@ -114,6 +118,13 @@ class AF3SampleDiffusion(BaseStructureModule):
         t_hat = train_input["t_hat"]  # [B, N]
         x_0 = train_input["x_0"]  # [B, N, La, 3]
         x_t = train_input["x_t"]  # [B, N, La, 3]
+
+        drop_rate = self.conditioning_drop_rate
+        if drop_rate > 0.0:
+            mask = torch.rand(s_trunk.shape[0], device=s_trunk.device) < drop_rate
+            use_conditioning = (~mask).to(z_trunk.dtype)  # [B,]
+            s_trunk = s_trunk * use_conditioning[:, None, None]
+            z_trunk = z_trunk * use_conditioning[:, None, None, None]
 
         x_0_hat = self.forward_train(
             x_t=x_t,  # [B, N, La, 3]
@@ -274,7 +285,7 @@ class AF3SampleDiffusion(BaseStructureModule):
 
         # Compute time-independent variables
         z = model.get_pair_conditioning(f_input, z_trunk)
-        q, c, p = model.get_atom_embeddings(f_input, s_inputs, s_trunk, z)
+        q, c, p = model.get_atom_embeddings(f_input, s_trunk, z)
         pair_bias = model.get_pair_bias(z)
         del z_trunk, z  # Free up memory for large LxL tensors
 

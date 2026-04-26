@@ -8,21 +8,14 @@ from kfold.utils.registry import STRUCTURE_ENCODER, BaseConfig
 
 @STRUCTURE_ENCODER.register()
 class BaseStructureEncoder(torch.nn.Module, ABC):
-    class Config(BaseConfig):
-        return_attn: bool = False
+    class Config(BaseConfig): ...
 
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg = cfg
-        self.return_attn: bool = cfg.return_attn
-
-    @property
-    def d_attn(self) -> int:
-        """Dimension of attention weights returned by the sequence encoder."""
-        raise NotImplementedError("Subclasses must implement d_attn property.")
 
     @abstractmethod
-    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def forward(self, f_input: FoldingInput) -> torch.Tensor:
         """Forward pass of structure representation module.
 
         Parameters
@@ -34,7 +27,4 @@ class BaseStructureEncoder(torch.nn.Module, ABC):
         -------
         x_token: torch.Tensor
             Tensor of shape (B, Ntoken, D) containing sequence representations.
-        attention: torch.Tensor | None
-            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
-            where N is number of layers and H is number of heads.
         """

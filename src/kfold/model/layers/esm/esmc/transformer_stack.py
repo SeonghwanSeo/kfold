@@ -12,15 +12,12 @@ class TransformerStack(torch.nn.Module):
         n_heads: int,
         n_layers: int,
         scale_residue: bool = True,
-        qk_layernorm: bool = True,
         expansion_ratio: float = 8 / 3,
-        return_attn: bool = False,
     ):
         super().__init__()
         self.d_model: int = d_model
         self.n_heads: int = n_heads
         self.n_layers: int = n_layers
-        self.return_attn: bool = return_attn
 
         self.blocks = torch.nn.ModuleList(
             [
@@ -31,7 +28,6 @@ class TransformerStack(torch.nn.Module):
                         math.sqrt(n_layers / 36) if scale_residue else 1.0
                     ),
                     expansion_ratio=expansion_ratio,
-                    return_attn=return_attn,
                 )
                 for _ in range(n_layers)
             ]
@@ -47,6 +43,5 @@ class TransformerStack(torch.nn.Module):
         attentions: list[torch.Tensor] = []
         for block in self.blocks:
             x, attn = block(x, seq_id, pos_id)
-            if self.return_attn:
-                attentions.append(attn)
+            attentions.append(attn)
         return self.norm(x), attentions

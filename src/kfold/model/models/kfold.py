@@ -176,21 +176,21 @@ class KFold(BaseFoldingModel):
         s_inputs, s_init, z_init = self.input_embedder(f_input)
 
         seq_emb, seq_attn = self.sequence_encoder(f_input)
-        struct_emb, _ = self.structure_encoder(f_input)
+        struct_emb = self.structure_encoder(f_input)
 
         # Trunk with recycling
         trunk_out = self.trunk(
             s_inputs,
-            s_init.float(),
-            z_init.float(),
+            s_init,
+            z_init,
             f_input,
             num_recycles,
             seq_emb=seq_emb,
             seq_attn=seq_attn,
             struct_emb=struct_emb,
         )
-        s_trunk = trunk_out["s_trunk"]
-        z_trunk = trunk_out["z_trunk"]
+        s_trunk = trunk_out.pop("s_trunk").float()
+        z_trunk = trunk_out.pop("z_trunk").float()
 
         if sample_structures:
             # Sample structures with Diffusion mini-rollout.
@@ -262,7 +262,6 @@ class KFold(BaseFoldingModel):
         return_traj : bool, optional
             Whether to return sampling trajectories.
         """
-        dict_out: dict[str, torch.Tensor] = {}
         time_logs: dict[str, float] = {}
 
         # Indicate whether to return batched output
@@ -285,7 +284,7 @@ class KFold(BaseFoldingModel):
 
         # Structure encoder
         st = time.time()
-        struct_emb, _ = self.structure_encoder(f_input)
+        struct_emb = self.structure_encoder(f_input)
         et = time.time()
         time_logs["structure_encoder"] = et - st
 
@@ -293,8 +292,8 @@ class KFold(BaseFoldingModel):
         st = time.time()
         trunk_out: dict[str, torch.Tensor] = self.trunk(
             s_inputs,
-            s_init.float(),
-            z_init.float(),
+            s_init,
+            z_init,
             f_input,
             num_recycles,
             seq_emb=seq_emb,
@@ -302,8 +301,9 @@ class KFold(BaseFoldingModel):
             struct_emb=struct_emb,
         )
         et = time.time()
-        s_trunk = trunk_out["s_trunk"]
-        z_trunk = trunk_out["z_trunk"]
+        s_trunk = trunk_out["s_trunk"].float()
+        z_trunk = trunk_out["z_trunk"].float()
+        del trunk_out
         time_logs["trunk"] = et - st
 
         dict_out = {

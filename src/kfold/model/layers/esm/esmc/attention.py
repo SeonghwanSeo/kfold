@@ -8,12 +8,11 @@ from .rotary import RotaryEmbedding
 class MultiHeadAttention(nn.Module):
     """A multi-head attention module with rotary positional embeddings."""
 
-    def __init__(self, d_model: int, n_heads: int, return_attn: bool = False):
+    def __init__(self, d_model: int, n_heads: int):
         super().__init__()
         self.d_model: int = d_model
         self.n_heads: int = n_heads
         self.d_head: int = self.d_model // self.n_heads
-        self.return_attn: bool = return_attn
 
         self.layernorm_qkv = nn.Sequential(
             nn.LayerNorm(d_model),
@@ -67,16 +66,11 @@ class MultiHeadAttention(nn.Module):
         attn_mask = attn_mask.unsqueeze(-3)  # [B, 1, L, L]
 
         # [B, H, L, Dh] @ [B, H, Dh, L] -> [B, H, L, L]
-        if self.return_attn:
-            q *= Dh**-0.5  # Scale query by sqrt(d_head)
-            attn_weights = torch.matmul(q, k.transpose(-2, -1))  # [*, H, L, L]
-            attn_weights.masked_fill_(~attn_mask, float("-inf"))
-            attn_weights = F.softmax(attn_weights, dim=-1).to(v.dtype)
-            out = torch.matmul(attn_weights, v)  # [*, H, L, Dh]
-        else:
-            # use SDPA
-            attn_weights = None
-            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        q *= Dh**-0.5  # Scale query by sqrt(d_head)
+        attn_weights = torch.matmul(q, k.transpose(-2, -1))  # [*, H, L, L]
+        attn_weights.masked_fill_(~attn_mask, float("-inf"))
+        attn_weights = F.softmax(attn_weights, dim=-1).to(v.dtype)
+        out = torch.matmul(attn_weights, v)  # [*, H, L, Dh]
 
         # [*, H, L, Dh] -> [*, L, H, Dh] -> [*, L, D]
         out = out.transpose(-2, -3).flatten(-2)

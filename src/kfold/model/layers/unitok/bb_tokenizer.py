@@ -26,9 +26,8 @@ def centering(coords: torch.Tensor) -> torch.Tensor:
         ca_coords = coords[..., 1, :]  # CA atom is the second atom (index 1)
         ca_mask = ca_coords.isfinite().all(dim=-1)
         ca_coords = ca_coords.masked_fill(~ca_mask[..., None], 0.0)
-        centroid = ca_coords.sum(dim=-2) / ca_mask.sum(dim=-1, keepdim=True).clamp(
-            min=1
-        )  # Mean CA position, avoid division by zero
+        n_ca = ca_mask.sum(dim=-1, keepdim=True)
+        centroid = ca_coords.sum(dim=-2) / n_ca.clamp(min=1)
         coords = coords - centroid[..., None, None, :]
     return coords
 

@@ -1,10 +1,11 @@
 _registry_: "score_model"
-_class_: "ECSIDiffusionModule"
+_class_: "ApoConditionedDiffusionModule"
 
 channel_s: 384
 channel_z: 128
 channel_atom: 128
 channel_atompair: 16
+channel_coords: 3
 atom_encoder_blocks: 3
 atom_encoder_heads: 4
 token_transformer_blocks: 24
