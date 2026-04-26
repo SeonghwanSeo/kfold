@@ -126,9 +126,8 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `ref_mask`            | `(Ntoken, 24)`    | Whether the atom is present in the reference conformer |
 | `apo_coords`          | `(Ntoken, 24, 3)` | Apo structure coordinates |
 | `apo_mask`            | `(Ntoken, 24)`    | Apo structure mask |
-| `prior_coords`        | `(Ntoken, 24, Np, 3)`| Prior coordinates (for ECSI) |
 | `pad_mask`            | `(Ntoken, 24)`    | Mask for valid atoms or padding |
-| `label_coords`        | `(Ntoken, 24, 3)` | Target coordinates for training |
+| `coords`              | `(Ntoken, 24, 3)` | Target coordinates for training |
 | `resolved_mask`       | `(Ntoken, 24)`    | Whether the atom is resolved |
 
 
@@ -208,7 +207,6 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `frames_index`    | `(Ntoken, 3)`   | Frame defining atom index, e.g., protein: (N, Cα, C) |
 | `frames_mask`     | `(Ntoken,)`     | Whether all frame atoms are resolved |
 | `pad_mask`        | `(Ntoken,)`     | Mask for valid tokens or padding |
-| `pocket_contact_type`| `(Ntoken,)`  | Pocket contact type |
 | `center_coords`   | `(Ntoken, 3)`   | Center atom coords (Cα, C1') |
 | `repr_coords`    | `(Ntoken, 3)`   | Representative atom coords (Cβ, C4/C2) |
 | `center_mask`     | `(Ntoken,)`     | Whether center atom is present |
@@ -226,7 +224,6 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `ref_space_uid`       | `(Natom,)`        | Reference atom unique ID |
 | `token_index`         | `(Natom,)`        | Token index to which the atom belongs |
 | `apo_coords`          | `(Natom, 3)`      | Apo structure coordinates |
-| `prior_coords`        | `(Natom, Np, 3)`  | Prior coordinates (for ECSI) |
 | `apo_mask`            | `(Natom,)`        | Apo structure mask |
 | `pad_mask`            | `(Natom,)`        | Mask for valid atoms or padding |
 | `label_coords`        | `(Natom, 3)`      | Target coordinates for training |
