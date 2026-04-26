@@ -118,7 +118,7 @@ This section describes the additional implementations which are not part of the 
 
 ## Data construction
 
-See [`scripts/process/rcsb/README.md`](../scripts/process/rcsb/README.md) for instructions on downloading and preparing the RCSB PDB dataset.
+See [`scripts/process/rcsb/README.md`](../../scripts/process/rcsb/README.md) for instructions on downloading and preparing the RCSB PDB dataset.
 
 ### Training set
 
