@@ -13,7 +13,7 @@ import numpy as np
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data.utils import interaction_utils, rdkit_utils
+from kfold.data.utils import rdkit_utils
 
 # Helper function
 
@@ -156,13 +156,15 @@ class Component:
     names: tuple[str, ...]  # (n_atoms,)
     elements: np.ndarray  # (n_atoms,) with dtype=np.uint8
     charges: np.ndarray  # (n_atoms,) with dtype=np.int8
-    interaction_types: np.ndarray  # (n_atoms, NUM_INTERACTION_TYPES) with dtype=np.bool
     is_leaving_atom: np.ndarray  # (n_atoms,) with dtype=bool
     bonds: dict[tuple[str, str], int]  # Bond orders between atom pairs
     etkdg_coords: np.ndarray | None  # (n_conf, n_atoms, 3) with dtype=np.float16
     ideal_coords: np.ndarray | None  # (n_atoms, 3) with dtype=np.float16
     model_coords: np.ndarray | None  # (n_atoms, 3) with dtype=np.float16
     symmetries: Sequence[list[int]] | None = None  # Permutational symmetries
+
+    # TODO: remove this
+    interaction_types: np.ndarray | None = None
 
     @property
     def mol(self) -> Chem.Mol:
@@ -571,10 +573,7 @@ class Component:
         else:
             symmetries = None
 
-        # 7. Compute interaction types
-        interaction_types = interaction_utils.compute_interaction_types(mol)
-
-        # 8. Clean up molecule properties and conformers
+        # 7. Clean up molecule properties and conformers
         mol.RemoveAllConformers()
         for prop_name in mol.GetPropNames():
             mol.ClearProp(prop_name)
@@ -592,7 +591,6 @@ class Component:
             names=tuple(atom_names),
             elements=elements,
             charges=charges,
-            interaction_types=interaction_types,
             is_leaving_atom=is_leaving_atom,
             bonds=bonds,
             ideal_coords=ideal_coords_arr,
