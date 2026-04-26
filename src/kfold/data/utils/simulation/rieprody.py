@@ -9,10 +9,16 @@ from io import BytesIO
 from pathlib import Path
 from typing import Self
 
-import lmdb
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
+
+# LMDB is not used in inference. During training, LMDB is required for
+# other modules as well, so we can safely raise ImportError if it's not installed.
+try:
+    import lmdb
+except ImportError:
+    lmdb = None  # type: ignore
 
 import kfold.constants as C
 from kfold.utils.geometry.rigid_align import compute_rmsd, rigid_align

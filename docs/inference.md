@@ -1,7 +1,5 @@
 # K-Fold Inference Guide
 
-Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
-
 This document provides a guide on how to perform structural inference (prediction) using the K-Fold model. K-Fold is designed for biomolecular co-folding, allowing you to predict the structure of complexes involving proteins, DNA, RNA, and ligands.
 
 ## Contents
@@ -75,6 +73,12 @@ Paths to apo files are resolved in the following priority:
 1. **Absolute Path**: If an absolute path is provided, it is used directly.
 2. **Relative to CWD**: If the path exists relative to your **current working directory** (where you run the command), it is used.
 3. **Relative to Input File**: If neither of the above works, the path is resolved relative to the **directory containing the input YAML/JSON file**.
+
+> [!NOTE]
+> **Future Improvements (TODO):**
+> - **Auto-ESMFold**: We plan to support automatic generation of apo structures via ESMFold if no path is provided.
+> - **Improved Folding Model**: We are developing a next-generation protein folding model intended to provide superior apo structure predictions compared to existing benchmarks.
+
 
 ### DNA and RNA
 Nucleic acids are specified by their sequence.
