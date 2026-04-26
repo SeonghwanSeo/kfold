@@ -16,10 +16,10 @@ git clone https://github.com/wykim-lab/kfold.git
 cd kfold
 
 # Install with cuequivariance kernels
-pip install -e '.[cuequiv]'
+pip install '.[cuequiv]'
 
 # Install in editable mode with training/dev dependencies
-pip install -e '.[train,dev]'
+pip install -e '.[train,cuequiv,dev]'
 pre-commit install
 ```
 

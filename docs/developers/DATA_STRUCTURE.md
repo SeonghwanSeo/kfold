@@ -20,7 +20,7 @@ This document describes the data structure used in **K-Fold** for protein comple
 #### Preprocessing (mmCIF -> `RefStructure`)
 
 The preprocessing stage is performed once before training to convert raw mmCIF files into an array-based format for efficient loading during training.
-This processing is done using the functions defined in [`kfold.data.pipelines.cif_factory`](../src/kfold/data/pipelines/cif_factory.py).
+This processing is done using the functions defined in [`kfold.data.pipelines.cif_factory`](../../src/kfold/data/pipelines/cif_factory.py).
 
 In addition, the preprocessing stage also includes apo structure processing from `AFDB, ESMFold` output pdb files and apo tokenization for populating apo structure information into the model input features.
 1.  **PDB Parsing:** Extracts a protein sequence and an atom37 structure (`(L, 37, 3)`) from the PDB/mmCIF file and saves them in `LMDB` format on disk.
@@ -54,7 +54,7 @@ The inference stage starts by parsing a query file (YAML or JSON) that specifies
 
 ## Data Structure
 
-K-Fold provides high-level data structures for reference structures via `kfold.data.types.structure.RefStructure`. This contains chains, covalent connections, and metadata. See [here](../src/kfold/data/types/structure.py) for more details.
+K-Fold provides high-level data structures for reference structures via `kfold.data.types.structure.RefStructure`. This contains chains, covalent connections, and metadata. See [here](../../src/kfold/data/types/structure.py) for more details.
 
 ```python
 from kfold.data.types.metadata import Metadata
@@ -68,7 +68,7 @@ metadata: Metadata = ref_struct.metadata
 
 ## Tokenized Structure
 
-K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`. This contains sub-layouts for chain, residue, token, atom, and bond structures. See [here](../src/kfold/data/types/tokenized.py) for more details.
+K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`. This contains sub-layouts for chain, residue, token, atom, and bond structures. See [here](../../src/kfold/data/types/tokenized.py) for more details.
 
 ```python
 from kfold.data.types import tokenized
@@ -158,7 +158,7 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 
 ## Model Input
 
-K-Fold provides high-level data structures for model input features via `kfold.data.types.model_input.FoldingInput`. This contains sub-layouts for atom, token, and bond features. See [here](../src/kfold/data/types/model_input.py) for more details.
+K-Fold provides high-level data structures for model input features via `kfold.data.types.model_input.FoldingInput`. This contains sub-layouts for atom, token, and bond features. See [here](../../src/kfold/data/types/model_input.py) for more details.
 
 ```python
 from kfold.data.types import model_input

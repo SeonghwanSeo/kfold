@@ -30,9 +30,15 @@ sequences:
   - protein:
       id: "A"
       sequence: "MKT..."
-      apo: "apo_structures/protein_a.pdb"
-  - ligand:
+      apo: "apo/protein_a.pdb"
+  - dna:
       id: "B"
+      sequence: "ACGTAA.."
+  - rna:
+      id: "C"
+      sequence: "ACGUCG.."
+  - ligand:
+      id: "D"
       smiles: "c1ccccc1"
 ```
 
@@ -45,13 +51,13 @@ sequences:
       "protein": {
         "id": "A",
         "sequence": "MKT...",
-        "apo": "./example/apo_structures/protein_a.pdb"
+        "apo": "apo/protein_a.pdb"
       }
     },
     {
       "ligand": {
         "id": "B",
-        "smiles": "c1ccccc1"
+        "ccd": "MOV"
       }
     }
   ]

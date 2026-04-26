@@ -5,7 +5,7 @@ Author: Seonghwan Seo (Prof. Woo Youn Kim's Lab)
 ## Mapping of Algorithms to Code
 
 ### Layer Implementations
-The directory [`src/kfold/model/layers/alphafold3`](src/kfold/model/layers/alphafold3) contains the implementation of the modules described in the AlphaFold3 paper.
+The directory [`src/kfold/model/layers/alphafold3`](../../src/kfold/model/layers/alphafold3) contains the implementation of the modules described in the AlphaFold3 paper.
 
 Below is a mapping of the algorithms presented in the paper to their corresponding classes and files in the codebase.
 Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/boltz), MIT licensed.
@@ -41,7 +41,7 @@ Most implementations are adapted from the [Boltz](https://github.com/jwohlwend/b
 
 ### Loss Implementations
 
-The directory [`src/kfold/training/loss`](src/kfold/training/loss) contains the implementation of the loss functions.
+The directory [`src/kfold/training/loss`](../../src/kfold/training/loss) contains the implementation of the loss functions.
 
 Below is a mapping of the algorithms of loss functions.
 | Section | Algorithm | Class | File |

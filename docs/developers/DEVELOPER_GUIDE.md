@@ -107,7 +107,7 @@ python scripts/inference.py --config <config_path> --checkpoint <checkpoint_path
 
 ### Benchmark
 
-See [`EVALUATION_GUIDE.md`](EVALUATION_GUIDE.md) for detailed instructions on benchmarking the K-Fold model.
+(TODO: `EVALUATION_GUIDE.md` for detailed instructions on benchmarking the K-Fold model.)
 
 ---
 

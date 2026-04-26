@@ -186,7 +186,7 @@ class RieProdyPerturbation:
         assert Path(self.lmdb_path).exists(), (
             f"LMDB path does not exist: {self.lmdb_path}"
         )
-        self._lmdb_env: lmdb.Environment | None = None
+        self._lmdb_env = None
 
         # === Perturbation statistics === #
         self._stats_total_perturbations: int = 0
@@ -510,7 +510,7 @@ class RieProdyPerturbation:
         return float(min_time + (max_time - min_time) * u)
 
     @property
-    def lmdb_env(self) -> lmdb.Environment:
+    def lmdb_env(self):
         """Lazy initialization of LMDB environment."""
         if self._lmdb_env is None:
             self._lmdb_env = lmdb.open(
@@ -582,7 +582,8 @@ class RieProdyPerturbation:
         dict | None
             Metric data dictionary or None if not found.
         """
-        with self.lmdb_env.begin(write=False) as txn:
+        lmdb_env: lmdb.Environment = self.lmdb_env
+        with lmdb_env.begin(write=False) as txn:
             try:
                 value_bytes = txn.get(key.encode("utf-8"))
                 if value_bytes is None:
