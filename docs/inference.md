@@ -38,6 +38,28 @@ sequences:
       smiles: "c1ccccc1"
 ```
 
+### Basic Example (JSON)
+```json
+{
+  "name": "Example_Complex",
+  "sequences": [
+    {
+      "protein": {
+        "id": "A",
+        "sequence": "MKT...",
+        "apo": "./example/apo_structures/protein_a.pdb"
+      }
+    },
+    {
+      "ligand": {
+        "id": "B",
+        "smiles": "c1ccccc1"
+      }
+    }
+  ]
+}
+```
+
 ### Proteins
 Protein chains require a sequence and an **apo structure** (PDB format).
 
@@ -47,6 +69,12 @@ Protein chains require a sequence and an **apo structure** (PDB format).
 | `sequence` | `str` | Standard amino acid sequence. |
 | `apo` | `str` | Path to the apo PDB file. |
 | `apo_range` | `str` | (Optional) Mapping between sequence and apo file. Format: `seq_st:seq_end->apo_st:apo_end` (1-indexed). |
+
+**Apo Path Resolution:**
+Paths to apo files are resolved in the following priority:
+1. **Absolute Path**: If an absolute path is provided, it is used directly.
+2. **Relative to CWD**: If the path exists relative to your **current working directory** (where you run the command), it is used.
+3. **Relative to Input File**: If neither of the above works, the path is resolved relative to the **directory containing the input YAML/JSON file**.
 
 ### DNA and RNA
 Nucleic acids are specified by their sequence.
@@ -70,17 +98,36 @@ Ligands can be specified using **SMILES** or **CCD** (Chemical Component Diction
 ### Covalent Bonds (Optional)
 You can specify custom covalent bonds between atoms in different chains.
 
+**Example: Protein-Ligand Bond**
 ```yaml
+name: "Covalent_Complex"
+sequences:
+  - protein:
+      id: "A"
+      sequence: "MKT..."
+  - ligand:
+      id: "B"
+      ccd: "WF1"
+  - ligand:
+      id: "C"
+      smiles: "CNCBr"
 bonds:
-  - [["A", 10, "CA"], ["B", 1, "C1"]] # Bond between Chain A, Residue 10, Atom CA and Chain B, Residue 1, Atom C1
+  - [["A", 20, "NZ"], ["B", 1, "C08"]]
+  - [["A", 10, "SG"], ["C", 1, "C2"]]
 ```
 
----
+The `bonds` field is a list of pairs of atoms, where each atom is specified as `[chain_id, residue_number, atom_name]`.
+Example yaml indicates there are two bonds:
+(i) a bond between the NZ atom of residue 20 in chain A and the C08 atom of residue 1 in ligand B (CCD=`WF1`) and
+(ii) a bond between the SG atom of residue 10 in chain A and the C2 atom of residue 1 in ligand C (SMILES=`CNCBr`).
+
+- For ligands defined by **CCD**, atom names are taken from the CCD definition in RCSB PDB. Example: [WF1](https://files.rcsb.org/ligands/view/WF1.cif).
+- (Experimental) For ligands defined by **SMILES**, atom names are automatically assigned as `<elem><number>`, where `<number>` is the 1-based index of the atom's occurrence for that element in the SMILES string. For example, in `CNCBr`, the atoms are named `C1`, `N1`, `C2`, and `BR1`.
 
 ## Running Inference
 
 ### Single-GPU Inference
-Use `scripts/inference.py` for standard inference tasks.
+Use `scripts/inference.py` for standard inference tasks. This script processes requires a single input file or a directory of input files.
 
 ```bash
 python scripts/inference.py \
