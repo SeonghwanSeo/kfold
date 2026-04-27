@@ -2,6 +2,7 @@
 import dataclasses
 import datetime
 import itertools
+import logging
 import pathlib
 import pickle
 import warnings
@@ -15,8 +16,9 @@ from rdkit import Chem
 import kfold.constants as C
 from kfold.data.utils import rdkit_utils
 
-# Helper function
+logger = logging.getLogger(__name__)
 
+# Helper function
 _T = TypeVar("_T")
 Point3D = tuple[float, float, float]
 
@@ -462,17 +464,23 @@ class Component:
             mol = Chem.RemoveAllHs(mol, sanitize=False)  # Remove hydrogens for processing
 
         if smiles is None or "":
-            smiles = Chem.MolToSmiles(mol)
+            smiles = Chem.MolToSmiles(mol, canonical=False)
 
         if sanitize:
             # Sanitize molecule
             success = rdkit_utils.sanitize_molecule(mol, allow_fail=True)
             if not success:
-                print(f"Warning: Molecule {code} failed sanitization.")
+                logger.warning(f"Molecule {code} failed sanitization.")
 
         # 2. Check and assign atom names
-        has_atom_names = all(atom.HasProp("name") for atom in mol.GetAtoms())
-        if not has_atom_names:
+        has_atom_names = [atom.HasProp("name") for atom in mol.GetAtoms()]
+        if any(has_atom_names) and not all(has_atom_names):
+            # Log a warning if some atoms have names but not all
+            logger.warning(
+                f"Molecule {code} has inconsistent atom names. "
+                f"Some atoms are missing 'name' property."
+            )
+        if not all(has_atom_names):
             # Ensure all atom names are present for CCD components
             assert not is_ccd_component, f"CCD component {code} is missing atom names."
             # Assign default atom names if missing
@@ -626,8 +634,8 @@ class Component:
                 # Use the first conformer(ideal) to assign stereochemistry
                 Chem.AssignStereochemistryFrom3D(mol, confId=0, replaceExistingTags=False)
             except RuntimeError:
-                print(
-                    f"Warning: Failed to assign stereochemistry for CCD component {code}."
+                logger.warning(
+                    f"Failed to assign stereochemistry for CCD component {code}."
                 )
 
         # Remove molecule coordinates
@@ -640,7 +648,7 @@ class Component:
         mol = Chem.RemoveAllHs(mol, sanitize=False)
         success = rdkit_utils.sanitize_molecule(mol, allow_fail=True)
         if not success:
-            print(f"Warning: Molecule {code} failed sanitization.")
+            logger.warning(f"Molecule {code} failed sanitization.")
 
         # Atom names in original CCD entry (including Hs)
         for atom in mol.GetAtoms():
