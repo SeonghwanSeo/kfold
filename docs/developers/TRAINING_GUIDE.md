@@ -64,7 +64,7 @@ If you need to regenerate the dataset from scratch, follow these steps.
 **Source Data Paths:**
 - RCSB: `/storage/wykim_lab/icl_shwan/data/rcsb-260109/`
 
-See [`scripts/process/rcsb/README.md`](../scripts/process/rcsb/README.md) for instructions on downloading and preparing the RCSB PDB dataset.
+See [`scripts/process/rcsb/README.md`](../../scripts/process/rcsb/README.md) for instructions on downloading and preparing the RCSB PDB dataset.
 
 
 ### For Community Users (Public)

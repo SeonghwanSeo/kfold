@@ -9,10 +9,16 @@ from io import BytesIO
 from pathlib import Path
 from typing import Self
 
-import lmdb
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
+
+# LMDB is not used in inference. During training, LMDB is required for
+# other modules as well, so we can safely raise ImportError if it's not installed.
+try:
+    import lmdb
+except ImportError:
+    lmdb = None  # type: ignore
 
 import kfold.constants as C
 from kfold.utils.geometry.rigid_align import compute_rmsd, rigid_align
@@ -180,7 +186,7 @@ class RieProdyPerturbation:
         assert Path(self.lmdb_path).exists(), (
             f"LMDB path does not exist: {self.lmdb_path}"
         )
-        self._lmdb_env: lmdb.Environment | None = None
+        self._lmdb_env = None
 
         # === Perturbation statistics === #
         self._stats_total_perturbations: int = 0
@@ -504,7 +510,7 @@ class RieProdyPerturbation:
         return float(min_time + (max_time - min_time) * u)
 
     @property
-    def lmdb_env(self) -> lmdb.Environment:
+    def lmdb_env(self):
         """Lazy initialization of LMDB environment."""
         if self._lmdb_env is None:
             self._lmdb_env = lmdb.open(
@@ -576,7 +582,8 @@ class RieProdyPerturbation:
         dict | None
             Metric data dictionary or None if not found.
         """
-        with self.lmdb_env.begin(write=False) as txn:
+        lmdb_env: lmdb.Environment = self.lmdb_env
+        with lmdb_env.begin(write=False) as txn:
             try:
                 value_bytes = txn.get(key.encode("utf-8"))
                 if value_bytes is None:
