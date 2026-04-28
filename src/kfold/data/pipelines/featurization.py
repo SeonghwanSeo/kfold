@@ -109,7 +109,7 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     token_index = np.arange(num_tokens, dtype=np.int64)
     token_dict["org_token_index"] = org_token_index
     token_dict["token_index"] = token_index
-    token_map = np.full((max_token_index + 1), -1, dtype=np.int64)
+    token_map = np.full((max_token_index + 2), -1, dtype=np.int64)
     token_map[org_token_index] = token_index
 
     # TODO: Add pocket constraint.
@@ -172,15 +172,15 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     # TODO: Remap token indices to cropped tokens
     # e.g., [0, 3, 4, 5, 8] -> [0, 1, 2, 3, 4]
     bond_token_index = token_map[bond_dict["token_index"]]
-    # Filter out bonds with invalid token indices
-    bond_mask = (bond_token_index != -1).all(-1)
+    assert (bond_token_index != -1).all(), (
+        "Bond token indices contain invalid values after mapping."
+    )
     bond_dict["token_index"] = bond_token_index
-    bond_dict = {k: v[bond_mask] for k, v in bond_dict.items()}
 
     # Indicate whether the bond atoms belong to polymer or ligand
     token1, token2 = bond_dict["token_index"][:, 0], bond_dict["token_index"][:, 1]
-    is_ligand1 = token_dict["chain_type"][token1] == C.chain.ChainType.LIGAND
-    is_ligand2 = token_dict["chain_type"][token2] == C.chain.ChainType.LIGAND
+    is_ligand1 = token_dict["chain_type"][token1] == C.chain.ChainType.LIGAND.value
+    is_ligand2 = token_dict["chain_type"][token2] == C.chain.ChainType.LIGAND.value
     bond_dict["is_polymer_ligand"] = ((~is_ligand1) & is_ligand2) | (
         is_ligand1 & (~is_ligand2)
     )

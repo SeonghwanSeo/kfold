@@ -1,6 +1,5 @@
 import math
 from dataclasses import dataclass
-from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -9,7 +8,7 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import CONFIDENCE_HEAD, BaseConfig
-from kfold.utils.torch import add, get_context_dtype
+from kfold.utils.torch import get_context_dtype
 
 NUM_ATOM_TYPES = 37 + 29 + 1  # 67: 37 for protein, 29 for dna/rna, and 1 for ligand
 
@@ -305,8 +304,8 @@ class ConfidenceHead(torch.nn.Module):
         for i in range(N):
             _pae_logits, _pde_logits, _plddt_logits, _resolved_logits = (
                 self.forward_single(
-                    s.clone(),  # Clone to avoid in-place modifications
-                    z.clone(),  # Clone to avoid in-place modifications
+                    s,
+                    z,
                     x_repr[:, i],
                     mask=f_input.token.pad_mask,
                     token_idcs=f_input.atom.token_index,
@@ -355,8 +354,6 @@ class ConfidenceHead(torch.nn.Module):
         resolved_logits: torch.Tensor
             Tensor of shape (B, L, 67, 2) containing predicted resolved atom logits.
         """
-        _add = partial(add, inplace=False)
-
         # Line 2
         with torch.autocast(x.device.type, dtype=torch.float32), torch.no_grad():
             d = (x[..., :, None, :] - x[..., None, :, :]).norm(dim=-1)
@@ -365,11 +362,13 @@ class ConfidenceHead(torch.nn.Module):
         distogram = F.one_hot(
             (d[..., None] > self.boundaries).sum(dim=-1), self.num_bins
         )  # [B, Ntoken, Ntoken, Nbin]
-        z = _add(z, self.linear_distogram(distogram.to(z.dtype)))
+        z = z + self.linear_distogram(distogram.to(z.dtype))
 
         # Line 4
         pairformer_stack = self.get_pairformer_stack()
         use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
+
+        s = s.clone()  # clone s to avoid in-place modification.
         s, z = pairformer_stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
 
         # Line 5
