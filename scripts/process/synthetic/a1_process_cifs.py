@@ -107,7 +107,7 @@ def parse_args():
     return args
 
 
-_CCD_CACHE = None
+_CCD_CACHE: CCD | None = None
 
 
 def init_worker(ccd_path):
@@ -147,21 +147,13 @@ def parse_cif(
 
     assert len(smiles_dict) <= 1, "Multi-ligand input is not supported yet."
 
-    # Read CIF file
-    if cif_path.suffix == ".gz":
-        doc: gemmi.cif.Document = gemmi.cif.read(str(cif_path))
-    else:
-        doc: gemmi.cif.Document = gemmi.cif.read_file(str(cif_path))
-    block: gemmi.cif.Block = doc[0]
-
     # Get metadata
     name = out_path.stem
-    metadata = cif_factory.prepare_metadata_from_synthetic_data(name, block, model)
+    metadata = cif_factory.prepare_metadata_from_synthetic_data(name, model)
 
     # Prepare raw structure
-    raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
-        block, clean_up=True
-    )
+    raw_struct: gemmi.Structure = gemmi.read_structure(str(cif_path))
+    cif_factory.clean_up_gemmi_structure(raw_struct)
 
     # Prepare reference structure
     ref_struct: RefStructure = cif_factory.prepare_ref_structure(
@@ -218,7 +210,7 @@ def main():
 
     cif_dir: pathlib.Path = input_dir / "holo"
     print(f"Scanning for mmCIF files in {cif_dir}...")
-    cif_paths = sorted(cif_dir.rglob("*.cif*"))
+    cif_paths = sorted(cif_dir.rglob("*.cif*")) + sorted(cif_dir.rglob("*.pdb*"))
     print(f"Found {len(cif_paths)} mmCIF files to process.")
 
     # create data_idx/structure_idx -> cif path mapping
@@ -259,7 +251,7 @@ def main():
                 "entry_id": entry_id,
                 "cif_path": cif_mapping[entry_id],
                 "out_path": out_dir / f"{entry_id}.npz",
-                "entry_metadata": row.to_dict(),  # worker_fn의 키 이름과 일치시킴
+                "entry_metadata": row.to_dict(),
                 "model": args.model,
             }
         )

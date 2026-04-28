@@ -126,9 +126,8 @@ def parse_cif(
         return DATE_FILTERED, []
 
     # Prepare gemmi Structure
-    raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
-        block, clean_up=True, expand_assembly=False
-    )
+    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
+    cif_factory.clean_up_gemmi_structure(raw_struct)
 
     # Extract polymer sequences
     polymer_sequences: list[tuple[str, str, C.ChainType, str]] = []
