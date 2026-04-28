@@ -1,8 +1,67 @@
+"""Loss functions for confidence prediction heads, including experimentally resolved
+prediction, Predicted Distance Error (PDE), pLDDT, and Predicted Aligned Error (PAE).
+
+The GT structures used for loss computation are aligned to the predicted structures
+using `kfold.training.utils.permutation_alignment.align_train`.
+
+"""
+
 import torch
 
-from kfold.data.types.model_input import FoldingInput
+from kfold.data.types import FoldingInput, RefStructure
+from kfold.training.utils.permutation_alignment.align_train import get_aligned_true_coords
 from kfold.utils.kernels.cdist import cdist as kernel_cdist
 from kfold.utils.torch import get_one_hot_from_bins
+
+
+def _gather(x: torch.Tensor, dim: int, index: torch.Tensor) -> torch.Tensor:
+    """Helper function to gather values from `x` along `dim` using `index`."""
+    dim = dim % x.ndim  # Normalize negative dims to positive
+    assert x.ndim == index.ndim
+    expand_shape = [-1 if i == dim else d for i, d in enumerate(x.shape)]
+    return x.gather(dim, index=index.expand(expand_shape))
+
+
+def get_aligned_gt_structure(
+    x_pred: torch.Tensor,
+    f_input: FoldingInput,
+    struct_info: list,
+) -> torch.Tensor:
+    """Compute the aligned ground truth coordinates for the confidence prediction losses.
+
+    Parameters
+    ----------
+    x_pred : torch.Tensor
+        Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
+    f_input : FoldingInput
+        The input features containing masks and representative atom indices.
+    struct_info : list
+        A list of length B containing structure information for each sample, including
+        the reference structure and symmetry information.
+
+    Returns
+    -------
+    aligned_x_gt : torch.Tensor
+        Tensor of shape (B, N, Natom, 3) containing the aligned ground truth coordinates.
+    """
+    # Ground truth coordinates for confidence loss computation.
+    x_gt: torch.Tensor = torch.full_like(x_pred, torch.nan)
+    f_input_list = f_input.to_list(deepcopy=False)
+    batch_size, num_sample, _, _ = x_pred.shape
+    for b_i in range(batch_size):
+        struct_info_i = struct_info[b_i]
+        ref_struct_i: RefStructure = struct_info_i["structure"]
+        symmetry_dict_i: dict = struct_info_i["symmetry"]
+        num_atoms: int = f_input_list[b_i].atom.pad_mask.sum().item()
+        for s_j in range(num_sample):
+            x_gt_ij = get_aligned_true_coords(
+                ref_struct=ref_struct_i,
+                f_input=f_input_list[b_i],
+                pred_coords=x_pred[b_i, s_j, :num_atoms],
+                symmetry_dict=symmetry_dict_i,
+            )
+            x_gt[b_i, s_j, :num_atoms] = x_gt_ij
+    return x_gt
 
 
 class ExperimentallyResolvedPredictionLoss(torch.nn.Module):
@@ -11,7 +70,8 @@ class ExperimentallyResolvedPredictionLoss(torch.nn.Module):
     def forward(
         self,
         logits: torch.Tensor,
-        f_input: FoldingInput,
+        resolved_mask: torch.Tensor,
+        pad_mask: torch.Tensor,
     ) -> torch.Tensor:
         """Compute the  distogram loss.
 
@@ -20,8 +80,11 @@ class ExperimentallyResolvedPredictionLoss(torch.nn.Module):
         logits : torch.Tensor
             Tensor of shape (B, N, Natom, 2) containing experimentally resolved prediction
             logits.
-        f_input : FoldingInput
-            The input features.
+        resolved_mask : torch.Tensor
+            Tensor of shape (B, N, Natom) containing boolean masks for experimentally
+            resolved atoms.
+        pad_mask : torch.Tensor
+            Tensor of shape (B, Natom) containing boolean masks for padded atoms.
 
         Returns
         -------
@@ -29,18 +92,16 @@ class ExperimentallyResolvedPredictionLoss(torch.nn.Module):
             The computed experimentally resolved prediction loss of shape (B, N).
         """
         B, N, Natom, _ = logits.shape
-        mask = f_input.atom.pad_mask  # [B, Natom]
-        label = f_input.atom.resolved_mask  # [B, Natom]
 
         # Compute the loss
-        label = label.unsqueeze(1).expand(-1, N, -1).long()  # [B, N, Natom]
+        label = resolved_mask.long()  # [B, N, Natom]
         loss = torch.nn.functional.cross_entropy(
             logits.reshape(B * N * Natom, 2),
             label.reshape(B * N * Natom),
             reduction="none",
         ).view(B, N, Natom)
 
-        mask = mask.unsqueeze(1).float()  # [B, 1, Natom]
+        mask = pad_mask.unsqueeze(1).float()  # [B, 1, Natom]
         n_valid = mask.sum(dim=-1).clamp(1)  # [B, 1]
         loss_mean = (loss * mask).sum(dim=-1) / n_valid  # [B, N]
         return loss_mean  # [B, N]
@@ -72,7 +133,7 @@ class PDELoss(torch.nn.Module):
         self,
         logits: torch.Tensor,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute the Predicted Distance Error (PDE) loss between representative atoms.
@@ -82,9 +143,9 @@ class PDELoss(torch.nn.Module):
         logits : torch.Tensor
             Tensor of shape (B, N, L, L, num_bins) containing distogram logits.
         x_pred : torch.Tensor
-            Tensor of shape (B, N, L, 3) containing predicted coordinates.
-        x_true : torch.Tensor
-            Tensor of shape (B, N, L, 3) containing ground truth coordinates.
+            Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
+        x_gt : torch.Tensor
+            Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
         f_input : FoldingInput
             The input features containing the target distogram and masks.
 
@@ -94,30 +155,35 @@ class PDELoss(torch.nn.Module):
             The computed pde loss of shape (B,).
         """
         with torch.no_grad():
-            e = self.get_distance_error(x_pred, x_true, f_input)  # [B, N, L, L]
+            e = self.get_distance_error(x_pred, x_gt, f_input)  # [B, N, L, L]
 
         # Compute loss
         e_bins = get_one_hot_from_bins(e, self.bins)  # [B, N, L, L, num_bins]
         loss = -torch.sum(e_bins.float() * logits.log_softmax(-1), dim=-1)  # [B, N, L, L]
 
         # Reduce loss
-        mask = f_input.token.repr_mask  # [B, N, L]
-        pair_mask = mask[..., None, :] & mask[..., :, None]  # [B, N, L, L]
+        atom_mask = x_gt.isfinite().all(-1)  # [B, N, Natom]
+        repr_idx = f_input.token.repr_index.clamp(0)[:, None, :]  # [B, 1, L]
+        repr_mask = _gather(atom_mask, dim=-1, index=repr_idx)  # [B, N, L]
+        pair_mask = repr_mask[..., None, :] & repr_mask[..., :, None]  # [B, N, L, L]
         n_pairs = pair_mask.sum((-1, -2)).clamp(1)  # [B, N]
         loss_mean = (loss * pair_mask).sum((-1, -2)) / n_pairs  # [B, N]
         return loss_mean
 
     def get_distance_error(
-        self, x_pred: torch.Tensor, x_true: torch.Tensor, f_input: FoldingInput
+        self,
+        x_pred: torch.Tensor,
+        x_gt: torch.Tensor,
+        f_input: FoldingInput,
     ) -> torch.Tensor:
-        """Compute the pairwise distance error between predicted and true coordinates
+        """Compute the pairwise distance error between predicted and GT coordinates
         for representative atoms.
 
         Parameters
         ----------
         x_pred : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
         f_input : FoldingInput
             The input features.
@@ -128,20 +194,19 @@ class PDELoss(torch.nn.Module):
             Tensor of shape (B, N, L, L) containing the pairwise distance error
         """
         # [*, Natom, 3] -> [*, L, 3]
-        B, N, _, _ = x_pred.shape
-        device = x_pred.device
-        b_idcs = torch.arange(B, device=device)[:, None, None]  # [B, 1, 1]
-        n_idcs = torch.arange(N, device=device)[None, :, None]  # [1, N, 1]
-        repr_idc = f_input.token.repr_index[:, None, :]  # [B, 1, L]
-        _x_pred = x_pred[b_idcs, n_idcs, repr_idc]  # [B, N, L, 3]
-        _x_true = x_true[b_idcs, n_idcs, repr_idc]  # [B, N, L, 3]
+        repr_idx = f_input.token.repr_index.clamp(min=0)[:, None, :]  # [B, 1, L]
+        _x_pred = _gather(x_pred, 2, repr_idx[..., None])  # [B, N, L, 3]
+        _x_gt = _gather(x_gt, 2, repr_idx[..., None])  # [B, N, L, 3]
 
         # Compute pairwise distances
         d_pred = kernel_cdist(_x_pred, _x_pred)  # [B, N, L, L]
-        d_true = kernel_cdist(_x_true, _x_true)  # [B, N, L, L]
+        d_gt = kernel_cdist(_x_gt, _x_gt)  # [B, N, L, L]
 
         # Compute distance error
-        e = torch.abs(d_true - d_pred)  # [B, N, L, L]
+        e = torch.abs(d_gt - d_pred)  # [B, N, L, L]
+
+        # Mask NaN values to zero
+        e.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
         return e
 
 
@@ -161,7 +226,7 @@ class PLDDTLoss(torch.nn.Module):
         self,
         logits: torch.Tensor,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute the pLDDT loss.
@@ -172,8 +237,9 @@ class PLDDTLoss(torch.nn.Module):
             Tensor of shape (B, N, Natom, num_bins) containing pLDDT logits.
         x_pred : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
+            The unresolved atoms is masked to NaN.
         f_input : FoldingInput
             The input features containing masks, token flags, and representative indices.
 
@@ -183,21 +249,22 @@ class PLDDTLoss(torch.nn.Module):
             The computed pLDDT loss of shape (B, N).
         """
         with torch.no_grad():
-            lddt = self.get_lddt_score(x_pred, x_true, f_input)  # [B, N, Natom]
+            lddt = self.get_lddt_score(x_pred, x_gt, f_input)  # [B, N, Natom]
 
         lddt_bins = get_one_hot_from_bins(lddt, self.bins)  # [B, N, Natom, num_bins]
         loss = -(lddt_bins.float() * logits.log_softmax(-1)).sum(-1)  # [B, N, Natom]
 
         # We only apply loss to atoms that are experimentally resolved
-        atom_mask = f_input.atom.resolved_mask.unsqueeze(1).float()  # [B, 1, Natom]
-        n_valid = atom_mask.sum(dim=-1).clamp(min=1)  # [B, 1]
-
-        loss_mean = (loss * atom_mask).sum(dim=-1) / n_valid  # [B, N]
-
+        mask = x_gt.isfinite().all(-1)  # [B, N, Natom]
+        n_valid = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
+        loss_mean = (loss * mask).sum(dim=-1) / n_valid  # [B, N]
         return loss_mean
 
     def get_lddt_score(
-        self, x_pred: torch.Tensor, x_true: torch.Tensor, f_input: FoldingInput
+        self,
+        x_pred: torch.Tensor,
+        x_gt: torch.Tensor,
+        f_input: FoldingInput,
     ):
         """Compute the ground truth LDDT score for each atom based on predicted and
         true coordinates.
@@ -208,6 +275,8 @@ class PLDDTLoss(torch.nn.Module):
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_true : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates
+        mask : torch.Tensor
+            Tensor of shape (B, N, Natom) containing boolean masks for valid atoms.
         f_input : FoldingInput
             The input features containing masks, token flags, and representative indices.
 
@@ -217,52 +286,53 @@ class PLDDTLoss(torch.nn.Module):
             Tensor of shape (B, N, Natom) containing the ground truth LDDT
             score for each atom.
         """
-        B, L, Nall = f_input.batch_size, f_input.num_tokens, f_input.num_atoms  # noqa
-        N = x_pred.shape[1]
+        B, Nrepr, Nall = f_input.batch_size, f_input.num_tokens, f_input.num_atoms  # noqa
         device = x_pred.device
 
         # === Extract representative coordinates ===
-        b_idcs = torch.arange(B, device=device)[:, None, None]  # [B, 1, 1]
-        n_idcs = torch.arange(N, device=device)[None, :, None]  # [1, N, 1]
-        repr_idc = f_input.token.repr_index[:, None, :]  # [B, 1, L]
+        repr_idx = f_input.token.repr_index.clamp(min=0)  # [B, Nrepr]
+        repr_idx = repr_idx[:, None, :]  # [B, 1, Nrepr]
 
-        x_pred_rep = x_pred[b_idcs, n_idcs, repr_idc]  # [B, N, L, 3]
-        x_true_rep = x_true[b_idcs, n_idcs, repr_idc]  # [B, N, L, 3]
+        x_pred_rep = _gather(x_pred, 2, repr_idx[..., None])  # [B, N, Nrepr, 3]
+        x_gt_rep = _gather(x_gt, 2, repr_idx[..., None])  # [B, N, Nrepr, 3]
 
         # === Compute pairwise distances (All Atoms -> Rep Atoms) ===
-        d_pred = kernel_cdist(x_pred, x_pred_rep)  # [B, N, Nall, L]
-        d_true = kernel_cdist(x_true, x_true_rep)  # [B, N, Nall, L]
+        d_pred = kernel_cdist(x_pred, x_pred_rep)  # [B, N, Nall, Nrepr]
+        d_gt = kernel_cdist(x_gt, x_gt_rep)  # [B, N, Nall, Nrepr]
 
         # === Create loss masks ===
+        # Create mask for valid atom pairs.
+        atom_mask = x_gt.isfinite().all(-1)  # [B, N, Nall]
+        repr_mask = _gather(atom_mask, -1, repr_idx)  # [B, N, Nrepr]
+        pair_mask = (
+            atom_mask[..., :, None] & repr_mask[..., None, :]
+        )  # [B, N, Nall, Nrepr]
+
         # Protein: cutoff 15A, Nucleic Acids: cutoff 30A
         is_prot = f_input.token.is_protein[:, None, None, :]
         is_nuc = (f_input.token.is_rna | f_input.token.is_dna)[:, None, None, :]
-        mask = ((d_true < 15.0) & is_prot) | ((d_true < 30.0) & is_nuc)  # [B, N, Nall, L]
-
-        # Mask unresolved atoms.
-        mask &= f_input.atom.resolved_mask[:, None, :, None]
-        mask &= f_input.token.repr_mask[:, None, None, :]
+        pair_mask &= ((d_gt < 15.0) & is_prot) | ((d_gt < 30.0) & is_nuc)
 
         # Mask non-standard residues (e.g., modified, ligand)
-        mask &= f_input.token.is_standard[:, None, None, :]
+        is_nonstandard = ~f_input.token.is_standard[:, None, None, :]
+        pair_mask &= ~is_nonstandard
 
         # Mask self-pairs
-        pair_atom_mask = (
-            torch.arange(Nall, device=device)[None, None, :, None]
-            != f_input.token.repr_index[:, None, None, :]
-        )  # [B, 1, Nall, L]
-        mask &= pair_atom_mask
+        atom_index = torch.arange(Nall, device=device)
+        pair_mask &= (
+            atom_index[None, None, :, None] != f_input.token.repr_index[:, None, None, :]
+        )  # [B, 1, Nall, Nrepr]
 
         # Compute LDDT Score
-        e = torch.abs(d_true - d_pred)  # [B, N, Natom, L]
+        e = torch.abs(d_gt - d_pred)  # [B, N, Natom, Nrepr]
         score = torch.zeros_like(e)
         for cutoff in [0.5, 1.0, 2.0, 4.0]:
             score += (e < cutoff).float()
         score *= 0.25
-        score.masked_fill_(~mask, 0.0)
+        score.masked_fill_(~pair_mask, 0.0)
 
         # Aggregate
-        lddt_score = score.sum(dim=-1) / mask.sum(dim=-1).clamp(min=1)
+        lddt_score = score.sum(dim=-1) / pair_mask.sum(dim=-1).clamp(min=1)
         return lddt_score
 
 
@@ -291,7 +361,7 @@ class PAELoss(torch.nn.Module):
         self,
         logits: torch.Tensor,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute the PAE loss.
@@ -302,7 +372,7 @@ class PAELoss(torch.nn.Module):
             Tensor of shape (B, N, L, L, num_bins) containing PAE logits.
         x_pred : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
         f_input : FoldingInput
             The input features containing masks and atom indices.
@@ -317,26 +387,29 @@ class PAELoss(torch.nn.Module):
             return (logits * 0.0).sum(dim=-1).mean(dim=(-1, -2))
 
         with torch.no_grad():
-            e = self.get_alignment_error(x_pred, x_true, f_input)  # [B, N, L, L]
+            e = self.get_alignment_error(x_pred, x_gt, f_input)  # [B, N, L, L]
 
         # Compute Cross Entropy Error
         e_bins = get_one_hot_from_bins(e, self.bins)
         loss = -(e_bins.float() * logits.log_softmax(-1)).sum(-1)  # [B, N, L, L]
 
         # === Compute validity masks ===
-        mask_i = f_input.token.frame_mask & f_input.token.repr_mask  # [B, L]
-        mask_j = f_input.token.repr_mask  # [B, L]
-        pair_mask = mask_i[..., :, None] & mask_j[..., None, :]  # [B, L, L]
-        pair_mask = pair_mask.unsqueeze(1)  # [B, 1, L, L] -> broadcasts over N
+        repr_idx = f_input.token.repr_index.clamp(0)[:, None, :]  # [B, 1, L]
+        atom_mask = x_gt.isfinite().all(-1)  # [B, N, Natom]
+        repr_mask = _gather(atom_mask, -1, repr_idx)  # [B, N, L]
+
+        mask_i = f_input.token.frame_mask.unsqueeze(1) & repr_mask  # [B, N, L]
+        mask_j = repr_mask  # [B, N, L]
+        pair_mask = mask_i[..., :, None] & mask_j[..., None, :]  # [B, N, L, L]
 
         # Reduce
-        n_valid = pair_mask.sum(dim=(-1, -2)).clamp(min=1)  # [B, 1]
+        n_valid = pair_mask.sum(dim=(-1, -2)).clamp(min=1)  # [B, N]
         loss_mean = (loss * pair_mask).sum(dim=(-1, -2)) / n_valid  # [B, N]
 
         return loss_mean
 
     def get_alignment_error(
-        self, x_pred: torch.Tensor, x_true: torch.Tensor, f_input: FoldingInput
+        self, x_pred: torch.Tensor, x_gt: torch.Tensor, f_input: FoldingInput
     ) -> torch.Tensor:
         """Compute the ground truth alignment error for each pair of representative atoms.
 
@@ -344,7 +417,7 @@ class PAELoss(torch.nn.Module):
         ----------
         x_pred : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
         f_input : FoldingInput
             The input features containing masks and representative atom indices.
@@ -355,36 +428,29 @@ class PAELoss(torch.nn.Module):
             Tensor of shape (B, N, L, L) containing the ground truth alignment error for
             each pair of representative atoms.
         """
-        # [*, Natom, 3] -> [*, L, 3]
-        B, N, _ = x_pred.shape
-        device = x_pred.device
-
         # Extract representative coordinates (the 'j' tokens)
-        b_idcs = torch.arange(B, device=device)[:, None, None]  # [B, 1, 1]
-        n_idcs = torch.arange(N, device=device)[None, :, None]  # [1, N, 1]
-        repr_idc = f_input.token.repr_index[:, None, :]  # [B, 1, L]
-
-        x_pred_rep = x_pred[b_idcs, n_idcs, repr_idc]  # [B, N, L, 3]
-        x_true_rep = x_true[b_idcs, n_idcs, repr_idc]  # [B, N, L, 3]
+        repr_idx = f_input.token.repr_index.clamp(0)[:, None, :, None]  # [B, 1, Nrepr, 1]
+        x_pred_rep = _gather(x_pred, 2, repr_idx)  # [B, N, Nrepr, 3]
+        x_gt_rep = _gather(x_gt, 2, repr_idx)  # [B, N, Nrepr, 3]
 
         # Extract frame coordinates (the 'i' tokens)
-        frame_index = f_input.token.frame_index[:, None, :, :]  # [B, 1, L, 3]
-
-        a_true = x_true[b_idcs, n_idcs, frame_index[..., 0]]
-        b_true = x_true[b_idcs, n_idcs, frame_index[..., 1]]
-        c_true = x_true[b_idcs, n_idcs, frame_index[..., 2]]
-
-        a_pred = x_pred[b_idcs, n_idcs, frame_index[..., 0]]
-        b_pred = x_pred[b_idcs, n_idcs, frame_index[..., 1]]
-        c_pred = x_pred[b_idcs, n_idcs, frame_index[..., 2]]
+        frame_idx = f_input.token.frame_index.clamp(min=0)[:, None, :, :]  # [B, 1, L, 3]
+        a_i, b_i, c_i = frame_idx.unbind(-1)  # Each of shape [B, 1, L]
+        a_gt = _gather(x_gt, 2, a_i[..., None])  # [B, N, L, 3]
+        b_gt = _gather(x_gt, 2, b_i[..., None])  # [B, N, L, 3]
+        c_gt = _gather(x_gt, 2, c_i[..., None])  # [B, N, L, 3]
+        a_pred = _gather(x_pred, 2, a_i[..., None])  # [B, N, L, 3]
+        b_pred = _gather(x_pred, 2, b_i[..., None])  # [B, N, L, 3]
+        c_pred = _gather(x_pred, 2, c_i[..., None])  # [B, N, L, 3]
 
         # Project coords into frames
-        xij_true = self.express_coords_in_frames(x_true_rep, a_true, b_true, c_true)
+        xij_gt = self.express_coords_in_frames(x_gt_rep, a_gt, b_gt, c_gt)
         xij_pred = self.express_coords_in_frames(x_pred_rep, a_pred, b_pred, c_pred)
 
         # Compute Euclidean distance between alignments
-        e = torch.sqrt((xij_pred - xij_true).pow(2).sum(-1) + self.eps)
+        e = torch.sqrt((xij_pred - xij_gt).pow(2).sum(-1) + self.eps)
 
+        e.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
         return e
 
     @staticmethod

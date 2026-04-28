@@ -43,7 +43,8 @@ data:
   val_datasets: []
 
   # Prior sampler for diffusion bridge modeling
-  prior_sampler: # If null, no prior sampling
+  prior_sampler:
+    # If null, no prior sampling
     chain_translation_scale: 50.0 # Angstroms
     use_ot_permutation: true # Only for training.
     align_for_permutation: false # Only for training.
@@ -90,7 +91,6 @@ validation:
   num_recycles: 3
   num_steps: 200
   num_diffusion_samples: 5
-  symmetry_correction: true
   save_predictions: false
   return_traj: false
   traj_format: "pdb"
@@ -154,7 +154,7 @@ loss:
   # Confidence loss
   confidence_loss:
     plddt_loss:
-        num_bins: 50
+      num_bins: 50
     pae_loss:
       min_dist: 0.0
       max_dist: 32.0

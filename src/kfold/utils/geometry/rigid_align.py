@@ -708,9 +708,9 @@ def get_rigid_transform_torch(
         return R, t
 
     L = coords.shape[-2]
-    if L < 4:
+    if L < 3:
         warnings.warn(
-            f"Point cloud has only {L} points (< 4). "
+            f"Point cloud has only {L} points (< 3). "
             "Weighted rigid alignment may not produce a unique rotation.",
             stacklevel=2,
         )

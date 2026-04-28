@@ -92,9 +92,10 @@ class ConfidenceHead(torch.nn.Module):
         num_pde_bins: int = 64
         num_plddt_bins: int = 50
 
+        # For training
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config, kernel_config):
+    def __init__(self, cfg: Config, kernel_config: dict):
         super().__init__()
         self.num_pae_bins = cfg.num_pae_bins
         self.num_pde_bins = cfg.num_pde_bins
@@ -368,9 +369,8 @@ class ConfidenceHead(torch.nn.Module):
 
         # Line 4
         pairformer_stack = self.get_pairformer_stack()
-        s, z = pairformer_stack(
-            s, z, mask, use_cuequiv_kernels=self.kernel_config.cuequivariance
-        )
+        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
+        s, z = pairformer_stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
 
         # Line 5
         pae_logits = self.pae_head(z)  # [B, L, L, num_pae_bins]

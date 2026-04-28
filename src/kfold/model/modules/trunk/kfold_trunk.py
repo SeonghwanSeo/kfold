@@ -182,7 +182,7 @@ class KFoldTrunk(BaseTrunk):
         seq_attn: torch.Tensor,
         struct_emb: torch.Tensor,
         **kwargs,
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
         Parameters
@@ -259,7 +259,7 @@ class KFoldTrunk(BaseTrunk):
         # === Revert register tokens === #
         s, z = self._undo_registers(s, z)
 
-        return {"s_trunk": s, "z_trunk": z}
+        return s, z
 
     def _run_trunk(
         self,
@@ -274,7 +274,7 @@ class KFoldTrunk(BaseTrunk):
         pairformer_stack = self.get_pairformer_stack(not self.training)
         plm_module = self.get_plm_module(not self.training)
 
-        use_cuequiv_kernels = self.kernel_config.cuequivariance
+        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
         z = plm_module(z, s_plm, asym_id, mask, use_cuequiv_kernels=use_cuequiv_kernels)
         s, z = pairformer_stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
         return s, z

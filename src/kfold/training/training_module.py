@@ -370,11 +370,11 @@ class KFoldTrainingModule(pl.LightningModule):
         mode: str = "train",
     ) -> dict[str, dict[str, torch.Tensor]]:
         if mode == "train":
-            return self.model(
+            return self.model.forward_train(
                 f_input,
                 num_recycles=num_recycles,
-                num_steps=num_steps,
-                num_samples=num_samples,
+                num_mini_rollout_steps=num_steps,
+                num_mini_rollout_samples=num_samples,
                 diffusion_batch_size=diffusion_batch_size,
                 train_structure_module=self.train_structure_module,
                 train_confidence_module=self.train_confidence_head,
@@ -454,7 +454,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self, batch: tuple[FoldingInput, list[dict]], model_output: dict[str, Any]
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute losses of given the model output."""
-        f_input, _ = batch
+        f_input, struct_info = batch
 
         with torch.autocast("cuda", dtype=torch.float32):
             # NOTE: Compute the losses in float32 for better numerical stability
@@ -494,7 +494,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     logits=model_output["confidence"],
                     x_sample=model_output["sample"]["coordinates"],
                     f_input=f_input,
-                    ref_struct=None,  # TODO: use ref_struct for symmetry correction
+                    struct_info=struct_info,
                 )
             else:
                 confidence_loss, confidence_metrics = 0.0, {}
@@ -535,15 +535,13 @@ class KFoldTrainingModule(pl.LightningModule):
         symmetry_dict: dict = struct_info["symmetry"]
 
         try:
-            out = self(
+            sample_out = self(
                 f_input=f_input,
                 num_recycles=val_config.num_recycles,
                 num_steps=val_config.num_steps,
                 num_samples=num_samples,
                 mode="validation",
-            )
-            sample_out = out["sample"]
-            sample_coords = sample_out["coordinates"]
+            )["sample"]
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -553,18 +551,23 @@ class KFoldTrainingModule(pl.LightningModule):
             else:
                 raise e
 
-        # Remove padding atoms
-        assert sample_coords.shape[:2] == (1, num_samples), (
-            "Expected sample_coords shape is (1, Nsample, Natom, 3)."
-        )
-        num_atoms: int = ref_struct.num_atoms
-        assert f_input.atom.pad_mask[:, :num_atoms].all(), (
-            "Non-padding atoms found in the padding mask."
-        )
-        assert not f_input.atom.pad_mask[:, num_atoms:].any(), (
-            "Padding atoms found in the non-padding region of the padding mask."
-        )
-        sample_coords = sample_coords[0, :, :num_atoms, :]  # [Nsample, Natom, 3]
+        sample_out = {k: v.squeeze(0) for k, v in sample_out.items()}  # remove batch dim
+
+        n_atoms: int = int(f_input.atom.pad_mask.sum().item())
+        n_tokens: int = int(f_input.token.pad_mask.sum().item())
+        assert n_atoms == ref_struct.num_atoms
+
+        # Select the best sample based on global PDE score.
+        if self.train_confidence_head:
+            gpde: torch.Tensor = validation_metrics.compute_global_pde(
+                sample_out["pde_score"][:, :n_tokens, :n_tokens],
+                sample_out["prob_contact"][:n_tokens, :n_tokens],
+            )  # [Nsample,]
+            top1_index = int(gpde.argmax().item())
+        else:
+            # If confidence head is not trained, use the sample with
+            # lowest RMSD among the samples as the best sample.
+            top1_index = None
 
         # Compute validation metrics
         ref_struct_aligned: list[RefStructure] = []
@@ -572,7 +575,7 @@ class KFoldTrainingModule(pl.LightningModule):
         with torch.autocast("cuda", torch.float32):
             # Permute predicted and true coordinates to align
             for i in range(num_samples):
-                pred_coords_i = sample_coords[i]  # [Natom, 3]
+                pred_coords_i = sample_out["coordinates"][i, :n_atoms]
                 struct_i = validation_metrics.get_aligned_gt_structure(
                     ref_struct,
                     pred_coords_i,
@@ -585,7 +588,9 @@ class KFoldTrainingModule(pl.LightningModule):
                 sample_metrics.append(metric_i)
 
         # Aggregate metrics
-        aggr_metrics = validation_metrics.aggregate_validation_metrics(sample_metrics)
+        aggr_metrics = validation_metrics.aggregate_validation_metrics(
+            sample_metrics, top1_index
+        )
 
         # Update validation metrics
         metrics: MetricCollection = self.val_metrics[dataloader_idx]
@@ -627,7 +632,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     prefix = str(save_dir / f"{name}-sample{i}")
                     self.save_structure_and_metrics(
                         ref_struct=ref_struct_aligned[i],
-                        pred_coords=sample_coords[i],
+                        pred_coords=sample_out["coordinates"][i, :n_atoms],
                         metrics=sample_metrics[i],
                         prefix=prefix,
                     )
@@ -793,7 +798,7 @@ class KFoldTrainingModule(pl.LightningModule):
         logits: dict[str, torch.Tensor],
         x_sample: torch.Tensor,
         f_input: FoldingInput,
-        ref_struct: RefStructure,
+        struct_info: list[dict],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute confidence head loss.
 
@@ -805,8 +810,9 @@ class KFoldTrainingModule(pl.LightningModule):
             The sampled atom coordinates of shape (B, Nsample, Latom, 3).
         f_input : FoldingInput
             The input features containing the target distogram and masks.
-        ref_struct : RefStructure
-            The reference structure used for symmetry correction.
+        struct_info : list[dict]
+            A list of dictionaries containing structure information,
+            including the reference structure and symmetry.
 
         Returns
         -------
@@ -818,17 +824,27 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics: dict[str, torch.Tensor] = {}
         alpha_pae = self.loss_weights["pae"]
 
-        # TODO: Implement symmetry correction using ref_struct
-        # For now, we just use the un-aligned coordinates for confidence loss computation.
-        x_gt = f_input.atom.label_coords
-        x_gt = x_gt.unsqueeze(1).expand(-1, x_sample.shape[1], -1, -1)
+        # Ground truth coordinates for confidence loss computation.
+        x_gt: torch.Tensor = loss_fn.confidence.get_aligned_gt_structure(
+            x_pred=x_sample,
+            f_input=f_input,
+            struct_info=struct_info,
+        )  # [B, Nsample, Latom, 3]
 
         L_pde = self.pde_loss(logits["pde_logits"], x_sample, x_gt, f_input).mean()
         metrics["pde_loss"] = L_pde.detach()
+
         L_plddt = self.plddt_loss(logits["plddt_logits"], x_sample, x_gt, f_input).mean()
         metrics["plddt_loss"] = L_plddt.detach()
-        L_resolved = self.exp_res_loss(logits["resolved_logits"], f_input).mean()
-        metrics["resolved_logits"] = L_resolved.detach()
+
+        is_resolved = x_gt.isfinite().all(-1)  # [B, Nsample, Latom]
+        pad_mask = f_input.atom.pad_mask
+        L_resolved = self.exp_res_loss(
+            logits["resolved_logits"], is_resolved, pad_mask
+        ).mean()
+        metrics["resolved_loss"] = L_resolved.detach()
+
+        # NOTE: PAE loss return 0.0 when alpha_pae is 0.
         L_pae = self.pae_loss(logits["pae_logits"], x_sample, x_gt, f_input).mean()
         if alpha_pae > 0:
             metrics["pae_loss"] = L_pae.detach()

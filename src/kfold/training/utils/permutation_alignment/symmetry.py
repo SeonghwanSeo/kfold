@@ -146,13 +146,19 @@ def get_standard_residue_permutations(res_name: str) -> ResidueSymmetry:
 
 def get_component_permutations(
     comp: Component,
-    valid_atoms: list[str],
+    valid_atoms: list[str] | None = None,
     max_permutations: int = 1000,
 ) -> ResidueSymmetry:
     """Get molecule's symmetries from ccd."""
     permutations: Sequence[list[int]] | None = comp.symmetries
     if permutations is None or len(permutations) <= 1:
         # No symmetries
+        return None
+
+    if valid_atoms is None:
+        valid_atoms = list(comp.names)
+
+    if len(valid_atoms) <= 1:
         return None
 
     # Limit the number of permutations
@@ -224,7 +230,8 @@ def get_residue_symmetries(
         Each symmetry is represented as a list of atom index permutations,
         or None if there is no symmetry for that residue.
     """
-    component_cache: dict[str, Component] = {}
+    _ref_comp_cache: dict[str, Component] = {}
+    _ref_comp_smi_cache: dict[str, Component] = {}
     permutations: dict[int, list[ResidueSymmetry]] = {}
     for chain in ref_struct.chains:
         chain_perms: list[ResidueSymmetry] = []
@@ -232,20 +239,29 @@ def get_residue_symmetries(
         for res_i in range(chain.num_residues):
             res_idx = res_i + 1  # 1-based index
             res_name = ccd_sequences[res_i]
+
+            # Compute residue symmetries.
             if chain.residue.is_standard[res_i]:
+                # Standard residues have predefined symmetries.
                 res_perms = get_standard_residue_permutations(res_name)
             else:
-                # Get valid atoms in the residue
+                # For ligands, use the CCD component or SMILES to compute symmetries.
+                smiles = chain.smiles
+                if smiles is not None:
+                    ref_comp = _ref_comp_smi_cache.setdefault(
+                        smiles,
+                        Component.from_smiles(res_name, smiles, compute_symmetry=True),
+                    )
+                else:
+                    ref_comp = _ref_comp_cache.setdefault(res_name, ccd[res_name])
+
+                # Get permutations between valid atoms
                 atom_slice = chain.residue.get_atom_slice(res_idx)
                 valid_atoms = chain.atom.name[atom_slice].tolist()
-                if len(valid_atoms) <= 1:
-                    # No symmetry for single-atom residues (e.g., ions)
-                    res_perms = None
-                else:
-                    ref_mol = component_cache.setdefault(res_name, ccd[res_name])
-                    res_perms = get_component_permutations(
-                        ref_mol, valid_atoms, max_permutations
-                    )
+                res_perms = get_component_permutations(
+                    ref_comp, valid_atoms, max_permutations
+                )
+
             chain_perms.append(res_perms)
         permutations[chain.asym_id] = chain_perms
     return permutations

@@ -305,13 +305,27 @@ def _rigid_align_gt_to_pred(
     gt_coords: torch.Tensor,
     pred_coords: torch.Tensor,
 ) -> torch.Tensor:
-    """Rigidly align GT coordinates to Pred coordinates using the Kabsch algorithm.
+    """Rigidly align GT coordinates to Pred coordinates using Kabsch algorithm.
 
     NOTE:
     - We use polymer residue center atoms (CA/C1') for alignment to provide a
       stable reference frame that is invariant to side-chain/ligand flips.
     - This allows us to perform atomic permutations without repeating the
       SVD-based global alignment.
+
+    Parameters
+    ----------
+    ref_struct : RefStructure
+        The reference structure containing ground truth coordinates and masks.
+    gt_coords : torch.Tensor
+        The ground truth coordinates. Shape: [Natom, 3]
+    pred_coords : torch.Tensor
+        The predicted coordinates. Shape: [Natom, 3]
+
+    Returns
+    -------
+    gt_coords_aligned: torch.Tensor
+        The aligned ground truth coordinates.
     """
 
     def get_is_center(c: Chain) -> np.ndarray:
@@ -346,14 +360,27 @@ def _do_optimal_atom_permutation(
     pred_coords: torch.Tensor,
     permutations: dict[int, list[ResidueSymmetry]],
 ) -> torch.Tensor:
-    """Resolve residue-level atom permutations (e.g., side-chain flips).
+    """Find the best residue/molecule permutation to minimize RMSD.
 
-    This function uses a vectorized Mean Squared Error check for each residue
-    to find the optimal atom mapping in the current pre-aligned frame.
+    Parameters
+    ----------
+    ref_struct : RefStructure
+        The reference structure containing ground truth coordinates and masks.
+    gt_coords : torch.Tensor
+        The ground truth coordinates. Shape: [Natoms, 3]
+    pred_coords : torch.Tensor
+        The predicted coordinates. Shape: [Natoms, 3]
+    permutations : dict[int, list[ResidueSymmetry]]
+        The dictionary for atom permutations for each residue in each chain.
+
+    Returns
+    -------
+    gt_coords_permuted: torch.Tensor
+        The ground truth coordinates after optimal residue/molecule permutation.
     """
     assert ref_struct.num_atoms == gt_coords.shape[0] == pred_coords.shape[0]
+    atom_index = torch.arange(gt_coords.shape[0], device=gt_coords.device)
     gt_mask = gt_coords.isfinite().all(dim=-1)
-
     for c in ref_struct.chains:
         perms_in_chain = permutations[c.asym_id]
 
@@ -361,11 +388,6 @@ def _do_optimal_atom_permutation(
             perms: np.ndarray | None = perms_in_chain[res_i]
             if perms is None or len(perms) <= 1:
                 continue
-
-            assert perms.shape[1] == c.residue.num_atoms[res_i], (
-                "Permutation index mismatch."
-            )
-
             res_idx = res_i + 1  # 1-based indexing
             atom_slc = c.residue.get_atom_slice(res_idx)
             x = pred_coords[atom_slc]
@@ -373,10 +395,11 @@ def _do_optimal_atom_permutation(
             m = gt_mask[atom_slc]
             if not m.any():
                 continue
+            best_perm = __do_optimal_atom_permutation_in_residue(x_gt, x, m, perms)
+            atom_index[atom_slc] = atom_index[atom_slc][best_perm]
 
-            __do_optimal_atom_permutation_in_residue(x_gt, x, m, perms)
-
-    return gt_coords
+    gt_coords_permuted = gt_coords[atom_index]
+    return gt_coords_permuted
 
 
 def __do_optimal_atom_permutation_in_residue(
@@ -384,28 +407,26 @@ def __do_optimal_atom_permutation_in_residue(
     pred_coords: torch.Tensor,
     gt_mask: torch.Tensor,
     permutations: ResidueSymmetry,
-) -> None:
+) -> torch.Tensor:
     """Resolve residue-level atom permutations (e.g., side-chain flips).
 
     This function uses a vectorized Mean Squared Error check for each residue
     to find the optimal atom mapping in the current pre-aligned frame.
     """
-    # Vectorized evaluation of all possible atom permutations for the residue.
+    assert permutations is not None
+    assert permutations.shape[1] == gt_coords.shape[0], "Permutation index mismatch."
+
+    # Convert permutations to tensor for indexing.
     perms_t = torch.as_tensor(permutations, device=gt_coords.device)
+
+    # Compute squared distances between Ground Truth and Predicted coordinates.
     x_pred = pred_coords[None, ...]  # [1, Natoms, 3]
     x_gt = gt_coords[perms_t]  # [Nperms, Natoms, 3]
     mask = gt_mask[perms_t]  # [Nperms, Natoms]
-
-    # Compute squared distances between Ground Truth and Predicted coordinates.
     diff_sq = (x_gt - x_pred).pow(2).sum(-1)
     # Mask out unresolved atoms to prevent NaN propagation.
     diff_sq[~mask] = 0.0
     # The permutation with the minimum sum of squared distances is selected.
     cost = diff_sq.sum(-1)
     best_i = int(torch.argmin(cost).item())
-
-    # Apply the optimal permutation to the coordinate tensor.
-    if best_i > 0:
-        # NOTE: The first permutation (index 0) is the identity mapping.
-        # See `./symmetry.py`
-        gt_coords[:] = x_gt[best_i]
+    return perms_t[best_i]

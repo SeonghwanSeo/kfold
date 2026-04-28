@@ -30,6 +30,3 @@ ode_step_power: 2.0
 # Training time schedule
 P_mean: -0.8
 P_std: 2.0
-
-# Training preconditioning
-conditioning_drop_rate: 0.2

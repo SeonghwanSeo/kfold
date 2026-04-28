@@ -128,6 +128,6 @@ def get_context_dtype(device_type: str | None = None) -> torch.dtype:
         device_type = "cuda" if torch.cuda.is_available() else "cpu"
 
     if torch.is_autocast_enabled(device_type):
-        return torch.get_autocast_gpu_dtype()
+        return torch.get_autocast_dtype(device_type)
     else:
         return torch.float32

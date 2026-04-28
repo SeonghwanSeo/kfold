@@ -69,6 +69,32 @@ def norm_key(k1: _T, k2: _T) -> tuple[_T, _T]:
 
 
 # ============================================================
+# Sample ranking and selection
+# ============================================================
+def compute_global_pde(
+    pde_score: torch.Tensor, prob_contact: torch.Tensor
+) -> torch.Tensor:
+    """Compute the global PDE score for ranking samples.
+
+    Parameters
+    ----------
+    pde_score : torch.Tensor
+        Tensor of shape (*, Nsample, Ntoken, Ntoken) containing the PDE scores.
+    prob_contact : torch.Tensor
+        Tensor of shape (*, Ntoken, Ntoken) containing the predicted contact
+        probabilities, i.e., distogram probabilities for bins below 8Å.
+
+    Returns
+    -------
+    global_pde : torch.Tensor
+        Tensor of shape (*, Nsample) containing the global PDE scores for each sample.
+    """
+    pde_contact_sum = (pde_score * prob_contact.unsqueeze(-3)).sum(dim=(-2, -1))
+    prob_contact_sum = prob_contact.sum(dim=(-2, -1))
+    return pde_contact_sum / prob_contact_sum.clamp(1e-6)[..., None]
+
+
+# ============================================================
 # Symmetry correction for accurate metric computation
 # ============================================================
 def get_aligned_gt_structure(
@@ -76,7 +102,7 @@ def get_aligned_gt_structure(
     pred_coords: torch.Tensor,
     symmetry_dict: dict,
 ) -> RefStructure:
-    """Get the best matching true coordinates to the predicted coordinates.
+    """Get the best matching ground truth coordinates to the predicted coordinates.
     Chain permutation and atom swaps.
 
     Parameters
@@ -107,7 +133,7 @@ def compute_rmsd(
     mask: torch.Tensor | None = None,
     align: bool = False,
 ):
-    """Compute RMSD between predicted and true coordinates.
+    """Compute RMSD between predicted and ground truth coordinates.
 
     Parameters
     ----------
@@ -132,22 +158,22 @@ def compute_rmsd(
 
 def compute_pair_lddt(
     pdist_pred: torch.Tensor,
-    pdist_true: torch.Tensor,
+    pdist_gt: torch.Tensor,
     thresholds: Sequence[float] = (0.5, 1.0, 2.0, 4.0),
 ):
-    """Compute the lddt score from predicted and true distances.
+    """Compute the lddt score from predicted and ground truth distances.
 
     Parameters
     ----------
     d_predicted : torch.Tensor
         Predicted distances, shape (*, Natom, Natom)
-    d_true : torch.Tensor
+    d_gt : torch.Tensor
         Ground truth distances, shape (*, Natom, Natom)
     thresholds : Sequence[float]
         Distance error thresholds for lddt calculation
     """
     dtype = pdist_pred.dtype
-    error = torch.abs(pdist_true - pdist_pred)
+    error = torch.abs(pdist_gt - pdist_pred)
     scores = torch.zeros_like(error, dtype=dtype)
     for threshold in thresholds:
         scores += (error < threshold).to(dtype)
@@ -243,27 +269,27 @@ def compute_validation_metric(
     assert st == num_atoms, "Mismatch in number of atoms when preparing asym_id tensor."
     assert atom_asym_ids.min().item() >= 1, "Asym IDs should be positive integers."
 
-    # Get true coordinates
+    # Get ground truth coordinates
     dev = pred_coords.device
-    true_coords = torch.from_numpy(ref_struct.get_atom_coords()).to(dev)
-    atom_mask = torch.isfinite(true_coords).all(-1)  # [Natom]
+    gt_coords = torch.from_numpy(ref_struct.get_atom_coords()).to(dev)
+    atom_mask = torch.isfinite(gt_coords).all(-1)  # [Natom]
 
     # Rigid-align
-    true_coords = rigid_align(true_coords, pred_coords, atom_mask)  # [Natom, 3]
+    gt_coords = rigid_align(gt_coords, pred_coords, atom_mask)  # [Natom, 3]
 
     # Remove unresolved atoms
-    true_coords = true_coords[atom_mask]  # [Natom_resolved, 3]
+    gt_coords = gt_coords[atom_mask]  # [Natom_resolved, 3]
     pred_coords = pred_coords[atom_mask]  # [Natom_resolved, 3]
     atom_asym_ids = atom_asym_ids[atom_mask]  # [Natom_resolved]
     del atom_mask
 
     # For lddt computations
-    pdist_true = torch.norm(true_coords[:, None, :] - true_coords[None, :, :], dim=-1)
+    pdist_gt = torch.norm(gt_coords[:, None, :] - gt_coords[None, :, :], dim=-1)
     pdist_pred = torch.norm(pred_coords[:, None, :] - pred_coords[None, :, :], dim=-1)
-    lddt_score = compute_pair_lddt(pdist_pred, pdist_true)  # [natom, natom]
-    # Use 30Å cutoff for DNA/RNA, 15Å cutoff for protein/ligand
-    cutoff_mask_15 = pdist_true < 15.0
-    cutoff_mask_30 = pdist_true < 30.0
+    lddt_score = compute_pair_lddt(pdist_pred, pdist_gt)  # [natom, natom]
+    # Use 30Å cutoff for DNA/RNA, 15Å cutoff for protein/ligand
+    cutoff_mask_15 = pdist_gt < 15.0
+    cutoff_mask_30 = pdist_gt < 30.0
     # Exclude self-pairs
     cutoff_mask_15.fill_diagonal_(False)
     cutoff_mask_30.fill_diagonal_(False)
@@ -271,7 +297,7 @@ def compute_validation_metric(
 
     # Compute complex-level metrics
     complex_metrics = {
-        "rmsd": compute_rmsd(true_coords, pred_coords, mask=None, align=False).item(),
+        "rmsd": compute_rmsd(gt_coords, pred_coords, mask=None, align=False).item(),
         "lddt": lddt_score[cutoff_mask_15].mean().item(),
     }
 
@@ -291,14 +317,14 @@ def compute_validation_metric(
         metrics: dict[str, float] = {}
 
         # Compute RMSD and aligned RMSD (n_atoms > 4)
-        chain_true_coords = true_coords[chain_mask]
+        chain_gt_coords = gt_coords[chain_mask]
         chain_pred_coords = pred_coords[chain_mask]
         metrics["rmsd"] = compute_rmsd(
-            chain_true_coords, chain_pred_coords, align=False
+            chain_gt_coords, chain_pred_coords, align=False
         ).item()
         if num_chain_atoms > 4:
             metrics["rmsd_aligned"] = compute_rmsd(
-                chain_true_coords, chain_pred_coords, align=True
+                chain_gt_coords, chain_pred_coords, align=True
             ).item()
 
         if num_chain_atoms > 1:
@@ -447,6 +473,7 @@ def extract_validation_metrics(summary: dict[str, Any]) -> dict[str, float]:
 
 def aggregate_validation_metrics(
     sample_summaries: list[dict[str, Any]],
+    top1_idx: int | None = None,
 ) -> dict[str, Any]:
     """Aggregate validation metrics across multiple samples."""
     # All values
@@ -461,12 +488,12 @@ def aggregate_validation_metrics(
     # Average
     avg_metrics = {k: sum(vs) / len(vs) for k, vs in all_metrics.items()}
 
-    # Best complex (by complex LDDT)
-    # TODO: change ranking criterion from LDDT to global PDE according to AF3
-    top1_idx = max(
-        range(len(sample_summaries)),
-        key=lambda i: sample_summaries[i]["metrics"]["lddt"],
-    )
+    if top1_idx is None:
+        # Use top-1 RMSD if global PDE score is not available
+        top1_idx = min(
+            range(len(sample_summaries)),
+            key=lambda i: sample_summaries[i]["metrics"]["rmsd"],
+        )
     top1_metrics = {k: vs[top1_idx] for k, vs in all_metrics.items()}
 
     # Top of five

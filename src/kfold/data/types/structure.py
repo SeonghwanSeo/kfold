@@ -244,11 +244,28 @@ class Chain:
             If the atom is not found.
         """
         # Get the range of atom indices for the given residue
-        atom_range = self.residue.iter_residue_atoms(residue_index)
-        for atom_index in atom_range:
-            if self.atom.name[atom_index] == atom_name:
-                return atom_index
-        raise KeyError(f"Atom '{atom_name}' not found in residue index {residue_index}.")
+        res_i = residue_index - 1  # convert to 0-based index
+        st = self.residue.atom_starts[res_i]
+        end = self.residue.atom_ends[res_i]
+
+        # Assuming self.atom.name is a numpy array
+        res_atoms = self.atom.name[st:end]
+
+        # Vectorized strip and upper (Note: these return new arrays)
+        # Only use this if the slice is very large
+        mask = np.char.upper(res_atoms) == atom_name.upper()
+        indices = np.where(mask)[0]
+        if indices.size == 0:
+            raise KeyError(
+                f"Atom '{atom_name}' not found in residue index {residue_index}: "
+                f"{res_atoms}"
+            )
+        elif indices.size > 1:
+            raise KeyError(
+                f"Multiple atoms '{atom_name}' found in residue index {residue_index}: "
+                f"{res_atoms}"
+            )
+        return int(st + indices[0])
 
     def iter_residue_atoms(self, residue_index: int) -> range:
         """Get the range of atom indices for a given residue index."""

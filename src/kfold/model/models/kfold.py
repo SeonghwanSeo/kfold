@@ -1,5 +1,9 @@
+import dataclasses
+import logging
+import pathlib
 import time
 from collections.abc import Mapping
+from typing import Self
 
 import torch
 
@@ -7,19 +11,41 @@ import kfold.model.modules as submodules
 from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
 
-from .base import BaseFoldingModel, BaseFoldingModelConfig
+logger = logging.getLogger(__name__)
 
 
-class KFoldConfig(BaseFoldingModelConfig):
-    _class_: str = "KFold"
+@dataclasses.dataclass
+class KFoldConfig:
+    input_embedder: BaseConfig
     sequence_encoder: BaseConfig
     structure_encoder: BaseConfig
+    trunk: BaseConfig
+    score_model: BaseConfig
+    structure_module: BaseConfig
+    distogram_head: BaseConfig
+    confidence_head: BaseConfig
+
+    # Kernel configurations
+    kernel_cuequivariance: bool = True
+
+    # For training
+    diffusion_conditioning_drop_rate: float = 0.0
+    confidence_conditioning_drop_rate: float = 0.0
 
 
 @MAIN_MODULE.register()
-class KFold(BaseFoldingModel):
+class KFold(torch.nn.Module):
     def __init__(self, config: KFoldConfig):
-        super().__init__(config)
+        super().__init__()
+        self.config: KFoldConfig = config
+        kernel_config = {
+            "cuequivariance": config.kernel_cuequivariance,
+        }
+
+        # Initialize encoders
+        self.input_embedder: submodules.input_embedder.BaseInputEmbedder = (
+            Registry.instantiate(config.input_embedder)
+        )
         self.sequence_encoder: submodules.sequence_encoder.BaseSequenceEncoder = (
             Registry.instantiate(config.sequence_encoder)
         )
@@ -27,6 +53,39 @@ class KFold(BaseFoldingModel):
             Registry.instantiate(config.structure_encoder)
         )
 
+        # Initialize trunk
+        self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(
+            config.trunk, kernel_config=kernel_config
+        )
+
+        # Initialize prediction heads
+        # NOTE: diffusion_head is not a torch.nn.Module
+        self.score_model: submodules.score_model.BaseScoreModel = Registry.instantiate(
+            config.score_model, kernel_config=kernel_config
+        )
+        self.diffusion_head: submodules.structure_module.BaseStructureModule = (
+            Registry.instantiate(config.structure_module, score_model=self.score_model)
+        )
+
+        self.distogram_head: submodules.prediction_head.DistogramHead = (
+            Registry.instantiate(config.distogram_head)
+        )
+
+        self.confidence_head: submodules.prediction_head.ConfidenceHead = (
+            Registry.instantiate(config.confidence_head, kernel_config=kernel_config)
+        )
+
+    def do_compile(self, mode: str = "default", dynamic: bool = False):
+        """Compile the trunk and score model."""
+        kwargs = {"mode": mode, "dynamic": dynamic}
+        self.trunk.do_compile(**kwargs)
+        self.score_model.do_compile(**kwargs)
+        self.confidence_head.do_compile(**kwargs)
+
+    # ============================================================
+    # Inference Methods
+    # ============================================================
+    @torch.inference_mode()
     def inference(
         self,
         f_input: FoldingInput,
@@ -92,13 +151,143 @@ class KFold(BaseFoldingModel):
 
         return model_out, time_logs
 
-    def forward(
+    @torch.inference_mode()
+    def sample(
+        self,
+        f_input: FoldingInput,
+        num_recycles: int = 10,
+        num_steps: int = 200,
+        num_samples: int = 5,
+        return_embeddings: bool = False,
+        return_traj: bool = False,
+    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+        """Forward pass of KFold model for model training.
+
+        Parameters
+        ----------
+        f_input : FoldingInput
+            Input data for folding model.
+        num_recycles : int
+            Number of recycling cycles in trunk.
+        num_steps : int
+            Number of diffusion steps for training.
+        num_samples : int
+            Number of diffusion samples for training.
+        return_embeddings : bool, optional
+            Whether to return intermediate sequence and structure embeddings.
+        return_traj : bool, optional
+            Whether to return sampling trajectories.
+        """
+        dict_out: dict[str, torch.Tensor] = {}
+        time_logs: dict[str, float] = {}
+
+        # Indicate whether to return batched output
+        return_batched_output = f_input.is_batched
+
+        # Ensure batched input
+        f_input = self.ensure_batched_input(f_input)
+
+        # Embed inputs
+        st = time.time()
+        s_inputs, s_init, z_init = self.input_embedder(f_input)
+        et = time.time()
+        time_logs["input_embedder"] = et - st
+
+        # Sequence encoder
+        st = time.time()
+        seq_emb, seq_attn = self.sequence_encoder(f_input)
+        et = time.time()
+        time_logs["sequence_encoder"] = et - st
+
+        # Structure encoder
+        st = time.time()
+        struct_emb = self.structure_encoder(f_input)
+        et = time.time()
+        time_logs["structure_encoder"] = et - st
+
+        # Trunk with recycling
+        st = time.time()
+        s_trunk, z_trunk = self.trunk(
+            s_inputs,
+            s_init,
+            z_init,
+            f_input,
+            num_recycles,
+            seq_emb=seq_emb,
+            seq_attn=seq_attn,
+            struct_emb=struct_emb,
+        )
+        et = time.time()
+        time_logs["trunk"] = et - st
+
+        if return_embeddings:
+            dict_out |= {
+                "seq_emb": seq_emb,
+                "seq_attn": seq_attn,
+                "struct_emb": struct_emb,
+                "s_inputs": s_inputs,
+                "s_trunk": s_trunk,
+                "z_trunk": z_trunk,
+            }
+        del seq_emb, seq_attn, struct_emb  # free memory
+
+        # Distogram head
+        st = time.time()
+        dict_out.update(
+            self.distogram_head.forward_inference(
+                f_input,
+                z_trunk,
+            )
+        )
+        et = time.time()
+        time_logs["distogram_head"] = et - st
+
+        # Diffusion head
+        # pred_atom_coords: [B, Nsample, La, 3]
+        st = time.time()
+        dict_out.update(
+            self.diffusion_head.sample_structure(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                num_steps,
+                num_samples,
+                return_traj=return_traj,
+            )
+        )
+        et = time.time()
+        time_logs["diffusion_head"] = et - st
+
+        st = time.time()
+        dict_out.update(
+            self.confidence_head.forward_inference(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                dict_out["coordinates"],
+            )
+        )
+        et = time.time()
+        time_logs["confidence_head"] = et - st
+
+        # If the input was not batched, remove the batch dimension
+        if not return_batched_output:
+            for key in dict_out:
+                dict_out[key] = dict_out[key].squeeze(0)
+        return dict_out, time_logs
+
+    # ============================================================
+    # Training Methods
+    # ============================================================
+    def forward_train(
         self,
         f_input: FoldingInput,
         num_recycles: int = 3,
-        num_steps: int = 20,
-        num_samples: int = 1,
         diffusion_batch_size: int = 48,
+        num_mini_rollout_steps: int = 20,
+        num_mini_rollout_samples: int = 1,
         train_structure_module: bool = True,
         train_confidence_module: bool = True,
     ) -> dict[str, dict[str, torch.Tensor]]:
@@ -109,20 +298,22 @@ class KFold(BaseFoldingModel):
         ----------
         f_input : FoldingInput
             Input data for folding model. Preferred to be batched.
+
+        # For trunk with recycling:
         num_recycles : int
             Number of recycling cycles in trunk.
-
-        # For diffusion sampling:
-        num_steps : int
-            Number of diffusion steps to sample structures:
-            Used for validation and confidence module training.
-        num_samples : int
-            Number of diffusion samples to sample structures for
-            confidence module training.
 
         # For structure module training:
         diffusion_batch_size : int
             Batch size for diffusion training step.
+
+        # For confidence module training with diffusion mini-rollout:
+        num_mini_rollout_steps : int
+            Number of diffusion steps to sample structures:
+            Used for validation and confidence module training.
+        num_mini_rollout_samples : int
+            Number of diffusion samples to sample structures for
+            confidence module training.
 
         train_structure_module : bool, optional
             Whether to train structure module, by default True
@@ -164,19 +355,24 @@ class KFold(BaseFoldingModel):
                     Predicted experimental resolved logits
         """
         # Ensure batched input
-        f_input = self.ensure_batched_input(f_input, do_warning=True)
+        assert f_input.is_batched, "Input must be batched for training.."
+        batch_size: int = f_input.batch_size
+        device: torch.device = f_input.device
 
         # Output dictionary
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
+        # Input embedding
         s_inputs, s_init, z_init = self.input_embedder(f_input)
+        # NOTE: cast to float32 for numerical stability in training.
+        s_inputs, s_init, z_init = s_inputs.float(), s_init.float(), z_init.float()
 
         # Get sequence and structure embeddings
         seq_emb, seq_attn = self.sequence_encoder(f_input)
         struct_emb = self.structure_encoder(f_input)
 
         # Trunk with recycling
-        trunk_out = self.trunk(
+        s_trunk, z_trunk = self.trunk(
             s_inputs,
             s_init,
             z_init,
@@ -186,51 +382,62 @@ class KFold(BaseFoldingModel):
             seq_attn=seq_attn,
             struct_emb=struct_emb,
         )
-        s_trunk = trunk_out.pop("s_trunk").float()
-        z_trunk = trunk_out.pop("z_trunk").float()
 
         if train_structure_module:
             # Distogram head
-            distogram_dict = {}
-            distogram_dict["logits"] = self.distogram_head(z_trunk)
-            if "z_aug" in trunk_out:
-                # This is for distogram auxiliary loss with prime trunk output.
-                z_aug = trunk_out["z_aug"]
-                distogram_dict["logits_aug"] = self.distogram_head(z_aug)
-            dict_out["distogram"] = distogram_dict
+            dict_out["distogram"] = {
+                "logits": self.distogram_head(z_trunk),
+            }
 
             # Diffusion head
-            diffusion_dict = self.structure_module.training_step(
+            _s_trunk, _z_trunk = s_trunk, z_trunk
+            drop_rate = self.config.diffusion_conditioning_drop_rate
+            if drop_rate > 0.0:
+                drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
+                mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
+                _s_trunk = s_trunk * mask[:, None, None]
+                _z_trunk = z_trunk * mask[:, None, None, None]
+
+            dict_out["diffusion"] = self.diffusion_head.training_step(
                 f_input,
                 s_inputs,
-                s_trunk,
-                z_trunk,
+                _s_trunk,
+                _z_trunk,
                 diffusion_batch_size,
             )
-            dict_out["diffusion"] = diffusion_dict
 
         if train_confidence_module:
-            # Sample structures with diffusion mini-rollout.
             s_inputs_detached = s_inputs.detach()
             s_trunk_detached = s_trunk.detach()
             z_trunk_detached = z_trunk.detach()
+
+            # Sample structures with diffusion mini-rollout.
             with torch.no_grad():
-                coordinates = self.structure_module.sample_structure(
+                coordinates = self.diffusion_head.sample_structure(
                     f_input=f_input,
                     s_inputs=s_inputs_detached,
                     s_trunk=s_trunk_detached,
                     z_trunk=z_trunk_detached,
-                    num_steps=num_steps,
-                    num_samples=num_samples,
+                    num_steps=num_mini_rollout_steps,
+                    num_samples=num_mini_rollout_samples,
                 )["coordinates"]  # [B, N_samples, Latom, 3]
             dict_out["sample"] = {
                 "coordinates": coordinates,
             }
+
+            _s_trunk, _z_trunk = s_trunk_detached, z_trunk_detached
+            drop_rate = self.config.confidence_conditioning_drop_rate
+            if drop_rate > 0.0:
+                drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
+                mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
+                _s_trunk = s_trunk_detached * mask[:, None, None]
+                _z_trunk = z_trunk_detached * mask[:, None, None, None]
+
             pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
                 f_input,
                 s_inputs_detached,
-                s_trunk_detached,
-                z_trunk_detached,
+                _s_trunk,
+                _z_trunk,
                 coordinates,
             )
             dict_out["confidence"] = {
@@ -242,123 +449,97 @@ class KFold(BaseFoldingModel):
 
         return dict_out
 
-    def sample(
+    # ============================================================
+    # Utility Methods
+    # ============================================================
+    def ensure_batched_input(
         self,
         f_input: FoldingInput,
-        num_recycles: int = 10,
-        num_steps: int = 200,
-        num_samples: int = 5,
-        return_traj: bool = False,
-    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
-        """Forward pass of KFold model for model training.
+        do_warning: bool = False,
+    ) -> FoldingInput:
+        """Ensure the input is batched. If not, add batch dimension of size 1.
 
         Parameters
         ----------
         f_input : FoldingInput
             Input data for folding model.
-        num_recycles : int
-            Number of recycling cycles in trunk.
-        num_steps : int
-            Number of diffusion steps for training.
-        num_samples : int
-            Number of diffusion samples for training.
-        return_traj : bool, optional
-            Whether to return sampling trajectories.
+
+        Returns
+        -------
+        f_input_batched : FoldingInput
+            Batched input data for folding model.
         """
-        time_logs: dict[str, float] = {}
+        if not f_input.is_batched:
+            # If single example is given, make it batched.
+            # However, this process copies tensors.
+            if do_warning:
+                logger.warning(
+                    "Input is not batched. Adding batch dimension of size 1."
+                    " This copies tensors and may slow down the process."
+                    " Please batch your inputs before moving to device:\n"
+                    "\tf_input = FoldingInput.from_list([f_input])",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            f_input = FoldingInput.from_list([f_input])
+        return f_input
 
-        # Indicate whether to return batched output
-        return_batched_output = f_input.is_batched
+    @classmethod
+    def from_checkpoint(
+        cls,
+        config_path: str | pathlib.Path,
+        ckpt_path: str | pathlib.Path,
+        override_args: list[str] | None = None,
+        use_ema: bool = True,
+        strict: bool = True,
+    ) -> Self:
+        """Load model from checkpoint."""
+        from omegaconf import OmegaConf
 
-        # Ensure batched input
-        f_input = self.ensure_batched_input(f_input)
+        from kfold.config import load_config
 
-        # Embed inputs
-        st = time.time()
-        s_inputs, s_init, z_init = self.input_embedder(f_input)
-        et = time.time()
-        time_logs["input_embedder"] = et - st
+        # Load model config
+        config = load_config(config_path)
+        if "model" in config:
+            # Get model config if wrapped in a higher-level config
+            config = config.model
 
-        # Sequence encoder
-        st = time.time()
-        seq_emb, seq_attn = self.sequence_encoder(f_input)
-        et = time.time()
-        time_logs["sequence_encoder"] = et - st
+        if override_args is not None:
+            # Override specific arguments in the config
+            overrides = OmegaConf.from_dotlist(override_args)
+            config = OmegaConf.merge(config, overrides)
 
-        # Structure encoder
-        st = time.time()
-        struct_emb = self.structure_encoder(f_input)
-        et = time.time()
-        time_logs["structure_encoder"] = et - st
+        # Initialize model
+        model = cls(config)
 
-        # Trunk with recycling
-        st = time.time()
-        trunk_out: dict[str, torch.Tensor] = self.trunk(
-            s_inputs,
-            s_init,
-            z_init,
-            f_input,
-            num_recycles,
-            seq_emb=seq_emb,
-            seq_attn=seq_attn,
-            struct_emb=struct_emb,
-        )
-        et = time.time()
-        s_trunk = trunk_out["s_trunk"].float()
-        z_trunk = trunk_out["z_trunk"].float()
-        del trunk_out
-        time_logs["trunk"] = et - st
+        # Load checkpoint
+        ckpt = torch.load(ckpt_path, map_location="cpu")
 
-        dict_out = {
-            "seq_emb": seq_emb,
-            "seq_attn": seq_attn,
-            "struct_emb": struct_emb,
-            "s_inputs": s_inputs,
-            "s_trunk": s_trunk,
-            "z_trunk": z_trunk,
+        if "state_dict" not in ckpt:
+            # Assume the checkpoint is a state_dict itself
+            state_dict = ckpt
+        elif use_ema:
+            # Load EMA weights
+            if "ema" not in ckpt:
+                raise KeyError(
+                    "EMA weights not found in checkpoint. "
+                    "Please set use_ema=False to load regular weights."
+                )
+            else:
+                state_dict = ckpt["ema"]["shadow_params"]
+        else:
+            # Load regular weights
+            state_dict = ckpt["state_dict"]
+
+        state_dict = {
+            k.replace("model.", "", 1): v
+            for k, v in state_dict.items()
+            if k.startswith("model.")
         }
 
-        # Distogram head
-        st = time.time()
-        dict_out["distogram_logits"] = self.distogram_head(z_trunk)
-        et = time.time()
-        time_logs["distogram_head"] = et - st
+        model.load_state_dict(state_dict, strict=strict)
 
-        # Diffusion head
-        # pred_atom_coords: [B, Nsample, La, 3]
-        st = time.time()
-        dict_out.update(
-            self.structure_module.sample_structure(
-                f_input,
-                s_inputs,
-                s_trunk,
-                z_trunk,
-                num_steps,
-                num_samples,
-                return_traj=return_traj,
-            )
-        )
-        et = time.time()
-        time_logs["diffusion_head"] = et - st
-
-        st = time.time()
-        dict_out.update(
-            self.confidence_head.forward_inference(
-                f_input,
-                s_inputs,
-                s_trunk,
-                z_trunk,
-                dict_out["coordinates"],
-            )
-        )
-        et = time.time()
-        time_logs["confidence_head"] = et - st
-
-        # If the input was not batched, remove the batch dimension
-        if not return_batched_output:
-            for key in dict_out:
-                dict_out[key] = dict_out[key].squeeze(0)
-        return dict_out, time_logs
+        return model
 
     def load_state_dict(
         self,
@@ -383,11 +564,26 @@ class KFold(BaseFoldingModel):
                 for k in missing_keys
                 if not k.startswith(("sequence_encoder.", "structure_encoder."))
             }
-            # Skip some fourier-related keys that are changed from
-            # nn.Parameter(..., required_grad=False) to buffer. (Backward compatibility)
-            unexpected_keys = {k for k in unexpected_keys if ".fourier_embed." not in k}
-
             if missing_keys:
                 raise KeyError(f"Missing keys in state_dict: {missing_keys}")
             if unexpected_keys:
                 raise KeyError(f"Unexpected keys in state_dict: {unexpected_keys}")
+
+    def _add_orig_mod_to_state_dict(
+        self, state_dict: Mapping[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        """Add '._orig_mod.' to state dict keys if required"""
+        model_keys = set(self.state_dict().keys())
+        state_keys = set(state_dict.keys())
+
+        # Keys expected by the compiled model but missing in the checkpoint
+        remaining_keys = model_keys - state_keys
+        if len(remaining_keys) == 0:
+            return dict(state_dict)  # No modification needed
+
+        new_state_dict = dict(state_dict)
+        for rk in remaining_keys:
+            k = rk.replace("._orig_mod.", ".")
+            if k in state_dict:
+                new_state_dict[rk] = new_state_dict.pop(k)
+        return new_state_dict

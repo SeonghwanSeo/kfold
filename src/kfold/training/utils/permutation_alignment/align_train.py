@@ -93,8 +93,10 @@ def get_aligned_true_coords(
         except Exception as e:
             # Fallback to using the cropped GT coordinates without permutation.
             logger.error(f"Chain permutation alignment failed: {e}")
+            num_atoms = f_input.atom.pad_mask.sum().item()
             gt_coords, mask = f_input.atom.label_coords, f_input.atom.resolved_mask
             gt_coords = torch.where(mask[:, None], gt_coords, torch.nan)
+            gt_coords = gt_coords[:num_atoms]  # Crop to the same number of atoms
 
         # 2. Rigid alignment.
         gt_coords = _rigid_align_gt_to_pred(f_input, gt_coords, pred_coords)
@@ -139,18 +141,17 @@ def _do_optimal_chain_permutation(
     # Extract the asym_ids of the chains present in the cropped region.
     pred_asym_ids: list[int] = f_input.chain.asym_id.tolist()
     pred_asym_ids = [i for i in pred_asym_ids if i > 0]  # Remove subsequent padding
+    valid_asym_ids: set[int] = set(pred_asym_ids)
 
     # Extract the necessary chains for permutation alignment.
-    valid_asym_ids: set[int] = set(pred_asym_ids)
-    valid_entity_ids = set(
-        c.entity_id for c in ref_struct.chains if c.asym_id in valid_asym_ids
-    )
-    chains = [c for c in ref_struct.chains if c.entity_id in valid_entity_ids]
-
     chain_symmetries = chain_symmetries.copy()
     for k, groups in list(chain_symmetries.items()):
         if all(i not in valid_asym_ids for g in groups for i in g):
             del chain_symmetries[k]
+    extended_asym_ids: set[int] = {
+        i for groups in chain_symmetries.values() for g in groups for i in g
+    }
+    chains = [c for c in ref_struct.chains if c.asym_id in extended_asym_ids]
 
     # Extract ground truth coordinates for chain permutation alignment.
     # NOTE: the unresolved atoms in RefStructure have coordinates of NaN.
@@ -163,9 +164,11 @@ def _do_optimal_chain_permutation(
         """Get the cropped ground truth coordinates based on the given permutation."""
         if (permuted_asym_ids is None) or (permuted_asym_ids == pred_asym_ids):
             # No permutation, return the original GT coordinates with masking
+            num_atoms = f_input.atom.pad_mask.sum().item()
             gt_coords = f_input.atom.label_coords
             gt_mask = f_input.atom.resolved_mask
-            return torch.where(gt_mask[:, None], gt_coords, torch.nan)
+            gt_coords = torch.where(gt_mask[:, None], gt_coords, torch.nan)
+            return gt_coords[:num_atoms]  # Crop to the same number of atoms
 
         gt_coords_permuted = torch.zeros_like(pred_coords)
         st = 0
@@ -253,13 +256,13 @@ def _get_anchor_chain_group(
             center_coords = c.atom.coords
         return np.isfinite(center_coords).all(-1).sum()
 
-    nvalid_dict: dict[int, int] = {c.asym_id: get_n_resolved_atoms(c) for c in chains}
+    nresolved_dict: dict[int, int] = {c.asym_id: get_n_resolved_atoms(c) for c in chains}
 
     # Prioritize chains with more residues as anchors
     len_dict: dict[int, int] = {c.asym_id: c.num_residues for c in chains}
 
     priority = {
-        v: (ctype_dict[v], -nsym_dict[v], nvalid_dict[v], len_dict[v], v)
+        v: (ctype_dict[v], -nsym_dict[v], nresolved_dict[v], len_dict[v], v)
         for v in asym_ids
     }
     anchor: Chain = max(chains, key=lambda c: priority[c.asym_id])
@@ -320,6 +323,10 @@ def _multi_chain_permutation_alignment(
 
         if mask_anchor.sum() < 3:
             # Not enough resolved atoms in crop, skip this anchor candidate.
+            logger.debug(
+                f"Skipping anchor {anchor_pred}: only {mask_anchor.sum().item():.0f} "
+                "resolved atoms in crop (min 3 required)."
+            )
             continue
 
         # Line 2: Apply the transform to GT coordinates.
@@ -342,78 +349,98 @@ def _multi_chain_permutation_alignment(
 
             # Line 3, 4: Compute the centroid of the chain groups in the bucket.
             ns, nt = len(pred_groups), len(gt_groups)
-            com_pred = torch.zeros((ns, 3), device=device)
+            nc = len(bucket[0])
+            com_pred = torch.zeros((ns, nt, 3), device=device)
             com_gt = torch.zeros((ns, nt, 3), device=device)
+            n_resolved_gt = torch.zeros((ns, nt), device=device)
+
+            stacked_gt_coords = [
+                torch.stack([gt_coords_aligned_dict[g[k]] for g in gt_groups])
+                for k in range(nc)
+            ]
+
             for s in range(ns):
-                g_s = pred_groups[s]
-                _g_s = [i for i in g_s if i in pred_asym_ids]
-                _x_pred = torch.cat([pred_center_coords_dict[i] for i in _g_s])
-                com_pred[s] = _x_pred.mean(dim=0)
-                for t in range(nt):
-                    g_t = gt_groups[t]
-                    _x_gt = torch.cat(
-                        [
-                            gt_coords_aligned_dict[j][pred_center_indices_dict[i]]
-                            for i, j in zip(g_s, g_t, strict=True)
-                            if i in pred_asym_ids
-                        ]
-                    )
-                    # NOTE: If no valid atoms, the centroid will be NaN.
-                    com_gt[s, t] = _x_gt.nanmean(dim=0)
+                g_s: tuple[int, ...] = pred_groups[s]
+                # Identify which chain positions in the group are present in the crop.
+                valid_k = [k for k in range(nc) if g_s[k] in pred_asym_ids]
+
+                # GT centroid for group s to all GT groups in the bucket.
+                _x_gt_all_t = torch.cat(
+                    [
+                        stacked_gt_coords[k][:, pred_center_indices_dict[g_s[k]]]
+                        for k in valid_k
+                    ],
+                    dim=1,
+                )  # [Nt, Natoms, 3]
+                _mask_gt_all_t = _x_gt_all_t.isfinite().all(dim=-1)
+                com_gt[s] = _x_gt_all_t.nanmean(dim=1)
+                n_resolved_gt[s] = _mask_gt_all_t.sum(dim=1)
+
+                # Prediction centroid for group s.
+                _x_pred = torch.cat([pred_center_coords_dict[g_s[k]] for k in valid_k])
+                _x_pred = _x_pred.unsqueeze(0).expand(nt, -1, -1)  # [Npred_atoms, Nt, 3]
+                _x_pred = torch.where(_mask_gt_all_t.unsqueeze(-1), _x_pred, torch.nan)
+                com_pred[s] = _x_pred.nanmean(dim=1)
 
             if torch.isnan(com_gt).all():
                 # If all centroids are NaN, skip this bucket without cost accumulation.
                 continue
 
+            # Compute distance matrix between GT centroids and Pred centroids
+            d = torch.norm(com_pred - com_gt, dim=-1)  # [ns, nt]
+            d.nan_to_num_(1e9)  # Replace NaN with large distance for cost calculation
+
             # Line 5: Find the optimal permutation of GT groups to Pred groups.
             if len(bucket) > 1:
-                perm = _find_optimal_chain_permutation(com_pred, com_gt)
+                perm = _find_optimal_chain_permutation(d.clone(), n_resolved_gt)
             else:
                 perm = [0]
+
+            bucket_cost = 0.0
             for s, t in enumerate(perm):
                 g_s, g_t = pred_groups[s], gt_groups[t]
-                cost = (com_pred[s] - com_gt[s, t]).norm(dim=-1).nansum().item()
-                total_cost += cost
+                bucket_cost += d[s, t].item()
                 for i, j in zip(g_s, g_t, strict=True):
                     if i in pred_asym_ids:
                         pred_to_gt[i] = j
+
+            total_cost += bucket_cost
 
         if total_cost < best_total_cost:
             best_total_cost, best_pred_to_gt_mapping = total_cost, pred_to_gt
 
     if best_total_cost == float("inf"):
-        print("Warning: No valid anchor found for chain permutation alignment.")
+        # Gather diagnostic info
+        logger.debug("No valid anchor found for chain permutation alignment. ")
         return {asym_id: asym_id for asym_id in pred_asym_ids}
-
     return best_pred_to_gt_mapping
 
 
 def _find_optimal_chain_permutation(
-    com_pred: torch.Tensor, com_gt: torch.Tensor
+    d: torch.Tensor,
+    n_resolved_gt: torch.Tensor,
 ) -> list[int]:
     """Find the optimal chain permutation based on centroid distances.
     See Algorithm 4 "Find Optimal Permutation" in AlphaFold-Multimer paper.
 
     Parameters
     ----------
-    com_pred : torch.Tensor
-        The centroids of the predicted chains. Shape: [Ns, 3]
-        Applied with different resolved atom masks for each GT group: Nt.
-    com_gt : torch.Tensor
-        The centroids of the ground truth chains. Shape: [Ns, Nt, 3]
+    d: torch.Tensor
+    n_resolved_gt : torch.Tensor
+        The number of resolved atoms in the GT chain segment for each pair.
+        Shape: [Ns, Nt]. Used to prioritize less ambiguous assignments.
 
     Returns
     -------
     perm: list[int]
         The optimal permutation of GT groups to Pred groups.
     """
-    # Line 1: Compute distance matrix between GT centroids and Pred centroids
-    d = torch.norm(com_pred[:, None, :] - com_gt, dim=-1)  # [Ns, Nt]
-    d.nan_to_num_(1e9)  # Replace NaN with large distance
+    # Sort prediction groups by the number of resolved atoms they can map to.
+    order = torch.argsort(n_resolved_gt.max(dim=1).values, descending=True).tolist()
 
     # Greedily assign each GT group to the closest Pred group
-    perm: list[int] = [-1] * com_gt.shape[0]
-    for s in range(com_pred.shape[0]):  # For each Pred group
+    perm: list[int] = [-1] * d.shape[0]
+    for s in order:  # For each Pred group
         # Line 3: Find the closest GT group for the Pred group
         best_idx = int(torch.argmin(d[s]).item())
         # Line 4: Mask out the assigned GT group
@@ -495,14 +522,11 @@ def _do_optimal_atom_permutation(
     gt_coords_permuted: torch.Tensor
         The ground truth coordinates after optimal residue/molecule permutation.
     """
-    gt_mask = gt_coords.isfinite().all(dim=-1)  # [Natoms]
-
     # Map every atom to its parent token to get asym_id and residue_index.
     num_atoms = gt_coords.shape[0]
     token_idx = f_input.atom.token_index[:num_atoms]
     atom_asym_ids: list[int] = f_input.token.asym_id[token_idx].tolist()
     atom_res_idxs: list[int] = f_input.token.residue_index[token_idx].tolist()
-    is_standard: list[int] = f_input.token.is_standard[token_idx].tolist()
 
     # Boundaries: [0, N1, ..., Ntot], where atoms in [Ni, Ni+1) belong to
     # the same residue.
@@ -511,6 +535,10 @@ def _do_optimal_atom_permutation(
     change_indices = torch.where(changes)[0] + 1
     boundaries = [0] + change_indices.tolist() + [num_atoms]
 
+    # Compute mask
+    gt_mask = gt_coords.isfinite().all(dim=-1)  # [Natoms]
+
+    atom_index = torch.arange(gt_coords.shape[0], device=gt_coords.device)
     for i in range(len(boundaries) - 1):
         st, end = boundaries[i], boundaries[i + 1]
         n_atoms: int = end - st
@@ -529,7 +557,7 @@ def _do_optimal_atom_permutation(
         if n_ref_atoms != n_atoms:
             # TODO: Implement partial permutation for non-standard residue/ligand
             # with missing atoms.
-            if any(is_standard[st:end]):
+            if f_input.token.is_standard[token_idx][st:end].any():
                 raise ValueError(
                     f"Incomplete atom set for standard residue at index {res_idx}. "
                     f"Expected {n_ref_atoms} atoms, got {n_atoms}."
@@ -541,10 +569,11 @@ def _do_optimal_atom_permutation(
         m = gt_mask[st:end]
         if not m.any():
             continue
+        best_perm = __do_optimal_atom_permutation_in_residue(x_gt, x, m, perms)
+        atom_index[st:end] = atom_index[st:end][best_perm]
 
-        __do_optimal_atom_permutation_in_residue(x_gt, x, m, perms)
-
-    return gt_coords
+    gt_coords_permuted = gt_coords[atom_index]
+    return gt_coords_permuted
 
 
 def __do_optimal_atom_permutation_in_residue(
@@ -552,27 +581,26 @@ def __do_optimal_atom_permutation_in_residue(
     pred_coords: torch.Tensor,
     gt_mask: torch.Tensor,
     permutations: ResidueSymmetry,
-) -> None:
+) -> torch.Tensor:
     """Resolve residue-level atom permutations (e.g., side-chain flips).
 
     This function uses a vectorized Mean Squared Error check for each residue
     to find the optimal atom mapping in the current pre-aligned frame.
     """
+    assert permutations is not None
+    assert permutations.shape[1] == gt_coords.shape[0], "Permutation index mismatch."
+
+    # Convert permutations to tensor for indexing.
     perms_t = torch.as_tensor(permutations, device=gt_coords.device)
+
+    # Compute squared distances between Ground Truth and Predicted coordinates.
     x_pred = pred_coords[None, ...]  # [1, Natoms, 3]
     x_gt = gt_coords[perms_t]  # [Nperms, Natoms, 3]
     mask = gt_mask[perms_t]  # [Nperms, Natoms]
-
-    # Compute squared distances between Ground Truth and Predicted coordinates.
     diff_sq = (x_gt - x_pred).pow(2).sum(-1)
     # Mask out unresolved atoms to prevent NaN propagation.
     diff_sq[~mask] = 0.0
     # The permutation with the minimum sum of squared distances is selected.
     cost = diff_sq.sum(-1)
     best_i = int(torch.argmin(cost).item())
-
-    # Apply the optimal permutation to the coordinate tensor.
-    if best_i > 0:
-        # NOTE: The first permutation (index 0) is the identity mapping.
-        # See `./symmetry.py`
-        gt_coords[:] = x_gt[best_i]
+    return perms_t[best_i]

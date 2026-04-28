@@ -15,6 +15,8 @@ model:
       blocks_per_ckpt: 4
   score_model:
     blocks_per_ckpt: 24
+  confidence_model:
+    blocks_per_ckpt: null
 
 train:
   _yaml_: "train/stage_1.yaml"
