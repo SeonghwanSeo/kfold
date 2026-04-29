@@ -119,7 +119,6 @@ class ValidationConfig(_Config):
     num_diffusion_samples: int = 5
     return_traj: bool = False
     traj_format: str = "cif"
-    symmetry_correction: bool = True
     # Validation output logging
     save_predictions: bool = False
 
@@ -244,8 +243,7 @@ class KFoldTrainingModule(pl.LightningModule):
             self.frozen_modules += ["score_model"]
 
         if self.train_confidence_head is False:
-            # TODO: freeze confidence module after they are implemented
-            pass
+            self.frozen_modules += ["confidence_head"]
 
         for module_name in self.frozen_modules:
             module = getattr(self.model, module_name)
@@ -291,7 +289,27 @@ class KFoldTrainingModule(pl.LightningModule):
                 )
 
         if self.train_confidence_head:
-            raise NotImplementedError("Confidence loss not implemented yet.")
+            confidence_loss_config = loss_config.confidence_loss
+            # pLDDT loss
+            self.plddt_loss = loss_fn.confidence.PLDDTLoss(
+                **confidence_loss_config["plddt_loss"]
+            )
+
+            # PDE loss
+            self.pde_loss = loss_fn.confidence.PDELoss(
+                **confidence_loss_config["pde_loss"]
+            )
+
+            # Experimentally resolved loss
+            self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss(
+                **confidence_loss_config["experimentally_resolved_loss"]
+            )
+
+            # PAE loss
+            return_zero_pae = self.loss_weights["pae"] == 0
+            self.pae_loss = loss_fn.confidence.PAELoss(
+                **confidence_loss_config["pae_loss"], return_zero=return_zero_pae
+            )
 
     def setup_metrics(self):
         """Setup metrics for validation"""
@@ -352,15 +370,14 @@ class KFoldTrainingModule(pl.LightningModule):
         mode: str = "train",
     ) -> dict[str, dict[str, torch.Tensor]]:
         if mode == "train":
-            return self.model(
+            return self.model.forward_train(
                 f_input,
                 num_recycles=num_recycles,
-                num_steps=num_steps,
-                num_samples=num_samples,
+                num_mini_rollout_steps=num_steps,
+                num_mini_rollout_samples=num_samples,
                 diffusion_batch_size=diffusion_batch_size,
                 train_structure_module=self.train_structure_module,
                 train_confidence_module=self.train_confidence_head,
-                sample_structures=self.train_confidence_head,
             )
         elif mode == "validation":
             return_traj = self.validation_config.return_traj
@@ -437,7 +454,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self, batch: tuple[FoldingInput, list[dict]], model_output: dict[str, Any]
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute losses of given the model output."""
-        f_input, _ = batch
+        f_input, struct_info = batch
 
         with torch.autocast("cuda", dtype=torch.float32):
             # NOTE: Compute the losses in float32 for better numerical stability
@@ -464,8 +481,8 @@ class KFoldTrainingModule(pl.LightningModule):
                 diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
                     x_pred=diffusion_out["x_0_hat"],
                     x_true=diffusion_out["x_gt"],
-                    per_sample_weights=model_output["diffusion"]["loss_weights"],
                     f_input=f_input,
+                    per_sample_weights=model_output["diffusion"]["loss_weights"],
                 )
 
             else:
@@ -473,7 +490,12 @@ class KFoldTrainingModule(pl.LightningModule):
                 diffusion_loss, diffusion_metrics = 0.0, {}
 
             if self.train_confidence_head:
-                confidence_loss, confidence_metrics = self.compute_confidence_loss()
+                confidence_loss, confidence_metrics = self.compute_confidence_loss(
+                    logits=model_output["confidence"],
+                    x_sample=model_output["sample"]["coordinates"],
+                    f_input=f_input,
+                    struct_info=struct_info,
+                )
             else:
                 confidence_loss, confidence_metrics = 0.0, {}
 
@@ -486,9 +508,6 @@ class KFoldTrainingModule(pl.LightningModule):
             + loss_weights["confidence"] * confidence_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
-
-        # Mean over batch
-        loss = loss.mean()
 
         # Log loss and metrics
         all_metrics = distogram_metrics | diffusion_metrics | confidence_metrics
@@ -513,17 +532,16 @@ class KFoldTrainingModule(pl.LightningModule):
         assert f_input.batch_size == 1, "Validation batch size should be 1"
         struct_info = full_struct_list[0]
         ref_struct: RefStructure = struct_info["structure"]
+        symmetry_dict: dict = struct_info["symmetry"]
 
         try:
-            out = self(
+            sample_out = self(
                 f_input=f_input,
                 num_recycles=val_config.num_recycles,
                 num_steps=val_config.num_steps,
                 num_samples=num_samples,
                 mode="validation",
-            )
-            sample_out = out["sample"]
-            sample_coords = sample_out["sample_coordinates"]
+            )["sample"]
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -533,36 +551,34 @@ class KFoldTrainingModule(pl.LightningModule):
             else:
                 raise e
 
-        # Remove padding atoms
-        assert sample_coords.shape[:2] == (1, num_samples), (
-            "Expected sample_coords shape is (1, Nsample, Natom, 3)."
-        )
-        num_atoms: int = ref_struct.num_atoms
-        assert f_input.atom.pad_mask[:, :num_atoms].all(), (
-            "Non-padding atoms found in the padding mask."
-        )
-        assert not f_input.atom.pad_mask[:, num_atoms:].any(), (
-            "Padding atoms found in the non-padding region of the padding mask."
-        )
-        sample_coords = sample_coords[0, :, :num_atoms, :]  # [Nsample, Natom, 3]
+        sample_out = {k: v.squeeze(0) for k, v in sample_out.items()}  # remove batch dim
+
+        n_atoms: int = int(f_input.atom.pad_mask.sum().item())
+        n_tokens: int = int(f_input.token.pad_mask.sum().item())
+        assert n_atoms == ref_struct.num_atoms
+
+        # Select the best sample based on global PDE score.
+        if self.train_confidence_head:
+            gpde: torch.Tensor = validation_metrics.compute_global_pde(
+                sample_out["pde_score"][:, :n_tokens, :n_tokens],
+                sample_out["prob_contact"][:n_tokens, :n_tokens],
+            )  # [Nsample,]
+            top1_index = int(gpde.argmax().item())
+        else:
+            # If confidence head is not trained, use the sample with
+            # lowest RMSD among the samples as the best sample.
+            top1_index = None
 
         # Compute validation metrics
         ref_struct_aligned: list[RefStructure] = []
         sample_metrics: list[dict[str, Any]] = []
         with torch.autocast("cuda", torch.float32):
             # Permute predicted and true coordinates to align
-            if val_config.symmetry_correction:
-                assert "symmetry" in struct_info, (
-                    "symmetry_dict must be provided in struct_info "
-                    "for symmetry correction during validation."
-                )
-            symmetry_dict = struct_info.get("symmetry", None)
             for i in range(num_samples):
-                pred_coords_i = sample_coords[i]  # [Natom, 3]
-                struct_i = validation_metrics.get_aligned_structure(
+                pred_coords_i = sample_out["coordinates"][i, :n_atoms]
+                struct_i = validation_metrics.get_aligned_gt_structure(
                     ref_struct,
                     pred_coords_i,
-                    find_best_permutation=val_config.symmetry_correction,
                     symmetry_dict=symmetry_dict,
                 )
                 metric_i = validation_metrics.compute_validation_metric(
@@ -572,7 +588,9 @@ class KFoldTrainingModule(pl.LightningModule):
                 sample_metrics.append(metric_i)
 
         # Aggregate metrics
-        aggr_metrics = validation_metrics.aggregate_validation_metrics(sample_metrics)
+        aggr_metrics = validation_metrics.aggregate_validation_metrics(
+            sample_metrics, top1_index
+        )
 
         # Update validation metrics
         metrics: MetricCollection = self.val_metrics[dataloader_idx]
@@ -614,7 +632,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     prefix = str(save_dir / f"{name}-sample{i}")
                     self.save_structure_and_metrics(
                         ref_struct=ref_struct_aligned[i],
-                        pred_coords=sample_coords[i],
+                        pred_coords=sample_out["coordinates"][i, :n_atoms],
                         metrics=sample_metrics[i],
                         prefix=prefix,
                     )
@@ -654,7 +672,9 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Loss functions === #
     def compute_distogram_loss(
-        self, logits: torch.Tensor, f_input: FoldingInput
+        self,
+        logits: torch.Tensor,
+        f_input: FoldingInput,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute distogram loss.
 
@@ -668,20 +688,20 @@ class KFoldTrainingModule(pl.LightningModule):
         Returns
         -------
         disto_loss : torch.Tensor
-            The computed distogram loss of shape (B,).
+            The computed distogram loss (scalar).
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
-        loss = self.distogram_loss(logits, f_input)
-        metrics = {"distogram_loss": loss.detach().mean()}
+        loss = self.distogram_loss(logits, f_input).mean()
+        metrics = {"distogram_loss": loss.detach()}
         return loss, metrics
 
     def compute_diffusion_loss(
         self,
         x_pred: torch.Tensor,
         x_true: torch.Tensor,
-        per_sample_weights: torch.Tensor,
         f_input: FoldingInput,
+        per_sample_weights: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute diffusion structure loss.
         See Section 3.7.1 Diffusion Training.
@@ -692,16 +712,16 @@ class KFoldTrainingModule(pl.LightningModule):
             The predicted atom coordinates of shape (B, Nsample, Latom, 3).
         x_true : torch.Tensor
             The ground truth atom coordinates of shape (B, Nsample, Latom, 3).
+        f_input : FoldingInput
+            The input features containing the target distogram and masks.
         per_sample_weights : torch.Tensor
             The per-sample loss weights of shape (B, Nsample),
             which is computed from the diffusion noise scale.
-        f_input : FoldingInput
-            The input features containing the target distogram and masks.
 
         Returns
         -------
         diffusion_loss : torch.Tensor
-            The computed diffusion loss of shape (B,).
+            The computed diffusion loss (scalar).
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
@@ -755,8 +775,8 @@ class KFoldTrainingModule(pl.LightningModule):
             )
 
         # Mean over diffusion samples
-        L_diffusion = L_diffusion_per_sample.mean(-1)  # [B, Nsample] -> [B,]
-        metrics["diffusion_loss"] = L_diffusion.detach().mean()
+        L_diffusion = L_diffusion_per_sample.mean()
+        metrics["diffusion_loss"] = L_diffusion.detach()
 
         if self._binned_cache_enabled and self.train_structure_module:
             payload: dict[str, torch.Tensor] = {
@@ -773,6 +793,69 @@ class KFoldTrainingModule(pl.LightningModule):
 
         return L_diffusion, metrics
 
+    def compute_confidence_loss(
+        self,
+        logits: dict[str, torch.Tensor],
+        x_sample: torch.Tensor,
+        f_input: FoldingInput,
+        struct_info: list[dict],
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute confidence head loss.
+
+        Parameters
+        ----------
+        logits : dict[str, torch.Tensor]
+            A dictionary containing the logits for different confidence predictions.
+        x_sample : torch.Tensor
+            The sampled atom coordinates of shape (B, Nsample, Latom, 3).
+        f_input : FoldingInput
+            The input features containing the target distogram and masks.
+        struct_info : list[dict]
+            A list of dictionaries containing structure information,
+            including the reference structure and symmetry.
+
+        Returns
+        -------
+        confidence_loss : torch.Tensor
+            The computed confidence loss (scalar).
+        metrics : dict[str, torch.Tensor]
+            A dictionary containing loss metrics.
+        """
+        metrics: dict[str, torch.Tensor] = {}
+        alpha_pae = self.loss_weights["pae"]
+
+        # Ground truth coordinates for confidence loss computation.
+        x_gt, mask = loss_fn.confidence.get_aligned_gt_structure(
+            x_pred=x_sample,
+            f_input=f_input,
+            struct_info=struct_info,
+        )  # [B, Nsample, Latom, 3]
+
+        L_pde = self.pde_loss(logits["pde_logits"], x_sample, x_gt, mask, f_input).mean()
+        metrics["pde_loss"] = L_pde.detach()
+
+        L_plddt = self.plddt_loss(
+            logits["plddt_logits"], x_sample, x_gt, mask, f_input
+        ).mean()
+        metrics["plddt_loss"] = L_plddt.detach()
+
+        is_resolved = mask
+        pad_mask = f_input.atom.pad_mask
+        L_resolved = self.exp_res_loss(
+            logits["resolved_logits"], is_resolved, pad_mask
+        ).mean()
+        metrics["resolved_loss"] = L_resolved.detach()
+
+        # NOTE: PAE loss return 0.0 when alpha_pae is 0.
+        L_pae = self.pae_loss(logits["pae_logits"], x_sample, x_gt, mask, f_input).mean()
+        if alpha_pae > 0:
+            metrics["pae_loss"] = L_pae.detach()
+
+        L_confidence = L_pde + L_plddt + L_resolved + alpha_pae * L_pae
+        metrics["confidence_loss"] = L_confidence.detach()
+
+        return L_confidence, metrics
+
     def on_train_epoch_end(self) -> None:  # type: ignore[override]
         out: dict[str, torch.Tensor] = {}
         out |= self.time_binned_logger.flush()
@@ -780,12 +863,9 @@ class KFoldTrainingModule(pl.LightningModule):
         if out:
             self.log_dict(out)
 
-    def compute_confidence_loss(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        raise NotImplementedError("Confidence loss not implemented yet.")
-
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        if self.trainer.global_step % 100 == 0:
+        if self.trainer.global_step % 10 == 0:
             self.log_model_state()
 
     def log_model_state(self):
@@ -823,21 +903,18 @@ class KFoldTrainingModule(pl.LightningModule):
             )
 
         if self.train_confidence_head:
-            raise NotImplementedError(
-                "Logging for confidence module not implemented yet."
+            self.log(
+                "monitor/grad_norm_confidence_head",
+                gradient_norm(model.confidence_head),
+                sync_dist=False,
+                prog_bar=False,
             )
-            # self.log(
-            #     "monitor/grad_norm_confidence_head",
-            #     gradient_norm(model.confidence_head),
-            #     sync_dist=False,
-            #     prog_bar=False,
-            # )
-            # self.log(
-            #     "monitor/param_norm_confidence_head",
-            #     parameter_norm(model.confidence_head),
-            #     sync_dist=False,
-            #     prog_bar=False,
-            # )
+            self.log(
+                "monitor/param_norm_confidence_head",
+                parameter_norm(model.confidence_head),
+                sync_dist=False,
+                prog_bar=False,
+            )
 
         pass
 

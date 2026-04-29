@@ -28,9 +28,6 @@ ode_step_power: 2.0
 P_mean: -0.8
 P_std: 2.0
 
-# Training preconditioning
-conditioning_drop_rate: 0.2
-
 # Training interpolation parameters
 train_com_noise_scale: 1.0
 train_com_noise_time_threshold: 0.3

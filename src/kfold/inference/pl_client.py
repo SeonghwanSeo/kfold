@@ -185,7 +185,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
 
         # Save Diffusion Samples
         num_atoms = ref_struct.num_atoms
-        sample_coords = model_out["sample_coordinates"][:, :num_atoms]
+        sample_coords = model_out["coordinates"][:, :num_atoms]
         coords_np = sample_coords.cpu().numpy()
         for i, coord in enumerate(coords_np):
             try:

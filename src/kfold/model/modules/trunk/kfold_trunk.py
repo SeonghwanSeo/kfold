@@ -182,7 +182,7 @@ class KFoldTrunk(BaseTrunk):
         seq_attn: torch.Tensor,
         struct_emb: torch.Tensor,
         **kwargs,
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
         Parameters
@@ -239,14 +239,13 @@ class KFoldTrunk(BaseTrunk):
 
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
-            _inplace = not enable_grad
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
 
                 # Recycling
-                s = add(self.linear_s(self.layernorm_s(s)), s_init, _inplace)
-                z = add(self.linear_z(self.layernorm_z(z)), z_init, _inplace)
+                s = s_init + self.linear_s(self.layernorm_s(s))
+                z = z_init + self.linear_z(self.layernorm_z(z))
 
                 # Run trunk
                 s, z = self._run_trunk(s, z, s_plm, asym_id, mask)
@@ -259,7 +258,7 @@ class KFoldTrunk(BaseTrunk):
         # === Revert register tokens === #
         s, z = self._undo_registers(s, z)
 
-        return {"s_trunk": s, "z_trunk": z}
+        return s, z
 
     def _run_trunk(
         self,
@@ -274,7 +273,7 @@ class KFoldTrunk(BaseTrunk):
         pairformer_stack = self.get_pairformer_stack(not self.training)
         plm_module = self.get_plm_module(not self.training)
 
-        use_cuequiv_kernels = self.kernel_config.cuequivariance
+        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
         z = plm_module(z, s_plm, asym_id, mask, use_cuequiv_kernels=use_cuequiv_kernels)
         s, z = pairformer_stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
         return s, z

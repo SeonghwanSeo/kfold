@@ -73,12 +73,13 @@ from kfold.data.types.metadata import Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.misc import hash_seq
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
-from .utils import pre_crop, symmetry
+from .utils import pre_crop
 
 
 # === Helper functions === #
@@ -155,7 +156,7 @@ class ValidationDatasetConfig(DatasetConfig): ...
 
 
 # Type alias
-SymmetryInfo = dict
+StructInfo = dict
 
 
 def next_multiple(n: int, divisor: int) -> int:
@@ -173,8 +174,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         tokenizer: tokenization.Tokenizer,
         featurizer: featurization.InputFeaturizer,
         prior_sampler: prior_sampling.PriorSampler | None,
-        return_symmetry: bool,
-        return_structure: bool,
         safe_load: bool,
         train: bool,
     ) -> None:
@@ -191,10 +190,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             Featurizer for featurizing tokenized structures.
         prior_sampler: prior_sampling.PriorSampler | None
             Prior sampler for sampling prior coordinates (optional).
-        return_symmetry : bool
-            Whether to return symmetry information.
-        return_structure : bool
-            Whether to return the original tokenized structure.
         safe_load : bool
             Whether to retry loading on failure.
         """
@@ -203,8 +198,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.name: str = config.name
         self.data_root: Path = Path(config.data_path)
         self.seed: int | None = config.seed
-        self.return_symmetry: bool = return_symmetry
-        self.return_structure: bool = return_structure
         self.safe_load: bool = safe_load
         self.train: bool = train
 
@@ -425,15 +418,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             max_sequence_tokens=num_sequence_tokens,
         )
 
-    def __getitem__(self, index: int) -> tuple[FoldingInput, SymmetryInfo]:
+    def __getitem__(self, index: int) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index, with retry on failure."""
         return self.get_item_safe(index, num_trials=100)
 
     def get_item_safe(
-        self,
-        index: int,
-        num_trials: int = 100,
-    ) -> tuple[FoldingInput, SymmetryInfo]:
+        self, index: int, num_trials: int = 100
+    ) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index, with retry on failure."""
         if self.seed is not None:
             rng = np.random.default_rng(self.seed + index % (1 << 15))
@@ -460,11 +451,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
 
-    def get_item(
-        self,
-        metadata: Metadata,
-        **kwargs,
-    ) -> tuple[FoldingInput, SymmetryInfo]:
+    def get_item(self, metadata: Metadata, **kwargs) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given sample."""
         metadata_id: str = metadata.id
 
@@ -504,21 +491,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         # Featurization
         f_input = self.featurize(cropped)
 
-        struct_info = {}
-        struct_info["id"] = metadata_id
-        if self.return_structure:
-            struct_info["structure"] = ref_struct
-        if self.return_symmetry:
-            # WARN: symmetry computation should be done before padding
-            struct_info["symmetry"] = symmetry.get_symmetries(
-                ref_struct,
-                self.ccd,
-                max_chain_permutations=1000,
-                rng=rng,
-            )
-
-        # Pad the folding input to multiple of 64 for LocalAtomAttention
+        # Pad the features.
         f_input = self.pad_input(f_input)
+
+        struct_info = {
+            "id": metadata_id,
+            "structure": ref_struct,
+            "symmetry": get_symmetries(ref_struct, self.ccd),
+        }
 
         return f_input, struct_info
 
@@ -711,8 +691,6 @@ class TrainingDataset(SafeLoadingDataset):
             tokenizer,
             featurizer,
             prior_sampler,
-            return_symmetry=False,
-            return_structure=False,
             safe_load=safe_load,
             train=True,
         )
@@ -852,10 +830,8 @@ class TrainingDataset(SafeLoadingDataset):
 
     @override
     def get_item_safe(
-        self,
-        index: int,
-        num_trials: int = 10,
-    ) -> tuple[FoldingInput, SymmetryInfo]:
+        self, index: int, num_trials: int = 100
+    ) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index, with retry on failure.
         NOTE: This is overridden to use `self.samples` instead of `self.metadatas`.
         """
@@ -951,7 +927,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return self.cumulative_sizes[-1]
 
-    def __getitem__(self, index: int) -> tuple[FoldingInput, SymmetryInfo]:
+    def __getitem__(self, index: int) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index."""
         # Find the dataset index
         dataset_idx = np.searchsorted(self.cumulative_sizes, index, side="right")
@@ -988,8 +964,6 @@ class ValidationDataset(SafeLoadingDataset):
             tokenizer,
             featurizer,
             prior_sampler,
-            return_symmetry=True,
-            return_structure=True,
             safe_load=safe_load,
             train=False,
         )

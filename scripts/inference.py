@@ -240,7 +240,7 @@ def main():
         #   - s_trunk: final trunk outputs [Ntoken, C_s]
         #   - z_trunk: final trunk latent [Ntoken, Ntoken, C_z]
         #   - distogram_logits: predicted distogram logits [Ntoken, Ntoken, bin]
-        #   - sample_coordinates: generated coordinates [num_samples, Natom, 3]
+        #   - coordinates: generated coordinates [num_samples, Natom, 3]
         #   - traj: (optional) diffusion trajectory [num_samples, num_frames, Natom, 3]
         # *) Ntoken and Natom may be different to original ones due to padding.
 
@@ -249,7 +249,7 @@ def main():
         assert save_dir.exists()
 
         # Save sampled coordinates
-        sample_coords = model_out["sample_coordinates"]  # [num_samples, Natom, 3]
+        sample_coords = model_out["coordinates"]  # [num_samples, Natom, 3]
         # Remove padding atoms to match reference structure
         assert ref_struct.num_atoms == f_input.atom.pad_mask.sum().item()
         num_atoms = ref_struct.num_atoms

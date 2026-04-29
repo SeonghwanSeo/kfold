@@ -1,6 +1,0 @@
-_registry_: "distogram_head"
-_class_: "BaseDistogramHead"
-channel_z: 128
-num_bins: 64
-min_dist: 2.0
-max_dist: 22.0

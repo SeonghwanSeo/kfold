@@ -398,17 +398,21 @@ class ApoInitializer:
                 ccd_name = str(chain.residue.name[res_i])
 
                 # Load reference molecule from CCD or from SMILES string
+                ref_comp: Component
                 if smiles is not None:
                     if smiles in _ref_comp_smi_cache:
                         ref_comp = _ref_comp_smi_cache[smiles]
                     else:
-                        # Use a shorter timeout (5.0s) for training,
-                        # and longer timeout (30.0s) for inference.
-                        timeout = 5 if self.conformer_mode == "train" else 30
-                        ref_comp: Component = Component.from_smiles(
-                            ccd_name, smiles, timeout=timeout, rng=rng
-                        )
+                        if self.conformer_mode == "train":
+                            # For training efficiency, we construct a reference
+                            # componenet using pre-computed ETKDG conformers.
+                            ref_comp = Component.from_smiles(
+                                ccd_name, smiles, num_confs=1, timeout=5, rng=rng
+                            )
+                        else:
+                            ref_comp = Component.from_smiles(ccd_name, smiles)
                         _ref_comp_smi_cache[smiles] = ref_comp
+
                 else:
                     ref_comp = get_ref_comp(ccd_name, self.ccd, _ref_comp_cache)
 

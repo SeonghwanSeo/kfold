@@ -233,8 +233,8 @@ class InputDataPipeline:
         # Collect bonded atoms
         chain_bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
         for (chain_id1, res_idx1, atom1), (chain_id2, res_idx2, atom2) in input.bonds:
-            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1.upper())
-            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2.upper())
+            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
+            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
 
         # TODO: add constraints if needed (covalent ligands)
         # This should be conducted here to property assign

@@ -168,10 +168,6 @@ class KFoldECSI(BaseStructureModule):
         P_std : float
             Standard deviation of the noise level sampling distribution in training.
 
-        # Training parameters
-        conditioning_drop_rate : float, optional
-            The drop rate of conditioning during training, by default 0.0.
-
         # Training interpolation noise parameters
         train_com_noise_scale : float
             The scale of the chain-wise COM noise added during training.
@@ -202,9 +198,6 @@ class KFoldECSI(BaseStructureModule):
         # Train time scheduling
         P_mean: float = -0.8
         P_std: float = 2.0
-
-        # Training parameters
-        conditioning_drop_rate: float = 0.0
 
         # Training interpolation noise parameters
         train_com_noise_scale: float = 1.0
@@ -237,9 +230,6 @@ class KFoldECSI(BaseStructureModule):
         # Train time scheduling
         self.P_mean: float = cfg.P_mean
         self.P_std: float = cfg.P_std
-
-        # Training parameters
-        self.conditioning_drop_rate: float = cfg.conditioning_drop_rate
 
         # Inference time sampling
         self.align_x_0_hat_to_x_t: bool = cfg.align_x_0_hat_to_x_t
@@ -349,14 +339,7 @@ class KFoldECSI(BaseStructureModule):
         x_t = train_input["x_t"]  # [B, N, Natom, 3]
         x_T = train_input["x_T"]  # [B, N, Natom, 3]
 
-        drop_rate = self.conditioning_drop_rate
-        if drop_rate > 0.0:
-            mask = torch.rand(s_trunk.shape[0], device=s_trunk.device) < drop_rate
-            use_conditioning = (~mask).to(z_trunk.dtype)  # [B,]
-            s_trunk = s_trunk * use_conditioning[:, None, None]
-            z_trunk = z_trunk * use_conditioning[:, None, None, None]
-
-        x_0_hat = self.forward_train(
+        x_0_hat = self._forward_train(
             x_t=x_t,  # [B, N, Natom, 3]
             t=t,  # [B, N]
             f_input=f_input,
@@ -377,7 +360,7 @@ class KFoldECSI(BaseStructureModule):
             "loss_weights": loss_weights,
         }
 
-    def forward_train(
+    def _forward_train(
         self,
         x_t: torch.Tensor,
         t: torch.Tensor,
@@ -642,7 +625,7 @@ class KFoldECSI(BaseStructureModule):
 
         sample_out: dict[str, torch.Tensor] = {}
         sample_out["init_coordinates"] = x_T
-        sample_out["sample_coordinates"] = x_t
+        sample_out["coordinates"] = x_t
         if return_traj:
             sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Natom, 3)
 
