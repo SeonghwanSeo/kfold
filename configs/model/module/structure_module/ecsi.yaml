@@ -12,7 +12,7 @@ cov_xy: 128.0
 # ECSI coefficients
 time_min: 0.0001
 time_max: 0.9999
-gamma_max: 24.0
+gamma_max: 32.0
 time_power: 2.0
 eta: 1.0
 
@@ -25,9 +25,11 @@ churn_step_power: 1.0
 ode_step_power: 2.0
 
 # Training time schedule
-P_mean: -0.8
-P_std: 2.0
+P_mean: -1
+P_std: 1.5
 
 # Training interpolation parameters
+# gamma_com_t = scale * gamma_t * (t ** time_power)
 train_com_noise_scale: 1.0
-train_com_noise_time_threshold: 0.3
+train_com_noise_time_power: 1.0
+train_com_noise_time_threshold: 0.2
