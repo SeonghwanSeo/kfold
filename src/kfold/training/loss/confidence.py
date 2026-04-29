@@ -11,22 +11,14 @@ import torch
 from kfold.data.types import FoldingInput, RefStructure
 from kfold.training.utils.permutation_alignment.align_train import get_aligned_true_coords
 from kfold.utils.kernels.cdist import cdist as kernel_cdist
-from kfold.utils.torch import get_one_hot_from_bins
-
-
-def _gather(x: torch.Tensor, dim: int, index: torch.Tensor) -> torch.Tensor:
-    """Helper function to gather values from `x` along `dim` using `index`."""
-    dim = dim % x.ndim  # Normalize negative dims to positive
-    assert x.ndim == index.ndim
-    expand_shape = [-1 if i == dim else d for i, d in enumerate(x.shape)]
-    return x.gather(dim, index=index.expand(expand_shape))
+from kfold.utils.torch import gather_dim, get_one_hot_from_bins
 
 
 def get_aligned_gt_structure(
     x_pred: torch.Tensor,
     f_input: FoldingInput,
     struct_info: list,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute the aligned ground truth coordinates for the confidence prediction losses.
 
     Parameters
@@ -41,8 +33,10 @@ def get_aligned_gt_structure(
 
     Returns
     -------
-    aligned_x_gt : torch.Tensor
+    x_gt_aligned : torch.Tensor
         Tensor of shape (B, N, Natom, 3) containing the aligned ground truth coordinates.
+    mask : torch.Tensor
+        Tensor of shape (B, N, Natom) containing boolean masks for valid atoms.
     """
     # Ground truth coordinates for confidence loss computation.
     x_gt: torch.Tensor = torch.full_like(x_pred, torch.nan)
@@ -61,7 +55,9 @@ def get_aligned_gt_structure(
                 symmetry_dict=symmetry_dict_i,
             )
             x_gt[b_i, s_j, :num_atoms] = x_gt_ij
-    return x_gt
+    mask = x_gt.isfinite().all(-1)  # [B, N, Natom]
+    x_gt[~mask] = 0.0  # Mask unresolved atoms to zero
+    return x_gt, mask
 
 
 class ExperimentallyResolvedPredictionLoss(torch.nn.Module):
@@ -134,6 +130,7 @@ class PDELoss(torch.nn.Module):
         logits: torch.Tensor,
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
+        mask_gt: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute the Predicted Distance Error (PDE) loss between representative atoms.
@@ -146,6 +143,9 @@ class PDELoss(torch.nn.Module):
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
+        mask : torch.Tensor
+            Tensor of shape (B, N, Natom) containing boolean masks for valid atoms
+            in the GT structure.
         f_input : FoldingInput
             The input features containing the target distogram and masks.
 
@@ -155,16 +155,16 @@ class PDELoss(torch.nn.Module):
             The computed pde loss of shape (B,).
         """
         with torch.no_grad():
-            e = self.get_distance_error(x_pred, x_gt, f_input)  # [B, N, L, L]
+            e = self.get_distance_error(x_pred, x_gt, mask_gt, f_input)  # [B, N, L, L]
 
         # Compute loss
         e_bins = get_one_hot_from_bins(e, self.bins)  # [B, N, L, L, num_bins]
         loss = -torch.sum(e_bins.float() * logits.log_softmax(-1), dim=-1)  # [B, N, L, L]
 
         # Reduce loss
-        atom_mask = x_gt.isfinite().all(-1)  # [B, N, Natom]
-        repr_idx = f_input.token.repr_index.clamp(0)[:, None, :]  # [B, 1, L]
-        repr_mask = _gather(atom_mask, dim=-1, index=repr_idx)  # [B, N, L]
+        repr_idx = f_input.token.repr_index[:, None, :]  # [B, 1, L]
+        repr_mask = gather_dim(mask_gt, -1, repr_idx)  # [B, N, L]
+        repr_mask &= f_input.token.pad_mask[:, None, :]  # [B, N, L]
         pair_mask = repr_mask[..., None, :] & repr_mask[..., :, None]  # [B, N, L, L]
         n_pairs = pair_mask.sum((-1, -2)).clamp(1)  # [B, N]
         loss_mean = (loss * pair_mask).sum((-1, -2)) / n_pairs  # [B, N]
@@ -174,6 +174,7 @@ class PDELoss(torch.nn.Module):
         self,
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
+        mask_gt: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute the pairwise distance error between predicted and GT coordinates
@@ -185,6 +186,9 @@ class PDELoss(torch.nn.Module):
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
+        mask_gt : torch.Tensor
+            Tensor of shape (B, N, Natom) containing boolean masks for valid atoms in
+            the GT structure.
         f_input : FoldingInput
             The input features.
 
@@ -194,9 +198,9 @@ class PDELoss(torch.nn.Module):
             Tensor of shape (B, N, L, L) containing the pairwise distance error
         """
         # [*, Natom, 3] -> [*, L, 3]
-        repr_idx = f_input.token.repr_index.clamp(min=0)[:, None, :]  # [B, 1, L]
-        _x_pred = _gather(x_pred, 2, repr_idx[..., None])  # [B, N, L, 3]
-        _x_gt = _gather(x_gt, 2, repr_idx[..., None])  # [B, N, L, 3]
+        repr_idx = f_input.token.repr_index[:, None, :]  # [B, 1, L]
+        _x_pred = gather_dim(x_pred, 2, repr_idx[..., None])  # [B, N, L, 3]
+        _x_gt = gather_dim(x_gt, 2, repr_idx[..., None])  # [B, N, L, 3]
 
         # Compute pairwise distances
         d_pred = kernel_cdist(_x_pred, _x_pred)  # [B, N, L, L]
@@ -205,8 +209,11 @@ class PDELoss(torch.nn.Module):
         # Compute distance error
         e = torch.abs(d_gt - d_pred)  # [B, N, L, L]
 
-        # Mask NaN values to zero
-        e.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+        # Mask invalid pairs (where either atom is invalid)
+        repr_mask = gather_dim(mask_gt, -1, repr_idx)  # [B, N, L]
+        pair_mask = repr_mask[..., None, :] & repr_mask[..., :, None]
+        e.masked_fill_(~pair_mask, 0.0)
+
         return e
 
 
@@ -227,6 +234,7 @@ class PLDDTLoss(torch.nn.Module):
         logits: torch.Tensor,
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
+        mask_gt: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute the pLDDT loss.
@@ -239,7 +247,9 @@ class PLDDTLoss(torch.nn.Module):
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
-            The unresolved atoms is masked to NaN.
+        mask : torch.Tensor
+            Tensor of shape (B, N, Natom) containing boolean masks for valid atoms
+                in the GT structure.
         f_input : FoldingInput
             The input features containing masks, token flags, and representative indices.
 
@@ -249,21 +259,20 @@ class PLDDTLoss(torch.nn.Module):
             The computed pLDDT loss of shape (B, N).
         """
         with torch.no_grad():
-            lddt = self.get_lddt_score(x_pred, x_gt, f_input)  # [B, N, Natom]
+            lddt = self.get_lddt_score(x_pred, x_gt, mask_gt, f_input)  # [B, N, Natom]
 
         lddt_bins = get_one_hot_from_bins(lddt, self.bins)  # [B, N, Natom, num_bins]
         loss = -(lddt_bins.float() * logits.log_softmax(-1)).sum(-1)  # [B, N, Natom]
 
-        # We only apply loss to atoms that are experimentally resolved
-        mask = x_gt.isfinite().all(-1)  # [B, N, Natom]
-        n_valid = mask.sum(dim=-1).clamp(min=1)  # [B, 1]
-        loss_mean = (loss * mask).sum(dim=-1) / n_valid  # [B, N]
+        n_valid = mask_gt.sum(dim=-1).clamp(min=1)  # [B, 1]
+        loss_mean = (loss * mask_gt).sum(dim=-1) / n_valid  # [B, N]
         return loss_mean
 
     def get_lddt_score(
         self,
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
+        mask_gt: torch.Tensor,
         f_input: FoldingInput,
     ):
         """Compute the ground truth LDDT score for each atom based on predicted and
@@ -275,7 +284,7 @@ class PLDDTLoss(torch.nn.Module):
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_true : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates
-        mask : torch.Tensor
+        mask_gt : torch.Tensor
             Tensor of shape (B, N, Natom) containing boolean masks for valid atoms.
         f_input : FoldingInput
             The input features containing masks, token flags, and representative indices.
@@ -289,24 +298,22 @@ class PLDDTLoss(torch.nn.Module):
         B, Nrepr, Nall = f_input.batch_size, f_input.num_tokens, f_input.num_atoms  # noqa
         device = x_pred.device
 
-        # === Extract representative coordinates ===
-        repr_idx = f_input.token.repr_index.clamp(min=0)  # [B, Nrepr]
-        repr_idx = repr_idx[:, None, :]  # [B, 1, Nrepr]
+        # === Create loss masks ===
+        # Create mask for valid atom pairs.
+        repr_idx = f_input.token.repr_index[:, None, :]
+        atom_mask = mask_gt  # [B, N, Natom]
+        repr_mask = gather_dim(mask_gt, -1, repr_idx)  # [B, N, Nrepr]
+        pair_mask = (
+            atom_mask[..., :, None] & repr_mask[..., None, :]
+        )  # [B, N, Nall, Nrepr]
 
-        x_pred_rep = _gather(x_pred, 2, repr_idx[..., None])  # [B, N, Nrepr, 3]
-        x_gt_rep = _gather(x_gt, 2, repr_idx[..., None])  # [B, N, Nrepr, 3]
+        # === Extract representative coordinates ===
+        x_pred_rep = gather_dim(x_pred, 2, repr_idx[..., None])  # [B, N, Nrepr, 3]
+        x_gt_rep = gather_dim(x_gt, 2, repr_idx[..., None])  # [B, N, Nrepr, 3]
 
         # === Compute pairwise distances (All Atoms -> Rep Atoms) ===
         d_pred = kernel_cdist(x_pred, x_pred_rep)  # [B, N, Nall, Nrepr]
         d_gt = kernel_cdist(x_gt, x_gt_rep)  # [B, N, Nall, Nrepr]
-
-        # === Create loss masks ===
-        # Create mask for valid atom pairs.
-        atom_mask = x_gt.isfinite().all(-1)  # [B, N, Nall]
-        repr_mask = _gather(atom_mask, -1, repr_idx)  # [B, N, Nrepr]
-        pair_mask = (
-            atom_mask[..., :, None] & repr_mask[..., None, :]
-        )  # [B, N, Nall, Nrepr]
 
         # Protein: cutoff 15A, Nucleic Acids: cutoff 30A
         is_prot = f_input.token.is_protein[:, None, None, :]
@@ -362,6 +369,7 @@ class PAELoss(torch.nn.Module):
         logits: torch.Tensor,
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
+        mask_gt: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute the PAE loss.
@@ -374,6 +382,9 @@ class PAELoss(torch.nn.Module):
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
+        mask : torch.Tensor
+            Tensor of shape (B, N, Natom) containing boolean masks for valid atoms
+            in the GT structure.
         f_input : FoldingInput
             The input features containing masks and atom indices.
 
@@ -394,10 +405,8 @@ class PAELoss(torch.nn.Module):
         loss = -(e_bins.float() * logits.log_softmax(-1)).sum(-1)  # [B, N, L, L]
 
         # === Compute validity masks ===
-        repr_idx = f_input.token.repr_index.clamp(0)[:, None, :]  # [B, 1, L]
-        atom_mask = x_gt.isfinite().all(-1)  # [B, N, Natom]
-        repr_mask = _gather(atom_mask, -1, repr_idx)  # [B, N, L]
-
+        repr_idx = f_input.token.repr_index[:, None, :]  # [B, 1, L]
+        repr_mask = gather_dim(mask_gt, -1, repr_idx)  # [B, N, L]
         mask_i = f_input.token.frame_mask.unsqueeze(1) & repr_mask  # [B, N, L]
         mask_j = repr_mask  # [B, N, L]
         pair_mask = mask_i[..., :, None] & mask_j[..., None, :]  # [B, N, L, L]
@@ -409,7 +418,11 @@ class PAELoss(torch.nn.Module):
         return loss_mean
 
     def get_alignment_error(
-        self, x_pred: torch.Tensor, x_gt: torch.Tensor, f_input: FoldingInput
+        self,
+        x_pred: torch.Tensor,
+        x_gt: torch.Tensor,
+        mask_gt: torch.Tensor,
+        f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute the ground truth alignment error for each pair of representative atoms.
 
@@ -419,6 +432,9 @@ class PAELoss(torch.nn.Module):
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_gt : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing ground truth coordinates.
+        mask_gt : torch.Tensor
+            Tensor of shape (B, N, Natom) containing boolean masks for valid atoms in
+            the GT structure.
         f_input : FoldingInput
             The input features containing masks and representative atom indices.
 
@@ -429,19 +445,19 @@ class PAELoss(torch.nn.Module):
             each pair of representative atoms.
         """
         # Extract representative coordinates (the 'j' tokens)
-        repr_idx = f_input.token.repr_index.clamp(0)[:, None, :, None]  # [B, 1, Nrepr, 1]
-        x_pred_rep = _gather(x_pred, 2, repr_idx)  # [B, N, Nrepr, 3]
-        x_gt_rep = _gather(x_gt, 2, repr_idx)  # [B, N, Nrepr, 3]
+        repr_idx = f_input.token.repr_index[:, None, :]  # [B, 1, Nrepr, 1]
+        x_pred_rep = gather_dim(x_pred, -2, repr_idx[..., None])  # [B, N, Nrepr, 3]
+        x_gt_rep = gather_dim(x_gt, -2, repr_idx[..., None])  # [B, N, Nrepr, 3]
 
         # Extract frame coordinates (the 'i' tokens)
-        frame_idx = f_input.token.frame_index.clamp(min=0)[:, None, :, :]  # [B, 1, L, 3]
+        frame_idx = f_input.token.frame_index[:, None, :, :]  # [B, 1, L, 3]
         a_i, b_i, c_i = frame_idx.unbind(-1)  # Each of shape [B, 1, L]
-        a_gt = _gather(x_gt, 2, a_i[..., None])  # [B, N, L, 3]
-        b_gt = _gather(x_gt, 2, b_i[..., None])  # [B, N, L, 3]
-        c_gt = _gather(x_gt, 2, c_i[..., None])  # [B, N, L, 3]
-        a_pred = _gather(x_pred, 2, a_i[..., None])  # [B, N, L, 3]
-        b_pred = _gather(x_pred, 2, b_i[..., None])  # [B, N, L, 3]
-        c_pred = _gather(x_pred, 2, c_i[..., None])  # [B, N, L, 3]
+        a_gt = gather_dim(x_gt, -2, a_i[..., None])  # [B, N, L, 3]
+        b_gt = gather_dim(x_gt, -2, b_i[..., None])  # [B, N, L, 3]
+        c_gt = gather_dim(x_gt, -2, c_i[..., None])  # [B, N, L, 3]
+        a_pred = gather_dim(x_pred, -2, a_i[..., None])  # [B, N, L, 3]
+        b_pred = gather_dim(x_pred, -2, b_i[..., None])  # [B, N, L, 3]
+        c_pred = gather_dim(x_pred, -2, c_i[..., None])  # [B, N, L, 3]
 
         # Project coords into frames
         xij_gt = self.express_coords_in_frames(x_gt_rep, a_gt, b_gt, c_gt)
@@ -450,7 +466,10 @@ class PAELoss(torch.nn.Module):
         # Compute Euclidean distance between alignments
         e = torch.sqrt((xij_pred - xij_gt).pow(2).sum(-1) + self.eps)
 
-        e.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+        # Apply mask to set pad atoms to zero
+        repr_mask = gather_dim(mask_gt, -1, repr_idx)  # [B, N, L]
+        pair_mask = repr_mask[..., :, None] & repr_mask[..., None, :]  # [B, 1, L, L]
+        e.masked_fill_(~pair_mask, 0.0)
         return e
 
     @staticmethod

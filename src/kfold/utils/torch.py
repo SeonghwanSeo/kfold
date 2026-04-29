@@ -75,6 +75,22 @@ def pad_dim(
     return torch.cat([tensor, pad_tensor], dim=dim)
 
 
+def gather_dim(
+    tensor: torch.Tensor,
+    dim: int,
+    index: torch.Tensor,
+) -> torch.Tensor:
+    """Helper function to gather values from `tensor` along `dim` using `index`."""
+    dim = dim % tensor.ndim  # Normalize negative dims to positive
+    assert tensor.ndim == index.ndim
+    expand_shape = [-1 if i == dim else d for i, d in enumerate(tensor.shape)]
+
+    mask = index < 0  # Mask for out-of-bounds indices
+    index_clipped = index.clamp(min=0)
+    out = tensor.gather(dim, index=index_clipped.expand(expand_shape))
+    return out.masked_fill_(mask, 0)
+
+
 def get_one_hot_from_boundaries(
     tensor: torch.Tensor, bounds: torch.Tensor
 ) -> torch.Tensor:

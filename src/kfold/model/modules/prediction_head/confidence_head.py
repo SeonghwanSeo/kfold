@@ -8,7 +8,7 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import CONFIDENCE_HEAD, BaseConfig
-from kfold.utils.torch import get_context_dtype
+from kfold.utils.torch import gather_dim, get_context_dtype
 
 NUM_ATOM_TYPES = 37 + 29 + 1  # 67: 37 for protein, 29 for dna/rna, and 1 for ligand
 
@@ -173,9 +173,9 @@ class ConfidenceHead(torch.nn.Module):
         """Compile the pairformer."""
         self.pairformer_stack = torch.compile(self.pairformer_stack, **kwargs)
 
-    def get_pairformer_stack(self, no_compile: bool = False) -> PairformerStack:
+    def get_pairformer_stack(self) -> PairformerStack:
         """Get the PairformerStack."""
-        if self.is_compiled and no_compile:
+        if self.is_compiled and not self.training:
             return self.pairformer_stack._orig_mod  # type: ignore
         return self.pairformer_stack
 
@@ -271,12 +271,8 @@ class ConfidenceHead(torch.nn.Module):
         # [B, Natom, 3] -> [B, L, 3]
         B, N, Natom, _ = x_pred.shape
         L = s_inputs.shape[1]
-        repr_idc = f_input.token.repr_index  # [B, Ntoken]
-        x_repr = x_pred[
-            torch.arange(B, device=device)[:, None, None],
-            torch.arange(N, device=device)[None, :, None],
-            repr_idc[:, None, :],
-        ]  # [B, N, L, 3]
+        repr_idx = f_input.token.repr_index.unsqueeze(-2)  # [B, 1, Ntoken]
+        x_repr = gather_dim(x_pred, dim=-2, index=repr_idx[..., None])
 
         s_inputs, s, z = s_inputs.to(dtype), s.to(dtype), z.to(dtype)
 
@@ -288,16 +284,16 @@ class ConfidenceHead(torch.nn.Module):
         )
 
         # Prepare output tensors
-        pae_logits = torch.empty(
+        pae_logits = torch.zeros(
             (B, N, L, L, self.num_pae_bins), device=device, dtype=dtype
         )
-        pde_logits = torch.empty(
+        pde_logits = torch.zeros(
             (B, N, L, L, self.num_pde_bins), device=device, dtype=dtype
         )
-        plddt_logits = torch.empty(
+        plddt_logits = torch.zeros(
             (B, N, Natom, self.num_plddt_bins), device=device, dtype=torch.float32
         )
-        resolved_logits = torch.empty(
+        resolved_logits = torch.zeros(
             (B, N, Natom, 2), device=device, dtype=torch.float32
         )
         # Process each sample in the batch separately to save memory
@@ -316,6 +312,19 @@ class ConfidenceHead(torch.nn.Module):
             pde_logits[:, i] = _pde_logits
             plddt_logits[:, i] = _plddt_logits
             resolved_logits[:, i] = _resolved_logits
+
+        # Mask out padding
+        token_mask = f_input.token.pad_mask[..., None, :]  # [B, 1, L]
+        pair_mask = token_mask[..., :, None] & token_mask[..., None, :]  # [B, 1, L, L]
+        pair_mask = pair_mask.to(dtype)
+        pae_logits = pae_logits * pair_mask[..., None]
+        pde_logits = pde_logits * pair_mask[..., None]
+
+        atom_mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
+        atom_mask = atom_mask.to(torch.float32)
+        plddt_logits = plddt_logits * atom_mask[..., None]
+        resolved_logits = resolved_logits * atom_mask[..., None]
+
         return pae_logits, pde_logits, plddt_logits, resolved_logits
 
     def forward_single(

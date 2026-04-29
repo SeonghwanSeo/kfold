@@ -398,6 +398,7 @@ class KFold(torch.nn.Module):
                 _s_trunk = s_trunk * mask[:, None, None]
                 _z_trunk = z_trunk * mask[:, None, None, None]
 
+            # Forward pass through diffusion head for training.
             dict_out["diffusion"] = self.diffusion_head.training_step(
                 f_input,
                 s_inputs,
@@ -407,17 +408,13 @@ class KFold(torch.nn.Module):
             )
 
         if train_confidence_module:
-            s_inputs_detached = s_inputs.detach()
-            s_trunk_detached = s_trunk.detach()
-            z_trunk_detached = z_trunk.detach()
-
             # Sample structures with diffusion mini-rollout.
             with torch.no_grad():
                 coordinates = self.diffusion_head.sample_structure(
                     f_input=f_input,
-                    s_inputs=s_inputs_detached,
-                    s_trunk=s_trunk_detached,
-                    z_trunk=z_trunk_detached,
+                    s_inputs=s_inputs,
+                    s_trunk=s_trunk,
+                    z_trunk=z_trunk,
                     num_steps=num_mini_rollout_steps,
                     num_samples=num_mini_rollout_samples,
                 )["coordinates"]  # [B, N_samples, Latom, 3]
@@ -425,17 +422,23 @@ class KFold(torch.nn.Module):
                 "coordinates": coordinates,
             }
 
-            _s_trunk, _z_trunk = s_trunk_detached, z_trunk_detached
+            # Stop gradients to input features and trunk outputs.
+            _s_inputs = s_inputs.detach()
+            _s_trunk = s_trunk.detach()
+            _z_trunk = z_trunk.detach()
+
+            # Randomly drop conditioning information for confidence head.
             drop_rate = self.config.confidence_conditioning_drop_rate
             if drop_rate > 0.0:
                 drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
                 mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
-                _s_trunk = s_trunk_detached * mask[:, None, None]
-                _z_trunk = z_trunk_detached * mask[:, None, None, None]
+                _s_trunk = _s_trunk * mask[:, None, None]
+                _z_trunk = _z_trunk * mask[:, None, None, None]
 
+            # Forward pass through confidence head
             pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
                 f_input,
-                s_inputs_detached,
+                _s_inputs,
                 _s_trunk,
                 _z_trunk,
                 coordinates,

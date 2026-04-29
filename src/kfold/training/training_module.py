@@ -825,19 +825,21 @@ class KFoldTrainingModule(pl.LightningModule):
         alpha_pae = self.loss_weights["pae"]
 
         # Ground truth coordinates for confidence loss computation.
-        x_gt: torch.Tensor = loss_fn.confidence.get_aligned_gt_structure(
+        x_gt, mask = loss_fn.confidence.get_aligned_gt_structure(
             x_pred=x_sample,
             f_input=f_input,
             struct_info=struct_info,
         )  # [B, Nsample, Latom, 3]
 
-        L_pde = self.pde_loss(logits["pde_logits"], x_sample, x_gt, f_input).mean()
+        L_pde = self.pde_loss(logits["pde_logits"], x_sample, x_gt, mask, f_input).mean()
         metrics["pde_loss"] = L_pde.detach()
 
-        L_plddt = self.plddt_loss(logits["plddt_logits"], x_sample, x_gt, f_input).mean()
+        L_plddt = self.plddt_loss(
+            logits["plddt_logits"], x_sample, x_gt, mask, f_input
+        ).mean()
         metrics["plddt_loss"] = L_plddt.detach()
 
-        is_resolved = x_gt.isfinite().all(-1)  # [B, Nsample, Latom]
+        is_resolved = mask
         pad_mask = f_input.atom.pad_mask
         L_resolved = self.exp_res_loss(
             logits["resolved_logits"], is_resolved, pad_mask
@@ -845,7 +847,7 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics["resolved_loss"] = L_resolved.detach()
 
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
-        L_pae = self.pae_loss(logits["pae_logits"], x_sample, x_gt, f_input).mean()
+        L_pae = self.pae_loss(logits["pae_logits"], x_sample, x_gt, mask, f_input).mean()
         if alpha_pae > 0:
             metrics["pae_loss"] = L_pae.detach()
 
@@ -863,7 +865,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        if self.trainer.global_step % 100 == 0:
+        if self.trainer.global_step % 10 == 0:
             self.log_model_state()
 
     def log_model_state(self):

@@ -5,6 +5,7 @@ from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
 from kfold.model.layers.kfold.input_encoder import InputEmbedderWithApo
 from kfold.model.layers.primitives import LinearNoBias
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
+from kfold.utils.torch import gather_dim
 
 from .base import BaseInputEmbedder
 
@@ -231,13 +232,14 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             Tensor of shape (B, L, L, num_bins) containing RBF-encoded apo distance map.
         """
         # Extract apo C-beta coordinates and mask
-        b_idx = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
-        repr_index = f_input.token.repr_index
-        coords = f_input.atom.apo_coords[b_idx, repr_index]  # [B, L, 3]
-        mask = f_input.atom.apo_mask[b_idx, repr_index]  # [B, L]
+        repr_idx = f_input.token.repr_index
+        coords = gather_dim(f_input.atom.apo_coords, -2, repr_idx[..., None])  # [B, L, 3]
+        mask = gather_dim(f_input.atom.apo_mask, -1, repr_idx)  # [B, L]
+        mask &= f_input.token.pad_mask  # ensure padding tokens are masked out
 
-        # Create pairwise mask for valid apo coordinates
-        pair_mask = mask[:, :, None] & mask[:, None, :]
+        # Create pairwise mask for valid tokens
+        pair_mask = mask[..., :, None] & mask[..., None, :]  # [B, L, L]
+
         # Chain identity mask (no inter-chain apo distances)
         asym_id = f_input.token.asym_id  # [B, L]
         chain_mask = asym_id[:, :, None] == asym_id[:, None, :]
