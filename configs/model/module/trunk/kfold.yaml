@@ -2,10 +2,7 @@ _registry_: "trunk"
 _class_: "KFoldTrunk"
 channel_s: 384
 channel_z: 128
-
-channel_plm: 768
-channel_seq_emb: 1152
-channel_seq_attn: 648
+channel_plm: 1152
 
 plm_module:
   num_heads_attn: 16

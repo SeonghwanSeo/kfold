@@ -9,6 +9,7 @@ import torch
 
 import kfold.model.modules as submodules
 from kfold.data.types.model_input import FoldingInput
+from kfold.model.layers.kfold.plm_module import PLMInputEmbedder
 from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,14 @@ class KFold(torch.nn.Module):
         )
         self.structure_encoder: submodules.structure_encoder.BaseStructureEncoder = (
             Registry.instantiate(config.structure_encoder)
+        )
+
+        seq_enc, struct_enc = self.sequence_encoder, self.structure_encoder
+        self.plm_input_embedder: PLMInputEmbedder = PLMInputEmbedder(
+            channel_seq_emb=(seq_enc.n_layers, seq_enc.d_model),
+            channel_seq_attn=(seq_enc.n_layers, seq_enc.n_heads),
+            channel_struct_emb=struct_enc.d_model,
+            channel_plm=config.trunk.channel_plm,  # type: ignore
         )
 
         # Initialize trunk
@@ -205,6 +214,13 @@ class KFold(torch.nn.Module):
         et = time.time()
         time_logs["structure_encoder"] = et - st
 
+        st = time.time()
+        plm_inputs, plm_attn = self.plm_input_embedder(seq_emb, seq_attn, struct_emb)
+        z_init += plm_attn  # add PLM attention bias to pair representation
+        del seq_emb, seq_attn, struct_emb, plm_attn  # free up memory
+        et = time.time()
+        time_logs["plm_input_embedder"] = et - st
+
         # Trunk with recycling
         st = time.time()
         s_trunk, z_trunk = self.trunk(
@@ -213,23 +229,19 @@ class KFold(torch.nn.Module):
             z_init,
             f_input,
             num_recycles,
-            seq_emb=seq_emb,
-            seq_attn=seq_attn,
-            struct_emb=struct_emb,
+            plm_inputs=plm_inputs,
         )
         et = time.time()
         time_logs["trunk"] = et - st
 
         if return_embeddings:
             dict_out |= {
-                "seq_emb": seq_emb,
-                "seq_attn": seq_attn,
-                "struct_emb": struct_emb,
                 "s_inputs": s_inputs,
+                "plm_inputs": plm_inputs,
                 "s_trunk": s_trunk,
                 "z_trunk": z_trunk,
             }
-        del seq_emb, seq_attn, struct_emb  # free memory
+        del plm_inputs  # free up memory
 
         # Distogram head
         st = time.time()
@@ -367,9 +379,12 @@ class KFold(torch.nn.Module):
         # NOTE: cast to float32 for numerical stability in training.
         s_inputs, s_init, z_init = s_inputs.float(), s_init.float(), z_init.float()
 
-        # Get sequence and structure embeddings
+        # Get PLM input embeddings
         seq_emb, seq_attn = self.sequence_encoder(f_input)
         struct_emb = self.structure_encoder(f_input)
+        plm_inputs, plm_attn = self.plm_input_embedder(seq_emb, seq_attn, struct_emb)
+        z_init = z_init + plm_attn  # add PLM attention bias to pair representation
+        del seq_emb, seq_attn, struct_emb, plm_attn  # free up memory
 
         # Trunk with recycling
         s_trunk, z_trunk = self.trunk(
@@ -378,9 +393,7 @@ class KFold(torch.nn.Module):
             z_init,
             f_input,
             num_recycles,
-            seq_emb=seq_emb,
-            seq_attn=seq_attn,
-            struct_emb=struct_emb,
+            plm_inputs=plm_inputs,
         )
 
         if train_structure_module:

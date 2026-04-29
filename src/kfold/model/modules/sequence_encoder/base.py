@@ -26,13 +26,8 @@ class BaseSequenceEncoder(torch.nn.Module, ABC):
     @abstractmethod
     def d_model(self) -> int: ...
 
-    @property
-    def d_attn(self) -> int:
-        """Dimension of attention weights."""
-        return self.n_layers * self.n_heads
-
     @abstractmethod
-    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of sequence representation module.
 
         Parameters
@@ -43,8 +38,9 @@ class BaseSequenceEncoder(torch.nn.Module, ABC):
         Returns
         -------
         x_token: torch.Tensor
-            Tensor of shape (B, Ntoken, D) containing sequence representations.
-        attention: torch.Tensor | None
-            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
+            Tensor of shape (B, Ntoken, N, D) containing sequence representations,
+            where N is the number of layers and D is the model dimension.
+        attention: torch.Tensor
+            Tensor of shape (B, Ntoken, Ntoken, N, H) containing attention weights,
             where N is number of layers and H is number of heads.
         """
