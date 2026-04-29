@@ -128,7 +128,6 @@ class PLMModule(nn.Module):
         num_blocks: int = 4,
         dropout_plm: float = 0.15,
         dropout_z: float = 0.25,
-        use_qk_norm: bool = False,
         blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
@@ -142,7 +141,6 @@ class PLMModule(nn.Module):
                     num_heads_tri_attn=num_heads_tri_attn,
                     dropout_plm=dropout_plm,
                     dropout_z=dropout_z,
-                    use_qk_norm=use_qk_norm,
                     is_last_block=(i == num_blocks - 1),
                 )
             )
@@ -212,7 +210,6 @@ class PLMBlock(nn.Module):
         num_heads_tri_attn: int = 4,
         dropout_plm: float = 0.15,
         dropout_z: float = 0.25,
-        use_qk_norm: bool = False,
         is_last_block: bool = False,
     ) -> None:
         super().__init__()
@@ -242,7 +239,6 @@ class PLMBlock(nn.Module):
                 channel_a=channel_plm,
                 channel_s=None,
                 num_heads=num_heads_attn,
-                qk_norm=use_qk_norm,
             )
             self.transition_plm = Transition(channel_plm, expansion_factor=4)
 

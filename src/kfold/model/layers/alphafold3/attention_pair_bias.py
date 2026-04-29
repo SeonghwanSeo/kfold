@@ -20,7 +20,6 @@ class AttentionPairBias(nn.Module):
         channel_a: int,
         num_heads: int,
         *,
-        qk_norm: bool = False,
         zero_init_out: bool = False,
         inf: float = 1e9,
     ) -> None:
@@ -47,13 +46,6 @@ class AttentionPairBias(nn.Module):
         self.linear_v = LinearNoBias(channel_a, channel_a, init="default")
         self.linear_g = LinearNoBias(channel_a, channel_a, init="gating")
 
-        if qk_norm:
-            self.layernorm_q = LayerNorm(channel_a, create_offset=True)
-            self.layernorm_k = LayerNorm(channel_a, create_offset=True)
-        else:
-            self.layernorm_q = nn.Identity()
-            self.layernorm_k = nn.Identity()
-
         if zero_init_out:
             self.linear_out = LinearNoBias(channel_a, channel_a, init="final")
         else:
@@ -64,8 +56,8 @@ class AttentionPairBias(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute the query, key, and value tensors from the input tensors."""
         # [*, L, c] -> [*, L, c]
-        q = self.layernorm_q(self.linear_q(a_q))
-        k = self.layernorm_k(self.linear_k(a_k))
+        q = self.linear_q(a_q)
+        k = self.linear_k(a_k)
         v = self.linear_v(a_k)
         # [*, L, c] -> [*, H, L, c_h]
         H = self.num_heads
@@ -106,7 +98,6 @@ class SelfAttentionPairBias(AttentionPairBias):
         channel_a: int,
         num_heads: int,
         channel_s: int | None,
-        qk_norm: bool = False,
         inf: float = 1e9,
     ) -> None:
         """Initialize the attention pair bias layer.
@@ -119,8 +110,6 @@ class SelfAttentionPairBias(AttentionPairBias):
             The number of heads.
         channel_s : int
             The single conditioning dimension.
-        qk_norm : bool, optional
-            Whether to apply LayerNorm to Q and K.
         inf : float, optional
             The inf value, by default 1e9
         """
@@ -129,7 +118,6 @@ class SelfAttentionPairBias(AttentionPairBias):
         super().__init__(
             channel_a,
             num_heads,
-            qk_norm=qk_norm,
             zero_init_out=(not self.use_single_conditioning),
             inf=inf,
         )
@@ -192,7 +180,6 @@ class CrossAttentionPairBias(AttentionPairBias):
         channel_a: int,
         num_heads: int,
         channel_s: int | None,
-        qk_norm: bool = False,
         inf: float = 1e9,
     ) -> None:
         """Initialize the attention pair bias layer.
@@ -215,7 +202,6 @@ class CrossAttentionPairBias(AttentionPairBias):
         super().__init__(
             channel_a,
             num_heads,
-            qk_norm=qk_norm,
             zero_init_out=(not self.use_single_conditioning),
             inf=inf,
         )
