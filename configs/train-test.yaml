@@ -1,0 +1,11 @@
+_yaml_: "train-ecsi-debug.yaml"
+train:
+  data:
+    num_workers: 1
+    train_datasets:
+      # - _yaml_: "./dataset/rcsb-train.yaml"
+      #   name: rcsb
+      #   data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-train/
+      - _yaml_: "./dataset/synthetic-complex.yaml"
+        name: sair
+        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/SAIR/

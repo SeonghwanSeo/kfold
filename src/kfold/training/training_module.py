@@ -24,6 +24,7 @@ from kfold.training.utils.binned_loss_logging import (
     TimeBinnedLossLogger,
 )
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
+from kfold.utils.geometry.rigid_align import compute_rmsd
 from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
@@ -490,14 +491,28 @@ class KFoldTrainingModule(pl.LightningModule):
                 diffusion_loss, diffusion_metrics = 0.0, {}
 
             if self.train_confidence_head:
-                confidence_loss, confidence_metrics = self.compute_confidence_loss(
-                    logits=model_output["confidence"],
-                    x_sample=model_output["sample"]["coordinates"],
+                x_pred = model_output["sample"]["coordinates"]
+                x_gt, mask_gt = loss_fn.confidence.get_aligned_gt_structure(
+                    x_pred=x_pred,
                     f_input=f_input,
                     struct_info=struct_info,
+                )  # [B, Nsample, Latom, 3]
+                confidence_loss, confidence_metrics = self.compute_confidence_loss(
+                    logits=model_output["confidence"],
+                    x_pred=x_pred,
+                    x_gt=x_gt,
+                    mask=mask_gt,
+                    f_input=f_input,
                 )
+                with torch.no_grad():
+                    # Log the rmsd between mini-rollout sample and GT.
+                    mask = x_gt.isfinite().all(dim=-1)  # [B, Nsample, Latom]
+                    rmsd = compute_rmsd(x_pred, x_gt, mask=mask)  # [B, Nsample]
+                    sample_metrics = {"mini_rollout_rmsd": rmsd.mean()}
+
             else:
                 confidence_loss, confidence_metrics = 0.0, {}
+                sample_metrics = {}
 
         # Aggregate losses
         # See Section 5.3 Equation 15
@@ -510,7 +525,9 @@ class KFoldTrainingModule(pl.LightningModule):
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
         # Log loss and metrics
-        all_metrics = distogram_metrics | diffusion_metrics | confidence_metrics
+        all_metrics = (
+            distogram_metrics | diffusion_metrics | confidence_metrics | sample_metrics
+        )
         all_metrics["loss"] = loss.detach()
 
         if self._binned_cache_enabled and self.train_structure_module:
@@ -796,9 +813,10 @@ class KFoldTrainingModule(pl.LightningModule):
     def compute_confidence_loss(
         self,
         logits: dict[str, torch.Tensor],
-        x_sample: torch.Tensor,
+        x_pred: torch.Tensor,
+        x_gt: torch.Tensor,
+        mask: torch.Tensor,
         f_input: FoldingInput,
-        struct_info: list[dict],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute confidence head loss.
 
@@ -806,8 +824,10 @@ class KFoldTrainingModule(pl.LightningModule):
         ----------
         logits : dict[str, torch.Tensor]
             A dictionary containing the logits for different confidence predictions.
-        x_sample : torch.Tensor
-            The sampled atom coordinates of shape (B, Nsample, Latom, 3).
+        x_pred : torch.Tensor
+            The mini-rollout sample coordinates of shape (B, Nsample, Latom, 3).
+        x_gt : torch.Tensor
+            The GT coordinates aligned to x_pred of shape (B, Nsample, Latom, 3).
         f_input : FoldingInput
             The input features containing the target distogram and masks.
         struct_info : list[dict]
@@ -824,18 +844,11 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics: dict[str, torch.Tensor] = {}
         alpha_pae = self.loss_weights["pae"]
 
-        # Ground truth coordinates for confidence loss computation.
-        x_gt, mask = loss_fn.confidence.get_aligned_gt_structure(
-            x_pred=x_sample,
-            f_input=f_input,
-            struct_info=struct_info,
-        )  # [B, Nsample, Latom, 3]
-
-        L_pde = self.pde_loss(logits["pde_logits"], x_sample, x_gt, mask, f_input).mean()
+        L_pde = self.pde_loss(logits["pde_logits"], x_pred, x_gt, mask, f_input).mean()
         metrics["pde_loss"] = L_pde.detach()
 
         L_plddt = self.plddt_loss(
-            logits["plddt_logits"], x_sample, x_gt, mask, f_input
+            logits["plddt_logits"], x_pred, x_gt, mask, f_input
         ).mean()
         metrics["plddt_loss"] = L_plddt.detach()
 
@@ -847,7 +860,7 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics["resolved_loss"] = L_resolved.detach()
 
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
-        L_pae = self.pae_loss(logits["pae_logits"], x_sample, x_gt, mask, f_input).mean()
+        L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input).mean()
         if alpha_pae > 0:
             metrics["pae_loss"] = L_pae.detach()
 
