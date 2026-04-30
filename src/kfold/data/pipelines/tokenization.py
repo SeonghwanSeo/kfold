@@ -7,7 +7,8 @@ from rdkit import Chem
 
 import kfold.constants as C
 from kfold.data.types.ccd import CCD, Component
-from kfold.data.types.structure import RefStructure
+from kfold.data.types.constraint import Constraint
+from kfold.data.types.structure import Chain, RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
 from kfold.utils.misc import spawn_rng
@@ -45,6 +46,7 @@ class Tokenizer:
         rng: np.random.Generator | None = None,
         *,
         num_priors: int = 0,
+        constraints: list[Constraint] | None = None,
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -62,7 +64,7 @@ class Tokenizer:
         struct: TokenizedStructure
             The parsed tokenized structure.
         """
-        return self.tokenize(input, rng, num_priors=num_priors)
+        return self.tokenize(input, rng, num_priors=num_priors, constraints=constraints)
 
     def tokenize(
         self,
@@ -70,6 +72,7 @@ class Tokenizer:
         rng: np.random.Generator | None = None,
         *,
         num_priors: int = 0,
+        constraints: list[Constraint] | None = None,
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -88,7 +91,12 @@ class Tokenizer:
             The parsed tokenized structure.
         """
         return tokenize_structure(
-            input, self.ccd, rng, train=self.train, num_priors=num_priors
+            input,
+            self.ccd,
+            rng,
+            train=self.train,
+            num_priors=num_priors,
+            constraints=constraints,
         )
 
 
@@ -99,6 +107,7 @@ def tokenize_structure(
     *,
     train: bool = False,
     num_priors: int = 0,
+    constraints: list[Constraint] | None = None,
 ) -> TokenizedStructure:
     """Tokenize structure.
 
@@ -123,6 +132,8 @@ def tokenize_structure(
     # Create new rng for this sampling to avoid affecting global state
     rng = spawn_rng(rng)
 
+    constraints: list[Constraint] = constraints or []
+
     ccd_dict: dict[str, Component] = {}
     ccd_smi_dict: dict[str, Component] = {}
 
@@ -136,6 +147,8 @@ def tokenize_structure(
         if ccd_name not in ccd_dict:
             ccd_dict[ccd_name] = ccd[ccd_name]
         return ccd_dict[ccd_name]
+
+    asym_id_to_chain: dict[int, Chain] = {c.asym_id: c for c in input.chains}
 
     # ==================================================
     # Estimate sizes
@@ -163,12 +176,14 @@ def tokenize_structure(
     # Create empty tokenized structure
     # ==================================================
     num_bonds = input.num_bonds + input.num_connections
+    num_constraints = len(constraints)
     struct = TokenizedStructure.get_empty(
         id=input.id,
         num_chains=len(input.chains),
         num_tokens=input.num_tokens,
         num_bonds=num_bonds,
         num_sequence_tokens=num_seq_tokens,
+        num_constraints=num_constraints,
         num_priors=num_priors,
     )
 
@@ -495,9 +510,9 @@ def tokenize_structure(
         atom1, atom2 = input.connections[conn_i].atom_names
         bondtype = C.ConnectionType.INTERMOLECULAR
 
-        # Find atom index
-        chain1 = input.get_chain_by_asym_id(asym_id1)
-        chain2 = input.get_chain_by_asym_id(asym_id2)
+        # Find chain
+        chain1 = asym_id_to_chain[asym_id1]
+        chain2 = asym_id_to_chain[asym_id2]
 
         # Find atom index
         aidx1 = chain1.find_atom_index(ridx1, atom1)
@@ -519,6 +534,37 @@ def tokenize_structure(
 
         # Update global bond index
         g_bond_i += 1
+
+    # ==================================================
+    # Fill constraint
+    # ==================================================
+    for cond_i, _cond in enumerate(constraints):
+        asym_id1, asym_id2 = _cond.asym_id
+        ridx1, ridx2 = _cond.residue_index
+        atom1, atom2 = _cond.atom_name
+
+        # Find chain
+        chain1 = asym_id_to_chain[asym_id1]
+        chain2 = asym_id_to_chain[asym_id2]
+
+        # Find atom index
+        aidx1 = chain1.find_atom_index(ridx1, atom1)
+        aidx2 = chain2.find_atom_index(ridx2, atom2)
+
+        # Map chain-local atom indices to global atom indices
+        g_aidx1 = chain_atom_st[asym_id1] + int(aidx1)
+        g_aidx2 = chain_atom_st[asym_id2] + int(aidx2)
+
+        # Map atom indices to token and atom indices
+        g_tok_i1, local_atom1 = g_atom_to_token_map[g_aidx1]
+        g_tok_i2, local_atom2 = g_atom_to_token_map[g_aidx2]
+
+        # Insert bond info
+        struct.constraint.asym_id[cond_i] = (asym_id1, asym_id2)
+        struct.constraint.token_index[cond_i] = (g_tok_i1, g_tok_i2)
+        struct.constraint.atom_index[cond_i] = (local_atom1, local_atom2)
+        struct.constraint.lower_bound[cond_i] = _cond.lower_bound
+        struct.constraint.upper_bound[cond_i] = _cond.upper_bound
 
     # ==================================================
     # Fill frame information

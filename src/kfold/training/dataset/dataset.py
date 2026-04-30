@@ -80,7 +80,7 @@ from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
-from .utils import pre_crop
+from .utils import constraint_sampling, pre_crop
 
 
 # === Helper functions === #
@@ -744,6 +744,15 @@ class TrainingDataset(SafeLoadingDataset):
             mask_prob=0.9, mask_ratio=0.15
         )
 
+        # Constraint sampling for training
+        # TODO: configurize the parameters
+        self.constraint_sampling = constraint_sampling.ConstraintSampling(
+            min_dist=3.0,
+            max_dist=22.0,
+            prob_constraint=0.05,
+            max_constraints=5,
+        )
+
         self.setup()
 
     def sanity_check(self) -> None:
@@ -776,8 +785,12 @@ class TrainingDataset(SafeLoadingDataset):
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
+        # Sample the constraints
+        constraints = self.constraint_sampling(ref_struct, rng)
         # Tokenize the structure
-        tok_struct = super().tokenize(ref_struct, rng)
+        tok_struct = self.tokenizer(
+            ref_struct, rng, num_priors=self.num_priors, constraints=constraints
+        )
         # Then apply sequence masking for training
         self.seq_masking(tok_struct, rng)
         return tok_struct
@@ -830,12 +843,14 @@ class TrainingDataset(SafeLoadingDataset):
         max_sequence_tokens = self.max_sequence_tokens
         max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
+        num_constraints = max_tokens  # max 1 constraint per token
         return f_input.pad(
             max_tokens=max_tokens,
             max_chains=max_chains,
             max_atoms=max_atoms,
             max_bonds=max_bonds,
             max_sequence_tokens=max_sequence_tokens,
+            max_constraints=num_constraints,
         )
 
     @override
