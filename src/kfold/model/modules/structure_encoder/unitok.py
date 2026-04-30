@@ -54,6 +54,10 @@ class UniTok(BaseStructureEncoder):
         for param in self.parameters():
             param.requires_grad = False
 
+    @property
+    def d_model(self) -> int:
+        return self.cfg.d_model
+
     def tokenize(
         self, aatypes: torch.Tensor, coords: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:

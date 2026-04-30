@@ -80,7 +80,7 @@ class ESMO(BaseSequenceEncoder):
     def n_heads(self) -> int:
         return self.cfg.n_heads
 
-    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor | None]:
+    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of sequence representation module.
 
         Parameters
@@ -91,10 +91,10 @@ class ESMO(BaseSequenceEncoder):
         Returns
         -------
         x_token: torch.Tensor
-            Tensor of shape (B, Ntoken, D) containing sequence representations,
-            where Ntoken is the number of tokens and D is the model dimension.
-        attention: torch.Tensor | None
-            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
+            Tensor of shape (B, Ntoken, N, D) containing sequence representations,
+            where N is the number of layers and D is the model dimension.
+        attention: torch.Tensor
+            Tensor of shape (B, Ntoken, Ntoken, N, H) containing attention weights,
             where N is number of layers and H is number of heads.
         """
         # NOTE: ESMC uses bfloat16 for inference.
@@ -102,7 +102,7 @@ class ESMO(BaseSequenceEncoder):
             torch.autocast(f_input.device.type, dtype=torch.bfloat16),
             torch.no_grad(),
         ):
-            return self.forward_attn(f_input)
+            return self._forward(f_input)
 
     def prepare_emb_mask(self, f_input: FoldingInput) -> torch.Tensor:
         """Prepare output mask"""
@@ -119,7 +119,7 @@ class ESMO(BaseSequenceEncoder):
         attn_mask &= asym_id.unsqueeze(-1) == asym_id.unsqueeze(-2)
         return attn_mask
 
-    def forward_attn(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
+    def _forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of sequence representation module.
 
         Parameters
@@ -130,13 +130,14 @@ class ESMO(BaseSequenceEncoder):
         Returns
         -------
         x_token: torch.Tensor
-            Tensor of shape (B, Ntoken, D) containing sequence representations.
+            Tensor of shape (B, Ntoken, N, D) containing sequence representations,
+            where N is the number of layers and D is the model dimension.
         attention: torch.Tensor
-            Tensor of shape (B, Ntoken, Ntoken, N*H) containing attention weights,
+            Tensor of shape (B, Ntoken, Ntoken, N, H) containing attention weights,
             where N is number of layers and H is number of heads.
         """
         dtype, device = torch.bfloat16, f_input.device
-        N, H = self.n_layers, self.n_heads
+        N, H, D = self.n_layers, self.n_heads, self.d_model
 
         # NOTE: padding tokens have seq_id=-1, which will be masked out in
         # attention computation. (entity_id is 1-indexed for valid tokens)
@@ -146,41 +147,37 @@ class ESMO(BaseSequenceEncoder):
         mlm_mask = f_input.sequence.mlm_mask
 
         # sequence -> token index mapping
-        seq_token_idx = f_input.token.seq_token_index
-        B, L = seq_token_idx.shape
+        seq_token_idx = f_input.token.seq_token_index.clamp(min=0)  # [B, n_tokens]
+        B, Ntoken = seq_token_idx.shape
+        b_idx = torch.arange(B, device=device)[:, None, None]
+        row_idx = seq_token_idx[:, :, None]
+        col_idx = seq_token_idx[:, None, :]
 
         # === MLM masking === #
         input_ids = input_ids.masked_fill(mlm_mask, self.mask_token_id)
 
         # === Forward pass === #
         x = self.embed(input_ids)
+        x_out = torch.empty((B, Ntoken, N, D), dtype=dtype, device=device)
+        attn_out = torch.empty((B, Ntoken, Ntoken, N, H), dtype=dtype, device=device)
 
-        b_idcs = torch.arange(B, device=device)
-        attn_out = torch.empty((B, L, L, N, H), dtype=dtype, device=device)
         for i, block in enumerate(self.transformer.blocks):
             x, attn_weights = block(x, seq_id, pos_id)
 
-            # [B, n_heads, seq_len, seq_len] -> [B, n_heads, n_tokens, n_tokens]
-            _attn = attn_weights[
-                b_idcs[:, None, None],  # [B, 1, 1]
-                :,
-                seq_token_idx[:, :, None],  # [B, 1, n_tokens]
-                seq_token_idx[:, None, :],  # [B, n_tokens, 1]
-            ]
-            attn_out[:, :, :, i, :] = _attn
+            # [B, seq_len, d_model] -> [B, n_tokens, d_model]
+            _x = x.gather(1, seq_token_idx[..., None].expand(-1, -1, D))
+            x_out[:, :, i, :] = _x.to(dtype)
+
+            # [B, n_heads, seq_len, seq_len] -> [B, n_tokens, n_tokens, n_heads]
+            _attn = attn_weights.permute(0, 2, 3, 1)  # [B, seq_len, seq_len, n_heads]
+            _attn = _attn[b_idx, row_idx, col_idx]
+            attn_out[:, :, :, i, :] = _attn.to(dtype)
             del attn_weights
-
-        x = x[b_idcs[:, None], seq_token_idx]  # [B, n_tokens, d_model]
-        x_out = self.transformer.norm(x).to(dtype)
-        del x
-
-        # Flatten attention output to shape [B, Ntoken, Ntoken, N*H]
-        attn_out = attn_out.view(B, L, L, N * H)
 
         # Mask out invalid tokens
         token_mask = self.prepare_emb_mask(f_input)
         attn_mask = self.prepare_out_attn_mask(f_input, token_mask)
-        x_out.masked_fill_(~token_mask[..., None], 0.0)
-        attn_out.masked_fill_(~attn_mask[..., None], 0.0)
+        x_out.masked_fill_(~token_mask[..., None, None], 0.0)
+        attn_out.masked_fill_(~attn_mask[..., None, None], 0.0)
 
         return x_out, attn_out

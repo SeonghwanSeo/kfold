@@ -208,7 +208,6 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `frames_index`    | `(Ntoken, 3)`   | Frame defining atom index, e.g., protein: (N, Cα, C) |
 | `frames_mask`     | `(Ntoken,)`     | Whether all frame atoms are resolved |
 | `pad_mask`        | `(Ntoken,)`     | Mask for valid tokens or padding |
-| `pocket_contact_type`| `(Ntoken,)`  | Pocket contact type |
 | `center_coords`   | `(Ntoken, 3)`   | Center atom coords (Cα, C1') |
 | `repr_coords`    | `(Ntoken, 3)`   | Representative atom coords (Cβ, C4/C2) |
 | `center_mask`     | `(Ntoken,)`     | Whether center atom is present |

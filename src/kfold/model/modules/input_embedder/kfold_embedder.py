@@ -2,6 +2,7 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
+from kfold.model.layers.kfold.constraint_encoding import ConstraintEncoding
 from kfold.model.layers.kfold.input_encoder import InputEmbedderWithApo
 from kfold.model.layers.primitives import LinearNoBias
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
@@ -96,6 +97,10 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         apo_num_bins: int = 48
         apo_min_dist: float = 2.0
         apo_max_dist: float = 49.0
+        # Constraint-related parameters
+        constraint_min_dist: float = 3.0
+        constraint_max_dist: float = 20.0
+        constraint_bin_size: float = 1.0
 
     def __init__(self, cfg: Config) -> None:
         super().__init__(cfg)
@@ -122,8 +127,17 @@ class KFoldInputEmbedder(BaseInputEmbedder):
 
         # Apo-related
         self.distmap = RBF(cfg.apo_min_dist, cfg.apo_max_dist, cfg.apo_num_bins)
-        # Pair representation
         self.linear_apo_pdist = LinearNoBias(self.distmap.num_bins, cfg.channel_z)
+
+        # Constraint-related
+        self.constraint_encoding = ConstraintEncoding(
+            min_dist=cfg.constraint_min_dist,
+            max_dist=cfg.constraint_max_dist,
+            bin_size=cfg.constraint_bin_size,
+        )
+        self.linear_constraint = LinearNoBias(
+            self.constraint_encoding.num_bins, cfg.channel_z
+        )
 
     def forward(
         self,
@@ -170,14 +184,21 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         z_init = add(z_init, self.linear_rel_pos(self.rel_pos_encoding(f_input, dtype)))
 
         # Add bond adjacency matrix
-        z_init = add(z_init, self.linear_bond(self.get_adj(f_input, dtype).unsqueeze(-1)))
+        z_init = add(
+            z_init, self.linear_bond(self.get_bond_adj(f_input, dtype).unsqueeze(-1))
+        )
+
+        # Add constraing embedding
+        z_init = add(
+            z_init, self.linear_constraint(self.constraint_encoding(f_input, dtype))
+        )
 
         # Add apo distance embedding
         z_init = add(z_init, self.linear_apo_pdist(self.get_apo_distmap(f_input, dtype)))
 
         return s_inputs, s_init, z_init
 
-    def get_adj(
+    def get_bond_adj(
         self,
         f_input: FoldingInput,
         dtype: torch.dtype = torch.float32,

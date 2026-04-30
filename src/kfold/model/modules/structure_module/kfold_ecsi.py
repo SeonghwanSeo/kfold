@@ -169,8 +169,12 @@ class KFoldECSI(BaseStructureModule):
             Standard deviation of the noise level sampling distribution in training.
 
         # Training interpolation noise parameters
+        Equation: $gamma_t_com = noise_scale * gamma_t * (t^power)$
         train_com_noise_scale : float
             The scale of the chain-wise COM noise added during training.
+        train_com_noise_time_power : float
+            The exponent controlling the time schedule for applying chain-wise
+            COM noise during training:
         train_com_noise_time_threshold : float
             The time threshold to apply chain-wise COM noise during training.
         """
@@ -183,7 +187,7 @@ class KFoldECSI(BaseStructureModule):
 
         time_min: float = 0.0001
         time_max: float = 0.9999
-        gamma_max: float = 24.0
+        gamma_max: float = 32.0
         time_power: float = 2.0
         eta: float = 1.0
 
@@ -196,12 +200,13 @@ class KFoldECSI(BaseStructureModule):
         ode_step_power: float = 2.0
 
         # Train time scheduling
-        P_mean: float = -0.8
-        P_std: float = 2.0
+        P_mean: float = -1.0
+        P_std: float = 1.5
 
         # Training interpolation noise parameters
         train_com_noise_scale: float = 1.0
-        train_com_noise_time_threshold: float = 0.3
+        train_com_noise_time_power: float = 1.0
+        train_com_noise_time_threshold: float = 0.2
 
     def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the ECSI module.
@@ -241,6 +246,7 @@ class KFoldECSI(BaseStructureModule):
 
         # Training interpolation noise parameters
         self.train_com_noise_scale: float = cfg.train_com_noise_scale
+        self.train_com_noise_time_power: float = cfg.train_com_noise_time_power
         self.train_com_noise_time_threshold: float = cfg.train_com_noise_time_threshold
 
         # NOTE: centering should be disabled.
@@ -495,8 +501,12 @@ class KFoldECSI(BaseStructureModule):
         _t = t[:, :, None, None]
         alpha_t, beta_t, gamma_t = C.alpha(_t), C.beta(_t), C.gamma(_t)
 
-        gamma_t_com = self.train_com_noise_scale * gamma_t
-        gamma_t_com[_t < self.train_com_noise_time_threshold] = 0.0
+        # Compute additional com noise scale for training interpolation.
+        com_noise_scale = self.train_com_noise_scale
+        com_noise_time_power = self.train_com_noise_time_power
+        com_noise_time_threshold = self.train_com_noise_time_threshold
+        gamma_t_com = com_noise_scale * gamma_t * (_t**com_noise_time_power)
+        gamma_t_com[_t < com_noise_time_threshold] = 0.0
 
         # Sample noise
         noise = torch.randn_like(x_0)
@@ -650,7 +660,7 @@ class KFoldECSI(BaseStructureModule):
         apo_mask = f_input.atom.pad_mask  # [B, L]
 
         # If num_diffusion_samples > num_prior, cycle through prior coords
-        num_prior = x_apo.shape[-2]
+        num_prior = x_apo.shape[-3]
         idx = [i % num_prior for i in range(num_samples)]
         x_T = x_apo[:, idx, :, :]  # [B, N, L, 3]
         x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, L]

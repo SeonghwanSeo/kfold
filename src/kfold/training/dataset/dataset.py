@@ -66,6 +66,7 @@ from kfold.data.pipelines import (
     featurization,
     prior_sampling,
     sequence_masking,
+    structure_cleaning,
     tokenization,
 )
 from kfold.data.types.ccd import CCD
@@ -79,7 +80,7 @@ from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
-from .utils import pre_crop
+from .utils import constraint_sampling, pre_crop
 
 
 # === Helper functions === #
@@ -341,7 +342,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         )
         # Copy metadata (to update cluster_id if needed)
         ref_struct.metadata = metadata.copy()
+
         return ref_struct
+
+    def cleanup_structure(self, ref_struct: RefStructure) -> RefStructure:
+        """Clean up the reference structure as needed."""
+        # NOTE: Right now, we simply filter out the unrealistic bonds.
+        return structure_cleaning.clean_up_ref_structure(ref_struct)
 
     def load_apo_structure(
         self,
@@ -464,6 +471,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
         # Load structure (NOTE: ref_struct.metadata == metadata)
         ref_struct: RefStructure = self.load_ref_structure(metadata)
+
+        # Clean up structure
+        ref_struct = self.cleanup_structure(ref_struct)
 
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
@@ -734,6 +744,16 @@ class TrainingDataset(SafeLoadingDataset):
             mask_prob=0.9, mask_ratio=0.15
         )
 
+        # Constraint sampling for training
+        # TODO: configurize the parameters
+        self.max_constraints = 5
+        self.constraint_sampling = constraint_sampling.ConstraintSampling(
+            min_dist=3.0,
+            max_dist=22.0,
+            prob_constraint=0.05,
+            max_constraints=self.max_constraints,
+        )
+
         self.setup()
 
     def sanity_check(self) -> None:
@@ -766,8 +786,12 @@ class TrainingDataset(SafeLoadingDataset):
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
+        # Sample the constraints
+        constraints = self.constraint_sampling(ref_struct, rng)
         # Tokenize the structure
-        tok_struct = super().tokenize(ref_struct, rng)
+        tok_struct = self.tokenizer(
+            ref_struct, rng, num_priors=self.num_priors, constraints=constraints
+        )
         # Then apply sequence masking for training
         self.seq_masking(tok_struct, rng)
         return tok_struct
@@ -818,6 +842,7 @@ class TrainingDataset(SafeLoadingDataset):
         max_chains = self.max_chains
         max_tokens = self.max_tokens
         max_sequence_tokens = self.max_sequence_tokens
+        num_constraints = self.max_constraints
         max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
         return f_input.pad(
@@ -826,6 +851,7 @@ class TrainingDataset(SafeLoadingDataset):
             max_atoms=max_atoms,
             max_bonds=max_bonds,
             max_sequence_tokens=max_sequence_tokens,
+            max_constraints=num_constraints,
         )
 
     @override

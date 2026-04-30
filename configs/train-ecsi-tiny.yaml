@@ -5,9 +5,6 @@ model:
   structure_encoder:
     path: /mnt/parallel_storage/share/plm_weights/unitok/unitok-dips.pt
   trunk:
-    channel_seq_emb: 1152
-    channel_seq_attn: 648
-    channel_struct_emb: 1536
     plm_module:
       num_blocks: 2
       blocks_per_ckpt: null
