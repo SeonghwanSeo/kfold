@@ -557,18 +557,6 @@ class KFoldTrainingModule(pl.LightningModule):
         n_tokens: int = int(f_input.token.pad_mask.sum().item())
         assert n_atoms == ref_struct.num_atoms
 
-        # Select the best sample based on global PDE score.
-        if self.train_confidence_head:
-            gpde: torch.Tensor = validation_metrics.compute_global_pde(
-                sample_out["pde_score"][:, :n_tokens, :n_tokens],
-                sample_out["prob_contact"][:n_tokens, :n_tokens],
-            )  # [Nsample,]
-            top1_index = int(gpde.argmax().item())
-        else:
-            # If confidence head is not trained, use the sample with
-            # lowest RMSD among the samples as the best sample.
-            top1_index = None
-
         # Compute validation metrics
         ref_struct_aligned: list[RefStructure] = []
         sample_metrics: list[dict[str, Any]] = []
@@ -587,10 +575,20 @@ class KFoldTrainingModule(pl.LightningModule):
                 ref_struct_aligned.append(struct_i)
                 sample_metrics.append(metric_i)
 
-        # Aggregate metrics
-        aggr_metrics = validation_metrics.aggregate_validation_metrics(
-            sample_metrics, top1_index
-        )
+            # Select the best sample based on global PDE score.
+            top1_index = None  # Use oracle sample.
+            if self.train_confidence_head:
+                gpde: torch.Tensor = validation_metrics.compute_global_pde(
+                    sample_out["pde_score"][:, :n_tokens, :n_tokens],
+                    sample_out["prob_contact"][:n_tokens, :n_tokens],
+                )  # [Nsample,]
+                assert gpde.shape == (num_samples,)
+                top1_index = int(gpde.argmin().item())
+
+            # Aggregate metrics
+            aggr_metrics = validation_metrics.aggregate_validation_metrics(
+                sample_metrics, top1_index
+            )
 
         # Update validation metrics
         metrics: MetricCollection = self.val_metrics[dataloader_idx]
@@ -865,7 +863,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        if self.trainer.global_step % 10 == 0:
+        if self.trainer.global_step % 50 == 0:
             self.log_model_state()
 
     def log_model_state(self):

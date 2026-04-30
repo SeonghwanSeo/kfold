@@ -89,7 +89,7 @@ def compute_global_pde(
     global_pde : torch.Tensor
         Tensor of shape (*, Nsample) containing the global PDE scores for each sample.
     """
-    pde_contact_sum = (pde_score * prob_contact.unsqueeze(-3)).sum(dim=(-2, -1))
+    pde_contact_sum = torch.einsum("...sij, ...ij -> ...s", pde_score, prob_contact)
     prob_contact_sum = prob_contact.sum(dim=(-2, -1))
     return pde_contact_sum / prob_contact_sum.clamp(1e-6)[..., None]
 
@@ -494,6 +494,15 @@ def aggregate_validation_metrics(
             range(len(sample_summaries)),
             key=lambda i: sample_summaries[i]["metrics"]["rmsd"],
         )
+
+    num_samples = len(sample_summaries)
+    for k, vs in all_metrics.items():
+        assert len(vs) == num_samples, (
+            f"Metric {k} has {len(vs)} values, expected {num_samples}."
+            f" Sample summaries: {sample_summaries[0]['id']}"
+            f" Metric values: {vs}"
+        )
+
     top1_metrics = {k: vs[top1_idx] for k, vs in all_metrics.items()}
 
     # Top of five
