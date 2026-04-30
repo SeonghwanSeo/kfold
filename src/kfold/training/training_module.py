@@ -506,8 +506,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 )
                 with torch.no_grad():
                     # Log the rmsd between mini-rollout sample and GT.
-                    mask = x_gt.isfinite().all(dim=-1)  # [B, Nsample, Latom]
-                    rmsd = compute_rmsd(x_pred, x_gt, mask=mask)  # [B, Nsample]
+                    rmsd = compute_rmsd(x_pred, x_gt, mask=mask_gt)  # [B, Nsample]
                     sample_metrics = {"mini_rollout_rmsd": rmsd.mean()}
 
             else:
@@ -878,7 +877,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        if self.trainer.global_step % 10 == 0:
+        if self.trainer.global_step % 50 == 0:
             self.log_model_state()
 
     def log_model_state(self):

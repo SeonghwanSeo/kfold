@@ -85,9 +85,9 @@ class ConstraintSampling:
             return []
 
         # Sample the number of constraints to sample
-        p = np.linspace(1.0, 0.0, self.max_constraints)
+        p = np.linspace(1.0, 0.0, self.max_constraints + 1)
         p /= p.sum()
-        num_constraints = int(rng.choice(np.arange(1, self.max_constraints + 1), p=p))
+        num_constraints = int(rng.choice(np.arange(1, self.max_constraints + 2), p=p))
 
         # Sample constraints
         constraints: list[Constraint] = []

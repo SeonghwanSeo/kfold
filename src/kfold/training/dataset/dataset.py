@@ -746,11 +746,12 @@ class TrainingDataset(SafeLoadingDataset):
 
         # Constraint sampling for training
         # TODO: configurize the parameters
+        self.max_constraints = 5
         self.constraint_sampling = constraint_sampling.ConstraintSampling(
             min_dist=3.0,
             max_dist=22.0,
             prob_constraint=0.05,
-            max_constraints=5,
+            max_constraints=self.max_constraints,
         )
 
         self.setup()
@@ -841,9 +842,9 @@ class TrainingDataset(SafeLoadingDataset):
         max_chains = self.max_chains
         max_tokens = self.max_tokens
         max_sequence_tokens = self.max_sequence_tokens
+        num_constraints = self.max_constraints
         max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
-        num_constraints = max_tokens  # max 1 constraint per token
         return f_input.pad(
             max_tokens=max_tokens,
             max_chains=max_chains,
