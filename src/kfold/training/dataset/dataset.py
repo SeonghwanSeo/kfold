@@ -66,6 +66,7 @@ from kfold.data.pipelines import (
     featurization,
     prior_sampling,
     sequence_masking,
+    structure_cleaning,
     tokenization,
 )
 from kfold.data.types.ccd import CCD
@@ -341,7 +342,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         )
         # Copy metadata (to update cluster_id if needed)
         ref_struct.metadata = metadata.copy()
+
         return ref_struct
+
+    def cleanup_structure(self, ref_struct: RefStructure) -> RefStructure:
+        """Clean up the reference structure as needed."""
+        # NOTE: Right now, we simply filter out the unrealistic bonds.
+        return structure_cleaning.clean_up_ref_structure(ref_struct)
 
     def load_apo_structure(
         self,
@@ -464,6 +471,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
         # Load structure (NOTE: ref_struct.metadata == metadata)
         ref_struct: RefStructure = self.load_ref_structure(metadata)
+
+        # Clean up structure
+        ref_struct = self.cleanup_structure(ref_struct)
 
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
