@@ -204,11 +204,11 @@ class ConfidenceHead(torch.nn.Module):
 
         Returns
         -------
-        pae_score: torch.Tensor
+        pae: torch.Tensor
             Tensor of shape (B, N, L, L) containing PAE score.
-        pde_score: torch.Tensor
+        pde: torch.Tensor
             Tensor of shape (B, N, L, L) containing PDE score.
-        plddt_score: torch.Tensor
+        plddt: torch.Tensor
             Tensor of shape (B, N, Natom) containing pLDDT score.
         """
         pae_logits, pde_logits, plddt_logits, _ = self(f_input, s_inputs, s, z, x_pred)
@@ -220,9 +220,9 @@ class ConfidenceHead(torch.nn.Module):
         pde = (p_pde * self.pde_bins).sum(dim=-1)
         plddt = (p_plddt * self.plddt_bins).sum(dim=-1)
         return {
-            "pae_score": pae,
-            "pde_score": pde,
-            "plddt_score": plddt,
+            "pae": pae,
+            "pde": pde,
+            "plddt": plddt * 100,
         }
 
     def forward(

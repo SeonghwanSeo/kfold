@@ -416,7 +416,8 @@ class KFoldTrainingModule(pl.LightningModule):
             diffusion_batch_size=training_config.diffusion_batch_size,
             mode="train",
         )
-        loss, metrics = self.compute_losses(batch, out)
+        with torch.autocast("cuda", dtype=torch.float32):
+            loss, metrics = self.compute_losses(batch, out)
 
         if self._binned_cache_enabled and self.train_structure_module:
             t_hat = out.get("diffusion", {}).get("t_hat", None)
@@ -457,61 +458,57 @@ class KFoldTrainingModule(pl.LightningModule):
         """Compute losses of given the model output."""
         f_input, struct_info = batch
 
-        with torch.autocast("cuda", dtype=torch.float32):
-            # NOTE: Compute the losses in float32 for better numerical stability
-            # Compute losses
-            if self.train_structure_module:
-                distogram_loss, distogram_metrics = self.compute_distogram_loss(
-                    logits=model_output["distogram"]["logits"],
+        # NOTE: Compute the losses in float32 for better numerical stability
+        # Compute losses
+        if self.train_structure_module:
+            distogram_loss, distogram_metrics = self.compute_distogram_loss(
+                logits=model_output["distogram"]["logits"],
+                f_input=f_input,
+            )
+            if "logits_aug" in model_output["distogram"]:
+                # Augmented distogram loss
+                distogram_loss_aug, distogram_aug_metrics = self.compute_distogram_loss(
+                    logits=model_output["distogram"]["logits_aug"],
                     f_input=f_input,
                 )
-                if "logits_aug" in model_output["distogram"]:
-                    # Augmented distogram loss
-                    distogram_loss_aug, distogram_aug_metrics = (
-                        self.compute_distogram_loss(
-                            logits=model_output["distogram"]["logits_aug"],
-                            f_input=f_input,
-                        )
-                    )
-                    distogram_loss = distogram_loss + distogram_loss_aug
-                    distogram_metrics["distogram_loss_aug"] = distogram_aug_metrics[
-                        "distogram_loss"
-                    ]
+                distogram_loss = distogram_loss + distogram_loss_aug
+                distogram_metrics["distogram_loss_aug"] = distogram_aug_metrics[
+                    "distogram_loss"
+                ]
 
-                diffusion_out = model_output["diffusion"]
-                diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
-                    x_pred=diffusion_out["x_0_hat"],
-                    x_true=diffusion_out["x_gt"],
-                    f_input=f_input,
-                    per_sample_weights=model_output["diffusion"]["loss_weights"],
-                )
+            diffusion_out = model_output["diffusion"]
+            diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
+                x_pred=diffusion_out["x_0_hat"],
+                x_true=diffusion_out["x_gt"],
+                f_input=f_input,
+                per_sample_weights=model_output["diffusion"]["loss_weights"],
+            )
 
-            else:
-                distogram_loss, distogram_metrics = 0.0, {}
-                diffusion_loss, diffusion_metrics = 0.0, {}
+        else:
+            distogram_loss, distogram_metrics = 0.0, {}
+            diffusion_loss, diffusion_metrics = 0.0, {}
 
-            if self.train_confidence_head:
-                x_pred = model_output["sample"]["coordinates"]
-                x_gt, mask_gt = loss_fn.confidence.get_aligned_gt_structure(
-                    x_pred=x_pred,
-                    f_input=f_input,
-                    struct_info=struct_info,
-                )  # [B, Nsample, Latom, 3]
-                confidence_loss, confidence_metrics = self.compute_confidence_loss(
-                    logits=model_output["confidence"],
-                    x_pred=x_pred,
-                    x_gt=x_gt,
-                    mask=mask_gt,
-                    f_input=f_input,
-                )
-                with torch.no_grad():
-                    # Log the rmsd between mini-rollout sample and GT.
-                    rmsd = compute_rmsd(x_pred, x_gt, mask=mask_gt)  # [B, Nsample]
-                    sample_metrics = {"mini_rollout_rmsd": rmsd.mean()}
+        if self.train_confidence_head:
+            x_pred = model_output["sample"]["coordinates"]
+            x_gt, mask_gt = loss_fn.confidence.get_aligned_gt_structure(
+                x_pred=x_pred,
+                f_input=f_input,
+                struct_info=struct_info,
+            )  # [B, Nsample, Latom, 3]
+            confidence_loss, confidence_metrics = self.compute_confidence_loss(
+                logits=model_output["confidence"],
+                x_pred=x_pred,
+                x_gt=x_gt,
+                mask=mask_gt,
+                f_input=f_input,
+            )
+            # Log the rmsd between mini-rollout sample and GT.
+            rmsd = compute_rmsd(x_pred, x_gt, mask_gt, align=True)  # [B, Nsample]
+            sample_metrics = {"mini_rollout_rmsd": rmsd.mean()}
 
-            else:
-                confidence_loss, confidence_metrics = 0.0, {}
-                sample_metrics = {}
+        else:
+            confidence_loss, confidence_metrics = 0.0, {}
+            sample_metrics = {}
 
         # Aggregate losses
         # See Section 5.3 Equation 15
@@ -595,7 +592,7 @@ class KFoldTrainingModule(pl.LightningModule):
             top1_index = None  # Use oracle sample.
             if self.train_confidence_head:
                 gpde: torch.Tensor = validation_metrics.compute_global_pde(
-                    sample_out["pde_score"][:, :n_tokens, :n_tokens],
+                    sample_out["pde"][:, :n_tokens, :n_tokens],
                     sample_out["prob_contact"][:n_tokens, :n_tokens],
                 )  # [Nsample,]
                 assert gpde.shape == (num_samples,)
