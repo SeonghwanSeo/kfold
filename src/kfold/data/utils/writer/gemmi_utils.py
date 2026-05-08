@@ -152,8 +152,10 @@ def create_gemmi_structure(
 
         if save_apo:
             atom_coords = atom_layout.apo_coords
+            b_factor = atom_layout.apo_plddt
         else:
             atom_coords = atom_layout.coords
+            b_factor = atom_layout.bfactor
 
         chain_id = chain_meta.name  # e.g., "A", "B", etc.
         entity_id = chain_meta.entity_id
@@ -184,10 +186,7 @@ def create_gemmi_structure(
                 atom.element = gemmi.Element(atom_elements[atom_i])
                 atom.charge = atom_charges[atom_i]
                 atom.pos = gemmi.Position(round(x, 3), round(y, 3), round(z, 3))
-
-                # Set calculation flag (since this is likely a predicted structure)
-                atom.calc_flag = gemmi.CalcFlag.Calculated
-
+                atom.b_iso = round(float(b_factor[atom_i]), 2)
                 atoms.append(atom)
 
             # Only add residue if it has atoms

@@ -1,4 +1,5 @@
 import gc
+import json
 import logging
 import pathlib
 from dataclasses import dataclass
@@ -186,14 +187,29 @@ class KFoldPredictionWriter(BasePredictionWriter):
         # Save Diffusion Samples
         num_atoms = ref_struct.num_atoms
         sample_coords = model_out["coordinates"][:, :num_atoms]
-        coords_np = sample_coords.cpu().numpy()
-        for i, coord in enumerate(coords_np):
+        coords_arr = sample_coords.cpu().numpy()
+        plddt_arr = model_out["plddt"].cpu().numpy()
+        for i in range(coords_arr.shape[0]):
+            sample_name = f"{name}_seed-{seed}_sample-{i}"
+            save_path = save_dir / f"{sample_name}.cif"
+            coords_i = coords_arr[i]
+            plddt_i = plddt_arr[i]
             try:
-                save_path = save_dir / f"{name}_seed-{seed}_sample-{i}.cif"
-                self.writer.write_new_coords(ref_struct, coord, save_path)
+                self.writer.write_new_coords(ref_struct, save_path, coords_i, plddt_i)
             except Exception as e:
                 self.logger.error(f"Error saving sample {i} for {name}: {e}")
+                continue
+
+            # Save confidence scores in JSON format
+            confidence_path = save_dir / f"{sample_name}_confidences.json"
+            avg_plddt = model_out["plddt"][i, :num_atoms].mean().item()
+            avg_pde = model_out["pde"][i, :num_atoms, :num_atoms].mean().item()
+            confidence_data = {
+                "plddt": avg_plddt,
+                "pde": avg_pde,
+            }
+            with open(confidence_path, "w") as f:
+                json.dump(confidence_data, f, indent=4)
 
         # Free up memory
         model_out.clear()
-        del model_out, sample_coords, coords_np

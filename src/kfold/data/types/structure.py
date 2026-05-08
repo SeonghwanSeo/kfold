@@ -697,11 +697,18 @@ class RefStructure:
         """Create a deep copy of the RefStructure."""
         return copy.deepcopy(self)
 
-    def copy_with_new_coords(self, coords: np.ndarray) -> Self:
+    def copy_with_new_coords(
+        self,
+        coords: np.ndarray,
+        confidence: np.ndarray | None = None,
+    ) -> Self:
         """Create a deep copy of the RefStructure."""
         assert coords.shape == (self.num_atoms, 3), (
             f"Invalid coords shape: {coords.shape}, expected ({self.num_atoms}, 3)"
         )
+        if confidence is None:
+            confidence = np.full((self.num_atoms,), fill_value=0, dtype=np.float32)
+
         new_chains = []
         atom_start = 0
         for chain in self.chains:
@@ -709,6 +716,7 @@ class RefStructure:
             new_atom = dataclasses.replace(
                 chain.atom,
                 coords=coords[atom_start:atom_end],
+                bfactor=confidence[atom_start:atom_end],
             )
             new_chain = chain.copy_with(deepcopy=False, atom=new_atom)
             new_chains.append(new_chain)
