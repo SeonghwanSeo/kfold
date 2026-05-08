@@ -141,7 +141,9 @@ def get_standard_residue_permutations(res_name: str) -> ResidueSymmetry:
         swap_perm[s_idx] = d_idx
         swap_perm[d_idx] = s_idx
     # Hack: there is only up to 2 symmetries per standard residue
-    return np.stack([original_perm, swap_perm], axis=0)
+    out = np.stack([original_perm, swap_perm], axis=0)
+    out.flags.writeable = False
+    return out
 
 
 def get_component_permutations(
