@@ -11,13 +11,14 @@ import torch
 from kfold.data.types import FoldingInput, RefStructure
 from kfold.training.utils.permutation_alignment.align_train import get_aligned_true_coords
 from kfold.utils.kernels.cdist import cdist as kernel_cdist
-from kfold.utils.torch import gather_dim, get_one_hot_from_bins
+from kfold.utils.torch import expand_dim, gather_dim, get_one_hot_from_bins
 
 
 def get_aligned_gt_structure(
     x_pred: torch.Tensor,
     f_input: FoldingInput,
     struct_info: list,
+    align_only_for_confidence_loss: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute the aligned ground truth coordinates for the confidence prediction losses.
 
@@ -30,6 +31,9 @@ def get_aligned_gt_structure(
     struct_info : list
         A list of length B containing structure information for each sample, including
         the reference structure and symmetry information.
+    align_only_for_confidence_loss : bool, optional
+        Whether to only compute aligned GT coordinates for samples that contribute to
+        the confidence loss (i.e., RCSB structures with resolution <= 4.0A).
 
     Returns
     -------
@@ -43,14 +47,24 @@ def get_aligned_gt_structure(
     f_input_list = f_input.to_list(deepcopy=False)
     batch_size, num_sample, _, _ = x_pred.shape
     for b_i in range(batch_size):
+        f_input_i = f_input_list[b_i]
         struct_info_i = struct_info[b_i]
         ref_struct_i: RefStructure = struct_info_i["structure"]
+
+        # Check if we should compute aligned GT coords for this sample
+        if align_only_for_confidence_loss and not struct_info_i["train_confidence_head"]:
+            _x_gt_i = f_input_i.atom.label_coords
+            _mask_i = f_input_i.atom.resolved_mask
+            _x_gt_i[~_mask_i] = torch.nan  # Mask unresolved atoms to NaN
+            x_gt[b_i] = expand_dim(_x_gt_i, num_sample, dim=0)
+            continue
+
         symmetry_dict_i: dict = struct_info_i["symmetry"]
-        num_atoms: int = f_input_list[b_i].atom.pad_mask.sum().item()
+        num_atoms: int = f_input_i.atom.pad_mask.sum().item()
         for s_j in range(num_sample):
             x_gt_ij = get_aligned_true_coords(
                 ref_struct=ref_struct_i,
-                f_input=f_input_list[b_i],
+                f_input=f_input_i,
                 pred_coords=x_pred[b_i, s_j, :num_atoms],
                 symmetry_dict=symmetry_dict_i,
             )
@@ -398,7 +412,7 @@ class PAELoss(torch.nn.Module):
             return (logits * 0.0).sum(dim=-1).mean(dim=(-1, -2))
 
         with torch.no_grad():
-            e = self.get_alignment_error(x_pred, x_gt, f_input)  # [B, N, L, L]
+            e = self.get_alignment_error(x_pred, x_gt, mask_gt, f_input)  # [B, N, L, L]
 
         # Compute Cross Entropy Error
         e_bins = get_one_hot_from_bins(e, self.bins)

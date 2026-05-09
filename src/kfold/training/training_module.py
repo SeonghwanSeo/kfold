@@ -490,6 +490,11 @@ class KFoldTrainingModule(pl.LightningModule):
 
         if self.train_confidence_head:
             x_pred = model_output["sample"]["coordinates"]
+            confidence_loss_mask = torch.tensor(
+                [info["train_confidence_head"] for info in struct_info],
+                device=x_pred.device,
+                dtype=torch.bool,
+            )
             x_gt, mask_gt = loss_fn.confidence.get_aligned_gt_structure(
                 x_pred=x_pred,
                 f_input=f_input,
@@ -501,6 +506,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 x_gt=x_gt,
                 mask=mask_gt,
                 f_input=f_input,
+                loss_mask=confidence_loss_mask,
             )
             # Log the rmsd between mini-rollout sample and GT.
             rmsd = compute_rmsd(x_pred, x_gt, mask_gt, align=True)  # [B, Nsample]
@@ -811,6 +817,7 @@ class KFoldTrainingModule(pl.LightningModule):
         x_gt: torch.Tensor,
         mask: torch.Tensor,
         f_input: FoldingInput,
+        loss_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute confidence head loss.
 
@@ -822,11 +829,14 @@ class KFoldTrainingModule(pl.LightningModule):
             The mini-rollout sample coordinates of shape (B, Nsample, Latom, 3).
         x_gt : torch.Tensor
             The GT coordinates aligned to x_pred of shape (B, Nsample, Latom, 3).
+        mask : torch.Tensor
+            The mask indicating which residues to include in the loss computation,
+            of shape (B, Nsample, Latom).
         f_input : FoldingInput
             The input features containing the target distogram and masks.
-        struct_info : list[dict]
-            A list of dictionaries containing structure information,
-            including the reference structure and symmetry.
+        loss_mask : torch.Tensor
+            A boolean tensor of shape (B,) indicating which samples in the batch should
+            contribute to the confidence loss.
 
         Returns
         -------
@@ -838,27 +848,33 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics: dict[str, torch.Tensor] = {}
         alpha_pae = self.loss_weights["pae"]
 
-        L_pde = self.pde_loss(logits["pde_logits"], x_pred, x_gt, mask, f_input).mean()
-        metrics["pde_loss"] = L_pde.detach()
+        num_samples = x_pred.shape[1]
+        loss_mask = loss_mask.float()[:, None]  # [B, 1]
+        num_valid_samples = (loss_mask.sum() * num_samples).clamp(1)
 
-        L_plddt = self.plddt_loss(
-            logits["plddt_logits"], x_pred, x_gt, mask, f_input
-        ).mean()
-        metrics["plddt_loss"] = L_plddt.detach()
+        L_pde = self.pde_loss(logits["pde_logits"], x_pred, x_gt, mask, f_input)
+        L_pde = L_pde * loss_mask  # [B, Nsample]
+        metrics["pde_loss"] = L_pde.detach().sum() / num_valid_samples
+
+        L_plddt = self.plddt_loss(logits["plddt_logits"], x_pred, x_gt, mask, f_input)
+        L_plddt = L_plddt * loss_mask  # [B, Nsample]
+        metrics["plddt_loss"] = L_plddt.detach().sum() / num_valid_samples
 
         is_resolved = mask
         pad_mask = f_input.atom.pad_mask
-        L_resolved = self.exp_res_loss(
-            logits["resolved_logits"], is_resolved, pad_mask
-        ).mean()
-        metrics["resolved_loss"] = L_resolved.detach()
+        L_resolved = self.exp_res_loss(logits["resolved_logits"], is_resolved, pad_mask)
+        L_resolved = L_resolved * loss_mask  # [B, Nsample]
+        metrics["resolved_loss"] = L_resolved.detach().sum() / num_valid_samples
 
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
-        L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input).mean()
+        L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input)
+        L_pae = L_pae * loss_mask  # [B, Nsample]
         if alpha_pae > 0:
-            metrics["pae_loss"] = L_pae.detach()
+            metrics["pae_loss"] = L_pae.detach().sum() / num_valid_samples
 
-        L_confidence = L_pde + L_plddt + L_resolved + alpha_pae * L_pae
+        L_confidence_per_sample = L_pde + L_plddt + L_resolved + alpha_pae * L_pae
+        L_confidence = L_confidence_per_sample.sum() / num_valid_samples
+
         metrics["confidence_loss"] = L_confidence.detach()
 
         return L_confidence, metrics
