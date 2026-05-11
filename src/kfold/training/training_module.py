@@ -416,7 +416,8 @@ class KFoldTrainingModule(pl.LightningModule):
             diffusion_batch_size=training_config.diffusion_batch_size,
             mode="train",
         )
-        loss, metrics = self.compute_losses(batch, out)
+        with torch.autocast("cuda", dtype=torch.float32):
+            loss, metrics = self.compute_losses(batch, out)
 
         if self._binned_cache_enabled and self.train_structure_module:
             t_hat = out.get("diffusion", {}).get("t_hat", None)
@@ -457,61 +458,63 @@ class KFoldTrainingModule(pl.LightningModule):
         """Compute losses of given the model output."""
         f_input, struct_info = batch
 
-        with torch.autocast("cuda", dtype=torch.float32):
-            # NOTE: Compute the losses in float32 for better numerical stability
-            # Compute losses
-            if self.train_structure_module:
-                distogram_loss, distogram_metrics = self.compute_distogram_loss(
-                    logits=model_output["distogram"]["logits"],
+        # NOTE: Compute the losses in float32 for better numerical stability
+        # Compute losses
+        if self.train_structure_module:
+            distogram_loss, distogram_metrics = self.compute_distogram_loss(
+                logits=model_output["distogram"]["logits"],
+                f_input=f_input,
+            )
+            if "logits_aug" in model_output["distogram"]:
+                # Augmented distogram loss
+                distogram_loss_aug, distogram_aug_metrics = self.compute_distogram_loss(
+                    logits=model_output["distogram"]["logits_aug"],
                     f_input=f_input,
                 )
-                if "logits_aug" in model_output["distogram"]:
-                    # Augmented distogram loss
-                    distogram_loss_aug, distogram_aug_metrics = (
-                        self.compute_distogram_loss(
-                            logits=model_output["distogram"]["logits_aug"],
-                            f_input=f_input,
-                        )
-                    )
-                    distogram_loss = distogram_loss + distogram_loss_aug
-                    distogram_metrics["distogram_loss_aug"] = distogram_aug_metrics[
-                        "distogram_loss"
-                    ]
+                distogram_loss = distogram_loss + distogram_loss_aug
+                distogram_metrics["distogram_loss_aug"] = distogram_aug_metrics[
+                    "distogram_loss"
+                ]
 
-                diffusion_out = model_output["diffusion"]
-                diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
-                    x_pred=diffusion_out["x_0_hat"],
-                    x_true=diffusion_out["x_gt"],
-                    f_input=f_input,
-                    per_sample_weights=model_output["diffusion"]["loss_weights"],
-                )
+            diffusion_out = model_output["diffusion"]
+            diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
+                x_pred=diffusion_out["x_0_hat"],
+                x_true=diffusion_out["x_gt"],
+                f_input=f_input,
+                per_sample_weights=model_output["diffusion"]["loss_weights"],
+            )
 
-            else:
-                distogram_loss, distogram_metrics = 0.0, {}
-                diffusion_loss, diffusion_metrics = 0.0, {}
+        else:
+            distogram_loss, distogram_metrics = 0.0, {}
+            diffusion_loss, diffusion_metrics = 0.0, {}
 
-            if self.train_confidence_head:
-                x_pred = model_output["sample"]["coordinates"]
-                x_gt, mask_gt = loss_fn.confidence.get_aligned_gt_structure(
-                    x_pred=x_pred,
-                    f_input=f_input,
-                    struct_info=struct_info,
-                )  # [B, Nsample, Latom, 3]
-                confidence_loss, confidence_metrics = self.compute_confidence_loss(
-                    logits=model_output["confidence"],
-                    x_pred=x_pred,
-                    x_gt=x_gt,
-                    mask=mask_gt,
-                    f_input=f_input,
-                )
-                with torch.no_grad():
-                    # Log the rmsd between mini-rollout sample and GT.
-                    rmsd = compute_rmsd(x_pred, x_gt, mask=mask_gt)  # [B, Nsample]
-                    sample_metrics = {"mini_rollout_rmsd": rmsd.mean()}
+        if self.train_confidence_head:
+            x_pred = model_output["sample"]["coordinates"]
+            confidence_loss_mask = torch.tensor(
+                [info["train_confidence_head"] for info in struct_info],
+                device=x_pred.device,
+                dtype=torch.bool,
+            )
+            x_gt, mask_gt = loss_fn.confidence.get_aligned_gt_structure(
+                x_pred=x_pred,
+                f_input=f_input,
+                struct_info=struct_info,
+            )  # [B, Nsample, Latom, 3]
+            confidence_loss, confidence_metrics = self.compute_confidence_loss(
+                logits=model_output["confidence"],
+                x_pred=x_pred,
+                x_gt=x_gt,
+                mask=mask_gt,
+                f_input=f_input,
+                loss_mask=confidence_loss_mask,
+            )
+            # Log the rmsd between mini-rollout sample and GT.
+            rmsd = compute_rmsd(x_pred, x_gt, mask_gt, align=True)  # [B, Nsample]
+            sample_metrics = {"mini_rollout_rmsd": rmsd.mean()}
 
-            else:
-                confidence_loss, confidence_metrics = 0.0, {}
-                sample_metrics = {}
+        else:
+            confidence_loss, confidence_metrics = 0.0, {}
+            sample_metrics = {}
 
         # Aggregate losses
         # See Section 5.3 Equation 15
@@ -595,7 +598,7 @@ class KFoldTrainingModule(pl.LightningModule):
             top1_index = None  # Use oracle sample.
             if self.train_confidence_head:
                 gpde: torch.Tensor = validation_metrics.compute_global_pde(
-                    sample_out["pde_score"][:, :n_tokens, :n_tokens],
+                    sample_out["pde"][:, :n_tokens, :n_tokens],
                     sample_out["prob_contact"][:n_tokens, :n_tokens],
                 )  # [Nsample,]
                 assert gpde.shape == (num_samples,)
@@ -814,6 +817,7 @@ class KFoldTrainingModule(pl.LightningModule):
         x_gt: torch.Tensor,
         mask: torch.Tensor,
         f_input: FoldingInput,
+        loss_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute confidence head loss.
 
@@ -825,11 +829,14 @@ class KFoldTrainingModule(pl.LightningModule):
             The mini-rollout sample coordinates of shape (B, Nsample, Latom, 3).
         x_gt : torch.Tensor
             The GT coordinates aligned to x_pred of shape (B, Nsample, Latom, 3).
+        mask : torch.Tensor
+            The mask indicating which residues to include in the loss computation,
+            of shape (B, Nsample, Latom).
         f_input : FoldingInput
             The input features containing the target distogram and masks.
-        struct_info : list[dict]
-            A list of dictionaries containing structure information,
-            including the reference structure and symmetry.
+        loss_mask : torch.Tensor
+            A boolean tensor of shape (B,) indicating which samples in the batch should
+            contribute to the confidence loss.
 
         Returns
         -------
@@ -841,27 +848,33 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics: dict[str, torch.Tensor] = {}
         alpha_pae = self.loss_weights["pae"]
 
-        L_pde = self.pde_loss(logits["pde_logits"], x_pred, x_gt, mask, f_input).mean()
-        metrics["pde_loss"] = L_pde.detach()
+        num_samples = x_pred.shape[1]
+        loss_mask = loss_mask.float()[:, None]  # [B, 1]
+        num_valid_samples = (loss_mask.sum() * num_samples).clamp(1)
 
-        L_plddt = self.plddt_loss(
-            logits["plddt_logits"], x_pred, x_gt, mask, f_input
-        ).mean()
-        metrics["plddt_loss"] = L_plddt.detach()
+        L_pde = self.pde_loss(logits["pde_logits"], x_pred, x_gt, mask, f_input)
+        L_pde = L_pde * loss_mask  # [B, Nsample]
+        metrics["pde_loss"] = L_pde.detach().sum() / num_valid_samples
+
+        L_plddt = self.plddt_loss(logits["plddt_logits"], x_pred, x_gt, mask, f_input)
+        L_plddt = L_plddt * loss_mask  # [B, Nsample]
+        metrics["plddt_loss"] = L_plddt.detach().sum() / num_valid_samples
 
         is_resolved = mask
         pad_mask = f_input.atom.pad_mask
-        L_resolved = self.exp_res_loss(
-            logits["resolved_logits"], is_resolved, pad_mask
-        ).mean()
-        metrics["resolved_loss"] = L_resolved.detach()
+        L_resolved = self.exp_res_loss(logits["resolved_logits"], is_resolved, pad_mask)
+        L_resolved = L_resolved * loss_mask  # [B, Nsample]
+        metrics["resolved_loss"] = L_resolved.detach().sum() / num_valid_samples
 
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
-        L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input).mean()
+        L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input)
+        L_pae = L_pae * loss_mask  # [B, Nsample]
         if alpha_pae > 0:
-            metrics["pae_loss"] = L_pae.detach()
+            metrics["pae_loss"] = L_pae.detach().sum() / num_valid_samples
 
-        L_confidence = L_pde + L_plddt + L_resolved + alpha_pae * L_pae
+        L_confidence_per_sample = L_pde + L_plddt + L_resolved + alpha_pae * L_pae
+        L_confidence = L_confidence_per_sample.sum() / num_valid_samples
+
         metrics["confidence_loss"] = L_confidence.detach()
 
         return L_confidence, metrics

@@ -139,9 +139,9 @@ def _do_optimal_chain_permutation(
     device = pred_coords.device
 
     # Extract the asym_ids of the chains present in the cropped region.
-    pred_asym_ids: list[int] = f_input.chain.asym_id.tolist()
-    pred_asym_ids = [i for i in pred_asym_ids if i > 0]  # Remove subsequent padding
-    valid_asym_ids: set[int] = set(pred_asym_ids)
+    cropped_asym_ids: list[int] = f_input.chain.asym_id.tolist()
+    cropped_asym_ids = [i for i in cropped_asym_ids if i > 0]  # Remove subsequent padding
+    valid_asym_ids: set[int] = set(cropped_asym_ids)
 
     # Extract the necessary chains for permutation alignment.
     chain_symmetries = chain_symmetries.copy()
@@ -162,7 +162,7 @@ def _do_optimal_chain_permutation(
     # Define the return function to get the aligned GT coordinates.
     def get_aligned_gt_coords(permuted_asym_ids: list[int] | None = None) -> torch.Tensor:
         """Get the cropped ground truth coordinates based on the given permutation."""
-        if (permuted_asym_ids is None) or (permuted_asym_ids == pred_asym_ids):
+        if (permuted_asym_ids is None) or (permuted_asym_ids == cropped_asym_ids):
             # No permutation, return the original GT coordinates with masking
             num_atoms = f_input.atom.pad_mask.sum().item()
             gt_coords = f_input.atom.label_coords
@@ -190,7 +190,7 @@ def _do_optimal_chain_permutation(
     pred_center_coords_dict: dict[int, torch.Tensor] = {}
     pred_center_indices_dict: dict[int, torch.Tensor] = {}
     st = 0
-    for c_i, asym_id in enumerate(pred_asym_ids):
+    for c_i, asym_id in enumerate(cropped_asym_ids):
         num_tokens = int(f_input.chain.num_tokens[c_i].item())
         end = st + num_tokens
         center_idcs = f_input.token.center_index[st:end]
@@ -202,14 +202,14 @@ def _do_optimal_chain_permutation(
     anchor_group: ChainGroup = _get_anchor_chain_group(chains, chain_symmetries)
 
     # Find the optimal multi-chain permutation.
-    pred_to_gt = _multi_chain_permutation_alignment(
+    gt_to_pred = _multi_chain_permutation_alignment(
         anchor_group,
         chain_symmetries,
         gt_coords_dict,
         pred_center_coords_dict,
         pred_center_indices_dict,
     )
-    permuted_asym_ids = [pred_to_gt.get(asym_id, asym_id) for asym_id in pred_asym_ids]
+    permuted_asym_ids = [gt_to_pred.get(asym_id, asym_id) for asym_id in cropped_asym_ids]
     return get_aligned_gt_coords(permuted_asym_ids)
 
 
@@ -302,7 +302,7 @@ def _multi_chain_permutation_alignment(
     anchor_pred_list: list[ChainGroup] = group_to_bucket[anchor_gt]
 
     best_total_cost = float("inf")
-    best_pred_to_gt_mapping: dict[int, int] = {}
+    best_gt_to_pred_mapping: dict[int, int] = {}
 
     for anchor_pred in anchor_pred_list:
         # Line 1: Compute alignment (GT to Pred) using the anchor
@@ -337,7 +337,7 @@ def _multi_chain_permutation_alignment(
 
         # Greedy Assignment for all buckets
         total_cost = 0.0
-        pred_to_gt = {}
+        gt_to_pred = {}
         for bucket in buckets:
             # pred_groups: groups in this bucket that have at least one chain in the crop.
             pred_groups = [g for g in bucket if any(aid in pred_asym_ids for aid in g)]
@@ -402,18 +402,18 @@ def _multi_chain_permutation_alignment(
                 bucket_cost += d[s, t].item()
                 for i, j in zip(g_s, g_t, strict=True):
                     if i in pred_asym_ids:
-                        pred_to_gt[i] = j
+                        gt_to_pred[i] = j
 
             total_cost += bucket_cost
 
         if total_cost < best_total_cost:
-            best_total_cost, best_pred_to_gt_mapping = total_cost, pred_to_gt
+            best_total_cost, best_gt_to_pred_mapping = total_cost, gt_to_pred
 
     if best_total_cost == float("inf"):
         # Gather diagnostic info
         logger.debug("No valid anchor found for chain permutation alignment. ")
         return {asym_id: asym_id for asym_id in pred_asym_ids}
-    return best_pred_to_gt_mapping
+    return best_gt_to_pred_mapping
 
 
 def _find_optimal_chain_permutation(
@@ -591,7 +591,7 @@ def __do_optimal_atom_permutation_in_residue(
     assert permutations.shape[1] == gt_coords.shape[0], "Permutation index mismatch."
 
     # Convert permutations to tensor for indexing.
-    perms_t = torch.as_tensor(permutations, device=gt_coords.device)
+    perms_t = torch.tensor(permutations, device=gt_coords.device)
 
     # Compute squared distances between Ground Truth and Predicted coordinates.
     x_pred = pred_coords[None, ...]  # [1, Natoms, 3]

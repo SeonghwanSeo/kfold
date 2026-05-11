@@ -20,7 +20,7 @@ import torch
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import AF3StyleDiffusionModule
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
-from kfold.utils.geometry.rigid_align import rigid_align
+from kfold.utils.geometry.rigid_align import get_rigid_transform_torch
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 from kfold.utils.torch import expand_dim
 
@@ -44,6 +44,37 @@ def _sqrt(t: _T) -> _T:
 def _log(t: _T) -> _T:
     log = torch.log if isinstance(t, torch.Tensor) else math.log
     return log(_clip(t, eps=1e-10))  # type: ignore
+
+
+# === Custom rigid align function === #
+def custom_rigid_align(
+    coords: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor | None,
+    rotation_only: bool = False,
+) -> torch.Tensor:
+    """
+    Torch implementation of weighted rigid alignment.
+    """
+    if mask is None:
+        mask = torch.ones(coords.shape[:-1], dtype=torch.bool, device=coords.device)
+    if not mask.any():
+        return coords
+
+    original_dtype = coords.dtype
+    mask_bool = mask.bool().unsqueeze(-1)
+    coords = coords.masked_fill(~mask_bool, 0.0)
+    target = target.masked_fill(~mask_bool, 0.0)
+
+    with torch.autocast(device_type=coords.device.type, enabled=False):
+        coords, target = coords.float(), target.float()
+        weights = mask.to(dtype=coords.dtype)
+        RT, T = get_rigid_transform_torch(coords, target, weights)
+        aligned_coords = coords @ RT
+        if not rotation_only:
+            aligned_coords += T.unsqueeze(-2)
+
+    return aligned_coords.to(original_dtype)
 
 
 # === Main ECSI module implementation === #
@@ -120,10 +151,6 @@ class KFoldECSI(BaseStructureModule):
 
         Parameters
         ----------
-        # Diffusion path design
-        align: bool
-            Whether to apply Kabsch alignment of x_0 to x_T during training.
-
         # ECSI preconditioning parameters
         sigma_data : float
             Effective target-coordinate scale used in ECSI preconditioning.
@@ -163,10 +190,10 @@ class KFoldECSI(BaseStructureModule):
             The exponent controlling the time schedule for ODE steps.
 
         # Training time scheduling
-        P_mean : float
-            Mean of the noise level sampling distribution in training.
-        P_std : float
-            Standard deviation of the noise level sampling distribution in training.
+        train_time_schedule_params : tuple[float, float, float]
+            A tuple of (mu, std, power) for the time sampling schedule during training.
+            Time values are sampled from:
+                t ~ logistic(mu, std) ** power, then scaled to [time_min, time_max].
 
         # Training interpolation noise parameters
         Equation: $gamma_t_com = noise_scale * gamma_t * (t^power)$
@@ -175,38 +202,35 @@ class KFoldECSI(BaseStructureModule):
         train_com_noise_time_power : float
             The exponent controlling the time schedule for applying chain-wise
             COM noise during training:
-        train_com_noise_time_threshold : float
+        train_com_noise_time_min : float
             The time threshold to apply chain-wise COM noise during training.
         """
 
-        align: bool = True
-
         sigma_data: float = 16.0
-        sigma_data_end: float = 66.0  # 16 + 50 translations
-        cov_xy: float = 128.0
+        sigma_data_end: float = 48.0  # 48 translations
+        cov_xy: float = 300.0
 
-        time_min: float = 0.0001
+        time_min: float = 1e-8
         time_max: float = 0.9999
-        gamma_max: float = 32.0
-        time_power: float = 2.0
+        gamma_max: float = 24.0
+        time_power: float = 1.0
         eta: float = 1.0
 
         # Inference sampling
         align_x_0_hat_to_x_t: bool = True
         churn_factor: float = 0.1
-        churn_end_time: float = 0.7
+        churn_end_time: float = 0.5
         churn_step_fraction: float = 0.4
         churn_step_power: float = 1.0
-        ode_step_power: float = 2.0
+        ode_step_power: float = 4.0
 
-        # Train time scheduling
-        P_mean: float = -1.0
-        P_std: float = 1.5
+        # Train time scheduling (mu, std, power)
+        train_time_schedule_params: tuple[float, float, float] = (-0.8, 1.8, 2.0)
 
         # Training interpolation noise parameters
         train_com_noise_scale: float = 1.0
         train_com_noise_time_power: float = 1.0
-        train_com_noise_time_threshold: float = 0.2
+        train_com_noise_time_min: float = 0.1
 
     def __init__(self, cfg: Config, score_model: AF3StyleDiffusionModule):
         """Initialize the ECSI module.
@@ -220,8 +244,6 @@ class KFoldECSI(BaseStructureModule):
         self.cfg = cfg
         self.score_model: AF3StyleDiffusionModule = score_model
 
-        self.align_mode = RIGID_ALIGN if cfg.align else NO_ALIGN
-
         # ECSI preconditioning parameters
         self.sigma_data: float = cfg.sigma_data
         self.sigma_data_end: float = cfg.sigma_data_end
@@ -233,8 +255,9 @@ class KFoldECSI(BaseStructureModule):
         self.time_max: float = cfg.time_max
 
         # Train time scheduling
-        self.P_mean: float = cfg.P_mean
-        self.P_std: float = cfg.P_std
+        self.train_time_schedule_params: tuple[float, float, float] = (
+            cfg.train_time_schedule_params
+        )
 
         # Inference time sampling
         self.align_x_0_hat_to_x_t: bool = cfg.align_x_0_hat_to_x_t
@@ -247,15 +270,10 @@ class KFoldECSI(BaseStructureModule):
         # Training interpolation noise parameters
         self.train_com_noise_scale: float = cfg.train_com_noise_scale
         self.train_com_noise_time_power: float = cfg.train_com_noise_time_power
-        self.train_com_noise_time_threshold: float = cfg.train_com_noise_time_threshold
+        self.train_com_noise_time_min: float = cfg.train_com_noise_time_min
 
         # NOTE: centering should be disabled.
-        if self.align_mode == RIGID_ALIGN:
-            self.random_augmentation = CenterRandomAugmentation()
-        else:
-            self.random_augmentation = CenterRandomAugmentation(
-                centering=False, s_trans=0.0
-            )
+        self.random_augmentation = CenterRandomAugmentation()
 
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(self, t: _T) -> tuple[_T, _T, _T]:
@@ -320,7 +338,7 @@ class KFoldECSI(BaseStructureModule):
 
     def loss_weights(self, t: torch.Tensor) -> torch.Tensor:
         """ECSI training loss weights"""
-        return 1 / self.c_out(t).pow_(2).clamp_(min=1e-8)
+        return 1 / self.c_out(t).pow(2).clamp(min=1e-8)
 
     # ============================================================
     # For training
@@ -439,8 +457,10 @@ class KFoldECSI(BaseStructureModule):
         t : torch.Tensor
             Time values. Shape (B, N).
         """
+        mu, std, power = self.train_time_schedule_params
         z = torch.randn(shape, device=device)
-        t = torch.sigmoid(self.P_mean + self.P_std * z)
+        x = mu + std * z
+        t = torch.sigmoid(x) ** power
 
         # Scale to [sampling_time_min, sampling_time_max]
         t = self.time_min + (self.time_max - self.time_min) * t
@@ -488,13 +508,10 @@ class KFoldECSI(BaseStructureModule):
         x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Apply centering/coordinate augmentation
-        if self.align_mode == RIGID_ALIGN:
-            x_0 = self.random_augmentation(x_0, mask=x_0_mask)
-            x_T = rigid_align(x_T, x_0, x_0_mask)
-        else:
-            x_0, x_T = self.random_augmentation(
-                x_0, x_T, mask=x_0_mask, mask_to_zero=False
-            )
+        x_0 = self.random_augmentation(x_0, mask=x_0_mask)
+
+        # Rigidly align x_T to x_0
+        x_T = custom_rigid_align(x_T, x_0, x_0_mask, rotation_only=True)
 
         # === Interpolate to get x_t === #
         C = self.coeff
@@ -504,9 +521,9 @@ class KFoldECSI(BaseStructureModule):
         # Compute additional com noise scale for training interpolation.
         com_noise_scale = self.train_com_noise_scale
         com_noise_time_power = self.train_com_noise_time_power
-        com_noise_time_threshold = self.train_com_noise_time_threshold
-        gamma_t_com = com_noise_scale * gamma_t * (_t**com_noise_time_power)
-        gamma_t_com[_t < com_noise_time_threshold] = 0.0
+        com_noise_time_min = self.train_com_noise_time_min
+        _com_t = (_t - com_noise_time_min).clamp(min=0.0) / (1 - com_noise_time_min)
+        gamma_t_com = com_noise_scale * gamma_t * (_com_t**com_noise_time_power)
 
         # Sample noise
         noise = torch.randn_like(x_0)
@@ -610,7 +627,7 @@ class KFoldECSI(BaseStructureModule):
         append_traj(x_t)
         for step_idx in range(num_steps):
             # Apply random augmentation
-            x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask)
+            x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask, centering=False)
 
             t = times[step_idx]
             t_next = times[step_idx + 1]
@@ -623,11 +640,10 @@ class KFoldECSI(BaseStructureModule):
 
             if self.align_x_0_hat_to_x_t:
                 # Rigidly align x_0_hat to x_t before centering.
-                x_0_hat = rigid_align(x_0_hat, x_noisy, mask)
+                x_0_hat = custom_rigid_align(x_0_hat, x_noisy, mask)
 
-            if self.align_mode == NO_ALIGN:
-                # version 1: center x_0_hat after alignment.
-                x_0_hat = do_centering(x_0_hat, mask)
+            # Centering the predicted x_0_hat
+            x_0_hat = do_centering(x_0_hat, mask=mask)
 
             # Update x_t
             x_t = self._update_step(x_noisy, x_0_hat, x_T, mask, t, t_next)
@@ -666,7 +682,7 @@ class KFoldECSI(BaseStructureModule):
         x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, L]
 
         # Apply random augmentation to prior coords
-        x_T = self.random_augmentation(x_T, mask=x_T_mask)
+        x_T = self.random_augmentation(x_T, mask=x_T_mask, centering=False)
         return x_T
 
     def inference_step(
@@ -901,7 +917,7 @@ class KFoldECSI(BaseStructureModule):
                 c_update = alpha_tm - alpha_t * c_skip
                 x_upd = c_skip * x_t + c_update * x_0_hat
             else:
-                # ECSI ODE update (no skip connection)
+                # ECSI ODE update
                 alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
                 gamma_t, gamma_tm = C.gamma(t), C.gamma(t_next)
                 z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_T) / _clip(gamma_t)

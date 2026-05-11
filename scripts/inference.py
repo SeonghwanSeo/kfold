@@ -1,4 +1,5 @@
 import argparse
+import json
 import logging
 import pathlib
 import time
@@ -254,14 +255,30 @@ def main():
         assert ref_struct.num_atoms == f_input.atom.pad_mask.sum().item()
         num_atoms = ref_struct.num_atoms
         sample_coords_arr = sample_coords[:, :num_atoms, :].cpu().numpy()
+        plddt_arr = model_out["plddt"].cpu().numpy()  # [num_samples, Natom]
 
         for i in range(args.num_samples):
-            save_path = save_dir / f"{name}_seed-{seed}_sample-{i}.cif"
+            sample_name = f"{name}_seed-{seed}_sample-{i}"
+            # Save structure in mmCIF format
+            save_path = save_dir / f"{sample_name}.cif"
             coords_i = sample_coords_arr[i]
+            plddt_i = plddt_arr[i]
             try:
-                writer.write_new_coords(ref_struct, coords_i, save_path)
+                writer.write_new_coords(ref_struct, save_path, coords_i, plddt_i)
             except Exception as e:
                 logger.error(f"Failed to save sample {i} for {name}: {e}")
+                continue
+
+            # Save confidence scores in JSON format
+            confidence_path = save_dir / f"{sample_name}_confidences.json"
+            avg_plddt = model_out["plddt"][i, :num_atoms].mean().item()
+            avg_pde = model_out["pde"][i, :num_atoms, :num_atoms].mean().item()
+            confidence_data = {
+                "plddt": avg_plddt,
+                "pde": avg_pde,
+            }
+            with open(confidence_path, "w") as f:
+                json.dump(confidence_data, f, indent=4)
 
         if args.save_trajectory:
             # Save trajectory

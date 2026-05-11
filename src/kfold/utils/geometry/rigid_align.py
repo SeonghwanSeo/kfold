@@ -614,7 +614,8 @@ def weighted_rigid_align_torch(
         weights = weights * mask
 
     # Compute rigid transformation under autocast for numerical stability
-    with torch.autocast(device_type=coords.device.type, dtype=torch.float32):
+    with torch.autocast(device_type=coords.device.type, enabled=False):
+        coords, target = coords.float(), target.float()
         if anchor_index is not None:
             # Select anchor points if provided
             _coords = coords[..., anchor_index, :]

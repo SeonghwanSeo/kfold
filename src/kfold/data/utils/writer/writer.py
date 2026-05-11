@@ -17,15 +17,16 @@ class KFoldWriter:
     def write_new_coords(
         cls,
         struct: RefStructure,
-        coordinates: np.ndarray,
         filename: str | Path,
+        coordinates: np.ndarray,
+        confidences: np.ndarray | None = None,
     ):
         if coordinates.shape != (struct.num_atoms, 3):
             raise ValueError(
                 f"Coordinates shape {coordinates.shape} does not match shape "
                 f"({struct.num_atoms}, 3)"
             )
-        struct = struct.copy_with_new_coords(coordinates)
+        struct = struct.copy_with_new_coords(coordinates, confidences)
         cls.write(struct, filename, save_apo=False)
 
     @classmethod

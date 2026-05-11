@@ -35,7 +35,7 @@ class PriorSamplerConfig:
         coordinates (only centering).
     """
 
-    chain_translation_scale: float = 50.0  # Angstrom
+    chain_translation_scale: float = 48.0  # Angstrom
     use_ot_permutation: bool = False
     align_for_permutation: bool = False
 
@@ -43,7 +43,7 @@ class PriorSamplerConfig:
     def inference_mode(cls) -> Self:
         """Get a PriorSampler config configured for inference."""
         return cls(
-            chain_translation_scale=50.0,
+            chain_translation_scale=48.0,
             use_ot_permutation=False,
         )
 

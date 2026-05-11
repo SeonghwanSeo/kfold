@@ -3,6 +3,7 @@ _yaml_: "default.yaml"
 
 name: ???
 weight: 1.0 # sample weight for this dataset
+is_distillation: ???
 
 # Random seed for data augmentation.
 seed: null

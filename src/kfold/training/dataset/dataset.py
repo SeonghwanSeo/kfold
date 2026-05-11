@@ -141,6 +141,8 @@ class TrainingDatasetConfig(DatasetConfig):
     ----------
     weight : float
         Weight of the dataset during training.
+    is_distillation : bool
+        Whether the dataset is not experimental data.
     sampler : BaseSampler.Config | None
         Sampler configuration for generating samples.
     cropper : BaseCropper.Config | None
@@ -148,6 +150,7 @@ class TrainingDatasetConfig(DatasetConfig):
     """
 
     weight: float = 1.0
+    is_distillation: bool = False
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
 
@@ -881,6 +884,23 @@ class TrainingDataset(SafeLoadingDataset):
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
+
+    def get_item(self, metadata: Metadata, **kwargs) -> tuple[FoldingInput, StructInfo]:
+        """Get the folding input for the given sample."""
+        f_input, struct_info = super().get_item(metadata, **kwargs)
+
+        # Add flag for confidence model training
+        train_confidence = False
+        if not getattr(self.config, "is_distillation", False):
+            metadata = struct_info["structure"].metadata
+            if metadata.source == "rcsb" and metadata.exp is not None:
+                # Train the confidence head only on experimental structures.
+                resolution = metadata.exp.resolution
+                if resolution is not None and 0.1 <= resolution <= 4.0:
+                    train_confidence = True
+
+        struct_info["train_confidence_head"] = train_confidence
+        return f_input, struct_info
 
 
 class MultiTrainingDataset(torch.utils.data.Dataset):

@@ -2,6 +2,7 @@
 _yaml_: "default-train.yaml"
 
 name: rcsb-train
+is_distillation: false
 
 sampler:
   _registry_: "data_sampler"
