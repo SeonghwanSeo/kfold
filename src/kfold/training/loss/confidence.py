@@ -10,8 +10,13 @@ import torch
 
 from kfold.data.types import FoldingInput, RefStructure
 from kfold.training.utils.permutation_alignment.align_train import get_aligned_true_coords
-from kfold.utils.kernels.cdist import cdist as kernel_cdist
 from kfold.utils.torch import expand_dim, gather_dim, get_one_hot_from_bins
+
+
+def cdist(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Compute pairwise distances between two sets of points."""
+    d = x[..., :, None, :] - y[..., None, :, :]  # [*, Lx, Ly, 3]
+    return d.norm(dim=-1)
 
 
 def get_aligned_gt_structure(
@@ -53,7 +58,7 @@ def get_aligned_gt_structure(
 
         # Check if we should compute aligned GT coords for this sample
         if align_only_for_confidence_loss and not struct_info_i["train_confidence_head"]:
-            _x_gt_i = f_input_i.atom.label_coords
+            _x_gt_i = f_input_i.atom.label_coords.clone()  # [Natom, 3]
             _mask_i = f_input_i.atom.resolved_mask
             _x_gt_i[~_mask_i] = torch.nan  # Mask unresolved atoms to NaN
             x_gt[b_i] = expand_dim(_x_gt_i, num_sample, dim=0)
@@ -125,13 +130,11 @@ class PDELoss(torch.nn.Module):
         min_dist: float = 0.0,
         max_dist: float = 32.0,
         num_bins: int = 64,
-        use_kernel: bool = False,
     ) -> None:
         super().__init__()
         self.min_dist: float = min_dist
         self.max_dist: float = max_dist
         self.num_bins: int = num_bins
-        self.use_kernel: bool = use_kernel
 
         bin_size: float = (max_dist - min_dist) / num_bins
         bins = torch.linspace(
@@ -217,8 +220,8 @@ class PDELoss(torch.nn.Module):
         _x_gt = gather_dim(x_gt, 2, repr_idx[..., None])  # [B, N, L, 3]
 
         # Compute pairwise distances
-        d_pred = kernel_cdist(_x_pred, _x_pred)  # [B, N, L, L]
-        d_gt = kernel_cdist(_x_gt, _x_gt)  # [B, N, L, L]
+        d_pred = cdist(_x_pred, _x_pred)  # [B, N, L, L]
+        d_gt = cdist(_x_gt, _x_gt)  # [B, N, L, L]
 
         # Compute distance error
         e = torch.abs(d_gt - d_pred)  # [B, N, L, L]
@@ -326,8 +329,8 @@ class PLDDTLoss(torch.nn.Module):
         x_gt_rep = gather_dim(x_gt, 2, repr_idx[..., None])  # [B, N, Nrepr, 3]
 
         # === Compute pairwise distances (All Atoms -> Rep Atoms) ===
-        d_pred = kernel_cdist(x_pred, x_pred_rep)  # [B, N, Nall, Nrepr]
-        d_gt = kernel_cdist(x_gt, x_gt_rep)  # [B, N, Nall, Nrepr]
+        d_pred = cdist(x_pred, x_pred_rep)  # [B, N, Nall, Nrepr]
+        d_gt = cdist(x_gt, x_gt_rep)  # [B, N, Nall, Nrepr]
 
         # Protein: cutoff 15A, Nucleic Acids: cutoff 30A
         is_prot = f_input.token.is_protein[:, None, None, :]
