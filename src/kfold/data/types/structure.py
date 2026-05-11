@@ -244,11 +244,28 @@ class Chain:
             If the atom is not found.
         """
         # Get the range of atom indices for the given residue
-        atom_range = self.residue.iter_residue_atoms(residue_index)
-        for atom_index in atom_range:
-            if self.atom.name[atom_index] == atom_name:
-                return atom_index
-        raise KeyError(f"Atom '{atom_name}' not found in residue index {residue_index}.")
+        res_i = residue_index - 1  # convert to 0-based index
+        st = self.residue.atom_starts[res_i]
+        end = self.residue.atom_ends[res_i]
+
+        # Assuming self.atom.name is a numpy array
+        res_atoms = self.atom.name[st:end]
+
+        # Vectorized strip and upper (Note: these return new arrays)
+        # Only use this if the slice is very large
+        mask = np.char.upper(res_atoms) == atom_name.upper()
+        indices = np.where(mask)[0]
+        if indices.size == 0:
+            raise KeyError(
+                f"Atom '{atom_name}' not found in residue index {residue_index}: "
+                f"{res_atoms}"
+            )
+        elif indices.size > 1:
+            raise KeyError(
+                f"Multiple atoms '{atom_name}' found in residue index {residue_index}: "
+                f"{res_atoms}"
+            )
+        return int(st + indices[0])
 
     def iter_residue_atoms(self, residue_index: int) -> range:
         """Get the range of atom indices for a given residue index."""
@@ -374,24 +391,22 @@ class ResidueLayout:
     @cached_property
     def atom_starts(self) -> np.ndarray:
         """Starting indices of atoms for each residue."""
-        dtype = np.int64
-        return np.concatenate(
-            [np.array([0], dtype=dtype), np.cumsum(self.num_atoms, dtype=dtype)[:-1]]
-        )
+        return np.concatenate([np.array([0], dtype=np.int64), self.atom_ends[:-1]])
+
+    @cached_property
+    def atom_ends(self) -> np.ndarray:
+        """Ending indices of atoms for each residue."""
+        return np.cumsum(self.num_atoms, dtype=np.int64)
 
     def get_atom_slice(self, residue_index: int) -> slice:
         """Get slice objects for each residue's atoms."""
         res_i = residue_index - 1  # convert to 0-based index
-        start = self.atom_starts[res_i]
-        end = start + self.num_atoms[res_i]
-        return slice(start, end)
+        return slice(self.atom_starts[res_i], self.atom_ends[res_i])
 
     def iter_residue_atoms(self, residue_index: int) -> range:
         """Get the range of atom indices for a given residue index."""
-        # residue_index: 1-based index
-        start = self.atom_starts[residue_index - 1]
-        end = start + self.num_atoms[residue_index - 1]
-        return range(start, end)
+        res_i = residue_index - 1  # convert to 0-based index
+        return range(self.atom_starts[res_i], self.atom_ends[res_i])
 
     @classmethod
     def get_default_dtype(cls) -> dict[str, type | np.dtype]:
@@ -682,11 +697,18 @@ class RefStructure:
         """Create a deep copy of the RefStructure."""
         return copy.deepcopy(self)
 
-    def copy_with_new_coords(self, coords: np.ndarray) -> Self:
+    def copy_with_new_coords(
+        self,
+        coords: np.ndarray,
+        confidence: np.ndarray | None = None,
+    ) -> Self:
         """Create a deep copy of the RefStructure."""
         assert coords.shape == (self.num_atoms, 3), (
             f"Invalid coords shape: {coords.shape}, expected ({self.num_atoms}, 3)"
         )
+        if confidence is None:
+            confidence = np.full((self.num_atoms,), fill_value=0, dtype=np.float32)
+
         new_chains = []
         atom_start = 0
         for chain in self.chains:
@@ -694,6 +716,7 @@ class RefStructure:
             new_atom = dataclasses.replace(
                 chain.atom,
                 coords=coords[atom_start:atom_end],
+                bfactor=confidence[atom_start:atom_end],
             )
             new_chain = chain.copy_with(deepcopy=False, atom=new_atom)
             new_chains.append(new_chain)

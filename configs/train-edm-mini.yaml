@@ -5,9 +5,6 @@ model:
   structure_encoder:
     path: /mnt/parallel_storage/share/plm_weights/unitok/unitok-dips.pt
   trunk:
-    channel_seq_emb: 1152
-    channel_seq_attn: 648
-    channel_struct_emb: 1536
     plm_module:
       blocks_per_ckpt: null
     pairformer:
@@ -15,6 +12,8 @@ model:
       blocks_per_ckpt: 4
   score_model:
     blocks_per_ckpt: 24
+  confidence_head:
+    blocks_per_ckpt: null
 
 train:
   _yaml_: "train/stage_1.yaml"
@@ -23,4 +22,4 @@ train:
   loss:
     diffusion_loss:
       smooth_lddt_loss:
-        chunk_size: 16
+        chunk_size: 8

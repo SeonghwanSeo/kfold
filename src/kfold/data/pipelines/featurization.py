@@ -8,12 +8,12 @@ from kfold.data.types.model_input import (
     AtomTensor,
     BondTensor,
     ChainTensor,
+    ConstraintTensor,
     FoldingInput,
     SequenceTensor,
     TokenTensor,
 )
 from kfold.data.types.tokenized import TokenizedStructure
-from kfold.data.utils import frame_utils
 
 
 class InputFeaturizer:
@@ -55,11 +55,11 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     # =========================================== #
     # ========== Extract raw features =========== #
     # =========================================== #
-
     chain_data = struct.chain
     token_data = struct.token
     atom_data = struct.atom
     bond_data = struct.bond
+    constraint_data = struct.constraint
 
     # === Chain-level features ===
     num_chains = chain_data.length
@@ -83,8 +83,7 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
         token_dict["num_atoms"],
     )  # [Nallatom,]
     atom_dict = {
-        k: v[atom_to_token, atom_in_token_idx]  # Fancy indexing - no loop!
-        for k, v in atom_data.to_dict().items()
+        k: v[atom_to_token, atom_in_token_idx] for k, v in atom_data.to_dict().items()
     }
     atom_dict["label_coords"] = np.nan_to_num(atom_dict["label_coords"], nan=0.0)
     atom_dict["apo_coords"] = np.nan_to_num(atom_dict["apo_coords"], nan=0.0)
@@ -97,6 +96,11 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     bond_dict: dict[str, np.ndarray] = bond_data.to_dict()
     bond_dict["pad_mask"] = np.ones((num_bonds,), dtype=np.bool_)
 
+    # === Constraint-level features ===
+    num_constraints = constraint_data.length
+    constraint_dict: dict[str, np.ndarray] = constraint_data.to_dict()
+    constraint_dict["pad_mask"] = np.ones((num_constraints,), dtype=np.bool_)
+
     # ============================================
     # ======= Compute additional features ========
     # ============================================
@@ -107,32 +111,18 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     token_dict["res_type"] = residue_one_hot[token_dict["res_type"]]
 
     # NOTE: Token index should be remapped due cropping
-    token_dict["org_token_index"] = token_dict["token_index"]
-    token_dict["token_index"] = np.arange(num_tokens, dtype=np.int64)
-    token_dict["pocket_contact_type"] = np.full(
-        (num_tokens,), C.constraint.ConstraintType.UNSPECIFIED, dtype=np.int64
-    )
-
-    # Add frame information
-    token_dict["frames_index"] = np.zeros((num_tokens, 3), dtype=np.int64)
-    token_dict["frames_mask"] = np.zeros((num_tokens,), dtype=np.bool_)
-    for tidx in range(num_tokens):
-        if not token_dict["is_standard"][tidx]:
-            # Skip non-standard residues
-            continue
-        res_name = C.residue.residue_id_to_name[int(token_data.res_type[tidx])]
-        restype_atoms = C.atom.RESIDUE_ATOMS[res_name]
-        n, ca, c = C.atom.RESIDUE_FRAME_ATOMS[res_name]
-        frame_atom_index = [restype_atoms.index(a) for a in (n, ca, c)]
-        is_frame = atom_data.resolved_mask[tidx, frame_atom_index].all()
-        token_dict["frames_index"][tidx] = frame_atom_index
-        token_dict["frames_mask"][tidx] = is_frame
+    org_token_index = token_dict["token_index"]
+    max_token_index = org_token_index.max()
+    token_index = np.arange(num_tokens, dtype=np.int64)
+    token_dict["org_token_index"] = org_token_index
+    token_dict["token_index"] = token_index
+    token_map = np.full((max_token_index + 2), -1, dtype=np.int64)
+    token_map[org_token_index] = token_index
 
     # Map atom indices to global atom indices
     atom_offset = np.cumsum(token_dict["num_atoms"]) - token_dict["num_atoms"]
     token_dict["center_index"] = token_dict["center_index"] + atom_offset
     token_dict["repr_index"] = token_dict["repr_index"] + atom_offset
-    token_dict["frames_index"] = token_dict["frames_index"] + atom_offset[:, np.newaxis]
 
     # Add center/representative atom coordinates
     token_dict["repr_coords"] = atom_dict["label_coords"][token_dict["repr_index"]]
@@ -141,6 +131,20 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     # Masks indicating whether the center/repr atoms are resolved
     token_dict["center_mask"] = atom_dict["resolved_mask"][token_dict["center_index"]]
     token_dict["repr_mask"] = atom_dict["resolved_mask"][token_dict["repr_index"]]
+
+    # Map frame indices to global atom indices
+    # NOTE: If token_index=-1, atom_index is also set to -1.
+    raw_frame_token_index = token_dict.pop("frame_token_index")
+    raw_frame_token_index[raw_frame_token_index > max_token_index] = -1
+    frame_token_index = token_map[raw_frame_token_index]
+    frame_token_index[raw_frame_token_index == -1] = -1
+    frame_atom_index = token_dict.pop("frame_atom_index")
+    frame_mask = (frame_token_index != -1).all(-1) & (frame_atom_index != -1).all(-1)
+    # Map to global atom indices, set to 0 for invalid indices
+    frame_index = atom_offset[frame_token_index] + frame_atom_index
+    frame_index[~frame_mask] = 0
+    token_dict["frame_index"] = frame_index
+    token_dict["frame_mask"] = frame_mask
 
     # === Atom-level features ===
     # Make one-hot vector for atom types
@@ -169,25 +173,20 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     # === Bond-level features ===
     # TODO: Remap token indices to cropped tokens
     # e.g., [0, 3, 4, 5, 8] -> [0, 1, 2, 3, 4]
-    original_token_index = token_dict["org_token_index"]
-    token_index = token_dict["token_index"]
-    token_map = np.zeros(original_token_index.max() + 1, dtype=np.int64) - 1
-    token_map[original_token_index] = token_index
-    bond_dict["token_index"] = token_map[bond_dict["token_index"]]
+    bond_token_index = token_map[bond_dict["token_index"]]
+    assert (bond_token_index != -1).all(), (
+        "Bond token indices contain invalid values after mapping."
+    )
+    bond_dict["token_index"] = bond_token_index
 
     # Indicate whether the bond atoms belong to polymer or ligand
     token1, token2 = bond_dict["token_index"][:, 0], bond_dict["token_index"][:, 1]
-
-    is_ligand1 = token_dict["chain_type"][token1] == C.chain.ChainType.LIGAND
-    is_ligand2 = token_dict["chain_type"][token2] == C.chain.ChainType.LIGAND
+    is_ligand1 = token_dict["chain_type"][token1] == C.chain.ChainType.LIGAND.value
+    is_ligand2 = token_dict["chain_type"][token2] == C.chain.ChainType.LIGAND.value
     bond_dict["is_polymer_ligand"] = ((~is_ligand1) & is_ligand2) | (
         is_ligand1 & (~is_ligand2)
     )
     bond_dict["is_ligand_ligand"] = is_ligand1 & is_ligand2
-
-    # Remove unused feature before converting to tensors
-    token_dict.pop("is_standard")
-    token_dict.pop("num_atoms")
 
     # === Sequence-level features ===
     seq_dict = struct.sequence.to_dict()
@@ -202,8 +201,17 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
         **{k: torch.from_numpy(v) for k, v in seq_dict.items()}
     )
 
-    # === Before returning, compute ligand frames inplace === #
-    frame_utils.compute_ligand_frames_inplace(token_layout, atom_layout, chain_layout)
+    # === Constraint-level features ===
+    # TODO: Remap token indices to cropped tokens
+    # e.g., [0, 3, 4, 5, 8] -> [0, 1, 2, 3, 4]
+    constraint_token_index = token_map[constraint_dict["token_index"]]
+    assert (constraint_token_index != -1).all(), (
+        "Constraint token indices contain invalid values after mapping."
+    )
+    constraint_dict["token_index"] = constraint_token_index
+    constraint_layout = ConstraintTensor(
+        **{k: torch.from_numpy(v) for k, v in constraint_dict.items()}
+    )
 
     folding_input = FoldingInput(
         chain=chain_layout,
@@ -211,5 +219,6 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
         atom=atom_layout,
         bond=bond_layout,
         sequence=sequence_layout,
+        constraint=constraint_layout,
     )
     return folding_input

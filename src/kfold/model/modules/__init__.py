@@ -5,6 +5,5 @@ from . import (  # noqa
     trunk,
     score_model,
     structure_module,
-    distogram_head,
-    confidence_head,
+    prediction_head,
 )

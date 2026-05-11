@@ -66,6 +66,7 @@ from kfold.data.pipelines import (
     featurization,
     prior_sampling,
     sequence_masking,
+    structure_cleaning,
     tokenization,
 )
 from kfold.data.types.ccd import CCD
@@ -73,12 +74,13 @@ from kfold.data.types.metadata import Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.misc import hash_seq
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
 from .sampler import BaseSampler, Sample
-from .utils import pre_crop, symmetry
+from .utils import constraint_sampling, pre_crop
 
 
 # === Helper functions === #
@@ -139,6 +141,8 @@ class TrainingDatasetConfig(DatasetConfig):
     ----------
     weight : float
         Weight of the dataset during training.
+    is_distillation : bool
+        Whether the dataset is not experimental data.
     sampler : BaseSampler.Config | None
         Sampler configuration for generating samples.
     cropper : BaseCropper.Config | None
@@ -146,6 +150,7 @@ class TrainingDatasetConfig(DatasetConfig):
     """
 
     weight: float = 1.0
+    is_distillation: bool = False
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
 
@@ -155,7 +160,7 @@ class ValidationDatasetConfig(DatasetConfig): ...
 
 
 # Type alias
-SymmetryInfo = dict
+StructInfo = dict
 
 
 def next_multiple(n: int, divisor: int) -> int:
@@ -173,8 +178,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         tokenizer: tokenization.Tokenizer,
         featurizer: featurization.InputFeaturizer,
         prior_sampler: prior_sampling.PriorSampler | None,
-        return_symmetry: bool,
-        return_structure: bool,
         safe_load: bool,
         train: bool,
     ) -> None:
@@ -191,10 +194,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             Featurizer for featurizing tokenized structures.
         prior_sampler: prior_sampling.PriorSampler | None
             Prior sampler for sampling prior coordinates (optional).
-        return_symmetry : bool
-            Whether to return symmetry information.
-        return_structure : bool
-            Whether to return the original tokenized structure.
         safe_load : bool
             Whether to retry loading on failure.
         """
@@ -203,8 +202,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.name: str = config.name
         self.data_root: Path = Path(config.data_path)
         self.seed: int | None = config.seed
-        self.return_symmetry: bool = return_symmetry
-        self.return_structure: bool = return_structure
         self.safe_load: bool = safe_load
         self.train: bool = train
 
@@ -348,7 +345,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         )
         # Copy metadata (to update cluster_id if needed)
         ref_struct.metadata = metadata.copy()
+
         return ref_struct
+
+    def cleanup_structure(self, ref_struct: RefStructure) -> RefStructure:
+        """Clean up the reference structure as needed."""
+        # NOTE: Right now, we simply filter out the unrealistic bonds.
+        return structure_cleaning.clean_up_ref_structure(ref_struct)
 
     def load_apo_structure(
         self,
@@ -425,15 +428,13 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             max_sequence_tokens=num_sequence_tokens,
         )
 
-    def __getitem__(self, index: int) -> tuple[FoldingInput, SymmetryInfo]:
+    def __getitem__(self, index: int) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index, with retry on failure."""
         return self.get_item_safe(index, num_trials=100)
 
     def get_item_safe(
-        self,
-        index: int,
-        num_trials: int = 100,
-    ) -> tuple[FoldingInput, SymmetryInfo]:
+        self, index: int, num_trials: int = 100
+    ) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index, with retry on failure."""
         if self.seed is not None:
             rng = np.random.default_rng(self.seed + index % (1 << 15))
@@ -460,11 +461,7 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
 
-    def get_item(
-        self,
-        metadata: Metadata,
-        **kwargs,
-    ) -> tuple[FoldingInput, SymmetryInfo]:
+    def get_item(self, metadata: Metadata, **kwargs) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given sample."""
         metadata_id: str = metadata.id
 
@@ -477,6 +474,9 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
         # Load structure (NOTE: ref_struct.metadata == metadata)
         ref_struct: RefStructure = self.load_ref_structure(metadata)
+
+        # Clean up structure
+        ref_struct = self.cleanup_structure(ref_struct)
 
         # Sub-complex structure extraction for large complex (>20 chains)
         # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
@@ -504,21 +504,14 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         # Featurization
         f_input = self.featurize(cropped)
 
-        struct_info = {}
-        struct_info["id"] = metadata_id
-        if self.return_structure:
-            struct_info["structure"] = ref_struct
-        if self.return_symmetry:
-            # WARN: symmetry computation should be done before padding
-            struct_info["symmetry"] = symmetry.get_symmetries(
-                ref_struct,
-                self.ccd,
-                max_chain_permutations=1000,
-                rng=rng,
-            )
-
-        # Pad the folding input to multiple of 64 for LocalAtomAttention
+        # Pad the features.
         f_input = self.pad_input(f_input)
+
+        struct_info = {
+            "id": metadata_id,
+            "structure": ref_struct,
+            "symmetry": get_symmetries(ref_struct, self.ccd),
+        }
 
         return f_input, struct_info
 
@@ -711,8 +704,6 @@ class TrainingDataset(SafeLoadingDataset):
             tokenizer,
             featurizer,
             prior_sampler,
-            return_symmetry=False,
-            return_structure=False,
             safe_load=safe_load,
             train=True,
         )
@@ -756,6 +747,16 @@ class TrainingDataset(SafeLoadingDataset):
             mask_prob=0.9, mask_ratio=0.15
         )
 
+        # Constraint sampling for training
+        # TODO: configurize the parameters
+        self.max_constraints = 5
+        self.constraint_sampling = constraint_sampling.ConstraintSampling(
+            min_dist=3.0,
+            max_dist=22.0,
+            prob_constraint=0.05,
+            max_constraints=self.max_constraints,
+        )
+
         self.setup()
 
     def sanity_check(self) -> None:
@@ -788,8 +789,12 @@ class TrainingDataset(SafeLoadingDataset):
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
+        # Sample the constraints
+        constraints = self.constraint_sampling(ref_struct, rng)
         # Tokenize the structure
-        tok_struct = super().tokenize(ref_struct, rng)
+        tok_struct = self.tokenizer(
+            ref_struct, rng, num_priors=self.num_priors, constraints=constraints
+        )
         # Then apply sequence masking for training
         self.seq_masking(tok_struct, rng)
         return tok_struct
@@ -840,6 +845,7 @@ class TrainingDataset(SafeLoadingDataset):
         max_chains = self.max_chains
         max_tokens = self.max_tokens
         max_sequence_tokens = self.max_sequence_tokens
+        num_constraints = self.max_constraints
         max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
         return f_input.pad(
@@ -848,14 +854,13 @@ class TrainingDataset(SafeLoadingDataset):
             max_atoms=max_atoms,
             max_bonds=max_bonds,
             max_sequence_tokens=max_sequence_tokens,
+            max_constraints=num_constraints,
         )
 
     @override
     def get_item_safe(
-        self,
-        index: int,
-        num_trials: int = 10,
-    ) -> tuple[FoldingInput, SymmetryInfo]:
+        self, index: int, num_trials: int = 100
+    ) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index, with retry on failure.
         NOTE: This is overridden to use `self.samples` instead of `self.metadatas`.
         """
@@ -879,6 +884,23 @@ class TrainingDataset(SafeLoadingDataset):
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
+
+    def get_item(self, metadata: Metadata, **kwargs) -> tuple[FoldingInput, StructInfo]:
+        """Get the folding input for the given sample."""
+        f_input, struct_info = super().get_item(metadata, **kwargs)
+
+        # Add flag for confidence model training
+        train_confidence = False
+        if not getattr(self.config, "is_distillation", False):
+            metadata = struct_info["structure"].metadata
+            if metadata.source == "rcsb" and metadata.exp is not None:
+                # Train the confidence head only on experimental structures.
+                resolution = metadata.exp.resolution
+                if resolution is not None and 0.1 <= resolution <= 4.0:
+                    train_confidence = True
+
+        struct_info["train_confidence_head"] = train_confidence
+        return f_input, struct_info
 
 
 class MultiTrainingDataset(torch.utils.data.Dataset):
@@ -951,7 +973,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return self.cumulative_sizes[-1]
 
-    def __getitem__(self, index: int) -> tuple[FoldingInput, SymmetryInfo]:
+    def __getitem__(self, index: int) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index."""
         # Find the dataset index
         dataset_idx = np.searchsorted(self.cumulative_sizes, index, side="right")
@@ -988,8 +1010,6 @@ class ValidationDataset(SafeLoadingDataset):
             tokenizer,
             featurizer,
             prior_sampler,
-            return_symmetry=True,
-            return_structure=True,
             safe_load=safe_load,
             train=False,
         )

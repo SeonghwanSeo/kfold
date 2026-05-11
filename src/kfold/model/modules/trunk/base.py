@@ -15,10 +15,10 @@ class BaseTrunk(torch.nn.Module, ABC):
         channel_s: int = 384
         channel_z: int = 128
 
-    def __init__(self, cfg: Config, kernel_config):
+    def __init__(self, cfg: Config, kernel_config: dict | None):
         super().__init__()
         self.cfg = cfg
-        self.kernel_config = kernel_config
+        self.kernel_config: dict = kernel_config or {}
         self.is_compiled: bool = False
 
     def do_compile(self, **kwargs):
@@ -42,7 +42,7 @@ class BaseTrunk(torch.nn.Module, ABC):
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
         See Section 3 Algorithm 1 Main Inference Loop: Line[6-14]
 

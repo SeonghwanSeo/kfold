@@ -5,27 +5,22 @@ model:
   structure_encoder:
     path: /mnt/parallel_storage/share/plm_weights/unitok/unitok-dips.pt
   trunk:
-    channel_seq_emb: 1152
-    channel_seq_attn: 648
-    channel_struct_emb: 1536
     plm_module:
-      use_qk_norm: true
-      blocks_per_ckpt: 4
+      num_blocks: 1
     pairformer:
-      use_qk_norm: true
-      blocks_per_ckpt: 24
-    num_register_tokens: 8
+      num_blocks: 4
   score_model:
-    blocks_per_ckpt: null
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 4
+    atom_decoder_blocks: 1
+  confidence_head:
+    num_blocks: 1
 
 train:
   _yaml_: "train/stage_1.yaml"
-  name: ecsi
-
-  data:
-    max_tokens: 376
+  name: ecsi-debug
 
   loss:
     diffusion_loss:
       smooth_lddt_loss:
-        chunk_size: 8
+        chunk_size: 6

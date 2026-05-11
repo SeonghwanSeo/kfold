@@ -94,22 +94,16 @@ def parse_cif(
     if out_path.exists():
         return SUCCESS
 
-    # Read CIF file
-    if "cif" in cif_path.name:
-        block: gemmi.cif.Block = gemmi.cif.read(str(cif_path))[0]
-    else:
-        block: gemmi.cif.Block = gemmi.cif.read_file(str(cif_path))[0]
-
     # Get metadata
     name = cif_path.name.split(".")[0]
     model = "AlphaFold2"
-    metadata = cif_factory.prepare_metadata_from_synthetic_data(name, block, model)
+    metadata = cif_factory.prepare_metadata_from_synthetic_data(name, model)
     metadata.id = out_path.stem
 
     # Prepare gemmi structure
-    raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
-        block, expand_assembly=False, clean_up=True
-    )
+    raw_struct: gemmi.Structure = gemmi.read_structure(str(cif_path))
+    cif_factory.clean_up_gemmi_structure(raw_struct)
+
     # Filter by residue count
     if not check_residue_count_cutoff(raw_struct, split):
         return FILTERED

@@ -227,9 +227,9 @@ def parse_cif(
             return RESOLUTION_FILTERED, []
 
     # Prepare gemmi Structure
-    raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
-        block, clean_up=True, expand_assembly=True
-    )
+    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
+    cif_factory.expand_first_assembly(raw_struct)
+    cif_factory.clean_up_gemmi_structure(raw_struct)
 
     # Filter by chain count
     if not check_chain_count_cutoff(

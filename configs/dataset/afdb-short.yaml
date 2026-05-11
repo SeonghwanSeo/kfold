@@ -1,6 +1,7 @@
 _yaml_: "default-train.yaml"
 
 name: afdb-short
+is_distillation: true
 
 sampler: null
 

@@ -35,19 +35,6 @@ class BaseStructureModule(ABC):
         """Get the noise schedule for diffusion sampling. Shape: (num_steps,)."""
 
     # === For model training === #
-    def forward_train(
-        self,
-        x_t: torch.Tensor,
-        t: torch.Tensor,
-        f_input: FoldingInput,
-        s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
-        **kwargs,
-    ) -> torch.Tensor:
-        """Forward pass for training. Returns denoised coordinates."""
-        raise NotImplementedError("forward_train must be implemented in subclass")
-
     def training_step(
         self,
         f_input: FoldingInput,
@@ -60,6 +47,19 @@ class BaseStructureModule(ABC):
         See Section 5 of EDM paper.
         """
         raise NotImplementedError("training_step must be implemented in subclass")
+
+    def _forward_train(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        s_trunk: torch.Tensor,
+        z_trunk: torch.Tensor,
+        **kwargs,
+    ) -> torch.Tensor:
+        """Forward pass for training. Returns denoised coordinates."""
+        raise NotImplementedError("forward_train must be implemented in subclass")
 
     @abstractmethod
     def sample_noise_level(self, shape: tuple, device: torch.device) -> torch.Tensor:

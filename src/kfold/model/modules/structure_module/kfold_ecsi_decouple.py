@@ -421,7 +421,7 @@ class KFoldECSI_Decoupling(base_ecsi.KFoldECSI):
 
         sample_out: dict[str, torch.Tensor] = {}
         sample_out["init_coordinates"] = x_T
-        sample_out["sample_coordinates"] = x_t
+        sample_out["coordinates"] = x_t
         if return_traj:
             sample_out["traj"] = torch.stack(traj, dim=-3)  # (B, N, num_steps, Natom, 3)
 

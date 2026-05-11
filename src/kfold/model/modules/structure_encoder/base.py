@@ -14,6 +14,10 @@ class BaseStructureEncoder(torch.nn.Module, ABC):
         super().__init__()
         self.cfg = cfg
 
+    @property
+    @abstractmethod
+    def d_model(self) -> int: ...
+
     @abstractmethod
     def forward(self, f_input: FoldingInput) -> torch.Tensor:
         """Forward pass of structure representation module.

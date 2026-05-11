@@ -2,7 +2,7 @@ import enum
 from collections.abc import Sequence
 from functools import lru_cache
 
-from . import residue
+from .chain import ChainType
 from .residue import ResidueName
 
 # === Constants lists === #
@@ -108,6 +108,7 @@ class AtomName(enum.StrEnum):
 
 
 atom_name_to_index: dict[AtomName, int] = {atom: idx for idx, atom in enumerate(AtomName)}
+num_atom_types: int = len(AtomName)
 
 
 residue_atoms: dict[str, tuple[str, ...]] = {
@@ -157,11 +158,10 @@ residue_atoms: dict[str, tuple[str, ...]] = {
     "DN": ("P",  "OP1", "OP2", "O5'", "C5'", "C4'", "O4'", "C3'", "O3'", "C2'", "C1'")
 }  # fmt: skip
 
-RESIDUE_FRAME_ATOMS: dict[ResidueName, tuple[AtomName, AtomName, AtomName]] = {
-    res: (AtomName.N, AtomName.CA, AtomName.C) for res in residue.PROTEIN_RESIDUES
-} | {
-    res: (AtomName.C1_PRIME, AtomName.C3_PRIME, AtomName.C4_PRIME)
-    for res in residue.RNA_RESIDUES + residue.DNA_RESIDUES
+CHAIN_FRAME_ATOMS: dict[ChainType, tuple[AtomName, AtomName, AtomName]] = {
+    ChainType.PROTEIN: (AtomName.N, AtomName.CA, AtomName.C),
+    ChainType.RNA: (AtomName.C1_PRIME, AtomName.C3_PRIME, AtomName.C4_PRIME),
+    ChainType.DNA: (AtomName.C1_PRIME, AtomName.C3_PRIME, AtomName.C4_PRIME),
 }
 
 

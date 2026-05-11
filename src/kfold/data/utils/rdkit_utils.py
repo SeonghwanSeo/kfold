@@ -28,7 +28,7 @@ def get_periodic_table() -> Chem.PeriodicTable:
 def assign_atom_names(mol: Chem.Mol, max_name_length: int = 4) -> None:
     element_counts: dict[str, int] = defaultdict(int)
     for atom in mol.GetAtoms():
-        elem = atom.GetSymbol().upper()
+        elem = atom.GetSymbol()
         count = element_counts.get(elem, 0) + 1
         element_counts[elem] = count
         atom_name = f"{elem}{count}"
@@ -89,6 +89,7 @@ def compute_rdkit_conformer(
 def compute_molecule_symmetry(
     mol: Chem.Mol,
     is_leaving_atom: list[bool] | None = None,
+    max_symmetries: int = 1000,
 ) -> tuple[list[int], ...]:
     """Compute permutational symmetries for the given molecule."""
     if is_leaving_atom is None:
@@ -107,7 +108,17 @@ def compute_molecule_symmetry(
             permutations.append(list(perm))
     if len(permutations) <= 1:
         return ()  # No symmetry found
-    return tuple(permutations)
+
+    # Ensure the original order is the first permutation
+    org_perm = list(range(len(permutations[0])))
+    if org_perm != permutations[0]:
+        # Ensure the original order is the first permutation
+        if org_perm in permutations:
+            permutations.remove(org_perm)
+        permutations.insert(0, org_perm)
+        permutations = permutations
+
+    return tuple(permutations[:max_symmetries])
 
 
 def get_conformer(mol: Chem.Mol, conf_id: int = 0) -> Chem.Conformer | None:

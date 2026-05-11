@@ -188,28 +188,16 @@ def parse_cif(
         ):
             return RESOLUTION_FILTERED
 
+    # Prepare gemmi structure
+    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
+    cif_factory.expand_first_assembly(raw_struct)
+    cif_factory.clean_up_gemmi_structure(raw_struct)
+
     # Filter by residue count per chain
     # NOTE: Only applied when invalid chains are disallowed since
     # partial structures may skew the residue count.
-    if not check_residue_count_cutoff(
-        cif_factory.prepare_gemmi_structure(block, expand_assembly=True, clean_up=True),
-        data_filter.max_residues,
-    ):
+    if not check_residue_count_cutoff(raw_struct, data_filter.max_residues):
         return RESIDUE_COUNT_FILTERED
-
-    # Prepare gemmi structure
-    raw_struct: gemmi.Structure = cif_factory.prepare_gemmi_structure(
-        block, expand_assembly=True, clean_up=True
-    )
-    print(raw_struct)
-    print(raw_struct.entities)
-    for entity in raw_struct.entities:
-        print(
-            f"Entity {entity.name}: type={entity.entity_type}, "
-            f"polymer_type={entity.polymer_type}, "
-            f"num_subchains={len(entity.subchains)}, "
-            f"num_residues={len(entity.full_sequence)}"
-        )
 
     # Filter by chain count
     if not check_chain_count_cutoff(raw_struct, data_filter.max_chains):

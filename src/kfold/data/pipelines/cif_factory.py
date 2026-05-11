@@ -77,10 +77,9 @@ def parse_cif(
 
     # --- Gemmi structure processing ---
 
-    # Prepare gemmi structure
-    raw_struct: gemmi.Structure = prepare_gemmi_structure(
-        block, expand_assembly=True, clean_up=True
-    )
+    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
+    expand_first_assembly(raw_struct)
+    clean_up_gemmi_structure(raw_struct)
 
     # --- Reference structure preparation ---
 
@@ -191,7 +190,6 @@ def prepare_metadata_from_rcsb(
 
 def prepare_metadata_from_synthetic_data(
     name: str,
-    block: gemmi.cif.Block,
     model: str,
 ) -> Metadata:
     """Parse metadata from CIF block."""
@@ -246,22 +244,6 @@ def check_method(
 # ==================================================
 # Helper functions for gemmi structure validation
 # ==================================================
-def prepare_gemmi_structure(
-    block: gemmi.cif.Block,
-    expand_assembly: bool = True,
-    clean_up: bool = True,
-) -> gemmi.Structure:
-    """Prepare gemmi Structure object from CIF block."""
-    raw_struct: gemmi.Structure = gemmi.make_structure_from_block(block)
-    if expand_assembly:
-        expand_first_assembly(raw_struct)
-    if clean_up:
-        clean_up_gemmi_structure(
-            raw_struct, map_mse_to_met=True, canonicalize_arginines=True
-        )
-    return raw_struct
-
-
 def expand_first_assembly(raw_struct: gemmi.Structure) -> None:
     """Expand the first assembly in the gemmi Structure object in-place.
 

@@ -50,7 +50,7 @@ class WeightedMSELoss(torch.nn.Module):
     def forward(
         self,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         f_input: FoldingInput,
         compute_chain_com_loss: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
@@ -60,7 +60,7 @@ class WeightedMSELoss(torch.nn.Module):
         ----------
         x_pred : torch.Tensor
             Predicted coordinates from the model. Shape (B, N, L, 3).
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
@@ -75,7 +75,7 @@ class WeightedMSELoss(torch.nn.Module):
             Computed chain COM loss if compute_chain_com_loss is True, else None.
         """
         assert x_pred.ndim == 4  # [B, N, L, 3]
-        assert x_pred.shape == x_true.shape
+        assert x_pred.shape == x_gt.shape
 
         w = self.get_atom_weights(f_input)  # [B, L]
         mask = f_input.atom.resolved_mask  # [B, L]
@@ -84,15 +84,15 @@ class WeightedMSELoss(torch.nn.Module):
         # See Section 3.7.1 Equation 2
         if self.align_true_to_pred:
             with torch.no_grad():
-                x_true = weighted_rigid_align(
-                    coords=x_true.float(),  # [B, N, L, 3]
-                    target=x_pred.float(),  # [B, N, L, 3]
+                x_gt = weighted_rigid_align(
+                    coords=x_gt,  # [B, N, L, 3]
+                    target=x_pred,  # [B, N, L, 3]
                     weights=w.unsqueeze(-2),  # [B, 1, L]
                     mask=mask.unsqueeze(-2),  # [B, 1, L]
                 )  # [B, N, L, 3]
 
         # Compute weighted mse loss
-        mse_loss = self.compute_weighted_mse_loss(x_pred, x_true, w, mask)  # [B, N]
+        mse_loss = self.compute_weighted_mse_loss(x_pred, x_gt, w, mask)  # [B, N]
 
         if compute_chain_com_loss:
             # Additional chain COM loss term
@@ -100,7 +100,7 @@ class WeightedMSELoss(torch.nn.Module):
             t_i = f_input.atom.token_index  # [B, Latom]
             asym_id = f_input.token.asym_id[b_i, t_i]  # [B, Latom]
             com_loss = self.compute_chain_com_loss(
-                x_pred, x_true, w, mask, asym_id, f_input.num_chains
+                x_pred, x_gt, w, mask, asym_id, f_input.num_chains
             )
             return mse_loss, com_loss
         else:
@@ -123,7 +123,7 @@ class WeightedMSELoss(torch.nn.Module):
     def compute_weighted_mse_loss(
         self,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         weights: torch.Tensor,
         mask: torch.Tensor,
     ) -> torch.Tensor:
@@ -133,7 +133,7 @@ class WeightedMSELoss(torch.nn.Module):
         ----------
         x_pred : torch.Tensor
             Predicted coordinates of shape [B, N, L, 3].
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Aligned ground-truth coordinates of shape [B, N, L, 3].
         weights : torch.Tensor
             Modality weights per atom of shape [B, L].
@@ -150,14 +150,14 @@ class WeightedMSELoss(torch.nn.Module):
 
         # Compute weighted MSE loss
         mask_sum = m.sum(-1).clamp(min=1.0)  # [B, 1]
-        d_sq = ((x_pred - x_true) ** 2).sum(-1)  # [B, N, L]
+        d_sq = ((x_pred - x_gt) ** 2).sum(-1)  # [B, N, L]
         mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
         return mse_loss
 
     def compute_chain_com_loss(
         self,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         weights: torch.Tensor,
         mask: torch.Tensor,
         asym_id: torch.Tensor,
@@ -169,7 +169,7 @@ class WeightedMSELoss(torch.nn.Module):
         ----------
         x_pred : torch.Tensor
             Predicted coordinates of shape [B, N, L, 3].
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Aligned ground-truth coordinates of shape [B, N, L, 3].
         weights : torch.Tensor
             Modality weights per atom of shape [B, L].
@@ -208,17 +208,17 @@ class WeightedMSELoss(torch.nn.Module):
             return com
 
         com_pred = compute_chain_com(x_pred)  # [B, N, Nchain, 3]
-        com_true = compute_chain_com(x_true)  # [B, N, Nchain, 3]
+        com_gt = compute_chain_com(x_gt)  # [B, N, Nchain, 3]
 
         # Broadcast each chain's centroid to its atoms.
         # This aims to weight the COM error by the number of atoms in each chain.
         gather_index = chain_id[:, None, :, None].expand_as(x_pred)
         com_pred = torch.gather(com_pred, 2, gather_index)
-        com_true = torch.gather(com_true, 2, gather_index)
+        com_gt = torch.gather(com_gt, 2, gather_index)
 
         m, w = mask[:, None, :], weights[:, None, :]  # [B, 1, L]
         mask_sum = m.sum(-1).clamp(min=1.0)  # [B, 1]
-        com_sq = ((com_pred - com_true) ** 2).sum(-1)
+        com_sq = ((com_pred - com_gt) ** 2).sum(-1)
         com_loss = (w * com_sq).sum(-1) / mask_sum  # [B, N]
         return com_loss
 
@@ -227,7 +227,7 @@ class BondLoss(torch.nn.Module):
     def forward(
         self,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         f_input: FoldingInput,
         eps: float = 1e-8,
     ) -> torch.Tensor:
@@ -238,7 +238,7 @@ class BondLoss(torch.nn.Module):
         ----------
         x_pred : torch.Tensor
             Predicted pair-wise distance from the model. Shape (B, N, L, 3).
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Ground truth pair-wise distance. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
@@ -276,11 +276,11 @@ class BondLoss(torch.nn.Module):
         dst_pred = x_pred[batch_indices, :, dst, :].transpose(1, 2)  # [B, N, Nbond, 3]
         d_pred = torch.sqrt((src_pred - dst_pred).pow(2).sum(-1) + eps)  # [B, N, Nbond]
 
-        src_true = x_true[batch_indices, :, src, :].transpose(1, 2)  # [B, N, Nbond, 3]
-        dst_true = x_true[batch_indices, :, dst, :].transpose(1, 2)  # [B, N, Nbond, 3]
-        d_true = torch.sqrt((src_true - dst_true).pow(2).sum(-1) + eps)  # [B, N, Nbond]
+        src_gt = x_gt[batch_indices, :, src, :].transpose(1, 2)  # [B, N, Nbond, 3]
+        dst_gt = x_gt[batch_indices, :, dst, :].transpose(1, 2)  # [B, N, Nbond, 3]
+        d_gt = torch.sqrt((src_gt - dst_gt).pow(2).sum(-1) + eps)  # [B, N, Nbond]
 
-        diff = (d_pred - d_true) ** 2  # [B, N, Nbond]
+        diff = (d_pred - d_gt) ** 2  # [B, N, Nbond]
 
         # Mask non-polymer-ligand bonds and invalid bonds
         mask = is_polymer_ligand_bond  # [B, Nbond]
@@ -339,7 +339,7 @@ class SmoothLDDTLoss(torch.nn.Module):
     def forward(
         self,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute weighted alignment.
@@ -348,7 +348,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         ----------
         x_pred : torch.Tensor
             Predicted coordinates from the model. Shape (B, N, L, 3).
-        x_true : torch.Tensor
+        x_gt : torch.Tensor
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
@@ -381,7 +381,7 @@ class SmoothLDDTLoss(torch.nn.Module):
             losses.extend(
                 self._forward_single(
                     x_pred[b_i],  # [N, L, 3]
-                    x_true[b_i],  # [N, L, 3]
+                    x_gt[b_i],  # [N, L, 3]
                     mask[b_i],  # [L]
                     is_nucleotide[b_i],  # [L]
                     repr_atom_index[b_i],  # [L]
@@ -394,7 +394,7 @@ class SmoothLDDTLoss(torch.nn.Module):
     def _forward_single(
         self,
         x_pred: torch.Tensor,
-        x_true: torch.Tensor,
+        x_gt: torch.Tensor,
         mask: torch.Tensor,
         is_nucleotide: torch.Tensor,
         repr_atom_index: torch.Tensor,
@@ -402,7 +402,7 @@ class SmoothLDDTLoss(torch.nn.Module):
     ) -> list[torch.Tensor]:
         N, L, _ = x_pred.shape
         # NOTE: pairwise distances of ground truth coordinates are shared across N.
-        x_true = x_true[0]
+        x_gt = x_gt[0]
 
         # Create pair mask
         pair_mask = mask[None, :] & mask[:, None]  # [L, L]
@@ -413,20 +413,20 @@ class SmoothLDDTLoss(torch.nn.Module):
 
         if self.repr_atom_only:
             # Extract representative atom indices
-            d_true = _cdist(x_true[repr_atom_index], x_true)  # [Lrepr, L]
+            d_gt = _cdist(x_gt[repr_atom_index], x_gt)  # [Lrepr, L]
             pair_mask = pair_mask[repr_atom_index]  # [L, L] -> [Lrepr, L]
             is_nucleotide = is_nucleotide[repr_atom_index]  # [L] -> [Lrepr]
         else:
-            d_true = _cdist(x_true, x_true)  # [L, L]
+            d_gt = _cdist(x_gt, x_gt)  # [L, L]
 
         # Mask out invalid distances
-        pair_mask &= ((d_true < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
-            (d_true < self.cutoff) & (~is_nucleotide[..., None])
+        pair_mask &= ((d_gt < self.cutoff_nucleic_acid) & is_nucleotide[..., None]) | (
+            (d_gt < self.cutoff) & (~is_nucleotide[..., None])
         )  # [L, L] or [Lrepr, L]
 
         loss_fn = partial(
             self._chunk_forward,
-            d_true=d_true,  # [L, L] or [Lrepr, L]
+            d_gt=d_gt,  # [L, L] or [Lrepr, L]
             pair_mask=pair_mask,  # [L, L] or [Lrepr, L]
             repr_atom_index=repr_atom_index if self.repr_atom_only else None,
             use_kernel=self.use_kernel,
@@ -451,7 +451,7 @@ class SmoothLDDTLoss(torch.nn.Module):
     @staticmethod
     def _chunk_forward(
         x_pred: torch.Tensor,
-        d_true: torch.Tensor,
+        d_gt: torch.Tensor,
         pair_mask: torch.Tensor,
         repr_atom_index: torch.Tensor | None = None,
         use_kernel: bool = False,
@@ -470,7 +470,7 @@ class SmoothLDDTLoss(torch.nn.Module):
         # Line 2 (outside function): compute true pairwise distances
 
         # Line 3
-        d_diff = torch.abs(d_pred - d_true[None, ...])  # [N, L, L]
+        d_diff = torch.abs(d_pred - d_gt[None, ...])  # [N, L, L]
 
         # Line 4
         lddt_score = (1 / 4) * (

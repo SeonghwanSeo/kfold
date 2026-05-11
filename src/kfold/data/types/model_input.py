@@ -86,7 +86,6 @@ class ChainTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
-        # value: PAD_IDX means padding
         pad_values = {
             "chain_type": -1,
             "entity_id": -1,
@@ -160,14 +159,16 @@ class TokenTensor(TensorLayout):
         Center indices of shape [Ntoken,], Cα
     repr_index: torch.Tensor (long)
         Representative atom indices of shape [Ntoken,], Cβ
-    frames_index: torch.Tensor (long)
+    frame_index: torch.Tensor (long)
         Frame indices of shape [Ntoken, 3].
-    frames_mask: torch.Tensor (bool)
+    frame_mask: torch.Tensor (bool)
         Boolean tensor of shape [Ntoken,], indicating whether token's frame is resolved.
     pad_mask: torch.Tensor (bool)
         Mask tensor of shape [Ntoken,], indicating valid tokens.
-    pocket_contact_type: torch.Tensor (long)
-        Pocket contact types of shape [Ntoken,], indicating pocket contact information.
+    is_standard: torch.Tensor (bool)
+        Boolean tensor of shape [Ntoken,], indicating whether the token is standard.
+    num_atoms: torch.Tensor (long)
+        Number of atoms per token of shape [Ntoken,].
 
     # For model training
     center_coords: torch.Tensor (float32)
@@ -191,10 +192,11 @@ class TokenTensor(TensorLayout):
     seq_token_index: torch.Tensor  # [Ntoken,], long
     center_index: torch.Tensor  # [Ntoken,], long
     repr_index: torch.Tensor  # [Ntoken,], long
-    frames_index: torch.Tensor  # [Ntoken, 3], long
-    frames_mask: torch.Tensor  # [Ntoken,], bool
+    frame_index: torch.Tensor  # [Ntoken, 3], long
+    frame_mask: torch.Tensor  # [Ntoken,], bool
     pad_mask: torch.Tensor  # [Ntoken,], bool
-    pocket_contact_type: torch.Tensor  # [Ntoken,], bool
+    is_standard: torch.Tensor  # [Ntoken,], bool
+    num_atoms: torch.Tensor  # [Ntoken,], long
 
     # For model training
     center_coords: torch.Tensor  # [Ntoken, 3], float32
@@ -235,16 +237,12 @@ class TokenTensor(TensorLayout):
             self.center_index, name="center_index", dtype=torch.long, shape=shape
         )
         check_tensor(
-            self.frames_index, name="frames_index", dtype=torch.long, shape=(*shape, 3)
+            self.frame_index, name="frame_index", dtype=torch.long, shape=(*shape, 3)
         )
         check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.frames_mask, name="frames_mask", dtype=torch.bool, shape=shape)
-        check_tensor(
-            self.pocket_contact_type,
-            name="pocket_contact_type",
-            dtype=torch.long,
-            shape=shape,
-        )
+        check_tensor(self.frame_mask, name="frame_mask", dtype=torch.bool, shape=shape)
+        check_tensor(self.is_standard, name="is_standard", dtype=torch.bool, shape=shape)
+        check_tensor(self.num_atoms, name="num_atoms", dtype=torch.long, shape=shape)
 
         # For model training
         check_tensor(
@@ -290,8 +288,9 @@ class TokenTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
-        # value: PAD_IDX means padding
         pad_values = {
+            "is_standard": False,
+            "num_atoms": -1,
             "token_index": -1,
             "org_token_index": -1,
             "seq_token_index": -1,
@@ -303,10 +302,9 @@ class TokenTensor(TensorLayout):
             "residue_index": -1,
             "repr_index": -1,
             "center_index": -1,
-            "frames_index": -1,
-            "frames_mask": False,
+            "frame_index": -1,
+            "frame_mask": False,
             "pad_mask": False,
-            "pocket_contact_type": 0,
             # For model training
             "center_coords": 0.0,
             "repr_coords": 0.0,
@@ -334,6 +332,8 @@ class AtomTensor(TensorLayout):
 
     Attributes
     ----------
+    atom_type: np.ndarray (int)
+        Atom types of shape [Natom,], indicating the type of each atom.
     ref_atom_name_chars: torch.Tensor (float32)
         Encoded atom name of shape [Natom, 4, 64].
         One-hot vector
@@ -350,6 +350,8 @@ class AtomTensor(TensorLayout):
         this reference conformer.
     token_index: torch.Tensor (long)
         Token indices mapping atoms to their parent tokens of shape [Natom,].
+    atom_index: torch.Tensor (long)
+        Atom indices of shape [Natom,]. Starting from 0 for each chain.
     apo_coords: torch.Tensor (float32)
         Apo (unbound) state coordinates of shape [Natom, 3],
     prior_coords: torch.Tensor (float32)
@@ -368,6 +370,7 @@ class AtomTensor(TensorLayout):
         Boolean mask of shape [Natom,] indicating atoms to be resolved.
     """
 
+    atom_type: torch.Tensor  # [Natom,], long
     ref_atom_name_chars: torch.Tensor  # [Natom, 4, 64], float32
     ref_element: torch.Tensor  # [Natom, 128], float32
     ref_charge: torch.Tensor  # [Natom,], float32
@@ -375,6 +378,7 @@ class AtomTensor(TensorLayout):
     ref_mask: torch.Tensor  # [Natom,], bool
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
+    atom_index: torch.Tensor  # [Natom,], long
     apo_coords: torch.Tensor  # [Natom, 3], float32
     prior_coords: torch.Tensor  # [Natom, Nprior, 3], float32
     apo_mask: torch.Tensor  # [Natom,], bool
@@ -395,6 +399,7 @@ class AtomTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
+        check_tensor(self.atom_type, name="atom_type", dtype=torch.long, shape=shape)
         check_tensor(
             self.ref_atom_name_chars,
             name="ref_atom_name_chars",
@@ -411,6 +416,7 @@ class AtomTensor(TensorLayout):
             self.ref_space_uid, name="ref_space_uid", dtype=torch.long, shape=shape
         )
         check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
+        check_tensor(self.atom_index, name="atom_index", dtype=torch.long, shape=shape)
         check_tensor(
             self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, 3)
         )
@@ -443,15 +449,16 @@ class AtomTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
-        # value: PAD_IDX means padding
         pad_values = {
-            "ref_atom_name_chars": 0.0,  # max value for atom_name encoding
-            "ref_element": 0.0,  # max value for element encoding
+            "atom_type": 0,
+            "ref_atom_name_chars": 0.0,
+            "ref_element": 0.0,
             "ref_charge": 0.0,
             "ref_pos": 0.0,
             "ref_mask": False,
             "ref_space_uid": -1,
             "token_index": 0,
+            "atom_index": 0,
             "prior_coords": 0.0,
             "apo_coords": 0.0,
             "apo_mask": False,
@@ -683,7 +690,6 @@ class SequenceTensor(TensorLayout):
         total_length = pad_shape[0]  # single dimension
         L = len(self)
 
-        # value: PAD_IDX means padding
         pad_values = {
             "chain_type": -1,
             "entity_id": -1,
@@ -708,6 +714,99 @@ class SequenceTensor(TensorLayout):
 
 
 @dataclasses.dataclass(frozen=True)
+class ConstraintTensor(TensorLayout):
+    """Constraint-level layout information for molecular structures.
+
+    Shape: [Nconstraint, ...] or [B, Nconstraint, ...]
+
+    Attributes
+    ----------
+    asym_id: torch.Tensor
+        Chain asym id pairs in the constraint of shape [Nconstraint, 2].
+    token_index: torch.Tensor
+        Token index pairs in the constraint of shape [Nconstraint, 2].
+    atom_index: torch.Tensor
+        Atom index pairs in the constraint of shape [Nconstraint, 2].
+        For polymer, the atom index is the center atom index of the token,
+        i.e., Protein: 1(CA), RNA: 11(C1'), DNA: 10(C1'), Ligand: 0.
+    lower_bound: torch.Tensor
+        Minimum distance constraints of shape [Nconstraint,],
+        -1 indicates no minimum distance constraint.
+    upper_bound: torch.Tensor
+        Maximum distance constraints of shape [Nconstraint,],
+        -1 indicates no maximum distance constraint.
+    pad_mask: torch.Tensor
+        Boolean mask of shape [Nconstraint,], indicating valid (non-padded) constraints.
+    """
+
+    asym_id: torch.Tensor  # [Nconstraint, 2], long
+    token_index: torch.Tensor  # [Nconstraint, 2], long
+    atom_index: torch.Tensor  # [Nconstraint, 2], long
+    lower_bound: torch.Tensor  # [Nconstraint,], float32
+    upper_bound: torch.Tensor  # [Nconstraint,], float32
+    pad_mask: torch.Tensor  # [Nconstraint,], bool
+
+    @property
+    def layout_shape(self) -> tuple[int, ...]:
+        return self.pad_mask.shape
+
+    @property
+    def ndim_unbatched(self) -> int:
+        """[ClassVar] The number of dimensions of the layout."""
+        return 1
+
+    def __post_init__(self):
+        shape = self.layout_shape
+        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=(*shape, 2))
+        check_tensor(
+            self.token_index, name="token_index", dtype=torch.long, shape=(*shape, 2)
+        )
+        check_tensor(
+            self.atom_index, name="atom_index", dtype=torch.long, shape=(*shape, 2)
+        )
+        check_tensor(
+            self.lower_bound, name="lower_bound", dtype=torch.float32, shape=shape
+        )
+        check_tensor(
+            self.upper_bound, name="upper_bound", dtype=torch.float32, shape=shape
+        )
+        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
+
+    def pad(self, *pad_shape: int) -> Self:
+        """Pad the layout to the total length."""
+        assert not self.is_batched, "Padding batched layout is not supported."
+        self._check_pad_input(pad_shape)
+
+        if pad_shape == self.layout_shape:
+            return self
+
+        total_length = pad_shape[0]  # single dimension
+        L = len(self)
+
+        # NOTE: (SeoSeongwhan) (0, 0) means self-looping, which doesn't exist in data.
+        # Therefore, we can simply remove an element (0, 0) in model forward safely.
+        pad_values = {
+            "asym_id": 0,
+            "token_index": 0,
+            "atom_index": 0,
+            "lower_bound": -1.0,
+            "upper_bound": -1.0,
+            "pad_mask": False,
+        }
+
+        fields = {}
+        for name, tensor in self.to_dict().items():
+            pad_value = pad_values[name]
+            to_shape = (total_length,) + tensor.shape[1:]
+            padded_tensor = torch.full(
+                to_shape, pad_value, dtype=tensor.dtype, device=tensor.device
+            )
+            padded_tensor[:L] = tensor
+            fields[name] = padded_tensor
+        return self.from_dict(fields)
+
+
+@dataclasses.dataclass(frozen=True)
 class FoldingInput:
     """Input of co-folding"""
 
@@ -716,6 +815,7 @@ class FoldingInput:
     atom: AtomTensor
     bond: BondTensor
     sequence: SequenceTensor
+    constraint: ConstraintTensor
 
     def __post_init__(self):
         # check all layouts are on the same device
@@ -725,6 +825,9 @@ class FoldingInput:
         assert self.bond.device == device, "bond layout must be on the same device."
         assert self.sequence.device == device, (
             "sequence layout must be on the same device."
+        )
+        assert self.constraint.device == device, (
+            "constraint layout must be on the same device."
         )
 
         # check all layouts are non-batched or batched
@@ -740,6 +843,9 @@ class FoldingInput:
         )
         assert self.sequence.is_batched == is_batched, (
             "sequence layout must be batched or non-batched as same as chain layout."
+        )
+        assert self.constraint.is_batched == is_batched, (
+            "constraint layout must be batched or non-batched as same as chain layout."
         )
 
         # check the batch size if batched
@@ -757,6 +863,9 @@ class FoldingInput:
             assert self.sequence.batch_size == batch_size, (
                 "sequence layout must have the same batch size as chain layout."
             )
+            assert self.constraint.batch_size == batch_size, (
+                "constraint layout must have the same batch size as chain layout."
+            )
 
     def to(self, device: str | torch.device) -> Self:
         return self.__class__(
@@ -765,6 +874,7 @@ class FoldingInput:
             atom=self.atom.to(device),
             bond=self.bond.to(device),
             sequence=self.sequence.to(device),
+            constraint=self.constraint.to(device),
         )
 
     @property
@@ -799,6 +909,10 @@ class FoldingInput:
     @property
     def num_sequence_tokens(self) -> int:
         return len(self.sequence)
+
+    @property
+    def num_constraints(self) -> int:
+        return len(self.constraint)
 
     @classmethod
     def from_list(cls, data_list: list[Self], pad_to_max: bool = False) -> Self:
@@ -835,9 +949,18 @@ class FoldingInput:
             max_tokens = max(len(data.token) for data in data_list)
             max_atoms = max(len(data.atom) for data in data_list)
             max_bonds = max(len(data.bond) for data in data_list)
+            max_sequence_tokens = max(len(data.sequence) for data in data_list)
+            max_constraints = max(len(data.constraint) for data in data_list)
             # Pad each layout to the maximum length
             data_list = [
-                data.pad(max_tokens, max_chains, max_atoms, max_bonds)
+                data.pad(
+                    max_tokens,
+                    max_chains,
+                    max_atoms,
+                    max_bonds,
+                    max_sequence_tokens,
+                    max_constraints,
+                )
                 for data in data_list
             ]
         else:
@@ -847,6 +970,7 @@ class FoldingInput:
             ref_num_atoms = len(data_list[0].atom)
             ref_num_bonds = len(data_list[0].bond)
             ref_num_sequence = len(data_list[0].sequence)
+            ref_num_constraints = len(data_list[0].constraint)
             for data in data_list:
                 assert len(data.chain) == ref_num_chains, (
                     "All chain layouts must have the same length."
@@ -863,12 +987,18 @@ class FoldingInput:
                 assert len(data.sequence) == ref_num_sequence, (
                     "All sequence layouts must have the same length."
                 )
+                assert len(data.constraint) == ref_num_constraints, (
+                    "All constraint layouts must have the same length."
+                )
 
         batched_chain = ChainTensor.from_list([data.chain for data in data_list])
         batched_token = TokenTensor.from_list([data.token for data in data_list])
         batched_atom = AtomTensor.from_list([data.atom for data in data_list])
         batched_bond = BondTensor.from_list([data.bond for data in data_list])
         batched_sequence = SequenceTensor.from_list([data.sequence for data in data_list])
+        batched_constraint = ConstraintTensor.from_list(
+            [data.constraint for data in data_list]
+        )
 
         return cls(
             chain=batched_chain,
@@ -876,6 +1006,7 @@ class FoldingInput:
             atom=batched_atom,
             bond=batched_bond,
             sequence=batched_sequence,
+            constraint=batched_constraint,
         )
 
     def to_list(self, deepcopy: bool = False) -> list[Self]:
@@ -884,6 +1015,7 @@ class FoldingInput:
         atom_list = self.atom.to_list(deepcopy)
         bond_list = self.bond.to_list(deepcopy)
         sequence_list = self.sequence.to_list(deepcopy)
+        constraint_list = self.constraint.to_list(deepcopy)
 
         data_list: list[Self] = []
         batch_size = self.batch_size
@@ -895,6 +1027,7 @@ class FoldingInput:
                     atom=atom_list[b],
                     bond=bond_list[b],
                     sequence=sequence_list[b],
+                    constraint=constraint_list[b],
                 )
             )
         return data_list
@@ -917,6 +1050,7 @@ class FoldingInput:
                 f"  num_tokens: {num_tokens}\n"
                 f"  num_atoms: {num_atoms}\n"
                 f"  num_bonds: {num_bonds}\n"
+                f"  num_constraints: {len(self.constraint)}\n"
                 f"  device: {device}\n"
                 f")"
             )
@@ -927,6 +1061,7 @@ class FoldingInput:
                 f"  num_tokens: {num_tokens}\n"
                 f"  num_atoms: {num_atoms}\n"
                 f"  num_bonds: {num_bonds}\n"
+                f"  num_constraints: {len(self.constraint)}\n"
                 f"  device: {device}\n"
                 f")"
             )
@@ -964,12 +1099,14 @@ class FoldingInput:
         max_chains = max_tokens // 4  # min 4 tokens per chain
         max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
+        max_constraint = max_tokens  # max 1 constraints per token
 
         return self.pad(
             max_chains=max_chains,
             max_tokens=max_tokens,
             max_atoms=max_atoms,
             max_bonds=max_bonds,
+            max_constraints=max_constraint,
         )
 
     def pad(
@@ -979,6 +1116,7 @@ class FoldingInput:
         max_atoms: int | None = None,
         max_bonds: int | None = None,
         max_sequence_tokens: int | None = None,
+        max_constraints: int | None = None,
     ) -> Self:
         """Pad all layouts to the specified maximum sizes."""
         max_tokens = max_tokens if max_tokens is not None else len(self.token)
@@ -988,6 +1126,9 @@ class FoldingInput:
         max_sequence_tokens = (
             max_sequence_tokens if max_sequence_tokens is not None else len(self.sequence)
         )
+        max_constraints = (
+            max_constraints if max_constraints is not None else len(self.constraint)
+        )
 
         return self.__class__(
             chain=self.chain.pad(max_chains),
@@ -995,4 +1136,5 @@ class FoldingInput:
             atom=self.atom.pad(max_atoms),
             bond=self.bond.pad(max_bonds),
             sequence=self.sequence.pad(max_sequence_tokens),
+            constraint=self.constraint.pad(max_constraints),
         )

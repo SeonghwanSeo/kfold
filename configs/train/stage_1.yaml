@@ -1,4 +1,4 @@
-_yaml_: "structure-only.yaml"
+_yaml_: "full.yaml"
 
 seed: 1
 
@@ -37,10 +37,10 @@ data:
       weight: 0.030
       data_path: /cache/wykim_lab/kfold_data/v260310/dataset/huMAP/
 
-    - _yaml_: "../dataset/synthetic-complex.yaml"
-      name: natural_ab
-      weight: 0.010
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/NatAb/
+    # - _yaml_: "../dataset/synthetic-complex.yaml"
+    #   name: natural_ab
+    #   weight: 0.010
+    #   data_path: /cache/wykim_lab/kfold_data/v260310/dataset/NatAb/
 
     - _yaml_: "../dataset/synthetic-complex.yaml"
       name: encore

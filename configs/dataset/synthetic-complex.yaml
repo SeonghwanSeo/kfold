@@ -1,4 +1,5 @@
 _yaml_: "default-train.yaml"
+is_distillation: true
 
 sampler: null
 

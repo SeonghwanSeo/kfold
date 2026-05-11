@@ -3,8 +3,7 @@ _registry_: "main_module"
 _class_: KFold
 
 # kernel settings
-kernel:
-  cuequivariance: true
+kernel_cuequivariance: true
 
 # Module configurations
 input_embedder:
@@ -27,4 +26,11 @@ score_model:
   channel_coords: 6
 
 distogram_head:
-  _yaml_: "module/distogram_head/af3.yaml"
+  _yaml_: "module/prediction_head/distogram_head.yaml"
+
+confidence_head:
+  _yaml_: "module/prediction_head/confidence_head.yaml"
+
+# Training preconditioning
+diffusion_conditioning_drop_rate: 0.2
+confidence_conditioning_drop_rate: 0.2

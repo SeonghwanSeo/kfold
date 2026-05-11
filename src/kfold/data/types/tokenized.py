@@ -184,6 +184,10 @@ class TokenArray(PlainLayout[np.ndarray]):
         Center atom index of shape [L,], used for center calculations.
     repr_index: np.ndarray (int)
         Representative atom index of shape [L,], used for distogram calculations.
+    frame_token_index: np.ndarray (int)
+        Frame token indices of shape [L, 3], used for frame calculations.
+    frame_atom_index: np.ndarray (int)
+        Frame atom indices of shape [L, 3], used for frame calculations.
 
     Cached Properties
     -----------------
@@ -209,6 +213,8 @@ class TokenArray(PlainLayout[np.ndarray]):
     seq_token_index: np.ndarray  # [L,], int
     center_index: np.ndarray  # [L,], int
     repr_index: np.ndarray  # [L,], int
+    frame_token_index: np.ndarray  # [L, 3], int
+    frame_atom_index: np.ndarray  # [L, 3], int
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
@@ -227,8 +233,23 @@ class TokenArray(PlainLayout[np.ndarray]):
         check_array(
             self.residue_index, name="residue_index", dtype=np.integer, shape=shape
         )
+        check_array(
+            self.seq_token_index, name="seq_token_index", dtype=np.integer, shape=shape
+        )
         check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
         check_array(self.repr_index, name="repr_index", dtype=np.integer, shape=shape)
+        check_array(
+            self.frame_token_index,
+            name="frame_token_index",
+            dtype=np.integer,
+            shape=(*shape, 3),
+        )
+        check_array(
+            self.frame_atom_index,
+            name="frame_atom_index",
+            dtype=np.integer,
+            shape=(*shape, 3),
+        )
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -254,28 +275,30 @@ class TokenArray(PlainLayout[np.ndarray]):
     def get_empty(cls, num_tokens: int) -> Self:
         """Get an empty TokenArray with the specified number of tokens."""
         return cls(
-            token_index=full_minus_one((num_tokens,)),
-            residue_index=full_minus_one((num_tokens,)),
-            seq_token_index=full_minus_one((num_tokens,)),
-            res_type=full_minus_one((num_tokens,)),
             chain_type=full_minus_one((num_tokens,)),
             entity_id=full_minus_one((num_tokens,)),
             asym_id=full_minus_one((num_tokens,)),
             sym_id=full_minus_one((num_tokens,)),
+            res_type=full_minus_one((num_tokens,)),
             num_atoms=full_minus_one((num_tokens,)),
+            is_standard=full_false((num_tokens,)),
+            token_index=full_minus_one((num_tokens,)),
+            residue_index=full_minus_one((num_tokens,)),
+            seq_token_index=full_minus_one((num_tokens,)),
             center_index=full_minus_one((num_tokens,)),
             repr_index=full_minus_one((num_tokens,)),
-            is_standard=full_false((num_tokens,)),
+            frame_token_index=full_minus_one((num_tokens, 3)),
+            frame_atom_index=full_minus_one((num_tokens, 3)),
         )
 
     def validate(self) -> None:
         """Perform sanity checks on the ResidueArray."""
         for field in dataclasses.fields(self):
-            array = getattr(self, field.name)
-            if np.any(array < 0) and field.name not in ["is_standard"]:
-                raise ValueError(
-                    f"TokenArray field '{field.name}' contains negative values."
-                )
+            fname = field.name
+            if fname in ["is_standard", "frame_token_index", "frame_atom_index"]:
+                continue
+            if np.any(getattr(self, fname) < 0):
+                raise ValueError(f"TokenArray field '{fname}' contains negative values.")
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -286,6 +309,10 @@ class AtomArray(PlainLayout[np.ndarray]):
 
     Attributes
     ----------
+    atom_type: np.ndarray (int)
+        Atom types of shape [Ntoken, 24], indicating the type of each atom.
+    atom_index: np.ndarray (int)
+        Atom indices of shape [Ntoken, 24], starting from 0 for each chain.
     ref_atom_name_chars: np.ndarray (int)
         Encoded atom name of shape [Ntoken, 24, 4].
     ref_element: np.ndarray (int)
@@ -314,6 +341,8 @@ class AtomArray(PlainLayout[np.ndarray]):
         Boolean mask of shape [Ntoken, 24,] indicating atoms to be resolved.
     """
 
+    atom_type: np.ndarray  # [Ntoken, 24], int
+    atom_index: np.ndarray  # [Ntoken, 24], int
     ref_atom_name_chars: np.ndarray  # [Ntoken, 24, 4], int
     ref_element: np.ndarray  # [Ntoken, 24], int
     ref_charge: np.ndarray  # [Ntoken, 24], float
@@ -332,6 +361,8 @@ class AtomArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
+        check_array(self.atom_type, name="atom_type", dtype=np.integer, shape=shape)
+        check_array(self.atom_index, name="atom_index", dtype=np.integer, shape=shape)
         check_array(
             self.ref_atom_name_chars,
             name="ref_atom_name_chars",
@@ -368,6 +399,8 @@ class AtomArray(PlainLayout[np.ndarray]):
         num_atoms = C.MAX_NUM_ATOMS_PER_TOKEN
         shape = (num_tokens, num_atoms)
         return cls(
+            atom_type=full_minus_one(shape),
+            atom_index=full_minus_one(shape),
             ref_atom_name_chars=full_minus_one((*shape, 4)),
             ref_element=full_minus_one(shape),
             ref_charge=full_nan(shape),
@@ -432,6 +465,8 @@ class BondArray(PlainLayout[np.ndarray]):
         Token indices of the connecting atoms in the bond of shape [Nbond, 2].
     atom_index: np.ndarray
         Atom indices of the connecting atoms in the bond of shape [Nbond, 2].
+        NOTE: the atom indices are local to each token, starting from 0 for
+        each token.
     bond_type: np.ndarray
         Bond types of shape [Nbond,], indicating the type of each bond.
     """
@@ -593,6 +628,78 @@ class SequenceArray(PlainLayout[np.ndarray]):
                 )
 
 
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class ConstraintArray(PlainLayout[np.ndarray]):
+    """Constraint information.
+
+    Shape: [Nconstraint, ...]
+
+    Attributes
+    ----------
+    asym_id: np.ndarray
+        Chain asym id pairs in the constraint of shape [Nconstraint, 2].
+    token_index: np.ndarray
+        Token index pairs in the constraint of shape [Nconstraint, 2].
+    atom_index: np.ndarray  # [Nconstraint, 2]
+        For polymer, the atom index is the center atom index of the token,
+        i.e., Protein: 1(CA), RNA: 11(C1'), DNA: 10(C1'), Ligand: 0.
+    lower_bound: np.ndarray
+        Minimum distance constraints of shape [Nconstraint,],
+        -1 indicates no minimum distance constraint.
+    upper_bound: np.ndarray
+        Maximum distance constraints of shape [Nconstraint,],
+        -1 indicates no maximum distance constraint.
+    """
+
+    asym_id: np.ndarray  # [Nconstraint, 2], int
+    token_index: np.ndarray  # [Nconstraint, 2], int
+    atom_index: np.ndarray  # [Nconstraint, 2], int
+    lower_bound: np.ndarray  # [Nconstraint,], float
+    upper_bound: np.ndarray  # [Nconstraint,], float
+
+    @cached_property
+    def layout_shape(self) -> tuple[int, ...]:
+        return self.lower_bound.shape
+
+    def __post_init__(self):
+        shape = self.layout_shape
+        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=(*shape, 2))
+        check_array(
+            self.token_index, name="token_index", dtype=np.integer, shape=(*shape, 2)
+        )
+        check_array(
+            self.atom_index, name="atom_index", dtype=np.integer, shape=(*shape, 2)
+        )
+        check_array(self.lower_bound, name="lower_bound", dtype=np.floating, shape=shape)
+        check_array(self.upper_bound, name="upper_bound", dtype=np.floating, shape=shape)
+
+    @classmethod
+    def get_empty(cls, num_constraints: int) -> Self:
+        """Get an empty ConstraintArray with the specified number of constraints."""
+        return cls(
+            asym_id=full_minus_one((num_constraints, 2)),
+            token_index=full_minus_one((num_constraints, 2)),
+            atom_index=full_minus_one((num_constraints, 2)),
+            lower_bound=full_nan((num_constraints,)),
+            upper_bound=full_nan((num_constraints,)),
+        )
+
+    def validate(self) -> None:
+        """Perform sanity checks on the ConstraintArray."""
+        for field in dataclasses.fields(self):
+            array = getattr(self, field.name)
+            if field.name in ["lower_bound", "upper_bound"]:
+                if not np.all(np.isfinite(array)):
+                    raise ValueError(
+                        f"ConstraintArray field '{field.name}' contains invalid values."
+                    )
+            else:
+                if np.any(array < 0):
+                    raise ValueError(
+                        f"ConstraintArray field '{field.name}' contains negative values."
+                    )
+
+
 @dataclasses.dataclass(kw_only=True)
 class TokenizedStructure:
     """Tokenized representation of a molecular structure.
@@ -609,6 +716,8 @@ class TokenizedStructure:
         Bond information.
     sequence: SequenceArray
         Sequence information for sequence embedding.
+    constraint: ConstraintArray
+        Constraint information.
     """
 
     id: str
@@ -616,6 +725,7 @@ class TokenizedStructure:
     token: TokenArray
     atom: AtomArray
     bond: BondArray
+    constraint: ConstraintArray
     sequence: SequenceArray
 
     @property
@@ -638,9 +748,13 @@ class TokenizedStructure:
         """Number of bonds in the structure."""
         return len(self.bond)
 
+    @property
+    def num_constraints(self) -> int:
+        """Number of constraints in the structure."""
+        return len(self.constraint)
+
     def __repr__(self) -> str:
-        """FoldingInput summary representation."""
-        # Summary statistics
+        """String representation of the TokenizedStructure"""
         num_chains = self.num_chains
         num_tokens = self.num_tokens
         num_bonds = len(self.bond)
@@ -660,6 +774,7 @@ class TokenizedStructure:
         num_tokens: int,
         num_bonds: int,
         num_sequence_tokens: int,
+        num_constraints: int = 0,
         num_priors: int = 0,
     ) -> Self:
         """Get an empty TokenizedStructure with the specified sizes."""
@@ -670,6 +785,7 @@ class TokenizedStructure:
             atom=AtomArray.get_empty(num_tokens, num_priors=num_priors),
             bond=BondArray.get_empty(num_bonds),
             sequence=SequenceArray.get_empty(num_sequence_tokens),
+            constraint=ConstraintArray.get_empty(num_constraints),
         )
 
     def validate(self) -> None:
@@ -679,6 +795,7 @@ class TokenizedStructure:
         self.atom.validate()
         self.bond.validate()
         self.sequence.validate()
+        self.constraint.validate()
 
     # === Utility functions === #
     def to(self, *args, **kwargs) -> Self:
@@ -697,6 +814,7 @@ class TokenizedStructure:
                 atom=self.atom,
                 bond=self.bond,
                 sequence=self.sequence,
+                constraint=self.constraint,
             )
 
     def copy_with(self, **kwargs) -> Self:
@@ -744,6 +862,10 @@ class TokenizedStructure:
         token_bonds = self.bond.token_index
         bond_mask = np.isin(token_bonds, token_indices).all(axis=1)
         cropped_bond = self.bond[bond_mask]  # type: ignore
+
+        token_constraints = self.constraint.token_index
+        constraint_mask = np.isin(token_constraints, token_indices).all(axis=1)
+        cropped_constraint = self.constraint[constraint_mask]  # type: ignore
 
         # Remove excluding chains
         token_asym_ids = np.unique(cropped_token.asym_id)
@@ -797,4 +919,5 @@ class TokenizedStructure:
             atom=cropped_atom,
             bond=cropped_bond,
             sequence=cropped_sequence,
+            constraint=cropped_constraint,
         )
