@@ -891,7 +891,7 @@ class TrainingDataset(SafeLoadingDataset):
 
         # Add flag for confidence model training
         train_confidence = False
-        if not getattr(self.config, "is_distillation", False):
+        if not self.config.is_distillation:
             metadata = struct_info["structure"].metadata
             if metadata.source == "rcsb" and metadata.exp is not None:
                 # Train the confidence head only on experimental structures.

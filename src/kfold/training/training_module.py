@@ -465,16 +465,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 logits=model_output["distogram"]["logits"],
                 f_input=f_input,
             )
-            if "logits_aug" in model_output["distogram"]:
-                # Augmented distogram loss
-                distogram_loss_aug, distogram_aug_metrics = self.compute_distogram_loss(
-                    logits=model_output["distogram"]["logits_aug"],
-                    f_input=f_input,
-                )
-                distogram_loss = distogram_loss + distogram_loss_aug
-                distogram_metrics["distogram_loss_aug"] = distogram_aug_metrics[
-                    "distogram_loss"
-                ]
 
             diffusion_out = model_output["diffusion"]
             diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(

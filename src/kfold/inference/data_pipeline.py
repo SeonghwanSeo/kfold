@@ -16,6 +16,7 @@ from kfold.data.pipelines import (
     tokenization,
 )
 from kfold.data.types.ccd import CCD
+from kfold.data.types.constraint import Constraint
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
@@ -184,9 +185,13 @@ class InputDataPipeline:
             apo structure tokenization.
         """
         rng = np.random.default_rng(input.seed)
+        ref_struct: RefStructure
+        tokenized: TokenizedStructure
+        f_input: FoldingInput
+        constraints: list[Constraint]
 
         # Prepare structure from input file
-        ref_struct: RefStructure = self.prepare_structure_from_query(input)
+        ref_struct, constraints = self.read_query(input)
 
         # Populate apo structure
         apo_lookup = self.load_apo_structures(ref_struct, input)
@@ -194,8 +199,8 @@ class InputDataPipeline:
 
         # Tokenize structure
         # NOTE: We feed apo structure tokens during model forward pass (gpu required).
-        tokenized: TokenizedStructure = self.tokenizer(
-            ref_struct, rng, num_priors=self.num_samples
+        tokenized = self.tokenizer(
+            ref_struct, rng, num_priors=self.num_samples, constraints=constraints
         )
 
         # Sample prior coordinates for diffusion bridge modeling
@@ -206,13 +211,13 @@ class InputDataPipeline:
             self.sequence_masking(tokenized, rng)
 
         # Featurize input
-        f_input: FoldingInput = self.featurizer(tokenized)
+        f_input = self.featurizer(tokenized)
 
         # Prepare structure tokenization input for later use in model inference
         struct_tok_input = self.prepare_struct_tok_input(f_input, apo_lookup)
         return ref_struct, tokenized, f_input, struct_tok_input
 
-    def prepare_structure_from_query(self, input: query.Query) -> RefStructure:
+    def read_query(self, input: query.Query) -> tuple[RefStructure, list[Constraint]]:
         """Prepare the reference structure from the input file.
 
         Parameters
@@ -224,6 +229,8 @@ class InputDataPipeline:
         -------
         ref_struct : RefStructure
             The reference structure.
+        constraints : list[Constraint]
+            The list of distance constraints specified in the input.
         """
         chain_metas: list[ChainInfo] = []
         chains: list[Chain] = []
@@ -232,13 +239,12 @@ class InputDataPipeline:
 
         # Collect bonded atoms
         chain_bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
-        for (chain_id1, res_idx1, atom1), (chain_id2, res_idx2, atom2) in input.bonds:
-            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
-            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
-
-        # TODO: add constraints if needed (covalent ligands)
-        # This should be conducted here to property assign
-        # covalent flags during ligand parsing.
+        for constraint in input.constraints:
+            if constraint.type == "bond":
+                chain_id1, res_idx1, atom1 = constraint.atom1
+                chain_id2, res_idx2, atom2 = constraint.atom2
+                chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
+                chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
 
         for entity_id, seq in enumerate(input.sequences, start=1):
             # Prepare chain ids
@@ -298,19 +304,43 @@ class InputDataPipeline:
             chains=chain_metas,
         )
 
-        # Add covalent bond
+        # Add covalent bond and constraint
         connections: list[CovalentConnection] = []
-        for (chain_id1, res_idx1, atom1), (chain_id2, res_idx2, atom2) in input.bonds:
-            asym_id1 = chain_id_to_asym_id[chain_id1]
-            asym_id2 = chain_id_to_asym_id[chain_id2]
-            connections.append(
-                CovalentConnection(
-                    (asym_id1, asym_id2), (res_idx1, res_idx2), (atom1, atom2)
+        constraints: list[Constraint] = []
+        for constraint in input.constraints:
+            if constraint.type == "bond":
+                chain_id1, res_idx1, atom1 = constraint.atom1
+                chain_id2, res_idx2, atom2 = constraint.atom2
+                asym_id1 = chain_id_to_asym_id[chain_id1]
+                asym_id2 = chain_id_to_asym_id[chain_id2]
+                connections.append(
+                    CovalentConnection(
+                        (asym_id1, asym_id2), (res_idx1, res_idx2), (atom1, atom2)
+                    )
                 )
-            )
+            elif constraint.type == "distance":
+                chain_id1, res_idx1, atom1 = constraint.atom1
+                chain_id2, res_idx2, atom2 = constraint.atom2
+                lower_bound, upper_bound = constraint.range  # type: ignore
+                asym_id1 = chain_id_to_asym_id[chain_id1]
+                asym_id2 = chain_id_to_asym_id[chain_id2]
+                constraints.append(
+                    Constraint(
+                        (asym_id1, asym_id2),
+                        (res_idx1, res_idx2),
+                        (atom1, atom2),
+                        lower_bound=lower_bound,
+                        upper_bound=upper_bound,
+                    )
+                )
+            else:
+                raise ValueError(f"Unsupported constraint type: {constraint.type}")
 
         # Return RefStructure
-        return structure_preparation.prepare_structure(chains, connections, metadata)
+        ref_struct = structure_preparation.prepare_structure(
+            chains, connections, metadata
+        )
+        return ref_struct, constraints
 
     def load_apo_structures(
         self, ref_struct: RefStructure, input: query.Query
