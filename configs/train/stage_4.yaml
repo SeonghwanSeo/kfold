@@ -1,0 +1,33 @@
+_yaml_: "full.yaml"
+
+seed: 3
+
+loss:
+  weights:
+    pae: 1.0
+
+training:
+  train_trunk: false
+  train_distogram_head: false
+  train_structure_module: false
+  train_confidence_head: true
+
+optimizer:
+  load_opt_state_from_checkpoint: false
+  final_training_stage: true
+
+data:
+  max_chains: 50
+  max_tokens: 768
+  max_sequence_tokens: 1280
+
+  ccd_path: /cache/wykim_lab/kfold_data/v260310/ccd-train.pkl
+  train_datasets:
+    - _yaml_: "../dataset/rcsb-train-ft.yaml"
+      name: rcsb
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-train/
+
+  val_datasets:
+    - _yaml_: "../dataset/rcsb-val.yaml"
+      name: rcsb-val
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-val/

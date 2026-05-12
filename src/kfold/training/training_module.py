@@ -74,10 +74,10 @@ class OptimizerConfig(_Config):
     lr_decay_every_n_steps: int = 50000
     lr_decay_factor: float = 0.95
     # ema
-    use_ema: bool = True
     ema_decay: float = 0.999
     # multi-phase training
     load_opt_state_from_checkpoint: bool = True
+    final_training_stage: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -161,9 +161,6 @@ class KFoldTrainingModule(pl.LightningModule):
         # Save hyperparameters
         self.save_hyperparameters(to_dict(self.global_config))
 
-        # EMA state
-        self.use_ema: bool = self.optimizer_config.use_ema
-
         # Whether to train structure and confidence modules
         self.train_trunk: bool = self.training_config.train_trunk
         self.train_distogram_head: bool = self.training_config.train_distogram_head
@@ -183,6 +180,13 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Freeze parts of the model if needed
         self.freeze_submodules()
+
+        # Setup EMA
+        self.ema: ExponentialMovingAverage = ExponentialMovingAverage(
+            model=self.model,
+            decay=self.optimizer_config.ema_decay,
+            submodules_to_ignore=("sequence_encoder", "structure_encoder"),
+        )
 
         # Setup losses and metrics
         self.setup_losses()
@@ -235,7 +239,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         self.frozen_modules = []
         if self.train_trunk is False:
-            self.frozen_modules += ["input_embedder", "trunk"]
+            self.frozen_modules += ["plm_input_embedder", "input_embedder", "trunk"]
 
         if self.train_distogram_head is False:
             self.frozen_modules += ["distogram_head"]
@@ -931,51 +935,6 @@ class KFoldTrainingModule(pl.LightningModule):
 
         pass
 
-    # === EMA === #
-    # Started from https://github.com/jwohlwend/boltz
-    @property
-    def is_ema_initialized(self) -> bool:
-        return hasattr(self, "_ema")
-
-    @property
-    def ema(self) -> ExponentialMovingAverage:
-        assert hasattr(self, "_ema"), "EMA has not been initialized."
-        return self._ema
-
-    @ema.setter
-    def ema(self, value: ExponentialMovingAverage):
-        self._ema: ExponentialMovingAverage = value
-
-    def on_train_start(self) -> None:
-        if self.use_ema:
-            if not self.is_ema_initialized:
-                ema_decay = self.optimizer_config.ema_decay
-                self.ema = ExponentialMovingAverage(self, decay=ema_decay)
-            self.ema.to(self.device)
-
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
-        optimizer.step(closure=optimizer_closure)
-        if self.use_ema:
-            self.ema.update(self)
-
-    def prepare_train(self) -> None:
-        if self.use_ema:
-            self.ema.restore(self)
-
-    def prepare_eval(self) -> None:
-        if self.use_ema:
-            if not self.is_ema_initialized:
-                ema_decay = self.optimizer_config.ema_decay
-                self.ema = ExponentialMovingAverage(self, decay=ema_decay)
-            self.ema.store(self)
-            self.ema.copy_to(self)
-
-    def on_validation_start(self):
-        self.prepare_eval()
-
-    def on_validation_end(self) -> None:
-        self.prepare_train()
-
     def _remove_orig_mod_from_state_dict(
         self, state_dict: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1017,14 +976,13 @@ class KFoldTrainingModule(pl.LightningModule):
             checkpoint["state_dict"]
         )
 
-        # Add EMA state dict if EMA is used
-        if self.use_ema:
-            ema_state_dict = self.ema.state_dict()
-            # Remove '._orig_mod.' from EMA state dict keys
-            ema_state_dict["shadow_params"] = self._remove_orig_mod_from_state_dict(
-                ema_state_dict["shadow_params"]
-            )
-            checkpoint["ema"] = ema_state_dict
+        # Add EMA state dict
+        # Remove '._orig_mod.' from EMA state dict keys
+        ema_state_dict = self.ema.state_dict()
+        ema_state_dict["shadow_params"] = self._remove_orig_mod_from_state_dict(
+            ema_state_dict["shadow_params"]
+        )
+        checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         if self.config.optimizer.load_opt_state_from_checkpoint is False:
@@ -1035,18 +993,12 @@ class KFoldTrainingModule(pl.LightningModule):
             state["state"] = init_state["state"]
             state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
             # checkpoint.pop("lr_schedulers", None)
-        if self.use_ema and "ema" in checkpoint:
-            # Create EMA object if not exists
-            ema_decay = self.optimizer_config.ema_decay
-            self.ema = ExponentialMovingAverage(self, decay=ema_decay)
-            self.load_ema_state_dict(checkpoint["ema"])
+        # Load EMA state dict
+        self.load_ema_state_dict(checkpoint["ema"])
 
     def load_state_dict(
-        self,
-        state_dict: dict[str, Any],
-        strict: bool = True,
-        assign: bool = False,
-    ):  # type: ignore[override]
+        self, state_dict: dict[str, Any], strict: bool = True, assign: bool = False
+    ):  # type: ignore
         """Override load_state_dict to handle EMA state dict."""
         # Remove '._orig_mod.' from state dict keys if present
         state_dict = self._remove_orig_mod_from_state_dict(state_dict)
@@ -1054,10 +1006,53 @@ class KFoldTrainingModule(pl.LightningModule):
         state_dict = self._add_orig_mod_to_state_dict(state_dict, self.state_dict())
         # Remove 'model.' prefix from state dict keys if present
         state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
-        return self.model.load_state_dict(state_dict, strict=strict)
+        out = self.model.load_state_dict(state_dict, strict=strict)
+
+        if self.config.optimizer.final_training_stage:
+            # Confidence-only training, so replace the structure-related
+            # parameters to EMA's parameters.
+            ema_state_dict = self.ema.state_dict()
+            override_prefixes = tuple(self.frozen_modules)
+            n = 0
+            for k, v in ema_state_dict["shadow_params"].items():
+                if k.startswith(override_prefixes):
+                    n += 1
+                    self.model.state_dict()[k].copy_(v)
+            print(
+                f"Override {n} parameters from EMA for final training stage "
+                f"with prefixes {override_prefixes}."
+            )
+
+        return out
+
+    # === EMA === #
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
+        super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and param.grad is None:
+                print(
+                    f"Warning: parameter {name} has requires_grad=True but grad is None."
+                )
+
+        if self.ema.device != self.device:
+            self.ema.to(self.device)
+        self.ema.update(self)
+
+    def on_validation_start(self):
+        if self.ema.device != self.device:
+            self.ema.to(self.device)
+        self.ema.store(self)
+        self.ema.copy_to(self)
+
+    def on_validation_end(self) -> None:
+        self.ema.restore(self)
 
     def load_ema_state_dict(self, state_dict: dict[str, Any]):
         """Load EMA state dict."""
+        # Remove 'model.' prefix from EMA state dict keys if present.
+        state_dict["shadow_params"] = {
+            k.removeprefix("model."): v for k, v in state_dict["shadow_params"].items()
+        }
         # Remove '._orig_mod.' from EMA state dict keys if present.
         state_dict["shadow_params"] = self._remove_orig_mod_from_state_dict(
             state_dict["shadow_params"]
@@ -1066,13 +1061,10 @@ class KFoldTrainingModule(pl.LightningModule):
         state_dict["shadow_params"] = self._add_orig_mod_to_state_dict(
             state_dict["shadow_params"], self.ema.shadow_params
         )
-        if self.ema.compatible(state_dict):
-            self.ema.load_state_dict(state_dict, device=torch.device("cpu"))
-            self.ema.to(self.device)
-        else:
-            print("Warning: EMA state not loaded due to incompatible model parameters.")
-            self.use_ema = False  # Disable EMA if not compatible
-            del self._ema
+        assert self.ema.compatible(state_dict), (
+            "EMA state dict is not compatible with the model."
+        )
+        self.ema.load_state_dict(state_dict, device=torch.device("cpu"))
 
     # === Helper functions === #
     def save_structure_and_metrics(
@@ -1083,6 +1075,7 @@ class KFoldTrainingModule(pl.LightningModule):
         prefix: str,
     ):
         """Save predicted and ground-truth structures as mmCIF files."""
+        # TODO: save confidence too.
         num_atoms = ref_struct.num_atoms
         assert pred_coords.shape == (num_atoms, 3), (
             "pred_coords must have shape (Natoms, 3)."
@@ -1099,7 +1092,7 @@ class KFoldTrainingModule(pl.LightningModule):
         rmsd = metrics["metrics"]["rmsd"]
         lddt = metrics["metrics"]["lddt"] * 100  # scale to [0, 100]
         pred_path = f"{prefix}-rmsd{rmsd:.2f}-lddt{lddt:.2f}.cif"
-        self.writer.write_new_coords(ref_struct, pred_coords.cpu().numpy(), pred_path)
+        self.writer.write_new_coords(ref_struct, pred_path, pred_coords.cpu().numpy())
 
     def save_trajectory(
         self,
