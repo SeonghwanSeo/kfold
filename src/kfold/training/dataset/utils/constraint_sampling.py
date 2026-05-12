@@ -112,7 +112,6 @@ class ConstraintSampling:
                 continue
 
             if cond is not None:
-                print(f"Sampled constraint: {cond}")
                 constraints.append(cond)
 
         return constraints
