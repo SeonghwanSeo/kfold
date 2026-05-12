@@ -105,34 +105,56 @@ Ligands can be specified using **SMILES** or **CCD** (Chemical Component Diction
 
 *Note: You must provide either `smiles` or `ccd`, but not both.*
 
-### Covalent Bonds (Optional)
-You can specify custom covalent bonds between atoms in different chains.
+### Constraint (Optional)
 
-**Example: Protein-Ligand Bond**
 ```yaml
 name: "Covalent_Complex"
 sequences:
   - protein:
       id: "A"
       sequence: "MKT..."
-  - ligand:
+  - dna:
       id: "B"
-      ccd: "WF1"
+      sequence: "ACGTAA.."
   - ligand:
       id: "C"
+      ccd: "WF1"
+  - ligand:
+      id: "D"
       smiles: "CNCBr"
-bonds:
-  - [["A", 20, "NZ"], ["B", 1, "C08"]]
-  - [["A", 10, "SG"], ["C", 1, "C2"]]
+constraint:
+  - bond:
+      atom1: ["A", 20, "NZ"]  # Chain A, residue 20, atom NZ
+      atom2: ["C", 1, "C08"]  # Chain B, residue 1, atom C08
+  - distance:
+      atom1: ["A", 10, "CA"]  # Chain A, residue 20, atom CA
+      atom2: ["B", 3, "C1'"]  # Chain B, residue 3, atom C1'
+      range: [4, 8]       # Desired distance range in Angstroms
 ```
 
-The `bonds` field is a list of pairs of atoms, where each atom is specified as `[chain_id, residue_number, atom_name]`.
-Example yaml indicates there are two bonds:
-(i) a bond between the NZ atom of residue 20 in chain A and the C08 atom of residue 1 in ligand B (CCD=`WF1`) and
-(ii) a bond between the SG atom of residue 10 in chain A and the C2 atom of residue 1 in ligand C (SMILES=`CNCBr`).
+#### Covalent Bonds
 
-- For ligands defined by **CCD**, atom names are taken from the CCD definition in RCSB PDB. Example: [WF1](https://files.rcsb.org/ligands/view/WF1.cif).
-- (Experimental) For ligands defined by **SMILES**, atom names are automatically assigned as `<elem><number>`, where `<number>` is the 1-based index of the atom's occurrence for that element in the SMILES string. For example, in `CNCBr`, the atoms are named `C1`, `N1`, `C2`, and `BR1`.
+You can specify custom covalent bonds between atoms in different chains using the `bond` entry within the `constraint` list.
+
+Each `bond` requires two atoms, `atom1` and `atom2`, specified as `[chain_id, residue_number, atom_name]`.
+- **chain_id**: The identifier assigned in the `sequences` section (e.g., `"A"`).
+- **residue_number**: 1-based index of the residue in the sequence.
+- **atom_name**: The atom name according to the following rules:
+    - For **Proteins/DNA/RNA**, atom names are not explicitly respected in the model.
+    - For ligands defined by **CCD**, names are taken from the CCD definition (e.g., [WF1](https://files.rcsb.org/ligands/view/WF1.cif)).
+    - (Experimental) For ligands defined by **SMILES**, names are assigned as `<Element><Index>` based on their order in the SMILES string (e.g., the atom names in `CNCBr` would be `C1`, `N2`, `C3`, `Br4`).
+
+#### Distance Constraints (Experimental)
+
+Distance constraints allow you to enforce spatial relationships between atoms. This is useful for incorporating experimental data like NOEs or cross-linking constraints.
+
+A `distance` entry includes:
+- `atom1`, `atom2`: The two atoms to be constrained, using the same `[chain_id, residue_number, atom_name]` format as bonds.
+    - **Note**: For proteins and nucleic acids, the model always uses the center atoms (`CA` for protein, `C1'` for DNA/RNA), regardless of the `atom_name` provided.
+- `range`: A list `[lower_bound, upper_bound]` in Angstroms.
+    - Set a bound to `-1` to leave it unconstrained (e.g., `[-1, 5]` for a maximum distance of 5Å).
+    - The valid range for constrained distances is between 3.0Å and 22.0Å.
+
 
 ## Running Inference
 
