@@ -19,8 +19,14 @@ sequences:
   - ligand:
       id: "D"
       ccd: ["GLY", "TYR"] # multi-residue ligand
-bonds:
-  - [["A", 10, "CA"], ["D", 1, "C1"]]
+constraints:
+  - bond:
+      atom1: ["A", 10, "NZ"]
+      atom2: ["D", 1, "C1"]
+  - distance:
+      atom1: ["A", 30, "CA"]
+      atom2: ["C", 5, "C1'"]
+      range: [3.0, 10.0] # -1 means no lower/upper bound
 ```
 
 ```json
@@ -70,6 +76,7 @@ from kfold.data.types.ccd import CCD
 logger = logging.getLogger("kfold.inference.query")
 
 
+# === Sequence === #
 @dataclasses.dataclass(kw_only=True)
 class BaseSequence(ABC):
     """Dataclass for base sequence input format."""
@@ -194,14 +201,37 @@ class LigandSequence(BaseSequence):
         return self.ccd
 
 
+# === Constraint === #
+@dataclasses.dataclass(kw_only=True)
+class Constraint:
+    """Dataclass for bond constraint input format."""
+
+    atom1: tuple[str, int, str]  # (chain_id, res_idx, atom_name)
+    atom2: tuple[str, int, str]  # (chain_id, res_idx, atom_name)
+
+
+@dataclasses.dataclass(kw_only=True)
+class BondConstraint(Constraint):
+    """Dataclass for bond constraint input format."""
+
+    type: ClassVar = "bond"
+
+
+@dataclasses.dataclass(kw_only=True)
+class DistanceConstraint(Constraint):
+    """Dataclass for distance constraint input format."""
+
+    type: ClassVar = "distance"
+    range: tuple[float, float]  # (lower_bound, upper_bound)
+
+
 @dataclasses.dataclass(kw_only=True)
 class Query:
     name: str  # default: input file name
     sequences: list[ProteinSequence | DNASequence | RNASequence | LigandSequence] = (
         dataclasses.field(default_factory=list)
     )
-    # list of bonds between chains, specified as tuples of (chain_id, res_idx, atom_name)
-    bonds: list[tuple[tuple[str, int, str], tuple[str, int, str]]] = dataclasses.field(
+    constraints: list[BondConstraint | DistanceConstraint] = dataclasses.field(
         default_factory=list
     )
     seed: int = 0  # Default seed, overridden to command line argument
@@ -319,27 +349,45 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
 
     validate_input_sequences(json_or_yaml_path, sequences, ccd=ccd)
 
-    bonds: list[tuple[tuple[str, int, str], tuple[str, int, str]]] = []
-    if "bonds" in input_dict:
-        for bond in input_dict["bonds"]:
-            if len(bond) != 2:
-                raise ValueError(
-                    f"Each bond entry must contain exactly two atoms: {bond}"
+    constraints: list[BondConstraint | DistanceConstraint] = []
+    for constraint in input_dict.get("constraints", []):
+        if len(constraint) != 1:
+            raise ValueError(
+                f"Each constraint entry must contain exactly one constraint type:"
+                f" {constraint}. (supported types: 'bond', 'distance')"
+            )
+        if "bonds" in constraint:
+            cond = constraint["bonds"]
+            chain1, res_idx1, atom_name1 = cond["atom1"]
+            chain2, res_idx2, atom_name2 = cond["atom2"]
+            constraints.append(
+                BondConstraint(
+                    atom1=(chain1, res_idx1, atom_name1),
+                    atom2=(chain2, res_idx2, atom_name2),
                 )
-            if len(bond[0]) != 3 or len(bond[1]) != 3:
-                raise ValueError(
-                    f"Each atom in bond entry must be specified as "
-                    f"(chain_id, res_idx, atom_name): {bond}"
-                )
-            (chain1, res_idx1, atom_name1), (chain2, res_idx2, atom_name2) = bond
+            )
+        elif "distance" in constraint:
+            cond = constraint["distance"]
+            if "range" not in cond:
+                # Set default range to (2.0, 8.0) if not provided
+                cond["range"] = (2.0, 8.0)
+            chain1, res_idx1, atom_name1 = cond["atom1"]
+            chain2, res_idx2, atom_name2 = cond["atom2"]
             # Convert atom names to uppercase for consistency (e.g. "ca" -> "CA")
             atom_name1, atom_name2 = atom_name1.upper(), atom_name2.upper()
-            bonds.append(((chain1, res_idx1, atom_name1), (chain2, res_idx2, atom_name2)))
+            lower_bound, upper_bound = cond["range"]
+            constraints.append(
+                DistanceConstraint(
+                    atom1=(chain1, res_idx1, atom_name1),
+                    atom2=(chain2, res_idx2, atom_name2),
+                    range=(lower_bound, upper_bound),
+                )
+            )
 
     return Query(
         name=name,
         sequences=sequences,  # type: ignore
-        bonds=bonds,
+        constraints=constraints,
         yaml=yaml.safe_dump(input_dict),
     )
 
@@ -372,10 +420,19 @@ def parse_input_files(
     input_path = Path(input_path)
     if not input_path.exists():
         raise FileNotFoundError(f"Input path does not exist: {input_path}")
+
+    queries: list[Query]
     if input_path.is_dir():
         queries = parse_directory(input_path, ccd=ccd, skip_invalid=skip_invalid)
     else:
         queries = [parse_single_file(input_path, ccd=ccd)]
+
+    # Check all queries have the different names to avoid overwriting results
+    names = set()
+    for query in queries:
+        if query.name in names:
+            raise ValueError(f"Duplicate query name found: {query.name}")
+        names.add(query.name)
 
     # Copy queries with updated seeds
     seeds = [seeds] if isinstance(seeds, int) else seeds
