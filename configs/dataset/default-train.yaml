@@ -8,6 +8,8 @@ is_distillation: ???
 # Random seed for data augmentation.
 seed: null
 
+filters: []
+
 sampler: ???
 
 cropper: ???
