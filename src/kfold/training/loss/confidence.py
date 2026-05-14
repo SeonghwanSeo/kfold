@@ -369,12 +369,10 @@ class PAELoss(torch.nn.Module):
         max_dist: float = 32.0,
         num_bins: int = 64,
         eps: float = 1e-8,
-        return_zero: bool = False,
     ) -> None:
         super().__init__()
         self.num_bins: int = num_bins
         self.eps: float = eps
-        self.return_zero: bool = return_zero
         bin_size: float = (max_dist - min_dist) / num_bins
         bins = torch.linspace(
             min_dist + bin_size / 2, max_dist - bin_size / 2, num_bins
@@ -410,10 +408,6 @@ class PAELoss(torch.nn.Module):
         pae_loss : torch.Tensor
             The computed PAE loss of shape (B, N).
         """
-        if self.return_zero:
-            # Keep gradients flowing but return zero loss.
-            return (logits * 0.0).sum(dim=-1).mean(dim=(-1, -2))
-
         with torch.no_grad():
             e = self.get_alignment_error(x_pred, x_gt, mask_gt, f_input)  # [B, N, L, L]
 

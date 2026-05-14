@@ -398,7 +398,6 @@ class SmoothLDDTLoss(torch.nn.Module):
         mask: torch.Tensor,
         is_nucleotide: torch.Tensor,
         repr_atom_index: torch.Tensor,
-        use_kernel: bool = False,
     ) -> list[torch.Tensor]:
         N, L, _ = x_pred.shape
         # NOTE: pairwise distances of ground truth coordinates are shared across N.

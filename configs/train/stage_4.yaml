@@ -2,10 +2,6 @@ _yaml_: "full.yaml"
 
 seed: 3
 
-loss:
-  weights:
-    pae: 1.0
-
 training:
   train_trunk: false
   train_distogram_head: false

@@ -120,8 +120,6 @@ loss:
     chain_com: 0.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
-    # Confidence loss weights
-    pae: 0.0 # 1 for final stage training
 
   # Distogram loss
   distogram_loss:

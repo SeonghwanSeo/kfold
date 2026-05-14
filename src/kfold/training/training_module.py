@@ -270,51 +270,39 @@ class KFoldTrainingModule(pl.LightningModule):
         loss_config = self.loss_config
         self.loss_weights: dict[str, float] = loss_config.weights
 
-        if self.train_structure_module:
-            # Distogram loss
-            if self.loss_weights["distogram"] > 0:
-                self.distogram_loss = loss_fn.distogram.DistogramLoss(
-                    **loss_config.distogram_loss
-                )
+        # Distogram loss
+        self.distogram_loss = loss_fn.distogram.DistogramLoss(
+            **loss_config.distogram_loss
+        )
 
-            # Diffusion loss
-            diffusion_loss_config = loss_config.diffusion_loss
-            self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(
-                **diffusion_loss_config["mse_loss"]
-            )
-            if self.loss_weights["bond"] > 0:
-                # Only used in fine-tuning stage
-                self.bond_loss = loss_fn.diffusion.BondLoss(
-                    **diffusion_loss_config["bond_loss"]
-                )
-            if self.loss_weights["smooth_lddt"] > 0:
-                # Only used in regular training stage
-                self.smooth_lddt_loss = loss_fn.diffusion.SmoothLDDTLoss(
-                    **diffusion_loss_config["smooth_lddt_loss"]
-                )
+        # Diffusion loss
+        diffusion_loss_config = loss_config.diffusion_loss
+        self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(
+            **diffusion_loss_config["mse_loss"]
+        )
+        # Only used in fine-tuning stage
+        self.bond_loss = loss_fn.diffusion.BondLoss(**diffusion_loss_config["bond_loss"])
+        # Only used in regular training stage
+        self.smooth_lddt_loss = loss_fn.diffusion.SmoothLDDTLoss(
+            **diffusion_loss_config["smooth_lddt_loss"]
+        )
 
-        if self.train_confidence_head:
-            confidence_loss_config = loss_config.confidence_loss
-            # pLDDT loss
-            self.plddt_loss = loss_fn.confidence.PLDDTLoss(
-                **confidence_loss_config["plddt_loss"]
-            )
+        confidence_loss_config = loss_config.confidence_loss
+        # pLDDT loss
+        self.plddt_loss = loss_fn.confidence.PLDDTLoss(
+            **confidence_loss_config["plddt_loss"]
+        )
 
-            # PDE loss
-            self.pde_loss = loss_fn.confidence.PDELoss(
-                **confidence_loss_config["pde_loss"]
-            )
+        # PDE loss
+        self.pde_loss = loss_fn.confidence.PDELoss(**confidence_loss_config["pde_loss"])
 
-            # Experimentally resolved loss
-            self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss(
-                **confidence_loss_config["experimentally_resolved_loss"]
-            )
+        # Experimentally resolved loss
+        self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss(
+            **confidence_loss_config["experimentally_resolved_loss"]
+        )
 
-            # PAE loss
-            return_zero_pae = self.loss_weights["pae"] == 0
-            self.pae_loss = loss_fn.confidence.PAELoss(
-                **confidence_loss_config["pae_loss"], return_zero=return_zero_pae
-            )
+        # PAE loss
+        self.pae_loss = loss_fn.confidence.PAELoss(**confidence_loss_config["pae_loss"])
 
     def setup_metrics(self):
         """Setup metrics for validation"""
@@ -840,8 +828,6 @@ class KFoldTrainingModule(pl.LightningModule):
             A dictionary containing loss metrics.
         """
         metrics: dict[str, torch.Tensor] = {}
-        alpha_pae = self.loss_weights["pae"]
-
         num_samples = x_pred.shape[1]
         loss_mask = loss_mask.float()[:, None]  # [B, 1]
         num_valid_samples = (loss_mask.sum() * num_samples).clamp(1)
@@ -863,10 +849,9 @@ class KFoldTrainingModule(pl.LightningModule):
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
         L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input)
         L_pae = L_pae * loss_mask  # [B, Nsample]
-        if alpha_pae > 0:
-            metrics["pae_loss"] = L_pae.detach().sum() / num_valid_samples
+        metrics["pae_loss"] = L_pae.detach().sum() / num_valid_samples
 
-        L_confidence_per_sample = L_pde + L_plddt + L_resolved + alpha_pae * L_pae
+        L_confidence_per_sample = L_pde + L_plddt + L_resolved + L_pae
         L_confidence = L_confidence_per_sample.sum() / num_valid_samples
 
         metrics["confidence_loss"] = L_confidence.detach()
