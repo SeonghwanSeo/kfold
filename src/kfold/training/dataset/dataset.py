@@ -152,7 +152,7 @@ class TrainingDatasetConfig(DatasetConfig):
 
     weight: float = 1.0
     is_distillation: bool = False
-    filters: list[BaseSampler.Config] = dataclasses.field(default_factory=list)
+    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
 

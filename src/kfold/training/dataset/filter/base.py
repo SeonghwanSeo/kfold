@@ -3,7 +3,7 @@ from kfold.utils.registry import DATA_FILTER, BaseConfig
 
 @DATA_FILTER.register()
 class BaseFilter:
-    """Base class for samplers for model training."""
+    """Base filter for filtering metadata."""
 
     class Config(BaseConfig):
         """Configuration for BaseFilter."""

@@ -1013,24 +1013,19 @@ class KFoldTrainingModule(pl.LightningModule):
     # === EMA === #
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
         super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
-        for name, param in self.model.named_parameters():
-            if param.requires_grad and param.grad is None:
-                print(
-                    f"Warning: parameter {name} has requires_grad=True but grad is None."
-                )
 
         if self.ema.device != self.device:
             self.ema.to(self.device)
-        self.ema.update(self)
+        self.ema.update(self.model)
 
     def on_validation_start(self):
         if self.ema.device != self.device:
             self.ema.to(self.device)
-        self.ema.store(self)
-        self.ema.copy_to(self)
+        self.ema.store(self.model)
+        self.ema.copy_to(self.model)
 
     def on_validation_end(self) -> None:
-        self.ema.restore(self)
+        self.ema.restore(self.model)
 
     def load_ema_state_dict(self, state_dict: dict[str, Any]):
         """Load EMA state dict."""
