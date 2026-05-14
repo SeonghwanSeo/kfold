@@ -64,16 +64,18 @@ class ChainTensor(TensorLayout):
     def __post_init__(self):
         # shape: [Nchain,] or [B, Nchain]
         shape = self.layout_shape
-
-        check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
-        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
-        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=shape)
-        check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=shape)
-        check_tensor(self.num_tokens, name="num_tokens", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.num_residues, name="num_residues", dtype=torch.long, shape=shape
-        )
-        check_tensor(self.num_atoms, name="num_atoms", dtype=torch.long, shape=shape)
+        attributes = [
+            ("chain_type", torch.long, shape),
+            ("entity_id", torch.long, shape),
+            ("asym_id", torch.long, shape),
+            ("sym_id", torch.long, shape),
+            ("num_tokens", torch.long, shape),
+            ("num_residues", torch.long, shape),
+            ("num_atoms", torch.long, shape),
+            ("pad_mask", torch.bool, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_tensor(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -140,6 +142,10 @@ class TokenTensor(TensorLayout):
     res_type: torch.Tensor (float32)
         Sequence tokens of shape [Ntoken, 32] (aatype, atom, ...)
         One-hot vector
+    is_standard: torch.Tensor (bool)
+        Boolean tensor of shape [Ntoken,], indicating whether the token is standard.
+    num_atoms: torch.Tensor (long)
+        Number of atoms per token of shape [Ntoken,].
     token_index: torch.Tensor (long)
         Token indices of shape [Ntoken,], mapping each token to its position.
     org_token_index: torch.Tensor (long)
@@ -165,10 +171,18 @@ class TokenTensor(TensorLayout):
         Boolean tensor of shape [Ntoken,], indicating whether token's frame is resolved.
     pad_mask: torch.Tensor (bool)
         Mask tensor of shape [Ntoken,], indicating valid tokens.
-    is_standard: torch.Tensor (bool)
-        Boolean tensor of shape [Ntoken,], indicating whether the token is standard.
-    num_atoms: torch.Tensor (long)
-        Number of atoms per token of shape [Ntoken,].
+    apo_center_coords: torch.Tensor (float32)
+        Apo state center coordinates of shape [Ntoken, 3].
+    apo_repr_coords: torch.Tensor (float32)
+        Apo state representative atom center coordinates of shape [Ntoken, 3].
+    apo_frame_coords: torch.Tensor (float32)
+        Apo state frame of shape [Ntoken, 3, 3].
+    apo_center_mask: torch.Tensor (bool)
+        Mask tensor of shape [Ntoken,], indicating apo Cα is resolved.
+    apo_repr_mask: torch.Tensor (bool)
+        Mask tensor of shape [Ntoken,], indicating apo Cβ is resolved.
+    apo_frame_mask: torch.Tensor (bool)
+        Mask tensor of shape [Ntoken,], indicating apo frame is resolved.
 
     # For model training
     center_coords: torch.Tensor (float32)
@@ -186,6 +200,8 @@ class TokenTensor(TensorLayout):
     asym_id: torch.Tensor  # [Ntoken,], long, same to sequence_id
     sym_id: torch.Tensor  # [Ntoken,], long
     res_type: torch.Tensor  # [Ntoken, 32], float32
+    is_standard: torch.Tensor  # [Ntoken,], bool
+    num_atoms: torch.Tensor  # [Ntoken,], long
     token_index: torch.Tensor  # [Ntoken,], long
     org_token_index: torch.Tensor  # [Ntoken,], long
     residue_index: torch.Tensor  # [Ntoken,], long
@@ -195,8 +211,14 @@ class TokenTensor(TensorLayout):
     frame_index: torch.Tensor  # [Ntoken, 3], long
     frame_mask: torch.Tensor  # [Ntoken,], bool
     pad_mask: torch.Tensor  # [Ntoken,], bool
-    is_standard: torch.Tensor  # [Ntoken,], bool
-    num_atoms: torch.Tensor  # [Ntoken,], long
+
+    # Apo state indices.
+    apo_center_coords: torch.Tensor  # [Ntoken,], float32
+    apo_repr_coords: torch.Tensor  # [Ntoken,], float32
+    apo_frame_coords: torch.Tensor  # [Ntoken, 3, 3], float32
+    apo_center_mask: torch.Tensor  # [Ntoken,], bool
+    apo_repr_mask: torch.Tensor  # [Ntoken,], bool
+    apo_frame_mask: torch.Tensor  # [Ntoken,], bool
 
     # For model training
     center_coords: torch.Tensor  # [Ntoken, 3], float32
@@ -215,47 +237,38 @@ class TokenTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
-        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
-        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=shape)
-        check_tensor(self.sym_id, name="sym_id", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.res_type, name="res_type", dtype=torch.float32, shape=(*shape, 32)
-        )
-        check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.org_token_index, name="org_token_index", dtype=torch.long, shape=shape
-        )
-        check_tensor(
-            self.seq_token_index, name="seq_token_index", dtype=torch.long, shape=shape
-        )
-        check_tensor(
-            self.residue_index, name="residue_index", dtype=torch.long, shape=shape
-        )
-        check_tensor(self.repr_index, name="repr_index", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.center_index, name="center_index", dtype=torch.long, shape=shape
-        )
-        check_tensor(
-            self.frame_index, name="frame_index", dtype=torch.long, shape=(*shape, 3)
-        )
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.frame_mask, name="frame_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.is_standard, name="is_standard", dtype=torch.bool, shape=shape)
-        check_tensor(self.num_atoms, name="num_atoms", dtype=torch.long, shape=shape)
-
-        # For model training
-        check_tensor(
-            self.center_coords,
-            name="center_coords",
-            dtype=torch.float32,
-            shape=(*shape, 3),
-        )
-        check_tensor(
-            self.repr_coords, name="repr_coords", dtype=torch.float32, shape=(*shape, 3)
-        )
-        check_tensor(self.center_mask, name="center_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.repr_mask, name="repr_mask", dtype=torch.bool, shape=shape)
+        attributes = [
+            ("chain_type", torch.long, shape),
+            ("entity_id", torch.long, shape),
+            ("asym_id", torch.long, shape),
+            ("sym_id", torch.long, shape),
+            ("res_type", torch.float32, (*shape, 32)),
+            ("is_standard", torch.bool, shape),
+            ("num_atoms", torch.long, shape),
+            ("token_index", torch.long, shape),
+            ("org_token_index", torch.long, shape),
+            ("seq_token_index", torch.long, shape),
+            ("residue_index", torch.long, shape),
+            ("repr_index", torch.long, shape),
+            ("center_index", torch.long, shape),
+            ("frame_index", torch.long, (*shape, 3)),
+            ("pad_mask", torch.bool, shape),
+            ("frame_mask", torch.bool, shape),
+            # Apo features.
+            ("apo_center_coords", torch.float32, (*shape, 3)),
+            ("apo_repr_coords", torch.float32, (*shape, 3)),
+            ("apo_frame_coords", torch.float32, (*shape, 3, 3)),
+            ("apo_center_mask", torch.bool, shape),
+            ("apo_repr_mask", torch.bool, shape),
+            ("apo_frame_mask", torch.bool, shape),
+            # For model training
+            ("center_coords", torch.float32, (*shape, 3)),
+            ("repr_coords", torch.float32, (*shape, 3)),
+            ("center_mask", torch.bool, shape),
+            ("repr_mask", torch.bool, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_tensor(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     @cached_property
     def is_protein(self) -> torch.Tensor:
@@ -305,6 +318,13 @@ class TokenTensor(TensorLayout):
             "frame_index": -1,
             "frame_mask": False,
             "pad_mask": False,
+            # Apo features.
+            "apo_center_coords": 0.0,
+            "apo_repr_coords": 0.0,
+            "apo_frame_coords": 0.0,
+            "apo_center_mask": False,
+            "apo_repr_mask": False,
+            "apo_frame_mask": False,
             # For model training
             "center_coords": 0.0,
             "repr_coords": 0.0,
@@ -399,44 +419,25 @@ class AtomTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(self.atom_type, name="atom_type", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.ref_atom_name_chars,
-            name="ref_atom_name_chars",
-            dtype=torch.float32,
-            shape=(*shape, 4, 64),
-        )
-        check_tensor(
-            self.ref_element, name="ref_element", dtype=torch.float32, shape=(*shape, 128)
-        )
-        check_tensor(self.ref_charge, name="ref_charge", dtype=torch.float32, shape=shape)
-        check_tensor(self.ref_pos, name="ref_pos", dtype=torch.float32, shape=(*shape, 3))
-        check_tensor(self.ref_mask, name="ref_mask", dtype=torch.bool, shape=shape)
-        check_tensor(
-            self.ref_space_uid, name="ref_space_uid", dtype=torch.long, shape=shape
-        )
-        check_tensor(self.token_index, name="token_index", dtype=torch.long, shape=shape)
-        check_tensor(self.atom_index, name="atom_index", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.apo_coords, name="apo_coords", dtype=torch.float32, shape=(*shape, 3)
-        )
-        check_tensor(
-            self.prior_coords,
-            name="prior_coords",
-            dtype=torch.float32,
-            shape=(*shape, -1, 3),
-        )
-        check_tensor(self.apo_mask, name="apo_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
-        check_tensor(
-            self.label_coords,
-            name="label_coords",
-            dtype=torch.float32,
-            shape=(*shape, 3),
-        )
-        check_tensor(
-            self.resolved_mask, name="resolved_mask", dtype=torch.bool, shape=shape
-        )
+        attributes = [
+            ("atom_type", torch.long, shape),
+            ("ref_atom_name_chars", torch.float32, (*shape, 4, 64)),
+            ("ref_element", torch.float32, (*shape, 128)),
+            ("ref_charge", torch.float32, shape),
+            ("ref_pos", torch.float32, (*shape, 3)),
+            ("ref_mask", torch.bool, shape),
+            ("ref_space_uid", torch.long, shape),
+            ("token_index", torch.long, shape),
+            ("atom_index", torch.long, shape),
+            ("apo_coords", torch.float32, (*shape, 3)),
+            ("prior_coords", torch.float32, (*shape, -1, 3)),
+            ("apo_mask", torch.bool, shape),
+            ("pad_mask", torch.bool, shape),
+            ("label_coords", torch.float32, (*shape, 3)),
+            ("resolved_mask", torch.bool, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_tensor(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -524,27 +525,17 @@ class BondTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=(*shape, 2))
-        check_tensor(
-            self.token_index, name="token_index", dtype=torch.long, shape=(*shape, 2)
-        )
-        check_tensor(
-            self.atom_index, name="atom_index", dtype=torch.long, shape=(*shape, 2)
-        )
-        check_tensor(self.bond_type, name="bond_type", dtype=torch.long, shape=shape)
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
-        check_tensor(
-            self.is_ligand_ligand,
-            name="is_ligand_ligand",
-            dtype=torch.bool,
-            shape=shape,
-        )
-        check_tensor(
-            self.is_polymer_ligand,
-            name="is_polymer_ligand",
-            dtype=torch.bool,
-            shape=shape,
-        )
+        attributes = [
+            ("asym_id", torch.long, (*shape, 2)),
+            ("token_index", torch.long, (*shape, 2)),
+            ("atom_index", torch.long, (*shape, 2)),
+            ("bond_type", torch.long, shape),
+            ("pad_mask", torch.bool, shape),
+            ("is_ligand_ligand", torch.bool, shape),
+            ("is_polymer_ligand", torch.bool, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_tensor(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -638,26 +629,18 @@ class SequenceTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(self.chain_type, name="chain_type", dtype=torch.long, shape=shape)
-        check_tensor(self.entity_id, name="entity_id", dtype=torch.long, shape=shape)
-        check_tensor(
-            self.seq_token_id, name="seq_token_id", dtype=torch.long, shape=shape
-        )
-        check_tensor(
-            self.bb_struct_token_id,
-            name="bb_struct_token_id",
-            dtype=torch.long,
-            shape=shape,
-        )
-        check_tensor(
-            self.fa_struct_token_id,
-            name="fa_struct_token_id",
-            dtype=torch.long,
-            shape=shape,
-        )
-        check_tensor(self.pos_id, name="pos_id", dtype=torch.long, shape=shape)
-        check_tensor(self.mlm_mask, name="mlm_mask", dtype=torch.bool, shape=shape)
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
+        attributes = [
+            ("chain_type", torch.long, shape),
+            ("entity_id", torch.long, shape),
+            ("seq_token_id", torch.long, shape),
+            ("bb_struct_token_id", torch.long, shape),
+            ("fa_struct_token_id", torch.long, shape),
+            ("pos_id", torch.long, shape),
+            ("mlm_mask", torch.bool, shape),
+            ("pad_mask", torch.bool, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_tensor(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     @cached_property
     def is_protein(self) -> torch.Tensor:
@@ -757,20 +740,16 @@ class ConstraintTensor(TensorLayout):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_tensor(self.asym_id, name="asym_id", dtype=torch.long, shape=(*shape, 2))
-        check_tensor(
-            self.token_index, name="token_index", dtype=torch.long, shape=(*shape, 2)
-        )
-        check_tensor(
-            self.atom_index, name="atom_index", dtype=torch.long, shape=(*shape, 2)
-        )
-        check_tensor(
-            self.lower_bound, name="lower_bound", dtype=torch.float32, shape=shape
-        )
-        check_tensor(
-            self.upper_bound, name="upper_bound", dtype=torch.float32, shape=shape
-        )
-        check_tensor(self.pad_mask, name="pad_mask", dtype=torch.bool, shape=shape)
+        attributes = [
+            ("asym_id", torch.long, (*shape, 2)),
+            ("token_index", torch.long, (*shape, 2)),
+            ("atom_index", torch.long, (*shape, 2)),
+            ("lower_bound", torch.float32, shape),
+            ("upper_bound", torch.float32, shape),
+            ("pad_mask", torch.bool, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_tensor(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     def pad(self, *pad_shape: int) -> Self:
         """Pad the layout to the total length."""
@@ -818,54 +797,21 @@ class FoldingInput:
     constraint: ConstraintTensor
 
     def __post_init__(self):
-        # check all layouts are on the same device
+        # check all layouts are on the same device and have same batch status
         device = self.chain.device
-        assert self.token.device == device, "token layout must be on the same device."
-        assert self.atom.device == device, "atom layout must be on the same device."
-        assert self.bond.device == device, "bond layout must be on the same device."
-        assert self.sequence.device == device, (
-            "sequence layout must be on the same device."
-        )
-        assert self.constraint.device == device, (
-            "constraint layout must be on the same device."
-        )
-
-        # check all layouts are non-batched or batched
         is_batched = self.chain.is_batched
-        assert self.token.is_batched == is_batched, (
-            "token layout must be batched or non-batched as same as chain layout."
-        )
-        assert self.atom.is_batched == is_batched, (
-            "atom layout must be batched or non-batched as same as chain layout."
-        )
-        assert self.bond.is_batched == is_batched, (
-            "bond layout must be batched or non-batched as same as chain layout."
-        )
-        assert self.sequence.is_batched == is_batched, (
-            "sequence layout must be batched or non-batched as same as chain layout."
-        )
-        assert self.constraint.is_batched == is_batched, (
-            "constraint layout must be batched or non-batched as same as chain layout."
-        )
+        batch_size = self.chain.batch_size if is_batched else None
 
-        # check the batch size if batched
-        if is_batched:
-            batch_size = self.chain.batch_size
-            assert self.token.batch_size == batch_size, (
-                "token layout must have the same batch size as chain layout."
+        for name in ["token", "atom", "bond", "sequence", "constraint"]:
+            layout = getattr(self, name)
+            assert layout.device == device, f"{name} layout must be on the same device."
+            assert layout.is_batched == is_batched, (
+                f"{name} layout must be batched or non-batched as same as chain layout."
             )
-            assert self.atom.batch_size == batch_size, (
-                "atom layout must have the same batch size as chain layout."
-            )
-            assert self.bond.batch_size == batch_size, (
-                "bond layout must have the same batch size as chain layout."
-            )
-            assert self.sequence.batch_size == batch_size, (
-                "sequence layout must have the same batch size as chain layout."
-            )
-            assert self.constraint.batch_size == batch_size, (
-                "constraint layout must have the same batch size as chain layout."
-            )
+            if is_batched:
+                assert layout.batch_size == batch_size, (
+                    f"{name} layout must have the same batch size as chain layout."
+                )
 
     def to(self, device: str | torch.device) -> Self:
         return self.__class__(

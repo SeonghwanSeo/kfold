@@ -16,6 +16,12 @@ from kfold.utils.misc import spawn_rng
 COLLISION_ANGLE_CUTOFF = math.cos(math.radians(25))  # 25 degree
 DETERMINISTIC_FRAME_SEED = 20000106
 
+frame_atoms = C.atom.CHAIN_FRAME_ATOMS[C.ChainType.PROTEIN]
+PROTEIN_FRAME_ATOM_INDICES: dict[C.ResidueName, tuple[int, int, int]] = {
+    res: tuple(C.atom.get_residue_atom_index(res, a) for a in frame_atoms)
+    for res in C.residue.PROTEIN_RESIDUES
+}
+
 
 def get_mask(coords: np.ndarray) -> np.ndarray:
     """Get mask for valid coordinates: [*, 3] -> [*]."""
@@ -303,6 +309,9 @@ def tokenize_structure(
             restype: int = res_name.value
             is_res_standard = chain.residue.is_standard[res_i]
 
+            center_atom_idx: int = C.atom.CENTER_ATOM_INDEX[res_name]
+            repr_atom_idx: int = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
+
             # Get atom info
             atom_names = all_atom_names[chain.residue.get_atom_slice(res_idx)]
             natoms = len(atom_names)
@@ -310,8 +319,6 @@ def tokenize_structure(
             if is_res_standard:
                 # Standard protein/dna/rna residues (including ambiguous residues)
                 assert ctype.is_polymer, "Only polymer residues can be standard."
-                center_atom_idx: int = C.atom.CENTER_ATOM_INDEX[res_name]
-                repr_atom_index: int = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
                 struct.token.chain_type[g_tok_i] = chain_type_i
                 struct.token.entity_id[g_tok_i] = entity_id
                 struct.token.asym_id[g_tok_i] = asym_id
@@ -322,7 +329,7 @@ def tokenize_structure(
                 struct.token.seq_token_index[g_tok_i] = seq_token_idx
                 struct.token.num_atoms[g_tok_i] = natoms
                 struct.token.center_index[g_tok_i] = center_atom_idx
-                struct.token.repr_index[g_tok_i] = repr_atom_index
+                struct.token.repr_index[g_tok_i] = repr_atom_idx
 
                 # Update atom existence mask
                 struct.atom.pad_mask[g_tok_i, :natoms] = True
@@ -347,6 +354,7 @@ def tokenize_structure(
                 struct.token.residue_index[st:end] = res_idx
                 struct.token.seq_token_index[st:end] = seq_token_idx
                 struct.token.num_atoms[st:end] = 1
+                # For non-standard residues, we set center and repr indices to itself.
                 struct.token.center_index[st:end] = 0
                 struct.token.repr_index[st:end] = 0
 
@@ -388,8 +396,8 @@ def tokenize_structure(
         # Insert ground-truth coordinates
         struct.atom.label_coords[token_st:token_end][pad_mask] = chain.atom.coords
 
-        # Insert apo coordinates
-        struct.atom.apo_coords[token_st:token_end][pad_mask] = chain.atom.apo_coords
+        if chain.is_protein:
+            struct.atom.apo_coords[token_st:token_end][pad_mask] = chain.atom.apo_coords
 
         # Insert reference atom info except reference conformers
         struct.atom.ref_atom_name_chars[token_st:token_end][pad_mask] = np.array(
@@ -669,6 +677,70 @@ def tokenize_structure(
                     struct.token.frame_token_index[g_tok_i] = (a_ti, b_ti, c_ti)
                     struct.token.frame_atom_index[g_tok_i] = (a_ai, b_ai, c_ai)
                     g_tok_i += 1
+
+    # ==================================================
+    # Fill apo coordinates
+    # ==================================================
+    g_tok_i = 0
+    for chain in input.chains:
+        ctype = chain.ctype
+        asym_id = chain.asym_id
+
+        if not ctype.is_protein:
+            g_tok_i += chain.num_tokens
+            continue
+
+        ccd_sequence: list[str] = ccd_sequence_dict[asym_id]
+
+        token_st: int = chain_token_st[asym_id]
+        assert g_tok_i == token_st, "Global token index does not match."
+
+        # Iterate residues in the chain and fill token and some atom info
+        for res_i in range(chain.num_residues):
+            res_idx = res_i + 1  # 1-based index
+            # Get residue info
+            ccd_name: str = ccd_sequence[res_i]
+            res_name: C.ResidueName = C.residue.get_residue_name_with_unk(ccd_name, ctype)
+            is_standard = chain.residue.is_standard[res_i]
+
+            if is_standard:
+                center_idx = C.atom.CENTER_ATOM_INDEX[res_name]
+                repr_idx = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
+                frame_indices = PROTEIN_FRAME_ATOM_INDICES[res_name]
+                center_coords = struct.atom.apo_coords[g_tok_i, center_idx]
+                repr_coords = struct.atom.apo_coords[g_tok_i, repr_idx]
+                frame_coords = struct.atom.apo_coords[g_tok_i, frame_indices]
+
+                struct.token.apo_center_coords[g_tok_i] = center_coords
+                struct.token.apo_repr_coords[g_tok_i] = repr_coords
+                struct.token.apo_frame_coords[g_tok_i] = frame_coords
+                g_tok_i += 1
+
+            else:
+                atom_names = all_atom_names[chain.residue.get_atom_slice(res_idx)]
+                atom_index = {n: i for i, n in enumerate(atom_names)}
+                atom_coords = {
+                    an: struct.atom.apo_coords[g_tok_i + atom_index[an], 0]
+                    if an in atom_names
+                    else np.full(3, np.nan)
+                    for an in ["N", "CA", "C", "CB"]
+                }
+                center_coords = atom_coords["CA"]
+                repr_coords = atom_coords["CB"]
+                frame_coords = np.stack([atom_coords[an] for an in ["N", "CA", "C"]])
+
+                # Modifications
+                st = g_tok_i
+                end = g_tok_i + len(atom_names)
+                struct.token.apo_center_coords[st:end] = center_coords
+                struct.token.apo_repr_coords[st:end] = repr_coords
+                struct.token.apo_frame_coords[st:end] = frame_coords
+                g_tok_i = end
+
+    # Update apo masks at once
+    struct.token.apo_center_mask[:] = get_mask(struct.token.apo_center_coords)
+    struct.token.apo_repr_mask[:] = get_mask(struct.token.apo_repr_coords)
+    struct.token.apo_frame_mask[:] = get_mask(struct.token.apo_frame_coords).all(-1)
 
     # Sanity check
     struct.validate()
