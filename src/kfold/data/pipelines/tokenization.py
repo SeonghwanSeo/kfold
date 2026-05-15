@@ -683,14 +683,14 @@ def tokenize_structure(
     # ==================================================
     g_tok_i = 0
     for chain in input.chains:
-        ctype = chain.ctype
-        asym_id = chain.asym_id
-
-        if not ctype.is_protein:
+        if not chain.is_protein:
             g_tok_i += chain.num_tokens
             continue
 
+        ctype = chain.ctype
+        asym_id = chain.asym_id
         ccd_sequence: list[str] = ccd_sequence_dict[asym_id]
+        all_atom_names: list[str] = all_atom_dict[asym_id]
 
         token_st: int = chain_token_st[asym_id]
         assert g_tok_i == token_st, "Global token index does not match."
@@ -701,9 +701,8 @@ def tokenize_structure(
             # Get residue info
             ccd_name: str = ccd_sequence[res_i]
             res_name: C.ResidueName = C.residue.get_residue_name_with_unk(ccd_name, ctype)
-            is_standard = chain.residue.is_standard[res_i]
 
-            if is_standard:
+            if chain.residue.is_standard[res_i]:
                 center_idx = C.atom.CENTER_ATOM_INDEX[res_name]
                 repr_idx = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
                 frame_indices = PROTEIN_FRAME_ATOM_INDICES[res_name]
