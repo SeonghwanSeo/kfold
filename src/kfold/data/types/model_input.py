@@ -914,6 +914,19 @@ class FoldingInput:
     def num_constraints(self) -> int:
         return len(self.constraint)
 
+    def add_batch_dim(self, deepcopy: bool = False) -> Self:
+        """Add a batch dimension"""
+        if self.is_batched:
+            raise ValueError("Input is already batched.")
+        return self.__class__(
+            chain=self.chain.add_batch_dim(deepcopy),
+            token=self.token.add_batch_dim(deepcopy),
+            atom=self.atom.add_batch_dim(deepcopy),
+            bond=self.bond.add_batch_dim(deepcopy),
+            sequence=self.sequence.add_batch_dim(deepcopy),
+            constraint=self.constraint.add_batch_dim(deepcopy),
+        )
+
     @classmethod
     def from_list(cls, data_list: list[Self], pad_to_max: bool = False) -> Self:
         """Create a Batched Input from a list of data.

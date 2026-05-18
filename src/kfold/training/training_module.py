@@ -24,6 +24,7 @@ from kfold.training.utils.binned_loss_logging import (
     TimeBinnedLossLogger,
 )
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
+from kfold.utils import confidence_metrics
 from kfold.utils.geometry.rigid_align import compute_rmsd
 from kfold.utils.registry import MAIN_MODULE
 
@@ -389,7 +390,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_samples=num_samples,
                 return_traj=return_traj,
             )
-            return {"sample": dict_out}
+            return dict_out
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
@@ -530,27 +531,26 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def validation_step(
         self,
-        batch: tuple[FoldingInput, list[dict]],
+        batch: tuple[FoldingInput, dict],
         batch_idx: int,
         dataloader_idx: int = 0,
     ):
         val_config = self.validation_config
         num_samples = val_config.num_diffusion_samples
 
-        f_input, full_struct_list = batch
-        assert f_input.batch_size == 1, "Validation batch size should be 1"
-        struct_info = full_struct_list[0]
+        f_input, struct_info = batch
+        assert not f_input.is_batched, "Validation input should not be batched."
         ref_struct: RefStructure = struct_info["structure"]
         symmetry_dict: dict = struct_info["symmetry"]
 
         try:
-            sample_out = self(
+            model_out: dict[str, dict[str, torch.Tensor]] = self(
                 f_input=f_input,
                 num_recycles=val_config.num_recycles,
                 num_steps=val_config.num_steps,
                 num_samples=num_samples,
                 mode="validation",
-            )["sample"]
+            )
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -559,11 +559,14 @@ class KFoldTrainingModule(pl.LightningModule):
                 return
             else:
                 raise e
+        diffusion_out = model_out["diffusion"]
+        distogram_out = model_out["distogram"]
+        confidence_out = model_out["confidence"]
 
-        sample_out = {k: v.squeeze(0) for k, v in sample_out.items()}  # remove batch dim
-
-        n_atoms: int = int(f_input.atom.pad_mask.sum().item())
-        n_tokens: int = int(f_input.token.pad_mask.sum().item())
+        token_mask = f_input.token.pad_mask  # [L,]
+        atom_mask = f_input.atom.pad_mask  # [Natom,]
+        n_tokens: int = int(token_mask.sum().item())
+        n_atoms: int = int(atom_mask.sum().item())
         assert n_atoms == ref_struct.num_atoms
 
         # Compute validation metrics
@@ -572,7 +575,7 @@ class KFoldTrainingModule(pl.LightningModule):
         with torch.autocast("cuda", torch.float32):
             # Permute predicted and true coordinates to align
             for i in range(num_samples):
-                pred_coords_i = sample_out["coordinates"][i, :n_atoms]
+                pred_coords_i = diffusion_out["coordinates"][i, :n_atoms]
                 struct_i = validation_metrics.get_aligned_gt_structure(
                     ref_struct,
                     pred_coords_i,
@@ -587,9 +590,15 @@ class KFoldTrainingModule(pl.LightningModule):
             # Select the best sample based on global PDE score.
             top1_index = None  # Use oracle sample.
             if self.train_confidence_head:
+                pde = confidence_metrics.compute_pde(
+                    confidence_out["pde_logits"],
+                    confidence_out["pde_bin_centers"],
+                    mask=token_mask.unsqueeze(0),
+                )  # [Nsample, Ntoken, Ntoken]
+                prob_contact = distogram_out["prob_contact"]
                 gpde: torch.Tensor = validation_metrics.compute_global_pde(
-                    sample_out["pde"][:, :n_tokens, :n_tokens],
-                    sample_out["prob_contact"][:n_tokens, :n_tokens],
+                    pde[:, :n_tokens, :n_tokens],
+                    prob_contact[:n_tokens, :n_tokens],
                 )  # [Nsample,]
                 assert gpde.shape == (num_samples,)
                 top1_index = int(gpde.argmin().item())
@@ -639,14 +648,14 @@ class KFoldTrainingModule(pl.LightningModule):
                     prefix = str(save_dir / f"{name}-sample{i}")
                     self.save_structure_and_metrics(
                         ref_struct=ref_struct_aligned[i],
-                        pred_coords=sample_out["coordinates"][i, :n_atoms],
+                        pred_coords=diffusion_out["coordinates"][i, :n_atoms],
                         metrics=sample_metrics[i],
                         prefix=prefix,
                     )
 
                 # Save trajectory if available
-                if "traj" in sample_out:
-                    traj = sample_out["traj"][0]  # remove batch dim
+                if "traj" in diffusion_out:
+                    traj = diffusion_out["traj"][0]  # remove batch dim
                     self.save_trajectory(
                         ref_struct,
                         traj,

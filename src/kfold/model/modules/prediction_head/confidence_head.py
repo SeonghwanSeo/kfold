@@ -96,6 +96,7 @@ class ConfidenceHead(torch.nn.Module):
 
     def __init__(self, cfg: Config, kernel_config: dict):
         super().__init__()
+        self.config = cfg
         self.num_pae_bins = cfg.num_pae_bins
         self.num_pde_bins = cfg.num_pde_bins
         self.num_plddt_bins = cfg.num_plddt_bins
@@ -138,30 +139,6 @@ class ConfidenceHead(torch.nn.Module):
         self.resolved_head = torch.nn.Sequential(
             LayerNorm(cfg.channel_s),
             LinearNoBias(cfg.channel_s, NUM_ATOM_TYPES * 2, init="final"),
-        )
-
-        # Create bins
-        def create_bins(d_min: float, d_max: float, n_bin: int) -> torch.Tensor:
-            d_bin = (d_max - d_min) / n_bin
-            return torch.linspace(d_min + d_bin / 2, d_max - d_bin / 2, n_bin)
-
-        self.pae_bins: torch.Tensor
-        self.pde_bins: torch.Tensor
-        self.plddt_bins: torch.Tensor
-        self.register_buffer(
-            "pae_bins",
-            create_bins(cfg.min_pae_dist, cfg.max_pae_dist, cfg.num_pae_bins),
-            persistent=False,
-        )
-        self.register_buffer(
-            "pde_bins",
-            create_bins(cfg.min_pde_dist, cfg.max_pde_dist, cfg.num_pde_bins),
-            persistent=False,
-        )
-        self.register_buffer(
-            "plddt_bins",
-            create_bins(0.0, 1.0, cfg.num_plddt_bins),
-            persistent=False,
         )
 
     def do_compile(self, **kwargs):
@@ -212,17 +189,26 @@ class ConfidenceHead(torch.nn.Module):
             Tensor of shape (B, N, Natom) containing pLDDT score.
         """
         pae_logits, pde_logits, plddt_logits, _ = self(f_input, s_inputs, s, z, x_pred)
-        p_pae = F.softmax(pae_logits, dim=-1)
-        p_pde = F.softmax(pde_logits, dim=-1)
-        p_plddt = F.softmax(plddt_logits, dim=-1)
+        cfg = self.config
+        device = pae_logits.device
 
-        pae = (p_pae * self.pae_bins).sum(dim=-1)
-        pde = (p_pde * self.pde_bins).sum(dim=-1)
-        plddt = (p_plddt * self.plddt_bins).sum(dim=-1)
+        def create_bins(d_min: float, d_max: float, n_bin: int):
+            d_bin = (d_max - d_min) / n_bin
+            return torch.linspace(
+                d_min + d_bin / 2, d_max - d_bin / 2, n_bin, device=device
+            )
+
         return {
-            "pae": pae,
-            "pde": pde,
-            "plddt": plddt * 100,
+            "pae_logits": pae_logits,
+            "pae_bin_centers": create_bins(
+                cfg.min_pae_dist, cfg.max_pae_dist, cfg.num_pae_bins
+            ),
+            "pde_logits": pde_logits,
+            "pde_bin_centers": create_bins(
+                cfg.min_pde_dist, cfg.max_pde_dist, cfg.num_pde_bins
+            ),
+            "plddt_logits": plddt_logits,
+            "plddt_bin_centers": create_bins(0.0, 1.0, cfg.num_plddt_bins),
         }
 
     def forward(
