@@ -29,7 +29,6 @@ data:
 
   # DataLoader
   train_batch_size: 1 # NOTE: Overridden by global_hparam
-  val_batch_size: 1
   num_workers: 8
   persistent_workers: true
   pin_memory: false

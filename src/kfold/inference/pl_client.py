@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import lightning.pytorch as pl
+import numpy as np
 import torch
 from lightning.pytorch.callbacks import BasePredictionWriter
 
@@ -13,8 +14,9 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.model.models.kfold import KFold
+from kfold.utils import confidence_metrics
 
-from .dataset import InferenceBatch
+from .dataset import InferenceInput
 from .query import Query
 
 
@@ -71,8 +73,8 @@ class KFoldInferenceClient(pl.LightningModule):
         return dict_out
 
     def predict_step(
-        self, batch: InferenceBatch | None
-    ) -> tuple[Query, RefStructure, dict]:
+        self, batch: InferenceInput | None
+    ) -> tuple[Query, RefStructure, FoldingInput, dict]:
         """Predict step for inference.
 
         Parameters
@@ -95,7 +97,6 @@ class KFoldInferenceClient(pl.LightningModule):
 
         # Unpack batch and validate
         query, ref_struct, f_input, apo_dict = batch
-        assert f_input.batch_size == 1, "Inference batch size should be 1"
         assert query.seed >= 0  # seed should be overridden by user input
 
         # HACK: Set random seed for reproducibility
@@ -118,10 +119,7 @@ class KFoldInferenceClient(pl.LightningModule):
                 return None  # type: ignore[return-value]
             else:
                 raise e
-
-        # Remove batch dimension from outputs
-        model_out = {k: v.squeeze(0) for k, v in model_out.items()}
-        return query, ref_struct, model_out
+        return query, ref_struct, f_input, model_out
 
 
 class KFoldPredictionWriter(BasePredictionWriter):
@@ -161,7 +159,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
         self,
         trainer: pl.Trainer,
         pl_module: KFoldInferenceClient,
-        prediction: tuple[Query, RefStructure, dict],
+        prediction: tuple[Query, RefStructure, FoldingInput, dict],
         batch_indices: list[int],
         batch: list[tuple[Query, RefStructure, FoldingInput, dict[int, dict]]],
         batch_idx: int,
@@ -176,7 +174,15 @@ class KFoldPredictionWriter(BasePredictionWriter):
 
         # Unpack the prediction and batch data
         # Note: We return these from predict_step now
-        query, ref_struct, model_out = prediction
+        query, ref_struct, f_input, model_out = prediction
+        n_atoms = ref_struct.num_atoms
+
+        sample_coords = model_out["diffusion"]["coordinates"][:, :n_atoms].cpu().numpy()
+        confidence_summary, confidence_scores = (
+            confidence_metrics.summarize_confidence_metrics(
+                f_input, ref_struct, model_out
+            )
+        )
 
         # Create save directory for this query
         name = query.name
@@ -185,31 +191,36 @@ class KFoldPredictionWriter(BasePredictionWriter):
         save_dir.mkdir(parents=True, exist_ok=True)
 
         # Save Diffusion Samples
-        num_atoms = ref_struct.num_atoms
-        sample_coords = model_out["coordinates"][:, :num_atoms]
-        coords_arr = sample_coords.cpu().numpy()
-        plddt_arr = model_out["plddt"].cpu().numpy()
-        for i in range(coords_arr.shape[0]):
+        for i in range(sample_coords.shape[0]):
             sample_name = f"{name}_seed-{seed}_sample-{i}"
             save_path = save_dir / f"{sample_name}.cif"
-            coords_i = coords_arr[i]
-            plddt_i = plddt_arr[i]
+
+            # Outputs to save
+            coords_i = sample_coords[i]
+            summary_i = confidence_summary[i]
+            score_i = confidence_scores[i]
+
             try:
-                self.writer.write_new_coords(ref_struct, save_path, coords_i, plddt_i)
+                self.writer.write_new_coords(
+                    ref_struct, save_path, coords_i, score_i["plddt"]
+                )
             except Exception as e:
                 self.logger.error(f"Error saving sample {i} for {name}: {e}")
                 continue
 
             # Save confidence scores in JSON format
             confidence_path = save_dir / f"{sample_name}_confidences.json"
-            avg_plddt = model_out["plddt"][i, :num_atoms].mean().item()
-            avg_pde = model_out["pde"][i, :num_atoms, :num_atoms].mean().item()
-            confidence_data = {
-                "plddt": avg_plddt,
-                "pde": avg_pde,
-            }
             with open(confidence_path, "w") as f:
-                json.dump(confidence_data, f, indent=4)
+                json.dump(summary_i, f, indent=2)
+
+            # Save confidence scores in npz format
+            confidence_npz_path = save_dir / f"{sample_name}_confidences.npz"
+            np.savez(
+                confidence_npz_path,
+                plddt=score_i["plddt"],
+                pae=score_i["pae"],
+                pde=score_i["pde"],
+            )
 
         # Free up memory
         model_out.clear()

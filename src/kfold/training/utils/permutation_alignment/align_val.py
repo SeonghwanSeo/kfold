@@ -62,14 +62,20 @@ def get_aligned_gt_structure(
     if not pred_coords.isfinite().all():
         raise RuntimeError("Predicted coordinates contain NaN or Inf values.")
 
+    chain_symmetries = symmetry_dict["chain"]
+    residue_symmetries = symmetry_dict["residue"]
+
+    # Convert to tuple
+    # HACK: I cannot understand why the type is list instead of tuple.
+    # I guess it's because of the torch lightning dataloader collate function...
+    chain_symmetries = {k: [tuple(g) for g in v] for k, v in chain_symmetries.items()}
+
     # Validation alignment is performed in double precision for stability.
     with torch.autocast(device.type, enabled=False), torch.no_grad():
         # 1. Multi-chain permutation alignment.
         # Finds the optimal mapping of swappable homomer subunits.
         gt_to_pred = _do_optimal_chain_permutation(
-            ref_struct,
-            pred_coords,
-            symmetry_dict["chain"],
+            ref_struct, pred_coords, chain_symmetries
         )
 
         # Swap GT chains according to the optimal mapping.
@@ -90,10 +96,7 @@ def get_aligned_gt_structure(
         # 3. Atomic permutation alignment.
         # Resolves side-chain symmetries and small molecule atom swappability.
         atom_index = _do_optimal_atom_permutation(
-            ref_struct,
-            gt_coords,
-            pred_coords,
-            symmetry_dict["residue"],
+            ref_struct, gt_coords, pred_coords, residue_symmetries
         )
         # Update the reference structure with the new permuted/aligned coordinates.
         gt_coords = gt_coords[atom_index]
@@ -176,18 +179,6 @@ def _do_optimal_chain_permutation(
         == set(c.asym_id for c in chains)
     ), "Invalid chain mapping: keys and values must match the set of chain asym_ids."
     return gt_to_pred_mapping
-
-    # Reconstruct the swapped GT structure based on the optimal mapping.
-    asym_id_to_chain: dict[int, Chain] = {c.asym_id: c for c in chains}
-    new_chains: list[Chain] = [
-        asym_id_to_chain[gt_to_pred_mapping[c.asym_id]] for c in chains
-    ]
-    ref_struct_permuted = RefStructure(
-        chains=new_chains,
-        connections=ref_struct.connections,
-        metadata=ref_struct.metadata,
-    )
-    return ref_struct_permuted
 
 
 def _get_anchor_chain_group(
