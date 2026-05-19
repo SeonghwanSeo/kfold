@@ -535,11 +535,7 @@ class KFold(torch.nn.Module):
             # Load regular weights
             state_dict = ckpt["state_dict"]
 
-        state_dict = {
-            k.replace("model.", "", 1): v
-            for k, v in state_dict.items()
-            if k.startswith("model.")
-        }
+        state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
 
         model.load_state_dict(state_dict, strict=strict)
 
