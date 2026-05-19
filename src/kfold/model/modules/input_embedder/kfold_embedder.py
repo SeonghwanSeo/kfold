@@ -98,7 +98,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         apo_min_dist: float = 2.0
         apo_max_dist: float = 49.0
         # Constraint-related parameters
-        constraint_min_dist: float = 3.0
+        constraint_min_dist: float = 2.0
         constraint_max_dist: float = 20.0
         constraint_bin_size: float = 1.0
 

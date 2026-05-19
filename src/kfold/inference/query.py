@@ -26,7 +26,7 @@ constraints:
   - distance:
       atom1: ["A", 30, "CA"]
       atom2: ["C", 5, "C1'"]
-      range: [3.0, 10.0] # -1 means no lower/upper bound
+      range: [3.0, 10.0] # -1 means no upper bound
 ```
 
 ```json
