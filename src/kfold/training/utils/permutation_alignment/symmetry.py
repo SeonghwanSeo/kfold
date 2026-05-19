@@ -113,7 +113,7 @@ def get_chain_symmetries(ref_struct: RefStructure) -> dict[str, ChainSymmetry]:
     # Collect swappable chain groups
     swappable_groups: dict[str, list[tuple[int, ...]]] = defaultdict(list)
     for _, chain_list in groups.items():
-        sym_id: str = ":".join(f"{c.entity_id}-{c.num_atoms}" for c in chain_list)
+        sym_id: str = ";".join(f"{c.entity_id}({c.num_atoms})" for c in chain_list)
         group_asym_ids = tuple(c.asym_id for c in chain_list)
         swappable_groups[sym_id].append(group_asym_ids)
 

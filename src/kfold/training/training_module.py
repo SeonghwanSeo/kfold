@@ -593,7 +593,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 pde = confidence_metrics.compute_pde(
                     confidence_out["pde_logits"],
                     confidence_out["pde_bin_centers"],
-                    mask=token_mask.unsqueeze(0),
+                    mask=token_mask,
                 )  # [Nsample, Ntoken, Ntoken]
                 prob_contact = distogram_out["prob_contact"]
                 gpde: torch.Tensor = validation_metrics.compute_global_pde(
