@@ -72,16 +72,17 @@ def norm_key(k1: _T, k2: _T) -> tuple[_T, _T]:
 # Sample ranking and selection
 # ============================================================
 def compute_global_pde(
-    pde_score: torch.Tensor, prob_contact: torch.Tensor
+    pde_score: torch.Tensor,
+    prob_contact: torch.Tensor,
 ) -> torch.Tensor:
     """Compute the global PDE score for ranking samples.
 
     Parameters
     ----------
     pde_score : torch.Tensor
-        Tensor of shape (*, Nsample, Ntoken, Ntoken) containing the PDE scores.
+        Tensor of shape (Nsample, Ntoken, Ntoken) containing the PDE scores.
     prob_contact : torch.Tensor
-        Tensor of shape (*, Ntoken, Ntoken) containing the predicted contact
+        Tensor of shape (Ntoken, Ntoken) containing the predicted contact
         probabilities, i.e., distogram probabilities for bins below 8Å.
 
     Returns

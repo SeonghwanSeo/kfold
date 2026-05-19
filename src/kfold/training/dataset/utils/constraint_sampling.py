@@ -24,8 +24,8 @@ class ConstraintSampling:
         self,
         min_dist: float = 3.0,
         max_dist: float = 22.0,
-        prob_constraint: float = 0.05,
-        max_constraints: int = 6,
+        prob_constraint: float = 0.1,
+        max_constraints: int = 5,
         prob_contact: float = 0.8,
         prob_intra_chain: float = 0.1,
     ) -> None:
@@ -195,11 +195,14 @@ class ConstraintSampling:
         if not mask.any():
             return None
 
-        if rng.random() < prob_dynamic:
+        x_apo = chain.atom.apo_coords[is_center]
+        mask_apo = np.isfinite(x_apo).all(axis=-1)
+        is_apo_available = mask_apo.any()
+
+        if is_apo_available and rng.random() < prob_dynamic:
             # Use the difference between holo and apo distances as a proxy for
             # dynamic regions.
-            x_apo = chain.atom.apo_coords[is_center]
-            d_apo = cdist(x_apo, x_apo).astype(np.float32)
+            d_apo = cdist(x_apo, x_apo).astype(np.float32, copy=False)
             diff = np.abs(d_holo - d_apo)
             mask &= np.isfinite(diff)
             if not mask.any():
@@ -221,18 +224,18 @@ class ConstraintSampling:
         idx = rng.choice(np.arange(L * L), p=p_sample.flatten())
         i, j = divmod(idx, L)
 
-        # Sample a distance constraint for the pair.
-        # 60%: only upper bound, 10%: only lower bound, 30%: both bounds
-        dist = d_holo[i, j]
-        lower_bound = (
-            float(rng.uniform(self.min_dist, dist)) if dist > self.min_dist else -1.0
-        )
+        dist = d_holo[i, j].clip(1e-3)
+        lower_bound = float(rng.triangular(0, dist, dist))
         upper_bound = (
-            float(rng.uniform(dist, self.max_dist)) if dist < self.max_dist else -1.0
+            float(rng.triangular(dist, dist, self.max_dist))
+            if dist < self.max_dist
+            else -1.0
         )
-        if upper_bound > 0.0 and rng.random() < 0.6:
+        # Drop one of the bounds to create more diverse constraints.
+        drop_prob = rng.random()
+        if drop_prob < 0.05:
             lower_bound = -1.0
-        if lower_bound > 0.0 and rng.random() < 0.2:
+        elif drop_prob < 0.1:
             upper_bound = -1.0
 
         return Constraint(
@@ -326,23 +329,25 @@ class ConstraintSampling:
         if not mask.any():
             return None
 
-        # Sample
+        # Sample from the interface pairs, with preference for closer pairs
+        d = dists.clip(min=self.min_dist, max=self.max_dist)
         p_sample = mask.astype(np.float32)
-        p_sample /= p_sample.sum()
+        p_sample /= d  # prefer closer pairs
+        p_sample /= p_sample.sum()  # normalize to get probabilities
         idx = rng.choice(np.arange(dists.size), p=p_sample.flatten())
         i, j = divmod(idx, dists.shape[1])
 
-        dist = dists[i, j]
-        lower_bound = (
-            float(rng.uniform(self.min_dist, dist)) if dist > self.min_dist else -1.0
-        )
+        dist = dists[i, j].clip(1e-3)
+        lower_bound = float(rng.triangular(0, dist, dist))
         upper_bound = (
-            float(rng.uniform(dist, self.max_dist)) if dist < self.max_dist else -1.0
+            float(rng.triangular(dist, dist, self.max_dist))
+            if dist < self.max_dist
+            else -1.0
         )
-        if upper_bound > 0.0 and rng.random() < 0.6:
+        # In general, interface constraints are more likely to upper bound only,
+        # so randomly drop the lower bound.
+        if upper_bound > 0.0 and rng.random() < 0.5:
             lower_bound = -1.0
-        if lower_bound > 0.0 and rng.random() < 0.2:
-            upper_bound = -1.0
 
         return Constraint(
             asym_id=(chain1.asym_id, chain2.asym_id),
@@ -366,9 +371,7 @@ class ConstraintSampling:
             return None
 
         dists = cdist(x1, x2).astype(np.float32)
-        mask = (
-            dists > INTERFACE_DISTANCE + 10.0
-        )  # add some buffer to avoid sampling near-interface pairs
+        mask = dists > self.max_dist
         if not mask.any():
             return None
 

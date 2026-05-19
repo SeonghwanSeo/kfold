@@ -292,6 +292,17 @@ class TensorLayout(TensorObj, PlainLayout):
         }
         return cls.from_dict(batched_fields)
 
+    def add_batch_dim(self, deepcopy: bool = False) -> Self:
+        """Add a batch dimension to the layout."""
+        assert not self.is_batched, "Layout is already batched."
+        if deepcopy:
+            return self.from_list([self])
+        else:
+            fields = {
+                name: tensor.unsqueeze(0) for name, tensor in self.to_dict().items()
+            }
+            return self.from_dict(fields)
+
     def to_list(self, deepcopy: bool = False) -> list[Self]:
         """Unpack a Batched Layout into a list of data."""
         assert self.is_batched, "Layout is not batched."

@@ -30,7 +30,6 @@ def collate(batches: list[tuple[FoldingInput, dict]]) -> tuple[FoldingInput, lis
 class DataModuleConfig(BaseConfig):
     # === Common config for data modules === #
     train_batch_size: int = 1
-    val_batch_size: int = 1
     num_workers: int = 0
     persistent_workers: bool = True
     pin_memory: bool = True
@@ -187,10 +186,9 @@ class TrainingDataModule(pl.LightningDataModule):
 
         return DataLoader(
             dataset,
-            batch_size=self.config.val_batch_size,
+            batch_size=None,  # No batching for validation
             sampler=sampler,
             shuffle=False,
-            collate_fn=collate,
             num_workers=self.config.num_workers,
             pin_memory=False,
             persistent_workers=False,
