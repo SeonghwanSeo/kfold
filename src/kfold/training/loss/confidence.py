@@ -419,7 +419,7 @@ class PAELoss(torch.nn.Module):
         frame_idx = f_input.token.frame_index[:, None, :, :]  # [B, 1, L, 3]
         repr_idx = f_input.token.repr_index[:, None, :]  # [B, 1, L]
         frame_mask = (
-            gather_dim(mask_gt, -1, frame_idx.flatten(-2)).unflatten(-2, (-1, 3)).all(-1)
+            gather_dim(mask_gt, -1, frame_idx.flatten(-2)).unflatten(-1, (-1, 3)).all(-1)
         )  # [B, N, L]
         repr_mask = gather_dim(mask_gt, -1, repr_idx)  # [B, N, L]
         mask_i = (
