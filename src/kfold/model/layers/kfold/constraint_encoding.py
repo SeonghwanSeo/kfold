@@ -17,11 +17,9 @@ class ConstraintEncoding(torch.nn.Module):
         self.max_dist: float = max_dist
         self.bin_size: float = bin_size
         self.no_upper_limit: float = max_dist + bin_size
-
         boundaries = torch.arange(min_dist, max_dist + 2 * bin_size, bin_size)
         self.register_buffer("boundaries", boundaries, persistent=False)
-
-        self.num_bins = len(boundaries) - 1
+        self.num_bins: int = len(boundaries) - 1
 
     def forward(
         self, f_input: FoldingInput, dtype: torch.dtype = torch.float32

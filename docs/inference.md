@@ -152,8 +152,8 @@ A `distance` entry includes:
 - `atom1`, `atom2`: The two atoms to be constrained, using the same `[chain_id, residue_number, atom_name]` format as bonds.
     - **Note**: For proteins and nucleic acids, the model always uses the center atoms (`CA` for protein, `C1'` for DNA/RNA), regardless of the `atom_name` provided.
 - `range`: A list `[lower_bound, upper_bound]` in Angstroms.
-    - Set a bound to `-1` to leave it unconstrained (e.g., `[-1, 5]` for a maximum distance of 5Å).
-    - The valid range for constrained distances is between 3.0Å and 22.0Å.
+    - The valid range for constrained distances is between 2.0Å and 22.0Å.
+    - Set a bound to `-1` to leave the upper bound unconstrained (e.g., `[5, -1]` for a minimum distance of 5Å)
 
 
 ## Running Inference
