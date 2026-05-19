@@ -40,7 +40,7 @@ def compute_plddt(
     probs = torch.softmax(logits, dim=-1)  # [*, L, num_bins]
     plddt = (probs * bin_centers).sum(dim=-1)  # [*, L]
     plddt *= mask.float()  # [*, L]
-    return plddt  # [*, L]
+    return plddt * 100.0  # [*, L]
 
 
 def compute_pde(
@@ -48,7 +48,7 @@ def compute_pde(
     bin_centers: torch.Tensor,
     mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Compute the predicted aligned error (PAE) from the PAE logits.
+    """Compute the predicted distance error (PDE) from the PDE logits.
 
     Parameters
     ----------
@@ -313,7 +313,7 @@ def summarize_confidence_metrics(
 ) -> tuple[list[dict], list[dict[str, np.ndarray]]]:
     if f_input.is_batched:
         raise NotImplementedError(
-            "full_complex_sample_ranking_metric does not support batched inputs"
+            "summarize_confidence_metrics does not support batched inputs"
         )
     sample_coords = model_out["diffusion"]["coordinates"]  # [Nsample, Natom, 3]
     summary_list = []
@@ -344,7 +344,7 @@ def summarize_confidence_metrics_single(
     """
     if f_input.is_batched:
         raise NotImplementedError(
-            "full_complex_sample_ranking_metric does not support batched inputs"
+            "summarize_confidence_metrics_single does not support batched inputs"
         )
     diffusion_out = model_out["diffusion"]
     confidence_out = model_out["confidence"]

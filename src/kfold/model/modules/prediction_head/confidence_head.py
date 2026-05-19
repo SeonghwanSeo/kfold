@@ -181,12 +181,18 @@ class ConfidenceHead(torch.nn.Module):
 
         Returns
         -------
-        pae: torch.Tensor
-            Tensor of shape (B, N, L, L) containing PAE score.
-        pde: torch.Tensor
-            Tensor of shape (B, N, L, L) containing PDE score.
-        plddt: torch.Tensor
-            Tensor of shape (B, N, Natom) containing pLDDT score.
+        pae_logits: torch.Tensor
+            Tensor of shape (B, N, L, L) containing PAE logits.
+        pae_bin_centers: torch.Tensor
+            Tensor of shape (num_pae_bins,) containing PAE bin centers.
+        pde_logits: torch.Tensor
+            Tensor of shape (B, N, L, L) containing PDE logits.
+        pde_bin_centers: torch.Tensor
+            Tensor of shape (num_pde_bins,) containing PDE bin centers.
+        plddt_logits: torch.Tensor
+            Tensor of shape (B, N, Natom, num_plddt_bins) containing pLDDT logits.
+        plddt_bin_centers: torch.Tensor
+            Tensor of shape (num_plddt_bins,) containing pLDDT bin centers.
         """
         pae_logits, pde_logits, plddt_logits, _ = self(f_input, s_inputs, s, z, x_pred)
         cfg = self.config

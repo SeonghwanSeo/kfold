@@ -13,7 +13,7 @@ from .query import Query
 
 
 class InferenceInput(NamedTuple):
-    """A input for inference (single query)."""
+    """An input for inference (single query)."""
 
     query: Query
     ref_struct: RefStructure
