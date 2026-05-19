@@ -364,7 +364,7 @@ def summarize_confidence_metrics_single(
 
     # Remove padding
     n_atoms: int = ref_struct.num_atoms
-    n_tokens: int = ref_struct.num_residues
+    n_tokens: int = ref_struct.num_tokens
     if not token_mask[:n_tokens].all():
         raise ValueError("All tokens must be valid (token_mask must be all True).")
     if not atom_mask[:n_atoms].all():
