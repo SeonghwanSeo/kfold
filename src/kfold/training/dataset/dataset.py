@@ -79,6 +79,7 @@ from kfold.utils.misc import hash_seq
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
+from .filter.base import BaseFilter
 from .sampler import BaseSampler, Sample
 from .utils import constraint_sampling, pre_crop
 
@@ -151,6 +152,7 @@ class TrainingDatasetConfig(DatasetConfig):
 
     weight: float = 1.0
     is_distillation: bool = False
+    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
 
@@ -708,28 +710,30 @@ class TrainingDataset(SafeLoadingDataset):
             train=True,
         )
         self.config: TrainingDatasetConfig = config
-        if self.seed is not None:
-            # Warn about fixed seed affecting randomness
-            self.logger.warning(
-                "Seed is set for TrainingDataset, which may affect randomness."
-            )
+        assert self.seed is None, (
+            "Seed should be None for training dataset to ensure randomness"
+        )
 
-        # For pre-cropping (RefStructure)
+        # For chain sampling for large complexes (> 20/50 chains)
         self.max_chains: int = max_chains
+
         # For main cropping (TokenizedStructure)
         self.max_tokens: int = max_tokens
         self.max_sequence_tokens: int = max_sequence_tokens
-
-        assert max_sequence_tokens >= max_tokens + (max_chains * 2), (
-            f"max_sequence_tokens should be greater than max_tokens to accommodate "
-            f"additional sequence tokens for PLM input."
+        assert max_sequence_tokens >= max_tokens + max_chains * 2, (
+            f"max_sequence_tokens should be greater than max_tokens + max_chains*2."
             f" (max_sequence_tokens={max_sequence_tokens}, max_tokens={max_tokens}, "
             f"max_chains={max_chains})"
         )  # +2 tokens per chain for [CLS] and [SEP]
-
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
 
+        # Filter metadatas
+        for filter_cfg in config.filters:
+            data_filter: BaseFilter = Registry.instantiate(filter_cfg)
+            self.metadatas = data_filter.filter(self.metadatas)
+
+        # Training data sampling
         if config.sampler is None:
             # Uniform sampling (complex-level)
             self.sampler: BaseSampler = BaseSampler()
@@ -889,17 +893,20 @@ class TrainingDataset(SafeLoadingDataset):
         """Get the folding input for the given sample."""
         f_input, struct_info = super().get_item(metadata, **kwargs)
 
-        # Add flag for confidence model training
-        train_confidence = False
+        # HACK: Hard-code the confidence head training flag.
         if not self.config.is_distillation:
+            # Train confidence head only.
             metadata = struct_info["structure"].metadata
-            if metadata.source == "rcsb" and metadata.exp is not None:
-                # Train the confidence head only on experimental structures.
-                resolution = metadata.exp.resolution
-                if resolution is not None and 0.1 <= resolution <= 4.0:
-                    train_confidence = True
-
+            assert metadata.exp is not None, (
+                "Experimental metadata must be available for confidence training."
+            )
+            resolution = metadata.exp.resolution
+            train_confidence = (resolution is not None) and (0.1 <= resolution <= 4.0)
+        else:
+            # For distillation dataset, we do not train confidence head.
+            train_confidence = False
         struct_info["train_confidence_head"] = train_confidence
+
         return f_input, struct_info
 
 

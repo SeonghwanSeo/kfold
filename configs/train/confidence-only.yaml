@@ -4,3 +4,4 @@ training:
   train_trunk: false
   train_distogram_head: false
   train_structure_module: false
+  train_confidence_head: true

@@ -369,12 +369,10 @@ class PAELoss(torch.nn.Module):
         max_dist: float = 32.0,
         num_bins: int = 64,
         eps: float = 1e-8,
-        return_zero: bool = False,
     ) -> None:
         super().__init__()
         self.num_bins: int = num_bins
         self.eps: float = eps
-        self.return_zero: bool = return_zero
         bin_size: float = (max_dist - min_dist) / num_bins
         bins = torch.linspace(
             min_dist + bin_size / 2, max_dist - bin_size / 2, num_bins
@@ -410,10 +408,6 @@ class PAELoss(torch.nn.Module):
         pae_loss : torch.Tensor
             The computed PAE loss of shape (B, N).
         """
-        if self.return_zero:
-            # Keep gradients flowing but return zero loss.
-            return (logits * 0.0).sum(dim=-1).mean(dim=(-1, -2))
-
         with torch.no_grad():
             e = self.get_alignment_error(x_pred, x_gt, mask_gt, f_input)  # [B, N, L, L]
 
@@ -425,7 +419,7 @@ class PAELoss(torch.nn.Module):
         frame_idx = f_input.token.frame_index[:, None, :, :]  # [B, 1, L, 3]
         repr_idx = f_input.token.repr_index[:, None, :]  # [B, 1, L]
         frame_mask = (
-            gather_dim(mask_gt, -1, frame_idx.flatten(-2)).unflatten(-2, (-1, 3)).all(-1)
+            gather_dim(mask_gt, -1, frame_idx.flatten(-2)).unflatten(-1, (-1, 3)).all(-1)
         )  # [B, N, L]
         repr_mask = gather_dim(mask_gt, -1, repr_idx)  # [B, N, L]
         mask_i = (
