@@ -102,8 +102,9 @@ class KFold(torch.nn.Module):
         num_recycles: int = 10,
         num_steps: int = 200,
         num_samples: int = 5,
+        return_embeddings: bool = False,
         return_traj: bool = False,
-    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+    ) -> tuple[dict[str, dict[str, torch.Tensor]], dict[str, float]]:
         """Forward pass of KFold model for model training.
 
         Parameters
@@ -121,16 +122,29 @@ class KFold(torch.nn.Module):
 
         Returns
         -------
-        model_out : dict[str, torch.Tensor]
-            Output dictionary containing sampled structures and intermediate features.
+        model_out : dict[str, dict[str, torch.Tensor]]
+            Output dictionary containing sampled structures and intermediate features:
+            - trunk: intermediate trunk outputs. (optional)
+            - distogram: predicted distogram logits.
+            - diffusion: sampled structures from diffusion head.
+            - confidence: predicted confidence metrics from confidence head.
+
         time_logs : dict[str, float]
             Dictionary containing time taken for each module during sampling.
         """
-        # Ensure batched input
-        f_input = f_input.from_list([f_input]) if not f_input.is_batched else f_input
+        # If input is not batched, add batch dimension for processing
+        # and remove it from output at the end.
+        if f_input.is_batched:
+            return_batched_output = True
+        else:
+            f_input = f_input.add_batch_dim()
+            return_batched_output = False
 
-        # Sanity check: ensure batch size is 1 for sampling
-        assert f_input.batch_size == 1, "Sampling currently only supports batch size of 1"
+        if f_input.batch_size != 1:
+            # TODO: Support batched inference.
+            raise NotImplementedError(
+                "Batched input with batch_size > 1 is not supported for inference yet."
+            )
 
         # Tokenize apo structure and feed into structure encoder input features
         for entity_id, apo_info in apo_dict.items():  # noqa
@@ -152,11 +166,16 @@ class KFold(torch.nn.Module):
             num_recycles,
             num_steps,
             num_samples,
+            return_embeddings=return_embeddings,
             return_traj=return_traj,
         )
 
         # remove batch dimension
-        model_out = {k: v.squeeze(0) for k, v in model_out.items()}
+        if not return_batched_output:
+            model_out = {
+                k: {kk: vv.squeeze(0) for kk, vv in v.items()}
+                for k, v in model_out.items()
+            }
 
         return model_out, time_logs
 
@@ -169,7 +188,7 @@ class KFold(torch.nn.Module):
         num_samples: int = 5,
         return_embeddings: bool = False,
         return_traj: bool = False,
-    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+    ) -> tuple[dict[str, dict[str, torch.Tensor]], dict[str, float]]:
         """Forward pass of KFold model for model training.
 
         Parameters
@@ -187,14 +206,22 @@ class KFold(torch.nn.Module):
         return_traj : bool, optional
             Whether to return sampling trajectories.
         """
-        dict_out: dict[str, torch.Tensor] = {}
+        dict_out: dict[str, dict[str, torch.Tensor]] = {}
         time_logs: dict[str, float] = {}
 
-        # Indicate whether to return batched output
-        return_batched_output = f_input.is_batched
+        # If input is not batched, add batch dimension for processing
+        # and remove it from output at the end.
+        if f_input.is_batched:
+            return_batched_output = True
+        else:
+            f_input = f_input.add_batch_dim()
+            return_batched_output = False
 
-        # Ensure batched input
-        f_input = self.ensure_batched_input(f_input)
+        if f_input.batch_size != 1:
+            # TODO: Support batched inference.
+            raise NotImplementedError(
+                "Batched input with batch_size > 1 is not supported for inference yet."
+            )
 
         # Embed inputs
         st = time.time()
@@ -235,7 +262,7 @@ class KFold(torch.nn.Module):
         time_logs["trunk"] = et - st
 
         if return_embeddings:
-            dict_out |= {
+            dict_out["trunk"] = {
                 "s_inputs": s_inputs,
                 "plm_inputs": plm_inputs,
                 "s_trunk": s_trunk,
@@ -245,11 +272,9 @@ class KFold(torch.nn.Module):
 
         # Distogram head
         st = time.time()
-        dict_out.update(
-            self.distogram_head.forward_inference(
-                f_input,
-                z_trunk,
-            )
+        dict_out["distogram"] = self.distogram_head.forward_inference(
+            f_input,
+            z_trunk,
         )
         et = time.time()
         time_logs["distogram_head"] = et - st
@@ -257,29 +282,25 @@ class KFold(torch.nn.Module):
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
         st = time.time()
-        dict_out.update(
-            self.diffusion_head.sample_structure(
-                f_input,
-                s_inputs,
-                s_trunk,
-                z_trunk,
-                num_steps,
-                num_samples,
-                return_traj=return_traj,
-            )
+        dict_out["diffusion"] = self.diffusion_head.sample_structure(
+            f_input,
+            s_inputs,
+            s_trunk,
+            z_trunk,
+            num_steps,
+            num_samples,
+            return_traj=return_traj,
         )
         et = time.time()
         time_logs["diffusion_head"] = et - st
 
         st = time.time()
-        dict_out.update(
-            self.confidence_head.forward_inference(
-                f_input,
-                s_inputs,
-                s_trunk,
-                z_trunk,
-                dict_out["coordinates"],
-            )
+        dict_out["confidence"] = self.confidence_head.forward_inference(
+            f_input,
+            s_inputs,
+            s_trunk,
+            z_trunk,
+            dict_out["diffusion"]["coordinates"],
         )
         et = time.time()
         time_logs["confidence_head"] = et - st
@@ -287,7 +308,7 @@ class KFold(torch.nn.Module):
         # If the input was not batched, remove the batch dimension
         if not return_batched_output:
             for key in dict_out:
-                dict_out[key] = dict_out[key].squeeze(0)
+                dict_out[key] = {k: v.squeeze(0) for k, v in dict_out[key].items()}
         return dict_out, time_logs
 
     # ============================================================
@@ -445,7 +466,6 @@ class KFold(torch.nn.Module):
             if drop_rate > 0.0:
                 drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
                 mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
-                _s_trunk = _s_trunk * mask[:, None, None]
                 _z_trunk = _z_trunk * mask[:, None, None, None]
 
             # Forward pass through confidence head
@@ -468,38 +488,6 @@ class KFold(torch.nn.Module):
     # ============================================================
     # Utility Methods
     # ============================================================
-    def ensure_batched_input(
-        self,
-        f_input: FoldingInput,
-        do_warning: bool = False,
-    ) -> FoldingInput:
-        """Ensure the input is batched. If not, add batch dimension of size 1.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            Input data for folding model.
-
-        Returns
-        -------
-        f_input_batched : FoldingInput
-            Batched input data for folding model.
-        """
-        if not f_input.is_batched:
-            # If single example is given, make it batched.
-            # However, this process copies tensors.
-            if do_warning:
-                logger.warning(
-                    "Input is not batched. Adding batch dimension of size 1."
-                    " This copies tensors and may slow down the process."
-                    " Please batch your inputs before moving to device:\n"
-                    "\tf_input = FoldingInput.from_list([f_input])",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            f_input = FoldingInput.from_list([f_input])
-        return f_input
-
     @classmethod
     def from_checkpoint(
         cls,

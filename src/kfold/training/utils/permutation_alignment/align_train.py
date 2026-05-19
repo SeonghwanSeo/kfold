@@ -81,14 +81,19 @@ def get_aligned_true_coords(
         "Batch dimension should be removed before calling this function."
     )
 
+    chain_symmetries = symmetry_dict["chain"]
+    residue_symmetries = symmetry_dict["residue"]
+
+    # Convert to tuple
+    # HACK: I cannot understand why the type is list instead of tuple.
+    # I guess it's because of the torch lightning dataloader collate function...
+    chain_symmetries = {k: [tuple(g) for g in v] for k, v in chain_symmetries.items()}
+
     with torch.autocast(f_input.device.type, enabled=False), torch.no_grad():
         # 1. Multi-chain permutation alignment.
         try:
             gt_coords = _do_optimal_chain_permutation(
-                ref_struct,
-                f_input,
-                pred_coords,
-                symmetry_dict["chain"],
+                ref_struct, f_input, pred_coords, chain_symmetries
             )
         except Exception as e:
             # Fallback to using the cropped GT coordinates without permutation.
@@ -103,10 +108,7 @@ def get_aligned_true_coords(
 
         # 3. Atomic permutation alignment.
         gt_coords = _do_optimal_atom_permutation(
-            f_input,
-            gt_coords,
-            pred_coords,
-            symmetry_dict["residue"],
+            f_input, gt_coords, pred_coords, residue_symmetries
         )
 
     return gt_coords

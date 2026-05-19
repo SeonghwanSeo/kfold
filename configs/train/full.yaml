@@ -29,7 +29,6 @@ data:
 
   # DataLoader
   train_batch_size: 1 # NOTE: Overridden by global_hparam
-  val_batch_size: 1
   num_workers: 8
   persistent_workers: true
   pin_memory: false
@@ -107,7 +106,6 @@ optimizer:
   lr_start_decay_after_n_steps: 50000
   lr_decay_every_n_steps: 50000
   lr_decay_factor: 0.95
-  use_ema: true
   ema_decay: 0.999
   load_opt_state_from_checkpoint: true
 
@@ -121,8 +119,6 @@ loss:
     chain_com: 0.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
-    # Confidence loss weights
-    pae: 0.0 # 1 for final stage training
 
   # Distogram loss
   distogram_loss:
