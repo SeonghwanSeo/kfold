@@ -10,7 +10,7 @@ cov_xy: 300.0
 time_min: 1e-8
 time_max: 0.9999
 gamma_max: 24.0
-time_power: 1.0
+gamma_power: 1.0
 eta: 1.0
 
 # Inference time schedule
@@ -22,10 +22,4 @@ churn_step_power: 1.0
 ode_step_power: 4.0
 
 # Training time schedule
-train_time_schedule_params: [-0.8, 1.8, 2.0]
-
-# Training interpolation parameters
-# gamma_com_t = scale * gamma_t * (t ** time_power)
-train_com_noise_scale: 1.0
-train_com_noise_time_power: 1.0
-train_com_noise_time_min: 0.1
+train_time_schedule_params: [-2.15, 2.25]
