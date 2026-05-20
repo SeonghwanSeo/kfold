@@ -170,6 +170,9 @@ class KFoldECSI(BaseStructureModule):
         # Inference sampling parameters
         align_x_0_hat_to_x_t : bool
             Whether to rigidly align the predicted x_0_hat to x_t at each sampling step.
+        sampler_step_scale : float
+            Multiplier for deterministic ODE update displacement. A value of 1.5
+            mirrors the step scale convention used by AF3/EDM samplers.
         churn_factor : float
             The factor controlling the magnitude of forward-pinned churn noise.
         churn_end_time : float
@@ -204,6 +207,7 @@ class KFoldECSI(BaseStructureModule):
         align_x_0_hat_to_x_t: bool = True
         sampler_mode: str = "ode"
         sampler_ode_type: str = "si"
+        sampler_step_scale: float = 1.0
         sampler_switch_gamma: float | None = None
         sampler_after_switch_mode: str = "ode"
         sampler_after_switch_ode_type: str = "si"
@@ -258,10 +262,13 @@ class KFoldECSI(BaseStructureModule):
                 f"Unknown ECSI sampler_after_switch_ode_type: "
                 f"{cfg.sampler_after_switch_ode_type}"
             )
+        if cfg.sampler_step_scale <= 0:
+            raise ValueError("ECSI sampler_step_scale must be positive.")
         if cfg.sampler_switch_gamma is not None and cfg.sampler_switch_gamma < 0:
             raise ValueError("ECSI sampler_switch_gamma must be non-negative.")
         self.sampler_mode: str = cfg.sampler_mode
         self.sampler_ode_type: str = cfg.sampler_ode_type
+        self.sampler_step_scale: float = cfg.sampler_step_scale
         self.sampler_switch_gamma: float | None = cfg.sampler_switch_gamma
         self.sampler_after_switch_mode: str = cfg.sampler_after_switch_mode
         self.sampler_after_switch_ode_type: str = cfg.sampler_after_switch_ode_type
@@ -626,6 +633,7 @@ class KFoldECSI(BaseStructureModule):
                 t_next,
                 mode=sampler_mode,
                 ode_type=sampler_ode_type,
+                step_scale=self.sampler_step_scale,
             )
             append_traj(x_t)
 
@@ -844,6 +852,7 @@ class KFoldECSI(BaseStructureModule):
         t_next: float,
         mode: str = "ode",  # 'ode' or 'sde'
         ode_type: str = "si",  # 'si' or 'ecsi'
+        step_scale: float = 1.0,
     ) -> torch.Tensor:
         """SDE step for ECSI sampling.
         See Algorithm 1 of ECSI paper.
@@ -866,6 +875,9 @@ class KFoldECSI(BaseStructureModule):
             Update mode: 'sde' or 'ode'
         ode_type : str, optional
             Type of update: 'si' or 'ecsi'.
+        step_scale : float, optional
+            Multiplier for the deterministic ODE displacement, analogous to the
+            step scale used in AF3/EDM samplers.
 
         """
         C = self.coeff
@@ -912,11 +924,12 @@ class KFoldECSI(BaseStructureModule):
                 alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
                 c_skip = beta_tm / beta_t
                 c_update = alpha_tm - alpha_t * c_skip
-                x_upd = c_skip * x_t + c_update * x_0_hat
+                x_target = c_skip * x_t + c_update * x_0_hat
             else:
                 # ECSI ODE update
                 alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
                 gamma_t, gamma_tm = C.gamma(t), C.gamma(t_next)
                 z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_T) / _clip(gamma_t)
-                x_upd = alpha_tm * x_0_hat + beta_tm * x_T + gamma_tm * z_hat
+                x_target = alpha_tm * x_0_hat + beta_tm * x_T + gamma_tm * z_hat
+            x_upd = x_t + step_scale * (x_target - x_t)
         return x_upd

@@ -17,6 +17,7 @@ eta: 1.0
 align_x_0_hat_to_x_t: true
 sampler_mode: ode
 sampler_ode_type: si
+sampler_step_scale: 1.0
 sampler_switch_gamma: null
 sampler_after_switch_mode: ode
 sampler_after_switch_ode_type: si
