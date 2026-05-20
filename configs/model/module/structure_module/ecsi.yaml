@@ -15,6 +15,11 @@ eta: 1.0
 
 # Inference time schedule
 align_x_0_hat_to_x_t: true
+sampler_mode: ode
+sampler_ode_type: si
+sampler_switch_gamma: null
+sampler_after_switch_mode: ode
+sampler_after_switch_ode_type: si
 churn_factor: 0.1
 churn_end_time: 0.5
 churn_step_fraction: 0.4

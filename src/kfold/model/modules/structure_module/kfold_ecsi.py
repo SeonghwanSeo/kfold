@@ -202,6 +202,11 @@ class KFoldECSI(BaseStructureModule):
 
         # Inference sampling
         align_x_0_hat_to_x_t: bool = True
+        sampler_mode: str = "ode"
+        sampler_ode_type: str = "si"
+        sampler_switch_gamma: float | None = None
+        sampler_after_switch_mode: str = "ode"
+        sampler_after_switch_ode_type: str = "si"
         churn_factor: float = 0.1
         churn_end_time: float = 0.5
         churn_step_fraction: float = 0.4
@@ -240,6 +245,26 @@ class KFoldECSI(BaseStructureModule):
 
         # Inference time sampling
         self.align_x_0_hat_to_x_t: bool = cfg.align_x_0_hat_to_x_t
+        if cfg.sampler_mode not in {"ode", "sde"}:
+            raise ValueError(f"Unknown ECSI sampler_mode: {cfg.sampler_mode}")
+        if cfg.sampler_ode_type not in {"si", "ecsi"}:
+            raise ValueError(f"Unknown ECSI sampler_ode_type: {cfg.sampler_ode_type}")
+        if cfg.sampler_after_switch_mode not in {"ode", "sde"}:
+            raise ValueError(
+                f"Unknown ECSI sampler_after_switch_mode: {cfg.sampler_after_switch_mode}"
+            )
+        if cfg.sampler_after_switch_ode_type not in {"si", "ecsi"}:
+            raise ValueError(
+                f"Unknown ECSI sampler_after_switch_ode_type: "
+                f"{cfg.sampler_after_switch_ode_type}"
+            )
+        if cfg.sampler_switch_gamma is not None and cfg.sampler_switch_gamma < 0:
+            raise ValueError("ECSI sampler_switch_gamma must be non-negative.")
+        self.sampler_mode: str = cfg.sampler_mode
+        self.sampler_ode_type: str = cfg.sampler_ode_type
+        self.sampler_switch_gamma: float | None = cfg.sampler_switch_gamma
+        self.sampler_after_switch_mode: str = cfg.sampler_after_switch_mode
+        self.sampler_after_switch_ode_type: str = cfg.sampler_after_switch_ode_type
         self.churn_factor: float = cfg.churn_factor
         self.churn_end_time: float = cfg.churn_end_time
         self.churn_step_fraction: float = cfg.churn_step_fraction
@@ -589,8 +614,19 @@ class KFoldECSI(BaseStructureModule):
             # Centering the predicted x_0_hat
             x_0_hat = do_centering(x_0_hat, mask=mask)
 
+            sampler_mode, sampler_ode_type = self._select_update_method(t)
+
             # Update x_t
-            x_t = self._update_step(x_noisy, x_0_hat, x_T, mask, t, t_next)
+            x_t = self._update_step(
+                x_noisy,
+                x_0_hat,
+                x_T,
+                mask,
+                t,
+                t_next,
+                mode=sampler_mode,
+                ode_type=sampler_ode_type,
+            )
             append_traj(x_t)
 
         sample_out: dict[str, torch.Tensor] = {}
@@ -787,6 +823,17 @@ class KFoldECSI(BaseStructureModule):
 
         return x_tm, tm
 
+    def _select_update_method(self, t: float) -> tuple[str, str]:
+        if self.sampler_switch_gamma is None:
+            return self.sampler_mode, self.sampler_ode_type
+
+        # Reverse sampling starts near t=1 where gamma is also small. The switch is
+        # intended for the late low-gamma phase after the gamma envelope has peaked.
+        gamma_peak_time = 0.5 ** (1.0 / self.coeff.gamma_power)
+        if t <= gamma_peak_time and self.coeff.gamma(t) <= self.sampler_switch_gamma:
+            return self.sampler_after_switch_mode, self.sampler_after_switch_ode_type
+        return self.sampler_mode, self.sampler_ode_type
+
     def _update_step(
         self,
         x_t: torch.Tensor,
@@ -818,7 +865,7 @@ class KFoldECSI(BaseStructureModule):
         mode : str, optional
             Update mode: 'sde' or 'ode'
         ode_type : str, optional
-            Type of ODE update: 'si' or 'ecsi'.
+            Type of update: 'si' or 'ecsi'.
 
         """
         C = self.coeff
@@ -827,29 +874,35 @@ class KFoldECSI(BaseStructureModule):
 
         if mode == "sde":
             # SDE update
-            gamma_t, gamma_dot = C.gamma(t), C.gamma_deriv(t)
+            gamma_t = C.gamma(t)
             eps: float = C.eps(t)
-
-            x_N = x_T  # For clarity with the paper's notation.
-
-            # Line 5
-            # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
-            z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_N) / _clip(gamma_t)
-
-            # Line 7: Sample noise for SDE step
-            # \bar{z} ~ N(0, I)
             noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
 
-            # Line 8: Compute drift term
-            # d = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_N
-            #     + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
-            drift = (
-                alpha_dot * x_0_hat
-                + beta_dot * x_N
-                + (gamma_dot + eps / _clip(gamma_t)) * z_hat
-            )
+            if ode_type == "si":
+                # SI SDE drift pinned to the denoised endpoint:
+                # b = (beta_dot / beta) x_t
+                #     + (alpha_dot - alpha * beta_dot / beta) x_0_hat
+                f_t = beta_dot / _clip(beta_t)
+                s_t = alpha_dot - alpha_t * beta_dot / _clip(beta_t)
+                drift = f_t * x_t + s_t * x_0_hat
+            else:
+                gamma_dot = C.gamma_deriv(t)
+                x_N = x_T  # For clarity with the paper's notation.
 
-            # Line 9: Euler-Maruyama update
+                # Line 5
+                # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
+                z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_N) / _clip(gamma_t)
+
+                # Line 8: Compute drift term
+                # d = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_N
+                #     + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
+                drift = (
+                    alpha_dot * x_0_hat
+                    + beta_dot * x_N
+                    + (gamma_dot + eps / _clip(gamma_t)) * z_hat
+                )
+
+            # Euler-Maruyama update
             dt = t - t_next
             x_upd = x_t - drift * dt + _sqrt(2 * eps * dt) * noise
         else:

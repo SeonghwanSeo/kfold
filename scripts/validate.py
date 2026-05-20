@@ -1,5 +1,7 @@
 import argparse
+import json
 import random
+from pathlib import Path
 
 import lightning.pytorch as pl
 import torch
@@ -39,6 +41,11 @@ def parse_args() -> argparse.Namespace:
         help="Return and save diffusion trajectories during validation.",
     )
     parser.add_argument(
+        "--no_save_predictions",
+        action="store_true",
+        help="Do not save predicted structures even when --save_dir is provided.",
+    )
+    parser.add_argument(
         "--traj_format",
         type=str,
         default="pdb",
@@ -52,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Number of validation samples to use",
     )
+    parser.add_argument(
+        "--override",
+        nargs="*",
+        default=None,
+        help="Config overrides in OmegaConf dotlist format.",
+    )
     return parser.parse_args()
 
 
@@ -59,14 +72,16 @@ def validate(args) -> None:
     # To ignore warning
     torch.set_float32_matmul_precision("high")
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, override_args=args.override)
 
     # Set random seed
     pl.seed_everything(cfg.train.seed, workers=False)
 
     cfg.train.validation.num_steps = args.num_steps
     cfg.train.validation.num_recycles = args.num_recycles
-    cfg.train.validation.save_predictions = args.save_dir is not None
+    cfg.train.validation.save_predictions = (
+        args.save_dir is not None and not args.no_save_predictions
+    )
     cfg.train.validation.return_traj = args.save_traj
     cfg.train.validation.traj_format = args.traj_format
 
@@ -105,6 +120,7 @@ def validate(args) -> None:
         default_root_dir=args.save_dir,
         logger=False,
         devices=cfg.train.trainer.devices,
+        num_nodes=cfg.train.trainer.num_nodes,
         accelerator=cfg.train.trainer.accelerator,
         precision=cfg.train.trainer.precision,
         strategy=cfg.train.trainer.strategy,
@@ -113,7 +129,25 @@ def validate(args) -> None:
         enable_checkpointing=False,
     )
 
-    trainer.validate(model_module, datamodule=data_module)
+    results = trainer.validate(model_module, datamodule=data_module)
+    if args.save_dir is not None:
+        save_dir = Path(args.save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        def to_jsonable(value):
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu()
+                if value.numel() == 1:
+                    return value.item()
+                return value.tolist()
+            return value
+
+        with open(save_dir / "validation_metrics.json", "w") as f:
+            json.dump(
+                [{k: to_jsonable(v) for k, v in result.items()} for result in results],
+                f,
+                indent=2,
+            )
 
 
 if __name__ == "__main__":
