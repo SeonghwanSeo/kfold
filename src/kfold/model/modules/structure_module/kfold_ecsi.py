@@ -516,8 +516,9 @@ class KFoldECSI(BaseStructureModule):
         # Apply centering/coordinate augmentation
         x_0 = self.random_augmentation(x_0, mask=x_0_mask)
 
-        # Rigidly align x_T to x_0
-        x_T = custom_rigid_align(x_T, x_0, x_0_mask, rotation_only=True)
+        # Rigidly align x_T to x_0, including translation, so the training bridge
+        # is built between centered endpoints.
+        x_T = custom_rigid_align(x_T, x_0, x_0_mask, rotation_only=False)
 
         # === Interpolate to get x_t === #
         C = self.coeff
@@ -603,7 +604,7 @@ class KFoldECSI(BaseStructureModule):
         append_traj(x_t)
         for step_idx in range(num_steps):
             # Apply random augmentation
-            x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask, centering=False)
+            x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask, centering=True)
 
             t = times[step_idx]
             t_next = times[step_idx + 1]
@@ -670,7 +671,7 @@ class KFoldECSI(BaseStructureModule):
         x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, L]
 
         # Apply random augmentation to prior coords
-        x_T = self.random_augmentation(x_T, mask=x_T_mask, centering=False)
+        x_T = self.random_augmentation(x_T, mask=x_T_mask, centering=True)
         return x_T
 
     def inference_step(
