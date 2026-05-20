@@ -22,7 +22,7 @@ class ConstraintSampling:
 
     def __init__(
         self,
-        min_dist: float = 3.0,
+        min_dist: float = 2.0,
         max_dist: float = 22.0,
         prob_constraint: float = 0.1,
         max_constraints: int = 5,
@@ -333,6 +333,7 @@ class ConstraintSampling:
         d = dists.clip(min=self.min_dist, max=self.max_dist)
         p_sample = mask.astype(np.float32)
         p_sample /= d  # prefer closer pairs
+        p_sample[~mask] = 0.0
         p_sample /= p_sample.sum()  # normalize to get probabilities
         idx = rng.choice(np.arange(dists.size), p=p_sample.flatten())
         i, j = divmod(idx, dists.shape[1])

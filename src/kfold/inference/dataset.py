@@ -12,8 +12,8 @@ from .data_pipeline import InputDataPipeline
 from .query import Query
 
 
-class InferenceBatch(NamedTuple):
-    """A batch of data for inference (single query)."""
+class InferenceInput(NamedTuple):
+    """An input for inference (single query)."""
 
     query: Query
     ref_struct: RefStructure
@@ -54,7 +54,7 @@ class InferenceDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.queries)
 
-    def __getitem__(self, index: int) -> InferenceBatch:
+    def __getitem__(self, index: int) -> InferenceInput:
         """Get the folding input for the given input."""
         query: Query = self.queries[index]
 
@@ -64,10 +64,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
 
-        # Add batch dimension
-        f_input = FoldingInput.from_list([f_input])
-
-        return InferenceBatch(query, ref_struct, f_input, struct_tok_input)
+        return InferenceInput(query, ref_struct, f_input, struct_tok_input)
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 64"""

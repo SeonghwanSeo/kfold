@@ -1,4 +1,5 @@
 import warnings
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -13,27 +14,36 @@ class ExponentialMovingAverage:
         self,
         model: torch.nn.Module,
         decay: float,
-        use_num_updates: bool = True,
+        submodules_to_ignore: Sequence[str] | None = None,
     ):
         """
         Args:
           model: The `torch.nn.Module` whose parameters will be tracked.
           decay: The exponential decay.
-          use_num_updates: Whether to use number of updates when computing
-            averages.
         """
-        if decay < 0.0 or decay > 1.0:
-            raise ValueError("Decay must be between 0 and 1")
         self.decay = decay
-        self.num_updates = 0 if use_num_updates else None
+
+        self.submodules_to_ignore = (
+            tuple(submodules_to_ignore) if submodules_to_ignore is not None else tuple()
+        )
 
         # Save as {name: tensor}
+        # NOTE: We store all parameters regardless of `requires_grad` status
+        # since only the confidence model is trained at the last phase,
+        # while other parameters are frozen.
         self.shadow_params: dict[str, torch.Tensor] = {
             name: p.clone().detach()
             for name, p in model.named_parameters()
-            if p.requires_grad
+            if not name.startswith(self.submodules_to_ignore)
         }
+
+        # For temporary storage of parameters when applying EMA weights for evaluation.
         self.collected_params: dict[str, torch.Tensor] = {}
+        self.device = next(iter(self.shadow_params.values())).device
+
+    def to(self, device: torch.device):
+        self.device = device
+        self.shadow_params = {k: v.to(device) for k, v in self.shadow_params.items()}
 
     def update(self, model: torch.nn.Module):
         """
@@ -44,12 +54,7 @@ class ExponentialMovingAverage:
           model: The `torch.nn.Module` containing the parameters to update.
         """
         decay = self.decay
-        if self.num_updates is not None:
-            self.num_updates += 1
-            decay = min(decay, (1 + self.num_updates) / (10 + self.num_updates))
-
         one_minus_decay = 1.0 - decay
-
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad and name in self.shadow_params:
@@ -63,18 +68,24 @@ class ExponentialMovingAverage:
             state_dict: The state dictionary of EMA to check compatibility with.
         """
         incoming_params = state_dict["shadow_params"]
-        if len(incoming_params) != len(self.shadow_params):
+        missing_keys = set(self.shadow_params.keys()) - set(incoming_params.keys())
+        if missing_keys:
             warnings.warn(
-                f"Parameter count mismatch: "
-                f"EMA has {len(self.shadow_params)} vs Model has {len(incoming_params)}"
+                f"Missing keys in incoming model: {missing_keys}\n"
+                f"EMA keys: {set(self.shadow_params.keys())}\n"
+                f"Incoming keys: {set(incoming_params.keys())}"
+            )
+            return False
+        unexpected_keys = set(incoming_params.keys()) - set(self.shadow_params.keys())
+        if unexpected_keys:
+            warnings.warn(
+                f"Unexpected keys in incoming model: {unexpected_keys}\n"
+                f"EMA keys: {set(self.shadow_params.keys())}\n"
+                f"Incoming keys: {set(incoming_params.keys())}"
             )
             return False
 
         for name, s_param in self.shadow_params.items():
-            if name not in incoming_params:
-                warnings.warn(f"Key {name} not found in incoming model.")
-                return False
-
             param = incoming_params[name]
             if param.data.shape != s_param.data.shape:
                 warnings.warn(
@@ -91,7 +102,7 @@ class ExponentialMovingAverage:
           model: The `torch.nn.Module` to update with the stored moving averages.
         """
         for name, param in model.named_parameters():
-            if param.requires_grad and name in self.shadow_params:
+            if name in self.shadow_params:
                 param.data.copy_(self.shadow_params[name].data)
 
     def store(self, model: torch.nn.Module):
@@ -101,7 +112,9 @@ class ExponentialMovingAverage:
           model: The `torch.nn.Module` whose parameters are to be temporarily stored.
         """
         self.collected_params = {
-            name: param.clone() for name, param in model.named_parameters()
+            name: param.clone()
+            for name, param in model.named_parameters()
+            if not name.startswith(self.submodules_to_ignore)
         }
 
     def restore(self, model: torch.nn.Module):
@@ -116,12 +129,13 @@ class ExponentialMovingAverage:
         """
         for name, param in model.named_parameters():
             if name in self.collected_params:
-                param.data.copy_(self.collected_params[name].data)
+                if not name.startswith(self.submodules_to_ignore):
+                    param.data.copy_(self.collected_params[name].data)
+        self.collected_params = {}
 
     def state_dict(self):
         return dict(
             decay=self.decay,
-            num_updates=self.num_updates,
             shadow_params=self.shadow_params,
         )
 
@@ -131,11 +145,14 @@ class ExponentialMovingAverage:
         device: torch.device,
     ):
         self.decay = state_dict["decay"]
-        self.num_updates = state_dict["num_updates"]
         # Restore as dictionary
-        self.shadow_params = {
-            k: v.to(device) for k, v in state_dict["shadow_params"].items()
-        }
-
-    def to(self, device: torch.device):
-        self.shadow_params = {k: v.to(device) for k, v in self.shadow_params.items()}
+        for k, v in state_dict["shadow_params"].items():
+            if k not in self.shadow_params:
+                warnings.warn(f"Key {k} not found in current EMA parameters.")
+            elif v.shape != self.shadow_params[k].shape:
+                raise ValueError(
+                    f"Shape mismatch for key {k}: "
+                    f"EMA {self.shadow_params[k].shape} vs Loaded {v.shape}"
+                )
+            else:
+                self.shadow_params[k] = v.clone().detach().to(device)

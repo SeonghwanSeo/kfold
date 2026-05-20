@@ -24,6 +24,7 @@ from kfold.training.utils.binned_loss_logging import (
     TimeBinnedLossLogger,
 )
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
+from kfold.utils import confidence_metrics
 from kfold.utils.geometry.rigid_align import compute_rmsd
 from kfold.utils.registry import MAIN_MODULE
 
@@ -74,10 +75,10 @@ class OptimizerConfig(_Config):
     lr_decay_every_n_steps: int = 50000
     lr_decay_factor: float = 0.95
     # ema
-    use_ema: bool = True
     ema_decay: float = 0.999
     # multi-phase training
     load_opt_state_from_checkpoint: bool = True
+    final_training_stage: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -161,9 +162,6 @@ class KFoldTrainingModule(pl.LightningModule):
         # Save hyperparameters
         self.save_hyperparameters(to_dict(self.global_config))
 
-        # EMA state
-        self.use_ema: bool = self.optimizer_config.use_ema
-
         # Whether to train structure and confidence modules
         self.train_trunk: bool = self.training_config.train_trunk
         self.train_distogram_head: bool = self.training_config.train_distogram_head
@@ -183,6 +181,13 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Freeze parts of the model if needed
         self.freeze_submodules()
+
+        # Setup EMA
+        self.ema: ExponentialMovingAverage = ExponentialMovingAverage(
+            model=self.model,
+            decay=self.optimizer_config.ema_decay,
+            submodules_to_ignore=("sequence_encoder", "structure_encoder"),
+        )
 
         # Setup losses and metrics
         self.setup_losses()
@@ -235,7 +240,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         self.frozen_modules = []
         if self.train_trunk is False:
-            self.frozen_modules += ["input_embedder", "trunk"]
+            self.frozen_modules += ["plm_input_embedder", "input_embedder", "trunk"]
 
         if self.train_distogram_head is False:
             self.frozen_modules += ["distogram_head"]
@@ -266,51 +271,39 @@ class KFoldTrainingModule(pl.LightningModule):
         loss_config = self.loss_config
         self.loss_weights: dict[str, float] = loss_config.weights
 
-        if self.train_structure_module:
-            # Distogram loss
-            if self.loss_weights["distogram"] > 0:
-                self.distogram_loss = loss_fn.distogram.DistogramLoss(
-                    **loss_config.distogram_loss
-                )
+        # Distogram loss
+        self.distogram_loss = loss_fn.distogram.DistogramLoss(
+            **loss_config.distogram_loss
+        )
 
-            # Diffusion loss
-            diffusion_loss_config = loss_config.diffusion_loss
-            self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(
-                **diffusion_loss_config["mse_loss"]
-            )
-            if self.loss_weights["bond"] > 0:
-                # Only used in fine-tuning stage
-                self.bond_loss = loss_fn.diffusion.BondLoss(
-                    **diffusion_loss_config["bond_loss"]
-                )
-            if self.loss_weights["smooth_lddt"] > 0:
-                # Only used in regular training stage
-                self.smooth_lddt_loss = loss_fn.diffusion.SmoothLDDTLoss(
-                    **diffusion_loss_config["smooth_lddt_loss"]
-                )
+        # Diffusion loss
+        diffusion_loss_config = loss_config.diffusion_loss
+        self.weighted_mse_loss = loss_fn.diffusion.WeightedMSELoss(
+            **diffusion_loss_config["mse_loss"]
+        )
+        # Only used in fine-tuning stage
+        self.bond_loss = loss_fn.diffusion.BondLoss(**diffusion_loss_config["bond_loss"])
+        # Only used in regular training stage
+        self.smooth_lddt_loss = loss_fn.diffusion.SmoothLDDTLoss(
+            **diffusion_loss_config["smooth_lddt_loss"]
+        )
 
-        if self.train_confidence_head:
-            confidence_loss_config = loss_config.confidence_loss
-            # pLDDT loss
-            self.plddt_loss = loss_fn.confidence.PLDDTLoss(
-                **confidence_loss_config["plddt_loss"]
-            )
+        confidence_loss_config = loss_config.confidence_loss
+        # pLDDT loss
+        self.plddt_loss = loss_fn.confidence.PLDDTLoss(
+            **confidence_loss_config["plddt_loss"]
+        )
 
-            # PDE loss
-            self.pde_loss = loss_fn.confidence.PDELoss(
-                **confidence_loss_config["pde_loss"]
-            )
+        # PDE loss
+        self.pde_loss = loss_fn.confidence.PDELoss(**confidence_loss_config["pde_loss"])
 
-            # Experimentally resolved loss
-            self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss(
-                **confidence_loss_config["experimentally_resolved_loss"]
-            )
+        # Experimentally resolved loss
+        self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss(
+            **confidence_loss_config["experimentally_resolved_loss"]
+        )
 
-            # PAE loss
-            return_zero_pae = self.loss_weights["pae"] == 0
-            self.pae_loss = loss_fn.confidence.PAELoss(
-                **confidence_loss_config["pae_loss"], return_zero=return_zero_pae
-            )
+        # PAE loss
+        self.pae_loss = loss_fn.confidence.PAELoss(**confidence_loss_config["pae_loss"])
 
     def setup_metrics(self):
         """Setup metrics for validation"""
@@ -389,7 +382,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_samples=num_samples,
                 return_traj=return_traj,
             )
-            return {"sample": dict_out}
+            return dict_out
         else:
             raise ValueError(f"Invalid mode: {mode}")
 
@@ -530,27 +523,26 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def validation_step(
         self,
-        batch: tuple[FoldingInput, list[dict]],
+        batch: tuple[FoldingInput, dict],
         batch_idx: int,
         dataloader_idx: int = 0,
     ):
         val_config = self.validation_config
         num_samples = val_config.num_diffusion_samples
 
-        f_input, full_struct_list = batch
-        assert f_input.batch_size == 1, "Validation batch size should be 1"
-        struct_info = full_struct_list[0]
+        f_input, struct_info = batch
+        assert not f_input.is_batched, "Validation input should not be batched."
         ref_struct: RefStructure = struct_info["structure"]
         symmetry_dict: dict = struct_info["symmetry"]
 
         try:
-            sample_out = self(
+            model_out: dict[str, dict[str, torch.Tensor]] = self(
                 f_input=f_input,
                 num_recycles=val_config.num_recycles,
                 num_steps=val_config.num_steps,
                 num_samples=num_samples,
                 mode="validation",
-            )["sample"]
+            )
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 print("**WARNING**: ran out of memory, skipping batch")
@@ -559,11 +551,14 @@ class KFoldTrainingModule(pl.LightningModule):
                 return
             else:
                 raise e
+        diffusion_out = model_out["diffusion"]
+        distogram_out = model_out["distogram"]
+        confidence_out = model_out["confidence"]
 
-        sample_out = {k: v.squeeze(0) for k, v in sample_out.items()}  # remove batch dim
-
-        n_atoms: int = int(f_input.atom.pad_mask.sum().item())
-        n_tokens: int = int(f_input.token.pad_mask.sum().item())
+        token_mask = f_input.token.pad_mask  # [L,]
+        atom_mask = f_input.atom.pad_mask  # [Natom,]
+        n_tokens: int = int(token_mask.sum().item())
+        n_atoms: int = int(atom_mask.sum().item())
         assert n_atoms == ref_struct.num_atoms
 
         # Compute validation metrics
@@ -572,7 +567,7 @@ class KFoldTrainingModule(pl.LightningModule):
         with torch.autocast("cuda", torch.float32):
             # Permute predicted and true coordinates to align
             for i in range(num_samples):
-                pred_coords_i = sample_out["coordinates"][i, :n_atoms]
+                pred_coords_i = diffusion_out["coordinates"][i, :n_atoms]
                 struct_i = validation_metrics.get_aligned_gt_structure(
                     ref_struct,
                     pred_coords_i,
@@ -587,9 +582,15 @@ class KFoldTrainingModule(pl.LightningModule):
             # Select the best sample based on global PDE score.
             top1_index = None  # Use oracle sample.
             if self.train_confidence_head:
+                pde = confidence_metrics.compute_pde(
+                    confidence_out["pde_logits"],
+                    confidence_out["pde_bin_centers"],
+                    mask=token_mask,
+                )  # [Nsample, Ntoken, Ntoken]
+                prob_contact = distogram_out["prob_contact"]
                 gpde: torch.Tensor = validation_metrics.compute_global_pde(
-                    sample_out["pde"][:, :n_tokens, :n_tokens],
-                    sample_out["prob_contact"][:n_tokens, :n_tokens],
+                    pde[:, :n_tokens, :n_tokens],
+                    prob_contact[:n_tokens, :n_tokens],
                 )  # [Nsample,]
                 assert gpde.shape == (num_samples,)
                 top1_index = int(gpde.argmin().item())
@@ -639,14 +640,14 @@ class KFoldTrainingModule(pl.LightningModule):
                     prefix = str(save_dir / f"{name}-sample{i}")
                     self.save_structure_and_metrics(
                         ref_struct=ref_struct_aligned[i],
-                        pred_coords=sample_out["coordinates"][i, :n_atoms],
+                        pred_coords=diffusion_out["coordinates"][i, :n_atoms],
                         metrics=sample_metrics[i],
                         prefix=prefix,
                     )
 
                 # Save trajectory if available
-                if "traj" in sample_out:
-                    traj = sample_out["traj"][0]  # remove batch dim
+                if "traj" in diffusion_out:
+                    traj = diffusion_out["traj"][0]  # remove batch dim
                     self.save_trajectory(
                         ref_struct,
                         traj,
@@ -836,8 +837,6 @@ class KFoldTrainingModule(pl.LightningModule):
             A dictionary containing loss metrics.
         """
         metrics: dict[str, torch.Tensor] = {}
-        alpha_pae = self.loss_weights["pae"]
-
         num_samples = x_pred.shape[1]
         loss_mask = loss_mask.float()[:, None]  # [B, 1]
         num_valid_samples = (loss_mask.sum() * num_samples).clamp(1)
@@ -859,10 +858,9 @@ class KFoldTrainingModule(pl.LightningModule):
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
         L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input)
         L_pae = L_pae * loss_mask  # [B, Nsample]
-        if alpha_pae > 0:
-            metrics["pae_loss"] = L_pae.detach().sum() / num_valid_samples
+        metrics["pae_loss"] = L_pae.detach().sum() / num_valid_samples
 
-        L_confidence_per_sample = L_pde + L_plddt + L_resolved + alpha_pae * L_pae
+        L_confidence_per_sample = L_pde + L_plddt + L_resolved + L_pae
         L_confidence = L_confidence_per_sample.sum() / num_valid_samples
 
         metrics["confidence_loss"] = L_confidence.detach()
@@ -931,51 +929,6 @@ class KFoldTrainingModule(pl.LightningModule):
 
         pass
 
-    # === EMA === #
-    # Started from https://github.com/jwohlwend/boltz
-    @property
-    def is_ema_initialized(self) -> bool:
-        return hasattr(self, "_ema")
-
-    @property
-    def ema(self) -> ExponentialMovingAverage:
-        assert hasattr(self, "_ema"), "EMA has not been initialized."
-        return self._ema
-
-    @ema.setter
-    def ema(self, value: ExponentialMovingAverage):
-        self._ema: ExponentialMovingAverage = value
-
-    def on_train_start(self) -> None:
-        if self.use_ema:
-            if not self.is_ema_initialized:
-                ema_decay = self.optimizer_config.ema_decay
-                self.ema = ExponentialMovingAverage(self, decay=ema_decay)
-            self.ema.to(self.device)
-
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
-        optimizer.step(closure=optimizer_closure)
-        if self.use_ema:
-            self.ema.update(self)
-
-    def prepare_train(self) -> None:
-        if self.use_ema:
-            self.ema.restore(self)
-
-    def prepare_eval(self) -> None:
-        if self.use_ema:
-            if not self.is_ema_initialized:
-                ema_decay = self.optimizer_config.ema_decay
-                self.ema = ExponentialMovingAverage(self, decay=ema_decay)
-            self.ema.store(self)
-            self.ema.copy_to(self)
-
-    def on_validation_start(self):
-        self.prepare_eval()
-
-    def on_validation_end(self) -> None:
-        self.prepare_train()
-
     def _remove_orig_mod_from_state_dict(
         self, state_dict: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1017,14 +970,13 @@ class KFoldTrainingModule(pl.LightningModule):
             checkpoint["state_dict"]
         )
 
-        # Add EMA state dict if EMA is used
-        if self.use_ema:
-            ema_state_dict = self.ema.state_dict()
-            # Remove '._orig_mod.' from EMA state dict keys
-            ema_state_dict["shadow_params"] = self._remove_orig_mod_from_state_dict(
-                ema_state_dict["shadow_params"]
-            )
-            checkpoint["ema"] = ema_state_dict
+        # Add EMA state dict
+        # Remove '._orig_mod.' from EMA state dict keys
+        ema_state_dict = self.ema.state_dict()
+        ema_state_dict["shadow_params"] = self._remove_orig_mod_from_state_dict(
+            ema_state_dict["shadow_params"]
+        )
+        checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         if self.config.optimizer.load_opt_state_from_checkpoint is False:
@@ -1035,18 +987,12 @@ class KFoldTrainingModule(pl.LightningModule):
             state["state"] = init_state["state"]
             state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
             # checkpoint.pop("lr_schedulers", None)
-        if self.use_ema and "ema" in checkpoint:
-            # Create EMA object if not exists
-            ema_decay = self.optimizer_config.ema_decay
-            self.ema = ExponentialMovingAverage(self, decay=ema_decay)
-            self.load_ema_state_dict(checkpoint["ema"])
+        # Load EMA state dict
+        self.load_ema_state_dict(checkpoint["ema"])
 
     def load_state_dict(
-        self,
-        state_dict: dict[str, Any],
-        strict: bool = True,
-        assign: bool = False,
-    ):  # type: ignore[override]
+        self, state_dict: dict[str, Any], strict: bool = True, assign: bool = False
+    ):  # type: ignore
         """Override load_state_dict to handle EMA state dict."""
         # Remove '._orig_mod.' from state dict keys if present
         state_dict = self._remove_orig_mod_from_state_dict(state_dict)
@@ -1054,10 +1000,48 @@ class KFoldTrainingModule(pl.LightningModule):
         state_dict = self._add_orig_mod_to_state_dict(state_dict, self.state_dict())
         # Remove 'model.' prefix from state dict keys if present
         state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
-        return self.model.load_state_dict(state_dict, strict=strict)
+        out = self.model.load_state_dict(state_dict, strict=strict)
+
+        if self.config.optimizer.final_training_stage:
+            # Confidence-only training, so replace the structure-related
+            # parameters to EMA's parameters.
+            ema_state_dict = self.ema.state_dict()
+            override_prefixes = tuple(self.frozen_modules)
+            n = 0
+            for k, v in ema_state_dict["shadow_params"].items():
+                if k.startswith(override_prefixes):
+                    n += 1
+                    self.model.state_dict()[k].copy_(v)
+            print(
+                f"Override {n} parameters from EMA for final training stage "
+                f"with prefixes {override_prefixes}."
+            )
+
+        return out
+
+    # === EMA === #
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):  # type: ignore
+        super().optimizer_step(epoch, batch_idx, optimizer, optimizer_closure)
+
+        if self.ema.device != self.device:
+            self.ema.to(self.device)
+        self.ema.update(self.model)
+
+    def on_validation_start(self):
+        if self.ema.device != self.device:
+            self.ema.to(self.device)
+        self.ema.store(self.model)
+        self.ema.copy_to(self.model)
+
+    def on_validation_end(self) -> None:
+        self.ema.restore(self.model)
 
     def load_ema_state_dict(self, state_dict: dict[str, Any]):
         """Load EMA state dict."""
+        # Remove 'model.' prefix from EMA state dict keys if present.
+        state_dict["shadow_params"] = {
+            k.removeprefix("model."): v for k, v in state_dict["shadow_params"].items()
+        }
         # Remove '._orig_mod.' from EMA state dict keys if present.
         state_dict["shadow_params"] = self._remove_orig_mod_from_state_dict(
             state_dict["shadow_params"]
@@ -1066,13 +1050,10 @@ class KFoldTrainingModule(pl.LightningModule):
         state_dict["shadow_params"] = self._add_orig_mod_to_state_dict(
             state_dict["shadow_params"], self.ema.shadow_params
         )
-        if self.ema.compatible(state_dict):
-            self.ema.load_state_dict(state_dict, device=torch.device("cpu"))
-            self.ema.to(self.device)
-        else:
-            print("Warning: EMA state not loaded due to incompatible model parameters.")
-            self.use_ema = False  # Disable EMA if not compatible
-            del self._ema
+        assert self.ema.compatible(state_dict), (
+            "EMA state dict is not compatible with the model."
+        )
+        self.ema.load_state_dict(state_dict, device=torch.device("cpu"))
 
     # === Helper functions === #
     def save_structure_and_metrics(
@@ -1083,6 +1064,7 @@ class KFoldTrainingModule(pl.LightningModule):
         prefix: str,
     ):
         """Save predicted and ground-truth structures as mmCIF files."""
+        # TODO: save confidence too.
         num_atoms = ref_struct.num_atoms
         assert pred_coords.shape == (num_atoms, 3), (
             "pred_coords must have shape (Natoms, 3)."
@@ -1099,7 +1081,7 @@ class KFoldTrainingModule(pl.LightningModule):
         rmsd = metrics["metrics"]["rmsd"]
         lddt = metrics["metrics"]["lddt"] * 100  # scale to [0, 100]
         pred_path = f"{prefix}-rmsd{rmsd:.2f}-lddt{lddt:.2f}.cif"
-        self.writer.write_new_coords(ref_struct, pred_coords.cpu().numpy(), pred_path)
+        self.writer.write_new_coords(ref_struct, pred_path, pred_coords.cpu().numpy())
 
     def save_trajectory(
         self,

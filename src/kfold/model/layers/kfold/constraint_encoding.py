@@ -8,7 +8,7 @@ class ConstraintEncoding(torch.nn.Module):
 
     def __init__(
         self,
-        min_dist: float = 3.0,
+        min_dist: float = 2.0,
         max_dist: float = 22.0,
         bin_size: float = 1.0,
     ) -> None:
@@ -16,13 +16,10 @@ class ConstraintEncoding(torch.nn.Module):
         self.min_dist: float = min_dist
         self.max_dist: float = max_dist
         self.bin_size: float = bin_size
-        self.no_lower_limit: float = min_dist - bin_size
         self.no_upper_limit: float = max_dist + bin_size
-
-        boundaries = torch.arange(min_dist - bin_size, max_dist + 2 * bin_size, bin_size)
+        boundaries = torch.arange(min_dist, max_dist + 2 * bin_size, bin_size)
         self.register_buffer("boundaries", boundaries, persistent=False)
-
-        self.num_bins = len(boundaries) - 1
+        self.num_bins: int = len(boundaries) - 1
 
     def forward(
         self, f_input: FoldingInput, dtype: torch.dtype = torch.float32
@@ -45,13 +42,10 @@ class ConstraintEncoding(torch.nn.Module):
         upper_bound = f_input.constraint.upper_bound  # [B, num_conds]
 
         # Handle -1 flags:
-        # -1 lower bound means no lower limit (use min_dist for bins)
         # -1 upper bound means no upper limit (use infinity)
-        no_lower_bound = lower_bound == -1
+        lower_bound = lower_bound.clamp(self.min_dist, self.no_upper_limit)
         no_upper_bound = upper_bound == -1
-        lower_bound = lower_bound.clamp(self.no_lower_limit, self.no_upper_limit)
-        upper_bound = upper_bound.clamp(self.no_lower_limit, self.no_upper_limit)
-        lower_bound[no_lower_bound] = self.no_lower_limit
+        upper_bound = upper_bound.clamp(self.min_dist, self.no_upper_limit)
         upper_bound[no_upper_bound] = self.no_upper_limit
 
         B, L = f_input.batch_size, f_input.num_tokens

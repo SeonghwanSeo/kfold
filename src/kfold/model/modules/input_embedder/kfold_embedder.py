@@ -41,7 +41,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
         # Constraint-related parameters
-        constraint_min_dist: float = 3.0
+        constraint_min_dist: float = 2.0
         constraint_max_dist: float = 20.0
         constraint_bin_size: float = 1.0
 

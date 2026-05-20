@@ -4,6 +4,7 @@ import logging
 import pathlib
 import time
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -14,6 +15,7 @@ from kfold.data.utils.writer import KFoldWriter
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.query import Query, parse_input_files
 from kfold.model.models import KFold
+from kfold.utils import confidence_metrics
 
 logger = logging.getLogger("kfold.inference")
 logging.basicConfig(
@@ -208,7 +210,8 @@ def main():
         ref_struct: RefStructure = batch[1]
         f_input: FoldingInput = batch[2]
         apo_dict: dict[int, dict] = batch[3]  # (entity_id -> apo_info)
-        assert f_input.batch_size == 1, "Inference batch size should be 1"
+        if f_input.is_batched:
+            raise NotImplementedError("Batching is not supported for inference.")
 
         name: str = query.name
         seed: int = query.seed
@@ -249,41 +252,48 @@ def main():
         save_dir = args.out_dir / name
         assert save_dir.exists()
 
-        # Save sampled coordinates
-        sample_coords = model_out["coordinates"]  # [num_samples, Natom, 3]
-        # Remove padding atoms to match reference structure
-        assert ref_struct.num_atoms == f_input.atom.pad_mask.sum().item()
-        num_atoms = ref_struct.num_atoms
-        sample_coords_arr = sample_coords[:, :num_atoms, :].cpu().numpy()
-        plddt_arr = model_out["plddt"].cpu().numpy()  # [num_samples, Natom]
+        n_atoms = ref_struct.num_atoms
+        sample_coords = model_out["diffusion"]["coordinates"][:, :n_atoms].cpu().numpy()
+        confidence_summary, confidence_scores = (
+            confidence_metrics.summarize_confidence_metrics(
+                f_input, ref_struct, model_out
+            )
+        )
 
-        for i in range(args.num_samples):
+        # Save Diffusion Samples
+        for i in range(sample_coords.shape[0]):
             sample_name = f"{name}_seed-{seed}_sample-{i}"
-            # Save structure in mmCIF format
             save_path = save_dir / f"{sample_name}.cif"
-            coords_i = sample_coords_arr[i]
-            plddt_i = plddt_arr[i]
+
+            # Outputs to save
+            coords_i = sample_coords[i]
+            summary_i = confidence_summary[i]
+            score_i = confidence_scores[i]
+
             try:
-                writer.write_new_coords(ref_struct, save_path, coords_i, plddt_i)
+                writer.write_new_coords(ref_struct, save_path, coords_i, score_i["plddt"])
             except Exception as e:
-                logger.error(f"Failed to save sample {i} for {name}: {e}")
+                logger.error(f"Error saving sample {i} for {name}: {e}")
                 continue
 
             # Save confidence scores in JSON format
             confidence_path = save_dir / f"{sample_name}_confidences.json"
-            avg_plddt = model_out["plddt"][i, :num_atoms].mean().item()
-            avg_pde = model_out["pde"][i, :num_atoms, :num_atoms].mean().item()
-            confidence_data = {
-                "plddt": avg_plddt,
-                "pde": avg_pde,
-            }
             with open(confidence_path, "w") as f:
-                json.dump(confidence_data, f, indent=4)
+                json.dump(summary_i, f, indent=2)
+
+            # Save confidence scores in npz format
+            confidence_npz_path = save_dir / f"{sample_name}_confidences.npz"
+            np.savez(
+                confidence_npz_path,
+                plddt=score_i["plddt"],
+                pae=score_i["pae"],
+                pde=score_i["pde"],
+            )
 
         if args.save_trajectory:
             # Save trajectory
             # [num_samples, num_frames, Natom, 3]
-            traj_coords = model_out["traj"][:, :, :num_atoms, :]
+            traj_coords = model_out["diffusion"]["traj"][:, :, :n_atoms, :]
             traj_coords = traj_coords.cpu().numpy()
             for i in range(args.num_samples):
                 save_path = save_dir / f"{name}_seed-{seed}_sample-{i}_traj.pdb"
