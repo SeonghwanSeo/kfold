@@ -165,9 +165,6 @@ class Component:
     model_coords: np.ndarray | None  # (n_atoms, 3) with dtype=np.float16
     symmetries: Sequence[list[int]] | None = None  # Permutational symmetries
 
-    # TODO: remove this
-    interaction_types: np.ndarray | None = None
-
     @property
     def mol(self) -> Chem.Mol:
         """Get the RDKit molecule object."""
@@ -577,7 +574,7 @@ class Component:
 
         # 6. Compute symmetries if requested
         if compute_symmetry:
-            symmetries = rdkit_utils.compute_molecule_symmetry(mol)
+            symmetries = rdkit_utils.compute_molecule_symmetry(mol, max_symmetries=1000)
         else:
             symmetries = None
 

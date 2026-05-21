@@ -445,9 +445,6 @@ class AtomLayout:
     charge: np.ndarray  # [Natom,], int
     coords: np.ndarray  # [Natom, 3], float32
     bfactor: np.ndarray  # [L,], int
-    # TODO: remove.
-    apo_coords: np.ndarray  # [Natom, 3], float32
-    apo_plddt: np.ndarray  # [L], int
 
     def __len__(self) -> int:
         return len(self.name)

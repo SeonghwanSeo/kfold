@@ -124,7 +124,7 @@ class Metadata:
     id: str
     source: str  # e.g., "rcsb"
     exp: ExperimentRecord | None = None
-    prediction: PredictionRecord | None = None
+    pred: PredictionRecord | None = None
     chains: list[ChainInfo]
     interfaces: list[InterfaceInfo] = field(
         default_factory=list
@@ -140,12 +140,12 @@ class Metadata:
         # FIXME: we may want to add more sources later
         assert self.source in {
             "rcsb",  # experimentally determined structures from RCSB PDB
-            "prediction",  # synthetic structures from structure prediction
+            "pred",  # synthetic structures from structure prediction
             "query",  # User query for inference
         }, f"Unsupported source: {self.source}"
 
         if self.source == "query":
-            assert self.exp is None and self.prediction is None, (
+            assert self.exp is None and self.pred is None, (
                 "Query metadata should not have exp or prediction records."
             )
             assert len(self.interfaces) == 0, "Query metadata should not have interfaces."
@@ -212,8 +212,8 @@ class Metadata:
         }
         if self.exp:
             data["exp"] = self.exp.to_dict()
-        if self.prediction:
-            data["prediction"] = self.prediction.to_dict()
+        if self.pred:
+            data["pred"] = self.pred.to_dict()
         return data
 
     @classmethod
@@ -226,10 +226,10 @@ class Metadata:
         else:
             exp = None
 
-        if data.get("prediction", None):
-            prediction = PredictionRecord.from_dict(data["prediction"])
+        if data.get("pred", None):
+            pred = PredictionRecord.from_dict(data["prediction"])
         else:
-            prediction = None
+            pred = None
 
         return cls(
             id=data["id"],
@@ -237,7 +237,7 @@ class Metadata:
             chains=chains,
             interfaces=interfaces,
             exp=exp,
-            prediction=prediction,
+            pred=pred,
         )
 
     def save_json(self, filepath: str | pathlib.Path) -> None:

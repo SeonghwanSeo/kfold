@@ -117,7 +117,7 @@ def process_pdbe_ccd_component_and_save(
             num_confs=num_confs,
             compute_symmetry=compute_symmetry,
             date_cutoff=date_cutoff,
-            timeout=120,
+            timeout=600,
             rng=rng,
         )
     except Exception as e:
@@ -256,15 +256,15 @@ def main():
         if args.num_conformers is None:
             logger.warning(
                 "Number of conformers not specified or non-positive. "
-                "Defaulting to 10 conformers for training data."
+                "Defaulting to 100 conformers for training data."
             )
-            args.num_conformers = 10
+            args.num_conformers = 100
         if args.num_conformers_standard_residues is None:
             logger.warning(
                 "Number of conformers for standard residues not specified. "
-                "Defaulting to 100 conformers for standard residues."
+                "Defaulting to 1000 conformers for standard residues."
             )
-            args.num_conformers_standard_residues = 100
+            args.num_conformers_standard_residues = 1000
         compute_symmetry = True
     else:
         logger.info("Processing CCD data for evaluation.")

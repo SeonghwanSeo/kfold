@@ -13,10 +13,9 @@ rcsb-train/
       - coords: np.ndarray of shape (L, 37, 3), dtype float32
     apo_unitok.lmdb     # pre-computed structure tokens for apo structures.
     apo_lookup.json     # mapping from each chain to apo structure(s).
-afdb-distillation/ ...  # no apo.lmdb or apo_lookup.json (label=apo)
+af2-long/ ...           # simple dataset with AF2 structures.
     manifest.json
     structure.lmdb/
-    apo_unitok.lmdb     # pre-computed structure tokens for apo structures.
 rcsb-val/ ...
 
 
@@ -70,7 +69,7 @@ from kfold.data.pipelines import (
     tokenization,
 )
 from kfold.data.types.ccd import CCD
-from kfold.data.types.metadata import Metadata
+from kfold.data.types.metadata import ChainInfo, Metadata, PredictionRecord
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
@@ -784,11 +783,7 @@ class TrainingDataset(SafeLoadingDataset):
         metadata_id: str = metadata.id
 
         # Initialize random number generator (create new rng based on metadata_id)
-        if self.seed is not None:
-            offset = int(hash_seq(metadata.id), 16)
-            rng = np.random.default_rng((self.seed + offset) % (1 << 32))
-        else:
-            rng = np.random.default_rng()
+        rng = np.random.default_rng()
 
         # Load structure (NOTE: ref_struct.metadata == metadata)
         ref_struct: RefStructure = self.load_ref_structure(metadata)
@@ -1000,7 +995,54 @@ class MonomerDistillationDataset(DistillationDataset):
     - We directly use holo structure as input.
     - After prior sampling, the apo coordinates and structure tokens are dropped.
       i.e., trunk does not use apo information while diffusion bridge uses it.
+
+    - Metadata: We use the simple metadata format with only id.
     """
+
+    @override
+    def get_item_safe(
+        self, index: int, num_trials: int = 100
+    ) -> tuple[FoldingInput, StructInfo]:
+        """Get the folding input for the given index, with retry on failure.
+        NOTE: This is overridden to use `self.samples` instead of `self.metadatas`.
+        """
+        trials = []
+        for _ in range(num_trials):
+            sample = self.samples[index]
+            metadata_dict = sample.metadata
+            metadata = Metadata(
+                id=metadata_dict["id"],
+                source="pred",
+                pred=PredictionRecord(**metadata_dict["pred"]),
+                chains=[
+                    ChainInfo(
+                        name="A",
+                        type=C.ChainType.PROTEIN.value,
+                        entity_id=1,
+                        asym_id=1,
+                        sym_id=1,
+                        num_residues=0,
+                        num_atoms=0,
+                        num_tokens=0,
+                    )
+                ],
+            )
+            try:
+                return self.get_item(metadata, asym_ids=sample.asym_id)
+            except (KeyboardInterrupt, SystemExit) as e:
+                raise e
+            except Exception as e:
+                sample_id = sample.metadata["id"]
+                self.logger.error(
+                    f"Error loading index {sample_id}({index}): {e}. Retrying..."
+                )
+                if not self.safe_load:
+                    raise e
+                index = np.random.randint(0, len(self))
+                trials.append(sample)
+        raise RuntimeError(
+            f"Failed to load data after {num_trials} attempts. Tried: {trials}"
+        )
 
     @override
     def load_ref_structure(self, metadata: Metadata) -> RefStructure:
@@ -1016,7 +1058,6 @@ class MonomerDistillationDataset(DistillationDataset):
             with np.load(byte_stream) as data:
                 sequence = data["sequence"].item().decode("utf-8")
                 coordinates = data["coordinates"]  # [Natom, 3]
-                b_factors = data["b_factors"]  # [Natom]
 
         ccd_sequence = [C.residue.PROTEIN_ONE_TO_THREE[aa] for aa in sequence]
         chain = structure_preparation.prepare_ref_chain(
@@ -1029,7 +1070,9 @@ class MonomerDistillationDataset(DistillationDataset):
         )
         # The coordinates and b_factors from npz are already ordered
         chain.atom.coords[:] = coordinates
-        chain.atom.bfactor[:] = b_factors
+        metadata.chains[0].num_residues = chain.num_residues
+        metadata.chains[0].num_atoms = chain.num_atoms
+        metadata.chains[0].num_tokens = chain.num_tokens
 
         ref_struct = RefStructure(
             chains=[chain], connections=[], metadata=metadata.copy()
@@ -1037,11 +1080,37 @@ class MonomerDistillationDataset(DistillationDataset):
         return ref_struct
 
     @override
+    def load_lookup_table(self) -> dict:
+        return {}
+
+    @override
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
         """Get the apo lookup for the given reference structure."""
-        return {}
+        c = ref_struct.chains[0]
+        seq = c.get_sequence()
+        ccd_sequence = c.get_ccd_sequence()
+
+        res_atom_dict = C.atom.residue_atoms
+        atom37_order = C.atom.protein_atom37_order
+
+        # Convert to atom37 format
+        apo_coords = c.atom.coords  # [Natom, 3]
+        apo_coords_37 = np.full((c.num_residues, 37, 3), np.nan, dtype=np.float32)
+        g_atom_i = 0
+        for i, restype in enumerate(ccd_sequence):
+            atoms = res_atom_dict[restype]
+            natoms = len(atoms)
+            st, end = g_atom_i, g_atom_i + natoms
+            atom_indices = [atom37_order[a] for a in atoms]
+            apo_coords_37[i, atom_indices] = apo_coords[st:end]
+            g_atom_i += natoms
+        assert g_atom_i == c.num_atoms, (
+            f"Total atom counts {g_atom_i} does not match chain.num_atoms {c.num_atoms}."
+        )
+
+        return {c.entity_id: {"coords": apo_coords_37, "seq": seq}}
 
     @override
     def populate_structure_tokens(
@@ -1171,4 +1240,8 @@ class ValidationDataset(SafeLoadingDataset):
 
     def setup(self) -> None:
         """Additional setup for subclasses."""
-        self.metadatas.sort(key=lambda m: Metadata.from_dict(m).num_tokens)
+
+        def get_num_tokens(m: dict) -> int:
+            return sum(c["num_tokens"] for c in m["chains"])
+
+        self.metadatas.sort(key=lambda m: get_num_tokens(m))

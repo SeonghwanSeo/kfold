@@ -194,11 +194,11 @@ def prepare_metadata_from_synthetic_data(
 ) -> Metadata:
     """Parse metadata from CIF block."""
     # Parse experiment record
-    prediction = PredictionRecord(model=model)
+    pred_record = PredictionRecord(model=model)
     return Metadata(
         id=name,
         source="prediction",
-        prediction=prediction,
+        pred=pred_record,
         chains=[],  # Filled later in parsing
         interfaces=[],  # Filled later in parsing
     )
@@ -616,11 +616,15 @@ def prepare_ref_structure(
                 is_atom2_found = True
 
         if not (is_atom1_found and is_atom2_found):
+            res_name1 = c1.residue.name[res_idx1 - 1]
+            res_name2 = c2.residue.name[res_idx2 - 1]
+            atom1_key = f"{label_id1}:{res_idx1}({res_name1}):{atom1}"
+            atom2_key = f"{label_id2}:{res_idx2}({res_name2}):{atom2}"
             logger.warning(
                 f"Skipping connection: atoms not found in {metadata.id}: "
-                f"({label_id1}:{res_idx1}:{atom1}, {label_id2}:{res_idx2}:{atom2}).\n"
-                f"Valid atoms in {label_id1}:{res_idx1}: {valid_atoms1.tolist()}\n"
-                f"Valid atoms in {label_id2}:{res_idx2}: {valid_atoms2.tolist()}"
+                f"({atom1_key} - {atom2_key}).\n"
+                f"Valid atoms in {atom1_key}: {valid_atoms1.tolist()}\n"
+                f"Valid atoms in {atom2_key}: {valid_atoms2.tolist()}"
             )
             continue
         connections.append(
@@ -644,7 +648,7 @@ def prepare_ref_structure(
         # Save label_asym_id/auth_asym_id, which is same to visualized in RCSB
         label_asym_id: LabelId = "".join(filter(str.isalpha, name))
         chain_info.label_asym_id = label_asym_id
-        chain_info.auth_asym_id = label_id_to_auth_id[label_asym_id]
+        chain_info.auth_asym_id = label_id_to_auth_id.get(label_asym_id, label_asym_id)
         metadata.chains.append(chain_info)
 
     return RefStructure(

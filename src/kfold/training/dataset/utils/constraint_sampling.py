@@ -131,12 +131,10 @@ class ConstraintSampling:
             threshold = INTRA_PROTEIN_CONTACT_DISTANCE
             center_atom = "CA"
             min_sequence_separation = 24
-            prob_dynamic = 0.5
         else:
             threshold = INTRA_NUCLEIC_ACID_CONTACT_DISTANCE
             center_atom = "C1'"
             min_sequence_separation = 12
-            prob_dynamic = 0.0
         d_min = 0 if sample_contact else threshold
         d_max = threshold if sample_contact else self.max_dist + 5.0
         return self._sample_intra_chain_constraint(
@@ -145,7 +143,6 @@ class ConstraintSampling:
             min_sequence_separation,
             min_distance=d_min,
             max_distance=d_max,
-            prob_dynamic=prob_dynamic,
             rng=rng,
         )
 
@@ -156,7 +153,6 @@ class ConstraintSampling:
         min_sequence_separation: int,
         min_distance: float,
         max_distance: float,
-        prob_dynamic: float,
         rng: np.random.Generator,
     ) -> Constraint | None:
         """Sample an intra-chain constraint from a polymer chain."""
@@ -195,31 +191,9 @@ class ConstraintSampling:
         if not mask.any():
             return None
 
-        x_apo = chain.atom.apo_coords[is_center]
-        mask_apo = np.isfinite(x_apo).all(axis=-1)
-        is_apo_available = mask_apo.any()
-
-        if is_apo_available and rng.random() < prob_dynamic:
-            # Use the difference between holo and apo distances as a proxy for
-            # dynamic regions.
-            d_apo = cdist(x_apo, x_apo).astype(np.float32, copy=False)
-            diff = np.abs(d_holo - d_apo)
-            mask &= np.isfinite(diff)
-            if not mask.any():
-                return None
-            # Normalize the difference based on the apo distance
-            diff /= d_apo + 1e-6
-            # Smoothing the probability
-            p_sample = np.sqrt(diff)
-        else:
-            p_sample = np.ones_like(d_holo, dtype=np.float32)
-
-        p_sample[~mask] = 0.0
-        if p_sample.sum() == 0.0:
-            return None
-
         # Sample a residue pair.
         L = res_indices.size
+        p_sample = mask.astype(np.float32)
         p_sample /= p_sample.sum()
         idx = rng.choice(np.arange(L * L), p=p_sample.flatten())
         i, j = divmod(idx, L)
