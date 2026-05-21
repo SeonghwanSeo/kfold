@@ -1,7 +1,9 @@
 _yaml_: "default-train.yaml"
 
-name: afdb-short
-is_distillation: true
+name: af2-long
+type: "monomer-distillation"
+prob_drop_apo: 1.0
+prob_drop_struct_token: 1.0
 
 sampler: null
 
@@ -13,11 +15,9 @@ cropper:
   w_spatial_interface: 0.0
 
 apo_init:
+  # Use harsh perturbation for AFDB to improve robustness.
   prob_perturbation: 1.0
-  # Use harsher perturbation than longer one.
-  protein_perturbation:
+  perturbation:
     bioprior:
-      min_steps: 10
-      max_steps: 30
-  # no ligand
-  ligand_perturbation: null
+      min_steps: 5
+      max_steps: 20

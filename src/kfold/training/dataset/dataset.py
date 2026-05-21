@@ -65,8 +65,8 @@ from kfold.data.pipelines import (
     apo_initialization,
     featurization,
     prior_sampling,
-    sequence_masking,
     structure_cleaning,
+    structure_preparation,
     tokenization,
 )
 from kfold.data.types.ccd import CCD
@@ -79,7 +79,6 @@ from kfold.utils.misc import hash_seq
 from kfold.utils.registry import Registry
 
 from .cropper import BaseCropper
-from .filter.base import BaseFilter
 from .sampler import BaseSampler, Sample
 from .utils import constraint_sampling, pre_crop
 
@@ -140,19 +139,24 @@ class TrainingDatasetConfig(DatasetConfig):
 
     Attributes
     ----------
+    type: str
+        Type of the training dataset, e.g. "monomer-distillation".
     weight : float
         Weight of the dataset during training.
-    is_distillation : bool
-        Whether the dataset is not experimental data.
+    prob_drop_apo : float
+        Probability of dropping apo structure for each chain.
+    prob_drop_struct_token : float
+        Probability of dropping structure tokens for each chain.
     sampler : BaseSampler.Config | None
         Sampler configuration for generating samples.
     cropper : BaseCropper.Config | None
         Cropper configuration for cropping structures.
     """
 
+    type: str
     weight: float = 1.0
-    is_distillation: bool = False
-    filters: list[BaseFilter.Config] = dataclasses.field(default_factory=list)
+    prob_drop_apo: float = 0.0  # probability of dropping apo structure
+    prob_drop_struct_token: float = 0.0  # probability of dropping structure tokens
     sampler: BaseSampler.Config | None
     cropper: BaseCropper.Config | None
 
@@ -230,15 +234,12 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         self.lookup_table: dict = self.load_lookup_table()
 
         # === Initialize modules === #
-        self.apo_initializer = apo_initialization.ApoInitializer(
-            config.apo_init, self.ccd
-        )
+        self.apo_initializer = apo_initialization.ApoInitializer(config.apo_init)
         self.tokenizer: tokenization.Tokenizer = tokenizer
         self.featurizer: featurization.InputFeaturizer = featurizer
         self.prior_sampler: prior_sampling.PriorSampler | None = prior_sampler
         self.num_priors: int = 4 if train else 5  # default number of prior samples
 
-        # Additional setup can be done in subclasses
         self.setup()
 
     def __len__(self) -> int:
@@ -313,123 +314,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             self._lmdb_env.close()
 
     # === Core dataset methods === #
-    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
-        """Get the structure for the given index."""
-        name = metadata.id
-        key_bytes = name.encode("utf-8")
-        with self.lmdb_env.begin(write=False) as txn:
-            value_bytes = txn.get(key_bytes)
-            if value_bytes is None:
-                raise KeyError(f"Record {name} not found in LMDB.")
-
-        # Use io.BytesIO to wrap the raw bytes
-        with io.BytesIO(value_bytes) as byte_stream:
-            ref_struct = RefStructure.load_npz(byte_stream)
-
-        # NOTE: Validate loaded record matches requested metadata
-        # If there is no problem, the cluster ID (for training) and
-        # low_homology flag (for validation) will be missing in npz
-        ref_metadata = ref_struct.metadata
-        assert ref_metadata.id == name, (
-            f"Loaded ID {ref_metadata.id} does not match requested ID {name}."
-        )
-        assert ref_metadata.num_chains == metadata.num_chains, (
-            f"Loaded num_chains {ref_metadata.num_chains} does not match "
-            f"requested num_chains {metadata.num_chains}."
-        )
-        assert ref_metadata.num_residues == metadata.num_residues, (
-            f"Loaded num_residues {ref_metadata.num_residues} does not match "
-            f"requested num_residues {metadata.num_residues}."
-        )
-        assert ref_metadata.num_interfaces == metadata.num_interfaces, (
-            f"Loaded num_interfaces {ref_metadata.num_interfaces} does not match "
-            f"requested num_interfaces {metadata.num_interfaces}."
-        )
-        # Copy metadata (to update cluster_id if needed)
-        ref_struct.metadata = metadata.copy()
-
-        return ref_struct
-
-    def cleanup_structure(self, ref_struct: RefStructure) -> RefStructure:
-        """Clean up the reference structure as needed."""
-        # NOTE: Right now, we simply filter out the unrealistic bonds.
-        return structure_cleaning.clean_up_ref_structure(ref_struct)
-
-    def load_apo_structure(
-        self,
-        ref_struct: RefStructure,
-        apo_lookup: dict[int, dict],
-        rng: np.random.Generator,
-    ) -> None:
-        """Populate the apo structure for the given reference structure."""
-        self.apo_initializer(ref_struct, apo_lookup, rng)
-
-    def tokenize(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator,
-    ) -> TokenizedStructure:
-        """Tokenize the given structure."""
-        return self.tokenizer(ref_struct, rng, num_priors=self.num_priors)
-
-    def sample_prior_coords(
-        self,
-        ref_struct: RefStructure,
-        tokenized: TokenizedStructure,
-        rng: np.random.Generator,
-    ) -> None:
-        """Populate the prior coordinates for the given reference structure."""
-        num_priors = self.num_priors
-        if self.prior_sampler is not None:
-            prior_coords = self.prior_sampler(ref_struct, num_priors, rng)
-            prior_coords = prior_coords.transpose(1, 0, 2)
-            mask = tokenized.atom.pad_mask
-            tokenized.atom.prior_coords[mask] = prior_coords
-
-    # === Optional to-override in subclasses === #
-    def extract_substructure(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator,
-        **kwargs,
-    ) -> RefStructure:
-        """Pre-crop the folding input structure as needed.
-        See Section 2.5.4 of AlphaFold3 SI
-
-        In contrast to `crop_structure`, this method is intended for
-        sampling sub-complexes from the original structure before applying
-        the main cropping strategy.
-        """
-        return ref_struct
-
-    def crop_structure(
-        self,
-        tokenized: TokenizedStructure,
-        metadata: Metadata,
-        rng: np.random.Generator,
-        **kwargs,
-    ) -> TokenizedStructure:
-        """Crop the tokenized structure as needed to fit within the model input size."""
-        return tokenized
-
-    def featurize(self, tokenized: TokenizedStructure) -> FoldingInput:
-        """Featurize the given tokenized structure."""
-        return self.featurizer(tokenized)
-
-    def pad_input(self, f_input: FoldingInput) -> FoldingInput:
-        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
-        # Pad num_tokens for CUDA efficiency.
-        num_tokens = next_multiple(f_input.num_tokens, 32)
-        # Pad num_seq_tokens for CUDA efficiency.
-        num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 64)
-        # Pad num_atoms for local attention.
-        num_atoms = next_multiple(f_input.num_atoms, 64)
-        return f_input.pad(
-            max_tokens=num_tokens,
-            max_atoms=num_atoms,
-            max_sequence_tokens=num_sequence_tokens,
-        )
-
     def __getitem__(self, index: int) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given index, with retry on failure."""
         return self.get_item_safe(index, num_trials=100)
@@ -477,34 +361,21 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         # Load structure (NOTE: ref_struct.metadata == metadata)
         ref_struct: RefStructure = self.load_ref_structure(metadata)
 
-        # Clean up structure
-        ref_struct = self.cleanup_structure(ref_struct)
-
-        # Sub-complex structure extraction for large complex (>20 chains)
-        # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
-        ref_struct = self.extract_substructure(ref_struct, rng=rng, **kwargs)
-        metadata = ref_struct.metadata  # update metadata after extraction
-
         # Get apo lookup for the structure
         apo_lookup = self.get_apo_lookup(ref_struct, rng)
 
-        # Populate apo structure (in-place)
-        self.load_apo_structure(ref_struct, apo_lookup, rng)
+        # Fetch apo structure
+        apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
 
         # Tokenization
-        tokenized: TokenizedStructure = self.tokenize(ref_struct, rng=rng)
-
-        # Sample prior coordinates for diffusion bridge model (in-place)
-        self.sample_prior_coords(ref_struct, tokenized, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, rng)
 
         # Populate structure tokens for apo structure (in-place)
-        self.populate_structure_tokens(tokenized, apo_lookup, rng)
-
-        # Cropping
-        cropped = self.crop_structure(tokenized, metadata, rng=rng, **kwargs)
+        # NOTE: For inference, this will be done on-the-fly.
+        self.populate_structure_tokens(tokenized, apo_lookup)
 
         # Featurization
-        f_input = self.featurize(cropped)
+        f_input = self.featurize(tokenized)
 
         # Pad the features.
         f_input = self.pad_input(f_input)
@@ -513,9 +384,104 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
             "id": metadata_id,
             "structure": ref_struct,
             "symmetry": get_symmetries(ref_struct, self.ccd),
+            "train_confidence_head": False,
         }
 
         return f_input, struct_info
+
+    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
+        """Get the structure for the given index."""
+        name = metadata.id
+        key_bytes = name.encode("utf-8")
+        with self.lmdb_env.begin(write=False) as txn:
+            value_bytes = txn.get(key_bytes)
+            if value_bytes is None:
+                raise KeyError(f"Record {name} not found in LMDB.")
+
+        # Use io.BytesIO to wrap the raw bytes
+        with io.BytesIO(value_bytes) as byte_stream:
+            ref_struct = RefStructure.load_npz(byte_stream)
+
+        # NOTE: Validate loaded record matches requested metadata
+        # If there is no problem, the cluster ID (for training) and
+        # low_homology flag (for validation) will be missing in npz
+        ref_metadata = ref_struct.metadata
+        assert ref_metadata.id == name, (
+            f"Loaded ID {ref_metadata.id} does not match requested ID {name}."
+        )
+        assert ref_metadata.num_chains == metadata.num_chains, (
+            f"Loaded num_chains {ref_metadata.num_chains} does not match "
+            f"requested num_chains {metadata.num_chains}."
+        )
+        assert ref_metadata.num_residues == metadata.num_residues, (
+            f"Loaded num_residues {ref_metadata.num_residues} does not match "
+            f"requested num_residues {metadata.num_residues}."
+        )
+        assert ref_metadata.num_interfaces == metadata.num_interfaces, (
+            f"Loaded num_interfaces {ref_metadata.num_interfaces} does not match "
+            f"requested num_interfaces {metadata.num_interfaces}."
+        )
+        # Copy metadata (to update cluster_id if needed)
+        ref_struct.metadata = metadata.copy()
+
+        return ref_struct
+
+    def fetch_apo_structures(
+        self,
+        ref_struct: RefStructure,
+        apo_lookup: dict[int, dict],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Return the apo coordinates for the given reference structure.
+        Key: entity_id, Value: apo coordinates of shape [Natoms, 3]
+        """
+        return self.apo_initializer(ref_struct, apo_lookup, rng)
+
+    def sample_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Sample the prior coordinates for the given structure and apo coordinates."""
+        if self.num_priors <= 0 or self.prior_sampler is None:
+            return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
+        else:
+            return self.prior_sampler(ref_struct, apo_dict, self.num_priors, rng)
+
+    def tokenize(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> TokenizedStructure:
+        """Tokenize the given structure."""
+        # Sample prior coordinates for diffusion bridge model
+        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
+        # Tokenization
+        return self.tokenizer(
+            ref_struct,
+            rng,
+            apo_coords=apo_dict,
+            prior_coords=prior_coords,
+        )
+
+    def featurize(self, tokenized: TokenizedStructure) -> FoldingInput:
+        """Featurize the given tokenized structure."""
+        return self.featurizer(tokenized)
+
+    # === Optional to-override in subclasses === #
+    def pad_input(self, f_input: FoldingInput) -> FoldingInput:
+        """Pad the folding input to multiple of 64 for LocalAtomAttention."""
+        # Pad inputs for CUDA efficiency.
+        num_tokens = next_multiple(f_input.num_tokens, 32)
+        num_sequence_tokens = next_multiple(f_input.num_sequence_tokens, 64)
+        num_atoms = next_multiple(f_input.num_atoms, 64)
+        return f_input.pad(
+            max_tokens=num_tokens,
+            max_atoms=num_atoms,
+            max_sequence_tokens=num_sequence_tokens,
+        )
 
     # === Helper methods for apo structure handling === #
     def get_apo_lookup(
@@ -575,17 +541,26 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
         return apo_lookup
 
     def populate_structure_tokens(
-        self,
-        tokenized: TokenizedStructure,
-        apo_lookup: dict[int, dict],
-        rng: np.random.Generator,
+        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
     ) -> None:
-        """Populate the structure tokens for the given tokenized structure."""
+        """Populate the structure tokens for the given tokenized structure.
 
+        Parameters
+        ----------
+        tokenized : TokenizedStructure
+            The tokenized structure to populate tokens for in-place.
+        apo_lookup : dict[int, dict]
+            Mapping from entity ID to apo structure dictionary metadata.
+        rng : np.random.Generator
+            Random number generator.
+        """
         bb_struct_token_id = tokenized.sequence.bb_struct_token_id
         fa_struct_token_id = tokenized.sequence.fa_struct_token_id
 
-        visited_entity_ids: set[int] = set()
+        # Precompute start and end indices of sequence tokens for all chains
+        seq_lens = tokenized.chain.num_residues + 2
+        seq_starts = np.cumsum(seq_lens) - seq_lens
+
         with self.unitok_lmdb_env.begin(write=False) as txn:
             for c_i in range(tokenized.num_chains):
                 if tokenized.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
@@ -593,10 +568,6 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
 
                 eid = tokenized.chain.entity_id[c_i]
                 ek = f"{tokenized.id}:{eid}"  # For logging purpose
-
-                if eid in visited_entity_ids:
-                    continue  # already populated from another chain with same entity_id
-                visited_entity_ids.add(eid)
 
                 if eid not in apo_lookup:
                     self.logger.warning(
@@ -618,44 +589,59 @@ class SafeLoadingDataset(torch.utils.data.Dataset):
                 bb_tok, fa_tok = apo_unitok
                 toklen = len(bb_tok)
 
-                # Find the corresponding sequence token indices
-                seq_token_i = np.where(tokenized.sequence.entity_id == eid)[0]
-                # Remove bos/eos
-                seq_token_i = seq_token_i[1:-1]
+                # Compute the sequence token slice for this chain c_i safely
+                seq_start = int(seq_starts[c_i])
+                seq_end = seq_start + int(seq_lens[c_i])
+                seq_token_len = int(tokenized.chain.num_residues[c_i])
 
                 if "residue_map" not in apo_info:
                     # If residue map is not provided, we assume the entire
                     # sequence can be aligned.
-                    if len(bb_tok) != len(seq_token_i):
+                    if len(bb_tok) != seq_token_len:
                         self.logger.warning(
                             f"Apo tokens ({key}, len={toklen}) cannot be aligned "
-                            f"with sequence tokens (len={len(seq_token_i)}) for "
-                            f"entity `{ek}` without residue map. Skipping this entry."
+                            f"with sequence tokens (len={seq_token_len}) for "
+                            f"chain {c_i} (entity `{ek}`) without residue map. Skipping."
                         )
                         continue
                     # Populate the structure tokens for the aligned residues
-                    bb_struct_token_id[seq_token_i] = bb_tok
-                    fa_struct_token_id[seq_token_i] = fa_tok
+                    bb_struct_token_id[seq_start + 1 : seq_end - 1] = bb_tok
+                    fa_struct_token_id[seq_start + 1 : seq_end - 1] = fa_tok
                 else:
                     residue_map = apo_info["residue_map"]
                     res_st, res_end, apo_st, apo_end = parse_residue_map(residue_map)
                     if res_st == -1:
                         self.logger.warning(
-                            f"Invalid residue map {residue_map} for entity {ek}. "
-                            f"Skipping this entry."
+                            f"Invalid residue map {residue_map} for chain {c_i} "
+                            f"(entity {ek}). Skipping."
                         )
                         continue
-                    if toklen < (apo_end - apo_st) or (len(seq_token_i) < res_end):
+                    if toklen < (apo_end - apo_st) or (seq_token_len < res_end):
                         self.logger.warning(
                             f"Apo tokens ({key}, len={toklen}) cannot cover the "
-                            f"residue mapping for entity {ek}: {residue_map}."
-                            f" Skipping this entry."
+                            f"residue mapping for chain {c_i} (entity {ek}): "
+                            f"{residue_map}. Skipping."
                         )
                         continue
-                    seq_token_i_mapped = seq_token_i[res_st:res_end]
                     # Populate the structure tokens for the mapped residues
-                    bb_struct_token_id[seq_token_i_mapped] = bb_tok[apo_st:apo_end]
-                    fa_struct_token_id[seq_token_i_mapped] = fa_tok[apo_st:apo_end]
+                    _st, _end = seq_start + 1 + res_st, seq_start + 1 + res_end
+                    bb_struct_token_id[_st:_end] = bb_tok[apo_st:apo_end]
+                    fa_struct_token_id[_st:_end] = fa_tok[apo_st:apo_end]
+
+
+# === Training Dataset === #
+def get_training_dataset_cls(
+    train_config: TrainingDatasetConfig,
+) -> type["TrainingDataset"]:
+    match train_config.type:
+        case "rcsb" | "disordered-pdb":
+            return RCSBTrainingDataset
+        case "distillation":
+            return DistillationDataset
+        case "monomer-distillation":
+            return MonomerDistillationDataset
+        case _:
+            raise ValueError(f"Unsupported training dataset type: {train_config.type}")
 
 
 class TrainingDataset(SafeLoadingDataset):
@@ -710,30 +696,28 @@ class TrainingDataset(SafeLoadingDataset):
             train=True,
         )
         self.config: TrainingDatasetConfig = config
-        assert self.seed is None, (
-            "Seed should be None for training dataset to ensure randomness"
-        )
+        if self.seed is not None:
+            # Warn about fixed seed affecting randomness
+            self.logger.warning(
+                "Seed is set for TrainingDataset, which may affect randomness."
+            )
 
-        # For chain sampling for large complexes (> 20/50 chains)
+        # For pre-cropping (RefStructure)
         self.max_chains: int = max_chains
-
         # For main cropping (TokenizedStructure)
         self.max_tokens: int = max_tokens
         self.max_sequence_tokens: int = max_sequence_tokens
-        assert max_sequence_tokens >= max_tokens + max_chains * 2, (
-            f"max_sequence_tokens should be greater than max_tokens + max_chains*2."
+
+        assert max_sequence_tokens >= max_tokens + (max_chains * 2), (
+            f"max_sequence_tokens should be greater than max_tokens to accommodate "
+            f"additional sequence tokens for PLM input."
             f" (max_sequence_tokens={max_sequence_tokens}, max_tokens={max_tokens}, "
             f"max_chains={max_chains})"
         )  # +2 tokens per chain for [CLS] and [SEP]
+
         assert config.cropper is not None, "Cropper config must be provided."
         self.cropper: BaseCropper = Registry.instantiate(config.cropper)
 
-        # Filter metadatas
-        for filter_cfg in config.filters:
-            data_filter: BaseFilter = Registry.instantiate(filter_cfg)
-            self.metadatas = data_filter.filter(self.metadatas)
-
-        # Training data sampling
         if config.sampler is None:
             # Uniform sampling (complex-level)
             self.sampler: BaseSampler = BaseSampler()
@@ -745,121 +729,26 @@ class TrainingDataset(SafeLoadingDataset):
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights
 
-        # Sequence masking for training
-        # TODO: do we have to configurize this?
-        self.seq_masking = sequence_masking.SequenceMasking(
-            mask_prob=0.9, mask_ratio=0.15
-        )
-
         # Constraint sampling for training
         # TODO: configurize the parameters
-        self.max_constraints = 5
+        self.max_constraints = 4
         self.constraint_sampling = constraint_sampling.ConstraintSampling(
-            min_dist=3.0,
+            min_dist=2.0,
             max_dist=22.0,
             prob_constraint=0.05,
             max_constraints=self.max_constraints,
         )
 
-        self.setup()
-
+    @override
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
-        # Check if perturbation is enabled for training set, and validate files.
-        if cfg.apo_init.protein_perturbation is None:
+        if cfg.apo_init.perturbation is None:
             self.logger.warning("Protein perturbation is disabled for training set.")
-        elif cfg.apo_init.protein_perturbation.rieprody is not None:
-            rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
-            if not rieprody_lmdb_path.exists():
-                raise FileNotFoundError(
-                    f"RieProDy LMDB path {rieprody_lmdb_path} not found "
-                    f"while rieprody is enabled."
-                )
-            # If rieprody perturbation is enabled, we need to provide the LMDB path
-            cfg.apo_init.protein_perturbation.rieprody.metric_lmdb_path = (
-                rieprody_lmdb_path
-            )
-        if cfg.apo_init.ligand_perturbation is None:
-            self.logger.warning("Ligand perturbation is disabled for training set.")
 
     @override
     def __len__(self) -> int:
         return len(self.samples)
-
-    def tokenize(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator,
-    ) -> TokenizedStructure:
-        """Tokenize the given structure."""
-        # Sample the constraints
-        constraints = self.constraint_sampling(ref_struct, rng)
-        # Tokenize the structure
-        tok_struct = self.tokenizer(
-            ref_struct, rng, num_priors=self.num_priors, constraints=constraints
-        )
-        # Then apply sequence masking for training
-        self.seq_masking(tok_struct, rng)
-        return tok_struct
-
-    @override
-    def extract_substructure(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator,
-        **kwargs,
-    ) -> RefStructure:
-        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
-        asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
-        if self.max_chains < ref_struct.num_chains:
-            # Get sub-complex with limited number of chains
-            ref_struct = pre_crop.extract_substructure(
-                ref_struct,
-                max_chains=self.max_chains,
-                bias_asym_id=asym_ids,
-                rng=rng,
-            )
-        return ref_struct
-
-    @override
-    def crop_structure(
-        self,
-        tokenized: TokenizedStructure,
-        metadata: Metadata,
-        rng: np.random.Generator,
-        **kwargs,
-    ) -> TokenizedStructure:
-        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
-        asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
-        if self.max_tokens < tokenized.num_tokens:
-            # Crop the tokenized structure
-            tokenized = self.cropper.crop(
-                tokenized,
-                metadata,
-                max_tokens=self.max_tokens,
-                max_sequence_tokens=self.max_sequence_tokens,
-                bias_asym_id=asym_ids,
-                rng=rng,
-            )
-        return tokenized
-
-    @override
-    def pad_input(self, f_input: FoldingInput) -> FoldingInput:
-        max_chains = self.max_chains
-        max_tokens = self.max_tokens
-        max_sequence_tokens = self.max_sequence_tokens
-        num_constraints = self.max_constraints
-        max_atoms = max_tokens * 24  # max 24 atoms per token
-        max_bonds = max_tokens * 10  # max 10 bonds per token
-        return f_input.pad(
-            max_tokens=max_tokens,
-            max_chains=max_chains,
-            max_atoms=max_atoms,
-            max_bonds=max_bonds,
-            max_sequence_tokens=max_sequence_tokens,
-            max_constraints=num_constraints,
-        )
 
     @override
     def get_item_safe(
@@ -889,25 +778,276 @@ class TrainingDataset(SafeLoadingDataset):
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
         )
 
+    @override
     def get_item(self, metadata: Metadata, **kwargs) -> tuple[FoldingInput, StructInfo]:
         """Get the folding input for the given sample."""
-        f_input, struct_info = super().get_item(metadata, **kwargs)
+        metadata_id: str = metadata.id
 
-        # HACK: Hard-code the confidence head training flag.
-        if not self.config.is_distillation:
-            # Train confidence head only.
-            metadata = struct_info["structure"].metadata
-            assert metadata.exp is not None, (
-                "Experimental metadata must be available for confidence training."
-            )
-            resolution = metadata.exp.resolution
-            train_confidence = (resolution is not None) and (0.1 <= resolution <= 4.0)
+        # Initialize random number generator (create new rng based on metadata_id)
+        if self.seed is not None:
+            offset = int(hash_seq(metadata.id), 16)
+            rng = np.random.default_rng((self.seed + offset) % (1 << 32))
         else:
-            # For distillation dataset, we do not train confidence head.
-            train_confidence = False
-        struct_info["train_confidence_head"] = train_confidence
+            rng = np.random.default_rng()
 
+        # Load structure (NOTE: ref_struct.metadata == metadata)
+        ref_struct: RefStructure = self.load_ref_structure(metadata)
+
+        # Sub-complex structure extraction for large complex (>20 chains)
+        # This is the on-the-fly pipeline of AlphaFold3 SI Section 2.5.4
+        ref_struct = self.extract_substructure(ref_struct, rng=rng, **kwargs)
+        metadata = ref_struct.metadata  # update metadata after extraction
+
+        # Get apo lookup for the structure
+        apo_lookup = self.get_apo_lookup(ref_struct, rng)
+
+        # Fetch apo structure
+        apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
+
+        # Tokenization
+        tokenized = self.tokenize(ref_struct, apo_dict, rng)
+
+        # Populate structure tokens for apo structure (in-place)
+        self.populate_structure_tokens(tokenized, apo_lookup)
+
+        # Optionally drop apo structure for trunk input during training
+        self.drop_apo_structure(tokenized, rng)
+
+        # Cropping
+        cropped = self.crop_structure(tokenized, metadata, rng=rng, **kwargs)
+
+        # Featurization
+        f_input = self.featurize(cropped)
+
+        # Pad the features.
+        f_input = self.pad_input(f_input)
+
+        # Determine whether to train confidence head
+        train_confidence = self.determine_confidence_train_data(metadata)
+
+        struct_info = {
+            "id": metadata_id,
+            "structure": ref_struct,
+            "symmetry": get_symmetries(ref_struct, self.ccd),
+            "train_confidence_head": train_confidence,
+        }
         return f_input, struct_info
+
+    @override
+    def pad_input(self, f_input: FoldingInput) -> FoldingInput:
+        max_chains = self.max_chains
+        max_tokens = self.max_tokens
+        max_sequence_tokens = self.max_sequence_tokens
+        num_constraints = self.max_constraints
+        max_atoms = max_tokens * 24  # max 24 atoms per token
+        max_bonds = max_tokens * 10  # max 10 bonds per token
+        return f_input.pad(
+            max_tokens=max_tokens,
+            max_chains=max_chains,
+            max_atoms=max_atoms,
+            max_bonds=max_bonds,
+            max_sequence_tokens=max_sequence_tokens,
+            max_constraints=num_constraints,
+        )
+
+    @override
+    def tokenize(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> TokenizedStructure:
+        """Tokenize the given structure."""
+        # Sample prior coordinates for diffusion bridge model
+        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
+        # Sample the constraints
+        constraints = self.constraint_sampling(ref_struct, rng)
+        # Tokenize the structure
+        tokenized = self.tokenizer(
+            ref_struct,
+            rng,
+            apo_coords=apo_dict,
+            prior_coords=prior_coords,
+            constraints=constraints,
+        )
+        return tokenized
+
+    # === Utility methods for training dataset === #
+    def extract_substructure(
+        self,
+        ref_struct: RefStructure,
+        rng: np.random.Generator,
+        **kwargs,
+    ) -> RefStructure:
+        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
+        asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
+        if self.max_chains < ref_struct.num_chains:
+            # Get sub-complex with limited number of chains
+            ref_struct = pre_crop.extract_substructure(
+                ref_struct,
+                max_chains=self.max_chains,
+                bias_asym_id=asym_ids,
+                rng=rng,
+            )
+        return ref_struct
+
+    def crop_structure(
+        self,
+        tokenized: TokenizedStructure,
+        metadata: Metadata,
+        rng: np.random.Generator,
+        **kwargs,
+    ) -> TokenizedStructure:
+        assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
+        asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
+        if self.max_tokens < tokenized.num_tokens:
+            # Crop the tokenized structure
+            tokenized = self.cropper.crop(
+                tokenized,
+                metadata,
+                max_tokens=self.max_tokens,
+                max_sequence_tokens=self.max_sequence_tokens,
+                bias_asym_id=asym_ids,
+                rng=rng,
+            )
+        return tokenized
+
+    def drop_apo_structure(
+        self, tokenized: TokenizedStructure, rng: np.random.Generator
+    ) -> None:
+        """Drop the apo coords / structure tokens"""
+        # Optionally drop apo structure for trunk input during training
+        if rng.random() < self.config.prob_drop_apo:
+            tokenized.token.apo_center_coords.fill(np.nan)
+            tokenized.token.apo_repr_coords.fill(np.nan)
+            tokenized.token.apo_frame_coords.fill(np.nan)
+            tokenized.token.apo_center_mask.fill(False)
+            tokenized.token.apo_repr_mask.fill(False)
+            tokenized.token.apo_frame_mask.fill(False)
+            tokenized.atom.apo_coords.fill(np.nan)
+            tokenized.atom.apo_mask.fill(False)
+
+        if rng.random() < self.config.prob_drop_struct_token:
+            tokenized.sequence.bb_struct_token_id.fill(-1)
+            tokenized.sequence.fa_struct_token_id.fill(-1)
+
+    def determine_confidence_train_data(self, metadata: Metadata) -> bool:
+        return False
+
+
+class RCSBTrainingDataset(TrainingDataset):
+    """Training dataset with AF3-style sampling and cropping."""
+
+    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
+        """Get the structure for the given index."""
+        ref_struct = super().load_ref_structure(metadata)
+        # Clean up the structure (e.g., filter out unrealistic bonds)
+        ref_struct = structure_cleaning.clean_up_ref_structure(ref_struct)
+        return ref_struct
+
+    @override
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the dataset."""
+        cfg = self.config
+        # Check if perturbation is enabled for training set, and validate files.
+        if cfg.apo_init.perturbation is None:
+            self.logger.warning("Protein perturbation is disabled.")
+        else:
+            if cfg.apo_init.perturbation.rieprody is None:
+                self.logger.info("RieProDy perturbation is disabled.")
+            else:
+                rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
+                if not rieprody_lmdb_path.exists():
+                    raise FileNotFoundError(
+                        f"RieProDy LMDB path {rieprody_lmdb_path} not found "
+                        f"while rieprody is enabled."
+                    )
+                # If rieprody perturbation is enabled, we need to provide the LMDB path
+                cfg.apo_init.perturbation.rieprody.metric_lmdb_path = rieprody_lmdb_path
+
+    @override
+    def determine_confidence_train_data(self, metadata: Metadata) -> bool:
+        # For RCSB training dataset, we only train confidence head on the
+        # high-resolution experimental structures.
+        assert metadata.source == "rcsb", (
+            f"Expected metadata source to be 'rcsb' for RCSBTrainingDataset,"
+            f" but got '{metadata.source}'."
+        )
+        assert metadata.exp is not None, (
+            "Experimental metadata must be available for RCSBTrainingDataset."
+        )
+        # Train the confidence head only on experimental structures.
+        resolution = metadata.exp.resolution
+        if resolution is not None and 0.1 <= resolution <= 4.0:
+            return True
+        return False
+
+
+class DistillationDataset(TrainingDataset):
+    """Training dataset for distillation"""
+
+    @override
+    def determine_confidence_train_data(self, metadata: Metadata) -> bool:
+        # No confidence training for distillation dataset
+        return False
+
+
+class MonomerDistillationDataset(DistillationDataset):
+    """Training dataset for monomer distillation.
+
+    NOTE: For monomer distillation,
+    - Data: We use simple data format for monomers (seq, coords, b_factors in npz)
+    - We directly use holo structure as input.
+    - After prior sampling, the apo coordinates and structure tokens are dropped.
+      i.e., trunk does not use apo information while diffusion bridge uses it.
+    """
+
+    @override
+    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
+        """Get the structure for the given index."""
+        name = metadata.id
+        key_bytes = name.encode("utf-8")
+        with self.lmdb_env.begin(write=False) as txn:
+            value_bytes = txn.get(key_bytes)
+            if value_bytes is None:
+                raise KeyError(f"Record {name} not found in LMDB.")
+
+        with io.BytesIO(value_bytes) as byte_stream:
+            with np.load(byte_stream) as data:
+                sequence = data["sequence"].item().decode("utf-8")
+                coordinates = data["coordinates"]  # [Natom, 3]
+                b_factors = data["b_factors"]  # [Natom]
+
+        ccd_sequence = [C.residue.PROTEIN_ONE_TO_THREE[aa] for aa in sequence]
+        chain = structure_preparation.prepare_ref_chain(
+            C.ChainType.PROTEIN,
+            ccd_sequence,
+            ccd=self.ccd,
+            entity_id=1,
+            asym_id=1,
+            sym_id=1,
+        )
+        # The coordinates and b_factors from npz are already ordered
+        chain.atom.coords[:] = coordinates
+        chain.atom.bfactor[:] = b_factors
+
+        ref_struct = RefStructure(
+            chains=[chain], connections=[], metadata=metadata.copy()
+        )
+        return ref_struct
+
+    @override
+    def get_apo_lookup(
+        self, ref_struct: RefStructure, rng: np.random.Generator
+    ) -> dict[int, dict]:
+        """Get the apo lookup for the given reference structure."""
+        return {}
+
+    @override
+    def populate_structure_tokens(
+        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
+    ) -> None:
+        return  # skip populating structure tokens for monomer distillation dataset
 
 
 class MultiTrainingDataset(torch.utils.data.Dataset):
@@ -956,7 +1096,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
            using the provided `cropper`.
         """
         self.datasets: list[TrainingDataset] = [
-            TrainingDataset(
+            get_training_dataset_cls(config)(
                 config,
                 ccd,
                 tokenizer,
@@ -991,6 +1131,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         return self.datasets[dataset_idx][sample_idx]
 
 
+# === Validation Dataset === #
 class ValidationDataset(SafeLoadingDataset):
     """Validation dataset without sampling and cropping."""
 
@@ -1025,11 +1166,8 @@ class ValidationDataset(SafeLoadingDataset):
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
-        # Check if perturbation is enabled for validation set, which is not expected.
-        if cfg.apo_init.protein_perturbation is not None:
-            self.logger.warning("Protein perturbation is enabled for validation set.")
-        if cfg.apo_init.ligand_perturbation is not None:
-            self.logger.warning("Ligand perturbation is enabled for validation set.")
+        if cfg.apo_init.perturbation is not None:
+            self.logger.warning("Protein perturbation is enabled.")
 
     def setup(self) -> None:
         """Additional setup for subclasses."""

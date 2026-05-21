@@ -161,7 +161,9 @@ class UniTok(BaseStructureEncoder):
 
         # HACK: we skip masking out invalid tokens to 0 since UniTok backbone
         # add 4 special tokens before nn.Embedding.
+        pass
 
+        # Backbone forward pass
         x = self.backbone(
             seq_token_ids,
             bb_token_ids,
@@ -169,6 +171,9 @@ class UniTok(BaseStructureEncoder):
             seq_id=seq_id,
             pos_id=pos_id,
         )
+
+        # Mask out invalid tokens in the output.
+        x[~allow_mask] = 0.0  # mask out invalid tokens
 
         # sequence -> token index mapping
         batch_index = torch.arange(x.shape[0], device=x.device)[:, None]

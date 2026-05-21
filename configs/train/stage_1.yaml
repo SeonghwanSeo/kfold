@@ -17,15 +17,15 @@ data:
       weight: 0.460
       data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-train/
 
-    - _yaml_: "../dataset/afdb-long.yaml"
-      name: afdb-long
+    - _yaml_: "../dataset/af2-long.yaml"
+      name: af2-long
       weight: 0.455
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/afdb-long/
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/af2-long/
 
-    - _yaml_: "../dataset/afdb-short.yaml"
-      name: afdb-short
+    - _yaml_: "../dataset/af2-short.yaml"
+      name: af2-short
       weight: 0.005
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/afdb-short/
+      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/af2-short/
 
     - _yaml_: "../dataset/synthetic-complex.yaml"
       name: sair

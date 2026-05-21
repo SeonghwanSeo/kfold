@@ -45,7 +45,6 @@ def make_mmcif_block(
 
 def create_gemmi_structure(
     struct: RefStructure,
-    save_apo: bool = False,
     pdb_compatible: bool = False,
 ) -> gemmi.Structure:
     """Convert a RefStructure to a Gemmi Structure
@@ -54,8 +53,6 @@ def create_gemmi_structure(
     ----------
     struct : RefStructure
         The input structure containing chain metadata and coordinates.
-    save_apo : bool, optional
-        Whether to save the apo form (default is False).
     pdb_compatible : bool, optional
         Whether to ensure PDB compatibility (default is False).
 
@@ -150,12 +147,8 @@ def create_gemmi_structure(
         atom_elements: list[int] = atom_layout.element.tolist()
         atom_charges: list[int] = atom_layout.charge.tolist()
 
-        if save_apo:
-            atom_coords = atom_layout.apo_coords
-            b_factor = atom_layout.apo_plddt
-        else:
-            atom_coords = atom_layout.coords
-            b_factor = atom_layout.bfactor
+        atom_coords = atom_layout.coords
+        b_factor = atom_layout.bfactor
 
         chain_id = chain_meta.name  # e.g., "A", "B", etc.
         entity_id = chain_meta.entity_id

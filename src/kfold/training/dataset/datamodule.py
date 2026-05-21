@@ -85,7 +85,9 @@ class TrainingDataModule(pl.LightningDataModule):
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
         if self.config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
+            prior_sampler = prior_sampling.PriorSampler(
+                self.config.prior_sampler, self.ccd
+            )
         else:
             prior_sampler = None
 
@@ -124,7 +126,9 @@ class TrainingDataModule(pl.LightningDataModule):
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
         if self.config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
+            prior_sampler = prior_sampling.PriorSampler(
+                self.config.prior_sampler, self.ccd
+            )
             # For validation, we should not use OT permutation.
             prior_sampler.use_ot_permutation = False
         else:

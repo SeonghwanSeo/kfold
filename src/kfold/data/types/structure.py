@@ -435,22 +435,17 @@ class AtomLayout:
         Holo (bound) state coordinates of shape [Natom, 3],
         This is for model training, so that this field is
         filled to 0 during inference.
-    apo_coords: np.ndarray (float32)
-        Apo (unbound) state coordinates of shape [Natom, 3],
     bfactor: np.ndarray (float16)
         B-factor values for each residue of shape [L,].
-    apo_plddt: np.ndarray (float16)
-        predicted LDDT scores for each apo conformation of shape [Napo, L],
-        where Napo is the number of available apo conformations.
-        For experimental structures, this can be filled to 100.
     """
 
     name: np.ndarray  # [Natom,], str
     element: np.ndarray  # [Natom,], int
     charge: np.ndarray  # [Natom,], int
     coords: np.ndarray  # [Natom, 3], float32
-    apo_coords: np.ndarray  # [Natom, 3], float32
     bfactor: np.ndarray  # [L,], int
+    # TODO: remove.
+    apo_coords: np.ndarray  # [Natom, 3], float32
     apo_plddt: np.ndarray  # [L], int
 
     def __len__(self) -> int:
@@ -462,11 +457,7 @@ class AtomLayout:
         check_array(self.element, name="element", dtype=np.integer, shape=shape)
         check_array(self.charge, name="charge", dtype=np.integer, shape=shape)
         check_array(self.coords, name="coords", dtype=np.floating, shape=(*shape, 3))
-        check_array(
-            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, 3)
-        )
         check_array(self.bfactor, name="bfactor", dtype=np.floating, shape=shape)
-        check_array(self.apo_plddt, name="apo_plddt", dtype=np.floating, shape=shape)
 
     @classmethod
     def get_default_dtype(cls) -> dict[str, type | np.dtype]:
@@ -476,9 +467,7 @@ class AtomLayout:
             "element": np.uint8,
             "charge": np.int8,
             "coords": np.float32,
-            "apo_coords": np.float32,
             "bfactor": np.float16,
-            "apo_plddt": np.float16,
         }
 
     @property
@@ -491,17 +480,6 @@ class AtomLayout:
             Shape [Natom,], bool
         """
         return np.isfinite(self.coords).all(axis=-1)
-
-    @property
-    def is_apo_resolved(self) -> np.ndarray:
-        """Get mask of resolved atoms in apo structure.
-
-        Returns
-        -------
-        apo_mask: np.ndarray (bool)
-            Shape [Natom,], bool
-        """
-        return np.isfinite(self.apo_coords).all(axis=-1)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -700,14 +678,14 @@ class RefStructure:
     def copy_with_new_coords(
         self,
         coords: np.ndarray,
-        confidence: np.ndarray | None = None,
+        b_factors: np.ndarray | None = None,
     ) -> Self:
         """Create a deep copy of the RefStructure."""
         assert coords.shape == (self.num_atoms, 3), (
             f"Invalid coords shape: {coords.shape}, expected ({self.num_atoms}, 3)"
         )
-        if confidence is None:
-            confidence = np.full((self.num_atoms,), fill_value=0, dtype=np.float32)
+        if b_factors is None:
+            b_factors = np.full((self.num_atoms,), fill_value=0, dtype=np.float32)
 
         new_chains = []
         atom_start = 0
@@ -716,7 +694,7 @@ class RefStructure:
             new_atom = dataclasses.replace(
                 chain.atom,
                 coords=coords[atom_start:atom_end],
-                bfactor=confidence[atom_start:atom_end],
+                bfactor=b_factors[atom_start:atom_end],
             )
             new_chain = chain.copy_with(deepcopy=False, atom=new_atom)
             new_chains.append(new_chain)
@@ -724,12 +702,12 @@ class RefStructure:
         return dataclasses.replace(self, chains=new_chains)
 
     # === Writer === #
-    def write(self, filename: str | pathlib.Path, save_apo: bool = False):
+    def write(self, filename: str | pathlib.Path):
         """Write the structure to a file."""
         from kfold.data.utils.writer import KFoldWriter
 
         writer = KFoldWriter()
-        writer.write(self, filename, save_apo=save_apo)
+        writer.write(self, filename)
 
     # === Helper functions === #
     def validate(self) -> None:
