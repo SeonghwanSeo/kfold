@@ -354,9 +354,6 @@ def _insert_token_structures(
             res_name = C.residue.get_residue_name_with_unk(ccd_name, c.ctype)
             restype: int = res_name.value
 
-            center_atom_idx: int = C.atom.CENTER_ATOM_INDEX[res_name]
-            repr_atom_idx: int = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
-
             # Get atom info
             atom_names = all_atom_names[c.residue.get_atom_slice(res_idx)]
             natoms = len(atom_names)
