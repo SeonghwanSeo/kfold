@@ -45,7 +45,7 @@ data:
   # Prior sampler for diffusion bridge modeling
   prior_sampler:
     # If null, no prior sampling
-    chain_translation_scale: 48.0 # Angstroms
+    chain_translation_scale: 24.0 # Angstroms
     use_ot_permutation: true # Only for training.
     align_for_permutation: false # Only for training.
 

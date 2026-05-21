@@ -3,8 +3,8 @@ _class_: "KFoldECSI"
 
 # ECSI preconditioning
 sigma_data: 16.0
-sigma_data_end: 48.0
-cov_xy: 300.0
+sigma_data_end: 20.0
+cov_xy: 175.0
 
 # ECSI coefficients
 time_min: 1e-8
@@ -25,7 +25,7 @@ churn_factor: 0.1
 churn_end_time: 0.5
 churn_step_fraction: 0.4
 churn_step_power: 1.0
-ode_step_power: 4.0
+ode_step_power: 2.0
 
 # Training time schedule
 train_time_schedule_params: [-2.15, 2.25]
