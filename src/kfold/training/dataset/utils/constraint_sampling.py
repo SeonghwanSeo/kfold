@@ -331,6 +331,7 @@ class ConstraintSampling:
 
         # Sample from the interface pairs, with preference for closer pairs
         d = dists.clip(min=self.min_dist, max=self.max_dist)
+        d[~mask] = self.max_dist + 1.0  # mask out non-interface pairs
         p_sample = mask.astype(np.float32)
         p_sample /= d  # prefer closer pairs
         p_sample[~mask] = 0.0

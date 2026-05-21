@@ -6,54 +6,8 @@ from kfold.model.layers.kfold.constraint_encoding import ConstraintEncoding
 from kfold.model.layers.kfold.input_encoder import InputEmbedderWithApo
 from kfold.model.layers.primitives import LinearNoBias
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
-from kfold.utils.torch import gather_dim
 
 from .base import BaseInputEmbedder
-
-
-class RBF(torch.nn.Module):
-    """Radial basis function encoding for distances.
-
-    Parameters
-    ----------
-    d_min : float
-        The minimum distance for RBF encoding.
-    d_max : float
-        The maximum distance for RBF encoding.
-    num_bins : int
-        The number of bins for RBF encoding.
-    """
-
-    def __init__(
-        self, d_min: float = 2.00, d_max: float = 50.75, num_bins: int = 40
-    ) -> None:
-        super().__init__()
-        self.d_min: float = d_min
-        self.d_max: float = d_max
-        self.d_sigma: float = (d_max - d_min) / (num_bins - 2)
-        self.register_buffer(
-            "d_mu", torch.linspace(d_min, d_max, num_bins - 1), persistent=False
-        )
-        self.num_bins: int = num_bins
-
-    def forward(self, dist: torch.Tensor) -> torch.Tensor:
-        """Forward pass of RBF encoding.
-
-        Parameters
-        ----------
-        dist : torch.Tensor
-            Tensor of shape (...,) containing distances.
-        Returns
-        -------
-        rbf : torch.Tensor
-            Tensor of shape (..., num_bins) containing RBF encoded distances.
-            last bin is for distances greater than d_max.
-        """
-        d_mu: torch.Tensor = self.d_mu
-        rbf = torch.exp(-((dist.unsqueeze(-1) - d_mu) ** 2) / (2 * self.d_sigma**2))
-        last_bin = (dist > self.d_max).float().unsqueeze(-1)
-        rbf = torch.cat([rbf, last_bin], dim=-1)
-        return rbf
 
 
 @INPUT_EMBEDDER.register()
@@ -77,13 +31,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             The atom encoder blocks.
         atom_encoder_heads: int
             The atom encoder heads.
-
-        # Apo-related parameters
-        apo_min_dist : float
-            The minimum distance for apo distance map encoding.
-        apo_max_dist : float
-            The maximum distance for apo distance map encoding.
-        apo_num_bins : int
             The number of bins for apo distance map encoding.
         """
 
@@ -93,10 +40,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         channel_atompair: int = 16
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
-        # Apo-related parameters
-        apo_num_bins: int = 48
-        apo_min_dist: float = 2.0
-        apo_max_dist: float = 49.0
         # Constraint-related parameters
         constraint_min_dist: float = 2.0
         constraint_max_dist: float = 20.0
@@ -124,10 +67,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
         self.linear_rel_pos = LinearNoBias(self.rel_pos_encoding.dimension, cfg.channel_z)
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
-
-        # Apo-related
-        self.distmap = RBF(cfg.apo_min_dist, cfg.apo_max_dist, cfg.apo_num_bins)
-        self.linear_apo_pdist = LinearNoBias(self.distmap.num_bins, cfg.channel_z)
 
         # Constraint-related
         self.constraint_encoding = ConstraintEncoding(
@@ -193,9 +132,6 @@ class KFoldInputEmbedder(BaseInputEmbedder):
             z_init, self.linear_constraint(self.constraint_encoding(f_input, dtype))
         )
 
-        # Add apo distance embedding
-        z_init = add(z_init, self.linear_apo_pdist(self.get_apo_distmap(f_input, dtype)))
-
         return s_inputs, s_init, z_init
 
     def get_bond_adj(
@@ -234,42 +170,3 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         # Padding is always located at index (0,)
         adj[:, 0, 0] = 0.0
         return adj
-
-    def get_apo_distmap(
-        self,
-        f_input: FoldingInput,
-        dtype: torch.dtype = torch.float32,
-    ) -> torch.Tensor:
-        """Get apo embedding for the input features.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            FoldingInput object containing model inputs.
-
-        Returns
-        -------
-        rbf_distmap : torch.Tensor
-            Tensor of shape (B, L, L, num_bins) containing RBF-encoded apo distance map.
-        """
-        # Extract apo C-beta coordinates and mask
-        repr_idx = f_input.token.repr_index
-        coords = gather_dim(f_input.atom.apo_coords, -2, repr_idx[..., None])  # [B, L, 3]
-        mask = gather_dim(f_input.atom.apo_mask, -1, repr_idx)  # [B, L]
-        mask &= f_input.token.pad_mask  # ensure padding tokens are masked out
-
-        # Create pairwise mask for valid tokens
-        pair_mask = mask[..., :, None] & mask[..., None, :]  # [B, L, L]
-
-        # Chain identity mask (no inter-chain apo distances)
-        asym_id = f_input.token.asym_id  # [B, L]
-        chain_mask = asym_id[:, :, None] == asym_id[:, None, :]
-        pair_mask &= chain_mask
-
-        with torch.autocast(f_input.device.type, enabled=False):
-            # Compute pairwise distance map and apply RBF encoding
-            pdist = (coords[..., :, None, :] - coords[..., None, :, :]).norm(dim=-1)
-            distmap = self.distmap(pdist).to(dtype)  # [B, L, L, num_bins]
-            distmap.masked_fill_(~pair_mask[..., None], 0.0)  # mask out invalid pairs
-
-        return distmap

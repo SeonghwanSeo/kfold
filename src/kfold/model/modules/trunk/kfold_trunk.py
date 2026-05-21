@@ -6,11 +6,20 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
+from kfold.model.layers.kfold.apo_module import ApoEmbedding
 from kfold.model.layers.kfold.plm_module import PLMModule
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
 from .base import BaseTrunk
+
+
+@dataclasses.dataclass(kw_only=True)
+class ApoEmbeddingConfig:
+    num_bins: int = 39
+    min_dist: float = 3.25
+    max_dist: float = 50.75
+    max_r: int = 64
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -63,6 +72,11 @@ class KFoldTrunk(BaseTrunk):
         channel_z: int = 128
         channel_plm: int = 1152
 
+        # apo module
+        apo_embedding: ApoEmbeddingConfig = dataclasses.field(
+            default_factory=ApoEmbeddingConfig
+        )
+
         # plm module
         plm_module: PLMModuleConfig = dataclasses.field(default_factory=PLMModuleConfig)
 
@@ -72,6 +86,17 @@ class KFoldTrunk(BaseTrunk):
     def __init__(self, cfg: Config, kernel_config: dict | None):
         """Initialize the KFoldTrunk module."""
         super().__init__(cfg, kernel_config)
+
+        # === Apo embedding === #
+        self.apo_embedding = ApoEmbedding(
+            num_bins=cfg.apo_embedding.num_bins,
+            min_dist=cfg.apo_embedding.min_dist,
+            max_dist=cfg.apo_embedding.max_dist,
+            max_r=cfg.apo_embedding.max_r,
+        )
+        self.linear_apo = LinearNoBias(
+            self.apo_embedding.num_channels, cfg.channel_z, init="default"
+        )
 
         # === PLM Module === #
         self.plm_module: PLMModule = PLMModule(
@@ -158,11 +183,6 @@ class KFoldTrunk(BaseTrunk):
         z_trunk: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        # === Get PLM features === #
-        mask = f_input.token.pad_mask
-        asym_id = f_input.token.asym_id
-
-        # === Main trunk iteration with recycling === #
         s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
 
@@ -177,7 +197,7 @@ class KFoldTrunk(BaseTrunk):
                 z = z_init + self.linear_z(self.layernorm_z(z))
 
                 # Run trunk
-                s, z = self._run_trunk(s, z, s_inputs, plm_inputs, asym_id, mask)
+                s, z = self._run_trunk(s, z, s_inputs, plm_inputs, f_input)
 
         # Skip connection to s_trunk
         s = s + self.proj_plm_to_s_trunk(plm_inputs)
@@ -190,26 +210,27 @@ class KFoldTrunk(BaseTrunk):
         z: torch.Tensor,
         s_inputs: torch.Tensor,
         plm_inputs: torch.Tensor,
-        asym_id: torch.Tensor,
-        mask: torch.Tensor,
+        f_input: FoldingInput,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Run trunk body"""
         # Revert to uncompiled version for validation
         pairformer_stack = self.get_pairformer_stack()
         plm_module = self.get_plm_module()
         use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
+
+        z = z + self.linear_apo(self.apo_embedding(f_input))
         z = plm_module(
             z,
             s_inputs,
             plm_inputs,
-            asym_id,
-            mask,
+            f_input.token.asym_id,
+            f_input.token.pad_mask,
             use_cuequiv_kernels=use_cuequiv_kernels,
         )
         s, z = pairformer_stack(
             s,
             z,
-            mask,
+            f_input.token.pad_mask,
             use_cuequiv_kernels=use_cuequiv_kernels,
         )
         return s, z

@@ -70,6 +70,9 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     num_tokens = token_data.length
     token_dict: dict[str, np.ndarray] = token_data.to_dict()
     token_dict["pad_mask"] = np.ones((num_tokens,), dtype=np.bool_)
+    token_dict["apo_center_coords"] = np.nan_to_num(token_dict["apo_center_coords"])
+    token_dict["apo_repr_coords"] = np.nan_to_num(token_dict["apo_repr_coords"])
+    token_dict["apo_frame_coords"] = np.nan_to_num(token_dict["apo_frame_coords"])
 
     # === Atom-level features ===
     # Make sparse atom features [Ntoken, 24, ...] into dense [Nallatom, ...]
@@ -85,9 +88,9 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     atom_dict = {
         k: v[atom_to_token, atom_in_token_idx] for k, v in atom_data.to_dict().items()
     }
-    atom_dict["label_coords"] = np.nan_to_num(atom_dict["label_coords"], nan=0.0)
-    atom_dict["apo_coords"] = np.nan_to_num(atom_dict["apo_coords"], nan=0.0)
-    atom_dict["ref_pos"] = np.nan_to_num(atom_dict["ref_pos"], nan=0.0)
+    atom_dict["label_coords"] = np.nan_to_num(atom_dict["label_coords"])
+    atom_dict["apo_coords"] = np.nan_to_num(atom_dict["apo_coords"])
+    atom_dict["ref_pos"] = np.nan_to_num(atom_dict["ref_pos"])
     atom_dict["token_index"] = atom_to_token
     atom_dict["pad_mask"] = np.ones((num_total_atoms,), dtype=np.bool_)  # Remove padding
 
