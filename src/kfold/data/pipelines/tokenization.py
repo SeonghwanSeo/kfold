@@ -299,7 +299,7 @@ def _insert_sequence_structures(tok: TokenizedStructure, struct: RefStructure):
         g_seq_i += n_seq
 
         tok.sequence.pos_id[st:end] = np.arange(n_seq)
-        tok.sequence.entity_id[st:end] = c.entity_id
+        tok.sequence.asym_id[st:end] = c.asym_id
         tok.sequence.chain_type[st:end] = c.chain_type
 
         # Add bos/eos tokens

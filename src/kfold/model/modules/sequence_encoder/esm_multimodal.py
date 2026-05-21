@@ -3,11 +3,11 @@ import torch
 from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import SEQUENCE_ENCODER
 
-from .esm import ESMO
+from .esm import ESMC
 
 
 @SEQUENCE_ENCODER.register()
-class ESM_MultiModal(ESMO):
+class ESM_MultiModal(ESMC):
     """ESMC sequence encoder for protein, dna, and rna sequences."""
 
     def prepare_emb_mask(self, f_input: FoldingInput) -> torch.Tensor:

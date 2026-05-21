@@ -148,7 +148,7 @@ class ESM2(BaseSequenceEncoder):
         # NOTE: padding tokens have seq_id=-1, which will be masked out in
         # attention computation. (entity_id is 1-indexed for valid tokens)
         input_ids = f_input.sequence.seq_token_id
-        seq_id = f_input.sequence.entity_id
+        seq_id = f_input.sequence.asym_id
         pos_id = f_input.sequence.pos_id
         mlm_mask = f_input.sequence.mlm_mask
 

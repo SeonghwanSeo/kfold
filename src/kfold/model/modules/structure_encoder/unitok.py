@@ -152,7 +152,7 @@ class UniTok(BaseStructureEncoder):
         # dna and rna tokens. We set those to 0 to prevent out-of-vocab errors.
         seq_token_ids = seq_token_ids.masked_fill(~f_input.sequence.is_protein, 0)
 
-        seq_id = f_input.sequence.entity_id
+        seq_id = f_input.sequence.asym_id
         pos_id = f_input.sequence.pos_id
 
         # Mask out unallowed tokens

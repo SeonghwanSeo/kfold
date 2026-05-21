@@ -580,8 +580,8 @@ class SequenceTensor(TensorLayout):
 
     Attributes
     ----------
-    entity_id: np.ndarray (int)
-        Entity IDs of shape [L,], starting from 1.
+    asym_id: np.ndarray (int)
+        Asymmetric unit IDs of shape [L,], starting from 1 for each chain.
     chain_type: np.ndarray (int)
         Chain types of shape [L,], indicating the type of each chain.
     seq_token_id: np.ndarray (int)
@@ -610,7 +610,7 @@ class SequenceTensor(TensorLayout):
     """
 
     chain_type: torch.Tensor  # [L,], int
-    entity_id: torch.Tensor  # [L,], int
+    asym_id: torch.Tensor  # [L,], int
     seq_token_id: torch.Tensor  # [L,], int
     bb_struct_token_id: torch.Tensor  # [L,], int
     fa_struct_token_id: torch.Tensor  # [L,], int
@@ -631,7 +631,7 @@ class SequenceTensor(TensorLayout):
         shape = self.layout_shape
         attributes = [
             ("chain_type", torch.long, shape),
-            ("entity_id", torch.long, shape),
+            ("asym_id", torch.long, shape),
             ("seq_token_id", torch.long, shape),
             ("bb_struct_token_id", torch.long, shape),
             ("fa_struct_token_id", torch.long, shape),
@@ -675,7 +675,7 @@ class SequenceTensor(TensorLayout):
 
         pad_values = {
             "chain_type": -1,
-            "entity_id": -1,
+            "asym_id": -1,
             "seq_token_id": C.sequence.PAD_TOKEN_INDEX,
             "bb_struct_token_id": -1,
             "fa_struct_token_id": -1,
