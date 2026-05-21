@@ -177,11 +177,12 @@ class Chain:
     def num_tokens(self) -> int:
         """Number of tokens in the structure."""
         num_tokens: int = 0
+        num_atom_list = self.residue.num_atoms.tolist()
         for res_i in range(self.num_residues):
             if self.residue.is_standard[res_i]:
                 num_tokens += 1
             else:
-                num_tokens += self.residue.num_atoms[res_i].item()
+                num_tokens += num_atom_list[res_i]
         return num_tokens
 
     # === Methods === #
