@@ -516,9 +516,8 @@ class KFoldECSI(BaseStructureModule):
         # Apply centering/coordinate augmentation
         x_0 = self.random_augmentation(x_0, mask=x_0_mask)
 
-        # Rigidly align x_T to x_0, including translation, so the training bridge
-        # is built between centered endpoints.
-        x_T = custom_rigid_align(x_T, x_0, x_0_mask, rotation_only=False)
+        # Rotate x_T toward x_0 while preserving the prior translation distribution.
+        x_T = custom_rigid_align(x_T, x_0, x_0_mask, rotation_only=True)
 
         # === Interpolate to get x_t === #
         C = self.coeff
@@ -603,8 +602,8 @@ class KFoldECSI(BaseStructureModule):
         # Sampling loop
         append_traj(x_t)
         for step_idx in range(num_steps):
-            # Apply random augmentation
-            x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask, centering=True)
+            # Apply random augmentation without centering to preserve x_T/x_t translation.
+            x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask, centering=False)
 
             t = times[step_idx]
             t_next = times[step_idx + 1]
@@ -616,8 +615,8 @@ class KFoldECSI(BaseStructureModule):
             x_0_hat = run_step(x_noisy, t)
 
             if self.align_x_0_hat_to_x_t:
-                # Rigidly align x_0_hat to x_t before centering.
-                x_0_hat = custom_rigid_align(x_0_hat, x_noisy, mask)
+                # Rotate x_0_hat toward x_t before centering.
+                x_0_hat = custom_rigid_align(x_0_hat, x_noisy, mask, rotation_only=True)
 
             # Centering the predicted x_0_hat
             x_0_hat = do_centering(x_0_hat, mask=mask)
@@ -670,8 +669,8 @@ class KFoldECSI(BaseStructureModule):
         x_T = x_apo[:, idx, :, :]  # [B, N, L, 3]
         x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, L]
 
-        # Apply random augmentation to prior coords
-        x_T = self.random_augmentation(x_T, mask=x_T_mask, centering=True)
+        # Apply random augmentation without centering to preserve the prior distribution.
+        x_T = self.random_augmentation(x_T, mask=x_T_mask, centering=False)
         return x_T
 
     def inference_step(

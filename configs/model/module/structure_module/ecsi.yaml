@@ -3,7 +3,7 @@ _class_: "KFoldECSI"
 
 # ECSI preconditioning
 sigma_data: 16.0
-sigma_data_end: 20.0
+sigma_data_end: 27.0
 cov_xy: 175.0
 
 # ECSI coefficients
