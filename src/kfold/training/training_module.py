@@ -76,6 +76,7 @@ class OptimizerConfig(_Config):
     lr_decay_factor: float = 0.95
     # ema
     ema_decay: float = 0.999
+    validate_with_ema_after_n_steps: int = 10000
     # multi-phase training
     load_opt_state_from_checkpoint: bool = True
     final_training_stage: bool = False
@@ -183,11 +184,13 @@ class KFoldTrainingModule(pl.LightningModule):
         self.freeze_submodules()
 
         # Setup EMA
+        self.submodules_to_ignore_for_ema = ("sequence_encoder", "structure_encoder")
         self.ema: ExponentialMovingAverage = ExponentialMovingAverage(
             model=self.model,
             decay=self.optimizer_config.ema_decay,
-            submodules_to_ignore=("sequence_encoder", "structure_encoder"),
+            submodules_to_ignore=self.submodules_to_ignore_for_ema,
         )
+        self.stored_weights: dict[str, torch.Tensor] | None = None
 
         # Setup losses and metrics
         self.setup_losses()
@@ -987,20 +990,9 @@ class KFoldTrainingModule(pl.LightningModule):
             state["state"] = init_state["state"]
             state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
             # checkpoint.pop("lr_schedulers", None)
+            #
         # Load EMA state dict
         self.load_ema_state_dict(checkpoint["ema"])
-
-    def load_state_dict(
-        self, state_dict: dict[str, Any], strict: bool = True, assign: bool = False
-    ):  # type: ignore
-        """Override load_state_dict to handle EMA state dict."""
-        # Remove '._orig_mod.' from state dict keys if present
-        state_dict = self._remove_orig_mod_from_state_dict(state_dict)
-        # Then, add '._orig_mod.' to state dict keys if required by the model
-        state_dict = self._add_orig_mod_to_state_dict(state_dict, self.state_dict())
-        # Remove 'model.' prefix from state dict keys if present
-        state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
-        out = self.model.load_state_dict(state_dict, strict=strict)
 
         if self.config.optimizer.final_training_stage:
             # Confidence-only training, so replace the structure-related
@@ -1017,6 +1009,17 @@ class KFoldTrainingModule(pl.LightningModule):
                 f"with prefixes {override_prefixes}."
             )
 
+    def load_state_dict(
+        self, state_dict: dict[str, Any], strict: bool = True, assign: bool = False
+    ):  # type: ignore
+        """Override load_state_dict to handle EMA state dict."""
+        # Remove '._orig_mod.' from state dict keys if present
+        state_dict = self._remove_orig_mod_from_state_dict(state_dict)
+        # Then, add '._orig_mod.' to state dict keys if required by the model
+        state_dict = self._add_orig_mod_to_state_dict(state_dict, self.state_dict())
+        # Remove 'model.' prefix from state dict keys if present
+        state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
+        out = self.model.load_state_dict(state_dict, strict=strict)
         return out
 
     # === EMA === #
@@ -1027,14 +1030,38 @@ class KFoldTrainingModule(pl.LightningModule):
             self.ema.to(self.device)
         self.ema.update(self.model)
 
+    def _replace_ema_weights(self):
+        if self.stored_weights is not None:
+            # NOTE: To avoid accidentally replacing the weights multiple times,
+            # we force only one replacement.
+            raise ValueError("EMA weights have already been replaced.")
+        self.stored_weights = {
+            name: param.clone()
+            for name, param in self.model.named_parameters()
+            if not name.startswith(self.submodules_to_ignore_for_ema)
+        }
+        ema_params = self.ema.shadow_params
+        for name, param in self.model.named_parameters():
+            if name in ema_params:
+                param.data.copy_(ema_params[name].data)
+
+    def _restore_weights(self):
+        if self.stored_weights is None:
+            raise ValueError("No stored weights to restore.")
+        for name, param in self.model.named_parameters():
+            if name in self.stored_weights:
+                param.data.copy_(self.stored_weights[name].data)
+        self.stored_weights = None
+
     def on_validation_start(self):
         if self.ema.device != self.device:
             self.ema.to(self.device)
-        self.ema.store(self.model)
-        self.ema.copy_to(self.model)
+        if self.global_step >= self.config.optimizer.validate_with_ema_after_n_steps:
+            self._replace_ema_weights()
 
     def on_validation_end(self) -> None:
-        self.ema.restore(self.model)
+        if self.stored_weights is not None:
+            self._restore_weights()
 
     def load_ema_state_dict(self, state_dict: dict[str, Any]):
         """Load EMA state dict."""
