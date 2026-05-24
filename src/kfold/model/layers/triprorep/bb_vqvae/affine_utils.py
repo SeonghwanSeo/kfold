@@ -1,3 +1,5 @@
+"""Modified from ESM-3 codebase"""
+
 from __future__ import annotations
 
 import typing as T
@@ -8,7 +10,23 @@ from typing import Self
 import torch
 from torch.nn import functional as F
 
-from .misc import fp32_autocast_context
+
+def fp32_autocast_context(device_type: str):
+    """
+    Returns an autocast context manager that disables downcasting by AMP.
+
+    Args:
+        device_type: The device type ('cpu' or 'cuda')
+
+    Returns:
+        An autocast context manager with the specified behavior.
+    """
+    if device_type == "cpu":
+        return torch.autocast(device_type, enabled=False)
+    elif device_type == "cuda":
+        return torch.autocast(device_type, dtype=torch.float32)
+    else:
+        raise ValueError(f"Unsupported device type: {device_type}")
 
 
 class Rotation(ABC):
@@ -177,7 +195,7 @@ class RotationMatrix(Rotation):
         return self.compose(other.as_matrix())
 
     def apply(self, p: torch.Tensor) -> torch.Tensor:
-        with fp32_autocast_context(self.device.type):
+        with fp32_autocast_context(self._rots.device.type):
             if self._rots.shape[-3] == 1:
                 # This is a slight speedup over einsum for batched rotations
                 return p @ self._rots.transpose(-1, -2).squeeze(-3)

@@ -1,0 +1,8 @@
+_registry_: "structure_encoder"
+_class_: "TriProRep"
+fa_tok_path: ???
+bb_tok_path: ???
+encoder_path: ???
+d_model: 2560
+n_heads: 33
+n_layers: 40

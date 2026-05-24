@@ -1,7 +1,7 @@
 import torch
 
-from ..utils.openfold_utils import residue_constants as rc
-from ..utils.openfold_utils.rigid_utils import Rigid
+from . import residue_constants as rc
+from .rigid_utils import Rigid
 
 
 def batched_gather(data, inds, dim=0, no_batch_dims=0):

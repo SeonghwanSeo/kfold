@@ -13,7 +13,7 @@ sequence_encoder:
   _yaml_: "module/sequence_encoder/esm-multimodal.yaml"
 
 structure_encoder:
-  _yaml_: "module/structure_encoder/unitok.yaml"
+  _yaml_: "module/structure_encoder/triprorep.yaml"
 
 trunk:
   _yaml_: "module/trunk/kfold.yaml"
