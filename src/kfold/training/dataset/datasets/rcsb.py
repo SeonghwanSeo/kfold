@@ -1,10 +1,66 @@
-"""Pipeline to clean up reference structures for model training"""
-
 import numpy as np
 
+from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import BondLayout, Chain, CovalentConnection, RefStructure
 
+from .train_dataset import TrainingDataset
+
+StructInfo = dict
 MAX_BOND_LENGTH = 2.4
+
+
+class RCSBTrainingDataset(TrainingDataset):
+    """Training dataset for RCSB structures with experimental metadata."""
+
+    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
+        """Get the structure for the given index."""
+        ref_struct = super().load_ref_structure(metadata)
+        # Clean up the structure (e.g., filter out unrealistic bonds)
+        ref_struct = clean_up_ref_structure(ref_struct)
+        return ref_struct
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the dataset."""
+        cfg = self.config
+        # Check if perturbation is enabled for training set, and validate files.
+        if cfg.apo_init.perturbation is None:
+            self.logger.warning("Protein perturbation is disabled.")
+        else:
+            if cfg.apo_init.perturbation.rieprody is None:
+                self.logger.info("RieProDy perturbation is disabled.")
+            else:
+                rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
+                if not rieprody_lmdb_path.exists():
+                    raise FileNotFoundError(
+                        f"RieProDy LMDB path {rieprody_lmdb_path} not found "
+                        f"while rieprody is enabled."
+                    )
+                # If rieprody perturbation is enabled, we need to provide the LMDB path
+                cfg.apo_init.perturbation.rieprody.metric_lmdb_path = rieprody_lmdb_path
+
+    def determine_confidence_train_data(self, metadata: Metadata) -> bool:
+        # For RCSB training dataset, we only train confidence head on the
+        # high-resolution experimental structures.
+        assert metadata.source == "rcsb", (
+            f"Expected metadata source to be 'rcsb' for RCSBTrainingDataset,"
+            f" but got '{metadata.source}'."
+        )
+        assert metadata.exp is not None, (
+            "Experimental metadata must be available for RCSBTrainingDataset."
+        )
+        # Train the confidence head only on experimental structures.
+        resolution = metadata.exp.resolution
+        if resolution is not None and 0.1 <= resolution <= 4.0:
+            return True
+        return False
+
+
+class DisorderedPDBTrainingDataset(RCSBTrainingDataset):
+    """Training dataset for disordered PDB structures predicted by
+    AlphaFold-multimer"""
+
+    def determine_confidence_train_data(self, metadata: Metadata) -> bool:
+        return False
 
 
 def clean_up_ref_structure(

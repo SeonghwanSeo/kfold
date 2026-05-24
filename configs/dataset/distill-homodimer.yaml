@@ -1,7 +1,7 @@
 _yaml_: "default-train.yaml"
 
-name: af2-long
-type: "monomer-distillation"
+name: af-m-homodimer
+type: "homodimer-distillation"
 prob_drop_apo: 1.0
 prob_drop_struct_token: 1.0
 
@@ -9,11 +9,10 @@ sampler: null
 
 cropper:
   _registry_: "data_cropper"
-  _class_: MultiAnchorCropper
-  max_anchors: 2
-  w_contiguous: 0.25
-  w_spatial: 0.75
-  w_spatial_interface: 0.0
+  _class_: AlphaFold3Cropper
+  w_contiguous: 0.0
+  w_spatial: 0.0
+  w_spatial_interface: 1.0
 
 apo_init:
   # Use harsh perturbation for AFDB to improve robustness.

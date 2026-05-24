@@ -108,6 +108,7 @@ optimizer:
   lr_decay_every_n_steps: 50000
   lr_decay_factor: 0.95
   ema_decay: 0.999
+  final_training_stage: false
   load_opt_state_from_checkpoint: true
 
 loss:

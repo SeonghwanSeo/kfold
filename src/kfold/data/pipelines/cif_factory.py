@@ -197,7 +197,7 @@ def prepare_metadata_from_synthetic_data(
     pred_record = PredictionRecord(model=model)
     return Metadata(
         id=name,
-        source="prediction",
+        source="pred",
         pred=pred_record,
         chains=[],  # Filled later in parsing
         interfaces=[],  # Filled later in parsing
@@ -321,6 +321,39 @@ def clean_up_gemmi_structure(
                     if dist_cd_nh2 < dist_cd_nh1:
                         # Swap names
                         nh1.name, nh2.name = "NH2", "NH1"
+
+
+def add_entity_info(raw_struct: gemmi.Structure, format: str = "pdb") -> None:
+    """Add entity_id for pdb-format synthetic data"""
+
+    def get_res_idx(res: gemmi.Residue) -> int:
+        return res.label_seq or res.seqid.num
+
+    raw_struct.setup_entities()
+    for entity in raw_struct.entities:
+        if format == "pdb":
+            entity.name = str("ABCDEFGHIJKLMNOPQRSTUVWXYZ".index(entity.name) + 1)
+        # Check if full_sequence is missing (due to no SEQRES in PDB)
+        if not entity.full_sequence:
+            # Get the first subchain ID belonging to this entity
+            target_subchain = entity.subchains[0]
+            model = raw_struct[0]
+            for chain in model:
+                poly = chain.get_polymer()
+                # Check if this polymer matches our target subchain
+                if len(poly) > 0 and poly[0].subchain == target_subchain:
+                    # Generate ccd sequence
+                    res_dict = {get_res_idx(res): res.name for res in poly}
+                    entity.full_sequence = [
+                        res_dict.get(i, "UNK") for i in range(1, max(res_dict.keys()) + 1)
+                    ]
+                    break
+
+
+def add_res_idx(raw_struct: gemmi.Structure) -> None:
+    for chain in raw_struct[0]:
+        for res in chain:
+            res.label_seq = res.seqid.num
 
 
 # ==================================================
@@ -648,7 +681,7 @@ def prepare_ref_structure(
         # Save label_asym_id/auth_asym_id, which is same to visualized in RCSB
         label_asym_id: LabelId = "".join(filter(str.isalpha, name))
         chain_info.label_asym_id = label_asym_id
-        chain_info.auth_asym_id = label_id_to_auth_id.get(label_asym_id, label_asym_id)
+        chain_info.auth_asym_id = label_id_to_auth_id[label_asym_id]
         metadata.chains.append(chain_info)
 
     return RefStructure(
@@ -703,7 +736,7 @@ def insert_chain_coordinates(
 
         # Get residue index
         if ref_chain.ctype.is_polymer:
-            residue_index: int = res.label_seq
+            residue_index = res.label_seq
             if residue_index is None:
                 logger.warning(
                     f"Residue {res.name} in chain {raw_chain.subchain_id()} "
@@ -716,12 +749,12 @@ def insert_chain_coordinates(
             residue_index: int = res_i + 1
 
         if residue_index < 1 or residue_index > len(ccd_sequence):
-            # Skip invalid residue indices
-            logger.warning(
+            raise ValueError(
                 f"Residue index {residue_index} out of bounds for chain with length "
-                f"{len(ccd_sequence)}."
+                f"{len(ccd_sequence)}.\n"
+                f"Residue info: {res.name} {res.seqid} (label_seq={res.label_seq})\n"
+                f"Ref Chain info: {ref_chain}"
             )
-            continue
 
         # Get atoms.
         name_to_atom: dict[str, gemmi.Atom] = {a.name.upper(): a for a in res}

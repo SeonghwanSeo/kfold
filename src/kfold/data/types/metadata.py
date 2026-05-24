@@ -227,7 +227,7 @@ class Metadata:
             exp = None
 
         if data.get("pred", None):
-            pred = PredictionRecord.from_dict(data["prediction"])
+            pred = PredictionRecord.from_dict(data["pred"])
         else:
             pred = None
 
