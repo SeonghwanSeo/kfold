@@ -62,7 +62,7 @@ class PLMInputEmbedder(nn.Module):
             The input single representations
         seq_emb : torch.Tensor
             The hidden states from the sequence encoder
-            of shape (B, L, num_layer_seq, channel_seq)
+            of shape (B, L, channel_seq)
         seq_attn : torch.Tensor
             The attention maps from the sequence encoder
             of shape (B, L, num_layer_seq_attn, channel_seq_attn)
@@ -77,7 +77,7 @@ class PLMInputEmbedder(nn.Module):
             The initial pair representations of shape (B, L, L, C_z)
         """
         # Compute s_plm
-        seq_emb = self.layernorm_seq(seq_emb[..., -1, :])
+        seq_emb = self.layernorm_seq(seq_emb)
         struct_emb = self.layernorm_struct(struct_emb)
         s_plm = torch.cat([seq_emb, struct_emb], dim=-1)
         # Compute z_plm for initializing pair representations.
