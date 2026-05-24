@@ -7,18 +7,17 @@ import torch.nn as nn
 class Quantizer(nn.Module):
     def __init__(
         self,
+        embed_size: int,
         codebook_size: int,
-        codebook_embed_size: int,
-        use_linear_project: bool = False,
-        **kwargs,
+        use_linear_project: bool = True,
     ):
         super().__init__()
         self.codebook_size = codebook_size
-        self.codebook_embed_size = codebook_embed_size
-        self.codebook = nn.Embedding(codebook_size, codebook_embed_size)
+        self.codebook_embed_size = embed_size
+        self.codebook = nn.Embedding(codebook_size, embed_size)
         self.use_linear_project = use_linear_project
         if self.use_linear_project:
-            self.linear_proj = nn.Linear(codebook_embed_size, codebook_embed_size)
+            self.linear_proj = nn.Linear(embed_size, embed_size)
 
     @cached_property
     def weight(self):
@@ -31,12 +30,6 @@ class Quantizer(nn.Module):
 
     def indices2embedding(self, indices: torch.IntTensor) -> torch.Tensor:
         return self.codebook.weight[indices]
-
-    def forward(self, z: torch.Tensor):
-        """
-        Return: quantized_z, detached codes
-        """
-        raise NotImplementedError
 
     def embedding2indices(self, z: torch.Tensor) -> torch.Tensor:
         B, L, D = z.shape

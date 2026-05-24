@@ -1,11 +1,8 @@
 import torch
 import torch.nn as nn
 
-from ..utils.esm_utils.affine3d import Affine3D, build_affine3d_from_coordinates
-from .layers.transformer import (
-    VanillaGeometricEncoderStack,
-    VanillaRelativePositionEmbedding,
-)
+from .affine_utils import Affine3D, build_affine3d_from_coordinates
+from .transformer import GeometricEncoderStack, RelativePositionEmbedding
 
 
 def batched_gather(data, inds, dim=0, no_batch_dims=0):
@@ -54,25 +51,40 @@ def knn_graph(
     return chosen_edges, chosen_mask
 
 
-class VanillaStructureTokenEncoder(nn.Module):
-    def __init__(self, d_model, n_heads, v_heads, n_layers, d_out):
+class BackboneEncoder(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        v_heads: int,
+        n_layers: int,
+        d_out: int,
+    ):
         super().__init__()
-        self.transformer = VanillaGeometricEncoderStack(
-            d_model, n_heads, v_heads, n_layers
-        )
+        self.transformer = GeometricEncoderStack(d_model, n_heads, v_heads, n_layers)
         self.pre_vq_proj = nn.Linear(d_model, d_out)
-        self.relative_positional_embedding = VanillaRelativePositionEmbedding(
-            32, d_model, init_std=0.02
-        )
+        self.relative_positional_embedding = RelativePositionEmbedding(32, d_model)
         self.knn = 16
-        self.d_out = d_out
+
+    def forward(
+        self,
+        coords: torch.Tensor,
+        res_idx: torch.Tensor | None = None,
+    ):
+        # Extract N, CA, C coordinates for geometric reasoning
+        affine, affine_mask = build_affine3d_from_coordinates(coords)
+        ca_coords = coords[:, :, 1, :]
+        z = self.encode_local_structure(ca_coords, affine, affine_mask, res_idx)
+        z = z.masked_fill(~affine_mask.unsqueeze(2), 0)
+        z = self.pre_vq_proj(z)
+        return z
 
     def encode_local_structure(
         self,
         ca_coords: torch.Tensor,
         affine: Affine3D,
         mask: torch.Tensor,
-        residue_index: torch.Tensor | None = None,
+        res_idx: torch.Tensor | None = None,
     ):
         """Encodes local structure using a geometric transformer with KNN attention.
 
@@ -85,7 +97,7 @@ class VanillaStructureTokenEncoder(nn.Module):
             residue.
         mask: torch.Tensor
             Mask tensor of shape (B, L) indicating valid residues.
-        residue_index: torch.Tensor | None
+        res_idx: torch.Tensor | None
             Optional tensor of shape (B, L) containing residue indices for relative
             positional embedding.
             If None, will use the KNN edge indices as a proxy for residue indices.
@@ -106,12 +118,12 @@ class VanillaStructureTokenEncoder(nn.Module):
             affine = Affine3D.from_tensor(knn_affine_tensor)
             knn_mask = node_gather(mask.unsqueeze(-1), knn_edges).view(-1, E)
             knn_mask = torch.logical_and(knn_mask, knn_edge_mask)
-            if residue_index is None:
-                res_idxs = knn_edges.view(-1, E)
+            if res_idx is None:
+                pos_i = knn_edges.view(-1, E)
             else:
-                res_idxs = node_gather(residue_index.unsqueeze(-1), knn_edges).view(-1, E)
+                pos_i = node_gather(res_idx.unsqueeze(-1), knn_edges).view(-1, E)
 
-        z = self.relative_positional_embedding(res_idxs[:, 0], res_idxs)
+        z = self.relative_positional_embedding(pos_i[:, 0], pos_i)
 
         z, _ = self.transformer(
             x=z,
@@ -128,12 +140,3 @@ class VanillaStructureTokenEncoder(nn.Module):
         with torch.autocast(device_type=coords.device.type, enabled=False):
             edges, edge_mask = knn_graph(coords, mask, no_knn)
         return edges, edge_mask
-
-    def encode(self, coords: torch.Tensor, residue_index: torch.Tensor | None = None):
-        # Extract N, CA, C coordinates for geometric reasoning
-        affine, affine_mask = build_affine3d_from_coordinates(coords)
-        ca_coords = coords[:, :, 1, :]
-        z = self.encode_local_structure(ca_coords, affine, affine_mask, residue_index)
-        z = z.masked_fill(~affine_mask.unsqueeze(2), 0)
-        z = self.pre_vq_proj(z)
-        return z

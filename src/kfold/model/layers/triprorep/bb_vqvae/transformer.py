@@ -9,7 +9,7 @@ from einops import rearrange
 from .rotary import RotaryEmbedding
 
 
-class VanillaRelativePositionEmbedding(nn.Module):
+class RelativePositionEmbedding(nn.Module):
     def __init__(self, bins, embedding_dim, init_std=0.02):
         super().__init__()
         self.bins = bins
@@ -52,7 +52,7 @@ def gelu_ln_ffn(d_model: int, expansion_ratio: float, bias: bool):
     )
 
 
-class VanillaMultiHeadAttention(nn.Module):
+class MultiHeadAttention(nn.Module):
     def __init__(
         self, d_model: int, n_heads: int, bias: bool = False, qk_layernorm: bool = True
     ):
@@ -99,7 +99,7 @@ class VanillaMultiHeadAttention(nn.Module):
         return self.out_proj(context_BLD)
 
 
-class VanillaGeometricReasoningOriginalImpl(nn.Module):
+class GeometricReasoningOriginalImpl(nn.Module):
     def __init__(
         self,
         c_s: int,
@@ -192,7 +192,7 @@ class VanillaGeometricReasoningOriginalImpl(nn.Module):
         return s
 
 
-class VanillaUnifiedTransformerBlock(nn.Module):
+class UnifiedTransformerBlock(nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -210,14 +210,14 @@ class VanillaUnifiedTransformerBlock(nn.Module):
         super().__init__()
         self.use_plain_attn = use_plain_attn
         if self.use_plain_attn:
-            self.attn = VanillaMultiHeadAttention(
+            self.attn = MultiHeadAttention(
                 d_model, n_heads, bias, qk_layernorm=qk_layernorm
             )
         self.use_geom_attn = use_geom_attn
         if self.use_geom_attn:
             if v_heads is None:
                 raise ValueError("v_heads must be specified when use_geom_attn is True")
-            self.geom_attn = VanillaGeometricReasoningOriginalImpl(
+            self.geom_attn = GeometricReasoningOriginalImpl(
                 c_s=d_model,
                 v_heads=v_heads,
                 bias=bias,
@@ -244,7 +244,7 @@ class VanillaUnifiedTransformerBlock(nn.Module):
         return x
 
 
-class VanillaTransformerStack(nn.Module):
+class TransformerStack(nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -262,7 +262,7 @@ class VanillaTransformerStack(nn.Module):
         super().__init__()
         self.blocks = nn.ModuleList(
             [
-                VanillaUnifiedTransformerBlock(
+                UnifiedTransformerBlock(
                     d_model,
                     n_heads,
                     v_heads=v_heads,
@@ -293,12 +293,12 @@ class VanillaTransformerStack(nn.Module):
         return self.norm(x), x
 
 
-class VanillaGeometricEncoderStack(VanillaTransformerStack):
+class GeometricEncoderStack(TransformerStack):
     def __init__(self, d_model, n_heads, v_heads, n_layers):
         super().__init__(d_model, n_heads, v_heads, 0)
         self.blocks = nn.ModuleList(
             [
-                VanillaUnifiedTransformerBlock(
+                UnifiedTransformerBlock(
                     d_model,
                     n_heads,
                     v_heads=v_heads,
