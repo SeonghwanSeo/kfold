@@ -12,9 +12,9 @@ from .base import BaseSequenceEncoder
 
 
 @SEQUENCE_ENCODER.register()
-class ESMO(BaseSequenceEncoder):
+class ESM(BaseSequenceEncoder):
     class Config(BaseSequenceEncoder.Config):
-        """Configuration for ESM-O sequence encoder.
+        """Configuration for ESM sequence encoder.
 
         Attributes
         ----------
@@ -38,7 +38,7 @@ class ESMO(BaseSequenceEncoder):
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
-        self.cfg: ESMO.Config = cfg
+        self.cfg: ESM.Config = cfg
 
         # Create model components
         self.embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
@@ -130,8 +130,8 @@ class ESMO(BaseSequenceEncoder):
         Returns
         -------
         x_token: torch.Tensor
-            Tensor of shape (B, Ntoken, N, D) containing sequence representations,
-            where N is the number of layers and D is the model dimension.
+            Tensor of shape (B, Ntoken, D) containing sequence representations,
+            where D is the model dimension.
         attention: torch.Tensor
             Tensor of shape (B, Ntoken, Ntoken, N, H) containing attention weights,
             where N is number of layers and H is number of heads.
@@ -158,26 +158,21 @@ class ESMO(BaseSequenceEncoder):
 
         # === Forward pass === #
         x = self.embed(input_ids)
-        x_out = torch.empty((B, Ntoken, N, D), dtype=dtype, device=device)
         attn_out = torch.empty((B, Ntoken, Ntoken, N, H), dtype=dtype, device=device)
 
         for i, block in enumerate(self.transformer.blocks):
             x, attn_weights = block(x, seq_id, pos_id)
-
-            # [B, seq_len, d_model] -> [B, n_tokens, d_model]
-            _x = x.gather(1, seq_token_idx[..., None].expand(-1, -1, D))
-            x_out[:, :, i, :] = _x.to(dtype)
-
             # [B, n_heads, seq_len, seq_len] -> [B, n_tokens, n_tokens, n_heads]
             _attn = attn_weights.permute(0, 2, 3, 1)  # [B, seq_len, seq_len, n_heads]
             _attn = _attn[b_idx, row_idx, col_idx]
             attn_out[:, :, :, i, :] = _attn.to(dtype)
             del attn_weights
+        x_out = x.gather(1, seq_token_idx[..., None].expand(-1, -1, D))
 
         # Mask out invalid tokens
         token_mask = self.prepare_emb_mask(f_input)
         attn_mask = self.prepare_out_attn_mask(f_input, token_mask)
-        x_out.masked_fill_(~token_mask[..., None, None], 0.0)
+        x_out.masked_fill_(~token_mask[..., None], 0.0)
         attn_out.masked_fill_(~attn_mask[..., None, None], 0.0)
 
         return x_out, attn_out

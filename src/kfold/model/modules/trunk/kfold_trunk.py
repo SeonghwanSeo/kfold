@@ -54,10 +54,6 @@ class KFoldTrunk(BaseTrunk):
             The token pairwise embedding size.
         channel_plm : int
             The hidden dimension for the PLMModule.
-        channel_seq_emb : tuple[int, int]
-            The sequence embedding size for the PLM module.
-        channel_struct_emb : int
-            The structure embedding size for the PLM module.
         channel_seq_attn : tuple[int, int]
             The number of attention maps for the PLM module.
         num_heads_attn : int, optional
@@ -70,7 +66,9 @@ class KFoldTrunk(BaseTrunk):
 
         channel_s: int = 384
         channel_z: int = 128
-        channel_plm: int = 1152
+
+        # PLM dimensions.
+        channel_plm: int = 768
 
         # apo module
         apo_embedding: ApoEmbeddingConfig = dataclasses.field(
@@ -83,7 +81,12 @@ class KFoldTrunk(BaseTrunk):
         # pairformer
         pairformer: PairformerConfig = dataclasses.field(default_factory=PairformerConfig)
 
-    def __init__(self, cfg: Config, kernel_config: dict | None):
+    def __init__(
+        self,
+        cfg: Config,
+        channel_plm_inputs: int,
+        kernel_config=None,
+    ):
         """Initialize the KFoldTrunk module."""
         super().__init__(cfg, kernel_config)
 
@@ -100,6 +103,8 @@ class KFoldTrunk(BaseTrunk):
 
         # === PLM Module === #
         self.plm_module: PLMModule = PLMModule(
+            channel_s_inputs=cfg.channel_s,
+            channel_plm_inputs=channel_plm_inputs,
             channel_z=cfg.channel_z,
             channel_plm=cfg.channel_plm,
             num_heads_attn=cfg.plm_module.num_heads_attn,
@@ -129,7 +134,7 @@ class KFoldTrunk(BaseTrunk):
 
         # === Skip connection === #
         self.proj_plm_to_s_trunk = LinearNoBias(
-            cfg.channel_plm, cfg.channel_s, init="final"
+            channel_plm_inputs, cfg.channel_s, init="final"
         )
 
     def _compile(self, **kwargs):
@@ -149,7 +154,7 @@ class KFoldTrunk(BaseTrunk):
             return self.pairformer_stack._orig_mod  # type: ignore
         return self.pairformer_stack
 
-    def forward(  # type: ignore
+    def forward(
         self,
         s_inputs: torch.Tensor,
         s_init: torch.Tensor,
@@ -183,6 +188,7 @@ class KFoldTrunk(BaseTrunk):
         z_trunk: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
+        # === Main trunk iteration with recycling === #
         s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
 

@@ -78,6 +78,8 @@ class ConstraintSampling:
         ref_struct: RefStructure,
         rng: np.random.Generator | None = None,
     ) -> list[Constraint]:
+        if self.max_constraints <= 0 or self.prob_constraint <= 0.0:
+            return []
         rng = spawn_rng(rng)
 
         # Sample whether to sample constraints

@@ -38,8 +38,8 @@ class BaseSequenceEncoder(torch.nn.Module, ABC):
         Returns
         -------
         x_token: torch.Tensor
-            Tensor of shape (B, Ntoken, N, D) containing sequence representations,
-            where N is the number of layers and D is the model dimension.
+            Tensor of shape (B, Ntoken, D) containing sequence representations,
+            where D is the model dimension.
         attention: torch.Tensor
             Tensor of shape (B, Ntoken, Ntoken, N, H) containing attention weights,
             where N is number of layers and H is number of heads.

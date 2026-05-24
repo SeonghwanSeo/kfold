@@ -28,39 +28,22 @@ class PLMInputEmbedder(nn.Module):
 
     def __init__(
         self,
-        channel_seq_emb: tuple[int, int],
-        channel_seq_attn: tuple[int, int],
+        channel_seq_emb: int,
+        channel_seq_attn: int,
         channel_struct_emb: int,
-        channel_plm: int = 1152,
         channel_z: int = 128,
     ) -> None:
         super().__init__()
-        # Sequence embedding projection
-        n_layer, c_seq = channel_seq_emb
         # Initialize with uniform weights.
-        self.gate_seq_emb = nn.Parameter(torch.zeros(n_layer))
-        self.layernorm_seq = LayerNorm(c_seq, create_scale=False, create_offset=False)
-        self.proj_seq_emb = nn.Sequential(
-            LinearNoBias(c_seq, channel_plm, init="relu"),
-            nn.ReLU(),
-            LinearNoBias(channel_plm, channel_plm, init="default"),
-        )
-
-        # Structure embedding projection
-        self.proj_struct_emb = nn.Sequential(
-            LayerNorm(channel_struct_emb),
-            LinearNoBias(channel_struct_emb, channel_plm, init="relu"),
-            nn.ReLU(),
-            LinearNoBias(channel_plm, channel_plm, init="default"),
-        )
+        self.layernorm_seq = LayerNorm(channel_seq_emb, create_offset=False)
+        self.layernorm_struct = LayerNorm(channel_struct_emb, create_offset=False)
 
         # Attention embedding projection to initialize pair representations.
         # NOTE (Seonghwan): LayerNorm is applied for scalability to sequence length,
         # as the scale of attention maps is reduced by sequence length.
-        channel_attn = channel_seq_attn[0] * channel_seq_attn[1]
         self.proj_seq_attn = nn.Sequential(
-            LayerNorm(channel_attn, create_offset=False),
-            LinearNoBias(channel_attn, channel_z, init="relu"),
+            LayerNorm(channel_seq_attn, create_offset=False),
+            LinearNoBias(channel_seq_attn, channel_z, init="relu"),
             nn.ReLU(),
             LinearNoBias(channel_z, channel_z, init="final"),
         )
@@ -79,7 +62,7 @@ class PLMInputEmbedder(nn.Module):
             The input single representations
         seq_emb : torch.Tensor
             The hidden states from the sequence encoder
-            of shape (B, L, num_layer_seq, channel_seq)
+            of shape (B, L, channel_seq)
         seq_attn : torch.Tensor
             The attention maps from the sequence encoder
             of shape (B, L, num_layer_seq_attn, channel_seq_attn)
@@ -93,18 +76,12 @@ class PLMInputEmbedder(nn.Module):
         z_plm: torch.Tensor
             The initial pair representations of shape (B, L, L, C_z)
         """
-        # Compute s_plm_seq
-        g = torch.softmax(self.gate_seq_emb, dim=0)  # [num_layer_seq,]
-        seq_emb = self.layernorm_seq(seq_emb)  # [B, L, num_layer_seq, channel_seq]
-        seq_emb = torch.einsum("n,blnd->bld", g, seq_emb)  # [B, L, channel_seq]
-        s_seq = self.proj_seq_emb(seq_emb)  # [B, L, channel_plm]
-        # Compute s_plm_struct
-        s_struct = self.proj_struct_emb(struct_emb)  # [B, L, channel_plm]
-        s_plm = s_seq + s_struct  # [B, L, channel_plm]
-
+        # Compute s_plm
+        seq_emb = self.layernorm_seq(seq_emb)
+        struct_emb = self.layernorm_struct(struct_emb)
+        s_plm = torch.cat([seq_emb, struct_emb], dim=-1)
         # Compute z_plm for initializing pair representations.
         z_plm = self.proj_seq_attn(seq_attn.flatten(-2))
-
         return s_plm, z_plm
 
 
@@ -116,30 +93,19 @@ class PairwiseProdDiff(nn.Module):
     def __init__(self, c_in: int, c_out: int) -> None:
         super().__init__()
         assert c_out % 2 == 0, "c_out must be even."
-        self.c_in: int = c_in
-        self.c_out: int = c_out
-        self.c_hid: int = c_out // 2
+        c_hidden = c_out // 2
+        self.layernorm = LayerNorm(c_in, create_offset=False)
+        self.linear_in = Linear(c_in, c_hidden * 2, init="default")
+        self.linear_out = Linear(c_hidden * 2, c_out, init="final")
 
-        self.layernorm = LayerNorm(c_in)
-        self.linear_in = LinearNoBias(c_in, 2 * c_out, init="default")
-        self.linear_out = Linear(2 * c_out, c_out, init="final")
-
-    def forward(
-        self,
-        s: torch.Tensor,
-        intra_mask: torch.Tensor,
-        inter_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """Compute pairwise embeddings from single embeddings.
+    def forward(self, s: torch.Tensor) -> torch.Tensor:
+        """Compute pairwise embeddings from single representations using
+        element-wise differences and products.
 
         Parameters
         ----------
         s : torch.Tensor
             The single representation (*, L, c_in).
-        intra_mask : torch.Tensor
-            The intra-chain mask of shape (*, L, L).
-        inter_mask : torch.Tensor
-            The inter-chain mask of shape (*, L, L).
 
         Returns
         -------
@@ -147,19 +113,15 @@ class PairwiseProdDiff(nn.Module):
             The output tensor (*, L, L, c_out).
         """
         s = self.layernorm(s)  # (*, L, c_in)
-        s_i, s_j = self.linear_in(s).chunk(2, dim=-1)  # 2 * (*, L, 2*c_hid)
-
-        dim = self.c_hid
-        s_i = s_i[..., :, None, :].unflatten(-1, (2, dim))  # (*, L, 1, 2, c_hid)
-        s_j = s_j[..., None, :, :].unflatten(-1, (2, dim))  # (*, 1, L, 2, c_hid)
+        s_i, s_j = self.linear_in(s).chunk(2, dim=-1)  # 2 * (*, L, c_hid)
+        s_i = s_i.unsqueeze(-2)  # (*, L, 1, c_hidden)
+        s_j = s_j.unsqueeze(-3)  # (*, 1, L, c_hidden)
 
         # Combine Diff (Asymmetry) and Prod (Correlation)
-        z = torch.cat([s_i - s_j, s_i * s_j], dim=-1)  # (*, L, L, 2, c_out)
-
-        # Apply masks
-        mask = torch.stack([intra_mask, inter_mask], dim=-1)  # (*, L, L, 2)
-        z = z * mask.to(z.dtype)[..., None]  # (*, L, L, 2, c_out)
-        z = z.flatten(-2, -1)  # (*, L, L, 2*c_out)
+        # NOTE: summation is derived from production operation with linear bias
+        # (W1(s_i) + b1) * (W2(s_j) + b2)
+        #   = W1(s_i)W2(s_j) + b1*W2(s_j) + b2*W1(s_i) + b1*b2
+        z = torch.cat([s_i - s_j, s_i * s_j], dim=-1)  # (*, L, L, c_hidden * 2)
 
         z = self.linear_out(z)  # (*, L, L, c_out)
         return z
@@ -168,9 +130,10 @@ class PairwiseProdDiff(nn.Module):
 class PLMModule(nn.Module):
     def __init__(
         self,
-        channel_s: int = 384,
+        channel_s_inputs: int = 384,
+        channel_plm_inputs: int = 2688,
+        channel_plm: int = 768,
         channel_z: int = 128,
-        channel_plm: int = 1152,
         num_heads_attn: int = 16,
         num_heads_tri_attn: int = 4,
         num_blocks: int = 4,
@@ -179,7 +142,8 @@ class PLMModule(nn.Module):
         blocks_per_ckpt: int | None = None,
     ) -> None:
         super().__init__()
-        self.linear_s_inputs = LinearNoBias(channel_s, channel_plm)
+        self.linear_s_inputs = LinearNoBias(channel_s_inputs, channel_plm)
+        self.linear_plm_inputs = LinearNoBias(channel_plm_inputs, channel_plm)
         self.blocks = torch.nn.ModuleList()
         for i in range(num_blocks):
             self.blocks.append(
@@ -227,7 +191,7 @@ class PLMModule(nn.Module):
             The updated pair representations
         """
         # Fuse inputs to get initial s_plm.
-        s_plm = plm_inputs + self.linear_s_inputs(s_inputs)  # [B, L, C_plm]
+        s_plm = self.linear_s_inputs(s_inputs) + self.linear_plm_inputs(plm_inputs)
 
         # Create masks
         pair_mask = mask[..., None] & mask[..., None, :]
@@ -271,7 +235,8 @@ class PLMBlock(nn.Module):
         self.channel_z: int = channel_z
         self.channel_plm: int = channel_plm
 
-        self.pairwise_proj = PairwiseProdDiff(channel_plm, channel_z)
+        self.pairwise_proj_intra = PairwiseProdDiff(channel_plm, channel_z)
+        self.pairwise_proj_inter = PairwiseProdDiff(channel_plm, channel_z)
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
         self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
@@ -334,7 +299,8 @@ class PLMBlock(nn.Module):
         _add = partial(add, inplace=not self.training)
 
         # Step 1: single to pair
-        z = _add(z, self.pairwise_proj(s_plm, intra_mask, inter_mask))
+        z = _add(z, self.pairwise_proj_intra(s_plm) * intra_mask[..., None])
+        z = _add(z, self.pairwise_proj_inter(s_plm) * inter_mask[..., None])
 
         # Step 2: pair to single
         if not self.is_last_block:

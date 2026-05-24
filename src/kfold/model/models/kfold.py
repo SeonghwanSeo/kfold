@@ -56,15 +56,16 @@ class KFold(torch.nn.Module):
 
         seq_enc, struct_enc = self.sequence_encoder, self.structure_encoder
         self.plm_input_embedder: PLMInputEmbedder = PLMInputEmbedder(
-            channel_seq_emb=(seq_enc.n_layers, seq_enc.d_model),
-            channel_seq_attn=(seq_enc.n_layers, seq_enc.n_heads),
+            channel_seq_emb=seq_enc.d_model,
+            channel_seq_attn=seq_enc.n_layers * seq_enc.n_heads,
             channel_struct_emb=struct_enc.d_model,
-            channel_plm=config.trunk.channel_plm,  # type: ignore
         )
 
         # Initialize trunk
         self.trunk: submodules.trunk.BaseTrunk = Registry.instantiate(
-            config.trunk, kernel_config=kernel_config
+            config.trunk,
+            channel_plm_inputs=(seq_enc.d_model + struct_enc.d_model),
+            kernel_config=kernel_config,
         )
 
         # Initialize prediction heads

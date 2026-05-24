@@ -753,7 +753,7 @@ class TrainingDataset(SafeLoadingDataset):
 
         # Constraint sampling for training
         # TODO: configurize the parameters
-        self.max_constraints = 5
+        self.max_constraints = 0
         self.constraint_sampling = constraint_sampling.ConstraintSampling(
             min_dist=3.0,
             max_dist=22.0,
