@@ -67,10 +67,6 @@ class KFoldTrunk(BaseTrunk):
         # pairformer
         pairformer: PairformerConfig = dataclasses.field(default_factory=PairformerConfig)
 
-        # Proteina-style register tokens.
-        num_register_tokens: int = 0
-        register_token_init_std: float = 0.05
-
     def __init__(
         self,
         cfg: Config,
