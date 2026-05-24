@@ -24,6 +24,10 @@ restype_order = {restype: i for i, restype in enumerate(restypes)}
 
 @STRUCTURE_ENCODER.register()
 class TriProRep(BaseStructureEncoder):
+    bb_tok: BackboneTokenizer
+    fa_tok: FullAtomTokenizer
+    encoder: ProteinNetEncoder
+
     class Config(BaseStructureEncoder.Config):
         """Configuration for UniTok structure encoder.
 
@@ -40,9 +44,10 @@ class TriProRep(BaseStructureEncoder):
 
         """
 
-        fa_tok_path: str
-        bb_tok_path: str
-        encoder_path: str
+        fa_tok_path: str | None = None
+        bb_tok_path: str | None = None
+        encoder_path: str | None = None
+        path: str | None = None
         d_model: int = 2560
         n_layers: int = 33
         n_heads: int = 40
@@ -53,18 +58,27 @@ class TriProRep(BaseStructureEncoder):
 
         # Create model components
         # TODO: replace to hf hub link.
-        self.bb_tok: BackboneTokenizer = BackboneTokenizer.from_pretrained(
-            cfg.bb_tok_path
-        )
-        self.fa_tok: FullAtomTokenizer = FullAtomTokenizer.from_pretrained(
-            cfg.fa_tok_path
-        )
+        if cfg.path is not None:
+            self.bb_tok = BackboneTokenizer()
+            self.fa_tok = FullAtomTokenizer()
+            self.encoder = ProteinNetEncoder()
+            state_dict = torch.load(cfg.path, map_location="cpu")
+            self.load_state_dict(state_dict, strict=True)
+        else:
+            if cfg.fa_tok_path is None:
+                raise ValueError("fa_tok_path must be provided if path is not provided.")
+            if cfg.bb_tok_path is None:
+                raise ValueError("bb_tok_path must be provided if path is not provided.")
+            if cfg.encoder_path is None:
+                raise ValueError("encoder_path must be provided if path is not provided.")
+            self.bb_tok = BackboneTokenizer.from_pretrained(cfg.bb_tok_path)
+            self.fa_tok = FullAtomTokenizer.from_pretrained(cfg.fa_tok_path)
+            self.encoder = ProteinNetEncoder.from_pretrained(cfg.encoder_path)
 
-        # Backbone
-        self.offset = 4  # number of special tokens
-        self.encoder: ProteinNetEncoder = ProteinNetEncoder.from_pretrained(
-            cfg.encoder_path,
-        ).to(torch.bfloat16)
+        # Set to bfloat16
+        self.bb_tok = self.bb_tok.to(torch.bfloat16)
+        self.fa_tok = self.fa_tok.to(torch.bfloat16)
+        self.encoder = self.encoder.to(torch.bfloat16)
 
         # Set to eval mode
         self.eval()
@@ -73,11 +87,14 @@ class TriProRep(BaseStructureEncoder):
         for param in self.parameters():
             param.requires_grad = False
 
+        # Backbone token offset
+        self.offset = 4  # number of special tokens
+
         seq_to_restype = torch.full((64,), -1, dtype=torch.long)
         for aa_i, aa in enumerate(restypes):
             seq_i = C.sequence.encode_protein_amino_acid(aa)
             seq_to_restype[seq_i] = aa_i
-        self.register_buffer("seq_to_restype", seq_to_restype)
+        self.register_buffer("seq_to_restype", seq_to_restype, persistent=False)
 
     @property
     def d_model(self) -> int:
@@ -112,7 +129,8 @@ class TriProRep(BaseStructureEncoder):
         """
         device = self.device
         if isinstance(atom37_coords, np.ndarray):
-            atom37_coords = torch.from_numpy(atom37_coords).to(device)
+            atom37_coords = torch.from_numpy(atom37_coords)
+        atom37_coords = atom37_coords.to(device)
 
         length = len(sequence)
         if atom37_coords.shape != (length, 37, 3):
@@ -122,9 +140,7 @@ class TriProRep(BaseStructureEncoder):
             )
 
         seq_tok_id = torch.tensor(
-            C.sequence.encode_protein_sequence(sequence),
-            dtype=torch.long,
-            device=atom37_coords.device,
+            C.sequence.encode_protein_sequence(sequence), dtype=torch.long, device=device
         )
         aatypes = self.seq_to_restype[seq_tok_id]
         bb_tok_id = self.bb_tok.tokenize(atom37_coords[..., :3, :])
@@ -181,21 +197,24 @@ class TriProRep(BaseStructureEncoder):
         # Stack inputs into tensors
         B = len(batch)
         L = max(len(sequence) for sequence, _ in batch)
-        device = batch[0][1].device
 
         pad_idx = C.sequence.PAD_TOKEN_INDEX
-        seq_tok_ids = torch.full((B, L), pad_idx, dtype=torch.long, device=device)
-        coords = torch.full((B, L, 37, 3), float("nan"), dtype=torch.float, device=device)
-        mask = torch.zeros((B, L), dtype=torch.bool, device=device)
+        seq_tok_ids = torch.full((B, L), pad_idx, dtype=torch.long)
+        coords = torch.full((B, L, 37, 3), float("nan"), dtype=torch.float)
+        mask = torch.zeros((B, L), dtype=torch.bool)
         for i, (sequence, atom37_coords) in enumerate(batch):
             length = len(sequence)
             seq_tok_ids[i, :length] = torch.tensor(
-                C.sequence.encode_protein_sequence(sequence),
-                dtype=torch.long,
-                device=device,
+                C.sequence.encode_protein_sequence(sequence), dtype=torch.long
             )
             coords[i, :length] = atom37_coords
             mask[i, :length] = True
+
+        seq_tok_ids, coords, mask = (
+            seq_tok_ids.to(device),
+            coords.to(device),
+            mask.to(device),
+        )
 
         aatypes = self.seq_to_restype[seq_tok_ids]
 
@@ -208,8 +227,8 @@ class TriProRep(BaseStructureEncoder):
         fa_tok_ids.masked_fill_(~mask, -1)  # set to -1 for invalid tokens
         return {
             "seq_token_id": seq_tok_ids,
-            "bb_struct_token_id": bb_tok_ids,
-            "fa_struct_token_id": fa_tok_ids,
+            "bb_token_id": bb_tok_ids,
+            "fa_token_id": fa_tok_ids,
         }
 
     def forward(self, f_input: FoldingInput) -> torch.Tensor:
@@ -259,7 +278,7 @@ class TriProRep(BaseStructureEncoder):
         # dna and rna tokens. We set those to 0 to prevent out-of-vocab errors.
         seq_token_ids = seq_token_ids.masked_fill(~f_input.sequence.is_protein, 0)
 
-        seq_id = f_input.sequence.entity_id
+        seq_id = f_input.sequence.asym_id
         pos_id = f_input.sequence.pos_id
 
         # Mask out unallowed tokens

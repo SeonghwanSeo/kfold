@@ -16,13 +16,6 @@ def parse_args():
         help="Path to working directory.",
     )
     parser.add_argument(
-        "--split",
-        required=True,
-        type=str,
-        choices=["train", "val", "test"],
-        help="Data split to process (train/val/test).",
-    )
-    parser.add_argument(
         "--clean",
         action="store_true",
         help="Whether to remove original lmdb files after combining.",
@@ -33,7 +26,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
+    data_dir: pathlib.Path = args.data_dir / "disordered_pdb"
 
     combine_lmdb_path = data_dir / "apo_tok.lmdb"
     env = lmdb.open(

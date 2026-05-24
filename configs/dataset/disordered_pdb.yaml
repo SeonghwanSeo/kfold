@@ -1,0 +1,25 @@
+# RCSB training dataset configuration.
+_yaml_: "default-train.yaml"
+
+name: "disordered_pdb"
+type: "disordered_pdb"
+
+sampler:
+  _registry_: "data_sampler"
+  _class_: ClusterSampler
+  beta_chain: 0.5
+  beta_interface: 1.0
+  allow_redundant: False
+
+cropper:
+  _registry_: "data_cropper"
+  _class_: AlphaFold3Cropper
+  w_contiguous: 0.2
+  w_spatial: 0.4
+  w_spatial_interface: 0.4
+
+apo_init:
+  perturbation:
+    bioprior:
+      min_steps: 1 # Minimum random walk steps
+      max_steps: 15 # Maximum random walk steps

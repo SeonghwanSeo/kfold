@@ -11,7 +11,7 @@ rcsb-train/
     apo.lmdb            # apo structures for each chain.
       - seq: np.ndarray of shape (L,), dtype S1
       - coords: np.ndarray of shape (L, 37, 3), dtype float32
-    apo_unitok.lmdb     # pre-computed structure tokens for apo structures.
+    apo_tok.lmdb     # pre-computed structure tokens for apo structures.
     apo_lookup.json     # mapping from each chain to apo structure(s).
 af2-long/ ...           # simple dataset with AF2 structures.
     manifest.json
@@ -257,17 +257,17 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         return self._apo_lmdb_env
 
     @property
-    def unitok_lmdb_env(self) -> lmdb.Environment:
+    def apo_tok_lmdb_env(self) -> lmdb.Environment:
         """Get the LMDB environment for structure tokens of apo structures."""
-        if not hasattr(self, "_unitok_lmdb_env"):
-            self._unitok_lmdb_env = _open_lmdb(self.data_root / "apo_unitok.lmdb")
-        return self._unitok_lmdb_env
+        if not hasattr(self, "_apo_tok_lmdb_env"):
+            self._apo_tok_lmdb_env = _open_lmdb(self.data_root / "apo_tok.lmdb")
+        return self._apo_tok_lmdb_env
 
     def __del__(self):
         if hasattr(self, "_apo_lmdb_env"):
             self._apo_lmdb_env.close()
-        if hasattr(self, "_unitok_lmdb_env"):
-            self._unitok_lmdb_env.close()
+        if hasattr(self, "_apo_tok_lmdb_env"):
+            self._apo_tok_lmdb_env.close()
         if hasattr(self, "_lmdb_env"):
             self._lmdb_env.close()
 
@@ -519,7 +519,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         seq_lens = tokenized.chain.num_residues + 2
         seq_starts = np.cumsum(seq_lens) - seq_lens
 
-        with self.unitok_lmdb_env.begin(write=False) as txn:
+        with self.apo_tok_lmdb_env.begin(write=False) as txn:
             for c_i in range(tokenized.num_chains):
                 if tokenized.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
                     continue  # only populate structure tokens for protein chains
@@ -543,8 +543,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                     )
                     continue
                 # Load pre-computed structure tokens for apo structure from LMDB
-                apo_unitok = np.frombuffer(v, dtype=np.uint16).reshape(2, -1)
-                bb_tok, fa_tok = apo_unitok
+                apo_tok = np.frombuffer(v, dtype=np.int16).reshape(2, -1)
+                bb_tok, fa_tok = apo_tok
                 toklen = len(bb_tok)
 
                 # Compute the sequence token slice for this chain c_i safely

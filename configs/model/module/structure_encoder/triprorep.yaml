@@ -1,5 +1,6 @@
 _registry_: "structure_encoder"
 _class_: "TriProRep"
+path: ???
 fa_tok_path: ???
 bb_tok_path: ???
 encoder_path: ???
