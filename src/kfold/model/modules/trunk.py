@@ -166,20 +166,36 @@ class Trunk(torch.nn.Module):
 
     def _compile(self, **kwargs):
         """Compile the trunk module."""
+        self.protein_sequence_encoder = torch.compile(
+            self.protein_sequence_encoder, **kwargs
+        )
+        self.rna_sequence_encoder = torch.compile(self.rna_sequence_encoder, **kwargs)
+        self.protein_structure_encoder = torch.compile(
+            self.protein_structure_encoder, **kwargs
+        )
         self.plm_module = torch.compile(self.plm_module, **kwargs)
         self.pairformer_stack = torch.compile(self.pairformer_stack, **kwargs)
 
+    def get_protein_sequence_encoder(self) -> SequenceEncoder:
+        return self._get_model("protein_sequence_encoder")
+
+    def get_rna_sequence_encoder(self) -> SequenceEncoder:
+        return self._get_model("rna_sequence_encoder")
+
+    def get_protein_structure_encoder(self) -> StructureEncoder:
+        return self._get_model("protein_structure_encoder")
+
     def get_plm_module(self) -> PLMModule:
-        """Get the PLMModule. Revert to uncompiled version for validation."""
-        if self.is_compiled and (not self.training):
-            return self.plm_module._orig_mod  # type: ignore
-        return self.plm_module
+        return self._get_model("plm_module")
 
     def get_pairformer_stack(self) -> PairformerStack:
-        """Get the PairformerStac. Revert to uncompiled version for validation."""
+        return self._get_model("pairformer_stack")
+
+    def _get_model(self, key: str):
+        model = getattr(self, key)
         if self.is_compiled and (not self.training):
-            return self.pairformer_stack._orig_mod  # type: ignore
-        return self.pairformer_stack
+            return model._orig_mod  # type: ignore
+        return model
 
     def forward(
         self,
@@ -214,13 +230,16 @@ class Trunk(torch.nn.Module):
         """
         _add = partial(add, inplace=not self.training)
 
+        prot_seq_encoder = self.get_protein_sequence_encoder()
+        rna_seq_encoder = self.get_rna_sequence_encoder()
+        prot_struct_encoder = self.get_protein_structure_encoder()
+
         pairformer_stack = self.get_pairformer_stack()
         plm_module = self.get_plm_module()
         use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
 
         # Run the structure encoder once, without stochastic masking.
-        with torch.no_grad():
-            x_prot_struct = self.protein_structure_encoder(f_input)
+        x_prot_struct = prot_struct_encoder(f_input)
 
         # Initialize s_plm
         s_plm_init = self.proj_prot_struct(x_prot_struct)
@@ -239,16 +258,12 @@ class Trunk(torch.nn.Module):
                 z = z_init + self.linear_z(self.layernorm_z(z))
 
                 # Add sequence features
-                with torch.no_grad():
-                    x_prot, attn_prot = self.protein_sequence_encoder(
-                        f_input, mask_ratio=0.15
-                    )
+                x_prot, attn_prot = prot_seq_encoder(f_input, mask_ratio=0.15)
                 s_plm = s_plm_init + self.proj_prot_seq(x_prot)
                 z = _add(z, self.proj_prot_seq_attn(attn_prot.flatten(-2)))
                 del x_prot, attn_prot
 
-                with torch.no_grad():
-                    x_rna, attn_rna = self.rna_sequence_encoder(f_input, mask_ratio=0.15)
+                x_rna, attn_rna = rna_seq_encoder(f_input, mask_ratio=0.15)
                 s_plm = s_plm + self.proj_rna_seq(x_rna)
                 z = _add(z, self.proj_rna_seq_attn(attn_rna.flatten(-2)))
                 del x_rna, attn_rna

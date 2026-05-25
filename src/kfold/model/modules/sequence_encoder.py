@@ -121,6 +121,7 @@ class SequenceEncoder(torch.nn.Module):
         ):
             return self._forward(f_input, mask_ratio)
 
+    @torch.compiler.disable
     def get_seq_mask(self, f_input: FoldingInput) -> torch.Tensor:
         """Prepare output mask"""
         if self.chain_type == "protein":
@@ -132,6 +133,7 @@ class SequenceEncoder(torch.nn.Module):
         else:
             raise ValueError(f"Unsupported chain type: {self.chain_type}")
 
+    @torch.compiler.disable
     def get_token_mask(self, f_input: FoldingInput) -> torch.Tensor:
         """Prepare output mask"""
         if self.chain_type == "protein":

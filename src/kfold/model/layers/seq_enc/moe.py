@@ -85,17 +85,8 @@ class MoEFFN(nn.Module):
         # Renormalize so the routed-expert weights sum to 1 (Mixtral-style)
         top_probs = top_probs / (top_probs.sum(dim=-1, keepdim=True) + 1e-9)
 
-        # Determine dtype for the routed expert dispatch buffer.
-        # Under bf16-mixed autocast, the LayerNorm output `h` stays in fp32
-        # while expert Linear outputs are bf16. We must allocate buffers in
-        # the autocast dtype so index_add_ (strict on dtype) succeeds.
-        if torch.is_autocast_enabled():
-            out_dtype = torch.get_autocast_gpu_dtype()
-        else:
-            out_dtype = h.dtype
-
         # Dispatch tokens to their selected routed experts.
-        out = self._dispatch_vectorized(h, top_idx, top_probs, out_dtype)
+        out = self._dispatch_vectorized(h, top_idx, top_probs, x_flat.dtype)
 
         return out.view(orig_shape)
 

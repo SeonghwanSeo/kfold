@@ -254,10 +254,19 @@ class StructureEncoder(torch.nn.Module):
         ):
             return self._forward(f_input)
 
+    @torch.compiler.disable
     def get_seq_mask(self, f_input: FoldingInput) -> torch.Tensor:
         """Prepare output mask"""
         if self.chain_type == "protein":
             return f_input.sequence.pad_mask & f_input.sequence.is_protein
+        else:
+            raise ValueError(f"Unsupported chain type: {self.chain_type}")
+
+    @torch.compiler.disable
+    def get_token_mask(self, f_input: FoldingInput) -> torch.Tensor:
+        """Prepare output mask"""
+        if self.chain_type == "protein":
+            return f_input.token.pad_mask & f_input.token.is_protein
         else:
             raise ValueError(f"Unsupported chain type: {self.chain_type}")
 
@@ -306,10 +315,7 @@ class StructureEncoder(torch.nn.Module):
         seq_token_index = f_input.token.seq_token_index
         x = x[batch_index, seq_token_index]  # [B, Ntoken, D]
 
-        # mask out invalid tokens
-        pad_mask = f_input.token.pad_mask
-
         # mask out non-protein tokens
-        token_mask = pad_mask & f_input.token.is_protein
+        token_mask = self.get_token_mask(f_input)
         x.masked_fill_(~token_mask[..., None], 0.0)
         return x

@@ -15,6 +15,7 @@ model:
   score_model:
     blocks_per_ckpt: 24
   confidence_head:
+    num_blocks: 2
     blocks_per_ckpt: null
 
 train:

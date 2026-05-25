@@ -430,8 +430,7 @@ class KFold(torch.nn.Module):
             drop_rate = self.config.confidence_conditioning_drop_rate
             if drop_rate > 0.0:
                 drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
-                mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
-                _z_trunk = _z_trunk * mask[:, None, None, None]
+                _z_trunk[drop_conditioning] = 0.0
 
             # Forward pass through confidence head
             pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
