@@ -10,7 +10,7 @@ input_embedder:
   _yaml_: "module/input_embedder/kfold.yaml"
 
 sequence_encoder:
-  _yaml_: "module/sequence_encoder/esm-multimodal.yaml"
+  _yaml_: "module/sequence_encoder/esmc.yaml"
 
 structure_encoder:
   _yaml_: "module/structure_encoder/triprorep.yaml"

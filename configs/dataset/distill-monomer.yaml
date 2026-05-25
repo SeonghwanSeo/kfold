@@ -2,7 +2,7 @@ _yaml_: "default-train.yaml"
 
 name: af2-long
 type: "monomer-distillation"
-prob_drop_apo: 1.0
+prob_drop_apo: 0.75
 prob_drop_struct_token: 1.0
 
 sampler: null
@@ -19,5 +19,4 @@ apo_init:
   prob_perturbation: 1.0
   perturbation:
     bioprior:
-      min_steps: 5
       max_steps: 20
