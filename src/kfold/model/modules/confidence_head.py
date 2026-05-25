@@ -1,4 +1,3 @@
-import math
 from dataclasses import dataclass
 
 import torch
@@ -10,54 +9,52 @@ from kfold.model.primitives import LayerNorm, LinearNoBias
 from kfold.model.primitives.utils import gather_dim, get_context_dtype
 from kfold.utils.registry import CONFIDENCE_HEAD, BaseConfig
 
-NUM_ATOM_TYPES = 37 + 29 + 1  # 67: 37 for protein, 29 for dna/rna, and 1 for ligand
-
 
 def to_atom_layout(
     x: torch.Tensor,
-    token_idcs: torch.Tensor,
-    atom_idcs: torch.Tensor,
+    num_token_atoms: torch.Tensor,
+    max_total_atoms: int,
 ) -> torch.Tensor:
     """Convert a tensor from token representation to dense representation.
 
     Parameters
     ----------
     x : torch.Tensor
-        Tensor of shape (*, Ntoken, 67, C).
-    token_idcs : torch.Tensor
-        Tensor of shape (*, Natom) containing the token indices.
-    atom_idcs : torch.Tensor
-        Tensor of shape (*, Natom) containing the atom type indices (0 to 66).
+        Tensor of shape (*, Ntoken, 24, C).
+    num_token_atoms : torch.Tensor
+        Tensor of shape (*, Ntoken) containing the number of atoms
+        for each token.
+    max_total_atoms : int
+        The maximum total number of atoms across all tokens. This is used to
+        determine the output shape.
 
     Returns
     -------
-    x_dense: torch.Tensor
+    x_atom: torch.Tensor
         Tensor of shape (B, Natom, C).
     """
     *batch_dims, L, _, C = x.shape
-    Natom = token_idcs.shape[-1]
-    B = math.prod(batch_dims)
-    device = x.device
 
-    # Compute indices for gathering.
-    _batch_idcs = torch.arange(B, device=device)[:, None]
-    _token_idcs = token_idcs.view(B, Natom)
-    _atom_idcs = atom_idcs.view(B, Natom)
+    arange = torch.arange(24, device=x.device)
+    mask = arange < num_token_atoms.unsqueeze(-1)
+    offsets = torch.cumsum(num_token_atoms, dim=-1) - num_token_atoms
+    target_idx = offsets.unsqueeze(-1) + arange
+    target_idx = target_idx.masked_fill(~mask, 0)
+    x_flat = x.reshape(*batch_dims, -1, C)
+    target_idx_flat = target_idx.reshape(*batch_dims, -1, 1).expand_as(x_flat)
+    x_flat_masked = x_flat.masked_fill(~mask.reshape(*batch_dims, -1, 1), 0)
 
-    # Gathers features.
-    x_flat = x.view(B, L, NUM_ATOM_TYPES, C)
-    x_dense_flat = x_flat[_batch_idcs, _token_idcs, _atom_idcs]
-    x_dense = x_dense_flat.view(*batch_dims, Natom, C)
-    return x_dense
+    # Scatter add the valid atoms into the dense atom representation
+    out = torch.zeros(*batch_dims, max_total_atoms, C, device=x.device, dtype=x.dtype)
+    out.scatter_add_(dim=-2, index=target_idx_flat, src=x_flat_masked)
+
+    return out
 
 
 @CONFIDENCE_HEAD.register()
 class ConfidenceHead(torch.nn.Module):
     """Base class for confidence head modules.
     See Section 4.3.5 Algorithm 31 Confidence head
-
-    NOTE: Differ to original AF3, we use 67 unique atom types (37 for protein,
-    29 for dna/rna, 1 for ligand) instead of 24 max atoms per token.
     """
 
     @dataclass
@@ -132,13 +129,11 @@ class ConfidenceHead(torch.nn.Module):
         )
         self.plddt_head = torch.nn.Sequential(
             LayerNorm(cfg.channel_s),
-            LinearNoBias(
-                cfg.channel_s, NUM_ATOM_TYPES * self.num_plddt_bins, init="final"
-            ),
+            LinearNoBias(cfg.channel_s, 24 * self.num_plddt_bins, init="final"),
         )
         self.resolved_head = torch.nn.Sequential(
             LayerNorm(cfg.channel_s),
-            LinearNoBias(cfg.channel_s, NUM_ATOM_TYPES * 2, init="final"),
+            LinearNoBias(cfg.channel_s, 24 * 2, init="final"),
         )
 
     def do_compile(self, **kwargs):
@@ -283,10 +278,10 @@ class ConfidenceHead(torch.nn.Module):
             (B, N, L, L, self.num_pde_bins), device=device, dtype=dtype
         )
         plddt_logits = torch.zeros(
-            (B, N, Natom, self.num_plddt_bins), device=device, dtype=torch.float32
+            (B, N, L, 24, self.num_plddt_bins), device=device, dtype=torch.float32
         )
         resolved_logits = torch.zeros(
-            (B, N, Natom, 2), device=device, dtype=torch.float32
+            (B, N, L, 24, 2), device=device, dtype=torch.float32
         )
         # Process each sample in the batch separately to save memory
         for i in range(N):
@@ -296,14 +291,19 @@ class ConfidenceHead(torch.nn.Module):
                     z,
                     x_repr[:, i],
                     mask=f_input.token.pad_mask,
-                    token_idcs=f_input.atom.token_index,
-                    atom_idcs=f_input.atom.atom_type,
                 )
             )
             pae_logits[:, i] = _pae_logits
             pde_logits[:, i] = _pde_logits
             plddt_logits[:, i] = _plddt_logits
             resolved_logits[:, i] = _resolved_logits
+
+        # Reshape plddt and resolved logits to (B, N, Natom, ...)
+        num_token_atoms = f_input.token.num_atoms.unsqueeze(-2).expand(-1, N, -1)
+        plddt_logits = to_atom_layout(plddt_logits, num_token_atoms, f_input.num_atoms)
+        resolved_logits = to_atom_layout(
+            resolved_logits, num_token_atoms, f_input.num_atoms
+        )
 
         # Mask out padding
         token_mask = f_input.token.pad_mask[..., None, :]  # [B, 1, L]
@@ -325,8 +325,6 @@ class ConfidenceHead(torch.nn.Module):
         z: torch.Tensor,
         x: torch.Tensor,
         mask: torch.Tensor,
-        token_idcs: torch.Tensor,
-        atom_idcs: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of confidence head module.
 
@@ -351,9 +349,9 @@ class ConfidenceHead(torch.nn.Module):
             Tensor of shape (B, L, L, num_pde_bins) containing predicted distance
             error logits.
         lddt_logits: torch.Tensor
-            Tensor of shape (B, L, 67, num_lddt_bins) containing predicted lddt logits.
+            Tensor of shape (B, L, 24, num_lddt_bins) containing predicted lddt logits.
         resolved_logits: torch.Tensor
-            Tensor of shape (B, L, 67, 2) containing predicted resolved atom logits.
+            Tensor of shape (B, L, 24, 2) containing predicted resolved atom logits.
         """
         # Line 2
         with torch.autocast(x.device.type, dtype=torch.float32), torch.no_grad():
@@ -383,13 +381,9 @@ class ConfidenceHead(torch.nn.Module):
             s = s.to(torch.float32)
 
             # Line 7: plddt head
-            plddt_logits = self.plddt_head(s).unflatten(
-                -1, (NUM_ATOM_TYPES, self.num_plddt_bins)
-            )
-            plddt_logits = to_atom_layout(plddt_logits, token_idcs, atom_idcs)
+            plddt_logits = self.plddt_head(s).unflatten(-1, (24, self.num_plddt_bins))
 
             # Line 8: resolved head
-            resolved_logits = self.resolved_head(s).unflatten(-1, (NUM_ATOM_TYPES, 2))
-            resolved_logits = to_atom_layout(resolved_logits, token_idcs, atom_idcs)
+            resolved_logits = self.resolved_head(s).unflatten(-1, (24, 2))
 
         return pae_logits, pde_logits, plddt_logits, resolved_logits
