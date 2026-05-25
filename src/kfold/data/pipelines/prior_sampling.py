@@ -147,6 +147,18 @@ class PriorSampler:
         chain_coords_list: list[np.ndarray] = [
             entity_prior_coords[c.entity_id] for c in struct.chains
         ]
+        for i, coords in enumerate(chain_coords_list):
+            c = struct.chains[i]
+            if coords.shape != (c.num_atoms, 3):
+                if c.is_polymer:
+                    raise ValueError(
+                        f"Apo coordinates for chain {i} have incorrect shape "
+                        f"{coords.shape}, expected {(struct.chains[i].num_atoms, 3)}."
+                    )
+                else:
+                    # NOTE: For non-polymer chains (e.g. ligands), the number of
+                    # atoms can be mismatched due to different bonding
+                    chain_coords_list[i] = np.zeros((c.num_atoms, 3), dtype=np.float32)
 
         # === 3. Sample priors with augmentation and optional permutation === #
         prior_coords_list: list[np.ndarray] = []

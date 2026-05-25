@@ -740,7 +740,7 @@ def _insert_prior_coordinates(tok: TokenizedStructure, prior_coords: np.ndarray)
         raise ValueError("Prior coordinates contain non-finite values.")
 
     prior_coords = prior_coords.transpose(1, 0, 2)  # [num_atoms, num_priors, 3]
-    tok.atom.prior_coords[tok.atom.pad_mask] = prior_coords
+    tok.atom.prior_coords[m] = prior_coords
 
 
 def _insert_constraint_structures(
