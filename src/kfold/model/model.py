@@ -8,7 +8,6 @@ from typing import Self
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.layers.folding.plm_module import PLMInputEmbedder
 from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
 
 logger = logging.getLogger(__name__)
@@ -23,8 +22,9 @@ class KFoldConfig:
 
     # Sub-module configurations
     input_embedder: BaseConfig
-    sequence_encoder: BaseConfig
-    structure_encoder: BaseConfig
+    protein_sequence_encoder: BaseConfig
+    protein_structure_encoder: BaseConfig
+    rna_sequence_encoder: BaseConfig
     trunk: BaseConfig
     score_model: BaseConfig
     diffusion_head: BaseConfig
@@ -50,19 +50,17 @@ class KFold(torch.nn.Module):
 
         # Initialize trunk
         self.input_embedder = Registry.instantiate(config.input_embedder)
-        self.sequence_encoder = Registry.instantiate(config.sequence_encoder)
-        self.structure_encoder = Registry.instantiate(config.structure_encoder)
-        seq_enc, struct_enc = self.sequence_encoder, self.structure_encoder
-        self.plm_input_embedder: PLMInputEmbedder = PLMInputEmbedder(
-            channel_seq_emb=seq_enc.d_model,
-            channel_seq_attn=seq_enc.n_layers * seq_enc.n_heads,
-            channel_struct_emb=struct_enc.d_model,
-        )
+
+        prot_seq_enc = Registry.instantiate(config.protein_sequence_encoder)
+        rna_seq_enc = Registry.instantiate(config.rna_sequence_encoder)
+        prot_struct_enc = Registry.instantiate(config.protein_structure_encoder)
 
         # Initialize trunk
         self.trunk = Registry.instantiate(
             config.trunk,
-            channel_plm_inputs=(seq_enc.d_model + struct_enc.d_model),
+            protein_sequence_encoder=prot_seq_enc,
+            rna_sequence_encoder=rna_seq_enc,
+            protein_structure_encoder=prot_struct_enc,
             kernel_config=kernel_config,
         )
 
@@ -151,7 +149,9 @@ class KFold(torch.nn.Module):
             aatypes, coords = apo_info["aatypes"], apo_info["coords"]
             seq_st, seq_ed, apo_st, apo_ed = apo_info["mapping"]
             seq_sl, apo_sl = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
-            bb_ids, fa_ids = self.structure_encoder.tokenize(aatypes, coords)
+            bb_ids, fa_ids = self.trunk.protein_structure_encoder.tokenize(
+                aatypes, coords
+            )
             f_input.sequence.bb_struct_token_id[0, seq_sl] = bb_ids[apo_sl]
             f_input.sequence.fa_struct_token_id[0, seq_sl] = fa_ids[apo_sl]
 
@@ -224,25 +224,6 @@ class KFold(torch.nn.Module):
         et = time.time()
         time_logs["input_embedder"] = et - st
 
-        # Sequence encoder
-        st = time.time()
-        seq_emb, seq_attn = self.sequence_encoder(f_input)
-        et = time.time()
-        time_logs["sequence_encoder"] = et - st
-
-        # Structure encoder
-        st = time.time()
-        struct_emb = self.structure_encoder(f_input)
-        et = time.time()
-        time_logs["structure_encoder"] = et - st
-
-        st = time.time()
-        plm_inputs, plm_attn = self.plm_input_embedder(seq_emb, seq_attn, struct_emb)
-        z_init += plm_attn  # add PLM attention bias to pair representation
-        del seq_emb, seq_attn, struct_emb, plm_attn  # free up memory
-        et = time.time()
-        time_logs["plm_input_embedder"] = et - st
-
         # Trunk with recycling
         st = time.time()
         s_trunk, z_trunk = self.trunk(
@@ -251,7 +232,6 @@ class KFold(torch.nn.Module):
             z_init,
             f_input,
             num_recycles,
-            plm_inputs=plm_inputs,
         )
         et = time.time()
         time_logs["trunk"] = et - st
@@ -259,11 +239,9 @@ class KFold(torch.nn.Module):
         if return_embeddings:
             dict_out["trunk"] = {
                 "s_inputs": s_inputs,
-                "plm_inputs": plm_inputs,
                 "s_trunk": s_trunk,
                 "z_trunk": z_trunk,
             }
-        del plm_inputs  # free up memory
 
         # Distogram head
         st = time.time()
@@ -395,13 +373,6 @@ class KFold(torch.nn.Module):
         # NOTE: cast to float32 for numerical stability in training.
         s_inputs, s_init, z_init = s_inputs.float(), s_init.float(), z_init.float()
 
-        # Get PLM input embeddings
-        seq_emb, seq_attn = self.sequence_encoder(f_input)
-        struct_emb = self.structure_encoder(f_input)
-        plm_inputs, plm_attn = self.plm_input_embedder(seq_emb, seq_attn, struct_emb)
-        z_init = z_init + plm_attn  # add PLM attention bias to pair representation
-        del seq_emb, seq_attn, struct_emb, plm_attn  # free up memory
-
         # Trunk with recycling
         s_trunk, z_trunk = self.trunk(
             s_inputs,
@@ -409,7 +380,6 @@ class KFold(torch.nn.Module):
             z_init,
             f_input,
             num_recycles,
-            plm_inputs=plm_inputs,
         )
 
         if train_structure_module:
@@ -557,7 +527,13 @@ class KFold(torch.nn.Module):
             missing_keys = {
                 k
                 for k in missing_keys
-                if not k.startswith(("sequence_encoder.", "structure_encoder."))
+                if not k.startswith(
+                    (
+                        "trunk.protein_sequence_encoder.",
+                        "trunk.rna_sequence_encoder.",
+                        "trunk.protein_structure_encoder.",
+                    )
+                )
             }
             if missing_keys:
                 raise KeyError(f"Missing keys in state_dict: {missing_keys}")

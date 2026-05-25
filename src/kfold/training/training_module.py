@@ -184,7 +184,11 @@ class KFoldTrainingModule(pl.LightningModule):
         self.freeze_submodules()
 
         # Setup EMA
-        self.submodules_to_ignore_for_ema = ("sequence_encoder", "structure_encoder")
+        self.submodules_to_ignore_for_ema = (
+            "trunk.protein_sequence_encoder",
+            "trunk.rna_sequence_encoder",
+            "trunk.protein_structure_encoder",
+        )
         self.ema: ExponentialMovingAverage = ExponentialMovingAverage(
             model=self.model,
             decay=self.optimizer_config.ema_decay,
@@ -243,7 +247,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         self.frozen_modules = []
         if self.train_trunk is False:
-            self.frozen_modules += ["plm_input_embedder", "input_embedder", "trunk"]
+            self.frozen_modules += ["input_embedder", "trunk"]
 
         if self.train_distogram_head is False:
             self.frozen_modules += ["distogram_head"]
@@ -964,7 +968,9 @@ class KFoldTrainingModule(pl.LightningModule):
         checkpoint["state_dict"] = {
             k: v
             for k, v in checkpoint["state_dict"].items()
-            if "sequence_encoder" not in k and "structure_encoder" not in k
+            if "protein_sequence_encoder" not in k
+            and "rna_sequence_encoder" not in k
+            and "protein_structure_encoder" not in k
         }
 
         # Remove '._orig_mod.' from checkpoint keys

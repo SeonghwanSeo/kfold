@@ -4,6 +4,7 @@ path: ???
 fa_tok_path: ???
 bb_tok_path: ???
 encoder_path: ???
+chain_type: 'protein'
 d_model: 2560
 n_heads: 33
 n_layers: 40

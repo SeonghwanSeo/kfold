@@ -9,11 +9,14 @@ kernel_cuequivariance: true
 input_embedder:
   _yaml_: "module/input_embedder.yaml"
 
-sequence_encoder:
-  _yaml_: "module/sequence_encoder.yaml"
+protein_sequence_encoder:
+  _yaml_: "module/protein_sequence_encoder.yaml"
 
-structure_encoder:
-  _yaml_: "module/structure_encoder.yaml"
+protein_structure_encoder:
+  _yaml_: "module/protein_structure_encoder.yaml"
+
+rna_sequence_encoder:
+  _yaml_: "module/rna_sequence_encoder.yaml"
 
 trunk:
   _yaml_: "module/trunk.yaml"
