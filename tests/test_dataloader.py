@@ -7,7 +7,7 @@ from tqdm import tqdm
 from kfold.config import load_config
 from kfold.training.dataset.datamodule import TrainingDataModule
 
-TEST_CONFIG_PATH = Path("./configs/train-af3-tiny.yaml")
+TEST_CONFIG_PATH = Path("./configs/train-test.yaml")
 
 
 if __name__ == "__main__":
@@ -17,9 +17,9 @@ if __name__ == "__main__":
     num_samples = 5
 
     global_config = load_config(TEST_CONFIG_PATH)
-    global_config.train.data.train_batch_size = 32
+    global_config.train.data.train_batch_size = 1
     global_config.train.data.safe_load = False
-    global_config.train.data.num_workers = 64
+    global_config.train.data.num_workers = 0
 
     # Load training loader
     data_module = TrainingDataModule(global_config.train.data)

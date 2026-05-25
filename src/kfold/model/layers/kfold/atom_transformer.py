@@ -31,8 +31,6 @@ class AtomEmbedderWithApo(AtomEmbedder):
             The atom single representation dimension.
         channel_atompair : int
             The atom pair representation dimension.
-        use_apo : bool, optional
-            Whether to use apo structure embedding, by default True.
         use_structure : bool, optional
             Whether to use structure information, by default True.
 

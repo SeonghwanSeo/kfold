@@ -543,8 +543,8 @@ class SequenceArray(PlainLayout[np.ndarray]):
     ----------
     chain_type: np.ndarray (int)
         Chain types of shape [L,], indicating the type of each chain.
-    entity_id: np.ndarray (int)
-        Entity IDs of shape [L,], starting from 1.
+    asym_id: np.ndarray (int)
+        Asymmetric unit IDs of shape [L,], starting from 1.
     seq_token_id: np.ndarray (int)
         Sequence tokens of shape [L,] (aatype, base, atom, ...)
         NOTE: this may differ from the res_type in TokenArray,
@@ -572,7 +572,7 @@ class SequenceArray(PlainLayout[np.ndarray]):
     """
 
     chain_type: np.ndarray  # [L,], int
-    entity_id: np.ndarray  # [L,], int
+    asym_id: np.ndarray  # [L,], int
     seq_token_id: np.ndarray  # [L,], int
     bb_struct_token_id: np.ndarray  # [L,], int
     fa_struct_token_id: np.ndarray  # [L,], int
@@ -587,7 +587,7 @@ class SequenceArray(PlainLayout[np.ndarray]):
         shape = self.layout_shape
         attributes = [
             ("chain_type", np.integer, shape),
-            ("entity_id", np.integer, shape),
+            ("asym_id", np.integer, shape),
             ("seq_token_id", np.integer, shape),
             ("bb_struct_token_id", np.integer, shape),
             ("fa_struct_token_id", np.integer, shape),
@@ -622,7 +622,7 @@ class SequenceArray(PlainLayout[np.ndarray]):
         """Get an empty SequenceArray with the specified sequence length."""
         return cls(
             chain_type=full_minus_one((sequence_length,)),
-            entity_id=full_minus_one((sequence_length,)),
+            asym_id=full_minus_one((sequence_length,)),
             seq_token_id=full_minus_one((sequence_length,)),
             bb_struct_token_id=full_minus_one((sequence_length,)),
             fa_struct_token_id=full_minus_one((sequence_length,)),
@@ -903,10 +903,8 @@ class TokenizedStructure:
 
         if sequence_token_indices is None:
             # Retain all sequence tokens corresponding to the remaining chains
-            entity_ids = np.unique(cropped_token.entity_id)
-            sequence_token_indices = np.where(
-                np.isin(self.sequence.entity_id, entity_ids)
-            )[0]
+            asym_ids = np.unique(cropped_token.asym_id)
+            sequence_token_indices = np.where(np.isin(self.sequence.asym_id, asym_ids))[0]
 
         if len(sequence_token_indices) == len(self.sequence):
             # keep all sequence tokens, no need to index

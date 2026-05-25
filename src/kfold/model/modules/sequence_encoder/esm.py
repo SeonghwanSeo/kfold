@@ -12,9 +12,9 @@ from .base import BaseSequenceEncoder
 
 
 @SEQUENCE_ENCODER.register()
-class ESM(BaseSequenceEncoder):
+class ESMC(BaseSequenceEncoder):
     class Config(BaseSequenceEncoder.Config):
-        """Configuration for ESM sequence encoder.
+        """Configuration for ESM-C sequence encoder.
 
         Attributes
         ----------
@@ -38,7 +38,7 @@ class ESM(BaseSequenceEncoder):
 
     def __init__(self, cfg: Config):
         super().__init__(cfg)
-        self.cfg: ESM.Config = cfg
+        self.cfg: ESMC.Config = cfg
 
         # Create model components
         self.embed = nn.Embedding(cfg.vocab_size, cfg.d_model)
@@ -142,7 +142,7 @@ class ESM(BaseSequenceEncoder):
         # NOTE: padding tokens have seq_id=-1, which will be masked out in
         # attention computation. (entity_id is 1-indexed for valid tokens)
         input_ids = f_input.sequence.seq_token_id
-        seq_id = f_input.sequence.entity_id
+        seq_id = f_input.sequence.asym_id
         pos_id = f_input.sequence.pos_id
         mlm_mask = f_input.sequence.mlm_mask
 

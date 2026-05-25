@@ -123,6 +123,12 @@ PROTEIN_AMINO_ACID_MAPPING: dict[str, str] = {
     "U": "C",  # Selenocysteine mapped to Cysteine
     "O": "X",  # Pyrrolysine mapped to Unknown
 }
+PROTEIN_ONE_TO_THREE: dict[str, str] = {
+    s: t for s, t in zip(PROTEIN_AMINO_ACIDS, PROTEIN_RESIDUES_STR, strict=True)
+}
+PROTEIN_THREE_TO_ONE: dict[str, str] = {
+    t: s for s, t in zip(PROTEIN_AMINO_ACIDS, PROTEIN_RESIDUES_STR, strict=True)
+}
 
 DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
 DNA_RESIDUES_STR: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")

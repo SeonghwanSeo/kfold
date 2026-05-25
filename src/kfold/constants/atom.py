@@ -108,6 +108,9 @@ class AtomName(enum.StrEnum):
 
 
 atom_name_to_index: dict[AtomName, int] = {atom: idx for idx, atom in enumerate(AtomName)}
+atom_name_str_to_index: dict[str, int] = {
+    atom.value: idx for idx, atom in enumerate(AtomName)
+}
 num_atom_types: int = len(AtomName)
 
 

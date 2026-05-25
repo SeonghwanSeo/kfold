@@ -636,7 +636,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 # Save ground-truth and apo structures
                 name = ref_struct.id
                 self.writer.write(ref_struct, save_dir / f"{name}-gt.cif")
-                self.writer.write(ref_struct, save_dir / f"{name}-apo.cif", save_apo=True)
 
                 # Save predicted structures and metrics
                 for i in range(num_samples):

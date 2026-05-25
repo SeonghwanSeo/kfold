@@ -1,8 +1,8 @@
 # RCSB training dataset configuration for final stage confidence head training
 _yaml_: "default-train.yaml"
 
-name: rcsb-train
-is_distillation: false
+name: "rcsb-train"
+type: "rcsb"
 
 filters:
   - _registry_: "data_filter"
@@ -26,5 +26,4 @@ cropper:
 
 apo_init:
   prob_perturbation: 0.0
-  protein_perturbation: null
-  ligand_perturbation: null
+  perturbation: null

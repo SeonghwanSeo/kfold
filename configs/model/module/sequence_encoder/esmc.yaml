@@ -1,5 +1,5 @@
 _registry_: "sequence_encoder"
-_class_: "ESM"
+_class_: "ESMC"
 path: ???
 vocab_size: 64
 d_model: 1152
