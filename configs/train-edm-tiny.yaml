@@ -1,0 +1,27 @@
+model:
+  _yaml_: "model/kfold-edm.yaml"
+  sequence_encoder:
+    path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_seq_3b.pth
+  structure_encoder:
+    path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_struct_3b.pth
+  trunk:
+    plm_module:
+      blocks_per_ckpt: null
+    pairformer:
+      num_blocks: 16
+      blocks_per_ckpt: 4
+  score_model:
+    atom_encoder_blocks: 1
+    token_transformer_blocks: 8
+    atom_decoder_blocks: 1
+  confidence_head:
+    blocks_per_ckpt: null
+
+train:
+  _yaml_: "train/stage_1.yaml"
+  name: edm-mini
+
+  loss:
+    diffusion_loss:
+      smooth_lddt_loss:
+        chunk_size: 8

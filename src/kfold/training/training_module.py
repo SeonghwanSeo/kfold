@@ -16,7 +16,7 @@ from kfold.config import to_dict
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
-from kfold.model.models.kfold import KFold, KFoldConfig
+from kfold.model.model import KFold, KFoldConfig
 from kfold.training.utils.binned_loss_logging import (
     EntityBinConfig,
     EntityBinnedLossLogger,

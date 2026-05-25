@@ -1,7 +1,0 @@
-_registry_: "sequence_encoder"
-_class_: "ESMC"
-path: ???
-vocab_size: 64
-d_model: 2304
-n_heads: 36
-n_layers: 48

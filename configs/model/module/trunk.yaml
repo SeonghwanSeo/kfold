@@ -1,0 +1,20 @@
+_registry_: "trunk"
+_class_: "Trunk"
+channel_s: 384
+channel_z: 128
+channel_plm: 768
+
+plm_module:
+  num_heads_attn: 16
+  num_heads_tri_attn: 4
+  num_blocks: 4
+  dropout_plm: 0.15
+  dropout_z: 0.25
+  blocks_per_ckpt: null
+
+pairformer:
+  num_heads_attn: 16
+  num_heads_tri_attn: 4
+  num_blocks: 48
+  dropout: 0.25
+  blocks_per_ckpt: null

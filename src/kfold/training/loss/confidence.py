@@ -9,8 +9,32 @@ using `kfold.training.utils.permutation_alignment.align_train`.
 import torch
 
 from kfold.data.types import FoldingInput, RefStructure
+from kfold.model.primitives.utils import expand_dim, gather_dim
 from kfold.training.utils.permutation_alignment.align_train import get_aligned_true_coords
-from kfold.utils.torch import expand_dim, gather_dim, get_one_hot_from_bins
+
+
+def get_one_hot_from_bins(
+    tensor: torch.Tensor, bin_centers: torch.Tensor
+) -> torch.Tensor:
+    """Get one-hot encoding of a tensor based on the provided bins.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        The input tensor to be one-hot encoded of shape (*,).
+    bin_centers : torch.Tensor
+        A tensor containing the centers of the bins for one-hot encoding
+        of shape (num_bins,).
+
+    Returns
+    -------
+    torch.Tensor
+        A one-hot encoded tensor of shape (*, num_bins).
+    """
+    num_bins = bin_centers.shape[0]
+    d = torch.abs(tensor[..., None] - bin_centers)  # [*, num_bins]
+    indices = d.argmin(dim=-1)  # [*]
+    return torch.nn.functional.one_hot(indices, num_classes=num_bins)
 
 
 def cdist(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:

@@ -6,7 +6,34 @@ import numpy as np
 import torch
 
 from kfold.data.types import FoldingInput, RefStructure
-from kfold.model.layers.alphafold3.utils import broadcast_tokens_to_atoms
+
+
+def broadcast_tokens_to_atoms(x: torch.Tensor, token_index: torch.Tensor) -> torch.Tensor:
+    """Broadcast token features to atom features.
+
+    Parameters
+    ----------
+    x: torch.Tensor
+        Token features of shape (*, Ntoken) or (*, Ntoken, D)
+    token_index: torch.Tensor
+        Tensor of shape (*, Natom) mapping each atom to a token index.
+
+    Returns
+    -------
+    x_atom: torch.Tensor
+        Atom features of shape (*, Natom, D)
+    """
+    if x.ndim == token_index.ndim:
+        return broadcast_tokens_to_atoms(x.unsqueeze(-1), token_index).squeeze(-1)
+
+    # Expand indices to match the input dimensions.
+    gather_shape = list(x.shape)
+    gather_shape[-2] = token_index.shape[-1]  # Natom
+    index_expanded = token_index.unsqueeze(-1).expand(*gather_shape)  # [*, Natom, D]
+
+    # Gather token features for each atom based on the token index.
+    out = torch.gather(x, dim=-2, index=index_expanded)  # [*, Natom, D]
+    return out
 
 
 def compute_plddt(

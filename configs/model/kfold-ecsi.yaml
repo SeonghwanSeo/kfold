@@ -7,29 +7,29 @@ kernel_cuequivariance: true
 
 # Module configurations
 input_embedder:
-  _yaml_: "module/input_embedder/kfold.yaml"
+  _yaml_: "module/input_embedder.yaml"
 
 sequence_encoder:
-  _yaml_: "module/sequence_encoder/esmc.yaml"
+  _yaml_: "module/sequence_encoder.yaml"
 
 structure_encoder:
-  _yaml_: "module/structure_encoder/triprorep.yaml"
+  _yaml_: "module/structure_encoder.yaml"
 
 trunk:
-  _yaml_: "module/trunk/kfold.yaml"
-
-structure_module:
-  _yaml_: "module/structure_module/ecsi.yaml"
+  _yaml_: "module/trunk.yaml"
 
 score_model:
-  _yaml_: "module/score_model/af3.yaml"
+  _yaml_: "module/score_model.yaml"
   channel_coords: 6
 
+diffusion_head:
+  _yaml_: "module/ecsi.yaml"
+
 distogram_head:
-  _yaml_: "module/prediction_head/distogram_head.yaml"
+  _yaml_: "module/distogram_head.yaml"
 
 confidence_head:
-  _yaml_: "module/prediction_head/confidence_head.yaml"
+  _yaml_: "module/confidence_head.yaml"
 
 # Training preconditioning
 diffusion_conditioning_drop_rate: 0.2
