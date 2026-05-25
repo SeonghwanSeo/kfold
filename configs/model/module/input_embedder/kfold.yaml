@@ -6,3 +6,7 @@ channel_atom: 128
 channel_atompair: 16
 atom_encoder_blocks: 3
 atom_encoder_heads: 4
+num_bins: 39
+min_dist: 3.25
+max_dist: 50.75
+max_r: 64

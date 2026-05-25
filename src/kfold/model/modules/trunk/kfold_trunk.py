@@ -6,20 +6,11 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.pairformer import PairformerStack
-from kfold.model.layers.kfold.apo_module import ApoEmbedding
 from kfold.model.layers.kfold.plm_module import PLMModule
 from kfold.model.layers.primitives import LayerNorm, LinearNoBias
 from kfold.utils.registry import TRUNK
 
 from .base import BaseTrunk
-
-
-@dataclasses.dataclass(kw_only=True)
-class ApoEmbeddingConfig:
-    num_bins: int = 39
-    min_dist: float = 3.25
-    max_dist: float = 50.75
-    max_r: int = 64
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -70,11 +61,6 @@ class KFoldTrunk(BaseTrunk):
         # PLM dimensions.
         channel_plm: int = 768
 
-        # apo module
-        apo_embedding: ApoEmbeddingConfig = dataclasses.field(
-            default_factory=ApoEmbeddingConfig
-        )
-
         # plm module
         plm_module: PLMModuleConfig = dataclasses.field(default_factory=PLMModuleConfig)
 
@@ -89,17 +75,6 @@ class KFoldTrunk(BaseTrunk):
     ):
         """Initialize the KFoldTrunk module."""
         super().__init__(cfg, kernel_config)
-
-        # === Apo embedding === #
-        self.apo_embedding = ApoEmbedding(
-            num_bins=cfg.apo_embedding.num_bins,
-            min_dist=cfg.apo_embedding.min_dist,
-            max_dist=cfg.apo_embedding.max_dist,
-            max_r=cfg.apo_embedding.max_r,
-        )
-        self.linear_apo = LinearNoBias(
-            self.apo_embedding.num_channels, cfg.channel_z, init="default"
-        )
 
         # === PLM Module === #
         self.plm_module: PLMModule = PLMModule(
@@ -223,8 +198,6 @@ class KFoldTrunk(BaseTrunk):
         pairformer_stack = self.get_pairformer_stack()
         plm_module = self.get_plm_module()
         use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
-
-        z = z + self.linear_apo(self.apo_embedding(f_input))
         z = plm_module(
             z,
             s_inputs,

@@ -2,8 +2,9 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.alphafold3.embeddings import RelativePositionEncoding
+from kfold.model.layers.alphafold3.input_encoder import InputFeatureEmbedder
+from kfold.model.layers.kfold.apo_module import ApoEmbedding
 from kfold.model.layers.kfold.constraint_encoding import ConstraintEncoding
-from kfold.model.layers.kfold.input_encoder import InputEmbedderWithApo
 from kfold.model.layers.primitives import LinearNoBias
 from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
 
@@ -40,6 +41,11 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         channel_atompair: int = 16
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
+        # Apo embedding parameters
+        num_bins: int = 39
+        min_dist: float = 3.25
+        max_dist: float = 50.75
+        max_r: int = 64
         # Constraint-related parameters
         constraint_min_dist: float = 2.0
         constraint_max_dist: float = 20.0
@@ -52,7 +58,7 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         self.channel_atom: int = cfg.channel_atom
         self.channel_atompair: int = cfg.channel_atompair
 
-        self.input_embedder = InputEmbedderWithApo(
+        self.input_embedder = InputFeatureEmbedder(
             channel_s=cfg.channel_s,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
@@ -67,6 +73,17 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
         self.linear_rel_pos = LinearNoBias(self.rel_pos_encoding.dimension, cfg.channel_z)
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
+
+        # Apo embedding
+        self.apo_embedding = ApoEmbedding(
+            num_bins=cfg.num_bins,
+            min_dist=cfg.min_dist,
+            max_dist=cfg.max_dist,
+            max_r=cfg.max_r,
+        )
+        self.linear_apo = LinearNoBias(
+            self.apo_embedding.num_channels, cfg.channel_z, init="default"
+        )
 
         # Constraint-related
         self.constraint_encoding = ConstraintEncoding(
@@ -126,6 +143,9 @@ class KFoldInputEmbedder(BaseInputEmbedder):
         z_init = add(
             z_init, self.linear_bond(self.get_bond_adj(f_input, dtype).unsqueeze(-1))
         )
+
+        # Add apo embedding
+        z_init = add(z_init, self.linear_apo(self.apo_embedding(f_input)))
 
         # Add constraing embedding
         z_init = add(

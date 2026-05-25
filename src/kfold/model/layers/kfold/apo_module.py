@@ -120,7 +120,7 @@ class ApoEmbedding(nn.Module):
         )  # [B, L, L, num_bins + 1 + 3 + 1]
 
         # Get pair mask
-        pair_mask = get_pair_mask(f_input.token.pad_mask)  # [B, L, L]
+        pair_mask = get_pair_mask(f_input.token.apo_repr_mask)  # [B, L, L]
         # Apo is only defined for intra-chain pairs.
         asym_id = f_input.token.asym_id  # [B, L]
         pair_mask &= asym_id[..., :, None] == asym_id[..., None, :]  # [B, L, L]
