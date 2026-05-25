@@ -13,6 +13,7 @@ class TransformerStack(torch.nn.Module):
         n_layers: int,
         scale_residue: bool = True,
         expansion_ratio: float = 8 / 3,
+        use_moe: bool = False,
     ):
         super().__init__()
         self.d_model: int = d_model
@@ -28,6 +29,7 @@ class TransformerStack(torch.nn.Module):
                         math.sqrt(n_layers / 36) if scale_residue else 1.0
                     ),
                     expansion_ratio=expansion_ratio,
+                    use_moe=use_moe,
                 )
                 for _ in range(n_layers)
             ]

@@ -21,70 +21,6 @@ from .attention_pair_bias import SelfAttentionPairBias
 from .transition import Transition
 
 
-class PLMInputEmbedder(nn.Module):
-    """
-    Separated embedder of PLMModule to avoid redundant computation across recycling steps.
-    """
-
-    def __init__(
-        self,
-        channel_seq_emb: int,
-        channel_seq_attn: int,
-        channel_struct_emb: int,
-        channel_z: int = 128,
-    ) -> None:
-        super().__init__()
-        # Initialize with uniform weights.
-        self.layernorm_seq = LayerNorm(channel_seq_emb, create_offset=False)
-        self.layernorm_struct = LayerNorm(channel_struct_emb, create_offset=False)
-
-        # Attention embedding projection to initialize pair representations.
-        # NOTE (Seonghwan): LayerNorm is applied for scalability to sequence length,
-        # as the scale of attention maps is reduced by sequence length.
-        self.proj_seq_attn = nn.Sequential(
-            LayerNorm(channel_seq_attn, create_offset=False),
-            LinearNoBias(channel_seq_attn, channel_z, init="relu"),
-            nn.ReLU(),
-            LinearNoBias(channel_z, channel_z, init="final"),
-        )
-
-    def forward(
-        self,
-        seq_emb: torch.Tensor,
-        seq_attn: torch.Tensor,
-        struct_emb: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Perform the forward pass.
-
-        Parameters
-        ----------
-        s_input : torch.Tensor
-            The input single representations
-        seq_emb : torch.Tensor
-            The hidden states from the sequence encoder
-            of shape (B, L, channel_seq)
-        seq_attn : torch.Tensor
-            The attention maps from the sequence encoder
-            of shape (B, L, num_layer_seq_attn, channel_seq_attn)
-        struct_emb : torch.Tensor
-            The structure embeddings of shape (B, L, channel_struct)
-
-        Returns
-        -------
-        s_plm: torch.Tensor
-            The fused single representations of shape (B, L, C_plm)
-        z_plm: torch.Tensor
-            The initial pair representations of shape (B, L, L, C_z)
-        """
-        # Compute s_plm
-        seq_emb = self.layernorm_seq(seq_emb)
-        struct_emb = self.layernorm_struct(struct_emb)
-        s_plm = torch.cat([seq_emb, struct_emb], dim=-1)
-        # Compute z_plm for initializing pair representations.
-        z_plm = self.proj_seq_attn(seq_attn.flatten(-2))
-        return s_plm, z_plm
-
-
 class PairwiseProdDiff(nn.Module):
     """Convert single embeddings to pairwise embeddings.
     Inspired by ESMFold's implementation.
@@ -131,7 +67,6 @@ class PLMModule(nn.Module):
     def __init__(
         self,
         channel_s_inputs: int = 384,
-        channel_plm_inputs: int = 2688,
         channel_plm: int = 768,
         channel_z: int = 128,
         num_heads_attn: int = 16,
@@ -143,7 +78,6 @@ class PLMModule(nn.Module):
     ) -> None:
         super().__init__()
         self.linear_s_inputs = LinearNoBias(channel_s_inputs, channel_plm)
-        self.linear_plm_inputs = LinearNoBias(channel_plm_inputs, channel_plm)
         self.blocks = torch.nn.ModuleList()
         for i in range(num_blocks):
             self.blocks.append(
@@ -163,7 +97,7 @@ class PLMModule(nn.Module):
         self,
         z: torch.Tensor,
         s_inputs: torch.Tensor,
-        plm_inputs: torch.Tensor,
+        s_plm: torch.Tensor,
         asym_id: torch.Tensor,
         mask: torch.Tensor,
         use_cuequiv_kernels: bool = False,
@@ -176,7 +110,7 @@ class PLMModule(nn.Module):
             The pair representations of shape (B, L, L, C_z)
         s_inputs : torch.Tensor
             The input single representations of shape (B, L, C_s)
-        plm_inputs : torch.Tensor
+        s_plm : torch.Tensor
             The sequence embeddings from PLM of shape (B, L, C_s_plm)
         asym_id : torch.Tensor
             The asymmetry IDs of shape (B, L)
@@ -191,7 +125,7 @@ class PLMModule(nn.Module):
             The updated pair representations
         """
         # Fuse inputs to get initial s_plm.
-        s_plm = self.linear_s_inputs(s_inputs) + self.linear_plm_inputs(plm_inputs)
+        s_plm = s_plm + self.linear_s_inputs(s_inputs)
 
         # Create masks
         pair_mask = mask[..., None] & mask[..., None, :]

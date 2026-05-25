@@ -33,19 +33,21 @@ class StructureEncoder(torch.nn.Module):
         ----------
         path: str
             Path to pretrained weights.
+        chain_type: str
+            Type of sequence chain to encode. Must be one of "protein", "dna", or "rna".
         d_model: int
             Dimension of token embeddings and transformer hidden states.
         n_heads: int
             Number of attention heads in the transformer.
         n_layers: int
             Number of transformer layers.
-
         """
 
+        path: str | None = None
         fa_tok_path: str | None = None
         bb_tok_path: str | None = None
         encoder_path: str | None = None
-        path: str | None = None
+        chain_type: str = "protein"
         d_model: int = 2560
         n_layers: int = 33
         n_heads: int = 40
@@ -53,13 +55,14 @@ class StructureEncoder(torch.nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg: StructureEncoder.Config = cfg
+        self.chain_type = cfg.chain_type
 
         # Create model components
         # TODO: replace to hf hub link.
         if cfg.path is not None:
-            self.bb_tok = BackboneTokenizer()
-            self.fa_tok = FullAtomTokenizer()
-            self.encoder = ProteinNetEncoder()
+            self.bb_tok = BackboneTokenizer().to(torch.bfloat16)
+            self.fa_tok = FullAtomTokenizer().to(torch.bfloat16)
+            self.encoder = ProteinNetEncoder().to(torch.bfloat16)
             state_dict = torch.load(cfg.path, map_location="cpu")
             self.load_state_dict(state_dict, strict=True)
         else:
@@ -72,11 +75,10 @@ class StructureEncoder(torch.nn.Module):
             self.bb_tok = BackboneTokenizer.from_pretrained(cfg.bb_tok_path)
             self.fa_tok = FullAtomTokenizer.from_pretrained(cfg.fa_tok_path)
             self.encoder = ProteinNetEncoder.from_pretrained(cfg.encoder_path)
-
-        # Set to bfloat16
-        self.bb_tok = self.bb_tok.to(torch.bfloat16)
-        self.fa_tok = self.fa_tok.to(torch.bfloat16)
-        self.encoder = self.encoder.to(torch.bfloat16)
+            # Set to bfloat16
+            self.bb_tok = self.bb_tok.to(torch.bfloat16)
+            self.fa_tok = self.fa_tok.to(torch.bfloat16)
+            self.encoder = self.encoder.to(torch.bfloat16)
 
         # Set to eval mode
         self.eval()
@@ -252,6 +254,13 @@ class StructureEncoder(torch.nn.Module):
         ):
             return self._forward(f_input)
 
+    def get_seq_mask(self, f_input: FoldingInput) -> torch.Tensor:
+        """Prepare output mask"""
+        if self.chain_type == "protein":
+            return f_input.sequence.pad_mask & f_input.sequence.is_protein
+        else:
+            raise ValueError(f"Unsupported chain type: {self.chain_type}")
+
     def _forward(self, f_input: FoldingInput) -> torch.Tensor:
         """Forward pass of sequence representation module.
 
@@ -274,7 +283,8 @@ class StructureEncoder(torch.nn.Module):
         # HACK: (Seonghwan) Since we use the shared sequence vocab for both sequence
         # and structure encoder, structure encoder does not have vocab ids for
         # dna and rna tokens. We set those to 0 to prevent out-of-vocab errors.
-        seq_token_ids = seq_token_ids.masked_fill(~f_input.sequence.is_protein, 0)
+        seq_mask = self.get_seq_mask(f_input)
+        seq_token_ids = seq_token_ids.masked_fill(~seq_mask, 0)
 
         seq_id = f_input.sequence.asym_id
         pos_id = f_input.sequence.pos_id
