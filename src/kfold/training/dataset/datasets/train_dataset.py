@@ -162,7 +162,7 @@ class TrainingDataset(BaseLMDBDataset):
 
         # Constraint sampling for training
         # TODO: configurize the parameters
-        self.max_constraints = 4
+        self.max_constraints = 0
         self.constraint_sampling = constraint_sampling.ConstraintSampling(
             min_dist=2.0,
             max_dist=22.0,
