@@ -35,7 +35,7 @@ def main():
     args = parse_args()
     data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
 
-    combine_lmdb_path = data_dir / "apo_unitok.lmdb"
+    combine_lmdb_path = data_dir / "apo_tok.lmdb"
     env = lmdb.open(
         str(combine_lmdb_path),
         map_size=1 * 1024 * 1024 * 1024,  # 1 GB
@@ -44,7 +44,7 @@ def main():
         sync=False,
     )
 
-    apo_tok_dir = data_dir / "apo_unitok_chunk/"
+    apo_tok_dir = data_dir / "apo_tok_chunk/"
     for apo_subdir in sorted(apo_tok_dir.iterdir()):
         apo_key = apo_subdir.name
         print(f"Processing {apo_subdir} ({apo_key})...")

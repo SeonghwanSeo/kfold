@@ -1,9 +1,9 @@
-from . import (  # noqa
-    sequence_encoder,
-    structure_encoder,
+from . import (
+    confidence_head,
+    distogram_head,
     input_embedder,
+    sequence_encoder,
+    structure,
+    structure_encoder,
     trunk,
-    score_model,
-    structure_module,
-    prediction_head,
 )

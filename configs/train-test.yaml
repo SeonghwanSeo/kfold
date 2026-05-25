@@ -1,11 +1,14 @@
-_yaml_: "train-ecsi-mini.yaml"
+_yaml_: "train-ecsi-debug.yaml"
 train:
   data:
-    num_workers: 1
+    num_workers: 4
+    ccd_path: /cache/wykim_lab/kfold_data/v260522/ccd-train.pkl
     train_datasets:
-      # - _yaml_: "./dataset/rcsb-train.yaml"
-      #   name: rcsb
-      #   data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-train/
-      - _yaml_: "./dataset/afdb-long.yaml"
-        name: afdb-long
-        data_path: /cache/wykim_lab/kfold_data/v260310/dataset/afdb-long/
+      - _yaml_: "./dataset/rcsb-train.yaml"
+        name: rcsb
+        data_path: /cache/wykim_lab/kfold_data/v260522/dataset/rcsb-train/
+
+    val_datasets:
+      - _yaml_: "./dataset/rcsb-val.yaml"
+        name: rcsb-val
+        data_path: /cache/wykim_lab/kfold_data/v260522/dataset/rcsb-val/

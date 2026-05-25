@@ -7,9 +7,6 @@ manifest_path: null # optionally provide a custom manifest path
 seed: null # should be null for data augmentation
 
 apo_init:
-  use_residue_permutation: false
-  prob_perturbation: 0.95
-  use_cached_conformer_only: true
+  prob_perturbation: 0.0
   use_holo_if_apo_unavailable: false
-  protein_perturbation: null
-  ligand_perturbation: null
+  perturbation: null

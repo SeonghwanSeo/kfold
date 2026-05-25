@@ -142,7 +142,6 @@ def get_standard_residue_permutations(res_name: str) -> ResidueSymmetry:
         swap_perm[d_idx] = s_idx
     # Hack: there is only up to 2 symmetries per standard residue
     out = np.stack([original_perm, swap_perm], axis=0)
-    out.flags.writeable = False
     return out
 
 
@@ -246,6 +245,7 @@ def get_residue_symmetries(
             if chain.residue.is_standard[res_i]:
                 # Standard residues have predefined symmetries.
                 res_perms = get_standard_residue_permutations(res_name)
+                res_perms = res_perms.copy() if res_perms is not None else None
             else:
                 # For ligands, use the CCD component or SMILES to compute symmetries.
                 smiles = chain.smiles

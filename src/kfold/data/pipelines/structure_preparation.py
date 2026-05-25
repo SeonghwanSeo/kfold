@@ -179,8 +179,6 @@ def prepare_ref_chain(
         # Empty coordinates, bfactors, apo coordinates, and apo pLDDT
         coords=np.full((num_atoms, 3), np.nan, dtype=np.float32),
         bfactor=np.full((num_atoms,), np.nan, dtype=np.float16),
-        apo_coords=np.full((num_atoms, 3), np.nan, dtype=np.float32),
-        apo_plddt=np.full((num_atoms), np.nan, dtype=np.float16),
     )
 
     # ==================================================

@@ -4,6 +4,8 @@ import logging
 from pathlib import Path
 
 import lightning.pytorch as pl
+import numpy as np
+import torch
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -12,11 +14,12 @@ from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.utils.registry import DATAMODULE, BaseConfig
 
-from .dataset import (
-    MultiTrainingDataset,
+from .datasets import (
+    TrainingDataset,
     TrainingDatasetConfig,
     ValidationDataset,
     ValidationDatasetConfig,
+    get_training_dataset_cls,
 )
 from .dl_sampler import DistributedWeightedSampler
 
@@ -49,6 +52,57 @@ class DataModuleConfig(BaseConfig):
 
     # === Other configs === #
     prior_sampler: prior_sampling.PriorSamplerConfig | None
+
+
+class MultiTrainingDataset(torch.utils.data.Dataset):
+    """A dataset that combines multiple training datasets with different weights."""
+
+    def __init__(
+        self,
+        configs: list[TrainingDatasetConfig],
+        ccd: CCD,
+        tokenizer: tokenization.Tokenizer,
+        featurizer: featurization.InputFeaturizer,
+        prior_sampler: prior_sampling.PriorSampler | None,
+        max_chains: int,
+        max_tokens: int,
+        max_sequence_tokens: int,
+        safe_load: bool = True,
+    ) -> None:
+        self.datasets: list[TrainingDataset] = [
+            get_training_dataset_cls(config)(
+                config=config,
+                ccd=ccd,
+                tokenizer=tokenizer,
+                featurizer=featurizer,
+                prior_sampler=prior_sampler,
+                safe_load=safe_load,
+                max_chains=max_chains,
+                max_tokens=max_tokens,
+                max_sequence_tokens=max_sequence_tokens,
+            )
+            for config in configs
+        ]
+        self.cumulative_sizes: np.ndarray = np.cumsum([len(ds) for ds in self.datasets])
+        self.weights: np.ndarray = np.concatenate(
+            [
+                config.weight * (ds.weights / ds.weights.sum())
+                for ds, config in zip(self.datasets, configs, strict=True)
+            ]
+        )
+
+    def __len__(self) -> int:
+        return self.cumulative_sizes[-1]
+
+    def __getitem__(self, index: int) -> tuple[FoldingInput, dict]:
+        # Find the dataset index
+        dataset_idx = np.searchsorted(self.cumulative_sizes, index, side="right")
+        # Find the sample index within the dataset
+        if dataset_idx == 0:
+            sample_idx = index
+        else:
+            sample_idx = index - self.cumulative_sizes[dataset_idx - 1]
+        return self.datasets[dataset_idx][sample_idx]
 
 
 @DATAMODULE.register(config_cls=DataModuleConfig)
@@ -85,7 +139,9 @@ class TrainingDataModule(pl.LightningDataModule):
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
         if self.config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
+            prior_sampler = prior_sampling.PriorSampler(
+                self.config.prior_sampler, self.ccd
+            )
         else:
             prior_sampler = None
 
@@ -124,7 +180,9 @@ class TrainingDataModule(pl.LightningDataModule):
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
         if self.config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
+            prior_sampler = prior_sampling.PriorSampler(
+                self.config.prior_sampler, self.ccd
+            )
             # For validation, we should not use OT permutation.
             prior_sampler.use_ot_permutation = False
         else:

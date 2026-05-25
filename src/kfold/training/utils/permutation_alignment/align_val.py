@@ -1,14 +1,13 @@
 """Permutation alignment for validation."""
 
+import itertools
+import math
+
 import numpy as np
 import torch
 
 from kfold.data.types.structure import Chain, RefStructure
-from kfold.utils.geometry.rigid_align import (
-    compute_rmsd,
-    get_rigid_transform,
-    rigid_align,
-)
+from kfold.utils.geometry.rigid_align import compute_rmsd, rigid_align
 
 from .symmetry import ChainGroup, ChainSymmetry, ResidueSymmetry
 
@@ -62,25 +61,31 @@ def get_aligned_gt_structure(
     if not pred_coords.isfinite().all():
         raise RuntimeError("Predicted coordinates contain NaN or Inf values.")
 
-    chain_symmetries = symmetry_dict["chain"]
-    residue_symmetries = symmetry_dict["residue"]
-
-    # Convert to tuple
-    # HACK: I cannot understand why the type is list instead of tuple.
-    # I guess it's because of the torch lightning dataloader collate function...
-    chain_symmetries = {k: [tuple(g) for g in v] for k, v in chain_symmetries.items()}
+    # FIX: Defensively convert lists back to tuples to avoid unhashable type errors
+    # caused by PyTorch DataLoader collation.
+    chain_syms = symmetry_dict["chain"]
+    if isinstance(chain_syms, dict):
+        chain_syms = {k: [tuple(g) for g in v] for k, v in chain_syms.items()}
 
     # Validation alignment is performed in double precision for stability.
     with torch.autocast(device.type, enabled=False), torch.no_grad():
         # 1. Multi-chain permutation alignment.
         # Finds the optimal mapping of swappable homomer subunits.
         gt_to_pred = _do_optimal_chain_permutation(
-            ref_struct, pred_coords, chain_symmetries
+            ref_struct,
+            pred_coords,
+            chain_syms,
         )
 
         # Swap GT chains according to the optimal mapping.
         asym_id_to_chain = {c.asym_id: c for c in ref_struct.chains}
-        new_chains = [asym_id_to_chain[gt_to_pred[c.asym_id]] for c in ref_struct.chains]
+
+        # FIX: Use .get() because non-swapped chains won't exist in the gt_to_pred dict.
+        new_chains = [
+            asym_id_to_chain[gt_to_pred.get(c.asym_id, c.asym_id)]
+            for c in ref_struct.chains
+        ]
+
         ref_struct = RefStructure(
             chains=new_chains,
             connections=ref_struct.connections,
@@ -96,7 +101,10 @@ def get_aligned_gt_structure(
         # 3. Atomic permutation alignment.
         # Resolves side-chain symmetries and small molecule atom swappability.
         atom_index = _do_optimal_atom_permutation(
-            ref_struct, gt_coords, pred_coords, residue_symmetries
+            ref_struct,
+            gt_coords,
+            pred_coords,
+            symmetry_dict["residue"],
         )
         # Update the reference structure with the new permuted/aligned coordinates.
         gt_coords = gt_coords[atom_index]
@@ -113,220 +121,150 @@ def get_aligned_gt_structure(
 # ============================================================
 # Chain permutation alignment
 # ============================================================
+def _generate_chain_permutations(
+    chain_symmetries: dict[str, ChainSymmetry],
+    max_permutations: int = 1000,
+    rng: np.random.Generator | None = None,
+) -> list[dict[int, int]]:
+    """Generate possible chain permutations mapping original asym_id to target asym_id."""
+    rng = rng or np.random.default_rng()
+    sorted_keys = sorted(chain_symmetries.keys())
+    bucket_anchors_list = [
+        chain_symmetries[k] for k in sorted_keys if len(chain_symmetries[k]) > 1
+    ]
+
+    if len(bucket_anchors_list) == 0:
+        return [{}]  # Identity only
+
+    total_perms = 1
+    for anchors in bucket_anchors_list:
+        total_perms *= math.factorial(len(anchors))
+
+    anchor_mappings: list[dict[ChainGroup, ChainGroup]] = []
+
+    if total_perms <= max_permutations:
+        # Exhaustive Search
+        per_bucket_perms = [
+            list(itertools.permutations(anchors)) for anchors in bucket_anchors_list
+        ]
+        for combination in itertools.product(*per_bucket_perms):
+            mapping: dict[ChainGroup, ChainGroup] = {}
+            for original_anchors, permuted_anchors in zip(
+                bucket_anchors_list, combination, strict=True
+            ):
+                for old_anchor, new_anchor in zip(
+                    original_anchors, permuted_anchors, strict=True
+                ):
+                    mapping[old_anchor] = new_anchor
+            anchor_mappings.append(mapping)
+    else:
+        # Random Sampling
+        identity_map: dict[ChainGroup, ChainGroup] = {}
+        for anchors in bucket_anchors_list:
+            for a in anchors:
+                identity_map[a] = a
+        anchor_mappings.append(identity_map)
+
+        seen_sigs = set()
+        all_swappable_keys = sorted(identity_map.keys())
+        sig = tuple(identity_map[k] for k in all_swappable_keys)
+        seen_sigs.add(sig)
+
+        for _ in range(max_permutations * 10):
+            mapping = {}
+            for anchors in bucket_anchors_list:
+                perm = list(anchors)
+                rng.shuffle(perm)
+                for old_anchor, new_anchor in zip(anchors, perm, strict=True):
+                    mapping[old_anchor] = new_anchor
+
+            sig = tuple(mapping[k] for k in all_swappable_keys)
+            if sig not in seen_sigs:
+                seen_sigs.add(sig)
+                anchor_mappings.append(mapping)
+            if len(anchor_mappings) >= max_permutations:
+                break
+
+    # Expand to full chain mappings
+    final_results: list[dict[int, int]] = []
+    for anchor_map in anchor_mappings:
+        full_mapping: dict[int, int] = {}
+        for old_group, new_group in anchor_map.items():
+            for old_id, new_id in zip(old_group, new_group, strict=True):
+                if old_id != new_id:
+                    full_mapping[old_id] = new_id
+        if len(full_mapping) > 0:
+            final_results.append(full_mapping)
+
+    final_results.sort(key=lambda x: sorted(x.items()))
+    return [{}] + final_results
+
+
+# FIX: Renamed from _find_best_chain_permutation to _do_optimal_chain_permutation
+# to match the function call in get_aligned_gt_structure.
 def _do_optimal_chain_permutation(
     ref_struct: RefStructure,
-    pred_coords: torch.Tensor,
+    coords: torch.Tensor,
     chain_symmetries: dict[str, ChainSymmetry],
+    max_permutations: int = 1000,
 ) -> dict[int, int]:
-    """Compute minimum RMSD coordinates considering chain permutation.
+    """Compute minimum RMSD coordinates considering chain permutation."""
+    dev = coords.device
 
-    This implements a greedy trial-based alignment for multi-chain complexes,
-    similar to the AlphaFold-Multimer approach.
-    """
-    if all(len(group) == 1 for group in chain_symmetries.values()):
-        # No swappable chains exist.
-        return {c.asym_id: c.asym_id for c in ref_struct.chains}
+    mappings = _generate_chain_permutations(chain_symmetries, max_permutations)
 
-    device = pred_coords.device
-    gt_coords = torch.as_tensor(ref_struct.get_atom_coords(), device=device)
+    if len(mappings) <= 1:
+        return {c.asym_id: c.asym_id for c in ref_struct.chains}  # Identity mapping
 
-    chains = ref_struct.chains
-    asym_ids = [aid for gs in chain_symmetries.values() for g in gs for aid in g]
-    assert sorted(asym_ids) == sorted(c.asym_id for c in chains), (
-        "Mismatch in number of chains between swappable groups and reference structure."
-    )
+    chain_coords_list: list[torch.Tensor] = []
+    chain_center_list: list[torch.Tensor] = []
+    chain_center_indices_list: list[torch.Tensor] = []
+    atom_st = 0
 
-    # Extract chain center coordinates for coarse-grain layout comparison.
-    dev = pred_coords.device
-    gt_center_coords_dict: dict[int, torch.Tensor] = {}
-    pred_center_coords_dict: dict[int, torch.Tensor] = {}
-    weights_dict: dict[int, float] = {}
-    st = 0
     for c in ref_struct.chains:
+        chain_coords = torch.from_numpy(c.atom.coords).to(dev)
         if c.is_protein:
             center_indices = np.where(c.atom.name == "CA")[0]
-            weights = len(center_indices)
         elif c.is_nucleic_acid:
-            center_indices = np.where(c.atom.name == "C1'")[0]
-            weights = len(center_indices)
+            center_indices = np.where(c.atom.name == "C4'")[0]
         else:
-            # For ligands, use all atoms for centroid calculation.
             center_indices = np.arange(c.num_atoms)
-            weights = 1
+        center_indices = torch.from_numpy(center_indices).to(dev)
 
-        end = st + c.num_atoms
-        center_atom_indices = torch.as_tensor(center_indices + st, device=dev)
-        gt_center_coords_dict[c.asym_id] = gt_coords[center_atom_indices]
-        pred_center_coords_dict[c.asym_id] = pred_coords[center_atom_indices]
-        weights_dict[c.asym_id] = weights
-        st = end
-    del st
+        chain_coords_list.append(chain_coords)
+        chain_center_list.append(chain_coords[center_indices])
+        chain_center_indices_list.append(center_indices + atom_st)
+        atom_st += c.num_atoms
 
-    # Prioritize chain groups (typically polymers) to act as the alignment anchor.
-    anchor: ChainGroup = _get_anchor_chain_group(chains, chain_symmetries)
+    center_index = torch.cat(chain_center_indices_list, dim=0)
 
-    # Find the optimal mapping from Predicted asym_ids to Ground Truth asym_ids.
-    gt_to_pred_mapping: dict[int, int] = _find_multi_chain_permutation(
-        anchor,
-        gt_center_coords_dict,
-        pred_center_coords_dict,
-        chain_symmetries,
-        weights_dict,  # NOt used yet.
-    )
-    assert (
-        set(gt_to_pred_mapping.keys())
-        == set(gt_to_pred_mapping.values())
-        == set(c.asym_id for c in chains)
-    ), "Invalid chain mapping: keys and values must match the set of chain asym_ids."
-    return gt_to_pred_mapping
+    best_i: int = -1
+    best_rmsd: float = float("inf")
+    center_coords = coords[center_index]
+    gt_center_coords = torch.empty_like(center_coords)
+    gt_center_mask = torch.zeros(center_index.shape, dtype=torch.bool, device=dev)
 
+    asym_id_to_idx = {c.asym_id: i for i, c in enumerate(ref_struct.chains)}
 
-def _get_anchor_chain_group(
-    chains: list[Chain], chain_symmetries: dict[str, ChainSymmetry]
-) -> ChainGroup:
-    """Select the most stable chain group to serve as the alignment anchor.
+    for perm_i, mapping in enumerate(mappings):
+        ptr = 0
+        for c in ref_struct.chains:
+            mapped_asym_id = mapping.get(c.asym_id, c.asym_id)
+            c_i = asym_id_to_idx[mapped_asym_id]
+            n_centers = chain_center_list[c_i].shape[0]
+            gt_center_coords[ptr : ptr + n_centers] = chain_center_list[c_i]
+            ptr += n_centers
 
-    Priority:
-      1. Polymer chains (Protein/Nucleic Acid)
-      2. Chains with the least symmetry (fewer trials)
-      3. Chains with more resolved atoms
-      4. Longer chains
-    """
-    asym_ids: list[int] = [c.asym_id for c in chains]
+        torch.all(gt_center_coords.isfinite(), dim=-1, out=gt_center_mask)
 
-    # Priority factors:
-    ctype_dict: dict[int, int] = {c.asym_id: 1 if c.is_polymer else 0 for c in chains}
-    nsym_dict: dict[int, int] = {
-        aid: len(gs) for gs in chain_symmetries.values() for g in gs for aid in g
-    }
+        rmsd = compute_rmsd(
+            gt_center_coords, center_coords, gt_center_mask, align=True
+        ).item()
 
-    def get_n_resolved_atoms(c: Chain) -> int:
-        if c.is_protein:
-            center_coords = c.atom.coords[c.atom.name == "CA"]
-        elif c.is_nucleic_acid:
-            center_coords = c.atom.coords[c.atom.name == "C1'"]
-        else:
-            center_coords = c.atom.coords
-        return np.isfinite(center_coords).all(-1).sum()
+        if rmsd < best_rmsd:
+            best_rmsd, best_i = rmsd, perm_i
 
-    nvalid_dict: dict[int, int] = {c.asym_id: get_n_resolved_atoms(c) for c in chains}
-    len_dict: dict[int, int] = {c.asym_id: c.num_residues for c in chains}
-
-    # Rank chains by priority tuple.
-    priority = {
-        v: (ctype_dict[v], -nsym_dict[v], nvalid_dict[v], len_dict[v], v)
-        for v in asym_ids
-    }
-    anchor: Chain = max(chains, key=lambda c: priority[c.asym_id])
-
-    # Return the symmetry group containing the best anchor chain.
-    for sym in chain_symmetries.values():
-        for group in sym:
-            if anchor.asym_id in group:
-                return group
-    raise RuntimeError("Anchor chain group not found in symmetries.")
-
-
-def _find_multi_chain_permutation(
-    anchor_gt: ChainGroup,
-    gt_coords_dict: dict[int, torch.Tensor],
-    pred_coords_dict: dict[int, torch.Tensor],
-    chain_symmetries: dict[str, ChainSymmetry],
-    weights_dict: dict[int, float],
-) -> dict[int, int]:
-    """Find the optimal chain mapping using a greedy search across anchor trials.
-    See Algorithm 3 in the AlphaFold-Multimer paper.
-    """
-    buckets: list[ChainSymmetry] = [
-        chain_symmetries[bucket_id] for bucket_id in sorted(chain_symmetries.keys())
-    ]
-    group_to_bucket: dict[ChainGroup, ChainSymmetry] = {g: b for b in buckets for g in b}
-
-    # Compute static centroids for layout comparison.
-    # Note: Using nanmean for GT to handle partially unresolved chains.
-    pred_com_dict: dict[int, torch.Tensor] = {
-        i: coords.mean(dim=-2) for i, coords in pred_coords_dict.items()
-    }
-    gt_com_dict: dict[int, torch.Tensor] = {
-        i: coords.nanmean(dim=-2) for i, coords in gt_coords_dict.items()
-    }
-    if any(torch.isnan(com).any() for com in gt_com_dict.values()):
-        raise RuntimeError(
-            "All chains in validation set must have at least one resolved center atom"
-        )
-
-    best_total_cost = float("inf")
-    best_gt_to_pred_mapping: dict[int, int] = {i: i for i in gt_coords_dict.keys()}
-
-    # Anchor Ground Truth coordinates (static reference for trials).
-    x_gt_anchor = gt_coords_dict[anchor_gt[0]]
-    mask_anchor = x_gt_anchor.isfinite().all(dim=-1)
-
-    # Trial loop: Try aligning the GT anchor to each of its predicted symmetry mates.
-    anchor_pred_list: list[ChainGroup] = group_to_bucket[anchor_gt]
-    for anchor_pred in anchor_pred_list:
-        # Step 1: Compute rigid alignment (GT -> Pred) based on current anchor trial.
-        x_pred_anchor = pred_coords_dict[anchor_pred[0]]
-        RT, T = get_rigid_transform(x_gt_anchor, x_pred_anchor, mask_anchor)
-
-        # Step 2: Apply alignment to all GT centroids.
-        gt_com_dict_aligned: dict[int, torch.Tensor] = {
-            i: com @ RT + T for i, com in gt_com_dict.items()
-        }
-
-        # Step 3: Greedily assign remaining chains in each symmetry bucket.
-        total_cost: float = 0.0
-        pred_to_gt: dict[int, int] = {}
-        for bucket in buckets:
-            rep_aids = [g[0] for g in bucket]
-            rep_aid_to_group = {g[0]: g for g in bucket}
-
-            _com_pred = torch.stack([pred_com_dict[i] for i in rep_aids])
-            _com_gt = torch.stack([gt_com_dict_aligned[i] for i in rep_aids])
-
-            if len(bucket) > 1:
-                # Algorithm 4: Greedy bipartite matching.
-                perm = _find_optimal_chain_permutation(_com_pred, _com_gt)
-            else:
-                perm = [0]
-
-            # Map all chains in the linked groups (e.g., polymer + linked ligand).
-            for s, t in enumerate(perm):
-                g_s, g_t = rep_aid_to_group[rep_aids[s]], rep_aid_to_group[rep_aids[t]]
-                pred_to_gt.update({i: j for i, j in zip(g_s, g_t, strict=True)})
-
-            # Cumulative distance between centroids serves as the cost for this trial.
-            matched_dist = torch.norm(_com_pred - _com_gt[perm], dim=-1).sum().item()
-            weight = weights_dict[rep_aids[0]]
-            total_cost += matched_dist * weight
-
-        # Update best global mapping if this trial yields lower total distance.
-        if total_cost < best_total_cost:
-            best_total_cost, best_gt_to_pred_mapping = total_cost, pred_to_gt
-
-    return best_gt_to_pred_mapping
-
-
-def _find_optimal_chain_permutation(
-    com_pred: torch.Tensor, com_gt: torch.Tensor
-) -> list[int]:
-    """Greedily find the optimal permutation of GT groups to Pred groups.
-    See Algorithm 4 in the AlphaFold-Multimer paper.
-    """
-    # Compute distance matrix between all pairs of centroids [Ns, Nt].
-    d = torch.norm(com_pred[:, None, :] - com_gt[None, :, :], dim=-1)
-
-    perm: list[int] = [-1] * com_gt.shape[0]
-    for _ in range(com_pred.shape[0]):
-        # Match each Predicted group to the closest remaining Ground Truth group.
-        best_idx = int(torch.argmin(d).item())
-        s, t = best_idx // com_gt.shape[0], best_idx % com_gt.shape[0]
-        d[:, t] = float("inf")  # Mark GT group as assigned.
-        d[s, :] = float("inf")  # Mark Pred group as assigned.
-        perm[s] = t
-
-    assert all(i >= 0 for i in perm), "Failed to assign all GT groups."
-    return perm
+    return mappings[best_i]
 
 
 # ============================================================

@@ -6,3 +6,5 @@ seed: 42
 
 apo_init:
   prob_perturbation: 0.0
+  use_holo_if_apo_unavailable: false
+  perturbation: null

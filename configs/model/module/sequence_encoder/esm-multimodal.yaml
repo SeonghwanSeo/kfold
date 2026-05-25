@@ -1,7 +1,0 @@
-_registry_: "sequence_encoder"
-_class_: "ESM_MultiModal"
-path: ???
-vocab_size: 640
-d_model: 1152
-n_heads: 18
-n_layers: 36
