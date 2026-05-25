@@ -83,42 +83,38 @@ class SICoeffs:
     """Stochastic interpolant coefficient helper for ECSI."""
 
     gamma_max: float
-    power: float
+    gamma_power: float
     eta: float
 
     def alpha(self, t: _T) -> _T:
-        return 1.0 - t**self.power  # type: ignore
+        return 1.0 - t  # type: ignore
 
     def alpha_deriv(self, t: _T) -> _T:
-        return -self.power * (t ** (self.power - 1))  # type: ignore
+        return -1.0  # type: ignore
 
     def beta(self, t: _T) -> _T:
-        return t**self.power  # type: ignore
+        return t
 
     def beta_deriv(self, t: _T) -> _T:
-        return self.power * t ** (self.power - 1)  # type: ignore
+        return 1.0  # type: ignore
 
     def gamma(self, t: _T) -> _T:
-        t_pow = t**self.power
+        t_pow = t**self.gamma_power
         return 0.5 * self.gamma_max * _sqrt(t_pow * (1 - t_pow))  # type: ignore
 
     def gamma_deriv(self, t: _T) -> _T:
-        t_pow = t**self.power
-        coeff = self.power * t ** (self.power - 1)
+        t_pow = t**self.gamma_power
+        coeff = self.gamma_power * t ** (self.gamma_power - 1)
         denom = _sqrt(t_pow * (1 - t_pow))  # type: ignore
         return (self.gamma_max / 4) * coeff * (1 - 2 * t_pow) / _clip(denom)  # type: ignore
 
     # Compute \epsilon = \eta (\gamma \dot{\gamma} - \dot{\alpha}/\alpha \gamma^2)
     def eps(self, t: _T) -> _T:
-        eta = self.eta
-        # Detailed formula for \epsilon_t:
-        # alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
-        # gamma, gamma_dot = self.gamma(t), self.gamma_deriv(t)
-        # eps = eta * (gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2)
-
-        # Optimized formula
-        eps = eta * (self.gamma_max**2 / 8) * self.power * t ** (self.power - 1)
-        return eps  # type: ignore
+        alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
+        gamma, gamma_dot = self.gamma(t), self.gamma_deriv(t)
+        return self.eta * (  # type: ignore
+            gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2
+        )
 
 
 @STRUCTURE_MODULE.register()
@@ -129,13 +125,11 @@ class KFoldECSI(BaseStructureModule):
     Models" for biomolecular structure prediction (apo -> holo translation).
 
     Key features:
-    - Linear route with shared power k:
-      \alpha_t=1-t^k and \beta_t=t^k
-    - Shared base gamma with component scales:
-      \gamma_t^2=\gamma_{\max}^2/4 \cdot t^k(1-t^k)
-      \gamma_{\mathrm{com}, t}=s_{\mathrm{com}}\gamma_t
-      \gamma_{\mathrm{int}, t}=s_{\mathrm{int}}\gamma_t
-    - Stochasticity control via \eta_{com}, \eta_{int} during sampling
+    - Linear route:
+      \alpha_t=1-t and \beta_t=t
+    - Tunable base gamma:
+      \gamma_t^2=\gamma_{\max}^2/4 \cdot u(1-u), where u=t^{gamma_power}
+    - Stochasticity control via \eta during sampling
     - Preconditioning adapted from DDBM using the shared base gamma
 
     Reference:
@@ -167,15 +161,18 @@ class KFoldECSI(BaseStructureModule):
             Maximum time value for training/inference.
         gamma_max : float
             Shared base bridge maximum used by `gamma(t)`.
-        time_power : float
-            Shared exponent `k` for the route coefficients
-            `alpha_t = 1 - t^k`, `beta_t = t^k`, and the base gamma schedule.
+        gamma_power : float
+            Exponent controlling the base gamma schedule while route coefficients
+            remain fixed as `alpha_t = 1 - t` and `beta_t = t`.
         eta : float
             Stochasticity control parameter for ECSI sampling.
 
         # Inference sampling parameters
         align_x_0_hat_to_x_t : bool
             Whether to rigidly align the predicted x_0_hat to x_t at each sampling step.
+        sampler_step_scale : float
+            Multiplier for deterministic ODE update displacement. A value of 1.5
+            mirrors the step scale convention used by AF3/EDM samplers.
         churn_factor : float
             The factor controlling the magnitude of forward-pinned churn noise.
         churn_end_time : float
@@ -190,20 +187,10 @@ class KFoldECSI(BaseStructureModule):
             The exponent controlling the time schedule for ODE steps.
 
         # Training time scheduling
-        train_time_schedule_params : tuple[float, float, float]
-            A tuple of (mu, std, power) for the time sampling schedule during training.
+        train_time_schedule_params : tuple[float, float]
+            A tuple of (mu, std) for the time sampling schedule during training.
             Time values are sampled from:
-                t ~ logistic(mu, std) ** power, then scaled to [time_min, time_max].
-
-        # Training interpolation noise parameters
-        Equation: $gamma_t_com = noise_scale * gamma_t * (t^power)$
-        train_com_noise_scale : float
-            The scale of the chain-wise COM noise added during training.
-        train_com_noise_time_power : float
-            The exponent controlling the time schedule for applying chain-wise
-            COM noise during training:
-        train_com_noise_time_min : float
-            The time threshold to apply chain-wise COM noise during training.
+                t ~ logistic(mu, std), then scaled to [time_min, time_max].
         """
 
         sigma_data: float = 16.0
@@ -213,24 +200,25 @@ class KFoldECSI(BaseStructureModule):
         time_min: float = 1e-8
         time_max: float = 0.9999
         gamma_max: float = 24.0
-        time_power: float = 1.0
+        gamma_power: float = 1.0
         eta: float = 1.0
 
         # Inference sampling
         align_x_0_hat_to_x_t: bool = True
+        sampler_mode: str = "ode"
+        sampler_ode_type: str = "si"
+        sampler_step_scale: float = 1.0
+        sampler_switch_gamma: float | None = None
+        sampler_after_switch_mode: str = "ode"
+        sampler_after_switch_ode_type: str = "si"
         churn_factor: float = 0.1
         churn_end_time: float = 0.5
         churn_step_fraction: float = 0.4
         churn_step_power: float = 1.0
         ode_step_power: float = 4.0
 
-        # Train time scheduling (mu, std, power)
-        train_time_schedule_params: tuple[float, float, float] = (-0.8, 1.8, 2.0)
-
-        # Training interpolation noise parameters
-        train_com_noise_scale: float = 1.0
-        train_com_noise_time_power: float = 1.0
-        train_com_noise_time_min: float = 0.1
+        # Train time scheduling (mu, std)
+        train_time_schedule_params: tuple[float, float] = (-2.15, 2.25)
 
     def __init__(self, cfg: Config, score_model: DiffusionModule):
         """Initialize the ECSI module.
@@ -250,27 +238,45 @@ class KFoldECSI(BaseStructureModule):
         self.cov_xy: float = cfg.cov_xy
 
         # ECSI coefficients
-        self.coeff = SICoeffs(cfg.gamma_max, cfg.time_power, cfg.eta)
+        self.coeff = SICoeffs(cfg.gamma_max, cfg.gamma_power, cfg.eta)
         self.time_min: float = cfg.time_min
         self.time_max: float = cfg.time_max
 
         # Train time scheduling
-        self.train_time_schedule_params: tuple[float, float, float] = (
+        self.train_time_schedule_params: tuple[float, float] = (
             cfg.train_time_schedule_params
         )
 
         # Inference time sampling
         self.align_x_0_hat_to_x_t: bool = cfg.align_x_0_hat_to_x_t
+        if cfg.sampler_mode not in {"ode", "sde"}:
+            raise ValueError(f"Unknown ECSI sampler_mode: {cfg.sampler_mode}")
+        if cfg.sampler_ode_type not in {"si", "ecsi"}:
+            raise ValueError(f"Unknown ECSI sampler_ode_type: {cfg.sampler_ode_type}")
+        if cfg.sampler_after_switch_mode not in {"ode", "sde"}:
+            raise ValueError(
+                f"Unknown ECSI sampler_after_switch_mode: {cfg.sampler_after_switch_mode}"
+            )
+        if cfg.sampler_after_switch_ode_type not in {"si", "ecsi"}:
+            raise ValueError(
+                f"Unknown ECSI sampler_after_switch_ode_type: "
+                f"{cfg.sampler_after_switch_ode_type}"
+            )
+        if cfg.sampler_step_scale <= 0:
+            raise ValueError("ECSI sampler_step_scale must be positive.")
+        if cfg.sampler_switch_gamma is not None and cfg.sampler_switch_gamma < 0:
+            raise ValueError("ECSI sampler_switch_gamma must be non-negative.")
+        self.sampler_mode: str = cfg.sampler_mode
+        self.sampler_ode_type: str = cfg.sampler_ode_type
+        self.sampler_step_scale: float = cfg.sampler_step_scale
+        self.sampler_switch_gamma: float | None = cfg.sampler_switch_gamma
+        self.sampler_after_switch_mode: str = cfg.sampler_after_switch_mode
+        self.sampler_after_switch_ode_type: str = cfg.sampler_after_switch_ode_type
         self.churn_factor: float = cfg.churn_factor
         self.churn_end_time: float = cfg.churn_end_time
         self.churn_step_fraction: float = cfg.churn_step_fraction
         self.churn_step_power: float = cfg.churn_step_power
         self.ode_step_power: float = cfg.ode_step_power
-
-        # Training interpolation noise parameters
-        self.train_com_noise_scale: float = cfg.train_com_noise_scale
-        self.train_com_noise_time_power: float = cfg.train_com_noise_time_power
-        self.train_com_noise_time_min: float = cfg.train_com_noise_time_min
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation()
@@ -457,10 +463,10 @@ class KFoldECSI(BaseStructureModule):
         t : torch.Tensor
             Time values. Shape (B, N).
         """
-        mu, std, power = self.train_time_schedule_params
+        mu, std = self.train_time_schedule_params
         z = torch.randn(shape, device=device)
         x = mu + std * z
-        t = torch.sigmoid(x) ** power
+        t = torch.sigmoid(x)
 
         # Scale to [sampling_time_min, sampling_time_max]
         t = self.time_min + (self.time_max - self.time_min) * t
@@ -510,7 +516,7 @@ class KFoldECSI(BaseStructureModule):
         # Apply centering/coordinate augmentation
         x_0 = self.random_augmentation(x_0, mask=x_0_mask)
 
-        # Rigidly align x_T to x_0
+        # Rotate x_T toward x_0 while preserving the prior translation distribution.
         x_T = custom_rigid_align(x_T, x_0, x_0_mask, rotation_only=True)
 
         # === Interpolate to get x_t === #
@@ -518,41 +524,11 @@ class KFoldECSI(BaseStructureModule):
         _t = t[:, :, None, None]
         alpha_t, beta_t, gamma_t = C.alpha(_t), C.beta(_t), C.gamma(_t)
 
-        # Compute additional com noise scale for training interpolation.
-        com_noise_scale = self.train_com_noise_scale
-        com_noise_time_power = self.train_com_noise_time_power
-        com_noise_time_min = self.train_com_noise_time_min
-        _com_t = (_t - com_noise_time_min).clamp(min=0.0) / (1 - com_noise_time_min)
-        gamma_t_com = com_noise_scale * gamma_t * (_com_t**com_noise_time_power)
-
         # Sample noise
         noise = torch.randn_like(x_0)
 
-        # Sample chain-wise COM noise
-        num_chains = f_input.num_chains
-        asym_id = f_input.token.asym_id  # [B, Ntoken]
-        token_mask = f_input.token.pad_mask  # [B, Ntoken]
-        atom_mask = f_input.atom.pad_mask  # [B, Natom]
-        chain_id = torch.zeros_like(asym_id)
-        for b_i in range(batch_size):
-            asym_id_i = asym_id[b_i]
-            mask_i = token_mask[b_i]
-            uniq_id = torch.sort(torch.unique(asym_id_i[mask_i]))[0]
-            for c_i, a_i in enumerate(uniq_id, start=1):
-                chain_id[b_i, asym_id_i == a_i] = c_i  # [B, Ntoken]
-
-        b_i = torch.arange(batch_size, device=device)[:, None]
-        t_i = f_input.atom.token_index  # [B, Natom]
-        chain_id = chain_id[b_i, t_i]  # [B, Natom]
-        chain_id[~atom_mask] = 0  # Set pad atoms to chain_id 0
-
-        chain_id = chain_id[:, None, :, None].expand(x_0.shape)
-        noise_com = torch.randn(
-            (batch_size, num_samples, num_chains + 1, 3), device=device
-        ).gather(-2, chain_id)  # [B, N, Natom, 3]
-
-        # ECSI interpolation with noises.
-        x_t = alpha_t * x_0 + beta_t * x_T + gamma_t * noise + gamma_t_com * noise_com
+        # ECSI interpolation with atom-wise noise.
+        x_t = alpha_t * x_0 + beta_t * x_T + gamma_t * noise
 
         # Mask out unresolved/pad atoms.
         x_0.masked_fill_(~x_0_mask[..., None], 0.0)
@@ -626,7 +602,7 @@ class KFoldECSI(BaseStructureModule):
         # Sampling loop
         append_traj(x_t)
         for step_idx in range(num_steps):
-            # Apply random augmentation
+            # Apply random augmentation without centering to preserve x_T/x_t translation.
             x_t, x_T = self.random_augmentation(x_t, x_T, mask=mask, centering=False)
 
             t = times[step_idx]
@@ -639,14 +615,26 @@ class KFoldECSI(BaseStructureModule):
             x_0_hat = run_step(x_noisy, t)
 
             if self.align_x_0_hat_to_x_t:
-                # Rigidly align x_0_hat to x_t before centering.
-                x_0_hat = custom_rigid_align(x_0_hat, x_noisy, mask)
+                # Rotate x_0_hat toward x_t before centering.
+                x_0_hat = custom_rigid_align(x_0_hat, x_noisy, mask, rotation_only=True)
 
             # Centering the predicted x_0_hat
             x_0_hat = do_centering(x_0_hat, mask=mask)
 
+            sampler_mode, sampler_ode_type = self._select_update_method(t)
+
             # Update x_t
-            x_t = self._update_step(x_noisy, x_0_hat, x_T, mask, t, t_next)
+            x_t = self._update_step(
+                x_noisy,
+                x_0_hat,
+                x_T,
+                mask,
+                t,
+                t_next,
+                mode=sampler_mode,
+                ode_type=sampler_ode_type,
+                step_scale=self.sampler_step_scale,
+            )
             append_traj(x_t)
 
         sample_out: dict[str, torch.Tensor] = {}
@@ -681,7 +669,7 @@ class KFoldECSI(BaseStructureModule):
         x_T = x_apo[:, idx, :, :]  # [B, N, L, 3]
         x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, L]
 
-        # Apply random augmentation to prior coords
+        # Apply random augmentation without centering to preserve the prior distribution.
         x_T = self.random_augmentation(x_T, mask=x_T_mask, centering=False)
         return x_T
 
@@ -843,6 +831,17 @@ class KFoldECSI(BaseStructureModule):
 
         return x_tm, tm
 
+    def _select_update_method(self, t: float) -> tuple[str, str]:
+        if self.sampler_switch_gamma is None:
+            return self.sampler_mode, self.sampler_ode_type
+
+        # Reverse sampling starts near t=1 where gamma is also small. The switch is
+        # intended for the late low-gamma phase after the gamma envelope has peaked.
+        gamma_peak_time = 0.5 ** (1.0 / self.coeff.gamma_power)
+        if t <= gamma_peak_time and self.coeff.gamma(t) <= self.sampler_switch_gamma:
+            return self.sampler_after_switch_mode, self.sampler_after_switch_ode_type
+        return self.sampler_mode, self.sampler_ode_type
+
     def _update_step(
         self,
         x_t: torch.Tensor,
@@ -853,6 +852,7 @@ class KFoldECSI(BaseStructureModule):
         t_next: float,
         mode: str = "ode",  # 'ode' or 'sde'
         ode_type: str = "si",  # 'si' or 'ecsi'
+        step_scale: float = 1.0,
     ) -> torch.Tensor:
         """SDE step for ECSI sampling.
         See Algorithm 1 of ECSI paper.
@@ -874,7 +874,10 @@ class KFoldECSI(BaseStructureModule):
         mode : str, optional
             Update mode: 'sde' or 'ode'
         ode_type : str, optional
-            Type of ODE update: 'si' or 'ecsi'.
+            Type of update: 'si' or 'ecsi'.
+        step_scale : float, optional
+            Multiplier for the deterministic ODE displacement, analogous to the
+            step scale used in AF3/EDM samplers.
 
         """
         C = self.coeff
@@ -883,29 +886,35 @@ class KFoldECSI(BaseStructureModule):
 
         if mode == "sde":
             # SDE update
-            gamma_t, gamma_dot = C.gamma(t), C.gamma_deriv(t)
+            gamma_t = C.gamma(t)
             eps: float = C.eps(t)
-
-            x_N = x_T  # For clarity with the paper's notation.
-
-            # Line 5
-            # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
-            z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_N) / _clip(gamma_t)
-
-            # Line 7: Sample noise for SDE step
-            # \bar{z} ~ N(0, I)
             noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
 
-            # Line 8: Compute drift term
-            # d = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_N
-            #     + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
-            drift = (
-                alpha_dot * x_0_hat
-                + beta_dot * x_N
-                + (gamma_dot + eps / _clip(gamma_t)) * z_hat
-            )
+            if ode_type == "si":
+                # SI SDE drift pinned to the denoised endpoint:
+                # b = (beta_dot / beta) x_t
+                #     + (alpha_dot - alpha * beta_dot / beta) x_0_hat
+                f_t = beta_dot / _clip(beta_t)
+                s_t = alpha_dot - alpha_t * beta_dot / _clip(beta_t)
+                drift = f_t * x_t + s_t * x_0_hat
+            else:
+                gamma_dot = C.gamma_deriv(t)
+                x_N = x_T  # For clarity with the paper's notation.
 
-            # Line 9: Euler-Maruyama update
+                # Line 5
+                # \hat{z}_t = (x_t - \alpha_t \hat{x}_0 - \beta_t x_T) / gamma
+                z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_N) / _clip(gamma_t)
+
+                # Line 8: Compute drift term
+                # d = \dot{\alpha}_t \hat{x}_0 + \dot{\beta}_t x_N
+                #     + (\dot{\gamma}_t + \epsilon_t/\gamma_t) \hat{z}_t
+                drift = (
+                    alpha_dot * x_0_hat
+                    + beta_dot * x_N
+                    + (gamma_dot + eps / _clip(gamma_t)) * z_hat
+                )
+
+            # Euler-Maruyama update
             dt = t - t_next
             x_upd = x_t - drift * dt + _sqrt(2 * eps * dt) * noise
         else:
@@ -915,11 +924,12 @@ class KFoldECSI(BaseStructureModule):
                 alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
                 c_skip = beta_tm / beta_t
                 c_update = alpha_tm - alpha_t * c_skip
-                x_upd = c_skip * x_t + c_update * x_0_hat
+                x_target = c_skip * x_t + c_update * x_0_hat
             else:
                 # ECSI ODE update
                 alpha_tm, beta_tm = C.alpha(t_next), C.beta(t_next)
                 gamma_t, gamma_tm = C.gamma(t), C.gamma(t_next)
                 z_hat = (x_t - alpha_t * x_0_hat - beta_t * x_T) / _clip(gamma_t)
-                x_upd = alpha_tm * x_0_hat + beta_tm * x_T + gamma_tm * z_hat
+                x_target = alpha_tm * x_0_hat + beta_tm * x_T + gamma_tm * z_hat
+            x_upd = x_t + step_scale * (x_target - x_t)
         return x_upd

@@ -390,7 +390,13 @@ class CenterRandomAugmentation:
         augmentation: bool | None = None,
         mask_to_zero: bool | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
-        return self.augment(*coords, mask=mask)
+        return self.augment(
+            *coords,
+            mask=mask,
+            centering=centering,
+            augmentation=augmentation,
+            mask_to_zero=mask_to_zero,
+        )
 
     @overload
     def augment(
