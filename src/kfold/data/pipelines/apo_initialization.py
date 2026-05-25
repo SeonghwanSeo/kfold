@@ -95,6 +95,8 @@ class ApoInitializer:
             )
         if config.perturbation is not None:
             self.perturbation = ProteinPerturbation(config.perturbation)
+        else:
+            self.perturbation = None
 
         # Logger
         self.logger = logging.getLogger("ApoInitializer")

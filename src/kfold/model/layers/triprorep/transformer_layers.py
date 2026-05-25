@@ -72,35 +72,11 @@ class RotaryEmbedding(nn.Module):
         self._cos_cached: Tensor | None = None
         self._sin_cached: Tensor | None = None
 
-    def _update_cos_sin_tables(self, x: Tensor, seq_dim: int) -> tuple[Tensor, Tensor]:
-        seq_len = x.shape[seq_dim]
-        if (
-            self._cos_cached is None
-            or seq_len != self._seq_len_cached
-            or self._cos_cached.device != x.device
-        ):
-            self._seq_len_cached = seq_len
-            t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
-            freqs = torch.einsum("i,j->ij", t, self.inv_freq)
-            emb = torch.cat((freqs, freqs), dim=-1).to(x.device)
-            self._cos_cached = emb.cos()[None, :, :]
-            self._sin_cached = emb.sin()[None, :, :]
-        return self._cos_cached, self._sin_cached
-
-    def forward(self, q: Tensor, k: Tensor) -> tuple[Tensor, Tensor]:
-        cos, sin = self._update_cos_sin_tables(k, seq_dim=-2)
-        cos = cos[:, : q.shape[-2], :]
-        sin = sin[:, : q.shape[-2], :]
-        return (q * cos) + (_rotate_half(q) * sin), (k * cos) + (_rotate_half(k) * sin)
-
-    def forward_with_position_ids(
+    def forward(
         self,
         q: Tensor,
         k: Tensor,
-        position_ids: Tensor,
-        bsz: int,
-        num_heads: int,
-        head_dim: int,
+        pos_id: Tensor,
     ) -> tuple[Tensor, Tensor]:
         """Apply RoPE using explicit `[B, L]` position IDs (per-chain reset).
 
@@ -109,23 +85,13 @@ class RotaryEmbedding(nn.Module):
         device = q.device
         dtype = q.dtype
         inv_freq = self.inv_freq.to(device=device, dtype=dtype)
+        num_heads = q.shape[-3]
 
-        pos = position_ids.to(dtype=dtype)  # [B, L]
-        freqs = torch.einsum("bl,d->bld", pos, inv_freq)  # [B, L, D//2]
+        freqs = torch.einsum("bl,d->bld", pos_id, inv_freq)  # [B, L, D//2]
         emb = torch.cat((freqs, freqs), dim=-1)  # [B, L, D]
 
-        cos = (
-            emb.cos()
-            .unsqueeze(1)
-            .expand(-1, num_heads, -1, -1)
-            .reshape(bsz * num_heads, -1, head_dim)
-        )
-        sin = (
-            emb.sin()
-            .unsqueeze(1)
-            .expand(-1, num_heads, -1, -1)
-            .reshape(bsz * num_heads, -1, head_dim)
-        )
+        cos = emb.cos().unsqueeze(1).expand(-1, num_heads, -1, -1)
+        sin = emb.sin().unsqueeze(1).expand(-1, num_heads, -1, -1)
         q = (q * cos) + (_rotate_half(q) * sin)
         k = (k * cos) + (_rotate_half(k) * sin)
         return q, k
@@ -153,7 +119,6 @@ class MultiheadAttention(nn.Module):
         num_heads: int = 40,
         dropout: float = 0.1,
         bias: bool = True,
-        relax_temperature_scaling: float | None = None,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -162,17 +127,6 @@ class MultiheadAttention(nn.Module):
         self.head_dim = embed_dim // num_heads
         if self.head_dim * num_heads != embed_dim:
             raise ValueError("embed_dim must be divisible by num_heads")
-
-        # The attention temperature factor pre-multiplied into Q. SDPA
-        # adds its own 1/sqrt(head_dim) on top; with the default below the
-        # effective temperature is 1/head_dim (softer / higher entropy
-        # attention than vanilla 1/sqrt(head_dim)). Pretrained ckpts were
-        # trained with this factor, so we MUST apply it at inference too.
-        self.relax_temperature_scaling: float = (
-            float(relax_temperature_scaling)
-            if relax_temperature_scaling is not None
-            else self.head_dim**-0.5
-        )
 
         # Linear projections (names match upstream so state_dict loads).
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
@@ -192,8 +146,8 @@ class MultiheadAttention(nn.Module):
     def forward(
         self,
         x: Tensor,
-        seq_id: Tensor | None = None,
-        pos_id: Tensor | None = None,
+        seq_id: Tensor,
+        pos_id: Tensor,
     ) -> Tensor:
         """
         x: [B, L, D]
@@ -215,19 +169,13 @@ class MultiheadAttention(nn.Module):
         )
 
         # Apply RoPE.
-        if pos_id is not None:
-            q, k = self.rot_emb.forward_with_position_ids(q, k, pos_id, B, H, Dh)
-        else:
-            q, k = self.rot_emb(q, k)
+        q, k = self.rot_emb(q, k, pos_id)
 
         # Apply the "relax temperature scaling" factor on Q. SDPA's own
         # 1/sqrt(head_dim) scaling is applied on top.
-        q = q * self.relax_temperature_scaling
-        if seq_id is not None:
-            attn_mask = seq_id[:, None, :] == seq_id[:, :, None]
-            attn_mask = attn_mask.unsqueeze(-3)  # [B, 1, L, L]
-        else:
-            attn_mask = None
+        q = q * (Dh**-0.5)
+        attn_mask = seq_id[:, None, :] == seq_id[:, :, None]
+        attn_mask = attn_mask.unsqueeze(-3)  # [B, 1, L, L]
 
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 

@@ -74,6 +74,15 @@ class ProteinNetEncoder(nn.Module):
         chain_emb = self.chain_embedding(chain_ids)  # [1, 1, D]
         x = x + chain_emb  # [B, L, D]
 
+        if seq_id is None:
+            seq_id = torch.ones_like(seq_token_id)
+        if pos_id is None:
+            pos_id = (
+                torch.arange(seq_token_id.shape[1], device=seq_token_id.device)
+                .unsqueeze(0)
+                .expand_as(seq_token_id)
+            )
+
         # --- Encoder loop ---------------------------------------------------
         for layer in self.encoder:
             x = layer(x, seq_id, pos_id)
