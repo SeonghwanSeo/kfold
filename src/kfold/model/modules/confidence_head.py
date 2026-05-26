@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.layers.folding.pairformer import PairformerStack
+from kfold.model.modules.pairformer import PairformerStack
 from kfold.model.primitives import LayerNorm, LinearNoBias
 from kfold.model.primitives.utils import gather_dim, get_context_dtype
 from kfold.utils.registry import CONFIDENCE_HEAD, BaseConfig
@@ -45,8 +45,9 @@ def to_atom_layout(
     x_flat_masked = x_flat.masked_fill(~mask.reshape(*batch_dims, -1, 1), 0)
 
     # Scatter add the valid atoms into the dense atom representation
-    out = torch.zeros(*batch_dims, max_total_atoms, C, device=x.device, dtype=x.dtype)
-    out.scatter_add_(dim=-2, index=target_idx_flat, src=x_flat_masked)
+    out = torch.zeros(
+        *batch_dims, max_total_atoms, C, device=x.device, dtype=x.dtype
+    ).scatter_add_(dim=-2, index=target_idx_flat, src=x_flat_masked)
 
     return out
 
@@ -298,24 +299,29 @@ class ConfidenceHead(torch.nn.Module):
             plddt_logits[:, i] = _plddt_logits
             resolved_logits[:, i] = _resolved_logits
 
-        # Reshape plddt and resolved logits to (B, N, Natom, ...)
-        num_token_atoms = f_input.token.num_atoms.unsqueeze(-2).expand(-1, N, -1)
-        plddt_logits = to_atom_layout(plddt_logits, num_token_atoms, f_input.num_atoms)
-        resolved_logits = to_atom_layout(
-            resolved_logits, num_token_atoms, f_input.num_atoms
-        )
+        with torch.autocast(device.type, enabled=False):
+            # Reshape plddt and resolved logits to (B, N, Natom, ...)
+            num_token_atoms = f_input.token.num_atoms.unsqueeze(-2).expand(-1, N, -1)
+            plddt_logits = to_atom_layout(
+                plddt_logits, num_token_atoms, f_input.num_atoms
+            )
+            resolved_logits = to_atom_layout(
+                resolved_logits, num_token_atoms, f_input.num_atoms
+            )
 
-        # Mask out padding
-        token_mask = f_input.token.pad_mask[..., None, :]  # [B, 1, L]
-        pair_mask = token_mask[..., :, None] & token_mask[..., None, :]  # [B, 1, L, L]
-        pair_mask = pair_mask.to(dtype)
-        pae_logits = pae_logits * pair_mask[..., None]
-        pde_logits = pde_logits * pair_mask[..., None]
+            # Mask out padding
+            token_mask = f_input.token.pad_mask[..., None, :]  # [B, 1, L]
+            pair_mask = (
+                token_mask[..., :, None] & token_mask[..., None, :]
+            )  # [B, 1, L, L]
+            pair_mask = pair_mask.to(dtype)
+            pae_logits = pae_logits * pair_mask[..., None]
+            pde_logits = pde_logits * pair_mask[..., None]
 
-        atom_mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
-        atom_mask = atom_mask.to(torch.float32)
-        plddt_logits = plddt_logits * atom_mask[..., None]
-        resolved_logits = resolved_logits * atom_mask[..., None]
+            atom_mask = f_input.atom.pad_mask[..., None, :]  # [B, 1, Natom]
+            atom_mask = atom_mask.to(torch.float32)
+            plddt_logits = plddt_logits * atom_mask[..., None]
+            resolved_logits = resolved_logits * atom_mask[..., None]
 
         return pae_logits, pde_logits, plddt_logits, resolved_logits
 
@@ -377,7 +383,7 @@ class ConfidenceHead(torch.nn.Module):
         pde_logits = self.pde_head(z)  # [B, L, L, num_pde_bins]
         pde_logits = pde_logits + pde_logits.transpose(-2, -3)  # symmetrize
 
-        with torch.autocast(x.device.type, dtype=torch.float32):
+        with torch.autocast(s.device.type, enabled=False):
             s = s.to(torch.float32)
 
             # Line 7: plddt head

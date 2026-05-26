@@ -339,6 +339,7 @@ class KFold(torch.nn.Module):
         # Trunk with recycling
         st = time.time()
         s_trunk, z_trunk = self.run_trunk(s_inputs, s_init, z_init, f_input, num_recycles)
+        s_trunk, z_trunk = s_trunk.float(), z_trunk.float()
         et = time.time()
         time_logs["trunk"] = et - st
 
@@ -571,7 +572,7 @@ class KFold(torch.nn.Module):
         # Input embedding
         s_inputs, s_init, z_init = self.input_embedder(f_input)
         # NOTE: cast to float32 for numerical stability in training.
-        s_inputs, s_init, z_init = s_inputs.float(), s_init.float(), z_init.float()
+        s_init, z_init = s_init.float(), z_init.float()
 
         # Trunk with recycling
         s_trunk, z_trunk = self.run_trunk(s_inputs, s_init, z_init, f_input, num_recycles)
@@ -615,16 +616,17 @@ class KFold(torch.nn.Module):
             dict_out["sample"] = {
                 "coordinates": coordinates,
             }
-            _s_inputs = s_inputs.detach().clone()
-            _s_trunk = s_trunk.detach().clone()
-            _z_trunk = z_trunk.detach().clone()
+            _s_inputs = s_inputs.detach()
+            _s_trunk = s_trunk.detach()
+            _z_trunk = z_trunk.detach()
 
             # Randomly drop conditioning information for confidence head.
             drop_rate = self.config.confidence_conditioning_drop_rate
             if drop_rate > 0.0:
                 drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
+                mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
                 # NOTE: Only drop the pair conditioning.
-                _z_trunk[drop_conditioning] = 0.0
+                _z_trunk = z_trunk * mask[:, None, None, None]
 
             # Forward pass through confidence head
             pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
