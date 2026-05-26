@@ -8,7 +8,7 @@ from kfold.model.primitives.utils import expand_dim
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation
 from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
-from .base import BaseStructureModule
+from .sample_diffusion import BaseStructureModule
 from .score_model import DiffusionModule
 
 _ScalarOrTensor = TypeVar("_ScalarOrTensor", float, torch.Tensor)

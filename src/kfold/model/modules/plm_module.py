@@ -3,6 +3,8 @@ from functools import partial
 import torch
 import torch.nn as nn
 
+from kfold.model.layers.folding.attention_pair_bias import SelfAttentionPairBias
+from kfold.model.layers.folding.transition import Transition
 from kfold.model.primitives import (
     DropoutColumnwise,
     DropoutRowwise,
@@ -16,9 +18,6 @@ from kfold.model.primitives import (
 )
 from kfold.model.primitives.utils import add, permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
-
-from .attention_pair_bias import SelfAttentionPairBias
-from .transition import Transition
 
 
 class PairwiseProdDiff(nn.Module):
