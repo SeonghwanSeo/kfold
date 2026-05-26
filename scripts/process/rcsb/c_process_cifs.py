@@ -4,11 +4,11 @@ This script processes mmCIF files from the RCSB PDB database.
 
 ## Usage:
 ```
-python c_process_rcsb.py \
-    --cif_dir /path/to/mmCIF/ \         # Path to RCSB mmCIF files
-    --ccd_path /path/to/ccd.pkl \       # Path to CCD pickled file
-    --out_dir /path/to/output_npz/ \    # Output Directory
-    --split train \                     # Use predefined AlphaFold3 train split
+python c_process_rcsb.py
+    --cif_dir /path/to/mmCIF/           # Path to RCSB mmCIF files
+    --ccd_path /path/to/ccd.pkl         # Path to CCD pickled file
+    --out_dir /path/to/output_npz/      # Output Directory
+    --split train                       # Use predefined AlphaFold3 train split
     --num_workers 120                   # Number of parallel workers
 ```
 
@@ -365,7 +365,6 @@ def worker_fn(
         return parse_cif(cif_path, ccd, out_path, data_filter)
     except Exception as e:
         print(f"Failed to process ({pdb_id}): {e}")
-        raise e
         return FAILED
 
 

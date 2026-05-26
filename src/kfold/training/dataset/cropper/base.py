@@ -124,15 +124,13 @@ class BaseCropper(ABC):
         max_sequence_tokens : int
             The maximum number of sequence tokens to keep.
         """
-        # Get the unique entity IDs in the selected tokens
-        selected_entity_ids = np.unique(struct.token.entity_id[token_indices])
+        # Get the asym IDs in the selected tokens
+        asym_ids_in_crop = np.unique(struct.token.asym_id[token_indices])
 
-        # If all seq-tokens belonging to these entities fit in memory
-        all_entity_seq_indices = np.where(
-            np.isin(struct.sequence.entity_id, selected_entity_ids)
-        )[0]
-        if len(all_entity_seq_indices) <= max_sequence_tokens:
-            return all_entity_seq_indices
+        # If all seq-tokens belonging to these chains fit in memory
+        all_seq_indices = np.where(np.isin(struct.sequence.asym_id, asym_ids_in_crop))[0]
+        if len(all_seq_indices) <= max_sequence_tokens:
+            return all_seq_indices
 
         # Otherwise, we need to expand from the selected seq-tokens.
         required_seq_tokens = np.sort(
@@ -142,7 +140,7 @@ class BaseCropper(ABC):
         required_seq_tokens = required_seq_tokens[required_seq_tokens >= 0]
 
         seqlen = len(struct.sequence)
-        entity_ids = struct.sequence.entity_id
+        asym_ids = struct.sequence.asym_id
 
         seq_tok_indices = set(required_seq_tokens)
 
@@ -150,15 +148,13 @@ class BaseCropper(ABC):
         left_cursors = {
             i
             for i in required_seq_tokens
-            if i > 0
-            and entity_ids[i - 1] == entity_ids[i]
-            and i - 1 not in seq_tok_indices
+            if i > 0 and asym_ids[i - 1] == asym_ids[i] and i - 1 not in seq_tok_indices
         }
         right_cursors = {
             i
             for i in required_seq_tokens
             if i < seqlen - 1
-            and entity_ids[i + 1] == entity_ids[i]
+            and asym_ids[i + 1] == asym_ids[i]
             and i + 1 not in seq_tok_indices
         }
 
@@ -170,7 +166,7 @@ class BaseCropper(ABC):
             for i in sorted(left_cursors):
                 left_i = i - 1
                 if left_i >= 0 and left_i not in seq_tok_indices:
-                    if entity_ids[left_i] == entity_ids[i]:
+                    if asym_ids[left_i] == asym_ids[i]:
                         seq_tok_indices.add(left_i)
                         if left_i > 0:
                             new_left_cursors.add(left_i)
@@ -185,7 +181,7 @@ class BaseCropper(ABC):
             for i in sorted(right_cursors):
                 right_i = i + 1
                 if right_i < seqlen and right_i not in seq_tok_indices:
-                    if entity_ids[right_i] == entity_ids[i]:
+                    if asym_ids[right_i] == asym_ids[i]:
                         seq_tok_indices.add(right_i)
                         if right_i < seqlen - 1:
                             new_right_cursors.add(right_i)

@@ -172,7 +172,7 @@ def extract_substructure(
         id=metadata.id,
         source=metadata.source,
         exp=metadata.exp,
-        prediction=metadata.prediction,
+        pred=metadata.pred,
         chains=new_chain_metas,
         interfaces=new_interfaces_meta,
     )

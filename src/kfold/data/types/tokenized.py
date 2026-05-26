@@ -87,16 +87,18 @@ class ChainArray(PlainLayout[np.ndarray]):
 
     # === Batched layout === #
     def __post_init__(self):
-        # shape: [Nchain,]
         shape = self.layout_shape
-
-        check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
-        check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
-        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=shape)
-        check_array(self.sym_id, name="sym_id", dtype=np.integer, shape=shape)
-        check_array(self.num_residues, name="num_residues", dtype=np.integer, shape=shape)
-        check_array(self.num_tokens, name="num_tokens", dtype=np.integer, shape=shape)
-        check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
+        attributes = [
+            ("chain_type", np.integer, shape),
+            ("entity_id", np.integer, shape),
+            ("asym_id", np.integer, shape),
+            ("sym_id", np.integer, shape),
+            ("num_residues", np.integer, shape),
+            ("num_tokens", np.integer, shape),
+            ("num_atoms", np.integer, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_array(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -188,6 +190,19 @@ class TokenArray(PlainLayout[np.ndarray]):
         Frame token indices of shape [L, 3], used for frame calculations.
     frame_atom_index: np.ndarray (int)
         Frame atom indices of shape [L, 3], used for frame calculations.
+    apo_center_coords: np.ndarray (float32)
+        Apo state Cα coordinates of shape [L, 3].
+    apo_repr_coords: np.ndarray (float32)
+        Apo state Cβ coordinates of shape [L, 3] (Cα for glycine).
+    apo_frame_coords: np.ndarray (float32)
+        Apo state frame atom coordinates of shape [L, 3, 3].
+    apo_center_mask: np.ndarray (bool)
+        Boolean mask of shape [L,], indicating whether the apo center atom is valid.
+    apo_repr_mask: np.ndarray (bool)
+        Boolean mask of shape [L,], indicating whether the apo representative atom
+        is valid.
+    apo_frame_mask: np.ndarray (bool)
+        Boolean mask of shape [L,], indicating whether the apo frame atoms are valid.
 
     Cached Properties
     -----------------
@@ -215,6 +230,13 @@ class TokenArray(PlainLayout[np.ndarray]):
     repr_index: np.ndarray  # [L,], int
     frame_token_index: np.ndarray  # [L, 3], int
     frame_atom_index: np.ndarray  # [L, 3], int
+    # Apo state indices.
+    apo_center_coords: np.ndarray  # [L, 3], float32
+    apo_repr_coords: np.ndarray  # [L, 3], float32
+    apo_frame_coords: np.ndarray  # [L, 3, 3], float32
+    apo_center_mask: np.ndarray  # [L,], bool
+    apo_repr_mask: np.ndarray  # [L,], bool
+    apo_frame_mask: np.ndarray  # [L,], bool
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
@@ -222,34 +244,30 @@ class TokenArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
-        check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
-        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=shape)
-        check_array(self.sym_id, name="sym_id", dtype=np.integer, shape=shape)
-        check_array(self.res_type, name="res_type", dtype=np.integer, shape=shape)
-        check_array(self.is_standard, name="is_standard", dtype=np.bool_, shape=shape)
-        check_array(self.num_atoms, name="num_atoms", dtype=np.integer, shape=shape)
-        check_array(self.token_index, name="token_index", dtype=np.integer, shape=shape)
-        check_array(
-            self.residue_index, name="residue_index", dtype=np.integer, shape=shape
-        )
-        check_array(
-            self.seq_token_index, name="seq_token_index", dtype=np.integer, shape=shape
-        )
-        check_array(self.center_index, name="center_index", dtype=np.integer, shape=shape)
-        check_array(self.repr_index, name="repr_index", dtype=np.integer, shape=shape)
-        check_array(
-            self.frame_token_index,
-            name="frame_token_index",
-            dtype=np.integer,
-            shape=(*shape, 3),
-        )
-        check_array(
-            self.frame_atom_index,
-            name="frame_atom_index",
-            dtype=np.integer,
-            shape=(*shape, 3),
-        )
+        attributes = [
+            ("chain_type", np.integer, shape),
+            ("entity_id", np.integer, shape),
+            ("asym_id", np.integer, shape),
+            ("sym_id", np.integer, shape),
+            ("res_type", np.integer, shape),
+            ("is_standard", np.bool_, shape),
+            ("num_atoms", np.integer, shape),
+            ("token_index", np.integer, shape),
+            ("residue_index", np.integer, shape),
+            ("seq_token_index", np.integer, shape),
+            ("center_index", np.integer, shape),
+            ("repr_index", np.integer, shape),
+            ("frame_token_index", np.integer, (*shape, 3)),
+            ("frame_atom_index", np.integer, (*shape, 3)),
+            ("apo_center_coords", np.floating, (*shape, 3)),
+            ("apo_repr_coords", np.floating, (*shape, 3)),
+            ("apo_frame_coords", np.floating, (*shape, 3, 3)),
+            ("apo_center_mask", np.bool_, shape),
+            ("apo_repr_mask", np.bool_, shape),
+            ("apo_frame_mask", np.bool_, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_array(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -289,13 +307,29 @@ class TokenArray(PlainLayout[np.ndarray]):
             repr_index=full_minus_one((num_tokens,)),
             frame_token_index=full_minus_one((num_tokens, 3)),
             frame_atom_index=full_minus_one((num_tokens, 3)),
+            apo_center_coords=full_nan((num_tokens, 3)),
+            apo_repr_coords=full_nan((num_tokens, 3)),
+            apo_frame_coords=full_nan((num_tokens, 3, 3)),
+            apo_center_mask=full_false((num_tokens,)),
+            apo_repr_mask=full_false((num_tokens,)),
+            apo_frame_mask=full_false((num_tokens,)),
         )
 
     def validate(self) -> None:
         """Perform sanity checks on the ResidueArray."""
         for field in dataclasses.fields(self):
             fname = field.name
-            if fname in ["is_standard", "frame_token_index", "frame_atom_index"]:
+            if fname in [
+                "is_standard",
+                "frame_token_index",
+                "frame_atom_index",
+                "apo_center_coords",
+                "apo_repr_coords",
+                "apo_frame_coords",
+                "apo_center_mask",
+                "apo_repr_mask",
+                "apo_frame_mask",
+            ]:
                 continue
             if np.any(getattr(self, fname) < 0):
                 raise ValueError(f"TokenArray field '{fname}' contains negative values.")
@@ -361,33 +395,23 @@ class AtomArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.atom_type, name="atom_type", dtype=np.integer, shape=shape)
-        check_array(self.atom_index, name="atom_index", dtype=np.integer, shape=shape)
-        check_array(
-            self.ref_atom_name_chars,
-            name="ref_atom_name_chars",
-            dtype=np.integer,
-            shape=(*shape, 4),
-        )
-        check_array(self.ref_element, name="ref_element", dtype=np.integer, shape=shape)
-        check_array(self.ref_charge, name="ref_charge", dtype=np.floating, shape=shape)
-        check_array(self.ref_pos, name="ref_pos", dtype=np.floating, shape=(*shape, 3))
-        check_array(self.ref_mask, name="ref_mask", dtype=np.bool_, shape=shape)
-        check_array(
-            self.apo_coords, name="apo_coords", dtype=np.floating, shape=(*shape, 3)
-        )
-        check_array(
-            self.prior_coords,
-            name="prior_coords",
-            dtype=np.floating,
-            shape=(*shape, -1, 3),
-        )
-        check_array(
-            self.label_coords, name="label_coords", dtype=np.floating, shape=(*shape, 3)
-        )
-        check_array(self.apo_mask, name="apo_mask", dtype=np.bool_, shape=shape)
-        check_array(self.pad_mask, name="pad_mask", dtype=np.bool_, shape=shape)
-        check_array(self.resolved_mask, name="resolved_mask", dtype=np.bool_, shape=shape)
+        attributes = [
+            ("atom_type", np.integer, shape),
+            ("atom_index", np.integer, shape),
+            ("ref_atom_name_chars", np.integer, (*shape, 4)),
+            ("ref_element", np.integer, shape),
+            ("ref_charge", np.floating, shape),
+            ("ref_pos", np.floating, (*shape, 3)),
+            ("ref_mask", np.bool_, shape),
+            ("apo_coords", np.floating, (*shape, 3)),
+            ("prior_coords", np.floating, (*shape, -1, 3)),
+            ("label_coords", np.floating, (*shape, 3)),
+            ("apo_mask", np.bool_, shape),
+            ("pad_mask", np.bool_, shape),
+            ("resolved_mask", np.bool_, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_array(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     @classmethod
     def get_empty(
@@ -482,14 +506,14 @@ class BondArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=(*shape, 2))
-        check_array(
-            self.token_index, name="token_index", dtype=np.integer, shape=(*shape, 2)
-        )
-        check_array(
-            self.atom_index, name="atom_index", dtype=np.integer, shape=(*shape, 2)
-        )
-        check_array(self.bond_type, name="bond_type", dtype=np.integer, shape=shape)
+        attributes = [
+            ("asym_id", np.integer, (*shape, 2)),
+            ("token_index", np.integer, (*shape, 2)),
+            ("atom_index", np.integer, (*shape, 2)),
+            ("bond_type", np.integer, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_array(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     @classmethod
     def get_empty(cls, num_bonds: int) -> Self:
@@ -519,8 +543,8 @@ class SequenceArray(PlainLayout[np.ndarray]):
     ----------
     chain_type: np.ndarray (int)
         Chain types of shape [L,], indicating the type of each chain.
-    entity_id: np.ndarray (int)
-        Entity IDs of shape [L,], starting from 1.
+    asym_id: np.ndarray (int)
+        Asymmetric unit IDs of shape [L,], starting from 1.
     seq_token_id: np.ndarray (int)
         Sequence tokens of shape [L,] (aatype, base, atom, ...)
         NOTE: this may differ from the res_type in TokenArray,
@@ -548,7 +572,7 @@ class SequenceArray(PlainLayout[np.ndarray]):
     """
 
     chain_type: np.ndarray  # [L,], int
-    entity_id: np.ndarray  # [L,], int
+    asym_id: np.ndarray  # [L,], int
     seq_token_id: np.ndarray  # [L,], int
     bb_struct_token_id: np.ndarray  # [L,], int
     fa_struct_token_id: np.ndarray  # [L,], int
@@ -561,23 +585,17 @@ class SequenceArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.chain_type, name="chain_type", dtype=np.integer, shape=shape)
-        check_array(self.entity_id, name="entity_id", dtype=np.integer, shape=shape)
-        check_array(self.seq_token_id, name="seq_token_id", dtype=np.integer, shape=shape)
-        check_array(
-            self.bb_struct_token_id,
-            name="bb_struct_token_id",
-            dtype=np.integer,
-            shape=shape,
-        )
-        check_array(
-            self.fa_struct_token_id,
-            name="fa_struct_token_id",
-            dtype=np.integer,
-            shape=shape,
-        )
-        check_array(self.pos_id, name="pos_id", dtype=np.integer, shape=shape)
-        check_array(self.mlm_mask, name="mlm_mask", dtype=np.bool_, shape=shape)
+        attributes = [
+            ("chain_type", np.integer, shape),
+            ("asym_id", np.integer, shape),
+            ("seq_token_id", np.integer, shape),
+            ("bb_struct_token_id", np.integer, shape),
+            ("fa_struct_token_id", np.integer, shape),
+            ("pos_id", np.integer, shape),
+            ("mlm_mask", np.bool_, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_array(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     @cached_property
     def is_protein(self) -> np.ndarray:
@@ -604,7 +622,7 @@ class SequenceArray(PlainLayout[np.ndarray]):
         """Get an empty SequenceArray with the specified sequence length."""
         return cls(
             chain_type=full_minus_one((sequence_length,)),
-            entity_id=full_minus_one((sequence_length,)),
+            asym_id=full_minus_one((sequence_length,)),
             seq_token_id=full_minus_one((sequence_length,)),
             bb_struct_token_id=full_minus_one((sequence_length,)),
             fa_struct_token_id=full_minus_one((sequence_length,)),
@@ -613,7 +631,7 @@ class SequenceArray(PlainLayout[np.ndarray]):
         )
 
     def validate(self) -> None:
-        """Perform sanity checks on the ResidueArray."""
+        """Perform sanity checks on the SequenceArray."""
         for field in dataclasses.fields(self):
             if field.name in ["mlm_mask"]:
                 # This field is boolean, so negative values are not applicable.
@@ -624,7 +642,7 @@ class SequenceArray(PlainLayout[np.ndarray]):
             array = getattr(self, field.name)
             if np.any(array < 0):
                 raise ValueError(
-                    f"TokenArray field '{field.name}' contains negative values."
+                    f"SequenceArray field '{field.name}' contains negative values."
                 )
 
 
@@ -663,15 +681,15 @@ class ConstraintArray(PlainLayout[np.ndarray]):
 
     def __post_init__(self):
         shape = self.layout_shape
-        check_array(self.asym_id, name="asym_id", dtype=np.integer, shape=(*shape, 2))
-        check_array(
-            self.token_index, name="token_index", dtype=np.integer, shape=(*shape, 2)
-        )
-        check_array(
-            self.atom_index, name="atom_index", dtype=np.integer, shape=(*shape, 2)
-        )
-        check_array(self.lower_bound, name="lower_bound", dtype=np.floating, shape=shape)
-        check_array(self.upper_bound, name="upper_bound", dtype=np.floating, shape=shape)
+        attributes = [
+            ("asym_id", np.integer, (*shape, 2)),
+            ("token_index", np.integer, (*shape, 2)),
+            ("atom_index", np.integer, (*shape, 2)),
+            ("lower_bound", np.floating, shape),
+            ("upper_bound", np.floating, shape),
+        ]
+        for name, dtype, shape in attributes:
+            check_array(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
     @classmethod
     def get_empty(cls, num_constraints: int) -> Self:
@@ -885,10 +903,8 @@ class TokenizedStructure:
 
         if sequence_token_indices is None:
             # Retain all sequence tokens corresponding to the remaining chains
-            entity_ids = np.unique(cropped_token.entity_id)
-            sequence_token_indices = np.where(
-                np.isin(self.sequence.entity_id, entity_ids)
-            )[0]
+            asym_ids = np.unique(cropped_token.asym_id)
+            sequence_token_indices = np.where(np.isin(self.sequence.asym_id, asym_ids))[0]
 
         if len(sequence_token_indices) == len(self.sequence):
             # keep all sequence tokens, no need to index

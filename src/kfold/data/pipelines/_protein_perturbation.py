@@ -7,15 +7,27 @@ import numpy as np
 import kfold.constants as C
 from kfold.data.utils.simulation.bioprior import BioPriorConfig, BioPriorPerturbation
 from kfold.data.utils.simulation.rieprody import RieProdyConfig, RieProdyPerturbation
+from kfold.utils.misc import spawn_rng
 
 ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
 
 
 @dataclasses.dataclass(kw_only=True)
 class ProteinPerturbationConfig:
-    prob_rieprody: float = 1.0
     rieprody: RieProdyConfig | None = None
     bioprior: BioPriorConfig = dataclasses.field(default_factory=BioPriorConfig)
+
+    @classmethod
+    def infererence_mode(cls) -> "ProteinPerturbationConfig":
+        """Configuration for inference mode (no RieProDy perturbation)."""
+        return cls(
+            rieprody=None,
+            bioprior=BioPriorConfig(
+                max_steps=10,  # Weaker perturbation for inference.
+                scale_length=True,  # No cropping during inference.
+                log_level="CRITICAL",  # Suppress BioPrior logging during inference
+            ),
+        )
 
 
 class ProteinPerturbation:
@@ -24,12 +36,16 @@ class ProteinPerturbation:
     def __init__(self, config: ProteinPerturbationConfig) -> None:
         """Initialize ProteinPerturbation."""
         self.config: ProteinPerturbationConfig = config
-        self.prob_rieprody: float = config.prob_rieprody
         if config.rieprody is not None:
             self.rieprody = RieProdyPerturbation(config.rieprody)
         else:
             self.rieprody = None
         self.bioprior = BioPriorPerturbation(config.bioprior)
+
+    @classmethod
+    def inference_mode(cls) -> "ProteinPerturbation":
+        """Factory method for inference mode (no RieProDy perturbation)."""
+        return cls(ProteinPerturbationConfig.infererence_mode())
 
     def __call__(
         self,
@@ -37,10 +53,11 @@ class ProteinPerturbation:
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-        rieprody_key: str | None = None,
+        backend: str = "bioprior",
+        **kwargs,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates."""
-        return self.run(sequence, coords, mask, rng, rieprody_key)
+        return self.run(sequence, coords, mask, rng, backend, **kwargs)
 
     def run(
         self,
@@ -48,7 +65,8 @@ class ProteinPerturbation:
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-        rieprody_key: str | None = None,
+        backend: str = "bioprior",
+        **kwargs,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates.
 
@@ -62,15 +80,15 @@ class ProteinPerturbation:
             Mask indicating valid atoms of shape [L, 37].
         rng : np.random.Generator
             Random number generator for stochastic operations.
-        key : str | None
-            Key for lmdb lookup / logging for rieprody perturbation.
+        backend : str
+            Perturbation backend, either "rieprody" or "bioprior".
 
         Returns
         -------
         perturbed_coords : np.ndarray
             Perturbed apo structure coordinates of shape [L, 37, 3].
         """
-        rng = rng or np.random.default_rng()
+        rng = spawn_rng(rng)
 
         assert coords.ndim == 3 and coords.shape[1] == 37, (
             f"Expected apo_coords shape [L, 37, 3], got {coords.shape}"
@@ -80,11 +98,11 @@ class ProteinPerturbation:
             # HACK: assumes that missing atoms are represented by NaN/Inf
             mask: np.ndarray = np.isfinite(coords).all(axis=-1)
 
-        if (
-            self.rieprody is not None
-            and rieprody_key is not None
-            and rng.uniform() < self.prob_rieprody
-        ):
+        if self.rieprody is not None and backend == "rieprody":
+            assert "rieprody_key" in kwargs, (
+                "rieprody_key must be provided for RieProDy perturbation."
+            )
+            rieprody_key = kwargs["rieprody_key"]
             # Apply RieProDy perturbation and fallback to bioPrior
             perturbed_coords = self.rieprody_perturbation(coords, mask, rng, rieprody_key)
             if perturbed_coords is None:

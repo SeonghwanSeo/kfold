@@ -1,9 +1,11 @@
 model:
   _yaml_: "model/kfold-ecsi.yaml"
-  sequence_encoder:
-    path: /mnt/parallel_storage/share/plm_weights/esm-multimodal/esm-multimodal-v1.pt
-  structure_encoder:
-    path: /mnt/parallel_storage/share/plm_weights/unitok/unitok-dips.pt
+  protein_sequence_encoder:
+    path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_seq_3b.pth
+  rna_sequence_encoder:
+    path: /mnt/parallel_storage/share/kfold_weights/pretrained/rna_seq_300m.pth
+  protein_structure_encoder:
+    path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_struct_3b.pth
   trunk:
     plm_module:
       blocks_per_ckpt: null

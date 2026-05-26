@@ -6,10 +6,6 @@ import torch
 
 
 class ExponentialMovingAverage:
-    """from https://github.com/yang-song/score_sde_pytorch/blob/main/models/ema.py,
-    Apache-2.0 license
-    Maintains (exponential) moving average of a set of parameters."""
-
     def __init__(
         self,
         model: torch.nn.Module,
@@ -27,7 +23,6 @@ class ExponentialMovingAverage:
             tuple(submodules_to_ignore) if submodules_to_ignore is not None else tuple()
         )
 
-        # Save as {name: tensor}
         # NOTE: We store all parameters regardless of `requires_grad` status
         # since only the confidence model is trained at the last phase,
         # while other parameters are frozen.
@@ -94,44 +89,6 @@ class ExponentialMovingAverage:
                 )
                 return False
         return True
-
-    def copy_to(self, model: torch.nn.Module):
-        """
-        Copy current parameters into given collection of parameters.
-        Args:
-          model: The `torch.nn.Module` to update with the stored moving averages.
-        """
-        for name, param in model.named_parameters():
-            if name in self.shadow_params:
-                param.data.copy_(self.shadow_params[name].data)
-
-    def store(self, model: torch.nn.Module):
-        """
-        Save the current parameters for restoring later.
-        Args:
-          model: The `torch.nn.Module` whose parameters are to be temporarily stored.
-        """
-        self.collected_params = {
-            name: param.clone()
-            for name, param in model.named_parameters()
-            if not name.startswith(self.submodules_to_ignore)
-        }
-
-    def restore(self, model: torch.nn.Module):
-        """
-        Restore the parameters stored with the `store` method.
-        Useful to validate the model with EMA parameters without affecting the
-        original optimization process. Store the parameters before the
-        `copy_to` method. After validation (or model saving), use this to
-        restore the former parameters.
-        Args:
-          model: The `torch.nn.Module` to update with the stored parameters.
-        """
-        for name, param in model.named_parameters():
-            if name in self.collected_params:
-                if not name.startswith(self.submodules_to_ignore):
-                    param.data.copy_(self.collected_params[name].data)
-        self.collected_params = {}
 
     def state_dict(self):
         return dict(

@@ -7,6 +7,7 @@ from typing import Self
 import numpy as np
 
 import kfold.constants as C
+from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import Chain, RefStructure
 from kfold.data.utils.simulation.langevin_dynamics import LangevinDynamicsSimulator
 from kfold.utils.geometry.random_augment import center_random_augmentation
@@ -29,15 +30,14 @@ class PriorSamplerConfig:
         Scale of random translation augmentation for each chain (in Angstrom).
     use_ot_permutation : bool
         Whether to apply optimal transport-based permutation
-    align_for_permutation : bool
-        Whether to align coordinates to compute fitness for optimal transport
-        permutation. If False, the permutation is computed based on unaligned
-        coordinates (only centering).
+    ligand_augmentation_scale : float
+        Scale of random noise augmentation for ligand coordinates (in Angstrom).
     """
 
     chain_translation_scale: float = 48.0  # Angstrom
     use_ot_permutation: bool = False
-    align_for_permutation: bool = False
+    ligand_augmentation_scale: float = 0.1  # Angstrom
+    train: bool = False
 
     @classmethod
     def inference_mode(cls) -> Self:
@@ -45,32 +45,45 @@ class PriorSamplerConfig:
         return cls(
             chain_translation_scale=48.0,
             use_ot_permutation=False,
+            ligand_augmentation_scale=0.1,
+            train=False,
         )
 
 
 class PriorSampler:
     """Class to populate and augment apo structures."""
 
-    def __init__(self, config: PriorSamplerConfig) -> None:
+    def __init__(self, config: PriorSamplerConfig, ccd: CCD) -> None:
         self.config: PriorSamplerConfig = config
         self.logger = logging.getLogger("PriorSampler")
+
+        self.ccd: CCD = ccd
 
         self.chain_translation_scale: float = config.chain_translation_scale
 
         self.use_ot_permutation: bool = config.use_ot_permutation
-        self.align_for_permutation: bool = config.align_for_permutation
+
+        # Ligand augmentation scale
+        self.train: bool = config.train
+        self.ligand_augmentation_scale: float = config.ligand_augmentation_scale
 
         # Langevin dynamics simulator for relaxing missing atoms
         self.langevin_simulator = LangevinDynamicsSimulator.default()
 
+        if self.use_ot_permutation and not self.train:
+            raise ValueError(
+                "Optimal transport permutation should only be used during training."
+            )
+
     @classmethod
-    def inference_mode(cls) -> Self:
+    def inference_mode(cls, ccd: CCD) -> Self:
         """Get a PriorSampler instance configured for inference."""
-        return cls(PriorSamplerConfig.inference_mode())
+        return cls(PriorSamplerConfig.inference_mode(), ccd)
 
     def __call__(
         self,
         struct: RefStructure,
+        apo_coords_dict: dict[int, np.ndarray] | None,
         num_samples: int,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
@@ -80,6 +93,8 @@ class PriorSampler:
         ----------
         struct : RefStructure
             Reference structure containing apo coordinates.
+        apo_coords_dict : dict[int, np.ndarray] | None
+            Optional dictionary mapping entity id to apo structure.
         num_samples : int
             Number of prior samples to generate.
         rng : np.random.Generator
@@ -90,11 +105,12 @@ class PriorSampler:
         prior_coords : np.ndarray
             Sampled prior coordinates of shape [num_priors, N_atoms, 3].
         """
-        return self.sample_prior_coordinates(struct, num_samples, rng)
+        return self.sample_prior_coordinates(struct, apo_coords_dict, num_samples, rng)
 
     def sample_prior_coordinates(
         self,
         struct: RefStructure,
+        apo_coords_dict: dict[int, np.ndarray] | None,
         num_samples: int,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
@@ -104,6 +120,8 @@ class PriorSampler:
         ----------
         struct : RefStructure
             Reference structure containing apo coordinates.
+        apo_coords_dict : dict[int, np.ndarray] | None
+            Optional dictionary mapping entity id to apo structure.
         num_samples : int
             Number of prior samples to generate.
         rng : np.random.Generator
@@ -120,108 +138,184 @@ class PriorSampler:
         if num_samples <= 0:
             return np.empty((0, struct.num_atoms, 3), dtype=np.float32)
 
-        # === 1. Get chain apo coordinates or sample from prior === #
-        chain_coords_list: list[np.ndarray] = []
-        for i in range(struct.num_chains):
-            chain = struct.chains[i]
-            chain_coords = chain.atom.apo_coords
+        # === 1. Prepare apo coordinates for each entity === #
+        entity_prior_coords = self.prepare_entity_prior_coords(
+            struct, apo_coords_dict, rng
+        )
 
-            # Fill missing atoms and relax
-            # NOTE: This operation is conducted before augmentation and OT permutation
-            # to reduce the computational cost.
-            is_missing: np.ndarray = ~np.isfinite(chain_coords).all(axis=-1)
-            if is_missing.any():
-                # Insert gaussian noise for missing atoms
-                chain_coords = self.fill_missing_atoms(chain_coords, is_missing, rng)
-                # Relax with Langevin dynamics
-                chain_coords = self.langevin_relaxation(
-                    chain_coords, is_missing, chain, rng
+        # === 2. Get chain prior coordinates === #
+        chain_coords_list: list[np.ndarray] = [
+            entity_prior_coords[c.entity_id] for c in struct.chains
+        ]
+        for i, coords in enumerate(chain_coords_list):
+            c = struct.chains[i]
+            if coords.shape != (c.num_atoms, 3):
+                if c.is_polymer:
+                    raise ValueError(
+                        f"Apo coordinates for chain {i} have incorrect shape "
+                        f"{coords.shape}, expected {(struct.chains[i].num_atoms, 3)}."
+                    )
+                else:
+                    # NOTE: For non-polymer chains (e.g. ligands), the number of
+                    # atoms can be mismatched due to different bonding
+                    chain_coords_list[i] = np.zeros((c.num_atoms, 3), dtype=np.float32)
+
+        # === 3. Sample priors with augmentation and optional permutation === #
+        prior_coords_list: list[np.ndarray] = []
+        for _ in range(num_samples):
+            # Apply random augmentation to each chain's apo coordinates
+            _chain_coords_list: list[np.ndarray] = [
+                self.apply_random_augmentation(x, rng) for x in chain_coords_list
+            ]
+
+            if self.use_ot_permutation:
+                # Optimal transport permutation
+                _chain_coords_list = self.match_optimal_transport_permutation(
+                    _chain_coords_list, struct, rng
                 )
 
-            chain_coords_list.append(chain_coords)
+            # Combine chains into complex coordinates
+            prior_coords = np.concatenate(_chain_coords_list, axis=0)
+            prior_coords_list.append(prior_coords)
 
-        # === 2. Random augmentation === #
-        prior_coords_list: list[np.ndarray] = [
-            self.sample_prior(chain_coords_list, struct, rng) for _ in range(num_samples)
-        ]
         return np.stack(prior_coords_list, axis=0)
 
-    def sample_prior(
+    # === Helper methods for preparing apo coordinates and sampling priors === #
+    def prepare_entity_prior_coords(
         self,
-        chain_apo_list: list[np.ndarray],
         struct: RefStructure,
+        apo_coords_dict: dict[int, np.ndarray] | None,
         rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Sample a single prior coordinate set with augmentation and optional
-        optimal-transport permutation."""
-        # Apply centering & random rotation to each chain
-        prior_coords_list: list[np.ndarray] = [
-            self.apply_random_rotation(coords, rng) for coords in chain_apo_list
-        ]
-        # Apply random translation to each chain
-        # TODO: we can consider more sophisticated augmentations here, such as
-        # each chain can be translated without overlapping with others.
-        prior_coords_list = [
-            self.apply_random_translation(coords, rng) for coords in prior_coords_list
-        ]
-
-        if self.use_ot_permutation:
-            # Optimal transport permutation
-            prior_coords_list = self.match_optimal_transport_permutation(
-                prior_coords_list, struct, rng
-            )
-
-        # Combine chains into complex coordinates
-        prior_coords = np.concatenate(prior_coords_list, axis=0)
-        return prior_coords
-
-    def fill_missing_atoms(
-        self,
-        prior_coords: np.ndarray,
-        is_missing_atom: np.ndarray,
-        rng: np.random.Generator,
-        scale: float = 16.0,
-    ) -> np.ndarray:
-        """Fill missing atoms with random noise.
+    ) -> dict[int, np.ndarray]:
+        """Sample prior coordinates (xT) for the given structure.
 
         Parameters
         ----------
-        prior_coords : np.ndarray
-            Prior coordinates of shape [N_atoms, 3].
-        is_missing_atom : np.ndarray
-            Boolean mask indicating missing atoms of shape [N_atoms].
+        struct : RefStructure
+            Reference structure containing apo coordinates.
+        apo_coords_dict : dict[int, np.ndarray] | None
+            Optional dictionary mapping entity id to apo structure.
         rng : np.random.Generator
             Random number generator for stochastic operations.
-        inplace : bool
-            Whether to modify prior_coords in-place.
+
+        Returns
+        -------
+        entity_prior_coords : dict[int, np.ndarray]
+            Dictionary mapping entity id to sampled prior coordinates.
         """
-        random_noise = rng.standard_normal(size=prior_coords.shape, dtype=np.float32)
-        random_noise *= scale
-        return np.where(is_missing_atom[:, None], random_noise, prior_coords)
+        if apo_coords_dict is None:
+            apo_coords_dict = {}
+
+        # === 1. Prepare apo coordinates for each entity === #
+        entity_prior_coords: dict[int, np.ndarray] = {}
+        for c in struct.chains:
+            if c.entity_id in entity_prior_coords:
+                continue
+            entity_key = f"{struct.id}_{c.entity_id}"
+            if c.is_protein:
+                if c.entity_id in apo_coords_dict:
+                    # Get apo coordinates for this protein entity
+                    coords = apo_coords_dict[c.entity_id]
+                    # Relax with Langevin dynamics
+                    coords = self.langevin_relaxation(coords, c, rng)
+                else:
+                    # Return langevin-sampled coordinates.
+                    self.logger.warning(
+                        f"Protein entity {entity_key} has no apo coordinates."
+                        f" Sampling with Langevin dynamics."
+                    )
+                    coords = self.langevin_sampling(c, rng)
+
+            elif c.is_nucleic_acid:
+                # For nucleic acids, return langevin-sampled coordinates.
+                coords = self.langevin_sampling(c, rng)
+
+            else:
+                # For ligands, use ETKDG conformer.
+                if c.smiles is not None:
+                    assert c.num_residues == 1, (
+                        "Multiple residues with SMILES not supported."
+                    )
+                    ref_comp = Component.from_smiles("LIG", c.smiles)
+                    coords = ref_comp.get_ref_conformer(rng, self.train)
+                else:
+                    coords = np.full_like(c.atom.coords, np.nan)
+                    ccd_sequence = c.get_ccd_sequence()
+                    for res_i in range(c.num_residues):
+                        res_idx = res_i + 1  # 1-based
+                        code = ccd_sequence[res_i]
+                        if code not in self.ccd:
+                            self.logger.warning(
+                                f"CCD code {code} not found for ligand entity "
+                                f"{entity_key}. Filling with NaN coordinates."
+                            )
+                            continue
+                        ref_comp = self.ccd[code]
+                        ref_pos = ref_comp.get_ref_conformer(rng, self.train)
+                        ref_atom_order = ref_comp.get_atom_index_map()
+                        # Map reference conformer to chain's atom order
+                        src_atom_indices: list[int] = []
+                        dst_atom_indices: list[int] = []
+                        for atom_i in c.residue.iter_residue_atoms(res_idx):
+                            an = c.atom.name[atom_i]
+                            if an in ref_atom_order:
+                                src_atom_indices.append(ref_atom_order[an])
+                                dst_atom_indices.append(atom_i)
+                        coords[dst_atom_indices] = ref_pos[src_atom_indices]
+
+                # Relax with Langevin dynamics
+                coords = self.langevin_relaxation(coords, c, rng)
+
+                # Apply random noise augmentation to ligand coordinates
+                scale = self.ligand_augmentation_scale
+                if scale > 0.0:
+                    noise = rng.normal(scale=scale, size=coords.shape)
+                    coords += noise
+
+            entity_prior_coords[c.entity_id] = coords
+        return entity_prior_coords
+
+    def langevin_sampling(
+        self,
+        chain: Chain,
+        rng: np.random.Generator,
+        scale: float = 16.0,
+    ) -> np.ndarray:
+        """Sample coordinates for a chain using Langevin dynamics"""
+        num_residues = chain.num_residues
+        residue_index = np.repeat(np.arange(num_residues), chain.residue.num_atoms)
+        # Start from random noise
+        noise = rng.standard_normal(size=chain.atom.coords.shape, dtype=np.float32)
+        noise *= scale
+        # Run Langevin dynamics to sample coordinates
+        return self.langevin_simulator(noise, residue_index, rng=rng)
 
     def langevin_relaxation(
         self,
-        prior_coords: np.ndarray,
-        is_missing_atom: np.ndarray,
-        ref_chain: Chain,
+        coords: np.ndarray,
+        chain: Chain,
         rng: np.random.Generator,
+        scale: float = 16.0,
     ) -> np.ndarray:
         """Relax unresolved atoms using Langevin dynamics."""
-        num_residues = ref_chain.num_residues
-        residue_index = np.repeat(
-            np.arange(num_residues, dtype=np.int32),
-            ref_chain.residue.num_atoms.astype(np.int32),
-        )
-        # Run a few steps of Langevin dynamics to relax the filled coordinates
-        prior_coords = self.langevin_simulator(
-            prior_coords,
-            residue_index,
-            rng=rng,
-            is_constraint=~is_missing_atom,
-        )
-        return prior_coords
+        is_resolved: np.ndarray = np.isfinite(coords).all(axis=-1)
+        if is_resolved.all():
+            return coords
 
-    def apply_random_rotation(
+        # Fill missing coordinates with random noise before relaxation
+        random_noise = rng.standard_normal(size=coords.shape, dtype=np.float32)
+        random_noise *= scale
+        coords = np.where(is_resolved[:, None], coords, random_noise)
+
+        # Run a few steps of Langevin dynamics to relax the filled coordinates
+        num_residues = chain.num_residues
+        residue_index = np.repeat(np.arange(num_residues), chain.residue.num_atoms)
+        return self.langevin_simulator(
+            coords, residue_index, rng=rng, is_constraint=is_resolved
+        )
+
+    # === Helper methods for augmentation and optimal transport permutation === #
+    def apply_random_augmentation(
         self,
         coords: np.ndarray,
         rng: np.random.Generator,
@@ -244,37 +338,10 @@ class PriorSampler:
         mask = get_mask(coords)
         if not mask.any():
             return coords
+        s_trans = self.chain_translation_scale
         augmented_coords = center_random_augmentation(
-            coords, mask, s_trans=0.0, rng=rng, mask_to_zero=False
+            coords, mask, s_trans=s_trans, rng=rng, mask_to_zero=False
         )
-        return augmented_coords
-
-    def apply_random_translation(
-        self,
-        coords: np.ndarray,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Augment coordinates with random translation.
-
-        Parameters
-        ----------
-        coords : np.ndarray
-            Structure coordinates of shape [Natom, 3].
-        rng : np.random.Generator
-            Random number generator for stochastic operations.
-
-        Returns
-        -------
-        augmented_coords : np.ndarray
-            Augmented structure coordinates of shape [Natom, 3].
-        """
-        assert coords.ndim == 2, "Apo coordinates must be of shape [Natom, 3]."
-        scale = self.chain_translation_scale
-        if scale == 0.0:
-            return coords
-        v = rng.normal(size=(3,))
-        augmented_coords = coords + v * scale
-        # Skip NaN masking here since translation does not change NaN positions
         return augmented_coords
 
     def match_optimal_transport_permutation(
@@ -300,8 +367,6 @@ class PriorSampler:
         rng : np.random.Generator
             Random number generator for stochastic sampling.
         """
-        # First, chain permutation
-        # RNG state is used for sampling permutations when too many exist
         try:
             prior_coords_list = self.find_best_chain_permutation(
                 prior_coords_list, struct, max_permutations=100, rng=rng
@@ -450,7 +515,7 @@ class PriorSampler:
                 prior_centers[label_mask],
                 label_centers_masked,
                 mask=None,
-                align=self.align_for_permutation,
+                align=True,
                 no_svd=True,
             )
             if rmsd < best_rmsd:
