@@ -91,6 +91,10 @@ class SequenceEncoder(torch.nn.Module):
     def n_heads(self) -> int:
         return self.cfg.n_heads
 
+    @property
+    def n_attns(self) -> int:
+        return self.n_layers * self.n_heads
+
     def forward(
         self,
         f_input: FoldingInput,

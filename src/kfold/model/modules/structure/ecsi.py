@@ -21,9 +21,9 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives.utils import expand_dim
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
 from kfold.utils.geometry.rigid_align import get_rigid_transform_torch
-from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
+from kfold.utils.registry import STRUCTURE_MODULE
 
-from .base import BaseStructureModule
+from .sample_diffusion import BaseStructureModule
 from .score_model import DiffusionModule
 
 RIGID_ALIGN = 0  # conduct centering ; kabsch align
@@ -140,7 +140,7 @@ class KFoldECSI(BaseStructureModule):
     to EDM with churn & ODE formulation.
     """
 
-    class Config(BaseConfig):
+    class Config(BaseStructureModule.Config):
         """Configuration for the ECSI structure module.
 
         Parameters

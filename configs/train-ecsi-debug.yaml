@@ -6,11 +6,10 @@ model:
     path: /mnt/parallel_storage/share/kfold_weights/pretrained/rna_seq_300m.pth
   protein_structure_encoder:
     path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_struct_3b.pth
-  trunk:
-    plm_module:
-      num_blocks: 1
-    pairformer:
-      num_blocks: 4
+  plm_module:
+    num_blocks: 1
+  pairformer:
+    num_blocks: 4
   score_model:
     atom_encoder_blocks: 1
     token_transformer_blocks: 4

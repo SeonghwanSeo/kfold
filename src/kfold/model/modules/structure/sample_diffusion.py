@@ -12,6 +12,8 @@ from .score_model import DiffusionModule
 class BaseStructureModule(ABC):
     """High-level flow-based framework for structure generation."""
 
+    class Config(BaseConfig): ...
+
     def __init__(self, cfg: BaseConfig, score_model: DiffusionModule):
         self.cfg = cfg
         self.score_model = score_model
