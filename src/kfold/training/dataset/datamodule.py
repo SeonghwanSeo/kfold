@@ -1,6 +1,7 @@
 import dataclasses
 import gc
 import logging
+import os
 from pathlib import Path
 
 import lightning.pytorch as pl
@@ -44,9 +45,10 @@ class DataModuleConfig(BaseConfig):
     max_sequence_tokens: int = 768
 
     # === CCD path === #
-    ccd_path: Path
+    ccd_path: str | Path
 
     # === Dataset configs === #
+    data_root: str | Path
     train_datasets: list[TrainingDatasetConfig] = dataclasses.field(default_factory=list)
     val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
 
@@ -119,6 +121,14 @@ class TrainingDataModule(pl.LightningDataModule):
         # Load CCD
         self.ccd: CCD = CCD.load(config.ccd_path)
         self.logger = logging.getLogger("[DataModule]")
+
+        # Update dataset configs with data root
+        for cfg in self.config.train_datasets:
+            if cfg.data_path is None:
+                cfg.data_path = os.path.join(self.config.data_root, cfg.name)
+        for cfg in self.config.val_datasets:
+            if cfg.data_path is None:
+                cfg.data_path = os.path.join(self.config.data_root, cfg.name)
 
     def setup(self, stage: str | None = None) -> None:
         if stage == "fit":
