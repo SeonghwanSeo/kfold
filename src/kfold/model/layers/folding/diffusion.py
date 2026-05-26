@@ -71,12 +71,13 @@ class PairConditioning(nn.Module):
         _add = partial(add, inplace=not self.training)
 
         # Line 1
+        z_trunk = z_trunk.float()
         rel_pos_feats = self.rel_pos_encoding(f_input, z_trunk.dtype)
         z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
         del rel_pos_feats, z_trunk
 
         # Line 2
-        z = self.linear(self.layernorm(z.float()))  # [B, Lt, Lt, c_z]
+        z = self.linear(self.layernorm(z))  # [B, Lt, Lt, c_z]
 
         # Line 3-5
         for transition in self.transitions:
@@ -135,10 +136,10 @@ class SingleConditioning(nn.Module):
         _add = partial(add, inplace=not self.training)
 
         # Line 6
-        s = torch.cat((s_trunk, s_inputs), dim=-1)  # [B, Lt, 2*c_s]
+        s = torch.cat((s_trunk.float(), s_inputs.float()), dim=-1)  # [B, Lt, 2*c_s]
 
         # Line 7
-        s = self.linear(self.layernorm(s.float()))  # [B, Lt, c_s]
+        s = self.linear(self.layernorm(s))  # [B, Lt, c_s]
 
         # Line 8:
         # NOTE: 1/4 log(t_hat / sigma_data) is computed outside of this class.
