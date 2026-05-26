@@ -120,7 +120,7 @@ class DatasetConfig:
     """
 
     name: str
-    data_path: str | Path
+    data_path: str | Path | None = None
     manifest_path: str | Path | None = None
     seed: int | None = None
     apo_init: apo_initialization.ApoInitializerConfig
