@@ -659,6 +659,7 @@ class KFold(torch.nn.Module):
     def get_trunk_module_names(self) -> list[str]:
         """Get the names of trunk modules."""
         return [
+            "input_embedder",
             "proj_prot_seq",
             "proj_rna_seq",
             "proj_prot_struct",
@@ -667,6 +668,10 @@ class KFold(torch.nn.Module):
             "skip_plm_to_s",
             "plm_module",
             "pairformer_stack",
+            "layernorm_s",
+            "layernorm_z",
+            "linear_s",
+            "linear_z",
         ]
 
     def get_distogram_head_module_names(self) -> list[str]:
