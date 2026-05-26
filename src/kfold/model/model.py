@@ -233,6 +233,7 @@ class KFold(torch.nn.Module):
             f_input,
             num_recycles,
         )
+        s_trunk, z_trunk = s_trunk.float(), z_trunk.float()
         et = time.time()
         time_logs["trunk"] = et - st
 
@@ -255,15 +256,16 @@ class KFold(torch.nn.Module):
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
         st = time.time()
-        dict_out["diffusion"] = self.diffusion_head.sample_structure(
-            f_input,
-            s_inputs,
-            s_trunk,
-            z_trunk,
-            num_steps,
-            num_samples,
-            return_traj=return_traj,
-        )
+        with torch.autocast(f_input.device.type, enabled=False):
+            dict_out["diffusion"] = self.diffusion_head.sample_structure(
+                f_input,
+                s_inputs,
+                s_trunk,
+                z_trunk,
+                num_steps,
+                num_samples,
+                return_traj=return_traj,
+            )
         et = time.time()
         time_logs["diffusion_head"] = et - st
 
@@ -381,6 +383,7 @@ class KFold(torch.nn.Module):
             f_input,
             num_recycles,
         )
+        s_trunk, z_trunk = s_trunk.float(), z_trunk.float()
 
         if train_structure_module:
             # Distogram head
@@ -398,17 +401,18 @@ class KFold(torch.nn.Module):
                 _z_trunk = z_trunk * mask[:, None, None, None]
 
             # Forward pass through diffusion head for training.
-            dict_out["diffusion"] = self.diffusion_head.training_step(
-                f_input,
-                s_inputs,
-                _s_trunk,
-                _z_trunk,
-                diffusion_batch_size,
-            )
+            with torch.autocast(device.type, enabled=False):
+                dict_out["diffusion"] = self.diffusion_head.training_step(
+                    f_input,
+                    s_inputs,
+                    _s_trunk,
+                    _z_trunk,
+                    diffusion_batch_size,
+                )
 
         if train_confidence_module:
             # Sample structures with diffusion mini-rollout.
-            with torch.no_grad():
+            with torch.no_grad(), torch.autocast(device.type, enabled=False):
                 coordinates = self.diffusion_head.sample_structure(
                     f_input=f_input,
                     s_inputs=s_inputs,

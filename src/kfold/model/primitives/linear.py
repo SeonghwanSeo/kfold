@@ -81,14 +81,10 @@ class Linear(nn.Module):
         if self.precision is not None:
             d = self.precision
             out_d = input.dtype
-            if torch.is_autocast_enabled():
-                out_d = torch.get_autocast_dtype(input.device.type)
-
             weight = self.weight.to(d)
             bias = self.bias.to(d) if self.bias is not None else None
-            with torch.autocast(input.device.type, dtype=d):
+            with torch.autocast(input.device.type, enabled=False):
                 out = F.linear(input.to(d), weight, bias)
-
             return out.to(out_d)
 
         return F.linear(input, self.weight, self.bias)
