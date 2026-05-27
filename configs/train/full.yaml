@@ -38,6 +38,7 @@ data:
   ccd_path: <CCD_PATH_PLACEHOLDER>
 
   # Datasets
+  data_root: <DATA_ROOT_PLACEHOLDER>
   train_datasets: []
   val_datasets: []
 
