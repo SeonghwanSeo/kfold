@@ -309,6 +309,7 @@ class StructureEncoder(torch.nn.Module):
             seq_id=seq_id,
             pos_id=pos_id,
         )
+        x = x * allow_mask[..., None]  # mask out invalid tokens
 
         # sequence -> token index mapping
         batch_index = torch.arange(x.shape[0], device=x.device)[:, None]

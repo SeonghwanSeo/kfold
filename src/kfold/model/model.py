@@ -193,7 +193,7 @@ class KFold(torch.nn.Module):
     def inference(
         self,
         f_input: FoldingInput,
-        apo_dict: dict[int, dict[str, torch.Tensor]],
+        apo_dict: dict[int, dict],
         num_recycles: int = 10,
         num_steps: int = 200,
         num_samples: int = 5,
@@ -206,7 +206,7 @@ class KFold(torch.nn.Module):
         ----------
         f_input : FoldingInput
             Input data for folding model.
-        apo_dict : dict[int, dict[str, torch.Tensor]]
+        apo_dict : dict[int, dict]
             Dictionary mapping entity_id to apo structure information.
         num_recycles : int
             Number of recycling cycles in trunk.
@@ -243,17 +243,19 @@ class KFold(torch.nn.Module):
 
         # Tokenize apo structure and feed into structure encoder input features
         for entity_id, apo_info in apo_dict.items():  # noqa
-            for k in ["aatypes", "coords", "mapping"]:
+            for k in ["seq", "coords", "mappings"]:
                 if k not in apo_info:
                     raise KeyError(
                         f"Apo info for entity_id {entity_id} is missing key: {k}"
                     )
-            aatypes, coords = apo_info["aatypes"], apo_info["coords"]
-            seq_st, seq_ed, apo_st, apo_ed = apo_info["mapping"]
-            seq_sl, apo_sl = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
-            bb_ids, fa_ids = self.protein_structure_encoder.tokenize(aatypes, coords)
-            f_input.sequence.bb_struct_token_id[0, seq_sl] = bb_ids[apo_sl]
-            f_input.sequence.fa_struct_token_id[0, seq_sl] = fa_ids[apo_sl]
+            seq, coords = apo_info["seq"], apo_info["coords"]
+            tokens = self.prot_struct_encoder.tokenize(seq, coords)
+            bb_tok, fa_tok = tokens["bb_token_id"], tokens["fa_token_id"]
+            for mapping in apo_info["mappings"]:
+                seq_st, seq_ed, apo_st, apo_ed = mapping
+                seq_sl, apo_sl = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
+                f_input.sequence.bb_struct_token_id[0, seq_sl] = bb_tok[apo_sl]
+                f_input.sequence.fa_struct_token_id[0, seq_sl] = fa_tok[apo_sl]
 
         # Sample structures
         model_out, time_logs = self.sample(

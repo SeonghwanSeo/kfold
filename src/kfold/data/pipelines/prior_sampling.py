@@ -34,18 +34,18 @@ class PriorSamplerConfig:
         Scale of random noise augmentation for ligand coordinates (in Angstrom).
     """
 
-    chain_translation_scale: float = 48.0  # Angstrom
+    chain_translation_scale: float = 24.0  # Angstrom
     use_ot_permutation: bool = False
-    ligand_augmentation_scale: float = 0.1  # Angstrom
+    ligand_augmentation_scale: float = 0.3  # Angstrom
     train: bool = False
 
     @classmethod
     def inference_mode(cls) -> Self:
         """Get a PriorSampler config configured for inference."""
         return cls(
-            chain_translation_scale=48.0,
+            chain_translation_scale=24.0,
             use_ot_permutation=False,
-            ligand_augmentation_scale=0.1,
+            ligand_augmentation_scale=0.3,
             train=False,
         )
 
