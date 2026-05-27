@@ -1,5 +1,5 @@
 model:
-  _yaml_: "model/kfold-edm.yaml"
+  _yaml_: "model/kfold-ecsi.yaml"
   protein_sequence_encoder:
     path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_seq_3b.pth
   rna_sequence_encoder:
@@ -7,20 +7,17 @@ model:
   protein_structure_encoder:
     path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_struct_3b.pth
   plm_module:
-    num_blocks: 2
     blocks_per_ckpt: null
   pairformer:
-    num_blocks: 16
-    blocks_per_ckpt: 4
+    blocks_per_ckpt: 8
   score_model:
-    blocks_per_ckpt: 24
+    blocks_per_ckpt: null
   confidence_head:
-    num_blocks: 2
     blocks_per_ckpt: null
 
 train:
   _yaml_: "train/stage_1.yaml"
-  name: edm-mini
+  name: ecsi-mini
 
   loss:
     diffusion_loss:

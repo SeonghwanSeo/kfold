@@ -25,7 +25,7 @@ rna_sequence_encoder:
 plm_module:
   num_heads_attn: 16
   num_heads_tri_attn: 4
-  num_blocks: 2
+  num_blocks: 4
   dropout_plm: 0.15
   dropout_z: 0.25
   blocks_per_ckpt: null
