@@ -30,7 +30,7 @@ class MultiHeadAttention(nn.Module):
         x: torch.Tensor,
         seq_id: torch.Tensor,
         pos_id: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> torch.Tensor:
         """Forward pass of multi-head attention.
 
         Parameters
@@ -46,8 +46,6 @@ class MultiHeadAttention(nn.Module):
         -------
         out: torch.Tensor
             Output tensor of shape (*, L, D).
-        attn_weights: torch.Tensor | None
-            Attention weights of shape (*, H, L, L), where H is number of heads.
         """
         H, Dh = self.n_heads, self.d_head
 
@@ -66,13 +64,9 @@ class MultiHeadAttention(nn.Module):
         attn_mask = attn_mask.unsqueeze(-3)  # [B, 1, L, L]
 
         # [B, H, L, Dh] @ [B, H, Dh, L] -> [B, H, L, L]
-        q *= Dh**-0.5  # Scale query by sqrt(d_head)
-        attn_weights = torch.matmul(q, k.transpose(-2, -1))  # [*, H, L, L]
-        attn_weights.masked_fill_(~attn_mask, float("-inf"))
-        attn_weights = F.softmax(attn_weights, dim=-1).to(v.dtype)
-        out = torch.matmul(attn_weights, v)  # [*, H, L, Dh]
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
         # [*, H, L, Dh] -> [*, L, H, Dh] -> [*, L, D]
         out = out.transpose(-2, -3).flatten(-2)
         out = self.out_proj(out)
-        return out, attn_weights
+        return out

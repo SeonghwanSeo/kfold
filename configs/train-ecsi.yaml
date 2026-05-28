@@ -6,12 +6,10 @@ model:
     path: /mnt/parallel_storage/share/kfold_weights/pretrained/rna_seq_300m.pth
   protein_structure_encoder:
     path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_struct_3b.pth
-  plm_module:
+  trunk:
     blocks_per_ckpt: null
-  pairformer:
-    blocks_per_ckpt: 8
   score_model:
-    blocks_per_ckpt: null
+    blocks_per_ckpt: 4
   confidence_head:
     blocks_per_ckpt: null
 
@@ -22,4 +20,4 @@ train:
   loss:
     diffusion_loss:
       smooth_lddt_loss:
-        chunk_size: 8
+        chunk_size: 4

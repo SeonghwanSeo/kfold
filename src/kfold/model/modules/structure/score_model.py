@@ -43,13 +43,13 @@ class DiffusionModule(torch.nn.Module):
         """
 
         channel_s: int = 384
-        channel_z: int = 128
+        channel_z: int = 256
         channel_atom: int = 128
         channel_atompair: int = 16
         channel_coords: int = 3
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
-        token_transformer_blocks: int = 24
+        token_transformer_blocks: int = 12
         token_transformer_heads: int = 16
         atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
@@ -97,8 +97,7 @@ class DiffusionModule(torch.nn.Module):
         r_noisy: torch.Tensor,
         c_noise: torch.Tensor,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
     ) -> torch.Tensor:
         """Training forward pass of the AF3 diffusion module.
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
@@ -116,9 +115,7 @@ class DiffusionModule(torch.nn.Module):
             c_noise is computed outside of this class (See StructureModule).
         s_inputs : torch.Tensor
             The input single representation, shape [B, Lt, c_s].
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
-        z_trunk : torch.Tensor
+        z : torch.Tensor
             The trunk pair representation, shape [B, Lt, c_z].
 
         Returns
@@ -132,13 +129,12 @@ class DiffusionModule(torch.nn.Module):
             r_noisy,
             c_noise,
             s_inputs,
-            s_trunk,
-            z_trunk,
+            z,
         )
 
     # === Inference step ===
     def get_pair_conditioning(
-        self, f_input: FoldingInput, z_trunk: torch.Tensor
+        self, f_input: FoldingInput, z: torch.Tensor
     ) -> torch.Tensor:
         """Get the pair conditioning for the diffusion module.
         This is time-independent and can be pre-computed before the diffusion steps.
@@ -147,7 +143,7 @@ class DiffusionModule(torch.nn.Module):
         ----------
         f_input : FoldingInput
             The folding input.
-        z_trunk : torch.Tensor
+        z : torch.Tensor
             The trunk pair representation, shape [B, Lt, Lt, c_z].
 
         Returns
@@ -155,10 +151,10 @@ class DiffusionModule(torch.nn.Module):
         z : torch.Tensor
             The conditioned pair representation, shape [B, Lt, Lt, c_z].
         """
-        return self._diffusion_stack.get_pair_conditioning(f_input, z_trunk)
+        return self._diffusion_stack.get_pair_conditioning(f_input, z)
 
     def get_single_conditioning(
-        self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, c_noise: torch.Tensor
+        self, s_inputs: torch.Tensor, c_noise: torch.Tensor
     ) -> torch.Tensor:
         """Get the single conditioning for the diffusion module.
         This is time-dependent and needs to be computed at each diffusion step.
@@ -167,8 +163,6 @@ class DiffusionModule(torch.nn.Module):
         ----------
         s_inputs : torch.Tensor
             The input single representation, shape [B, Lt, c_s].
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
         c_noise : torch.Tensor
             Tensor of shape (B, N) containing diffusion noise level (or sigma).
             c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm.)
@@ -178,12 +172,11 @@ class DiffusionModule(torch.nn.Module):
         s : torch.Tensor
             The single conditioning, shape [B, N, Lt, c_s].
         """
-        return self._diffusion_stack.get_single_conditioning(s_inputs, s_trunk, c_noise)
+        return self._diffusion_stack.get_single_conditioning(s_inputs, c_noise)
 
     def get_atom_embeddings(
         self,
         f_input: FoldingInput,
-        s_trunk: torch.Tensor,
         z: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Prepare the inputs which are static across diffusion steps.
@@ -193,8 +186,6 @@ class DiffusionModule(torch.nn.Module):
         ----------
         f_input : FoldingInput
             The folding input.
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
         z : torch.Tensor
             The trunk pair conditioning, shape [B, Lt, Lt, c_z].
 
@@ -207,7 +198,7 @@ class DiffusionModule(torch.nn.Module):
         p : torch.Tensor
             The atom pair representation, shape [B, La, La, c_atompair].
         """
-        return self._diffusion_stack.get_atom_embeddings(f_input, s_trunk, z)
+        return self._diffusion_stack.get_atom_embeddings(f_input, z)
 
     def get_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
         """Get the pair bias for the token transformer.

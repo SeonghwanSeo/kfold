@@ -7,8 +7,8 @@ kernel_cuequivariance: true
 
 # Module configurations
 channel_s: 384
-channel_z: 128
-channel_plm: 768
+channel_z: 256
+dropout: 0.25
 
 input_embedder:
   _yaml_: "module/input_embedder.yaml"
@@ -22,18 +22,10 @@ protein_structure_encoder:
 rna_sequence_encoder:
   _yaml_: "module/rna_sequence_encoder.yaml"
 
-plm_module:
-  num_heads_attn: 16
-  num_heads_tri_attn: 4
-  num_blocks: 4
-  dropout_plm: 0.15
-  dropout_z: 0.25
-  blocks_per_ckpt: null
-
-pairformer:
-  num_heads_attn: 16
-  num_heads_tri_attn: 4
-  num_blocks: 48
+trunk:
+  num_lm_blocks: 4
+  num_main_blocks: 48
+  num_refine_blocks: 2
   dropout: 0.25
   blocks_per_ckpt: null
 

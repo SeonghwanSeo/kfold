@@ -3,44 +3,32 @@ import logging
 import pathlib
 import time
 from collections.abc import Mapping
-from functools import partial
 from typing import Self
 
 import torch
+import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules import (
     confidence_head,
     distogram_head,
     input_embedder,
-    pairformer,
-    plm_module,
     sequence_encoder,
     structure_encoder,
+    tri_stack,
 )
 from kfold.model.modules.structure import sample_diffusion, score_model
-from kfold.model.primitives import LayerNorm, LinearNoBias
-from kfold.model.primitives.utils import add
+from kfold.model.primitives import LayerNorm, Linear, LinearNoBias
 from kfold.utils.registry import MAIN_MODULE, Registry
 
 logger = logging.getLogger(__name__)
 
 
 @dataclasses.dataclass(kw_only=True)
-class PLMModuleConfig:
-    num_heads_attn: int = 16
-    num_heads_tri_attn: int = 4
-    num_blocks: int = 4
-    dropout_plm: float = 0.15
-    dropout_z: float = 0.25
-    blocks_per_ckpt: int | None = None
-
-
-@dataclasses.dataclass(kw_only=True)
-class PairformerConfig:
-    num_heads_attn: int = 16
-    num_heads_tri_attn: int = 4
-    num_blocks: int = 48
+class TrunkConfig:
+    num_lm_blocks: int = 4
+    num_main_blocks: int = 48
+    num_refine_blocks: int = 2
     dropout: float = 0.25
     blocks_per_ckpt: int | None = None
 
@@ -49,16 +37,15 @@ class PairformerConfig:
 class KFoldConfig:
     # Model dimensions
     channel_s: int = 384
-    channel_z: int = 128
-    channel_plm: int = 768
+    channel_z: int = 256
+    dropout: float = 0.25
 
     # Sub-module configurations
     input_embedder: input_embedder.InputEmbedder.Config
     protein_sequence_encoder: sequence_encoder.SequenceEncoder.Config
     protein_structure_encoder: structure_encoder.StructureEncoder.Config
     rna_sequence_encoder: sequence_encoder.SequenceEncoder.Config
-    plm_module: PLMModuleConfig
-    pairformer: PairformerConfig
+    trunk: TrunkConfig
     score_model: score_model.DiffusionModule.Config
     diffusion_head: sample_diffusion.BaseStructureModule.Config
     distogram_head: distogram_head.DistogramHead.Config
@@ -72,6 +59,35 @@ class KFoldConfig:
     confidence_conditioning_drop_rate: float = 0.0
 
 
+class LMToPair(torch.nn.Module):
+    def __init__(self, channel_lm: int, n_layers: int, channel_z: int):
+        super().__init__()
+        # Combine the hidden states
+        self.proj_lm = torch.nn.Sequential(
+            LayerNorm(channel_lm), LinearNoBias(channel_lm, channel_z)
+        )
+        self.w_lm_layer = torch.nn.Parameter(torch.zeros(n_layers + 1))
+        # MLP
+        self.linear = Linear(channel_z, channel_z)
+        self.mlp = torch.nn.Sequential(
+            Linear(2 * channel_z, channel_z),
+            torch.nn.GELU(),
+            Linear(channel_z, channel_z),
+        )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # Weighted sum of hidden states from all layers
+        hs = self.proj_lm(hidden_states)  # [B, L, Nlayer+1, D_z]
+        w = self.w_lm_layer.softmax(-1)  # [Nlayer+1]
+        x = torch.einsum("n, b l n d -> b l d", w, hs)  # [B, L, D]
+
+        # Outer product to get pairwise features
+        x = self.linear(x)  # [B, L, D]
+        xi, xj = x.unsqueeze(-2), x.unsqueeze(-3)  # [B, L, 1, D], [B, 1, L, D]
+        z = self.mlp(torch.cat([xi * xj, xi - xj], dim=-1))  # [B, L, L, D]
+        return z
+
+
 @MAIN_MODULE.register()
 class KFold(torch.nn.Module):
     def __init__(self, config: KFoldConfig):
@@ -79,7 +95,7 @@ class KFold(torch.nn.Module):
         self.config: KFoldConfig = config
         self.channel_s: int = config.channel_s
         self.channel_z: int = config.channel_z
-        self.channel_plm: int = config.channel_plm
+        self.dropout: float = config.dropout
 
         kernel_config = {
             "cuequivariance": config.kernel_cuequivariance,
@@ -87,7 +103,7 @@ class KFold(torch.nn.Module):
         self.kernel_config = kernel_config
 
         # Initialize input featurizer.
-        self.input_embedder = Registry.instantiate(config.input_embedder)
+        self.input_embedder = input_embedder.InputEmbedder(config.input_embedder)
 
         # Initialize pre-trained sequence and structure encoders.
         self.prot_seq_encoder = sequence_encoder.SequenceEncoder(
@@ -100,64 +116,37 @@ class KFold(torch.nn.Module):
             config.protein_structure_encoder
         )
 
-        def proj_plm(channel_in: int) -> torch.nn.Sequential:
-            return torch.nn.Sequential(
-                LayerNorm(channel_in, create_offset=False),
-                LinearNoBias(channel_in, self.channel_plm, init="relu"),
-                torch.nn.ReLU(),
-                LinearNoBias(self.channel_plm, self.channel_plm, init="relu"),
-            )
-
-        self.proj_prot_seq = proj_plm(self.prot_seq_encoder.d_model)
-        self.proj_rna_seq = proj_plm(self.rna_seq_encoder.d_model)
-        self.proj_prot_struct = proj_plm(self.prot_struct_encoder.d_model)
-
-        def proj_attn(channel_in: int) -> torch.nn.Sequential:
-            return torch.nn.Sequential(
-                LayerNorm(channel_in, create_offset=False),
-                LinearNoBias(channel_in, self.channel_z, init="relu"),
-                torch.nn.ReLU(),
-                LinearNoBias(self.channel_z, self.channel_z, init="final"),
-            )
-
-        self.proj_prot_seq_attn = proj_attn(self.prot_seq_encoder.n_attns)
-        self.proj_rna_seq_attn = proj_attn(self.rna_seq_encoder.n_attns)
-
-        # Skip projection
-        self.skip_plm_to_s = torch.nn.Sequential(
-            LinearNoBias(self.channel_plm, self.channel_s, init="relu"),
-            torch.nn.ReLU(),
-            LinearNoBias(self.channel_s, self.channel_s, init="final"),
+        self.prot_seq_to_pair = LMToPair(
+            self.prot_seq_encoder.d_model, self.prot_seq_encoder.n_layers, self.channel_z
+        )
+        self.rna_seq_to_pair = LMToPair(
+            self.rna_seq_encoder.d_model, self.rna_seq_encoder.n_layers, self.channel_z
+        )
+        self.prot_struct_to_pair = LMToPair(
+            self.prot_struct_encoder.d_model, 0, self.channel_z
         )
 
         # Initialize trunk
-        self.plm_module = plm_module.PLMModule(
-            channel_s_inputs=self.channel_s,
-            channel_plm=self.channel_plm,
-            channel_z=self.channel_z,
-            num_heads_attn=config.plm_module.num_heads_attn,
-            num_heads_tri_attn=config.plm_module.num_heads_tri_attn,
-            num_blocks=config.plm_module.num_blocks,
-            dropout_plm=config.plm_module.dropout_plm,
-            dropout_z=config.plm_module.dropout_z,
-            blocks_per_ckpt=config.plm_module.blocks_per_ckpt,
-        )
-
-        self.pairformer_stack = pairformer.PairformerStack(
-            channel_s=self.channel_s,
-            channel_z=self.channel_z,
-            num_heads_attn=config.pairformer.num_heads_attn,
-            num_heads_tri_attn=config.pairformer.num_heads_tri_attn,
-            num_blocks=config.pairformer.num_blocks,
-            dropout=config.pairformer.dropout,
-            blocks_per_ckpt=config.pairformer.blocks_per_ckpt,
-        )
-
-        # Recyling
-        self.layernorm_s = LayerNorm(self.channel_s)
         self.layernorm_z = LayerNorm(self.channel_z)
-        self.linear_s = LinearNoBias(self.channel_s, self.channel_s, init="final")
         self.linear_z = LinearNoBias(self.channel_z, self.channel_z, init="final")
+        self.lm_stack = tri_stack.TrianglularStack(
+            self.channel_z,
+            config.trunk.num_lm_blocks,
+            config.trunk.dropout,
+        )
+        self.main_stack = tri_stack.TrianglularStack(
+            self.channel_z,
+            config.trunk.num_main_blocks,
+            config.trunk.dropout,
+            blocks_per_ckpt=config.trunk.blocks_per_ckpt,
+        )
+        # Recyling
+        self.linear_refine = LinearNoBias(self.channel_z, self.channel_z, init="identity")
+        self.refine_stack = tri_stack.TrianglularStack(
+            self.channel_z,
+            config.trunk.num_refine_blocks,
+            config.trunk.dropout,
+        )
 
         # Initialize prediction heads
         self.score_model = score_model.DiffusionModule(
@@ -181,8 +170,9 @@ class KFold(torch.nn.Module):
         self.prot_seq_encoder = torch.compile(self.prot_seq_encoder, **opts)
         self.rna_seq_encoder = torch.compile(self.rna_seq_encoder, **opts)
         self.prot_struct_encoder = torch.compile(self.prot_struct_encoder, **opts)
-        self.plm_module = torch.compile(self.plm_module, **opts)
-        self.pairformer_stack = torch.compile(self.pairformer_stack, **opts)
+        self.lm_stack = torch.compile(self.lm_stack, **opts)
+        self.main_stack = torch.compile(self.main_stack, **opts)
+        self.refine_stack = torch.compile(self.refine_stack, **opts)
         self.score_model.do_compile(**opts)
         self.confidence_head.do_compile(**opts)
 
@@ -334,30 +324,26 @@ class KFold(torch.nn.Module):
 
         # Embed inputs
         st = time.time()
-        s_inputs, s_init, z_init = self.input_embedder(f_input)
+        s_inputs, z_init = self.input_embedder(f_input)
         et = time.time()
         time_logs["input_embedder"] = et - st
 
         # Trunk with recycling
         st = time.time()
-        s_trunk, z_trunk = self.run_trunk(s_inputs, s_init, z_init, f_input, num_recycles)
-        s_trunk, z_trunk = s_trunk.float(), z_trunk.float()
+        z = self.run_trunk(z_init, f_input, num_recycles)
+        z = z.float()
         et = time.time()
         time_logs["trunk"] = et - st
 
         if return_embeddings:
             dict_out["trunk"] = {
                 "s_inputs": s_inputs,
-                "s_trunk": s_trunk,
-                "z_trunk": z_trunk,
+                "z": z,
             }
 
         # Distogram head
         st = time.time()
-        dict_out["distogram"] = self.distogram_head.forward_inference(
-            f_input,
-            z_trunk,
-        )
+        dict_out["distogram"] = self.distogram_head.forward_inference(f_input, z)
         et = time.time()
         time_logs["distogram_head"] = et - st
 
@@ -368,8 +354,7 @@ class KFold(torch.nn.Module):
             dict_out["diffusion"] = self.diffusion_head.sample_structure(
                 f_input,
                 s_inputs,
-                s_trunk,
-                z_trunk,
+                z,
                 num_steps,
                 num_samples,
                 return_traj=return_traj,
@@ -378,12 +363,9 @@ class KFold(torch.nn.Module):
         time_logs["diffusion_head"] = et - st
 
         st = time.time()
+        coords = dict_out["diffusion"]["coordinates"]
         dict_out["confidence"] = self.confidence_head.forward_inference(
-            f_input,
-            s_inputs,
-            s_trunk,
-            z_trunk,
-            dict_out["diffusion"]["coordinates"],
+            f_input, s_inputs, z, coords
         )
         et = time.time()
         time_logs["confidence_head"] = et - st
@@ -396,20 +378,14 @@ class KFold(torch.nn.Module):
 
     def run_trunk(
         self,
-        s_inputs: torch.Tensor,
-        s_init: torch.Tensor,
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         """Perform the forward pass.
 
         Parameters
         ----------
-        s_inputs : torch.Tensor
-            Tensor of shape (B, L, C_s) containing input single features
-        s_init: torch.Tensor
-            Tensor of shape (B, L, C_s) containing initial single representation
         z_init: torch.Tensor
             Tensor of shape (B, L, L, C_z) containing initial pair representation
         f_input : FoldingInput
@@ -419,9 +395,7 @@ class KFold(torch.nn.Module):
 
         Returns
         -------
-        s_trunk: torch.Tensor
-            The updated tensor of shape (B, L, c_s).
-        z_trunk: torch.Tensor
+        z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
         use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
@@ -432,61 +406,37 @@ class KFold(torch.nn.Module):
         prot_seq_encoder = get_model(self.prot_seq_encoder)
         rna_seq_encoder = get_model(self.rna_seq_encoder)
         prot_struct_encoder = get_model(self.prot_struct_encoder)
-        plm_module = get_model(self.plm_module)
-        pairformer_stack = get_model(self.pairformer_stack)
+        lm_stack = get_model(self.lm_stack)
+        main_stack = get_model(self.main_stack)
+        refine_stack = get_model(self.refine_stack)
 
-        # Run the structure encoder once, without stochastic masking.
-        x_prot_struct = prot_struct_encoder(f_input)
+        # Initial pairwise representation from pretrained encoders.
+        z_lm = (
+            self.prot_seq_to_pair(prot_seq_encoder(f_input))
+            + self.rna_seq_to_pair(rna_seq_encoder(f_input))
+            + self.prot_struct_to_pair(prot_struct_encoder(f_input).unsqueeze(-2))
+        )
 
         # === Main trunk iteration with recycling === #
-        s = torch.zeros_like(s_init)
         z = torch.zeros_like(z_init)
+        token_mask = f_input.token.pad_mask
+        pair_mask = token_mask[..., None] & token_mask[..., None, :]
+
         for i in range(0, num_recycles + 1):
             enable_grad = self.training and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
+                _z_lm = F.dropout(z_lm, p=self.dropout)
+                _z = z_init + lm_stack(_z_lm, pair_mask, use_cuequiv_kernels)
+                z = z + self.linear_z(self.layernorm_z(_z))
+                z = main_stack(z, pair_mask, use_cuequiv_kernels)
 
-                _add = partial(add, inplace=not enable_grad)
+        # Refinement iteration
+        z = self.linear_refine(z)
+        z = refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
 
-                # Recycling
-                s = s_init + self.linear_s(self.layernorm_s(s))
-                z = z_init + self.linear_z(self.layernorm_z(z))
-
-                # Initialize s_plm
-                s_plm = self.proj_prot_struct(x_prot_struct)
-
-                # Add sequence features with stochastic masking
-                x_prot, attn_prot = prot_seq_encoder(f_input, mask_ratio=0.15)
-                s_plm = _add(s_plm, self.proj_prot_seq(x_prot))
-                z = _add(z, self.proj_prot_seq_attn(attn_prot.flatten(-2)))
-                del x_prot, attn_prot
-
-                x_rna, attn_rna = rna_seq_encoder(f_input, mask_ratio=0.15)
-                s_plm = _add(s_plm, self.proj_rna_seq(x_rna))
-                z = _add(z, self.proj_rna_seq_attn(attn_rna.flatten(-2)))
-                del x_rna, attn_rna
-
-                # Run trunk
-                z = plm_module(
-                    z,
-                    s_inputs,
-                    s_plm,
-                    f_input.token.asym_id,
-                    f_input.token.pad_mask,
-                    use_cuequiv_kernels=use_cuequiv_kernels,
-                )
-                s, z = pairformer_stack(
-                    s,
-                    z,
-                    f_input.token.pad_mask,
-                    use_cuequiv_kernels=use_cuequiv_kernels,
-                )
-
-                # Skip connection to s_trunk
-                s = _add(s, self.skip_plm_to_s(s_plm))
-
-        return s, z
+        return z
 
     # ============================================================
     # Training Methods
@@ -573,37 +523,31 @@ class KFold(torch.nn.Module):
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
         # Input embedding
-        s_inputs, s_init, z_init = self.input_embedder(f_input)
-        # NOTE: cast to float32 for numerical stability in training.
-        s_init, z_init = s_init.float(), z_init.float()
+        s_inputs, z_init = self.input_embedder(f_input)
 
         # Trunk with recycling
-        s_trunk, z_trunk = self.run_trunk(s_inputs, s_init, z_init, f_input, num_recycles)
-        s_trunk, z_trunk = s_trunk.float(), z_trunk.float()
+        z_init = z_init.float()  # cast to float32 for numerical stability
+        z = self.run_trunk(z_init, f_input, num_recycles)
+        z = z.float()
 
         # Distogram head
         dict_out["distogram"] = {
-            "logits": self.distogram_head(z_trunk),
+            "logits": self.distogram_head(z),
         }
 
         if train_diffusion_head:
             # Diffusion head
-            _s_trunk, _z_trunk = s_trunk, z_trunk
+            _z = z
             drop_rate = self.config.diffusion_conditioning_drop_rate
             if drop_rate > 0.0:
                 drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
-                mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
-                _s_trunk = s_trunk * mask[:, None, None]
-                _z_trunk = z_trunk * mask[:, None, None, None]
+                mask = ~drop_conditioning
+                _z = z * mask[:, None, None, None]
 
             # Forward pass through diffusion head for training.
             with torch.autocast(device.type, enabled=False):
                 dict_out["diffusion"] = self.diffusion_head.training_step(
-                    f_input,
-                    s_inputs,
-                    _s_trunk,
-                    _z_trunk,
-                    diffusion_batch_size,
+                    f_input, s_inputs, _z, diffusion_batch_size
                 )
 
         if train_confidence_module:
@@ -613,8 +557,7 @@ class KFold(torch.nn.Module):
                 coordinates = self.diffusion_head.sample_structure(
                     f_input=f_input,
                     s_inputs=s_inputs,
-                    s_trunk=s_trunk,
-                    z_trunk=z_trunk,
+                    z=z,
                     num_steps=num_mini_rollout_steps,
                     num_samples=num_mini_rollout_samples,
                 )["coordinates"]  # [B, N_samples, Latom, 3]
@@ -622,24 +565,18 @@ class KFold(torch.nn.Module):
                 "coordinates": coordinates,
             }
             _s_inputs = s_inputs.detach()
-            _s_trunk = s_trunk.detach()
-            _z_trunk = z_trunk.detach()
+            _z = z.detach()
 
             # Randomly drop conditioning information for confidence head.
             drop_rate = self.config.confidence_conditioning_drop_rate
             if drop_rate > 0.0:
                 drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
-                mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
-                # NOTE: Only drop the pair conditioning.
-                _z_trunk = z_trunk * mask[:, None, None, None]
+                mask = ~drop_conditioning
+                _z = _z * mask[:, None, None, None]
 
             # Forward pass through confidence head
             pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
-                f_input,
-                _s_inputs,
-                _s_trunk,
-                _z_trunk,
-                coordinates,
+                f_input, _s_inputs, _z, coordinates
             )
             dict_out["confidence"] = {
                 "pae_logits": pae_logits,
@@ -662,18 +599,15 @@ class KFold(torch.nn.Module):
         """Get the names of trunk modules."""
         return [
             "input_embedder",
-            "proj_prot_seq",
-            "proj_rna_seq",
-            "proj_prot_struct",
-            "proj_prot_seq_attn",
-            "proj_rna_seq_attn",
-            "skip_plm_to_s",
-            "plm_module",
-            "pairformer_stack",
-            "layernorm_s",
+            "prot_seq_to_pair",
+            "rna_seq_to_pair",
+            "prot_struct_to_pair",
             "layernorm_z",
-            "linear_s",
             "linear_z",
+            "lm_stack",
+            "main_stack",
+            "linear_refine",
+            "refine_stack",
         ]
 
     def get_distogram_head_module_names(self) -> list[str]:

@@ -68,6 +68,9 @@ class Linear(nn.Module):
             )
             initialize.gating_init_(self.weight)
             nn.init.constant_(self.bias, +2.0)
+        elif init == "identity":
+            # set diagonal to 1 for identity initialization
+            torch.nn.init.eye_(self.weight)
         elif init == "final":
             # weight: zero
             initialize.final_init_(self.weight)

@@ -101,8 +101,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         diffusion_batch_size: int,
     ) -> dict[str, torch.Tensor]:
         """Perform a single training step for the structure module.
@@ -120,8 +119,7 @@ class AF3SampleDiffusion(BaseStructureModule):
             t=t_hat,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
-            s_trunk=s_trunk,  # [B, Lt, c_s]
-            z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
+            z=z,  # [B, Lt, Lt, c_z]
         )  # [B, N, La, 3]
 
         loss_weights = self.loss_weights(t_hat)  # [B, N]
@@ -140,8 +138,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         t: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
         """Forward pass through the score model.
@@ -157,9 +154,7 @@ class AF3SampleDiffusion(BaseStructureModule):
             FoldingInput object containing model inputs.
         s_inputs : torch.Tensor
             Input sequence embeddings. Shape (B, Lt, c_s).
-        s_trunk : torch.Tensor
-            Trunk sequence embeddings. Shape (B, Lt, c_s).
-        z_trunk : torch.Tensor
+        z : torch.Tensor
             Trunk pairwise embeddings. Shape (B, Lt, Lt, c_z).
 
         Returns
@@ -182,8 +177,7 @@ class AF3SampleDiffusion(BaseStructureModule):
             r_noisy=r_noisy,  # [B, N, La, 3]
             c_noise=c_noise,  # [B, N]
             s_inputs=s_inputs,  # [B, Lt, c_s]
-            s_trunk=s_trunk,  # [B, Lt, c_s]
-            z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
+            z=z,  # [B, Lt, Lt, c_z]
         )
 
         # Line 8 of Algorithm 20
@@ -248,8 +242,7 @@ class AF3SampleDiffusion(BaseStructureModule):
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         num_steps: int = 200,
         num_samples: int = 1,
         chunk_size: int | None = None,
@@ -273,14 +266,13 @@ class AF3SampleDiffusion(BaseStructureModule):
         x.masked_fill_(~mask[:, :, :, None], 0.0)  # apply atom mask
 
         # Compute time-independent variables
-        z = model.get_pair_conditioning(f_input, z_trunk)
-        q, c, p = model.get_atom_embeddings(f_input, s_trunk, z)
+        z = model.get_pair_conditioning(f_input, z)
+        q, c, p = model.get_atom_embeddings(f_input, z)
         pair_bias = model.get_pair_bias(z)
-        del z_trunk, z  # Free up memory for large LxL tensors
 
         def run_step(x_t: torch.Tensor, t_hat: float) -> torch.Tensor:
             c_noise = torch.tensor(self.c_noise(t_hat), device=s_inputs.device)
-            s = model.get_single_conditioning(s_inputs, s_trunk, c_noise.view(1, 1))
+            s = model.get_single_conditioning(s_inputs, c_noise.view(1, 1))
             return self.inference_step(
                 f_input, x_t, t_hat, q, c, p, s, pair_bias, chunk_size
             )

@@ -41,14 +41,10 @@ class TransformerStack(torch.nn.Module):
         x: torch.Tensor,
         seq_id: torch.Tensor,
         pos_id: torch.Tensor,
-    ) -> tuple[
-        torch.Tensor, list[torch.Tensor], list[torch.Tensor]
-    ]:  # hidden states, attentions
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:  # hidden states, attentions
         hidden_states: list[torch.Tensor] = []
-        attentions: list[torch.Tensor] = []
         for block in self.blocks:
-            x, attn = block(x, seq_id, pos_id)
-            hidden_states.append(x.clone())
-            attentions.append(attn)
+            x = block(x, seq_id, pos_id)
+            hidden_states.append(x)
         x = self.norm(x)
-        return x, hidden_states, attentions
+        return x, hidden_states

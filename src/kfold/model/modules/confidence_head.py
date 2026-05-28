@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.pairformer import PairformerStack
+from kfold.model.modules.tri_stack import TrianglularStack
 from kfold.model.primitives import LayerNorm, LinearNoBias
 from kfold.model.primitives.utils import gather_dim, get_context_dtype
 from kfold.utils.registry import CONFIDENCE_HEAD, BaseConfig
@@ -71,9 +71,8 @@ class ConfidenceHead(torch.nn.Module):
         """
 
         channel_s: int = 384
-        channel_z: int = 128
+        channel_z: int = 256
         num_heads_attn: int = 16
-        num_heads_tri_attn: int = 4
         num_blocks: int = 4
         dropout: float = 0.25
         num_bins: int = 39
@@ -102,23 +101,25 @@ class ConfidenceHead(torch.nn.Module):
         self.kernel_config = kernel_config
         self.is_compiled = False
 
-        self.linear_s1 = LinearNoBias(cfg.channel_s, cfg.channel_z, init="default")
-        self.linear_s2 = LinearNoBias(cfg.channel_s, cfg.channel_z, init="default")
+        self.linear_s1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
+        self.linear_s2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
 
         self.num_bins = cfg.num_bins
         boundaries = torch.linspace(cfg.min_dist, cfg.max_dist, self.num_bins - 1)
         self.register_buffer("boundaries", boundaries, persistent=False)
-        self.linear_distogram = LinearNoBias(self.num_bins, cfg.channel_z, init="default")
+        self.linear_distogram = LinearNoBias(self.num_bins, cfg.channel_z)
 
-        self.pairformer_stack = PairformerStack(
-            channel_s=cfg.channel_s,
+        # Pair to pair
+        self.stack = TrianglularStack(
             channel_z=cfg.channel_z,
-            num_heads_attn=cfg.num_heads_attn,
-            num_heads_tri_attn=cfg.num_heads_tri_attn,
             num_blocks=cfg.num_blocks,
             dropout=cfg.dropout,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
+
+        # Pair to single
+        self.linear_s_weights = LinearNoBias(cfg.channel_z, 1)
+        self.linear_s_out = LinearNoBias(cfg.channel_z, cfg.channel_s)
 
         self.pae_head = torch.nn.Sequential(
             LayerNorm(cfg.channel_z),
@@ -143,20 +144,19 @@ class ConfidenceHead(torch.nn.Module):
         self.is_compiled = True
 
     def _compile(self, **kwargs):
-        """Compile the pairformer."""
-        self.pairformer_stack = torch.compile(self.pairformer_stack, **kwargs)
+        """Compile the triangular stack."""
+        self.stack = torch.compile(self.stack, **kwargs)
 
-    def get_pairformer_stack(self) -> PairformerStack:
-        """Get the PairformerStack."""
+    def get_stack(self) -> TrianglularStack:
+        """Get the triangular stack"""
         if self.is_compiled and not self.training:
-            return self.pairformer_stack._orig_mod  # type: ignore
-        return self.pairformer_stack
+            return self.stack
+        return self.stack
 
     def forward_inference(
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s: torch.Tensor,
         z: torch.Tensor,
         x_pred: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
@@ -168,8 +168,6 @@ class ConfidenceHead(torch.nn.Module):
             The folding input features.
         s_inputs : torch.Tensor
             Tensor of shape (B, L, C_s) containing input single representation
-        s: torch.Tensor
-            Tensor of shape (B, L, C_s) containing single representation
         z: torch.Tensor
             Tensor of shape (B, L, L, C_s) containing pair representation
         x_pred: torch.Tensor
@@ -190,7 +188,7 @@ class ConfidenceHead(torch.nn.Module):
         plddt_bin_centers: torch.Tensor
             Tensor of shape (num_plddt_bins,) containing pLDDT bin centers.
         """
-        pae_logits, pde_logits, plddt_logits, _ = self(f_input, s_inputs, s, z, x_pred)
+        pae_logits, pde_logits, plddt_logits, _ = self(f_input, s_inputs, z, x_pred)
         cfg = self.config
         device = pae_logits.device
 
@@ -217,7 +215,6 @@ class ConfidenceHead(torch.nn.Module):
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s: torch.Tensor,
         z: torch.Tensor,
         x_pred: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -228,13 +225,11 @@ class ConfidenceHead(torch.nn.Module):
         f_input : FoldingInput
             The folding input features.
         s_inputs : torch.Tensor
-            Tensor of shape (B, L, C_s) containing input single representation
-        s: torch.Tensor
-            Tensor of shape (B, L, C_s) containing single representation
+            Tensor of shape (B, L, C_s) containing input single representation.
         z: torch.Tensor
-            Tensor of shape (B, L, L, C_s) containing pair representation
+            Tensor of shape (B, L, L, C_s) containing pair representation.
         x_pred: torch.Tensor
-            Tensor of shape (B, N, Latom, 3) containing predicted coordinates
+            Tensor of shape (B, N, Latom, 3) containing predicted coordinates.
 
         Returns
         -------
@@ -262,9 +257,8 @@ class ConfidenceHead(torch.nn.Module):
         repr_idx = f_input.token.repr_index.unsqueeze(-2)  # [B, 1, Ntoken]
         x_repr = gather_dim(x_pred, dim=-2, index=repr_idx[..., None])
 
-        s_inputs, s, z = s_inputs.to(dtype), s.to(dtype), z.to(dtype)
+        s_inputs, z = s_inputs.to(dtype), z.to(dtype)
 
-        # Line 1
         z = (
             z
             + self.linear_s1(s_inputs)[..., None, :, :]
@@ -288,7 +282,6 @@ class ConfidenceHead(torch.nn.Module):
         for i in range(N):
             _pae_logits, _pde_logits, _plddt_logits, _resolved_logits = (
                 self.forward_single(
-                    s,
                     z,
                     x_repr[:, i],
                     mask=f_input.token.pad_mask,
@@ -327,7 +320,6 @@ class ConfidenceHead(torch.nn.Module):
 
     def forward_single(
         self,
-        s: torch.Tensor,
         z: torch.Tensor,
         x: torch.Tensor,
         mask: torch.Tensor,
@@ -336,10 +328,8 @@ class ConfidenceHead(torch.nn.Module):
 
         Parameters
         ----------
-        s: torch.Tensor
-            Tensor of shape (B, L, C_s) containing single conditioning
         z: torch.Tensor
-            Tensor of shape (B, L, L, C_s) containing pair conditioning
+            Tensor of shape (B, L, L, C_s) containing pair representation.
         x: torch.Tensor
             Tensor of shape (B, N, L, 3) containing predicted coordinates of
             representative atoms.
@@ -359,37 +349,34 @@ class ConfidenceHead(torch.nn.Module):
         resolved_logits: torch.Tensor
             Tensor of shape (B, L, 24, 2) containing predicted resolved atom logits.
         """
-        # Line 2
+        # Compute distogram of sampled coordinates.
         with torch.autocast(x.device.type, dtype=torch.float32), torch.no_grad():
             d = (x[..., :, None, :] - x[..., None, :, :]).norm(dim=-1)
+        dgram = F.one_hot((d[..., None] > self.boundaries).sum(dim=-1), self.num_bins)
 
-        # Line 3
-        distogram = F.one_hot(
-            (d[..., None] > self.boundaries).sum(dim=-1), self.num_bins
-        )  # [B, Ntoken, Ntoken, Nbin]
-        z = z + self.linear_distogram(distogram.to(z.dtype))
-
-        # Line 4
-        pairformer_stack = self.get_pairformer_stack()
+        # Update pair representation with distogram.
+        stack = self.get_stack()
         use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
 
-        s = s.clone()  # clone s to avoid in-place modification.
-        s, z = pairformer_stack(s, z, mask, use_cuequiv_kernels=use_cuequiv_kernels)
+        z = z + self.linear_distogram(dgram.to(z.dtype))
+        pair_mask = mask[..., :, None] & mask[..., None, :]
+        z = stack(z, pair_mask, use_cuequiv_kernels)
 
-        # Line 5
+        # Pair to single.
+        s_weights = self.linear_s_weights(z).squeeze(-1)  # [B, L, L]
+        s_weights = s_weights + (~mask)[..., None, :].float() * -1e9
+        s_weights = F.softmax(s_weights, dim=-1)  # [B, L, L]
+        s = torch.einsum("bij,bijd->bid", s_weights, z)  # [B, L, C_z]
+        s = self.linear_s_out(s)  # [B, L, C_s]
+
+        # Confidence heads.
         pae_logits = self.pae_head(z)  # [B, L, L, num_pae_bins]
-
-        # Line 6
         pde_logits = self.pde_head(z)  # [B, L, L, num_pde_bins]
         pde_logits = pde_logits + pde_logits.transpose(-2, -3)  # symmetrize
 
         with torch.autocast(s.device.type, enabled=False):
             s = s.to(torch.float32)
-
-            # Line 7: plddt head
             plddt_logits = self.plddt_head(s).unflatten(-1, (24, self.num_plddt_bins))
-
-            # Line 8: resolved head
             resolved_logits = self.resolved_head(s).unflatten(-1, (24, 2))
 
         return pae_logits, pde_logits, plddt_logits, resolved_logits

@@ -893,26 +893,38 @@ class KFoldTrainingModule(pl.LightningModule):
 
         if self.train_trunk:
             self.log(
-                "monitor/grad_norm_plm_module",
-                gradient_norm(model.plm_module),
+                "monitor/grad_norm_lm_stack",
+                gradient_norm(model.lm_stack),
                 sync_dist=False,
                 prog_bar=False,
             )
             self.log(
-                "monitor/param_norm_plm_module",
-                parameter_norm(model.plm_module),
+                "monitor/param_norm_lm_stack",
+                parameter_norm(model.lm_stack),
                 sync_dist=False,
                 prog_bar=False,
             )
             self.log(
-                "monitor/grad_norm_pairformer_stack",
-                gradient_norm(model.pairformer_stack),
+                "monitor/grad_norm_main_stack",
+                gradient_norm(model.main_stack),
                 sync_dist=False,
                 prog_bar=False,
             )
             self.log(
-                "monitor/param_norm_pairformer_stack",
-                parameter_norm(model.pairformer_stack),
+                "monitor/param_norm_refine_stack",
+                parameter_norm(model.refine_stack),
+                sync_dist=False,
+                prog_bar=False,
+            )
+            self.log(
+                "monitor/grad_norm_refine_stack",
+                gradient_norm(model.refine_stack),
+                sync_dist=False,
+                prog_bar=False,
+            )
+            self.log(
+                "monitor/param_norm_main_stack",
+                parameter_norm(model.main_stack),
                 sync_dist=False,
                 prog_bar=False,
             )

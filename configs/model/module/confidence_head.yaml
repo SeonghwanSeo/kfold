@@ -1,9 +1,8 @@
 _registry_: "confidence_head"
 _class_: "ConfidenceHead"
 channel_s: 384
-channel_z: 128
+channel_z: 256
 num_heads_attn: 16
-num_heads_tri_attn: 4
 num_blocks: 4
 dropout: 0.25
 num_bins: 39

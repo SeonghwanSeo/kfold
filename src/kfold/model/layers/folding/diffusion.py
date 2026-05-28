@@ -33,7 +33,7 @@ class PairConditioning(nn.Module):
     See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
     """
 
-    def __init__(self, channel_z: int = 128):
+    def __init__(self, channel_z: int = 256):
         """Initialize the single conditioning layer.
 
         Parameters
@@ -53,14 +53,14 @@ class PairConditioning(nn.Module):
             [Transition(channel_z, expansion_factor=2) for _ in range(2)]
         )
 
-    def forward(self, f_input: FoldingInput, z_trunk: torch.Tensor) -> torch.Tensor:
+    def forward(self, f_input: FoldingInput, z: torch.Tensor) -> torch.Tensor:
         """See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
 
         Parameters
         ----------
         f_input : FoldingInput
             The folding input.
-        z_trunk : torch.Tensor
+        z : torch.Tensor
             Tensor of shape (B, Lt, Lt, c_z) containing trunk pair embeddings.
 
         Returns
@@ -70,16 +70,10 @@ class PairConditioning(nn.Module):
         """
         _add = partial(add, inplace=not self.training)
 
-        # Line 1
-        z_trunk = z_trunk.float()
-        rel_pos_feats = self.rel_pos_encoding(f_input, z_trunk.dtype)
-        z = torch.cat((z_trunk, rel_pos_feats), dim=-1)
-        del rel_pos_feats, z_trunk
-
-        # Line 2
+        z = z.float()
+        rel_pos_feats = self.rel_pos_encoding(f_input, z.dtype)
+        z = torch.cat((z, rel_pos_feats), dim=-1)
         z = self.linear(self.layernorm(z))  # [B, Lt, Lt, c_z]
-
-        # Line 3-5
         for transition in self.transitions:
             z = _add(z, transition(z))
 
@@ -107,23 +101,18 @@ class SingleConditioning(nn.Module):
         self.linear_fourier = LinearNoBias(
             dim_fourier, channel_s, init="default", precision=32
         )
-        self.layernorm = LayerNorm(channel_s * 2, create_offset=False)
-        self.linear = LinearNoBias(channel_s * 2, channel_s, init="default", precision=32)
+        self.linear = LinearNoBias(channel_s, channel_s, init="default", precision=32)
         self.transitions = nn.ModuleList(
             [Transition(channel_s, expansion_factor=2) for _ in range(2)]
         )
 
-    def forward(
-        self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, c_noise: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, s_inputs: torch.Tensor, c_noise: torch.Tensor) -> torch.Tensor:
         """See Section 3.7 Algorithm 21 Diffusion Conditioning in the AF3 paper.
 
         Parameters
         ----------
         s_inputs : torch.Tensor
             Tensor of shape (B, Lt, c_s) containing input single embeddings.
-        s_trunk : torch.Tensors
-            Tensor of shape (B, Lt, c_s) containing trunk single embeddings.
         c_noise : torch.Tensor
             Tensor of shape (B, N) containing diffusion noise level (or sigma).
             c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm.)
@@ -135,26 +124,18 @@ class SingleConditioning(nn.Module):
         """
         _add = partial(add, inplace=not self.training)
 
-        # Line 6
-        s = torch.cat((s_trunk.float(), s_inputs.float()), dim=-1)  # [B, Lt, 2*c_s]
+        s = self.linear(s_inputs)  # [B, Lt, c_s]
 
-        # Line 7
-        s = self.linear(self.layernorm(s))  # [B, Lt, c_s]
-
-        # Line 8:
         # NOTE: 1/4 log(t_hat / sigma_data) is computed outside of this class.
         # See StructureModule for more details.
         fourier_embed = self.fourier_embed(c_noise.float())  # [B, N, d_fourier]
 
-        # Line 9
         fourier_embed = self.linear_fourier(self.layernorm_fourier(fourier_embed))
         s = s[:, None, :, :] + fourier_embed[:, :, None, :]  # [B, N, Lt, c_s]
 
-        # Line 10-12
         for transition in self.transitions:
             s = _add(s, transition(s))
 
-        # Line 13
         return s
 
 
@@ -167,7 +148,7 @@ class DiffusionStack(nn.Module):
     def __init__(
         self,
         channel_s: int = 384,
-        channel_z: int = 128,
+        channel_z: int = 256,
         channel_atom: int = 128,
         channel_atompair: int = 16,
         channel_coords: int = 3,
@@ -230,7 +211,6 @@ class DiffusionStack(nn.Module):
         # === Local atom-level attention encoder === #
         channel_token = channel_s * 2
         self.atom_embedder = AtomEmbedder(
-            channel_s=channel_s,
             channel_z=channel_z,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
@@ -282,8 +262,7 @@ class DiffusionStack(nn.Module):
         r_noisy: torch.Tensor,
         c_noise: torch.Tensor,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
     ) -> torch.Tensor:
         """Training forward pass of the AF3 diffusion module
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
@@ -299,9 +278,7 @@ class DiffusionStack(nn.Module):
             The diffusion noise level (or sigmas), shape [B, N].
         s_inputs: torch.Tensor
             The input single representation, shape [B, Lt, c_s].
-        s_trunk: torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
-        z_trunk: torch.Tensor
+        z: torch.Tensor
             The trunk pair representation, shape [B, Lt, Lt, c_z].
 
         Returns
@@ -313,10 +290,9 @@ class DiffusionStack(nn.Module):
         atom_mask = f_input.atom.pad_mask  # [B, La]
         token_mask = f_input.token.pad_mask  # [B, Lt]
 
-        # Line 1: Diffusion conditioning
-        s = self.get_single_conditioning(s_inputs, s_trunk, c_noise)  # [B, N, Lt, c_s]
-        z = self.get_pair_conditioning(f_input, z_trunk)  # [B, Lt, Lt, c_z]
-        q, c, p = self.get_atom_embeddings(f_input, s_trunk, z)
+        s = self.get_single_conditioning(s_inputs, c_noise)  # [B, N, Lt, c_s]
+        z = self.get_pair_conditioning(f_input, z)  # [B, Lt, Lt, c_z]
+        q, c, p = self.get_atom_embeddings(f_input, z)
         pair_bias = self.get_pair_bias(z)  # [B, Nblock, H, Lt, Lt]
         r_update = self.step(
             r_noisy,
@@ -333,7 +309,7 @@ class DiffusionStack(nn.Module):
 
     # === Multiple forward functions for different parts of the diffusion module === #
     def get_pair_conditioning(
-        self, f_input: FoldingInput, z_trunk: torch.Tensor
+        self, f_input: FoldingInput, z: torch.Tensor
     ) -> torch.Tensor:
         """Get the pair conditioning for the diffusion module.
         This is time-independent and can be pre-computed before the diffusion steps.
@@ -342,7 +318,7 @@ class DiffusionStack(nn.Module):
         ----------
         f_input : FoldingInput
             The folding input.
-        z_trunk : torch.Tensor
+        z : torch.Tensor
             The trunk pair representation, shape [B, Lt, Lt, c_z].
 
         Returns
@@ -350,8 +326,7 @@ class DiffusionStack(nn.Module):
         z : torch.Tensor
             The conditioned pair representation, shape [B, Lt, Lt, c_z].
         """
-        # Algorithm 21 Line 1-5
-        return self.pair_conditioning(f_input, z_trunk)
+        return self.pair_conditioning(f_input, z)
 
     def get_pair_bias(self, z: torch.Tensor) -> torch.Tensor:
         """Get the pair bias for the token transformer.
@@ -367,7 +342,6 @@ class DiffusionStack(nn.Module):
         pair_bias : torch.Tensor
             The pair bias for the token transformer, shape [B, Nblock, H, Lt, Lt].
         """
-        # Algorithm 21 Line 1-5
         B, L, _, c_z = z.shape
         N, H = self.token_transformer_blocks, self.token_transformer_heads
         pair_bias = self.linear_z_to_bias(self.layernorm_z(z)).view(B, L, L, N, H)
@@ -376,7 +350,7 @@ class DiffusionStack(nn.Module):
         return pair_bias.to(torch.float32)
 
     def get_single_conditioning(
-        self, s_inputs: torch.Tensor, s_trunk: torch.Tensor, c_noise: torch.Tensor
+        self, s_inputs: torch.Tensor, c_noise: torch.Tensor
     ) -> torch.Tensor:
         """Get the single conditioning for the diffusion module.
         This is time-dependent and needs to be computed at each diffusion step.
@@ -385,8 +359,6 @@ class DiffusionStack(nn.Module):
         ----------
         s_inputs : torch.Tensor
             The input single representation, shape [B, Lt, c_s].
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
         c_noise : torch.Tensor
             Tensor of shape (B, N) containing diffusion noise level (or sigma).
             c_noise = 1/4 log(t_hat / sigma_data) (See Algorithm.)
@@ -396,25 +368,19 @@ class DiffusionStack(nn.Module):
         s : torch.Tensor
             The single conditioning, shape [B, N, Lt, c_s].
         """
-        return self.single_conditioning(s_inputs, s_trunk, c_noise).to(torch.float32)
+        return self.single_conditioning(s_inputs, c_noise).to(torch.float32)
 
     def get_atom_embeddings(
         self,
         f_input: FoldingInput,
-        s_trunk: torch.Tensor,
         z: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Prepare the inputs which are static across diffusion steps.
-        # Algorithm 5 Line 1-10, 13-14.
 
         Parameters
         ----------
         f_input : FoldingInput
             The folding input.
-        s_inputs : torch.Tensor
-            The input single representation, shape [B, Lt, c_s].
-        s_trunk : torch.Tensor
-            The trunk single representation, shape [B, Lt, c_s].
         z : torch.Tensor
             The trunk pair conditioning, shape [B, Lt, Lt, c_z].
 
@@ -427,7 +393,7 @@ class DiffusionStack(nn.Module):
         p : torch.Tensor
             The atom pair representation, shape [B, La, La, c_atompair].
         """
-        q, c, p = self.atom_embedder(f_input, s_trunk, z)
+        q, c, p = self.atom_embedder(f_input, z)
         return q, c, p
 
     def step(
@@ -475,12 +441,6 @@ class DiffusionStack(nn.Module):
         r_update : torch.Tensor
             The scaled updated atom positions, shape [B, N, La, 3].
         """
-        # Line 1: Outside of this function.
-        # Already given as an input, s, z
-
-        # Line 2: x_noisy -> r_noisy
-        # Already given as an input: r_noisy
-
         # === Local attention on atom-level and aggregate to coarse-grained token === #
         # Add diffusion sample dimension
         q = q.unsqueeze(-3)  # [B, 1, La, c_atom]
@@ -491,7 +451,6 @@ class DiffusionStack(nn.Module):
         pair_bias = pair_bias.unsqueeze(-5)  # [B, 1, Nblock, H, Lt, Lt]
         token_index = token_index.unsqueeze(-2)  # [B, 1, La]
 
-        # Line 3
         # NOTE: Add extra dimension for the number of diffusion samples, N.
         r_noisy = r_noisy * atom_mask[..., None]
         a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
@@ -512,11 +471,9 @@ class DiffusionStack(nn.Module):
         # - p_skip: [B, 1, W, Lq, Lk, c_atompair]
 
         # === Full attention on token-level === #
-        # Line 4
         a = a.float()  # Convert to float32 for stability.
         a = a + self.linear_s_to_a(self.layernorm_s(s))  # [B, N, Lt, c_token]
 
-        # Line 5
         a = self.token_transformer(
             a,  # [B, N, Lt, c_token]
             s,  # [B, N, Lt, c_s]
@@ -524,11 +481,9 @@ class DiffusionStack(nn.Module):
             mask=token_mask,  # [B, 1, Lt]
         )
 
-        # Line 6
         a = self.layernorm_a(a)  # [B, N, Lt, c_token]
 
         # === Broadcast token to atoms and run Local Atom Attention === #
-        # Line 7
         r_update = self.atom_attention_decoder(
             a,  # [B, N, Lt, c_token]
             q_skip,  # [B, N, La, c_atom]
@@ -538,7 +493,6 @@ class DiffusionStack(nn.Module):
             mask=atom_mask,  # [B, 1, La]
         )  # -> [B, N, La, 3]
 
-        # Line 8: Performed on StructureModule side.
         r_update = r_update * atom_mask[..., None]  # Mask out padded atoms.
 
         return r_update

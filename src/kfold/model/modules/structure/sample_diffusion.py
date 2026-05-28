@@ -24,8 +24,7 @@ class BaseStructureModule(ABC):
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         num_steps: int = 200,
         num_samples: int = 1,
         chunk_size: int | None = None,
@@ -42,8 +41,7 @@ class BaseStructureModule(ABC):
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         diffusion_batch_size: int,
     ) -> dict[str, torch.Tensor]:
         """Perform a single training step for the structure module.
@@ -57,8 +55,7 @@ class BaseStructureModule(ABC):
         t: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
         """Forward pass for training. Returns denoised coordinates."""
