@@ -23,12 +23,12 @@ disabled, so this lean version is byte-compatible for weight loading.
 import math
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch import Tensor
+
+from .nn import Linear
 
 
-def gelu(x: Tensor) -> Tensor:
+def gelu(x: torch.Tensor) -> torch.Tensor:
     """ESM2-style GELU — the *manual* `x * 0.5 * (1 + erf(x / sqrt(2)))`
     formula, matching the upstream training-time `layers.gelu`.
 
@@ -42,12 +42,12 @@ def gelu(x: Tensor) -> Tensor:
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
 
-def _rotate_half(x: Tensor) -> Tensor:
+def _rotate_half(x: torch.Tensor) -> torch.Tensor:
     x1, x2 = x.chunk(2, dim=-1)
     return torch.cat((-x2, x1), dim=-1)
 
 
-class RotaryEmbedding(nn.Module):
+class RotaryEmbedding(torch.nn.Module):
     """Rotary position embeddings (RoFormer, Su et al. 2021).
 
     Two entry points:
@@ -63,21 +63,14 @@ class RotaryEmbedding(nn.Module):
     def __init__(self, dim: int = 64):
         super().__init__()
         inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        # `persistent=True` matches the upstream training-time module, so
-        # `rot_emb.inv_freq` keys present in K-Fold checkpoints load
-        # without `unexpected_keys` complaints.
         self.register_buffer("inv_freq", inv_freq, persistent=True)
-
-        self._seq_len_cached: int | None = None
-        self._cos_cached: Tensor | None = None
-        self._sin_cached: Tensor | None = None
 
     def forward(
         self,
-        q: Tensor,
-        k: Tensor,
-        pos_id: Tensor,
-    ) -> tuple[Tensor, Tensor]:
+        q: torch.Tensor,
+        k: torch.Tensor,
+        pos_id: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply RoPE using explicit `[B, L]` position IDs (per-chain reset).
 
         q, k: `[B*H, L, head_dim]`
@@ -97,7 +90,7 @@ class RotaryEmbedding(nn.Module):
         return q, k
 
 
-class MultiheadAttention(nn.Module):
+class MultiheadAttention(torch.nn.Module):
     """Self-attention with rotary embeddings (always on).
 
     Lean port of the training-time `layers.MultiheadAttention`, restricted
@@ -129,10 +122,10 @@ class MultiheadAttention(nn.Module):
             raise ValueError("embed_dim must be divisible by num_heads")
 
         # Linear projections (names match upstream so state_dict loads).
-        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
-        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
-        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
+        self.k_proj = Linear(embed_dim, embed_dim, bias=bias)
+        self.v_proj = Linear(embed_dim, embed_dim, bias=bias)
+        self.q_proj = Linear(embed_dim, embed_dim, bias=bias)
+        self.out_proj = Linear(embed_dim, embed_dim, bias=bias)
 
         # bias_k / bias_v: not used at inference (kept None so state_dict
         # loading doesn't complain about extra keys — the training code
@@ -145,10 +138,10 @@ class MultiheadAttention(nn.Module):
 
     def forward(
         self,
-        x: Tensor,
-        seq_id: Tensor,
-        pos_id: Tensor,
-    ) -> Tensor:
+        x: torch.Tensor,
+        seq_id: torch.Tensor,
+        pos_id: torch.Tensor,
+    ) -> torch.Tensor:
         """
         x: [B, L, D]
         seq_id: [B, L] (bool or int)
@@ -184,7 +177,7 @@ class MultiheadAttention(nn.Module):
         return out
 
 
-class ESM1LayerNorm(nn.Module):
+class ESM1LayerNorm(torch.nn.Module):
     """Layer norm with ESM1 initialization (affine=True by default).
 
     Default `hidden_size=2560` matches the 3B encoder's `embed_dim` /
@@ -199,13 +192,13 @@ class ESM1LayerNorm(nn.Module):
         self.eps = eps
         self.affine = bool(affine)
         if self.affine:
-            self.weight = nn.Parameter(torch.ones(hidden_size))
-            self.bias = nn.Parameter(torch.zeros(hidden_size))
+            self.weight = torch.nn.Parameter(torch.ones(hidden_size))
+            self.bias = torch.nn.Parameter(torch.zeros(hidden_size))
         else:
             self.weight = None
             self.bias = None
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         dims = tuple(-(i + 1) for i in range(len(self.hidden_size)))
         means = x.mean(dims, keepdim=True)
         x_zeromean = x - means
@@ -216,7 +209,7 @@ class ESM1LayerNorm(nn.Module):
         return x
 
 
-class TransformerLayer(nn.Module):
+class TransformerLayer(torch.nn.Module):
     """ESM2-style pre-LN transformer block with rotary attention.
 
     Defaults match the 3B encoder block (`embed_dim=2560`,
@@ -237,8 +230,8 @@ class TransformerLayer(nn.Module):
 
         self.self_attn = MultiheadAttention(embed_dim, attention_heads)
         self.self_attn_layer_norm = ESM1LayerNorm(embed_dim)
-        self.fc1 = nn.Linear(embed_dim, ffn_embed_dim)
-        self.fc2 = nn.Linear(ffn_embed_dim, embed_dim)
+        self.fc1 = Linear(embed_dim, ffn_embed_dim)
+        self.fc2 = Linear(ffn_embed_dim, embed_dim)
         self.final_layer_norm = ESM1LayerNorm(embed_dim)
 
     def forward(
