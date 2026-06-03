@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+from .nn import Embedding, Linear
 from .transformer_layers import ESM1LayerNorm, TransformerLayer
 
 # From main non-JEPA training path: non-foldseek uses 4 special tokens.
@@ -30,15 +31,15 @@ class ProteinNetEncoder(nn.Module):
         self.bb_vocab_size = bb_vocab_size
         self.fa_vocab_size = fa_vocab_size
 
-        self.seq_embedding = nn.Embedding(seq_vocab_size, embed_dim)
-        self.bb_embedding = nn.Embedding(bb_vocab_size, embed_dim)
-        self.fa_embedding = nn.Embedding(fa_vocab_size, embed_dim)
+        self.seq_embedding = Embedding(seq_vocab_size, embed_dim)
+        self.bb_embedding = Embedding(bb_vocab_size, embed_dim)
+        self.fa_embedding = Embedding(fa_vocab_size, embed_dim)
         self.fuse_layer = nn.Sequential(
-            nn.Linear(embed_dim * 3, embed_dim),
+            Linear(embed_dim * 3, embed_dim),
             ESM1LayerNorm(embed_dim),
         )
 
-        self.chain_embedding = nn.Embedding(100, embed_dim)
+        self.chain_embedding = Embedding(100, embed_dim)
 
         self.encoder = nn.ModuleList(
             [

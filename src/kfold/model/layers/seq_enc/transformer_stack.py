@@ -3,6 +3,7 @@ import math
 import torch
 
 from .blocks import TransformerBlock
+from .nn import LayerNorm
 
 
 class TransformerStack(torch.nn.Module):
@@ -34,7 +35,7 @@ class TransformerStack(torch.nn.Module):
                 for _ in range(n_layers)
             ]
         )
-        self.norm = torch.nn.LayerNorm(d_model, bias=False)
+        self.norm = LayerNorm(d_model, bias=False)
 
     def forward(
         self,

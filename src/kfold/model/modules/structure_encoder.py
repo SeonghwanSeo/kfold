@@ -43,10 +43,7 @@ class StructureEncoder(torch.nn.Module):
             Number of transformer layers.
         """
 
-        path: str | None = None
-        fa_tok_path: str | None = None
-        bb_tok_path: str | None = None
-        encoder_path: str | None = None
+        path: str
         chain_type: str = "protein"
         d_model: int = 2560
         n_layers: int = 33
@@ -59,26 +56,11 @@ class StructureEncoder(torch.nn.Module):
 
         # Create model components
         # TODO: replace to hf hub link.
-        if cfg.path is not None:
-            self.bb_tok = BackboneTokenizer().to(torch.bfloat16)
-            self.fa_tok = FullAtomTokenizer().to(torch.bfloat16)
-            self.encoder = ProteinNetEncoder().to(torch.bfloat16)
-            state_dict = torch.load(cfg.path, map_location="cpu")
-            self.load_state_dict(state_dict, strict=True)
-        else:
-            if cfg.fa_tok_path is None:
-                raise ValueError("fa_tok_path must be provided if path is not provided.")
-            if cfg.bb_tok_path is None:
-                raise ValueError("bb_tok_path must be provided if path is not provided.")
-            if cfg.encoder_path is None:
-                raise ValueError("encoder_path must be provided if path is not provided.")
-            self.bb_tok = BackboneTokenizer.from_pretrained(cfg.bb_tok_path)
-            self.fa_tok = FullAtomTokenizer.from_pretrained(cfg.fa_tok_path)
-            self.encoder = ProteinNetEncoder.from_pretrained(cfg.encoder_path)
-            # Set to bfloat16
-            self.bb_tok = self.bb_tok.to(torch.bfloat16)
-            self.fa_tok = self.fa_tok.to(torch.bfloat16)
-            self.encoder = self.encoder.to(torch.bfloat16)
+        self.bb_tok = BackboneTokenizer().to(torch.bfloat16)
+        self.fa_tok = FullAtomTokenizer().to(torch.bfloat16)
+        self.encoder = ProteinNetEncoder().to(torch.bfloat16)
+        state_dict = torch.load(cfg.path, map_location="cpu")
+        self.load_state_dict(state_dict, strict=True)
 
         # Set to eval mode
         self.eval()

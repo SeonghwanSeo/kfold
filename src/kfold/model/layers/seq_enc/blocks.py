@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from .attention import MultiHeadAttention
 from .moe import MoEFFN
+from .nn import LayerNorm, Linear
 
 
 class SwiGLU(nn.Module):
@@ -47,10 +48,10 @@ class TransformerBlock(nn.Module):
         else:
             d_ffn = swiglu_correction_fn(expansion_ratio, d_model)
             self.ffn = nn.Sequential(
-                nn.LayerNorm(d_model),
-                nn.Linear(d_model, d_ffn * 2, bias=False),
+                LayerNorm(d_model),
+                Linear(d_model, d_ffn * 2, bias=False),
                 SwiGLU(),
-                nn.Linear(d_ffn, d_model, bias=False),
+                Linear(d_ffn, d_model, bias=False),
             )
         self.scaling_factor: float = residue_scaling_factor
 

@@ -316,7 +316,7 @@ def compute_has_clash(
             ni, nj = chain_i.shape[0], chain_j.shape[0]
             if ni == 0 or nj == 0:
                 continue
-            d = (chain_i[:, None, :] - chain_j[None, :, :]).norm(-1)
+            d = (chain_i[:, None, :] - chain_j[None, :, :]).norm(dim=-1)
             n_clash = (d < threshold).sum().item()
             if n_clash > max_clash_num:
                 return True

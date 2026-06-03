@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from .nn import LayerNorm, Linear
 from .rotary import RotaryEmbedding
 
 
@@ -15,12 +16,12 @@ class MultiHeadAttention(nn.Module):
         self.d_head: int = self.d_model // self.n_heads
 
         self.layernorm_qkv = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_model * 3, bias=False),
+            LayerNorm(d_model),
+            Linear(d_model, d_model * 3, bias=False),
         )
-        self.q_ln = nn.LayerNorm(d_model, bias=False)
-        self.k_ln = nn.LayerNorm(d_model, bias=False)
-        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_ln = LayerNorm(d_model, bias=False)
+        self.k_ln = LayerNorm(d_model, bias=False)
+        self.out_proj = Linear(d_model, d_model, bias=False)
 
         # Assume max sequence length of 20k, which is sufficient for most sequences.
         self.rotary = RotaryEmbedding(self.d_head, max_seqlen=20000)
