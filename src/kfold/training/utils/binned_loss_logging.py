@@ -79,6 +79,52 @@ def _per_bin_update(
         metrics[f"{label}__{name}"].update(m, c)
 
 
+def _as_batch_vector(
+    values: torch.Tensor,
+    *,
+    batch_size: int,
+    name: str,
+) -> torch.Tensor:
+    """Return values as a [B] tensor, broadcasting scalar losses if needed."""
+    if values.ndim == 0:
+        return values.reshape(1).expand(batch_size)
+    if values.ndim == 1 and values.shape[0] == batch_size:
+        return values
+    if values.ndim == 1 and values.shape[0] == 1:
+        return values.expand(batch_size)
+    raise ValueError(
+        f"{name} must be scalar or shape [B], got shape {tuple(values.shape)} "
+        f"for batch size {batch_size}."
+    )
+
+
+def _total_loss_per_sample(
+    *,
+    diffusion_per_sample: dict[str, torch.Tensor],
+    distogram_loss_per_batch: torch.Tensor,
+    loss_weights: dict[str, float],
+) -> torch.Tensor:
+    """Compute weighted total loss with shape [B, Nsample]."""
+    diffusion_weight = float(loss_weights["diffusion"])
+    distogram_weight = float(loss_weights["distogram"])
+    diffusion_term = diffusion_per_sample["diffusion_loss"] * diffusion_weight  # [B, N]
+    if diffusion_term.ndim < 2:
+        raise ValueError(
+            "diffusion_per_sample['diffusion_loss'] must have shape [B, Nsample], "
+            f"got shape {tuple(diffusion_term.shape)}."
+        )
+    batch_size = int(diffusion_term.shape[0])
+    disto_term = (
+        _as_batch_vector(
+            distogram_loss_per_batch,
+            batch_size=batch_size,
+            name="distogram_loss_per_batch",
+        )
+        * distogram_weight
+    )  # [B]
+    return diffusion_term + disto_term[:, None]
+
+
 class TimeBinnedLossLogger(torch.nn.Module):
     """
     Epoch-level aggregation of losses by normalized diffusion time u∈[0,1].
@@ -129,13 +175,11 @@ class TimeBinnedLossLogger(torch.nn.Module):
                 self.metrics, self.labels, name, values, bin_index, self.nbins
             )
 
-        diffusion_weight = float(loss_weights["diffusion"])
-        distogram_weight = float(loss_weights["distogram"])
-        disto_term = distogram_loss_per_batch * distogram_weight  # [B]
-        diffusion_term = (
-            diffusion_per_sample["diffusion_loss"] * diffusion_weight
-        )  # [B, N]
-        total_per_sample = diffusion_term + disto_term[:, None]
+        total_per_sample = _total_loss_per_sample(
+            diffusion_per_sample=diffusion_per_sample,
+            distogram_loss_per_batch=distogram_loss_per_batch,
+            loss_weights=loss_weights,
+        )
         _per_bin_update(
             self.metrics,
             self.labels,
@@ -220,13 +264,11 @@ class EntityBinnedLossLogger(torch.nn.Module):
                 self.metrics, self.labels, name, values, bin_index, self.nbins
             )
 
-        diffusion_weight = float(loss_weights["diffusion"])
-        distogram_weight = float(loss_weights["distogram"])
-        disto_term = distogram_loss_per_batch * distogram_weight  # [B]
-        diffusion_term = (
-            diffusion_per_sample["diffusion_loss"] * diffusion_weight
-        )  # [B, N]
-        total_per_sample = diffusion_term + disto_term[:, None]
+        total_per_sample = _total_loss_per_sample(
+            diffusion_per_sample=diffusion_per_sample,
+            distogram_loss_per_batch=distogram_loss_per_batch,
+            loss_weights=loss_weights,
+        )
         _per_bin_update(
             self.metrics,
             self.labels,

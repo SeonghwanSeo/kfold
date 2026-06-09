@@ -5,6 +5,7 @@ import torch
 from torchmetrics import MeanMetric
 
 from kfold.training.training_module import (
+    KFoldTrainingModule,
     _get_diffusion_time_for_binning,
     _get_structure_module_for_binning,
 )
@@ -134,6 +135,26 @@ def test_time_binned_loss_logger_updates_with_ecsi_style_t():
     assert torch.isclose(out["train_time_bin/loss_interval10"], torch.tensor(6.0))
 
 
+def test_time_binned_loss_logger_broadcasts_scalar_distogram_loss():
+    logger = TimeBinnedLossLogger(TimeBinConfig(enabled=True, width=0.1))
+    structure_module = SimpleNamespace(time_min=0.0, time_max=1.0)
+
+    logger.update(
+        t_hat=torch.tensor([[0.05, 0.15]]),
+        structure_module=structure_module,
+        diffusion_per_sample={
+            "mse_loss": torch.tensor([[1.0, 3.0]]),
+            "diffusion_loss": torch.tensor([[2.0, 4.0]]),
+        },
+        distogram_loss_per_batch=torch.tensor(10.0),
+        loss_weights={"diffusion": 1.0, "distogram": 0.5},
+    )
+
+    out = logger.flush()
+    assert torch.isclose(out["train_time_bin/loss_interval1"], torch.tensor(7.0))
+    assert torch.isclose(out["train_time_bin/loss_interval2"], torch.tensor(9.0))
+
+
 def test_entity_binned_loss_logger_does_not_require_diffusion_time():
     logger = EntityBinnedLossLogger(EntityBinConfig(enabled=True, nbins=10))
     f_input = SimpleNamespace(
@@ -156,3 +177,51 @@ def test_entity_binned_loss_logger_does_not_require_diffusion_time():
     out = logger.flush()
     assert torch.isclose(out["train_entity_bin/mse_loss_interval2"], torch.tensor(2.0))
     assert torch.isclose(out["train_entity_bin/loss_interval2"], torch.tensor(3.0))
+
+
+def test_entity_binned_loss_logger_broadcasts_scalar_distogram_loss():
+    logger = EntityBinnedLossLogger(EntityBinConfig(enabled=True, nbins=10))
+    f_input = SimpleNamespace(
+        token=SimpleNamespace(
+            asym_id=torch.tensor([[1, 1, 2]]),
+            pad_mask=torch.tensor([[True, True, True]]),
+        )
+    )
+
+    logger.update(
+        f_input=f_input,
+        diffusion_per_sample={
+            "mse_loss": torch.tensor([[1.0, 3.0]]),
+            "diffusion_loss": torch.tensor([[2.0, 4.0]]),
+        },
+        distogram_loss_per_batch=torch.tensor(10.0),
+        loss_weights={"diffusion": 1.0, "distogram": 0.5},
+    )
+
+    out = logger.flush()
+    assert torch.isclose(out["train_entity_bin/loss_interval2"], torch.tensor(8.0))
+
+
+def test_compute_distogram_loss_caches_per_batch_loss_for_binned_logging():
+    class FakeDistogramLoss:
+        def __call__(self, logits, f_input):
+            return torch.tensor([1.0, 3.0], device=logits.device)
+
+    module = KFoldTrainingModule.__new__(KFoldTrainingModule)
+    module.distogram_loss = FakeDistogramLoss()
+    module._binned_cache_enabled = True
+    module.train_diffusion_head = True
+    module._timebin_last_distogram_loss_per_batch = None
+
+    loss, metrics = KFoldTrainingModule.compute_distogram_loss(
+        module,
+        logits=torch.empty(2, 1, 1, 1),
+        f_input=SimpleNamespace(),
+    )
+
+    assert torch.isclose(loss, torch.tensor(2.0))
+    assert torch.isclose(metrics["distogram_loss"], torch.tensor(2.0))
+    assert torch.equal(
+        module._timebin_last_distogram_loss_per_batch,
+        torch.tensor([1.0, 3.0]),
+    )

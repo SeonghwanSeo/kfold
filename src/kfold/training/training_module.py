@@ -547,10 +547,6 @@ class KFoldTrainingModule(pl.LightningModule):
         )
         all_metrics["loss"] = loss.detach()
 
-        if self._binned_cache_enabled and self.train_diffusion_head:
-            # Used to compute per-time-bin total loss without recomputing distogram head.
-            self._timebin_last_distogram_loss_per_batch = distogram_loss.detach()
-
         return loss, all_metrics
 
     def validation_step(
@@ -731,8 +727,11 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
-        loss = self.distogram_loss(logits, f_input).mean()
+        loss_per_batch = self.distogram_loss(logits, f_input)
+        loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
+        if self._binned_cache_enabled and self.train_diffusion_head:
+            self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
         return loss, metrics
 
     def compute_diffusion_loss(
