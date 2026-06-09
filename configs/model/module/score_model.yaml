@@ -6,6 +6,8 @@ channel_z: 256
 channel_atom: 128
 channel_atompair: 16
 channel_coords: 3
+separate_endpoint_atom_encoder: false
+endpoint_branch_dropout: 0.0
 atom_encoder_blocks: 3
 atom_encoder_heads: 4
 token_transformer_blocks: 12
