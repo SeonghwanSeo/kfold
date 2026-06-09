@@ -34,15 +34,26 @@ def _entitybin_labels(nbins: int) -> list[str]:
 def _get_time_bounds(structure_module: Any) -> tuple[float, float]:
     """Return (t_min, t_max) bounds used for u-normalization.
 
-    - ECSI: sampling_time_min/max are already in [0, 1].
+    - ECSI: time_min/max are already in [0, 1].
+    - Legacy/config-wrapped ECSI: sampling.time_min/max are already in [0, 1].
     - EDM/AF3/Boltz-style: sigma_min/max are relative and typically scaled by sigma_data.
     """
     if hasattr(structure_module, "sampling"):
         t_min = float(structure_module.sampling.time_min)
         t_max = float(structure_module.sampling.time_max)
-    else:
+    elif hasattr(structure_module, "time_min") and hasattr(structure_module, "time_max"):
+        t_min = float(structure_module.time_min)
+        t_max = float(structure_module.time_max)
+    elif hasattr(structure_module, "sigma_min") and hasattr(
+        structure_module, "sigma_max"
+    ):
         t_min = float(structure_module.sigma_min)
         t_max = float(structure_module.sigma_max)
+    else:
+        raise AttributeError(
+            "structure_module must expose either sampling.time_min/time_max, "
+            "time_min/time_max, or sigma_min/sigma_max for time-binned logging."
+        )
     if hasattr(structure_module, "sigma_data") and t_max > 1.0:
         sigma_data = float(structure_module.sigma_data)
         t_min *= sigma_data
@@ -141,6 +152,8 @@ class TimeBinnedLossLogger(torch.nn.Module):
 
         out: dict[str, torch.Tensor] = {}
         for key, m in self.metrics.items():
+            if float(m.weight.item()) <= 0.0:
+                continue
             v = m.compute()
             if not v.isfinite().all():
                 continue
@@ -229,6 +242,8 @@ class EntityBinnedLossLogger(torch.nn.Module):
 
         out: dict[str, torch.Tensor] = {}
         for key, m in self.metrics.items():
+            if float(m.weight.item()) <= 0.0:
+                continue
             v = m.compute()
             if not v.isfinite().all():
                 continue

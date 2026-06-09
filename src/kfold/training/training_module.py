@@ -112,6 +112,19 @@ class TrainingConfig(_Config):
     log_entity_binned_losses: bool = False
 
 
+def _get_diffusion_time_for_binning(
+    diffusion_out: dict[str, Any],
+) -> torch.Tensor | None:
+    """Return the diffusion time tensor used by generic time-bin logging."""
+    t_hat = diffusion_out.get("t_hat")
+    if torch.is_tensor(t_hat):
+        return t_hat
+    t = diffusion_out.get("t")
+    if torch.is_tensor(t):
+        return t
+    return None
+
+
 @dataclasses.dataclass(kw_only=True)
 class ValidationConfig(_Config):
     """Validation step configuration."""
@@ -418,20 +431,17 @@ class KFoldTrainingModule(pl.LightningModule):
             loss, metrics = self.compute_losses(batch, out)
 
         if self._binned_cache_enabled and self.train_diffusion_head:
-            t_hat = out.get("diffusion", {}).get("t_hat", None)
+            diffusion_out = out.get("diffusion", {})
+            t_for_bins = _get_diffusion_time_for_binning(diffusion_out)
             diffusion_per_sample = self._timebin_last_diffusion_per_sample
             distogram_loss_per_batch = self._timebin_last_distogram_loss_per_batch
 
             # These caches are populated inside compute_losses/compute_diffusion_loss.
             # Skip if anything is missing for this batch.
-            if (
-                torch.is_tensor(t_hat)
-                and diffusion_per_sample is not None
-                and distogram_loss_per_batch is not None
-            ):
-                if self._timebin_enabled:
+            if diffusion_per_sample is not None and distogram_loss_per_batch is not None:
+                if self._timebin_enabled and torch.is_tensor(t_for_bins):
                     self.time_binned_logger.update(
-                        t_hat=t_hat,
+                        t_hat=t_for_bins,
                         structure_module=self.model.structure_module,
                         diffusion_per_sample=diffusion_per_sample,
                         distogram_loss_per_batch=distogram_loss_per_batch,
