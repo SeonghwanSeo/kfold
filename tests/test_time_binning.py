@@ -1,9 +1,13 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torchmetrics import MeanMetric
 
-from kfold.training.training_module import _get_diffusion_time_for_binning
+from kfold.training.training_module import (
+    _get_diffusion_time_for_binning,
+    _get_structure_module_for_binning,
+)
 from kfold.training.utils.binned_loss_logging import (
     EntityBinConfig,
     EntityBinnedLossLogger,
@@ -80,6 +84,29 @@ def test_get_diffusion_time_for_binning_prefers_t_hat_and_falls_back_to_t():
     assert _get_diffusion_time_for_binning({"t_hat": t_hat, "t": t}) is t_hat
     assert _get_diffusion_time_for_binning({"t": t}) is t
     assert _get_diffusion_time_for_binning({}) is None
+
+
+def test_get_structure_module_for_binning_prefers_kfold_diffusion_head():
+    diffusion_head = SimpleNamespace(time_min=0.0, time_max=1.0)
+    legacy_structure_module = SimpleNamespace(time_min=0.1, time_max=0.9)
+    model = SimpleNamespace(
+        diffusion_head=diffusion_head,
+        structure_module=legacy_structure_module,
+    )
+
+    assert _get_structure_module_for_binning(model) is diffusion_head
+
+
+def test_get_structure_module_for_binning_supports_legacy_structure_module():
+    structure_module = SimpleNamespace(time_min=0.0, time_max=1.0)
+    model = SimpleNamespace(structure_module=structure_module)
+
+    assert _get_structure_module_for_binning(model) is structure_module
+
+
+def test_get_structure_module_for_binning_raises_for_unknown_model_shape():
+    with pytest.raises(AttributeError, match="diffusion_head or structure_module"):
+        _get_structure_module_for_binning(SimpleNamespace())
 
 
 def test_time_binned_loss_logger_updates_with_ecsi_style_t():

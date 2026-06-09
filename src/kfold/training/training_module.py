@@ -125,6 +125,22 @@ def _get_diffusion_time_for_binning(
     return None
 
 
+def _get_structure_module_for_binning(model: Any) -> Any:
+    """Return the structure module that defines time/sigma bounds for binning."""
+    diffusion_head = getattr(model, "diffusion_head", None)
+    if diffusion_head is not None:
+        return diffusion_head
+
+    structure_module = getattr(model, "structure_module", None)
+    if structure_module is not None:
+        return structure_module
+
+    raise AttributeError(
+        "Model must expose either diffusion_head or structure_module for "
+        "time-binned loss logging."
+    )
+
+
 @dataclasses.dataclass(kw_only=True)
 class ValidationConfig(_Config):
     """Validation step configuration."""
@@ -442,7 +458,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 if self._timebin_enabled and torch.is_tensor(t_for_bins):
                     self.time_binned_logger.update(
                         t_hat=t_for_bins,
-                        structure_module=self.model.structure_module,
+                        structure_module=_get_structure_module_for_binning(self.model),
                         diffusion_per_sample=diffusion_per_sample,
                         distogram_loss_per_batch=distogram_loss_per_batch,
                         loss_weights=self.loss_weights,
