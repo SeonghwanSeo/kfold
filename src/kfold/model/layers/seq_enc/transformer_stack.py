@@ -3,6 +3,7 @@ import math
 import torch
 
 from .blocks import TransformerBlock
+from .nn import LayerNorm
 
 
 class TransformerStack(torch.nn.Module):
@@ -34,21 +35,17 @@ class TransformerStack(torch.nn.Module):
                 for _ in range(n_layers)
             ]
         )
-        self.norm = torch.nn.LayerNorm(d_model, bias=False)
+        self.norm = LayerNorm(d_model, bias=False)
 
     def forward(
         self,
         x: torch.Tensor,
         seq_id: torch.Tensor,
         pos_id: torch.Tensor,
-    ) -> tuple[
-        torch.Tensor, list[torch.Tensor], list[torch.Tensor]
-    ]:  # hidden states, attentions
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:  # hidden states, attentions
         hidden_states: list[torch.Tensor] = []
-        attentions: list[torch.Tensor] = []
         for block in self.blocks:
-            x, attn = block(x, seq_id, pos_id)
-            hidden_states.append(x.clone())
-            attentions.append(attn)
+            x = block(x, seq_id, pos_id)
+            hidden_states.append(x)
         x = self.norm(x)
-        return x, hidden_states, attentions
+        return x, hidden_states

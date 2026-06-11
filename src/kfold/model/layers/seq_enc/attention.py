@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from .nn import LayerNorm, Linear
 from .rotary import RotaryEmbedding
 
 
@@ -15,12 +16,12 @@ class MultiHeadAttention(nn.Module):
         self.d_head: int = self.d_model // self.n_heads
 
         self.layernorm_qkv = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_model * 3, bias=False),
+            LayerNorm(d_model),
+            Linear(d_model, d_model * 3, bias=False),
         )
-        self.q_ln = nn.LayerNorm(d_model, bias=False)
-        self.k_ln = nn.LayerNorm(d_model, bias=False)
-        self.out_proj = nn.Linear(d_model, d_model, bias=False)
+        self.q_ln = LayerNorm(d_model, bias=False)
+        self.k_ln = LayerNorm(d_model, bias=False)
+        self.out_proj = Linear(d_model, d_model, bias=False)
 
         # Assume max sequence length of 20k, which is sufficient for most sequences.
         self.rotary = RotaryEmbedding(self.d_head, max_seqlen=20000)
@@ -30,7 +31,7 @@ class MultiHeadAttention(nn.Module):
         x: torch.Tensor,
         seq_id: torch.Tensor,
         pos_id: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> torch.Tensor:
         """Forward pass of multi-head attention.
 
         Parameters
@@ -46,8 +47,6 @@ class MultiHeadAttention(nn.Module):
         -------
         out: torch.Tensor
             Output tensor of shape (*, L, D).
-        attn_weights: torch.Tensor | None
-            Attention weights of shape (*, H, L, L), where H is number of heads.
         """
         H, Dh = self.n_heads, self.d_head
 
@@ -66,13 +65,9 @@ class MultiHeadAttention(nn.Module):
         attn_mask = attn_mask.unsqueeze(-3)  # [B, 1, L, L]
 
         # [B, H, L, Dh] @ [B, H, Dh, L] -> [B, H, L, L]
-        q *= Dh**-0.5  # Scale query by sqrt(d_head)
-        attn_weights = torch.matmul(q, k.transpose(-2, -1))  # [*, H, L, L]
-        attn_weights.masked_fill_(~attn_mask, float("-inf"))
-        attn_weights = F.softmax(attn_weights, dim=-1).to(v.dtype)
-        out = torch.matmul(attn_weights, v)  # [*, H, L, Dh]
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
 
         # [*, H, L, Dh] -> [*, L, H, Dh] -> [*, L, D]
         out = out.transpose(-2, -3).flatten(-2)
         out = self.out_proj(out)
-        return out, attn_weights
+        return out

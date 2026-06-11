@@ -21,9 +21,9 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives.utils import expand_dim
 from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
 from kfold.utils.geometry.rigid_align import get_rigid_transform_torch
-from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
+from kfold.utils.registry import STRUCTURE_MODULE
 
-from .base import BaseStructureModule
+from .sample_diffusion import BaseStructureModule
 from .score_model import DiffusionModule
 
 RIGID_ALIGN = 0  # conduct centering ; kabsch align
@@ -140,7 +140,7 @@ class KFoldECSI(BaseStructureModule):
     to EDM with churn & ODE formulation.
     """
 
-    class Config(BaseConfig):
+    class Config(BaseStructureModule.Config):
         """Configuration for the ECSI structure module.
 
         Parameters
@@ -353,8 +353,7 @@ class KFoldECSI(BaseStructureModule):
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         diffusion_batch_size: int,
     ) -> dict[str, torch.Tensor]:
         """Perform a single training step for the structure module.
@@ -374,8 +373,7 @@ class KFoldECSI(BaseStructureModule):
             t=t,  # [B, N]
             f_input=f_input,
             s_inputs=s_inputs,  # [B, Lt, c_s]
-            s_trunk=s_trunk,  # [B, Lt, c_s]
-            z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
+            z=z,  # [B, Lt, Lt, c_z]
             x_T=x_T,  # [B, N, Natom, 3]
         )  # [B, N, Natom, 3]
 
@@ -396,8 +394,7 @@ class KFoldECSI(BaseStructureModule):
         t: torch.Tensor,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         x_T: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
@@ -413,9 +410,7 @@ class KFoldECSI(BaseStructureModule):
             FoldingInput object containing model inputs.
         s_inputs : torch.Tensor
             Input sequence embeddings. Shape (B, L, c_s).
-        s_trunk : torch.Tensor
-            Trunk sequence embeddings. Shape (B, L, c_s).
-        z_trunk : torch.Tensor
+        z : torch.Tensor
             Trunk pairwise embeddings. Shape (B, L, L, c_z).
         x_T : torch.Tensor | None
             Source (apo) coordinates x_T. Shape (B, N, L, 3).
@@ -442,8 +437,7 @@ class KFoldECSI(BaseStructureModule):
             r_noisy=r_noisy,  # [B, N, Natom, 6]
             c_noise=c_noise,  # [B, N]
             s_inputs=s_inputs,  # [B, Lt, c_s]
-            s_trunk=s_trunk,  # [B, Lt, c_s]
-            z_trunk=z_trunk,  # [B, Lt, Lt, c_z]
+            z=z,  # [B, Lt, Lt, c_z]
         )
 
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
@@ -549,8 +543,7 @@ class KFoldECSI(BaseStructureModule):
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
-        s_trunk: torch.Tensor,
-        z_trunk: torch.Tensor,
+        z: torch.Tensor,
         num_steps: int = 200,
         num_samples: int = 1,
         chunk_size: int | None = None,
@@ -581,14 +574,13 @@ class KFoldECSI(BaseStructureModule):
         mask = f_input.atom.pad_mask[..., None, :]  # (B, 1, Natom)
 
         # Compute time-independent variables
-        z = model.get_pair_conditioning(f_input, z_trunk)
-        q, c, p = model.get_atom_embeddings(f_input, s_trunk, z)
+        z = model.get_pair_conditioning(f_input, z)
+        q, c, p = model.get_atom_embeddings(f_input, z)
         pair_bias = model.get_pair_bias(z)
-        del z_trunk, z  # Free up memory for large LxL tensors
 
         def run_step(x_t: torch.Tensor, t: float) -> torch.Tensor:
             c_noise = torch.tensor(self.c_noise(t), device=s_inputs.device)
-            s = model.get_single_conditioning(s_inputs, s_trunk, c_noise.view(1, 1))
+            s = model.get_single_conditioning(s_inputs, c_noise.view(1, 1))
             return self.inference_step(
                 f_input, x_t, x_T, t, q, c, p, s, pair_bias, chunk_size
             )

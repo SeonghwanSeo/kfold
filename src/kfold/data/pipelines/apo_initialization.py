@@ -60,13 +60,14 @@ class ApoInitializerConfig:
     perturbation: ProteinPerturbationConfig | None = None
 
     @classmethod
-    def inference_mode(cls, *args, **kwargs) -> Self:
+    def inference_mode(cls, use_perturbation: bool = False) -> Self:
         """Get ApoSampler instance for inference mode.
 
         Accepts and ignores any additional positional or keyword arguments
         for backward/forward compatibility.
         """
-        return cls(prob_perturbation=0.0)
+        prob_perturbation = 1.0 if use_perturbation else 0.0
+        return cls(prob_perturbation=prob_perturbation)
 
 
 class ApoInitializer:
@@ -102,13 +103,13 @@ class ApoInitializer:
         self.logger = logging.getLogger("ApoInitializer")
 
     @classmethod
-    def inference_mode(cls, *args, **kwargs) -> Self:
+    def inference_mode(cls, use_perturbation: bool = False) -> Self:
         """Get ApoInitializer instance for inference mode.
 
         Accepts and ignores any additional positional or keyword arguments
         for backward/forward compatibility.
         """
-        return cls(ApoInitializerConfig.inference_mode(*args, **kwargs))
+        return cls(ApoInitializerConfig.inference_mode(use_perturbation))
 
     def __call__(
         self,

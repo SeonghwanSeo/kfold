@@ -38,7 +38,6 @@ class InputFeatureEmbedder(torch.nn.Module):
         super().__init__()
 
         self.embedder = AtomEmbedder(
-            channel_s=channel_s,
             channel_z=None,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,

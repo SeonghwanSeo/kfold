@@ -14,7 +14,7 @@ from kfold.inference.pl_client import (
     KFoldPredictionWriter,
 )
 from kfold.inference.query import Query, parse_input_files
-from kfold.model.models import KFold
+from kfold.model import KFold
 
 logger = logging.getLogger("kfold.inference")
 logging.basicConfig(
@@ -94,14 +94,6 @@ def parse_args():
         help="Number of samples to generate per input.",
     )
     parser.add_argument(
-        "--use_sequence_masking",
-        action="store_true",
-        help=(
-            "Whether to mask sequence to increase sampling diversity."
-            "This is only meaningful when using multiple seeds"
-        ),
-    )
-    parser.add_argument(
         "--ccd",
         type=pathlib.Path,
         default=pathlib.Path(
@@ -165,9 +157,7 @@ def main():
     log_info(f"Predict total {nsample} samples: {nquery} inputs x {nseed} seeds.")
 
     # Create dataloader
-    dataset = InferenceDataset(
-        input_queries, ccd, args.num_samples, args.use_sequence_masking
-    )
+    dataset = InferenceDataset(input_queries, ccd, args.num_samples)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )
@@ -200,7 +190,6 @@ def main():
     model: KFold = KFold.from_checkpoint(
         args.config, args.checkpoint, override_args=args.override
     )
-    model = model.eval().cuda()
     log_info("Model loaded successfully.")
 
     # === Run inference ===

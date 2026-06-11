@@ -5,5 +5,5 @@ from . import (
     sequence_encoder,
     structure,
     structure_encoder,
-    trunk,
+    tri_stack,
 )

@@ -38,6 +38,7 @@ data:
   ccd_path: <CCD_PATH_PLACEHOLDER>
 
   # Datasets
+  data_root: <DATA_ROOT_PLACEHOLDER>
   train_datasets: []
   val_datasets: []
 
@@ -68,8 +69,7 @@ trainer:
 training:
   # Training step hyperparameters
   train_trunk: true
-  train_distogram_head: true
-  train_structure_module: true
+  train_diffusion_head: true
   train_confidence_head: true
 
   num_recycles: 3

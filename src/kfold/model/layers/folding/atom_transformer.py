@@ -22,7 +22,6 @@ class AtomEmbedder(nn.Module):
 
     def __init__(
         self,
-        channel_s: int,
         channel_z: int | None,
         channel_atom: int,
         channel_atompair: int,
@@ -32,8 +31,6 @@ class AtomEmbedder(nn.Module):
 
         Parameters
         ----------
-        channel_s : int
-            The single representation dimension.
         channel_z : int | None
             The pair representation dimension.
         channel_atom : int
@@ -66,10 +63,6 @@ class AtomEmbedder(nn.Module):
             assert channel_z is not None, (
                 "channel_z must be provided if use_structure is True"
             )
-            self.linear_s_to_c = nn.Sequential(
-                LayerNorm(channel_s, create_offset=False),
-                LinearNoBias(channel_s, channel_atom, init="final", precision=32),
-            )
             self.linear_z_to_p = nn.Sequential(
                 LayerNorm(channel_z, create_offset=False),
                 LinearNoBias(channel_z, channel_atompair, init="final", precision=32),
@@ -97,7 +90,6 @@ class AtomEmbedder(nn.Module):
     def forward(
         self,
         f_input: FoldingInput,
-        s_trunk: torch.Tensor | None = None,
         z: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of the atom attention input embedder.
@@ -111,10 +103,6 @@ class AtomEmbedder(nn.Module):
         ----------
         f_input : FoldingInput
             The folding input.
-        local_attn_index : LocalAttentionIndex
-            The local attention indexer for atom attention.
-        s_trunk : torch.Tensor | None
-            The trunk single representation, shape [B, Lt, c_s].
         z : torch.Tensor | None
             The pair conditioning, shape [B, Lt, c_z].
 
@@ -132,31 +120,28 @@ class AtomEmbedder(nn.Module):
         """
         to_qk = build_atom_to_qk_fn(f_input.num_atoms, f_input.device)
 
-        # Line 1: Initialize single conditioning
+        # Initialize single conditioning
         c = self.embed_atom(f_input)  # [B, La, c_atom]
 
-        # Line 2-6, Initialize pair representation
+        # Initialize pair representation
         # [B, W, Lq, Lk, c_atompair]
         p = self.embed_atom_pairs(f_input, to_qk)
 
-        # LIne 7: Initialize atom single representation
+        # Initialize atom single representation
         q = c  # [B, La, c_atom]
 
         # Add trunk embedding and noise position
         if self.use_structure:
-            assert s_trunk is not None and z is not None
+            assert z is not None
             token_index = f_input.atom.token_index  # [B, La]
-            # Line 9-10
-            c = c + self.get_trunk_single_representation(s_trunk, token_index)
             p = p + self.get_trunk_pair_conditioning(z, token_index, to_qk)
         else:
-            assert s_trunk is None and z is None
+            assert z is None
 
-        # Line 13: Add atom-wise contributions to pair representation
+        # Add atom-wise contributions to pair representation
         c_q, c_k = to_qk(c, -2)  # [B, W, Lq|Lk, c_atom]
         p = p + self.linear_query(c_q)[..., :, None, :]
         p = p + self.linear_key(c_k)[..., None, :, :]
-        # Line 14
         p = p + self.mlp_pair(p)  # [*, W, Lq, Lk, c_atompair]
 
         return q, c, p
@@ -203,28 +188,6 @@ class AtomEmbedder(nn.Module):
         p = p + self.embed_ref_mask(v)
         p = p * v
         return p
-
-    def get_trunk_single_representation(
-        self,
-        s_trunk: torch.Tensor,
-        token_index: torch.Tensor,
-    ) -> torch.Tensor:
-        """Add trunk single embedding to atom single conditioning.
-
-        Parameters
-        ----------
-        s_trunk: torch.Tensor
-            The trunk single representation, shape [*, Lt, c_s].
-        token_index: torch.Tensor
-            The token index for each atom, shape [*, La].
-
-        Returns
-        -------
-        c: torch.Tensor
-            The updated atom single conditioning, shape [*, La, c_atom].
-        """
-        cond = self.linear_s_to_c(s_trunk.float())  # [*, Lt, c_atom]
-        return broadcast_tokens_to_atoms(cond, token_index)  # [*, La, c_atom]
 
     def get_trunk_pair_conditioning(
         self,
@@ -372,15 +335,15 @@ class AtomAttentionEncoder(nn.Module):
         else:
             assert r_noisy is None, "r_noisy must be None if use_structure is False"
 
-        # Line 15: Run Transformer
+        # Run Transformer
         q = self.transformer(q, c, p, mask)
 
-        # Line 16: Aggregate atom representations to token representations
+        # Aggregate atom representations to token representations
         # [*, La, c_atom] -> [*, Lt, c_token]
         q_to_a = self.relu(self.linear_q_to_a(q))  # [*, La, c_token]
         a = aggregate_atoms_to_tokens(q_to_a, token_index, mask, num_tokens=num_tokens)
 
-        # Line 17: Save skip connections for decoder
+        # Save skip connections for decoder
         q_skip, c_skip, p_skip = q, c, p
         return a, q_skip, c_skip, p_skip
 
@@ -458,15 +421,15 @@ class AtomAttentionDecoder(nn.Module):
         r_update : torch.Tensor
             The atom position updates, shape [*, La, 3].
         """
-        # Line 1: Convert token representation to atom representation
+        # Convert token representation to atom representation
         a_to_q = self.linear_a_to_q(a)  # [*, Lt, c_atom]
         q = broadcast_tokens_to_atoms(a_to_q, token_index)  # -> [*, La, c_atom]
         # Skip-connection
         q = q + q_skip  # [*, La, c_atom]
 
-        # Line 2: Run Transformer
+        #  Run Transformer
         q = self.transformer(q, c_skip, p_skip, mask)
 
-        # Line 3: Project atom representation to updated coordinates
+        # Project atom representation to updated coordinates
         r_update = self.linear_q_to_r(self.layernorm_q(q.float()))  # [*, N, La, 3]
         return r_update

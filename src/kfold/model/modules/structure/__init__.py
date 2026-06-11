@@ -3,7 +3,7 @@
 import importlib
 from pathlib import Path
 
-from .base import BaseStructureModule
+from .sample_diffusion import BaseStructureModule
 
 # Get all Python module names in current directory
 _package_dir = Path(__file__).parent

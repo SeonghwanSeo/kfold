@@ -36,7 +36,7 @@ class InputEmbedder(torch.nn.Module):
         """
 
         channel_s: int = 384
-        channel_z: int = 128
+        channel_z: int = 256
         channel_atom: int = 128
         channel_atompair: int = 16
         atom_encoder_blocks: int = 3
@@ -68,7 +68,6 @@ class InputEmbedder(torch.nn.Module):
         )
 
         # Initial linear layers for single and pair representations
-        self.linear_s_init = LinearNoBias(cfg.channel_s, cfg.channel_s)
         self.linear_z_init1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         self.linear_z_init2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
@@ -100,7 +99,7 @@ class InputEmbedder(torch.nn.Module):
         self,
         f_input: FoldingInput,
         **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of embedding module.
         See Section 3 Algorithm 1 and Algorithm 2 of AlphaFold3 paper.
         Algorithm 1 Line[1-5]
@@ -114,9 +113,6 @@ class InputEmbedder(torch.nn.Module):
         -------
         s_inputs : torch.Tensor
             Tensor of shape (B, L, C_s) containing input single features
-        s_init: torch.Tensor
-            Tensor of shape (B, L, C_s) containing initial single representation
-            before trunk.
         z_init: torch.Tensor
             Tensor of shape (B, L, L, C_z) containing initial pair representation
             before trunk.
@@ -126,9 +122,6 @@ class InputEmbedder(torch.nn.Module):
 
         # Get input single representation
         s_inputs = self.input_embedder(f_input)  # [B, L, c_s]
-
-        # Get initial single representation
-        s_init = self.linear_s_init(s_inputs)  # [B, L, c_s]
 
         # Get initial pair representation
         z_init = (
@@ -153,7 +146,7 @@ class InputEmbedder(torch.nn.Module):
             z_init, self.linear_constraint(self.constraint_encoding(f_input, dtype))
         )
 
-        return s_inputs, s_init, z_init
+        return s_inputs, z_init
 
     def get_bond_adj(
         self,

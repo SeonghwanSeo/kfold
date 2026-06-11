@@ -43,10 +43,7 @@ class StructureEncoder(torch.nn.Module):
             Number of transformer layers.
         """
 
-        path: str | None = None
-        fa_tok_path: str | None = None
-        bb_tok_path: str | None = None
-        encoder_path: str | None = None
+        path: str
         chain_type: str = "protein"
         d_model: int = 2560
         n_layers: int = 33
@@ -59,26 +56,11 @@ class StructureEncoder(torch.nn.Module):
 
         # Create model components
         # TODO: replace to hf hub link.
-        if cfg.path is not None:
-            self.bb_tok = BackboneTokenizer().to(torch.bfloat16)
-            self.fa_tok = FullAtomTokenizer().to(torch.bfloat16)
-            self.encoder = ProteinNetEncoder().to(torch.bfloat16)
-            state_dict = torch.load(cfg.path, map_location="cpu")
-            self.load_state_dict(state_dict, strict=True)
-        else:
-            if cfg.fa_tok_path is None:
-                raise ValueError("fa_tok_path must be provided if path is not provided.")
-            if cfg.bb_tok_path is None:
-                raise ValueError("bb_tok_path must be provided if path is not provided.")
-            if cfg.encoder_path is None:
-                raise ValueError("encoder_path must be provided if path is not provided.")
-            self.bb_tok = BackboneTokenizer.from_pretrained(cfg.bb_tok_path)
-            self.fa_tok = FullAtomTokenizer.from_pretrained(cfg.fa_tok_path)
-            self.encoder = ProteinNetEncoder.from_pretrained(cfg.encoder_path)
-            # Set to bfloat16
-            self.bb_tok = self.bb_tok.to(torch.bfloat16)
-            self.fa_tok = self.fa_tok.to(torch.bfloat16)
-            self.encoder = self.encoder.to(torch.bfloat16)
+        self.bb_tok = BackboneTokenizer().to(torch.bfloat16)
+        self.fa_tok = FullAtomTokenizer().to(torch.bfloat16)
+        self.encoder = ProteinNetEncoder().to(torch.bfloat16)
+        state_dict = torch.load(cfg.path, map_location="cpu")
+        self.load_state_dict(state_dict, strict=True)
 
         # Set to eval mode
         self.eval()
@@ -254,10 +236,19 @@ class StructureEncoder(torch.nn.Module):
         ):
             return self._forward(f_input)
 
+    @torch.compiler.disable
     def get_seq_mask(self, f_input: FoldingInput) -> torch.Tensor:
         """Prepare output mask"""
         if self.chain_type == "protein":
             return f_input.sequence.pad_mask & f_input.sequence.is_protein
+        else:
+            raise ValueError(f"Unsupported chain type: {self.chain_type}")
+
+    @torch.compiler.disable
+    def get_token_mask(self, f_input: FoldingInput) -> torch.Tensor:
+        """Prepare output mask"""
+        if self.chain_type == "protein":
+            return f_input.token.pad_mask & f_input.token.is_protein
         else:
             raise ValueError(f"Unsupported chain type: {self.chain_type}")
 
@@ -300,16 +291,14 @@ class StructureEncoder(torch.nn.Module):
             seq_id=seq_id,
             pos_id=pos_id,
         )
+        x = x * allow_mask[..., None]  # mask out invalid tokens
 
         # sequence -> token index mapping
         batch_index = torch.arange(x.shape[0], device=x.device)[:, None]
         seq_token_index = f_input.token.seq_token_index
         x = x[batch_index, seq_token_index]  # [B, Ntoken, D]
 
-        # mask out invalid tokens
-        pad_mask = f_input.token.pad_mask
-
         # mask out non-protein tokens
-        token_mask = pad_mask & f_input.token.is_protein
+        token_mask = self.get_token_mask(f_input)
         x.masked_fill_(~token_mask[..., None], 0.0)
         return x

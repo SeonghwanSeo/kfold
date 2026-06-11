@@ -13,7 +13,7 @@ from lightning.pytorch.callbacks import BasePredictionWriter
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
-from kfold.model.models.kfold import KFold
+from kfold.model import KFold
 from kfold.utils import confidence_metrics
 
 from .dataset import InferenceInput
@@ -62,7 +62,7 @@ class KFoldInferenceClient(pl.LightningModule):
     # === Main forward method === #
     def forward(
         self, f_input: FoldingInput, apo_dict: dict[int, dict]
-    ) -> dict[str, torch.Tensor]:
+    ) -> dict[str, dict[str, torch.Tensor]]:
         dict_out, _ = self.model.inference(
             f_input,
             apo_dict,
@@ -215,7 +215,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
 
             # Save confidence scores in npz format
             confidence_npz_path = save_dir / f"{sample_name}_confidences.npz"
-            np.savez(
+            np.savez_compressed(
                 confidence_npz_path,
                 plddt=score_i["plddt"],
                 pae=score_i["pae"],

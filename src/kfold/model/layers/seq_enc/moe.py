@@ -1,8 +1,9 @@
 import math
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+
+from .nn import LayerNorm, Linear
 
 
 def swiglu_correction_fn(expansion_ratio: float, d_model: int) -> int:
@@ -10,7 +11,7 @@ def swiglu_correction_fn(expansion_ratio: float, d_model: int) -> int:
     return int(((expansion_ratio * d_model) + 255) // 256 * 256)
 
 
-class MoEFFN(nn.Module):
+class MoEFFN(torch.nn.Module):
     """
     Sparse MoE FFN with optional shared experts (DeepSeek-MoE / Qwen-MoE style).
 
@@ -51,12 +52,12 @@ class MoEFFN(nn.Module):
         self.capacity_factor: float = capacity_factor
 
         # Pre-FFN LayerNorm (matches dense ffn structure)
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = LayerNorm(d_model)
 
         # Router (no bias, as in Switch Transformer / Mixtral)
         # routing='modality': router is unused but kept as a no-op nn.Linear
         # so the module's state_dict layout stays stable across routing modes.
-        self.router = nn.Linear(d_model, self.num_routed, bias=False)
+        self.router = Linear(d_model, self.num_routed, bias=False)
 
         # Stacked routed expert weights — single big parameters for batched
         # bmm in the vectorized forward path. ffn_type='swiglu', bias=False:
@@ -65,10 +66,12 @@ class MoEFFN(nn.Module):
         #   w13: (E, 2h, d)   [first Linear]
         #   w2:  (E, d, h)    [second Linear]
         self.h_dim: int = swiglu_correction_fn(expansion_ratio, d_model)
-        self.w13_stacked = nn.Parameter(
+        self.w13_stacked = torch.nn.Parameter(
             torch.empty(self.num_routed, 2 * self.h_dim, d_model)
         )
-        self.w2_stacked = nn.Parameter(torch.empty(self.num_routed, d_model, self.h_dim))
+        self.w2_stacked = torch.nn.Parameter(
+            torch.empty(self.num_routed, d_model, self.h_dim)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
@@ -85,17 +88,8 @@ class MoEFFN(nn.Module):
         # Renormalize so the routed-expert weights sum to 1 (Mixtral-style)
         top_probs = top_probs / (top_probs.sum(dim=-1, keepdim=True) + 1e-9)
 
-        # Determine dtype for the routed expert dispatch buffer.
-        # Under bf16-mixed autocast, the LayerNorm output `h` stays in fp32
-        # while expert Linear outputs are bf16. We must allocate buffers in
-        # the autocast dtype so index_add_ (strict on dtype) succeeds.
-        if torch.is_autocast_enabled():
-            out_dtype = torch.get_autocast_gpu_dtype()
-        else:
-            out_dtype = h.dtype
-
         # Dispatch tokens to their selected routed experts.
-        out = self._dispatch_vectorized(h, top_idx, top_probs, out_dtype)
+        out = self._dispatch_vectorized(h, top_idx, top_probs, x_flat.dtype)
 
         return out.view(orig_shape)
 

@@ -88,8 +88,7 @@ class TrainingConfig(_Config):
 
     # Whether to train each submodules
     train_trunk: bool = True
-    train_distogram_head: bool = True
-    train_structure_module: bool = True
+    train_diffusion_head: bool = True
     train_confidence_head: bool = False
 
     # trunk recycling
@@ -165,8 +164,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Whether to train structure and confidence modules
         self.train_trunk: bool = self.training_config.train_trunk
-        self.train_distogram_head: bool = self.training_config.train_distogram_head
-        self.train_structure_module: bool = self.training_config.train_structure_module
+        self.train_diffusion_head: bool = self.training_config.train_diffusion_head
         self.train_confidence_head: bool = self.training_config.train_confidence_head
 
         # Initialize model here
@@ -185,9 +183,9 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Setup EMA
         self.submodules_to_ignore_for_ema = (
-            "trunk.protein_sequence_encoder",
-            "trunk.rna_sequence_encoder",
-            "trunk.protein_structure_encoder",
+            "prot_seq_encoder",
+            "rna_seq_encoder",
+            "prot_struct_encoder",
         )
         self.ema: ExponentialMovingAverage = ExponentialMovingAverage(
             model=self.model,
@@ -246,17 +244,17 @@ class KFoldTrainingModule(pl.LightningModule):
         # This is required when we train the confidence module only (Final-training-stage)
 
         self.frozen_modules = []
+        self.frozen_modules += self.model.get_pretrained_module_names()
+
         if self.train_trunk is False:
-            self.frozen_modules += ["input_embedder", "trunk"]
+            self.frozen_modules += self.model.get_trunk_module_names()
+            self.frozen_modules += self.model.get_distogram_head_module_names()
 
-        if self.train_distogram_head is False:
-            self.frozen_modules += ["distogram_head"]
-
-        if self.train_structure_module is False:
-            self.frozen_modules += ["score_model"]
+        if self.train_diffusion_head is False:
+            self.frozen_modules += self.model.get_diffusion_head_module_names()
 
         if self.train_confidence_head is False:
-            self.frozen_modules += ["confidence_head"]
+            self.frozen_modules += self.model.get_confidence_head_module_names()
 
         for module_name in self.frozen_modules:
             module = getattr(self.model, module_name)
@@ -377,7 +375,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_mini_rollout_steps=num_steps,
                 num_mini_rollout_samples=num_samples,
                 diffusion_batch_size=diffusion_batch_size,
-                train_structure_module=self.train_structure_module,
+                train_diffusion_head=self.train_diffusion_head,
                 train_confidence_module=self.train_confidence_head,
             )
         elif mode == "validation":
@@ -419,7 +417,7 @@ class KFoldTrainingModule(pl.LightningModule):
         with torch.autocast("cuda", dtype=torch.float32):
             loss, metrics = self.compute_losses(batch, out)
 
-        if self._binned_cache_enabled and self.train_structure_module:
+        if self._binned_cache_enabled and self.train_diffusion_head:
             t_hat = out.get("diffusion", {}).get("t_hat", None)
             diffusion_per_sample = self._timebin_last_diffusion_per_sample
             distogram_loss_per_batch = self._timebin_last_distogram_loss_per_batch
@@ -460,12 +458,13 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # NOTE: Compute the losses in float32 for better numerical stability
         # Compute losses
-        if self.train_structure_module:
+        if self.train_trunk:
             distogram_loss, distogram_metrics = self.compute_distogram_loss(
                 logits=model_output["distogram"]["logits"],
                 f_input=f_input,
             )
 
+        if self.train_diffusion_head:
             diffusion_out = model_output["diffusion"]
             diffusion_loss, diffusion_metrics = self.compute_diffusion_loss(
                 x_pred=diffusion_out["x_0_hat"],
@@ -522,7 +521,7 @@ class KFoldTrainingModule(pl.LightningModule):
         )
         all_metrics["loss"] = loss.detach()
 
-        if self._binned_cache_enabled and self.train_structure_module:
+        if self._binned_cache_enabled and self.train_diffusion_head:
             # Used to compute per-time-bin total loss without recomputing distogram head.
             self._timebin_last_distogram_loss_per_batch = distogram_loss.detach()
 
@@ -792,7 +791,7 @@ class KFoldTrainingModule(pl.LightningModule):
         L_diffusion = L_diffusion_per_sample.mean()
         metrics["diffusion_loss"] = L_diffusion.detach()
 
-        if self._binned_cache_enabled and self.train_structure_module:
+        if self._binned_cache_enabled and self.train_diffusion_head:
             payload: dict[str, torch.Tensor] = {
                 "mse_loss": L_mse_weighted.detach(),
                 "diffusion_loss": L_diffusion_per_sample.detach(),
@@ -892,20 +891,45 @@ class KFoldTrainingModule(pl.LightningModule):
         self.log("monitor/grad_norm", gradient_norm(model), prog_bar=False)
         self.log("monitor/param_norm", parameter_norm(model), prog_bar=False)
 
-        if self.train_structure_module:
+        if self.train_trunk:
             self.log(
-                "monitor/grad_norm_trunk",
-                gradient_norm(model.trunk),
+                "monitor/grad_norm_lm_stack",
+                gradient_norm(model.lm_stack),
                 sync_dist=False,
                 prog_bar=False,
             )
             self.log(
-                "monitor/param_norm_trunk",
-                parameter_norm(model.trunk),
+                "monitor/param_norm_lm_stack",
+                parameter_norm(model.lm_stack),
+                sync_dist=False,
+                prog_bar=False,
+            )
+            self.log(
+                "monitor/grad_norm_main_stack",
+                gradient_norm(model.main_stack),
+                sync_dist=False,
+                prog_bar=False,
+            )
+            self.log(
+                "monitor/param_norm_refine_stack",
+                parameter_norm(model.refine_stack),
+                sync_dist=False,
+                prog_bar=False,
+            )
+            self.log(
+                "monitor/grad_norm_refine_stack",
+                gradient_norm(model.refine_stack),
+                sync_dist=False,
+                prog_bar=False,
+            )
+            self.log(
+                "monitor/param_norm_main_stack",
+                parameter_norm(model.main_stack),
                 sync_dist=False,
                 prog_bar=False,
             )
 
+        if self.train_diffusion_head:
             self.log(
                 "monitor/grad_norm_score_model",
                 gradient_norm(model.score_model),
@@ -968,9 +992,9 @@ class KFoldTrainingModule(pl.LightningModule):
         checkpoint["state_dict"] = {
             k: v
             for k, v in checkpoint["state_dict"].items()
-            if "protein_sequence_encoder" not in k
-            and "rna_sequence_encoder" not in k
-            and "protein_structure_encoder" not in k
+            if "prot_seq_encoder." not in k
+            and "rna_seq_encoder." not in k
+            and "prot_struct_encoder." not in k
         }
 
         # Remove '._orig_mod.' from checkpoint keys

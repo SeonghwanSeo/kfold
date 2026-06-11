@@ -1,4 +1,4 @@
-_yaml_: "full.yaml"
+_yaml_: "stage_0.yaml"
 
 seed: 2
 
@@ -13,55 +13,3 @@ data:
   max_chains: 20
   max_tokens: 640
   max_sequence_tokens: 768
-
-  ccd_path: /cache/wykim_lab/kfold_data/v260310/ccd-train.pkl
-  train_datasets:
-    - _yaml_: "../dataset/rcsb-train-ft.yaml"
-      name: rcsb
-      weight: 0.460
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-train/
-
-    - _yaml_: "../dataset/af2-long-ft.yaml"
-      name: af2-long
-      weight: 0.455
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/af2-long/
-
-    - _yaml_: "../dataset/af2-short.yaml"
-      name: af2-short
-      weight: 0.005
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/af2-short/
-
-    - _yaml_: "../dataset/synthetic-complex.yaml"
-      name: sair
-      weight: 0.030
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/SAIR/
-
-    - _yaml_: "../dataset/synthetic-complex.yaml"
-      name: humap
-      weight: 0.030
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/huMAP/
-
-    - _yaml_: "../dataset/synthetic-complex.yaml"
-      name: natural_ab
-      weight: 0.010
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/NatAb/
-
-    - _yaml_: "../dataset/synthetic-complex.yaml"
-      name: encore
-      weight: 0.005
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/ENCORE/
-
-    - _yaml_: "../dataset/synthetic-complex.yaml"
-      name: protac_db
-      weight: 0.0045
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/PROTAC-DB/
-
-    - _yaml_: "../dataset/synthetic-complex.yaml"
-      name: molglue_db
-      weight: 0.0005
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/MolGlueDB/
-
-  val_datasets:
-    - _yaml_: "../dataset/rcsb-val.yaml"
-      name: rcsb-val
-      data_path: /cache/wykim_lab/kfold_data/v260310/dataset/rcsb-val/
