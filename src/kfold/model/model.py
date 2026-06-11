@@ -357,6 +357,7 @@ class KFold(torch.nn.Module):
                 z,
                 num_steps,
                 num_samples,
+                chunk_size=5,
                 return_traj=return_traj,
             )
         et = time.time()

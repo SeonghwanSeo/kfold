@@ -132,12 +132,13 @@ class FourierEmbedding(torch.nn.Module):
 
         """
         super().__init__()
-        generator = torch.Generator()
-        generator.manual_seed(42)
+        gen = torch.Generator()
+        gen.manual_seed(42)
 
         # Line 1: Randomly generate weight/bias once before training
-        w = torch.randn(size=(1, channel), generator=generator)
-        b = torch.randn(size=(1, channel), generator=generator)
+        dev = torch.get_default_device()
+        w = torch.randn(size=(1, channel), generator=gen, device="cpu").to(dev)
+        b = torch.randn(size=(1, channel), generator=gen, device="cpu").to(dev)
         self.register_buffer("w", w, persistent=False)
         self.register_buffer("b", b, persistent=False)
 
