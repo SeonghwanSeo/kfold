@@ -6,6 +6,10 @@ _class_: KFold
 kernel_cuequivariance: true
 
 # Module configurations
+channel_s: 384
+channel_z: 256
+dropout: 0.25
+
 input_embedder:
   _yaml_: "module/input_embedder.yaml"
 
@@ -19,7 +23,11 @@ rna_sequence_encoder:
   _yaml_: "module/rna_sequence_encoder.yaml"
 
 trunk:
-  _yaml_: "module/trunk.yaml"
+  num_lm_blocks: 4
+  num_main_blocks: 48
+  num_refine_blocks: 2
+  dropout: 0.25
+  blocks_per_ckpt: null
 
 score_model:
   _yaml_: "module/score_model.yaml"

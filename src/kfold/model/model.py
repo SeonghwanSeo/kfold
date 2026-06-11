@@ -6,30 +6,50 @@ from collections.abc import Mapping
 from typing import Self
 
 import torch
+import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.utils.registry import MAIN_MODULE, BaseConfig, Registry
+from kfold.model.modules import (
+    confidence_head,
+    distogram_head,
+    input_embedder,
+    sequence_encoder,
+    structure_encoder,
+    tri_stack,
+)
+from kfold.model.modules.structure import sample_diffusion, score_model
+from kfold.model.primitives import LayerNorm, Linear, LinearNoBias
+from kfold.utils.registry import MAIN_MODULE, Registry
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(kw_only=True)
+class TrunkConfig:
+    num_lm_blocks: int = 4
+    num_main_blocks: int = 48
+    num_refine_blocks: int = 2
+    dropout: float = 0.25
+    blocks_per_ckpt: int | None = None
 
 
 @dataclasses.dataclass(kw_only=True)
 class KFoldConfig:
     # Model dimensions
     channel_s: int = 384
-    channel_z: int = 128
-    channel_plm: int = 768
+    channel_z: int = 256
+    dropout: float = 0.25
 
     # Sub-module configurations
-    input_embedder: BaseConfig
-    protein_sequence_encoder: BaseConfig
-    protein_structure_encoder: BaseConfig
-    rna_sequence_encoder: BaseConfig
-    trunk: BaseConfig
-    score_model: BaseConfig
-    diffusion_head: BaseConfig
-    distogram_head: BaseConfig
-    confidence_head: BaseConfig
+    input_embedder: input_embedder.InputEmbedder.Config
+    protein_sequence_encoder: sequence_encoder.SequenceEncoder.Config
+    protein_structure_encoder: structure_encoder.StructureEncoder.Config
+    rna_sequence_encoder: sequence_encoder.SequenceEncoder.Config
+    trunk: TrunkConfig
+    score_model: score_model.DiffusionModule.Config
+    diffusion_head: sample_diffusion.BaseStructureModule.Config
+    distogram_head: distogram_head.DistogramHead.Config
+    confidence_head: confidence_head.ConfidenceHead.Config
 
     # Kernel configurations
     kernel_cuequivariance: bool = True
@@ -39,50 +59,122 @@ class KFoldConfig:
     confidence_conditioning_drop_rate: float = 0.0
 
 
+class LMToPair(torch.nn.Module):
+    def __init__(self, channel_lm: int, n_layers: int, channel_z: int):
+        super().__init__()
+        # Combine the hidden states
+        self.proj_lm = torch.nn.Sequential(
+            LayerNorm(channel_lm), LinearNoBias(channel_lm, channel_z)
+        )
+        self.w_lm_layer = torch.nn.Parameter(torch.zeros(n_layers + 1))
+        # MLP
+        self.linear = Linear(channel_z, channel_z)
+        self.mlp = torch.nn.Sequential(
+            Linear(2 * channel_z, channel_z),
+            torch.nn.GELU(),
+            Linear(channel_z, channel_z),
+        )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # Weighted sum of hidden states from all layers
+        hs = self.proj_lm(hidden_states)  # [B, L, Nlayer+1, D_z]
+        w = self.w_lm_layer.softmax(-1)  # [Nlayer+1]
+        x = torch.einsum("n, b l n d -> b l d", w, hs)  # [B, L, D]
+
+        # Outer product to get pairwise features
+        x = self.linear(x)  # [B, L, D]
+        xi, xj = x.unsqueeze(-2), x.unsqueeze(-3)  # [B, L, 1, D], [B, 1, L, D]
+        z = self.mlp(torch.cat([xi * xj, xi - xj], dim=-1))  # [B, L, L, D]
+        return z
+
+
 @MAIN_MODULE.register()
 class KFold(torch.nn.Module):
     def __init__(self, config: KFoldConfig):
         super().__init__()
         self.config: KFoldConfig = config
+        self.channel_s: int = config.channel_s
+        self.channel_z: int = config.channel_z
+        self.dropout: float = config.dropout
+
         kernel_config = {
             "cuequivariance": config.kernel_cuequivariance,
         }
+        self.kernel_config = kernel_config
+
+        # Initialize input featurizer.
+        self.input_embedder = input_embedder.InputEmbedder(config.input_embedder)
+
+        # Initialize pre-trained sequence and structure encoders.
+        self.prot_seq_encoder = sequence_encoder.SequenceEncoder(
+            config.protein_sequence_encoder
+        )
+        self.rna_seq_encoder = sequence_encoder.SequenceEncoder(
+            config.rna_sequence_encoder
+        )
+        self.prot_struct_encoder = structure_encoder.StructureEncoder(
+            config.protein_structure_encoder
+        )
+
+        self.prot_seq_to_pair = LMToPair(
+            self.prot_seq_encoder.d_model, self.prot_seq_encoder.n_layers, self.channel_z
+        )
+        self.rna_seq_to_pair = LMToPair(
+            self.rna_seq_encoder.d_model, self.rna_seq_encoder.n_layers, self.channel_z
+        )
+        self.prot_struct_to_pair = LMToPair(
+            self.prot_struct_encoder.d_model, 0, self.channel_z
+        )
 
         # Initialize trunk
-        self.input_embedder = Registry.instantiate(config.input_embedder)
-
-        prot_seq_enc = Registry.instantiate(config.protein_sequence_encoder)
-        rna_seq_enc = Registry.instantiate(config.rna_sequence_encoder)
-        prot_struct_enc = Registry.instantiate(config.protein_structure_encoder)
-
-        # Initialize trunk
-        self.trunk = Registry.instantiate(
-            config.trunk,
-            protein_sequence_encoder=prot_seq_enc,
-            rna_sequence_encoder=rna_seq_enc,
-            protein_structure_encoder=prot_struct_enc,
-            kernel_config=kernel_config,
+        self.layernorm_z = LayerNorm(self.channel_z)
+        self.linear_z = LinearNoBias(self.channel_z, self.channel_z, init="final")
+        self.lm_stack = tri_stack.TrianglularStack(
+            self.channel_z,
+            config.trunk.num_lm_blocks,
+            config.trunk.dropout,
+        )
+        self.main_stack = tri_stack.TrianglularStack(
+            self.channel_z,
+            config.trunk.num_main_blocks,
+            config.trunk.dropout,
+            blocks_per_ckpt=config.trunk.blocks_per_ckpt,
+        )
+        # Recyling
+        self.linear_refine = LinearNoBias(self.channel_z, self.channel_z, init="identity")
+        self.refine_stack = tri_stack.TrianglularStack(
+            self.channel_z,
+            config.trunk.num_refine_blocks,
+            config.trunk.dropout,
         )
 
         # Initialize prediction heads
-        self.score_model = Registry.instantiate(
+        self.score_model = score_model.DiffusionModule(
             config.score_model, kernel_config=kernel_config
         )
         # NOTE: diffusion_head is not a torch.nn.Module
+        # TODO: After we fix the diffusion algorith, remove Registry.instantiate
         self.diffusion_head = Registry.instantiate(
             config.diffusion_head, score_model=self.score_model
         )
-        self.distogram_head = Registry.instantiate(config.distogram_head)
-        self.confidence_head = Registry.instantiate(
+        self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
+        self.confidence_head = confidence_head.ConfidenceHead(
             config.confidence_head, kernel_config=kernel_config
         )
+        self.is_compiled = False
 
     def do_compile(self, mode: str = "default", dynamic: bool = False):
         """Compile the trunk and score model."""
-        kwargs = {"mode": mode, "dynamic": dynamic}
-        self.trunk.do_compile(**kwargs)
-        self.score_model.do_compile(**kwargs)
-        self.confidence_head.do_compile(**kwargs)
+        opts = {"mode": mode, "dynamic": dynamic}
+        self.is_compiled = True
+        self.prot_seq_encoder = torch.compile(self.prot_seq_encoder, **opts)
+        self.rna_seq_encoder = torch.compile(self.rna_seq_encoder, **opts)
+        self.prot_struct_encoder = torch.compile(self.prot_struct_encoder, **opts)
+        self.lm_stack = torch.compile(self.lm_stack, **opts)
+        self.main_stack = torch.compile(self.main_stack, **opts)
+        self.refine_stack = torch.compile(self.refine_stack, **opts)
+        self.score_model.do_compile(**opts)
+        self.confidence_head.do_compile(**opts)
 
     # ============================================================
     # Inference Methods
@@ -91,7 +183,7 @@ class KFold(torch.nn.Module):
     def inference(
         self,
         f_input: FoldingInput,
-        apo_dict: dict[int, dict[str, torch.Tensor]],
+        apo_dict: dict[int, dict],
         num_recycles: int = 10,
         num_steps: int = 200,
         num_samples: int = 5,
@@ -104,7 +196,7 @@ class KFold(torch.nn.Module):
         ----------
         f_input : FoldingInput
             Input data for folding model.
-        apo_dict : dict[int, dict[str, torch.Tensor]]
+        apo_dict : dict[int, dict]
             Dictionary mapping entity_id to apo structure information.
         num_recycles : int
             Number of recycling cycles in trunk.
@@ -141,19 +233,19 @@ class KFold(torch.nn.Module):
 
         # Tokenize apo structure and feed into structure encoder input features
         for entity_id, apo_info in apo_dict.items():  # noqa
-            for k in ["aatypes", "coords", "mapping"]:
+            for k in ["seq", "coords", "mappings"]:
                 if k not in apo_info:
                     raise KeyError(
                         f"Apo info for entity_id {entity_id} is missing key: {k}"
                     )
-            aatypes, coords = apo_info["aatypes"], apo_info["coords"]
-            seq_st, seq_ed, apo_st, apo_ed = apo_info["mapping"]
-            seq_sl, apo_sl = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
-            bb_ids, fa_ids = self.trunk.protein_structure_encoder.tokenize(
-                aatypes, coords
-            )
-            f_input.sequence.bb_struct_token_id[0, seq_sl] = bb_ids[apo_sl]
-            f_input.sequence.fa_struct_token_id[0, seq_sl] = fa_ids[apo_sl]
+            seq, coords = apo_info["seq"], apo_info["coords"]
+            tokens = self.prot_struct_encoder.tokenize(seq, coords)
+            bb_tok, fa_tok = tokens["bb_token_id"], tokens["fa_token_id"]
+            for mapping in apo_info["mappings"]:
+                seq_st, seq_ed, apo_st, apo_ed = mapping
+                seq_sl, apo_sl = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
+                f_input.sequence.bb_struct_token_id[0, seq_sl] = bb_tok[apo_sl]
+                f_input.sequence.fa_struct_token_id[0, seq_sl] = fa_tok[apo_sl]
 
         # Sample structures
         model_out, time_logs = self.sample(
@@ -200,6 +292,18 @@ class KFold(torch.nn.Module):
             Whether to return intermediate sequence and structure embeddings.
         return_traj : bool, optional
             Whether to return sampling trajectories.
+
+        Returns
+        -------
+        model_out : dict[str, dict[str, torch.Tensor]]
+            Output dictionary containing sampled structures and intermediate features:
+            - trunk: intermediate trunk outputs. (optional)
+            - distogram: predicted distogram logits.
+            - diffusion: sampled structures from diffusion head.
+            - confidence: predicted confidence metrics from confidence head.
+
+        time_logs : dict[str, float]
+            Dictionary containing time taken for each module during sampling.
         """
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
         time_logs: dict[str, float] = {}
@@ -220,60 +324,49 @@ class KFold(torch.nn.Module):
 
         # Embed inputs
         st = time.time()
-        s_inputs, s_init, z_init = self.input_embedder(f_input)
+        s_inputs, z_init = self.input_embedder(f_input)
         et = time.time()
         time_logs["input_embedder"] = et - st
 
         # Trunk with recycling
         st = time.time()
-        s_trunk, z_trunk = self.trunk(
-            s_inputs,
-            s_init,
-            z_init,
-            f_input,
-            num_recycles,
-        )
+        z = self.run_trunk(z_init, f_input, num_recycles)
+        z = z.float()
         et = time.time()
         time_logs["trunk"] = et - st
 
         if return_embeddings:
             dict_out["trunk"] = {
                 "s_inputs": s_inputs,
-                "s_trunk": s_trunk,
-                "z_trunk": z_trunk,
+                "z": z,
             }
 
         # Distogram head
         st = time.time()
-        dict_out["distogram"] = self.distogram_head.forward_inference(
-            f_input,
-            z_trunk,
-        )
+        dict_out["distogram"] = self.distogram_head.forward_inference(f_input, z)
         et = time.time()
         time_logs["distogram_head"] = et - st
 
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
         st = time.time()
-        dict_out["diffusion"] = self.diffusion_head.sample_structure(
-            f_input,
-            s_inputs,
-            s_trunk,
-            z_trunk,
-            num_steps,
-            num_samples,
-            return_traj=return_traj,
-        )
+        with torch.autocast(f_input.device.type, enabled=False):
+            dict_out["diffusion"] = self.diffusion_head.sample_structure(
+                f_input,
+                s_inputs,
+                z,
+                num_steps,
+                num_samples,
+                chunk_size=5,
+                return_traj=return_traj,
+            )
         et = time.time()
         time_logs["diffusion_head"] = et - st
 
         st = time.time()
+        coords = dict_out["diffusion"]["coordinates"]
         dict_out["confidence"] = self.confidence_head.forward_inference(
-            f_input,
-            s_inputs,
-            s_trunk,
-            z_trunk,
-            dict_out["diffusion"]["coordinates"],
+            f_input, s_inputs, z, coords
         )
         et = time.time()
         time_logs["confidence_head"] = et - st
@@ -283,6 +376,68 @@ class KFold(torch.nn.Module):
             for key in dict_out:
                 dict_out[key] = {k: v.squeeze(0) for k, v in dict_out[key].items()}
         return dict_out, time_logs
+
+    def run_trunk(
+        self,
+        z_init: torch.Tensor,
+        f_input: FoldingInput,
+        num_recycles: int,
+    ) -> torch.Tensor:
+        """Perform the forward pass.
+
+        Parameters
+        ----------
+        z_init: torch.Tensor
+            Tensor of shape (B, L, L, C_z) containing initial pair representation
+        f_input : FoldingInput
+            The input features.
+        num_recycles : int
+            The number of recycling steps.
+
+        Returns
+        -------
+        z: torch.Tensor
+            The updated tensor of shape (B, L, L, c_z).
+        """
+        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
+
+        def get_model(mod: torch.nn.Module) -> torch.nn.Module:
+            return mod._orig_mod if (self.is_compiled and not self.training) else mod
+
+        prot_seq_encoder = get_model(self.prot_seq_encoder)
+        rna_seq_encoder = get_model(self.rna_seq_encoder)
+        prot_struct_encoder = get_model(self.prot_struct_encoder)
+        lm_stack = get_model(self.lm_stack)
+        main_stack = get_model(self.main_stack)
+        refine_stack = get_model(self.refine_stack)
+
+        # Initial pairwise representation from pretrained encoders.
+        z_lm = (
+            self.prot_seq_to_pair(prot_seq_encoder(f_input))
+            + self.rna_seq_to_pair(rna_seq_encoder(f_input))
+            + self.prot_struct_to_pair(prot_struct_encoder(f_input).unsqueeze(-2))
+        )
+
+        # === Main trunk iteration with recycling === #
+        z = torch.zeros_like(z_init)
+        token_mask = f_input.token.pad_mask
+        pair_mask = token_mask[..., None] & token_mask[..., None, :]
+
+        for i in range(0, num_recycles + 1):
+            enable_grad = self.training and i == num_recycles
+            with torch.set_grad_enabled(enable_grad):
+                if enable_grad and torch.is_autocast_enabled():
+                    torch.clear_autocast_cache()
+                _z_lm = F.dropout(z_lm, p=self.dropout)
+                _z = z_init + lm_stack(_z_lm, pair_mask, use_cuequiv_kernels)
+                z = z + self.linear_z(self.layernorm_z(_z))
+                z = main_stack(z, pair_mask, use_cuequiv_kernels)
+
+        # Refinement iteration
+        z = self.linear_refine(z)
+        z = refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
+
+        return z
 
     # ============================================================
     # Training Methods
@@ -294,7 +449,7 @@ class KFold(torch.nn.Module):
         diffusion_batch_size: int = 48,
         num_mini_rollout_steps: int = 20,
         num_mini_rollout_samples: int = 1,
-        train_structure_module: bool = True,
+        train_diffusion_head: bool = True,
         train_confidence_module: bool = True,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold for model training.
@@ -321,8 +476,8 @@ class KFold(torch.nn.Module):
             Number of diffusion samples to sample structures for
             confidence module training.
 
-        train_structure_module : bool, optional
-            Whether to train structure module, by default True
+        train_diffusion_head : bool, optional
+            Whether to train diffusion head, by default True
         train_confidence_module : bool, optional
             Whether to train confidence module, by default True
 
@@ -369,77 +524,60 @@ class KFold(torch.nn.Module):
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
 
         # Input embedding
-        s_inputs, s_init, z_init = self.input_embedder(f_input)
-        # NOTE: cast to float32 for numerical stability in training.
-        s_inputs, s_init, z_init = s_inputs.float(), s_init.float(), z_init.float()
+        s_inputs, z_init = self.input_embedder(f_input)
 
         # Trunk with recycling
-        s_trunk, z_trunk = self.trunk(
-            s_inputs,
-            s_init,
-            z_init,
-            f_input,
-            num_recycles,
-        )
+        z_init = z_init.float()  # cast to float32 for numerical stability
+        z = self.run_trunk(z_init, f_input, num_recycles)
+        z = z.float()
 
-        if train_structure_module:
-            # Distogram head
-            dict_out["distogram"] = {
-                "logits": self.distogram_head(z_trunk),
-            }
+        # Distogram head
+        dict_out["distogram"] = {
+            "logits": self.distogram_head(z),
+        }
 
+        if train_diffusion_head:
             # Diffusion head
-            _s_trunk, _z_trunk = s_trunk, z_trunk
+            _z = z
             drop_rate = self.config.diffusion_conditioning_drop_rate
             if drop_rate > 0.0:
                 drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
-                mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
-                _s_trunk = s_trunk * mask[:, None, None]
-                _z_trunk = z_trunk * mask[:, None, None, None]
+                mask = ~drop_conditioning
+                _z = z * mask[:, None, None, None]
 
             # Forward pass through diffusion head for training.
-            dict_out["diffusion"] = self.diffusion_head.training_step(
-                f_input,
-                s_inputs,
-                _s_trunk,
-                _z_trunk,
-                diffusion_batch_size,
-            )
+            with torch.autocast(device.type, enabled=False):
+                dict_out["diffusion"] = self.diffusion_head.training_step(
+                    f_input, s_inputs, _z, diffusion_batch_size
+                )
 
         if train_confidence_module:
+            # Stop gradients to input features and trunk outputs.
             # Sample structures with diffusion mini-rollout.
-            with torch.no_grad():
+            with torch.no_grad(), torch.autocast(device.type, enabled=False):
                 coordinates = self.diffusion_head.sample_structure(
                     f_input=f_input,
                     s_inputs=s_inputs,
-                    s_trunk=s_trunk,
-                    z_trunk=z_trunk,
+                    z=z,
                     num_steps=num_mini_rollout_steps,
                     num_samples=num_mini_rollout_samples,
                 )["coordinates"]  # [B, N_samples, Latom, 3]
             dict_out["sample"] = {
                 "coordinates": coordinates,
             }
-
-            # Stop gradients to input features and trunk outputs.
             _s_inputs = s_inputs.detach()
-            _s_trunk = s_trunk.detach()
-            _z_trunk = z_trunk.detach()
+            _z = z.detach()
 
             # Randomly drop conditioning information for confidence head.
             drop_rate = self.config.confidence_conditioning_drop_rate
             if drop_rate > 0.0:
                 drop_conditioning = torch.rand(batch_size, device=device) < drop_rate
-                mask = (~drop_conditioning).to(z_trunk.dtype)  # [B,]
-                _z_trunk = _z_trunk * mask[:, None, None, None]
+                mask = ~drop_conditioning
+                _z = _z * mask[:, None, None, None]
 
             # Forward pass through confidence head
             pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
-                f_input,
-                _s_inputs,
-                _s_trunk,
-                _z_trunk,
-                coordinates,
+                f_input, _s_inputs, _z, coordinates
             )
             dict_out["confidence"] = {
                 "pae_logits": pae_logits,
@@ -449,6 +587,41 @@ class KFold(torch.nn.Module):
             }
 
         return dict_out
+
+    def get_pretrained_module_names(self) -> list[str]:
+        """Get the names of pretrained modules."""
+        return [
+            "prot_seq_encoder",
+            "rna_seq_encoder",
+            "prot_struct_encoder",
+        ]
+
+    def get_trunk_module_names(self) -> list[str]:
+        """Get the names of trunk modules."""
+        return [
+            "input_embedder",
+            "prot_seq_to_pair",
+            "rna_seq_to_pair",
+            "prot_struct_to_pair",
+            "layernorm_z",
+            "linear_z",
+            "lm_stack",
+            "main_stack",
+            "linear_refine",
+            "refine_stack",
+        ]
+
+    def get_distogram_head_module_names(self) -> list[str]:
+        """Get the names of distogram head modules."""
+        return ["distogram_head"]
+
+    def get_diffusion_head_module_names(self) -> list[str]:
+        """Get the names of diffusion head modules."""
+        return ["score_model"]
+
+    def get_confidence_head_module_names(self) -> list[str]:
+        """Get the names of confidence head modules."""
+        return ["confidence_head"]
 
     # ============================================================
     # Utility Methods
@@ -529,9 +702,9 @@ class KFold(torch.nn.Module):
                 for k in missing_keys
                 if not k.startswith(
                     (
-                        "trunk.protein_sequence_encoder.",
-                        "trunk.rna_sequence_encoder.",
-                        "trunk.protein_structure_encoder.",
+                        "prot_seq_encoder.",
+                        "rna_seq_encoder.",
+                        "prot_struct_encoder.",
                     )
                 )
             }

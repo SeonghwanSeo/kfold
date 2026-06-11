@@ -7,14 +7,12 @@ model:
   protein_structure_encoder:
     path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_struct_3b.pth
   trunk:
-    plm_module:
-      blocks_per_ckpt: null
-    pairformer:
-      num_blocks: 16
-      blocks_per_ckpt: 4
+    num_main_blocks: 16
+    blocks_per_ckpt: null
   score_model:
-    blocks_per_ckpt: 24
+    blocks_per_ckpt: null
   confidence_head:
+    num_blocks: 2
     blocks_per_ckpt: null
 
 train:

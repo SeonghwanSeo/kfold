@@ -1,4 +1,4 @@
-_yaml_: "train-ecsi-debug.yaml"
+_yaml_: "train-ecsi.yaml"
 train:
   data:
     num_workers: 4

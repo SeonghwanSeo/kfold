@@ -1,7 +1,7 @@
 _registry_: "input_embedder"
 _class_: "InputEmbedder"
 channel_s: 384
-channel_z: 128
+channel_z: 256
 channel_atom: 128
 channel_atompair: 16
 atom_encoder_blocks: 3

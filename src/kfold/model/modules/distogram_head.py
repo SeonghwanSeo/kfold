@@ -19,7 +19,7 @@ class DistogramHead(torch.nn.Module):
             The number of distance bins.
         """
 
-        channel_z: int = 128
+        channel_z: int = 256
         num_bins: int = 64
         min_dist: float = 2.0
         max_dist: float = 22.0

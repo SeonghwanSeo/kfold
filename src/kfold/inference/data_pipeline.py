@@ -11,7 +11,6 @@ from kfold.data.pipelines import (
     apo_initialization,
     featurization,
     prior_sampling,
-    sequence_masking,
     structure_preparation,
     tokenization,
 )
@@ -98,12 +97,7 @@ def align_sequence(query: str, target: str, margin: int = 5) -> tuple[int, int, 
 
 
 class InputDataPipeline:
-    def __init__(
-        self,
-        ccd: CCD,
-        num_samples: int = 5,
-        use_sequence_masking: bool = False,
-    ) -> None:
+    def __init__(self, ccd: CCD, num_samples: int = 5) -> None:
         """Initialize the input data pipeline.
 
         Parameters
@@ -113,24 +107,17 @@ class InputDataPipeline:
         num_samples : int, optional
             The number of samples to generate for prior sampling.
             Default is 5.
-        use_sequence_masking : bool, optional
-            Whether to apply sequence masking for sample diversity. Default is False.
         """
 
         self.ccd: CCD = ccd
 
         # Initialize apo initializer
-        self.apo_initializer = apo_initialization.ApoInitializer.inference_mode(ccd)
-        self.prior_sampler = prior_sampling.PriorSampler.inference_mode()
+        self.apo_initializer = apo_initialization.ApoInitializer.inference_mode()
+        self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd)
         self.num_samples = num_samples
 
         # Initialize tokenizer
         self.tokenizer = tokenization.Tokenizer(self.ccd)
-
-        # Initialize sequence masking (0.0-0.15 masking ratio if enabled)
-        self.use_sequence_masking = use_sequence_masking
-        if use_sequence_masking:
-            self.sequence_masking = sequence_masking.SequenceMasking(1.0, 0.15)
 
         # Initialize featurizer
         self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer()
@@ -193,28 +180,28 @@ class InputDataPipeline:
         # Prepare structure from input file
         ref_struct, constraints = self.read_query(input)
 
-        # Populate apo structure
+        # Get apo structure
         apo_lookup = self.load_apo_structures(ref_struct, input)
-        self.apo_initializer(ref_struct, lookup=apo_lookup, rng=rng)
+        apo_dict = self.apo_initializer(ref_struct, apo_lookup, rng)
+
+        # Sample prior coordinates for diffusion bridge model
+        prior_coords = self.prior_sampler(ref_struct, apo_dict, self.num_samples, rng)
 
         # Tokenize structure
         # NOTE: We feed apo structure tokens during model forward pass (gpu required).
         tokenized = self.tokenizer(
-            ref_struct, rng, num_priors=self.num_samples, constraints=constraints
+            ref_struct,
+            rng,
+            apo_coords=apo_dict,
+            prior_coords=prior_coords,
+            constraints=constraints,
         )
-
-        # Sample prior coordinates for diffusion bridge modeling
-        self.sample_prior_coords(ref_struct, tokenized, rng)
-
-        # Apply sequence masking for sample diversity (only if enabled)
-        if self.use_sequence_masking:
-            self.sequence_masking(tokenized, rng)
 
         # Featurize input
         f_input = self.featurizer(tokenized)
 
         # Prepare structure tokenization input for later use in model inference
-        struct_tok_input = self.prepare_struct_tok_input(f_input, apo_lookup)
+        struct_tok_input = self.prepare_struct_tok_input(ref_struct, f_input, apo_lookup)
         return ref_struct, tokenized, f_input, struct_tok_input
 
     def read_query(self, input: query.Query) -> tuple[RefStructure, list[Constraint]]:
@@ -401,23 +388,9 @@ class InputDataPipeline:
             }
         return lookup
 
-    def sample_prior_coords(
-        self,
-        ref_struct: RefStructure,
-        tokenized: TokenizedStructure,
-        rng: np.random.Generator,
-    ) -> None:
-        """Populate the prior coordinates for the given reference structure."""
-        prior_coords = np.full(
-            (tokenized.num_tokens, 24, self.num_samples, 3), np.nan, dtype=np.float32
-        )
-        prior_coords[tokenized.atom.pad_mask] = self.prior_sampler(
-            ref_struct, self.num_samples, rng=rng
-        ).transpose(1, 0, 2)
-        tokenized.atom.prior_coords[:] = prior_coords
-
     def prepare_struct_tok_input(
         self,
+        ref_struct: RefStructure,
         f_input: FoldingInput,
         apo_lookup: dict[int, dict],
     ) -> dict[int, dict]:
@@ -435,38 +408,51 @@ class InputDataPipeline:
             A dictionary mapping entity_id to a tuple of (aatypes, coords) for
             structure tokenization.
         """
+        entity_chains: dict[int, list[int]] = defaultdict(list)
+        for c in ref_struct.chains:
+            entity_chains[c.entity_id].append(c.asym_id)
+
         struct_tok_input: dict[int, dict] = {}
         for entity_id, info in apo_lookup.items():
-            length = len(info["seq"])
-            aatypes = C.sequence.encode_protein_sequence(info["seq"])
-            aatypes = torch.tensor(aatypes, dtype=torch.long)
+            seq = info["seq"]
+            length = len(seq)
             coords = torch.from_numpy(info["coords"]).float()
 
             # Find the corresponding indices in the featurized input.
-            indices = torch.where(f_input.sequence.entity_id == entity_id)[0]
-            ref_length = len(indices)
-            if ref_length == 0:
-                raise ValueError(f"No sequence indices found for entity_id {entity_id}.")
+            mappings = []
+            for asym_id in entity_chains[entity_id]:
+                indices = torch.where(f_input.sequence.asym_id == asym_id)[0]
+                ref_length = len(indices)
+                if ref_length == 0:
+                    raise ValueError(
+                        f"No sequence indices found for chain with entity_id {entity_id}"
+                        f" and asym_id {asym_id} in the featurized input."
+                    )
 
-            seq_base = indices[0].item() + 1  # Account for bos token at the start
-            if "residue_map" in info:
-                # If residue_map is provided, find the corresponding residue ranges
-                res_st, res_end, apo_st, apo_end = parse_residue_map(info["residue_map"])
-                seq_st, seq_end = seq_base + res_st, seq_base + res_end
-            else:
-                apo_st, apo_end = 0, length
-                seq_st, seq_end = seq_base, seq_base + length
+                seq_base = indices[0].item() + 1  # Account for bos token at the start
+                if "residue_map" in info:
+                    # If residue_map is provided, find the corresponding residue ranges
+                    res_st, res_end, apo_st, apo_end = parse_residue_map(
+                        info["residue_map"]
+                    )
+                    seq_st, seq_end = seq_base + res_st, seq_base + res_end
+                else:
+                    apo_st, apo_end = 0, length
+                    seq_st, seq_end = seq_base, seq_base + length
 
-            if (seq_end - seq_st) != (apo_end - apo_st):
-                raise ValueError(
-                    f"Sequence range does not match apo range for entity {entity_id}: "
-                    f"seq range ({seq_st}:{seq_end}) vs apo range ({apo_st}:{apo_end})"
-                )
+                if (seq_end - seq_st) != (apo_end - apo_st):
+                    raise ValueError(
+                        f"Sequence range does not match apo range for chain "
+                        f"with entity_id {entity_id} and asym_id {asym_id}: "
+                        f"seq range ({seq_st}:{seq_end}) vs apo range "
+                        f"({apo_st}:{apo_end})"
+                    )
+                mappings.append((seq_st, seq_end, apo_st, apo_end))
 
             struct_tok_input[entity_id] = {
-                "aatypes": aatypes,
+                "seq": seq,
                 "coords": coords,
-                "mapping": (seq_st, seq_end, apo_st, apo_end),
+                "mappings": mappings,
             }
         return struct_tok_input
 

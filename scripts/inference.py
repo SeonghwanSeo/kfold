@@ -14,7 +14,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.query import Query, parse_input_files
-from kfold.model.models import KFold
+from kfold.model import KFold
 from kfold.utils import confidence_metrics
 
 logger = logging.getLogger("kfold.inference")
@@ -96,14 +96,6 @@ def parse_args():
         help="Whether to save diffusion trajectory.",
     )
     parser.add_argument(
-        "--use_sequence_masking",
-        action="store_true",
-        help=(
-            "Whether to mask sequence to increase sampling diversity."
-            "This is only meaningful when using multiple seeds"
-        ),
-    )
-    parser.add_argument(
         "--cpu",
         action="store_true",
         help="Use CPU for inference instead of GPU.",
@@ -180,9 +172,7 @@ def main():
         query.save(query_path)
 
     # Create data loader
-    dataset = InferenceDataset(
-        input_queries, ccd, args.num_samples, args.use_sequence_masking
-    )
+    dataset = InferenceDataset(input_queries, ccd, args.num_samples)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )
@@ -283,7 +273,7 @@ def main():
 
             # Save confidence scores in npz format
             confidence_npz_path = save_dir / f"{sample_name}_confidences.npz"
-            np.savez(
+            np.savez_compressed(
                 confidence_npz_path,
                 plddt=score_i["plddt"],
                 pae=score_i["pae"],
