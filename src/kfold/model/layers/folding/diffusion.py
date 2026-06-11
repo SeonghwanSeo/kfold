@@ -255,6 +255,14 @@ class DiffusionStack(nn.Module):
                 num_heads=atom_encoder_heads,
                 use_structure=True,
             )
+            self.layernorm_a_t = LayerNorm(channel_token, create_offset=False)
+            self.layernorm_a_endpoint = LayerNorm(channel_token, create_offset=False)
+            self.endpoint_fusion = LinearNoBias(
+                channel_token * 2,
+                channel_token,
+                init="final",
+                precision=32,
+            )
 
         # === Full token-level attention === #
         self.layernorm_s = LayerNorm(channel_s, create_offset=False)
@@ -514,7 +522,12 @@ class DiffusionStack(nn.Module):
                     < keep_prob
                 )
                 a_endpoint = a_endpoint * keep.to(a_endpoint.dtype) / keep_prob
-            a = a + a_endpoint
+            a = self.endpoint_fusion(
+                torch.cat(
+                    (self.layernorm_a_t(a), self.layernorm_a_endpoint(a_endpoint)),
+                    dim=-1,
+                )
+            )
         else:
             a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
                 q,  # [B, 1, La, c_atom]
