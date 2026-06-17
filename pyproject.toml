@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
   # core dependencies
-  "torch",
+  "torch==2.11.0+cu128",
   "numpy",
   # additional dependencies
   "tqdm",
@@ -21,6 +21,16 @@ dependencies = [
   "einops",
   "gemmi",
 ]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [project.optional-dependencies]
 cuequiv = [
