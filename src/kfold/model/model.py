@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import math
 import pathlib
 import time
 from collections.abc import Mapping
@@ -24,6 +25,17 @@ from kfold.utils.registry import MAIN_MODULE, Registry
 logger = logging.getLogger(__name__)
 
 
+def _inverse_softplus(x: float) -> float:
+    return math.log(math.expm1(x))
+
+
+@dataclasses.dataclass(kw_only=True)
+class ParcaeConfig:
+    state_init: str = "trunc_normal"
+    decay_init: float = math.sqrt(1.0 / 5.0)
+    coda_n_layers: int | None = None
+
+
 @dataclasses.dataclass(kw_only=True)
 class TrunkConfig:
     num_lm_blocks: int = 4
@@ -31,6 +43,48 @@ class TrunkConfig:
     num_refine_blocks: int = 2
     dropout: float = 0.25
     blocks_per_ckpt: int | None = None
+    parcae: ParcaeConfig = dataclasses.field(default_factory=ParcaeConfig)
+
+
+_MISSING = object()
+
+
+def _get_config_value(config: object, key: str, default: object = _MISSING) -> object:
+    if isinstance(config, Mapping):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def _normalize_parcae_config(config: object | None) -> ParcaeConfig:
+    if config is None:
+        parcae_config = ParcaeConfig()
+    elif isinstance(config, ParcaeConfig):
+        parcae_config = config
+    else:
+        values = {}
+        for field in dataclasses.fields(ParcaeConfig):
+            value = _get_config_value(config, field.name, _MISSING)
+            if value is not _MISSING:
+                values[field.name] = value
+        parcae_config = ParcaeConfig(**values)
+
+    if parcae_config.state_init not in {"trunc_normal", "zero"}:
+        raise ValueError(
+            "ParcaeConfig.state_init must be either 'trunc_normal' or 'zero', "
+            f"got {parcae_config.state_init!r}."
+        )
+    if not 0.0 < parcae_config.decay_init < 1.0:
+        raise ValueError(
+            "ParcaeConfig.decay_init must be in (0, 1) so it maps to a "
+            f"positive step size, got {parcae_config.decay_init}."
+        )
+    if parcae_config.coda_n_layers is not None and parcae_config.coda_n_layers < 0:
+        raise ValueError(
+            "ParcaeConfig.coda_n_layers must be non-negative or None, "
+            f"got {parcae_config.coda_n_layers}."
+        )
+
+    return parcae_config
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -96,6 +150,9 @@ class KFold(torch.nn.Module):
         self.channel_s: int = config.channel_s
         self.channel_z: int = config.channel_z
         self.dropout: float = config.dropout
+        self.parcae_config: ParcaeConfig = _normalize_parcae_config(
+            _get_config_value(config.trunk, "parcae", None)
+        )
 
         kernel_config = {
             "cuequivariance": config.kernel_cuequivariance,
@@ -128,7 +185,26 @@ class KFold(torch.nn.Module):
 
         # Initialize trunk
         self.layernorm_z = LayerNorm(self.channel_z)
+        # Retained for checkpoint compatibility; the Parcae/ESMFold2 recurrence
+        # below uses parcae_b_cont for normalized pair-input injection.
         self.linear_z = LinearNoBias(self.channel_z, self.channel_z, init="final")
+
+        # Parcae theory: learn a continuous negative-diagonal state transition
+        # and an Euler-discretized input injection for the pair recurrence.
+        self.parcae_log_a = torch.nn.Parameter(torch.zeros(self.channel_z))
+        # Parcae config: decay_init is the initial discrete contraction a when
+        # log_a starts at zero, so delta_init = -log(decay_init).
+        parcae_decay_init = self.parcae_config.decay_init
+        parcae_delta_init = -math.log(parcae_decay_init)
+        self.parcae_log_delta = torch.nn.Parameter(
+            torch.full(
+                (self.channel_z,),
+                _inverse_softplus(parcae_delta_init),
+                dtype=torch.float32,
+            )
+        )
+        self.parcae_b_cont = torch.nn.Parameter(torch.eye(self.channel_z))
+
         self.lm_stack = tri_stack.TrianglularStack(
             self.channel_z,
             config.trunk.num_lm_blocks,
@@ -142,9 +218,16 @@ class KFold(torch.nn.Module):
         )
         # Recyling
         self.linear_refine = LinearNoBias(self.channel_z, self.channel_z, init="identity")
+        # ESMFold2 coda adaptation: coda_n_layers controls the refinement stack;
+        # None preserves the previous KFold num_refine_blocks config path.
+        coda_n_layers = (
+            config.trunk.num_refine_blocks
+            if self.parcae_config.coda_n_layers is None
+            else self.parcae_config.coda_n_layers
+        )
         self.refine_stack = tri_stack.TrianglularStack(
             self.channel_z,
-            config.trunk.num_refine_blocks,
+            coda_n_layers,
             config.trunk.dropout,
         )
 
@@ -162,6 +245,30 @@ class KFold(torch.nn.Module):
             config.confidence_head, kernel_config=kernel_config
         )
         self.is_compiled = False
+
+    def _parcae_discretized_dynamics(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute the Parcae ZOH/Euler-discretized pair-state dynamics."""
+        delta = F.softplus(self.parcae_log_delta)
+        a = torch.exp(-delta * torch.exp(self.parcae_log_a))
+        b = delta[:, None] * self.parcae_b_cont
+        return a, b
+
+    def _init_parcae_pair_state(self, ref: torch.Tensor) -> torch.Tensor:
+        """Initialize z_0 as in ESMFold2's domain-adapted Parcae recurrence."""
+        # Parcae config: "zero" preserves KFold's previous pair-state init.
+        if self.parcae_config.state_init == "zero":
+            return torch.zeros_like(ref)
+
+        # ESMFold2 cofolding adaptation: randomized truncated-normal pair state.
+        if self.parcae_config.state_init != "trunc_normal":
+            raise ValueError(
+                "ParcaeConfig.state_init must be either 'trunc_normal' or 'zero', "
+                f"got {self.parcae_config.state_init!r}."
+            )
+        std = math.sqrt(2.0 / (5.0 * ref.shape[-1]))
+        state = torch.empty_like(ref, dtype=torch.float32)
+        torch.nn.init.trunc_normal_(state, mean=0.0, std=std, a=-3 * std, b=3 * std)
+        return state.to(dtype=ref.dtype)
 
     def do_compile(self, mode: str = "default", dynamic: bool = False):
         """Compile the trunk and score model."""
@@ -417,19 +524,38 @@ class KFold(torch.nn.Module):
             + self.prot_struct_to_pair(prot_struct_encoder(f_input).unsqueeze(-2))
         )
 
-        # === Main trunk iteration with recycling === #
-        z = torch.zeros_like(z_init)
+        # ESMFold2 cofolding adaptation: initialize an independent pair-state
+        # z_0 instead of recycling from zeros.
+        z = self._init_parcae_pair_state(z_init)
         token_mask = f_input.token.pad_mask
         pair_mask = token_mask[..., None] & token_mask[..., None, :]
 
+        # Parcae theory: stable channel-wise state decay (a) and
+        # Euler-discretized normalized input injection (b).
+        a, b = self._parcae_discretized_dynamics()
+        a = a.view(*((1,) * (z_init.ndim - 1)), -1).to(
+            device=z_init.device, dtype=z_init.dtype
+        )
+        b = b.to(device=z_init.device, dtype=z_init.dtype)
+
+        # === Main trunk iteration with ESMFold2-style Parcae recurrence === #
+        # Training-time stochastic recycle-count sampling is handled by the
+        # trainer so this loop preserves num_recycles + 1 public semantics.
+        # Intentionally not implemented: per-sequence depth sampling or
+        # Parcae's truncated-backprop training-depth recipe.
         for i in range(0, num_recycles + 1):
+            # Preserve KFold's existing train-time gradient behavior.
             enable_grad = self.training and i == num_recycles
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
                 _z_lm = F.dropout(z_lm, p=self.dropout)
-                _z = z_init + lm_stack(_z_lm, pair_mask, use_cuequiv_kernels)
-                z = z + self.linear_z(self.layernorm_z(_z))
+                # ESMFold2 cofolding adaptation: u_t combines input pair
+                # features with the refined LM pair contribution each loop.
+                u_t = z_init + lm_stack(_z_lm, pair_mask, use_cuequiv_kernels)
+                # Parcae recurrence: z_in = a * z_t + B_bar LN(u_t), followed
+                # by the pair folding trunk as the nonlinear recurrent update.
+                z = a * z + F.linear(self.layernorm_z(u_t), b)
                 z = main_stack(z, pair_mask, use_cuequiv_kernels)
 
         # Refinement iteration

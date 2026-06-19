@@ -83,6 +83,34 @@ class OptimizerConfig(_Config):
 
 
 @dataclasses.dataclass(kw_only=True)
+class ParcaeTrainConfig:
+    """Training-time Parcae recycle-count sampling configuration."""
+
+    max_recycles: int = 5
+    min_recycles: int = 0
+    poisson_mean: float = 2.0
+
+
+def _validate_parcae_train_config(config: ParcaeTrainConfig) -> ParcaeTrainConfig:
+    if config.min_recycles < 0:
+        raise ValueError(
+            "ParcaeTrainConfig.min_recycles must be non-negative, "
+            f"got {config.min_recycles}."
+        )
+    if config.max_recycles < config.min_recycles:
+        raise ValueError(
+            "ParcaeTrainConfig.max_recycles must be >= min_recycles, got "
+            f"{config.max_recycles} < {config.min_recycles}."
+        )
+    if config.poisson_mean < 0.0:
+        raise ValueError(
+            "ParcaeTrainConfig.poisson_mean must be non-negative, "
+            f"got {config.poisson_mean}."
+        )
+    return config
+
+
+@dataclasses.dataclass(kw_only=True)
 class TrainingConfig(_Config):
     """Training step configuration."""
 
@@ -91,8 +119,10 @@ class TrainingConfig(_Config):
     train_diffusion_head: bool = True
     train_confidence_head: bool = False
 
-    # trunk recycling
+    # trunk recycling; Parcae training-time sampling below owns the active
+    # recycle schedule, and this value is kept for config/checkpoint compatibility.
     num_recycles: int = 3
+    parcae: ParcaeTrainConfig = dataclasses.field(default_factory=ParcaeTrainConfig)
     # for structure model training
     diffusion_batch_size: int = 48
     # for confidence module training
@@ -150,6 +180,9 @@ class KFoldTrainingModule(pl.LightningModule):
         self.training_config: TrainingConfig = TrainingConfig.from_dict(
             self.config.training
         )
+        self.parcae_train_config: ParcaeTrainConfig = _validate_parcae_train_config(
+            self.training_config.parcae
+        )
         self.validation_config: ValidationConfig = ValidationConfig.from_dict(
             self.config.validation
         )
@@ -201,14 +234,21 @@ class KFoldTrainingModule(pl.LightningModule):
         # Create writer
         self.writer: KFoldWriter = KFoldWriter()
 
-        # Pre-sample recycling steps for training
-        # This ensures all GPUs use the same recycling schedule
+        # Parcae methodology: pre-sample a shared clamped-Poisson recycle
+        # schedule for training. The trunk still runs num_recycles + 1 loops.
+        # This intentionally does not add per-sequence/per-token sampling or
+        # Parcae's truncated-backprop training-depth recipe.
+        # Pre-sampling with a fixed seed ensures all GPUs use the same schedule.
         rng = np.random.default_rng(seed=42)
-        self.recycles_per_step: np.ndarray = rng.integers(
-            0,
-            self.training_config.num_recycles + 1,
+        sampled_recycles = rng.poisson(
+            lam=self.parcae_train_config.poisson_mean,
             size=100_000,
         )
+        self.recycles_per_step: np.ndarray = np.clip(
+            sampled_recycles,
+            self.parcae_train_config.min_recycles,
+            self.parcae_train_config.max_recycles,
+        ).astype(np.int64)
 
         # Time-binned logging state (populated only when enabled)
         self._timebin_enabled: bool = bool(self.training_config.log_time_binned_losses)
@@ -400,8 +440,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
-        # Sample recycling steps
-        # Use shared recycling schedule across all the gpus
+        # Use the shared Parcae clamped-Poisson recycle schedule across all GPUs.
         idx = self.global_step % len(self.recycles_per_step)
         num_recycles = int(self.recycles_per_step[idx])
 
