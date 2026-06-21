@@ -28,4 +28,5 @@ churn_step_power: 1.0
 ode_step_power: 2.0
 
 # Training time schedule
+train_time_schedule: logistic
 train_time_schedule_params: [-2.15, 2.25]

@@ -187,10 +187,13 @@ class KFoldECSI(BaseStructureModule):
             The exponent controlling the time schedule for ODE steps.
 
         # Training time scheduling
+        train_time_schedule : str
+            Training-time sampling schedule. Supported values are "logistic" and
+            "uniform".
         train_time_schedule_params : tuple[float, float]
-            A tuple of (mu, std) for the time sampling schedule during training.
-            Time values are sampled from:
-                t ~ logistic(mu, std), then scaled to [time_min, time_max].
+            A tuple of (mu, std) for the logistic time sampling schedule.
+            Time values are sampled from sigmoid(N(mu, std)), then scaled to
+            [time_min, time_max].
         """
 
         sigma_data: float = 16.0
@@ -217,7 +220,8 @@ class KFoldECSI(BaseStructureModule):
         churn_step_power: float = 1.0
         ode_step_power: float = 4.0
 
-        # Train time scheduling (mu, std)
+        # Train time scheduling
+        train_time_schedule: str = "logistic"
         train_time_schedule_params: tuple[float, float] = (-2.15, 2.25)
 
     def __init__(self, cfg: Config, score_model: DiffusionModule):
@@ -243,6 +247,12 @@ class KFoldECSI(BaseStructureModule):
         self.time_max: float = cfg.time_max
 
         # Train time scheduling
+        if cfg.train_time_schedule not in {"logistic", "uniform"}:
+            raise ValueError(
+                "Unknown ECSI train_time_schedule: "
+                f"{cfg.train_time_schedule!r}. Expected 'logistic' or 'uniform'."
+            )
+        self.train_time_schedule: str = cfg.train_time_schedule
         self.train_time_schedule_params: tuple[float, float] = (
             cfg.train_time_schedule_params
         )
@@ -457,10 +467,13 @@ class KFoldECSI(BaseStructureModule):
         t : torch.Tensor
             Time values. Shape (B, N).
         """
-        mu, std = self.train_time_schedule_params
-        z = torch.randn(shape, device=device)
-        x = mu + std * z
-        t = torch.sigmoid(x)
+        if self.train_time_schedule == "uniform":
+            t = torch.rand(shape, device=device)
+        else:
+            mu, std = self.train_time_schedule_params
+            z = torch.randn(shape, device=device)
+            x = mu + std * z
+            t = torch.sigmoid(x)
 
         # Scale to [sampling_time_min, sampling_time_max]
         t = self.time_min + (self.time_max - self.time_min) * t
