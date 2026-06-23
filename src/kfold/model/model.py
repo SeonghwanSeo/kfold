@@ -128,6 +128,7 @@ class LMToPair(torch.nn.Module):
             torch.nn.GELU(),
             Linear(channel_z, channel_z),
         )
+        self.layernorm_pair = LayerNorm(channel_z)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         # Weighted sum of hidden states from all layers
@@ -139,6 +140,7 @@ class LMToPair(torch.nn.Module):
         x = self.linear(x)  # [B, L, D]
         xi, xj = x.unsqueeze(-2), x.unsqueeze(-3)  # [B, L, 1, D], [B, 1, L, D]
         z = self.mlp(torch.cat([xi * xj, xi - xj], dim=-1))  # [B, L, L, D]
+        z = self.layernorm_pair(z)
         return z
 
 
