@@ -59,8 +59,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "Optional source manifest path. Defaults to the validation dataset "
-            "manifest."
+            "Optional source manifest path. Defaults to the validation dataset manifest."
         ),
     )
     parser.add_argument(

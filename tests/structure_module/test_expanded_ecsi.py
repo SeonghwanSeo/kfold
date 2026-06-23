@@ -1,12 +1,12 @@
 import torch
-
-from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules.score_model.base import BaseScoreModel
 from kfold.model.modules.structure_module.kfold_ecsi import (
     KFoldECSI,
     SamplingConfig,
     TrainTimeSamplingConfig,
 )
+
+from kfold.data.types.model_input import FoldingInput
 
 
 class DummyScoreModel(BaseScoreModel):
@@ -115,9 +115,7 @@ def test_interpolate_matches_full_noise_when_component_maxima_match() -> None:
     expanded_xt = expanded.interpolate(apo, holo, t_hat, mask)
     torch.manual_seed(7)
     expected_xt = (
-        alpha_t * holo
-        + beta_t * apo
-        + gamma_t * torch.randn_like(apo)
+        alpha_t * holo + beta_t * apo + gamma_t * torch.randn_like(apo)
     ) * mask[:, None, :, None]
 
     assert torch.allclose(expanded_xt, expected_xt, atol=1e-6)

@@ -7,9 +7,8 @@ import pathlib
 import lmdb
 import numpy as np
 import torch
-from tqdm import tqdm
-
 from kfold.model.modules.structure_encoder.triprorep import TriProRep, restype_order
+from tqdm import tqdm
 
 PADDING_SIZES = [32, 64, 128, 256, 384, 512, 640, 768, 1024, 1280]
 BATCH_THRESHOLD = 1280

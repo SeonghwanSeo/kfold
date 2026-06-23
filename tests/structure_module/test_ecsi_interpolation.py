@@ -12,6 +12,10 @@ from pathlib import Path
 import lightning.pytorch as pl
 import numpy as np
 import torch
+from kfold.model.modules.structure_module.kfold_ecsi import (
+    KFoldECSI,
+    SamplingConfig,
+)
 
 import kfold.model.modules as submodules
 from kfold.config import load_config
@@ -19,10 +23,6 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.data.utils.writer import KFoldWriter
-from kfold.model.modules.structure_module.kfold_ecsi import (
-    KFoldECSI,
-    SamplingConfig,
-)
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.utils import errors
 from kfold.utils.registry import Registry
@@ -115,9 +115,7 @@ def test_interpolation_coefficients(structure_module: KFoldECSI) -> None:
 
         # Verify gamma uses the shared base gamma.
         expected_gamma = (
-            0.5
-            * structure_module.gamma_max
-            * (t * (1 - t) + 1e-8).sqrt().item()
+            0.5 * structure_module.gamma_max * (t * (1 - t) + 1e-8).sqrt().item()
         )
         assert abs(gamma - expected_gamma) < 1e-4, (
             f"gamma mismatch: got {gamma}, expected {expected_gamma}"
@@ -184,8 +182,7 @@ def test_gamma_max_effect(structure_module: KFoldECSI) -> None:
     print(f"  Expected (gamma_max): {expected_gamma_at_mid:.4f}")
 
     assert abs(gamma_at_mid - expected_gamma_at_mid) < 1e-4, (
-        "gamma at t=0.5 should match the shared base gamma rule, "
-        f"got {gamma_at_mid}"
+        f"gamma at t=0.5 should match the shared base gamma rule, got {gamma_at_mid}"
     )
 
     print("  ✓ Gamma max test passed!")

@@ -8,12 +8,12 @@ from pathlib import Path
 
 import torch
 from kfold.data.pipelines._apo_perturbation import ApoPerturbationConfig
+from kfold.model.modules.score_model.base import BaseScoreModel
+from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
 from omegaconf import DictConfig, OmegaConf
 
 from kfold.config import load_config
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules.score_model.base import BaseScoreModel
-from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
 from kfold.training.dataset.datamodule import TrainingDataModule
 
 

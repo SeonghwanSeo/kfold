@@ -4,11 +4,11 @@ from pathlib import Path
 
 import lightning.pytorch as pl
 import numpy as np
+from kfold.training.dataset.dataset import TrainingDataset
 from tqdm import tqdm
 
 from kfold.config import load_config
 from kfold.training.dataset.datamodule import TrainingDataModule
-from kfold.training.dataset.dataset import TrainingDataset
 
 
 def analyze_structure(apo_coords, holo_coords, masks, prefix=""):
