@@ -90,6 +90,7 @@ training:
     min_recycles: 0
     max_recycles: 5
     poisson_mean: 2.0
+    grad_recurrence_steps: 2
 
 validation:
   # Validation step hyperparameters

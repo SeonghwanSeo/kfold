@@ -89,6 +89,7 @@ class ParcaeTrainConfig:
     max_recycles: int = 5
     min_recycles: int = 0
     poisson_mean: float = 2.0
+    grad_recurrence_steps: int = 1
 
 
 def _validate_parcae_train_config(config: ParcaeTrainConfig) -> ParcaeTrainConfig:
@@ -106,6 +107,11 @@ def _validate_parcae_train_config(config: ParcaeTrainConfig) -> ParcaeTrainConfi
         raise ValueError(
             "ParcaeTrainConfig.poisson_mean must be non-negative, "
             f"got {config.poisson_mean}."
+        )
+    if config.grad_recurrence_steps < 1:
+        raise ValueError(
+            "ParcaeTrainConfig.grad_recurrence_steps must be >= 1, "
+            f"got {config.grad_recurrence_steps}."
         )
     return config
 
@@ -265,8 +271,9 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Parcae methodology: pre-sample a shared clamped-Poisson recycle
         # schedule for training. The trunk still runs num_recycles + 1 loops.
-        # This intentionally does not add per-sequence/per-token sampling or
-        # Parcae's truncated-backprop training-depth recipe.
+        # This intentionally does not add per-sequence/per-token sampling.
+        # The number of recurrent trunk steps saved for backprop is controlled
+        # by parcae.grad_recurrence_steps.
         # Pre-sampling with a fixed seed ensures all GPUs use the same schedule.
         rng = np.random.default_rng(seed=42)
         sampled_recycles = rng.poisson(
@@ -436,11 +443,13 @@ class KFoldTrainingModule(pl.LightningModule):
         num_samples: int = 1,
         diffusion_batch_size: int = 48,
         mode: str = "train",
+        grad_recurrence_steps: int = 1,
     ) -> dict[str, dict[str, torch.Tensor]]:
         if mode == "train":
             return self.model.forward_train(
                 f_input,
                 num_recycles=num_recycles,
+                grad_recurrence_steps=grad_recurrence_steps,
                 num_mini_rollout_steps=num_steps,
                 num_mini_rollout_samples=num_samples,
                 diffusion_batch_size=diffusion_batch_size,
@@ -477,6 +486,7 @@ class KFoldTrainingModule(pl.LightningModule):
         out: dict[str, torch.Tensor] = self(
             f_input=f_input,
             num_recycles=num_recycles,
+            grad_recurrence_steps=self.parcae_train_config.grad_recurrence_steps,
             num_steps=training_config.num_mini_rollout_steps,
             num_samples=training_config.num_mini_rollout_samples,
             diffusion_batch_size=training_config.diffusion_batch_size,

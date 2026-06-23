@@ -488,6 +488,7 @@ class KFold(torch.nn.Module):
         z_init: torch.Tensor,
         f_input: FoldingInput,
         num_recycles: int,
+        grad_recurrence_steps: int = 1,
     ) -> torch.Tensor:
         """Perform the forward pass.
 
@@ -499,6 +500,9 @@ class KFold(torch.nn.Module):
             The input features.
         num_recycles : int
             The number of recycling steps.
+        grad_recurrence_steps : int, optional
+            Number of final recurrent trunk steps to track with autograd during
+            training, by default 1.
 
         Returns
         -------
@@ -541,11 +545,12 @@ class KFold(torch.nn.Module):
         # === Main trunk iteration with ESMFold2-style Parcae recurrence === #
         # Training-time stochastic recycle-count sampling is handled by the
         # trainer so this loop preserves num_recycles + 1 public semantics.
-        # Intentionally not implemented: per-sequence depth sampling or
-        # Parcae's truncated-backprop training-depth recipe.
+        grad_recurrence_steps = max(1, int(grad_recurrence_steps))
+        grad_start = max(0, num_recycles + 1 - grad_recurrence_steps)
+
+        # Intentionally not implemented: per-sequence depth sampling.
         for i in range(0, num_recycles + 1):
-            # Preserve KFold's existing train-time gradient behavior.
-            enable_grad = self.training and i == num_recycles
+            enable_grad = self.training and i >= grad_start
             with torch.set_grad_enabled(enable_grad):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
@@ -576,6 +581,7 @@ class KFold(torch.nn.Module):
         num_mini_rollout_samples: int = 1,
         train_diffusion_head: bool = True,
         train_confidence_module: bool = True,
+        grad_recurrence_steps: int = 1,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold for model training.
         See Figure 2c in the main article of AlphaFold3.
@@ -588,6 +594,9 @@ class KFold(torch.nn.Module):
         # For trunk with recycling:
         num_recycles : int
             Number of recycling cycles in trunk.
+        grad_recurrence_steps : int, optional
+            Number of final recurrent trunk steps to track with autograd during
+            training.
 
         # For structure module training:
         diffusion_batch_size : int
@@ -653,7 +662,12 @@ class KFold(torch.nn.Module):
 
         # Trunk with recycling
         z_init = z_init.float()  # cast to float32 for numerical stability
-        z = self.run_trunk(z_init, f_input, num_recycles)
+        z = self.run_trunk(
+            z_init,
+            f_input,
+            num_recycles,
+            grad_recurrence_steps=grad_recurrence_steps,
+        )
         z = z.float()
 
         # Distogram head
