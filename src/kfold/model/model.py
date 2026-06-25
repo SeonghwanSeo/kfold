@@ -63,6 +63,10 @@ class LMToPair(torch.nn.Module):
     def __init__(self, channel_lm: int, n_layers: int, channel_z: int):
         super().__init__()
         # Combine the hidden states
+        self.channel_lm: int = channel_lm
+        self.n_layers: int = n_layers
+        self.channel_z: int = channel_z
+
         self.proj_lm = torch.nn.Sequential(
             LayerNorm(channel_lm), LinearNoBias(channel_lm, channel_z)
         )
@@ -85,6 +89,17 @@ class LMToPair(torch.nn.Module):
         x = self.linear(x)  # [B, L, D]
         xi, xj = x.unsqueeze(-2), x.unsqueeze(-3)  # [B, L, 1, D], [B, 1, L, D]
         z = self.mlp(torch.cat([xi * xj, xi - xj], dim=-1))  # [B, L, L, D]
+        return z
+
+    def from_zero_embedding(self, device: torch.device) -> torch.Tensor:
+        """Return a pairwise representation from zero-initialized sequence embedding.
+
+        Return shape: [1, 1, 1, D] where D is channel_z.
+        """
+        x = torch.zeros((1, 1, self.channel_z), device=device)
+        x = self.linear(x)
+        xi, xj = x.unsqueeze(-2), x.unsqueeze(-3)
+        z = self.mlp(torch.cat([xi * xj, xi - xj], dim=-1))
         return z
 
 
