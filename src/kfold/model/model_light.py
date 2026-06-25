@@ -1,22 +1,12 @@
 import logging
-from collections.abc import Mapping
 
 import torch
 import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.modules import (
-    confidence_head,
-    distogram_head,
-    input_embedder,
-    sequence_encoder,
-    tri_stack,
-)
-from kfold.model.modules.structure import score_model
-from kfold.model.primitives import LayerNorm, LinearNoBias
-from kfold.utils.registry import MAIN_MODULE, Registry
+from kfold.utils.registry import MAIN_MODULE
 
-from .model import KFold, KFoldConfig, LMToPair
+from .model import KFold, KFoldConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,70 +14,8 @@ logger = logging.getLogger(__name__)
 @MAIN_MODULE.register()
 class KFold_Light(KFold):
     def __init__(self, config: KFoldConfig):
-        torch.nn.Module.__init__(self)
-        self.config: KFoldConfig = config
-        self.channel_s: int = config.channel_s
-        self.channel_z: int = config.channel_z
-        self.dropout: float = config.dropout
-
-        kernel_config = {
-            "cuequivariance": config.kernel_cuequivariance,
-        }
-        self.kernel_config = kernel_config
-
-        # Initialize input featurizer.
-        self.input_embedder = input_embedder.InputEmbedder(config.input_embedder)
-
-        # Initialize pre-trained sequence and structure encoders.
-        self.prot_seq_encoder = sequence_encoder.SequenceEncoder(
-            config.protein_sequence_encoder
-        )
-        self.rna_seq_encoder = sequence_encoder.SequenceEncoder(
-            config.rna_sequence_encoder
-        )
-
-        self.prot_seq_to_pair = LMToPair(
-            self.prot_seq_encoder.d_model, self.prot_seq_encoder.n_layers, self.channel_z
-        )
-        self.rna_seq_to_pair = LMToPair(
-            self.rna_seq_encoder.d_model, self.rna_seq_encoder.n_layers, self.channel_z
-        )
-
-        # Initialize trunk
-        self.layernorm_z = LayerNorm(self.channel_z)
-        self.linear_z = LinearNoBias(self.channel_z, self.channel_z, init="final")
-        self.lm_stack = tri_stack.TrianglularStack(
-            self.channel_z,
-            config.trunk.num_lm_blocks,
-            config.trunk.dropout,
-        )
-        self.main_stack = tri_stack.TrianglularStack(
-            self.channel_z,
-            config.trunk.num_main_blocks,
-            config.trunk.dropout,
-            blocks_per_ckpt=config.trunk.blocks_per_ckpt,
-        )
-        # Recyling
-        self.linear_refine = LinearNoBias(self.channel_z, self.channel_z, init="identity")
-        self.refine_stack = tri_stack.TrianglularStack(
-            self.channel_z,
-            config.trunk.num_refine_blocks,
-            config.trunk.dropout,
-        )
-
-        # Initialize prediction heads
-        self.score_model = score_model.DiffusionModule(
-            config.score_model, kernel_config=kernel_config
-        )
-        # NOTE: diffusion_head is not a torch.nn.Module
-        # TODO: After we fix the diffusion algorith, remove Registry.instantiate
-        self.diffusion_head = Registry.instantiate(
-            config.diffusion_head, score_model=self.score_model
-        )
-        self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
-        self.confidence_head = confidence_head.ConfidenceHead(
-            config.confidence_head, kernel_config=kernel_config
-        )
+        super().__init__(config)
+        del self.prot_struct_encoder
 
     @torch.inference_mode()
     def inference(
@@ -187,6 +115,8 @@ class KFold_Light(KFold):
         # Initial pairwise representation from pretrained encoders.
         z_lm = self.prot_seq_to_pair(self.prot_seq_encoder(f_input))
         z_lm += self.rna_seq_to_pair(self.rna_seq_encoder(f_input))
+        # Add zero-initialized structure representation
+        z_lm += self.prot_struct_to_pair.from_zero_embedding(f_input.device)
 
         # === Main trunk iteration with recycling === #
         z = torch.zeros_like(z_init)
@@ -204,33 +134,3 @@ class KFold_Light(KFold):
         z = self.refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
 
         return z
-
-    def load_state_dict(
-        self,
-        state_dict: Mapping[str, torch.Tensor],
-        strict: bool = True,
-        assign: bool = False,
-    ):
-        """Load state dict without pretrained sequence encoder"""
-        # If strict is False, it is fine to have missing keys (e.g., pretrained model)
-        incompatible_keys = super().load_state_dict(state_dict, strict=False)
-        if strict:
-            missing_keys = incompatible_keys.missing_keys
-            unexpected_keys = incompatible_keys.unexpected_keys
-            # If the sequence encoder is pretrained and not included in the state dict,
-            # missing keys starting with "sequence_encoder." or "structure_encoder." are
-            # allowed.
-            missing_keys = {
-                k
-                for k in missing_keys
-                if not k.startswith(("prot_seq_encoder.", "rna_seq_encoder."))
-            }
-            # Light model does not have a structure encoder.
-            unexpected_keys = {
-                k for k in unexpected_keys if not k.startswith(("prot_struct_to_pair.",))
-            }
-            if missing_keys:
-                raise KeyError(f"Missing keys in state_dict: {missing_keys}")
-            if unexpected_keys:
-                raise KeyError(f"Unexpected keys in state_dict: {unexpected_keys}")
-        return incompatible_keys
