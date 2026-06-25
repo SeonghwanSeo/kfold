@@ -676,6 +676,7 @@ class KFold(torch.nn.Module):
         state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
 
         model.load_state_dict(state_dict, strict=strict)
+        del ckpt, state_dict
 
         return model
 
@@ -712,6 +713,7 @@ class KFold(torch.nn.Module):
                 raise KeyError(f"Missing keys in state_dict: {missing_keys}")
             if unexpected_keys:
                 raise KeyError(f"Unexpected keys in state_dict: {unexpected_keys}")
+        return incompatible_keys
 
     def _add_orig_mod_to_state_dict(
         self, state_dict: Mapping[str, torch.Tensor]
