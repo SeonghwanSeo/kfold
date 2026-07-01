@@ -296,7 +296,7 @@ class ApoInitializer:
         sequence: str,
         apo_coords: np.ndarray,
         rng: np.random.Generator,
-        backend: str = "bioprior",
+        backend: str = "auto",
         rieprody_key: str | None = None,
     ) -> np.ndarray:
         """Augment apo structure coordinates with perturbation.
