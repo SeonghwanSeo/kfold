@@ -28,14 +28,9 @@ Validation/Test set: Consider only the most preferred apo structure.
         "residue_map": "1:235->11:245",
       },
       {
-        "source": "esmfold"
+        "source": "atlasfold"
         "name": "rcsb_protein_000020",
       },
-      {
-        "source": "pdb"
-        "name": "6oim_A",
-        "residue_map": "5:250->5:250",
-      }
     ],
     "2": [...]
   },

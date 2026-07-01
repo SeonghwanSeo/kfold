@@ -66,7 +66,7 @@ class DataFilter:
         )
 
 
-AF3_SPLITS = {
+SPLITS = {
     "train": DataFilter(
         date_start=datetime.min,
         date_end=datetime.fromisoformat("2021-09-30 23:59:59"),
@@ -78,40 +78,12 @@ AF3_SPLITS = {
         date_end=datetime.fromisoformat("2023-01-12 23:59:59"),
         max_resolution=4.5,
         max_chains=1000,
+        min_residues=4,
         max_residues=2560,
     ),
     "test": DataFilter(
         date_start=datetime.fromisoformat("2022-05-02 00:00:00"),
         date_end=datetime.fromisoformat("2023-01-12 23:59:59"),
-        max_resolution=4.5,
-        max_chains=1000,
-        max_residues=5120,
-        filter_nmr=True,
-    ),
-}
-
-# NOTE(SeonghwanSeo): mmCIF files were downloaded on 2024-01-09.
-# The training/validation cutoff is set to 2023-12-31, aligning with
-# the Boltz2 cutoff (2024-01-01). Since no PDB releases occurred on
-# 2024-01-01, using 2023-12-31 as the inclusive end date is functionally
-# equivalent and ensures a clean separation between val and test sets.
-KFOLD_SPLITS = {
-    "train": DataFilter(
-        date_start=datetime.min,
-        date_end=datetime.fromisoformat("2022-12-31 23:59:59"),
-        max_resolution=9.0,
-        max_chains=300,
-    ),
-    "val": DataFilter(
-        date_start=datetime.fromisoformat("2023-01-01 00:00:00"),
-        date_end=datetime.fromisoformat("2023-12-31 23:59:59"),
-        max_resolution=4.5,
-        max_chains=1000,
-        max_residues=2048,
-    ),
-    "test": DataFilter(
-        date_start=datetime.fromisoformat("2024-01-01 00:00:00"),
-        date_end=datetime.fromisoformat("2026-01-09 23:59:59"),
         max_resolution=4.5,
         min_chains=2,
         max_chains=1000,
@@ -322,7 +294,7 @@ def main():
 
     # Apply split defaults if specified
     print(f"Applying {args.split} split parameters...")
-    data_filter = KFOLD_SPLITS[args.split]
+    data_filter = SPLITS[args.split]
     print(data_filter)
 
     # Prepare partial function for multiprocessing
