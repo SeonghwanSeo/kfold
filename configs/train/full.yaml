@@ -85,6 +85,7 @@ training:
   log_time_binned_losses: false
   time_bin_width: 0.1
   log_entity_binned_losses: false
+  log_monitor_norms: false
 
 validation:
   # Validation step hyperparameters

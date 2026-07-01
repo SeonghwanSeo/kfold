@@ -111,6 +111,9 @@ class TrainingConfig(_Config):
     # Logs `train/{metric}_entity_interval{1..10}` where interval10 means >=10.
     log_entity_binned_losses: bool = False
 
+    # Logging: parameter and gradient norm monitor metrics.
+    log_monitor_norms: bool = False
+
 
 def _get_diffusion_time_for_binning(
     diffusion_out: dict[str, Any],
@@ -906,6 +909,8 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
+        if not self.training_config.log_monitor_norms:
+            return
         if self.trainer.global_step % 50 == 0:
             self.log_model_state()
 
