@@ -751,6 +751,14 @@ class KFold(torch.nn.Module):
             "refine_stack",
         ]
 
+    def get_trunk_parameter_names(self) -> list[str]:
+        """Get standalone trunk parameter names (Parcae)."""
+        return [
+            "parcae_log_a",
+            "parcae_log_delta",
+            "parcae_b_cont",
+        ]
+
     def get_distogram_head_module_names(self) -> list[str]:
         """Get the names of distogram head modules."""
         return ["distogram_head"]

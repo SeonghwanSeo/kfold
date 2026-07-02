@@ -403,6 +403,11 @@ class KFoldTrainingModule(pl.LightningModule):
             for param in module.parameters():
                 param.requires_grad_(False)
 
+        # freeze trunk Parcae params directly, as they are not treated as modules
+        for param_name in self.model.get_trunk_parameter_names():
+            param = getattr(self.model, param_name)
+            param.requires_grad_(False)
+
     def train(self, mode: bool = True):
         """Override train() to set sub-modules to eval mode if frozen."""
         out = super().train(mode)
