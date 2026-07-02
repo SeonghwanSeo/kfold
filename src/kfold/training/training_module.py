@@ -33,6 +33,10 @@ from .metrics import structure_metrics as validation_metrics
 from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
 
+_PARCAE_RECURRENCE_BASE_SEED = 42
+_PARCAE_RECURRENCE_SCHEDULE_SIZE = 100_000
+_PARCAE_RECURRENCE_SAMPLING_MODES = {"shared", "rank_independent"}
+
 
 class _Config:
     @classmethod
@@ -90,6 +94,7 @@ class ParcaeTrainConfig:
     min_recycles: int = 0
     poisson_mean: float = 2.0
     grad_recurrence_steps: int = 1
+    recurrence_sampling_mode: str = "shared"
 
 
 def _validate_parcae_train_config(config: ParcaeTrainConfig) -> ParcaeTrainConfig:
@@ -113,7 +118,35 @@ def _validate_parcae_train_config(config: ParcaeTrainConfig) -> ParcaeTrainConfi
             "ParcaeTrainConfig.grad_recurrence_steps must be >= 1, "
             f"got {config.grad_recurrence_steps}."
         )
+    if config.recurrence_sampling_mode not in _PARCAE_RECURRENCE_SAMPLING_MODES:
+        raise ValueError(
+            "ParcaeTrainConfig.recurrence_sampling_mode must be one of "
+            f"{sorted(_PARCAE_RECURRENCE_SAMPLING_MODES)}, got "
+            f"{config.recurrence_sampling_mode!r}."
+        )
     return config
+
+
+def _build_clamped_poisson_recycle_schedule(
+    config: ParcaeTrainConfig,
+    seed: int,
+    size: int = _PARCAE_RECURRENCE_SCHEDULE_SIZE,
+) -> np.ndarray:
+    rng = np.random.default_rng(seed=seed)
+    sampled_recycles = rng.poisson(
+        lam=config.poisson_mean,
+        size=size,
+    )
+    return np.clip(
+        sampled_recycles,
+        config.min_recycles,
+        config.max_recycles,
+    ).astype(np.int64)
+
+
+def _select_recycle_count(schedule: np.ndarray, global_step: int) -> int:
+    idx = global_step % len(schedule)
+    return int(schedule[idx])
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -269,22 +302,22 @@ class KFoldTrainingModule(pl.LightningModule):
         # Create writer
         self.writer: KFoldWriter = KFoldWriter()
 
-        # Parcae methodology: pre-sample a shared clamped-Poisson recycle
-        # schedule for training. The trunk still runs num_recycles + 1 loops.
-        # This intentionally does not add per-sequence/per-token sampling.
-        # The number of recurrent trunk steps saved for backprop is controlled
-        # by parcae.grad_recurrence_steps.
-        # Pre-sampling with a fixed seed ensures all GPUs use the same schedule.
-        rng = np.random.default_rng(seed=42)
-        sampled_recycles = rng.poisson(
-            lam=self.parcae_train_config.poisson_mean,
-            size=100_000,
+        # Parcae methodology: pre-sample a clamped-Poisson recycle schedule for
+        # training. The trunk still runs num_recycles + 1 loops, and the number
+        # of recurrent trunk steps saved for backprop is controlled by
+        # parcae.grad_recurrence_steps. "shared" preserves the previous
+        # cross-rank lockstep schedule; "rank_independent" lazily builds a
+        # deterministic rank-specific schedule once Lightning rank is known.
+        self._shared_recycles_per_step: np.ndarray = (
+            _build_clamped_poisson_recycle_schedule(
+                self.parcae_train_config,
+                seed=_PARCAE_RECURRENCE_BASE_SEED,
+            )
         )
-        self.recycles_per_step: np.ndarray = np.clip(
-            sampled_recycles,
-            self.parcae_train_config.min_recycles,
-            self.parcae_train_config.max_recycles,
-        ).astype(np.int64)
+        self._rank_independent_recycles_per_step: np.ndarray | None = None
+        self._rank_independent_recycles_rank: int | None = None
+        # Backward-compatible alias for code/tests that read the existing attr.
+        self.recycles_per_step: np.ndarray = self._shared_recycles_per_step
 
         # Time-binned logging state (populated only when enabled)
         self._timebin_enabled: bool = bool(self.training_config.log_time_binned_losses)
@@ -313,6 +346,37 @@ class KFoldTrainingModule(pl.LightningModule):
         self.entity_binned_logger = EntityBinnedLossLogger(
             EntityBinConfig(enabled=self._entitybin_enabled, nbins=10)
         )
+
+    def _get_recurrence_schedule_rank(self) -> int:
+        trainer = getattr(self, "_trainer", None)
+        if trainer is None:
+            return 0
+        return int(getattr(trainer, "global_rank", 0))
+
+    def _get_active_recycles_per_step(self) -> np.ndarray:
+        if self.parcae_train_config.recurrence_sampling_mode == "shared":
+            self.recycles_per_step = self._shared_recycles_per_step
+            return self.recycles_per_step
+
+        rank = self._get_recurrence_schedule_rank()
+        if (
+            self._rank_independent_recycles_per_step is None
+            or self._rank_independent_recycles_rank != rank
+        ):
+            self._rank_independent_recycles_per_step = (
+                _build_clamped_poisson_recycle_schedule(
+                    self.parcae_train_config,
+                    seed=_PARCAE_RECURRENCE_BASE_SEED + rank,
+                )
+            )
+            self._rank_independent_recycles_rank = rank
+
+        self.recycles_per_step = self._rank_independent_recycles_per_step
+        return self.recycles_per_step
+
+    def _get_num_recycles_for_current_step(self) -> int:
+        schedule = self._get_active_recycles_per_step()
+        return _select_recycle_count(schedule, int(self.global_step))
 
     def freeze_submodules(self):
         """Freeze submodules based on the training configuration."""
@@ -478,9 +542,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
-        # Use the shared Parcae clamped-Poisson recycle schedule across all GPUs.
-        idx = self.global_step % len(self.recycles_per_step)
-        num_recycles = int(self.recycles_per_step[idx])
+        num_recycles = self._get_num_recycles_for_current_step()
 
         # Compute the forward pass
         out: dict[str, torch.Tensor] = self(

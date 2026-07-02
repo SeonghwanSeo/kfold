@@ -566,7 +566,6 @@ class KFold(torch.nn.Module):
                 z = main_stack(z, pair_mask, use_cuequiv_kernels)
 
         # Refinement iteration
-        z = self.linear_refine(z)
         z = refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
 
         return z
