@@ -162,6 +162,18 @@ class DNASequence(PolymerSequence):
 
     # class variable
     ctype: ClassVar = C.ChainType.DNA
+    apo: str | None = None
+    apo_range: str | None = None  # format: "seq_st:seq_end->apo_st:apo_end"
+
+    def __post_init__(self):
+        assert self.apo is None, (
+            "DNA apo files are not accepted in query inputs. "
+            "DNA apo coordinates are generated heuristically."
+        )
+        assert self.apo_range is None, (
+            "DNA apo_range is not accepted in query inputs. "
+            "DNA apo coordinates are generated as full-length heuristic helices."
+        )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -170,6 +182,16 @@ class RNASequence(PolymerSequence):
 
     # class variable
     ctype: ClassVar = C.ChainType.RNA
+    apo: str | None = None
+    apo_range: str | None = None  # format: "seq_st:seq_end->apo_st:apo_end"
+
+    def __post_init__(self):
+        assert self.apo_range is None, "RNA apo_range is not accepted in query inputs."
+        if self.apo is None:
+            return
+
+        if not Path(self.apo).exists():
+            raise ValueError(f"Apo file does not exist: {self.apo}")
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -330,7 +352,7 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
             "Each sequence entry must contain exactly one chain type."
         )
         chain_type, chain_info = next(iter(seq_dict.items()))
-        if chain_type == "protein" and "apo" in chain_info:
+        if chain_type in {"protein", "dna", "rna"} and "apo" in chain_info:
             # Resolve apo path to be absolute
             input_dir = Path(json_or_yaml_path).parent
             chain_info["apo"] = resolve_apo_path(chain_info["apo"], input_dir)

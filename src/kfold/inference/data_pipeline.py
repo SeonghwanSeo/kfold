@@ -20,7 +20,10 @@ from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
-from kfold.data.utils.io.structure import read_protein_structure
+from kfold.data.utils.io.structure import (
+    read_protein_structure,
+    read_rna_structure,
+)
 
 from . import query
 
@@ -352,15 +355,33 @@ class InputDataPipeline:
 
         lookup: dict[int, dict] = {}
         for entity_id, seq in enumerate(input.sequences, start=1):
-            if not isinstance(seq, query.ProteinSequence):
+            if isinstance(seq, query.ProteinSequence):
+                read_structure = read_protein_structure
+                use_struct_token = True
+            elif isinstance(seq, query.DNASequence):
+                assert seq.apo is None, (
+                    "DNA apo files are not accepted in query inputs. "
+                    "DNA apo coordinates are generated heuristically."
+                )
+                assert seq.apo_range is None, (
+                    "DNA apo_range is not accepted in query inputs."
+                )
+                continue
+            elif isinstance(seq, query.RNASequence) and seq.apo is not None:
+                assert seq.apo_range is None, (
+                    "RNA apo_range is not accepted in query inputs."
+                )
+                read_structure = read_rna_structure
+                use_struct_token = False
+            else:
                 continue
             seq_id = f"{input.name}:{list(seq.ids)}"
 
             path = pathlib.Path(seq.apo)
-            sequence, coords = read_protein_structure(path)
-            if seq.apo_range is not None:
+            sequence, coords = read_structure(path)
+            if isinstance(seq, query.ProteinSequence) and seq.apo_range is not None:
                 apo_range = seq.apo_range
-            else:
+            elif isinstance(seq, query.ProteinSequence):
                 # If no residue_map is provided, check if sequence lengths match
                 ref_chain = entity_to_ref_chain[entity_id]
                 length = len(sequence)
@@ -368,7 +389,8 @@ class InputDataPipeline:
                 seq_st, seq_end, apo_st, apo_end = align_sequence(ref_seq, sequence)
                 if seq_st == -1:
                     self.logger.warning(
-                        f"No apo_range provided for protein sequence {seq_id}, "
+                        f"No apo_range provided for {seq.ctype.name.lower()} "
+                        f"sequence {seq_id}, "
                         f"and no alignment found between reference and apo sequences. "
                         f"Skipping apo structure loading for this entity."
                     )
@@ -376,16 +398,33 @@ class InputDataPipeline:
                 apo_range = f"{seq_st + 1}:{seq_end}->{apo_st + 1}:{apo_end}"
                 if apo_range != f"1:{length}->1:{length}":
                     self.logger.warning(
-                        f"No apo_range provided for protein sequence {seq_id}, "
+                        f"No apo_range provided for {seq.ctype.name.lower()} "
+                        f"sequence {seq_id}, "
                         f"but lengths do not match. Inferred apo_range: {apo_range}"
                     )
+            else:
+                ref_chain = entity_to_ref_chain[entity_id]
+                assert len(sequence) == ref_chain.num_residues, (
+                    f"{seq.ctype.name.lower()} apo length {len(sequence)} must match "
+                    f"reference sequence length {ref_chain.num_residues}."
+                )
+                apo_range = None
 
-            lookup[entity_id] = {
+            apo_info = {
                 "path": path,
                 "seq": sequence,
                 "coords": coords,
-                "residue_map": apo_range,
             }
+            if apo_range is not None:
+                apo_info["residue_map"] = apo_range
+            for chain in ref_struct.chains:
+                if chain.entity_id != entity_id or chain.ctype != seq.ctype:
+                    continue
+                chain_info = apo_info.copy()
+                chain_info["apo_uid"] = chain.asym_id
+                chain_info["skip_perturbation"] = chain.is_nucleic_acid
+                chain_info["use_struct_token"] = use_struct_token
+                lookup[chain.asym_id] = chain_info
         return lookup
 
     def prepare_struct_tok_input(
@@ -405,51 +444,44 @@ class InputDataPipeline:
 
         Returns
         dict[int, dict]
-            A dictionary mapping entity_id to a tuple of (aatypes, coords) for
+            A dictionary mapping asym_id to a tuple of (aatypes, coords) for
             structure tokenization.
         """
-        entity_chains: dict[int, list[int]] = defaultdict(list)
-        for c in ref_struct.chains:
-            entity_chains[c.entity_id].append(c.asym_id)
-
         struct_tok_input: dict[int, dict] = {}
-        for entity_id, info in apo_lookup.items():
+        for asym_id, info in apo_lookup.items():
+            if not info.get("use_struct_token", True):
+                continue
             seq = info["seq"]
             length = len(seq)
             coords = torch.from_numpy(info["coords"]).float()
 
             # Find the corresponding indices in the featurized input.
             mappings = []
-            for asym_id in entity_chains[entity_id]:
-                indices = torch.where(f_input.sequence.asym_id == asym_id)[0]
-                ref_length = len(indices)
-                if ref_length == 0:
-                    raise ValueError(
-                        f"No sequence indices found for chain with entity_id {entity_id}"
-                        f" and asym_id {asym_id} in the featurized input."
-                    )
+            indices = torch.where(f_input.sequence.asym_id == asym_id)[0]
+            if len(indices) == 0:
+                raise ValueError(
+                    f"No sequence indices found for chain with asym_id {asym_id} "
+                    "in the featurized input."
+                )
 
-                seq_base = indices[0].item() + 1  # Account for bos token at the start
-                if "residue_map" in info:
-                    # If residue_map is provided, find the corresponding residue ranges
-                    res_st, res_end, apo_st, apo_end = parse_residue_map(
-                        info["residue_map"]
-                    )
-                    seq_st, seq_end = seq_base + res_st, seq_base + res_end
-                else:
-                    apo_st, apo_end = 0, length
-                    seq_st, seq_end = seq_base, seq_base + length
+            seq_base = indices[0].item() + 1  # Account for bos token at the start
+            if "residue_map" in info:
+                # If residue_map is provided, find the corresponding residue ranges
+                res_st, res_end, apo_st, apo_end = parse_residue_map(info["residue_map"])
+                seq_st, seq_end = seq_base + res_st, seq_base + res_end
+            else:
+                apo_st, apo_end = 0, length
+                seq_st, seq_end = seq_base, seq_base + length
 
-                if (seq_end - seq_st) != (apo_end - apo_st):
-                    raise ValueError(
-                        f"Sequence range does not match apo range for chain "
-                        f"with entity_id {entity_id} and asym_id {asym_id}: "
-                        f"seq range ({seq_st}:{seq_end}) vs apo range "
-                        f"({apo_st}:{apo_end})"
-                    )
-                mappings.append((seq_st, seq_end, apo_st, apo_end))
+            if (seq_end - seq_st) != (apo_end - apo_st):
+                raise ValueError(
+                    f"Sequence range does not match apo range for chain "
+                    f"with asym_id {asym_id}: seq range ({seq_st}:{seq_end}) "
+                    f"vs apo range ({apo_st}:{apo_end})"
+                )
+            mappings.append((seq_st, seq_end, apo_st, apo_end))
 
-            struct_tok_input[entity_id] = {
+            struct_tok_input[asym_id] = {
                 "seq": seq,
                 "coords": coords,
                 "mappings": mappings,

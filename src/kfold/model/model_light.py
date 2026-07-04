@@ -35,7 +35,7 @@ class KFold_Light(KFold):
         f_input : FoldingInput
             Input data for folding model.
         apo_dict : dict[int, dict]
-            Dictionary mapping entity_id to apo structure information.
+            Dictionary mapping asym_id to apo structure tokenization information.
         num_recycles : int
             Number of recycling cycles in trunk.
         num_steps : int

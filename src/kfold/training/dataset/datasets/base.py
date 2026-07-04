@@ -70,6 +70,7 @@ from kfold.data.types.metadata import Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
+from kfold.data.utils.io.apo import unpack_apo_complex_record, unpack_apo_record
 from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.misc import hash_seq
 
@@ -117,6 +118,9 @@ class DatasetConfig:
         Random seed for data loading.
     apo_init : ApoInitializerConfig
         Configuration for apo structure initialization.
+    prob_use_complex_apo : float
+        Probability of replacing chain apo records with grouped complex apo records
+        when the lookup entry provides complex groups.
     """
 
     name: str
@@ -125,6 +129,7 @@ class DatasetConfig:
     seed: int | None = None
     apo_init: apo_initialization.ApoInitializerConfig
     prior_sampler: prior_sampling.PriorSamplerConfig | None
+    prob_use_complex_apo: float = 0.0
 
 
 def next_multiple(n: int, divisor: int) -> int:
@@ -166,6 +171,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         self.name: str = config.name
         self.data_root: Path = Path(config.data_path)
         self.seed: int | None = config.seed
+        self.prob_use_complex_apo: float = config.prob_use_complex_apo
         self.safe_load: bool = safe_load
         self.train: bool = train
 
@@ -227,13 +233,54 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             # we can directly feed apo structures from labeled monomer structures.
             raise FileNotFoundError(f"Apo lookup file {lookup_path} not found.")
         with open(lookup_path, "rb") as f:
-            lookup_table: dict = msgpack.unpack(f)
-        # Convert entity IDs from string to int for easier handling later
+            lookup_table: dict = msgpack.unpack(f, raw=False, strict_map_key=False)
+
+        # Normalize legacy and extended lookup formats to one internal shape.
         for entry_id, entry_lookup in lookup_table.items():
-            lookup_table[entry_id] = {
-                int(eid): infos for eid, infos in entry_lookup.items()
-            }
+            lookup_table[entry_id] = self.normalize_apo_lookup_entry(entry_lookup)
         return lookup_table
+
+    @staticmethod
+    def normalize_apo_lookup_entry(entry_lookup: dict) -> dict:
+        """Normalize one apo lookup entry to the extended internal format."""
+        if "chains" in entry_lookup or "complex_groups" in entry_lookup:
+            chains_raw = entry_lookup.get("chains", {})
+            complex_groups_raw = entry_lookup.get("complex_groups", [])
+        else:
+            # Legacy format: entity_id -> [apo_info]
+            chains_raw = entry_lookup
+            complex_groups_raw = []
+
+        chains: dict[int, list[dict]] = {
+            int(eid): list(infos) for eid, infos in chains_raw.items()
+        }
+
+        complex_groups: list[dict] = []
+        for group in complex_groups_raw:
+            members_raw = group.get("members", {})
+            members = {int(aid): info for aid, info in members_raw.items()}
+            if "asym_ids" in group:
+                asym_ids = [int(aid) for aid in group["asym_ids"]]
+            else:
+                asym_ids = list(members.keys())
+            normalized = {
+                "kind": group.get("kind", "complex"),
+                "chain_type": group.get("chain_type", "protein"),
+                "apo_uid": int(group["apo_uid"]),
+                "asym_ids": asym_ids,
+                "group_id": group.get("group_id", ""),
+            }
+            if "label_asym_ids" in group:
+                normalized["label_asym_ids"] = [
+                    str(aid) for aid in group["label_asym_ids"]
+                ]
+            if members:
+                normalized["members"] = members
+            if "candidates" in group:
+                normalized["candidates"] = list(group["candidates"])
+            complex_groups.append(normalized)
+
+        return {"chains": chains, "complex_groups": complex_groups}
 
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
@@ -257,6 +304,13 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         return self._apo_lmdb_env
 
     @property
+    def apo_complex_lmdb_env(self) -> lmdb.Environment:
+        """Get the LMDB environment for multimer apo structures."""
+        if not hasattr(self, "_apo_complex_lmdb_env"):
+            self._apo_complex_lmdb_env = _open_lmdb(self.data_root / "apo_complex.lmdb")
+        return self._apo_complex_lmdb_env
+
+    @property
     def apo_tok_lmdb_env(self) -> lmdb.Environment:
         """Get the LMDB environment for structure tokens of apo structures."""
         if not hasattr(self, "_apo_tok_lmdb_env"):
@@ -264,6 +318,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         return self._apo_tok_lmdb_env
 
     def __del__(self):
+        if hasattr(self, "_apo_complex_lmdb_env"):
+            self._apo_complex_lmdb_env.close()
         if hasattr(self, "_apo_lmdb_env"):
             self._apo_lmdb_env.close()
         if hasattr(self, "_apo_tok_lmdb_env"):
@@ -391,7 +447,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
         """Return the apo coordinates for the given reference structure.
-        Key: entity_id, Value: apo coordinates of shape [Natoms, 3]
+        Key: asym_id, Value: apo coordinates of shape [Natoms, 3]
         """
         return self.apo_initializer(ref_struct, apo_lookup, rng)
 
@@ -442,60 +498,196 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         )
 
     # === Helper methods for apo structure handling === #
+    @staticmethod
+    def _get_apo_key(apo_info: dict) -> str:
+        if "key" in apo_info:
+            return apo_info["key"]
+        return f"{apo_info['source']}:{apo_info['name']}"
+
+    @staticmethod
+    def _decode_apo_sequence(seq: np.ndarray) -> str:
+        if seq.ndim == 0:
+            return str(seq.astype(str).item())
+        return "".join(seq.astype(str).tolist())
+
+    def _load_apo_info_from_lmdb(
+        self,
+        apo_info: dict,
+        *,
+        context: str,
+        strict: bool,
+    ) -> dict | None:
+        """Attach `seq` and `coords` from apo.lmdb to an apo lookup record."""
+        loaded = apo_info.copy()
+        apo_key = self._get_apo_key(loaded)
+        loaded["key"] = apo_key
+
+        with self.apo_lmdb_env.begin(write=False) as txn:
+            value_bytes = txn.get(apo_key.encode("utf-8"))
+        if value_bytes is None:
+            msg = f"Apo '{apo_key}' not found in LMDB for {context}"
+            if strict:
+                raise KeyError(msg)
+            self.logger.warning(msg)
+            return None
+
+        loaded.update(unpack_apo_record(value_bytes))
+        return loaded
+
+    def _load_apo_complex_info_from_lmdb(
+        self,
+        apo_info: dict,
+        *,
+        context: str,
+        strict: bool,
+    ) -> dict | None:
+        """Attach multimer chain payloads from apo_complex.lmdb."""
+        loaded = apo_info.copy()
+        apo_key = self._get_apo_key(loaded)
+        loaded["key"] = apo_key
+
+        with self.apo_complex_lmdb_env.begin(write=False) as txn:
+            value_bytes = txn.get(apo_key.encode("utf-8"))
+        if value_bytes is None:
+            msg = f"Apo complex '{apo_key}' not found in LMDB for {context}"
+            if strict:
+                raise KeyError(msg)
+            self.logger.warning(msg)
+            return None
+
+        loaded["chains"] = unpack_apo_complex_record(value_bytes)
+        return loaded
+
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
         """Get the apo lookup for the given reference structure."""
         entry_id: str = ref_struct.id
-        entry_lookup: dict[int, list[dict[str, str]]] = self.lookup_table[entry_id]
+        entry_lookup: dict = self.lookup_table[entry_id]
+        chain_lookup: dict[int, list[dict]] = entry_lookup["chains"]
+        complex_groups: list[dict] = entry_lookup["complex_groups"]
 
         # Match apo structure for each protein entries.
-        apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
-        visited_entity_ids: set[int] = set()
+        apo_lookup: dict[int, dict] = {}  # asym_id -> apo_info dict
+        selected_by_entity: dict[int, dict] = {}
+        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
+        label_by_asym_id = {
+            c.asym_id: c.label_asym_id or str(c.asym_id)
+            for c in ref_struct.metadata.chains
+        }
+        protein_asym_ids = {c.asym_id for c in ref_struct.chains if c.ctype.is_protein}
+
         for c in ref_struct.chains:
-            if not c.ctype.is_protein:
-                # Currently we only provide apo structures for protein chains.
+            if c.asym_id in metadata_by_asym_id:
+                metadata_by_asym_id[c.asym_id].apo_uid = c.asym_id
+            if not (c.ctype.is_protein or c.ctype.is_nucleic_acid):
+                # Currently we only provide apo structures for polymer chains.
                 # For ligand, we use ETKDG conformers as apo.
                 continue
 
             eid: int = c.entity_id
             ek: str = f"{entry_id}:{eid}"  # For logging purpose
 
-            if eid in visited_entity_ids:
-                continue  # already populated from another chain with same entity_id
-            visited_entity_ids.add(eid)
-
-            if eid not in entry_lookup:
+            if eid not in chain_lookup:
                 self.logger.warning(f"No apo info found for entity '{ek}' in lookup.")
                 continue
 
-            entity_apo_infos: list[dict[str, str]] = entry_lookup[eid]
-            num_apos = len(entity_apo_infos)
-            # Select apo structure (randomly if multiple)
-            if num_apos == 0:
-                self.logger.warning(f"Empty apo info found for entity '{ek}' in lookup.")
-                continue
-            apo_info = entity_apo_infos[rng.integers(0, num_apos)].copy()
-
-            name = apo_info["name"]
-            source = apo_info["source"]
-            apo_key = f"{source}:{name}"
-            apo_info["key"] = apo_key
-
-            # Load apo coordinates from LMDB
-            with self.apo_lmdb_env.begin(write=False) as txn:
-                value_bytes = txn.get(apo_key.encode("utf-8"))
-                if value_bytes is None:
+            if eid not in selected_by_entity:
+                entity_apo_infos: list[dict] = chain_lookup[eid]
+                num_apos = len(entity_apo_infos)
+                # Select apo structure (randomly if multiple)
+                if num_apos == 0:
                     self.logger.warning(
-                        f"Apo '{apo_key}' not found in LMDB for entity {ek}"
+                        f"Empty apo info found for entity '{ek}' in lookup."
                     )
                     continue
-                with io.BytesIO(value_bytes) as byte_stream:
-                    with np.load(byte_stream) as data:
-                        apo_info["seq"] = "".join(data["seq"].astype(str).tolist())
-                        apo_info["coords"] = data["coords"].copy()
+                apo_info = entity_apo_infos[rng.integers(0, num_apos)]
+                loaded = self._load_apo_info_from_lmdb(
+                    apo_info, context=f"entity {ek}", strict=False
+                )
+                if loaded is None:
+                    continue
+                selected_by_entity[eid] = loaded
 
-            apo_lookup[eid] = apo_info
+            apo_info = selected_by_entity[eid].copy()
+            apo_info["asym_id"] = c.asym_id
+            apo_info["apo_uid"] = c.asym_id
+            apo_info["skip_perturbation"] = c.ctype.is_nucleic_acid
+            apo_info["use_struct_token"] = c.ctype.is_protein
+            apo_lookup[c.asym_id] = apo_info
+
+        if complex_groups and rng.random() < self.prob_use_complex_apo:
+            for group in complex_groups:
+                apo_uid = int(group["apo_uid"])
+                group_asym_ids = [int(aid) for aid in group["asym_ids"]]
+                active_asym_ids = [
+                    asym_id for asym_id in group_asym_ids if asym_id in protein_asym_ids
+                ]
+                if not active_asym_ids:
+                    continue
+
+                if group.get("candidates"):
+                    candidates = group["candidates"]
+                    candidate = candidates[rng.integers(0, len(candidates))]
+                    context = f"complex group {entry_id}:{apo_uid}"
+                    complex_info = self._load_apo_complex_info_from_lmdb(
+                        candidate, context=context, strict=True
+                    )
+                    assert complex_info is not None
+                    complex_chains: dict[str, dict] = complex_info["chains"]
+                    label_asym_ids = group.get("label_asym_ids", [])
+                    label_by_group_asym_id = {
+                        int(asym_id): str(label)
+                        for asym_id, label in zip(
+                            group_asym_ids, label_asym_ids, strict=False
+                        )
+                    }
+                    for asym_id in active_asym_ids:
+                        label_asym_id = label_by_group_asym_id.get(
+                            asym_id, label_by_asym_id.get(asym_id, str(asym_id))
+                        )
+                        if label_asym_id not in complex_chains:
+                            raise KeyError(
+                                f"Apo complex {complex_info['key']} for entry "
+                                f"{entry_id} does not contain chain "
+                                f"{label_asym_id} for asym_id {asym_id}."
+                            )
+                        loaded = candidate.copy()
+                        loaded.update(complex_chains[label_asym_id])
+                        loaded["key"] = complex_info["key"]
+                        loaded["complex_key"] = complex_info["key"]
+                        loaded["complex_chain_id"] = label_asym_id
+                        loaded["asym_id"] = asym_id
+                        loaded["apo_uid"] = apo_uid
+                        loaded["skip_perturbation"] = True
+                        loaded["use_struct_token"] = False
+                        apo_lookup[asym_id] = loaded
+                        if asym_id in metadata_by_asym_id:
+                            metadata_by_asym_id[asym_id].apo_uid = apo_uid
+                    continue
+
+                members: dict[int, dict] = group.get("members", {})
+                for asym_id in active_asym_ids:
+                    asym_id = int(asym_id)
+                    if asym_id not in members:
+                        raise KeyError(
+                            f"Complex apo group for entry {entry_id} is missing "
+                            f"member asym_id {asym_id}."
+                        )
+
+                    context = f"complex group {entry_id}:{apo_uid}/{asym_id}"
+                    loaded = self._load_apo_info_from_lmdb(
+                        members[asym_id], context=context, strict=True
+                    )
+                    assert loaded is not None
+                    loaded["asym_id"] = asym_id
+                    loaded["apo_uid"] = apo_uid
+                    loaded["skip_perturbation"] = True
+                    loaded["use_struct_token"] = False
+                    apo_lookup[asym_id] = loaded
+                    if asym_id in metadata_by_asym_id:
+                        metadata_by_asym_id[asym_id].apo_uid = apo_uid
+
         return apo_lookup
 
     def populate_structure_tokens(
@@ -508,7 +700,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         tokenized : TokenizedStructure
             The tokenized structure to populate tokens for in-place.
         apo_lookup : dict[int, dict]
-            Mapping from entity ID to apo structure dictionary metadata.
+            Mapping from asym_id to apo structure dictionary metadata.
         rng : np.random.Generator
             Random number generator.
         """
@@ -524,22 +716,24 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                 if tokenized.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
                     continue  # only populate structure tokens for protein chains
 
+                asym_id = int(tokenized.chain.asym_id[c_i])
                 eid = tokenized.chain.entity_id[c_i]
-                ek = f"{tokenized.id}:{eid}"  # For logging purpose
+                ek = f"{tokenized.id}:{asym_id}"  # For logging purpose
 
-                if eid not in apo_lookup:
+                apo_info = apo_lookup.get(asym_id, apo_lookup.get(int(eid)))
+                if apo_info is None:
                     self.logger.warning(
-                        f"No apo info for entity `{ek}` in apo lookup. "
-                        f"Skipping this entry"
+                        f"No apo info for chain `{ek}` in apo lookup. Skipping this entry"
                     )
                     continue
-                apo_info = apo_lookup[eid]
+                if not apo_info.get("use_struct_token", True):
+                    continue
                 key = apo_info["key"]
                 v = txn.get(key.encode("utf-8"))
                 if v is None:
                     self.logger.warning(
                         f"Apo structure tokens {key} not found in LMDB for "
-                        f"entity `{ek}`. Skipping this entry"
+                        f"chain `{ek}`. Skipping this entry"
                     )
                     continue
                 # Load pre-computed structure tokens for apo structure from LMDB

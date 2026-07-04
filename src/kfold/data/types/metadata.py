@@ -83,6 +83,11 @@ class ChainInfo(JsonSerializable):
     is_low_homology: bool = False  # whether to use this chain for evaluation
     label_asym_id: str | None = None  # chain id assigned by PDB
     auth_asym_id: str | None = None  # chain id assigned by author
+    apo_uid: int | None = None  # apo rigid-group id; defaults to asym_id
+
+    def __post_init__(self) -> None:
+        if self.apo_uid is None:
+            self.apo_uid = self.asym_id
 
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding default boolean values."""

@@ -3,6 +3,7 @@ _yaml_: "default-train.yaml"
 
 name: "rcsb"
 type: "rcsb"
+prob_use_complex_apo: 0.5
 
 sampler:
   _registry_: "data_sampler"

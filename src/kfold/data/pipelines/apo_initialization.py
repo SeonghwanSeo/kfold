@@ -7,6 +7,7 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.types.structure import Chain, RefStructure
+from kfold.data.utils.dna_utils import build_dna_single_helix_for_chain
 from kfold.utils.misc import spawn_rng
 
 from ._protein_perturbation import ProteinPerturbation, ProteinPerturbationConfig
@@ -28,13 +29,26 @@ def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
     return res_st - 1, res_end, apo_st - 1, apo_end
 
 
-@lru_cache(maxsize=21)
-def get_atom_order_in_residue(res_name: str) -> tuple[int, ...]:
-    """Get the indices of ambiguous atoms for a given residue type."""
+@lru_cache(maxsize=128)
+def get_atom_order_in_residue(res_name: str, ctype: C.ChainType) -> tuple[int, ...]:
+    """Get apo-coordinate indices for atoms in a residue."""
     res_name: C.ResidueName = C.ResidueName[res_name]
-    assert res_name in C.residue.PROTEIN_RESIDUES, f"Unsupported residue name: {res_name}"
-    atom_order = C.atom.protein_atom37_order
+    if ctype.is_protein:
+        atom_order = C.atom.protein_atom37_order
+    elif ctype.is_rna or ctype.is_dna:
+        atom_order = C.atom.nucleic_acid_atom29_order
+    else:
+        raise ValueError(f"Unsupported apo chain type: {ctype}")
     return tuple(atom_order[an.value] for an in C.atom.RESIDUE_ATOMS[res_name])
+
+
+def get_expected_apo_num_atoms(ctype: C.ChainType) -> int:
+    """Return the per-residue apo coordinate width for a polymer type."""
+    if ctype.is_protein:
+        return 37
+    if ctype.is_rna or ctype.is_dna:
+        return 29
+    raise ValueError(f"Unsupported apo chain type: {ctype}")
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -71,7 +85,7 @@ class ApoInitializerConfig:
 
 
 class ApoInitializer:
-    """Class to sample apo structure coordinates for protein chains.
+    """Class to sample apo structure coordinates for protein/RNA/DNA chains.
 
     NOTE: Each apo structures (shape: [Napo, L, 37, 3]) is ordered according to
     following priority:
@@ -124,7 +138,7 @@ class ApoInitializer:
         struct : RefStructure
             Reference structure containing apo coordinates and masks.
         lookup : dict[int, dict]
-            Mapping from entity_id to structure file paths and residue indices
+            Mapping from asym_id to structure file paths and residue indices
             - input types:
                 - seq: str
                 - coords: np.ndarray (L, 37, 3)
@@ -133,13 +147,15 @@ class ApoInitializer:
                     Optional key for using pre-computed perturbation with rieprody.
                 - residue_map: residue index mapping between holo and apo
                     e.g., "11:100->66:155"
+                - skip_perturbation: bool
+                    Whether to bypass apo perturbation for grouped complex apo.
         rng : np.random.Generator
             Random number generator for stochastic operations.
 
         Returns
         -------
         apo_coords_dict : dict[int, np.ndarray]
-            Mapping from entity_id to apo coordinates of shape [Napo, L, 37, 3].
+            Mapping from asym_id to apo coordinates of shape [Natoms, 3].
         """
         return self.sample_apo_structure(struct, lookup, rng)
 
@@ -156,7 +172,7 @@ class ApoInitializer:
         struct : RefStructure
             Reference structure containing apo coordinates and masks.
         lookup : dict[int, dict]
-            Mapping from entity_id to structure file paths and residue indices
+            Mapping from asym_id to structure file paths and residue indices
             - input types:
                 - seq: str
                 - coords: np.ndarray (L, 37, 3)
@@ -166,50 +182,63 @@ class ApoInitializer:
                     rieprody.
                 - residue_map: residue index mapping between holo and apo
                     e.g., "11:100->66:155"
+                - skip_perturbation: bool
+                    Whether to bypass apo perturbation for grouped complex apo.
         rng : np.random.Generator
             Random number generator for stochastic operations.
 
         Returns
         -------
         apo_coords_dict : dict[int, np.ndarray]
-            Mapping from entity_id to apo coordinates of shape [Napo, L, 37, 3].
+            Mapping from asym_id to apo coordinates of shape [Natoms, 3].
         """
         # Create new rng for this sampling to avoid affecting global state
         rng = spawn_rng(rng)
 
-        # === Collect the apo coordinates for all protein chains === #
+        # === Collect the apo coordinates for supported polymer chains === #
         apo_coords_dict: dict[int, np.ndarray] = {}
+        entity_cache: dict[int, np.ndarray] = {}
         for c in struct.chains:
-            if not c.ctype.is_protein:
-                # Only protein chains have apo structures.
-                continue
-            if c.entity_id in apo_coords_dict:
-                # Apo coordinates already collected for this entity_id;
-                # copy them to this chain too.
+            if not (c.ctype.is_protein or c.ctype.is_nucleic_acid):
+                # Only protein/nucleic-acid chains have apo structures.
                 continue
 
-            chain_key = f"{struct.id}_{c.entity_id}"
-            apo_coords = self._sample_apo_structure_for_chain(c, lookup, chain_key, rng)
-            apo_coords_dict[c.entity_id] = apo_coords
+            lookup_key = c.asym_id if c.asym_id in lookup else c.entity_id
+            apo_info = lookup.get(lookup_key)
+            skip_perturbation = (
+                False
+                if apo_info is None
+                else bool(apo_info.get("skip_perturbation", False))
+            )
+            if not skip_perturbation and c.entity_id in entity_cache:
+                apo_coords_dict[c.asym_id] = entity_cache[c.entity_id].copy()
+                continue
+
+            chain_key = f"{struct.id}_{c.asym_id}"
+            apo_coords = self._sample_apo_structure_for_chain(c, apo_info, chain_key, rng)
+            apo_coords_dict[c.asym_id] = apo_coords
+            if not skip_perturbation:
+                entity_cache[c.entity_id] = apo_coords.copy()
 
         return apo_coords_dict
 
     def _sample_apo_structure_for_chain(
         self,
         chain: Chain,
-        lookup: dict[int, dict],
+        apo_info: dict | None,
         chain_key: str,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        """Sample apo structure coordinates for a single protein chain."""
-        assert chain.is_protein, (
-            "Apo structure sampling is only applicable to protein chains."
+        """Sample apo structure coordinates for a single polymer chain."""
+        assert chain.is_protein or chain.is_nucleic_acid, (
+            "Apo structure sampling is only applicable to protein/RNA/DNA chains."
         )
-        eid = chain.entity_id
-        if eid not in lookup:
+        if apo_info is None:
+            if chain.is_dna:
+                return build_dna_single_helix_for_chain(chain)
             if self.use_holo_if_apo_unavailable:
                 self.logger.warning(
-                    f"Apo structure not found for entity {chain_key} in lookup. "
+                    f"Apo structure not found for chain {chain_key} in lookup. "
                     "Falling back to holo coordinates."
                 )
                 apo_coords = chain.atom.coords.copy()
@@ -217,23 +246,34 @@ class ApoInitializer:
                 apo_coords = np.full_like(chain.atom.coords, np.nan)
             return apo_coords
 
-        apo_info = lookup[eid]
         if "seq" not in apo_info or "coords" not in apo_info:
             raise ValueError(
                 f"Apo info must contain 'seq' and 'coords' keys: {apo_info.keys()}"
             )
         apo_seq: str = apo_info["seq"]
-        apo_coords: np.ndarray = apo_info["coords"]
-        if apo_coords.shape != (len(apo_seq), 37, 3):
+        apo_coords: np.ndarray = apo_info["coords"].copy()
+        expected_num_atoms = get_expected_apo_num_atoms(chain.ctype)
+        if apo_coords.shape != (len(apo_seq), expected_num_atoms, 3):
             raise ValueError(
-                f"Apo coordinates shape mismatch: expected ({len(apo_seq)}, 37, 3), "
+                f"Apo coordinates shape mismatch: expected "
+                f"({len(apo_seq)}, {expected_num_atoms}, 3), "
                 f"got {apo_coords.shape}"
             )
         res_map = apo_info.get("residue_map", None)
+        assert not chain.is_nucleic_acid or res_map is None, (
+            "Nucleic-acid apo structures must be full-length records without "
+            "residue_map/apo_range."
+        )
         rieprody_key = apo_info.get("key", None)
+        skip_perturbation = bool(apo_info.get("skip_perturbation", False))
 
         # === Random perturbation === #
-        if self.perturbation is not None and rng.random() < self.prob_perturbation:
+        if (
+            not skip_perturbation
+            and chain.is_protein
+            and self.perturbation is not None
+            and rng.random() < self.prob_perturbation
+        ):
             apo_coords = self._apply_perturbation(
                 apo_seq, apo_coords, rng, rieprody_key=rieprody_key
             )
@@ -260,7 +300,13 @@ class ApoInitializer:
             )
 
         # === Map apo coordinates to full atom set === #
-        atom37_order = C.atom.protein_atom37_order
+        if chain.is_protein:
+            atom_order = C.atom.protein_atom37_order
+        elif chain.is_rna or chain.is_dna:
+            atom_order = C.atom.nucleic_acid_atom29_order
+        else:
+            raise ValueError(f"Unsupported apo chain type: {chain.ctype}")
+
         # Insert apo coordinates into chain according to atom order
         # [L, Natom, 3] -> [Nallatoms, 3]
         src_res_indices: list[int] = []
@@ -273,7 +319,7 @@ class ApoInitializer:
             if chain.residue.is_standard[res_i]:
                 # Standard residues are assumed to have complete atom sets.
                 atom_st = chain.residue.atom_starts[res_i]
-                atom_orders = get_atom_order_in_residue(ccd_sequence[res_i])
+                atom_orders = get_atom_order_in_residue(ccd_sequence[res_i], chain.ctype)
                 natoms = len(atom_orders)
                 src_res_indices.extend([res_i] * natoms)
                 src_atom_indices.extend(atom_orders)
@@ -282,9 +328,9 @@ class ApoInitializer:
             else:
                 for atom_i in chain.residue.iter_residue_atoms(residue_index):
                     an = atom_names[atom_i]
-                    if an in atom37_order:
+                    if an in atom_order:
                         src_res_indices.append(res_i)
-                        src_atom_indices.append(atom37_order[an])
+                        src_atom_indices.append(atom_order[an])
                         dst_atom_indices.append(atom_i)
 
         apo_flat = np.full((chain.num_atoms, 3), np.nan, dtype=np.float32)
