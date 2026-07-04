@@ -204,3 +204,19 @@ python scripts/process/rcsb/f1_prepare_esmfold_input.py \
 mkdir -p /data/processed/dataset/rcsb-train/apo/esmfold/
 esm-fold -i /data/processed/dataset/rcsb-train/sequences/esmfold_input.fasta -o /data/processed/dataset/rcsb-train/apo/esmfold/
 ```
+
+### Deterministic DNA apo structure preparation
+
+DNA apo records are generated from `unique_dna_sequences.fasta` as idealized
+single-stranded helices. By default the script writes zstd-compressed PDB files
+under `apo/dna/`, and the apo LMDB creation step parses them into atom29 records.
+
+```bash
+python scripts/process/rcsb/f2b_create_dna_apo.py \
+    --data_dir /data/processed/dataset \
+    --split train
+
+python scripts/process/rcsb/f2b_create_dna_apo.py \
+    --data_dir /data/processed/dataset \
+    --split val
+```
