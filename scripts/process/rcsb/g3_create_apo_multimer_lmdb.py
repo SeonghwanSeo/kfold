@@ -17,11 +17,11 @@ import numpy as np
 from tqdm import tqdm
 
 from kfold.data.types.metadata import Metadata
-from kfold.data.utils.io.apo import (
+from kfold.data.utils.io.structure import read_protein_multimer_structure
+from kfold.training.dataset.utils.apo_io import (
     pack_apo_multimer_record,
     pack_prior_multimer_stack_record,
 )
-from kfold.data.utils.io.structure import read_protein_multimer_structure
 
 
 @dataclass(frozen=True)

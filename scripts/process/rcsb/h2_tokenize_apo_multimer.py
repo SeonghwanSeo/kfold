@@ -10,12 +10,12 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from kfold.data.utils.io.apo import (
+from kfold.model.layers.struct_enc import BackboneTokenizer, FullAtomTokenizer
+from kfold.model.modules.structure_encoder import restype_order
+from kfold.training.dataset.utils.apo_io import (
     pack_apo_multimer_token_record,
     unpack_apo_multimer_record,
 )
-from kfold.model.layers.struct_enc import BackboneTokenizer, FullAtomTokenizer
-from kfold.model.modules.structure_encoder import restype_order
 
 PADDING_SIZES = [32, 64, 128, 256, 384, 512, 640, 768, 1024, 1280]
 BATCH_THRESHOLD = 1280

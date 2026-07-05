@@ -13,13 +13,13 @@ import msgpack
 import numpy as np
 from tqdm import tqdm
 
-from kfold.data.utils.io.apo import pack_apo_record, pack_prior_stack_record
 from kfold.data.utils.io.fasta import read_fasta
 from kfold.data.utils.io.structure import (
     read_dna_structure,
     read_protein_structure,
     read_rna_structure,
 )
+from kfold.training.dataset.utils.apo_io import pack_apo_record, pack_prior_stack_record
 
 
 @dataclass(frozen=True)

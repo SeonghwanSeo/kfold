@@ -10,12 +10,12 @@ from dataclasses import dataclass
 import lmdb
 from tqdm import tqdm
 
-from kfold.data.utils.io.apo import pack_apo_record
 from kfold.data.utils.io.structure import (
     read_dna_structure,
     read_protein_structure,
     read_rna_structure,
 )
+from kfold.training.dataset.utils.apo_io import pack_apo_record
 
 
 @dataclass(frozen=True)

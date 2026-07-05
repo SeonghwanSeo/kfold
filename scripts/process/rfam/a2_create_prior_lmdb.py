@@ -17,8 +17,8 @@ import msgpack
 import numpy as np
 from tqdm import tqdm
 
-from kfold.data.utils.io.apo import pack_prior_stack_record
 from kfold.data.utils.io.structure import read_rna_structure
+from kfold.training.dataset.utils.apo_io import pack_prior_stack_record
 
 
 @dataclass(frozen=True)

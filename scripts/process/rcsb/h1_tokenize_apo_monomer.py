@@ -8,9 +8,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from kfold.data.utils.io.apo import unpack_apo_record
 from kfold.model.layers.struct_enc import BackboneTokenizer, FullAtomTokenizer
 from kfold.model.modules.structure_encoder import restype_order
+from kfold.training.dataset.utils.apo_io import unpack_apo_record
 
 PADDING_SIZES = [32, 64, 128, 256, 384, 512, 640, 768, 1024, 1280]
 BATCH_THRESHOLD = 1280
