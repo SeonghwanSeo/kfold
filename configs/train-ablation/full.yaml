@@ -1,4 +1,8 @@
-# Configuration for K-Fold training
+# NOTE:
+# This configuration file is for training the ablation model
+# 1. no confidence head training (no mini-rollout)
+# 2. batch size 128 for training, lr=1e-3
+
 name: full-train
 out_dir: ./experiments/
 
@@ -8,9 +12,9 @@ seed: 1 # NOTE: You may have to set different seeds for different stages
 # Training parameters for multi-gpu setup.
 global_hparams:
   batch_size: 1
+  global_batch_size: 128
   diffusion_batch_size: 48
-  global_batch_size: 256
-  num_global_steps_per_epoch: 1000
+  num_global_steps_per_epoch: 500
 
 # Compilation settings
 compile:
@@ -52,7 +56,7 @@ data:
     prob_bioprior_perturbation: 1.0
     bioprior:
       min_steps: 1
-      max_steps: 4
+      max_steps: 8
       log_level: "INFO"
     train: true # Only for train/val
 
@@ -76,7 +80,7 @@ training:
   # Training step hyperparameters
   train_trunk: true
   train_diffusion_head: true
-  train_confidence_head: true
+  train_confidence_head: false
 
   num_recycles: 3
 
@@ -108,7 +112,7 @@ optimizer:
   eps: 1e-8
   lr_scheduler: af3
   base_lr: 0.0
-  max_lr: 0.0018
+  max_lr: 0.0010
   lr_warmup_no_steps: 1000
   lr_start_decay_after_n_steps: 50000
   lr_decay_every_n_steps: 50000
@@ -153,7 +157,7 @@ loss:
     # Smooth LDDT Loss
     smooth_lddt_loss:
       repr_atom_only: false # If True, use [Nrepr, N] instead of [N, N] for LDDT calculation.
-      chunk_size: 1 # Number of samples per chunk for LDDT calculation.
+      chunk_size: null # Number of samples per chunk for LDDT calculation.
       use_kernel: true # Use triton kernel for LDDT calculation.
 
   # Confidence loss

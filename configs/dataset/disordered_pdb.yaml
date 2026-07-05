@@ -21,4 +21,4 @@ cropper:
 apo_init:
   perturbation:
     bioprior:
-      max_steps: 15 # Maximum random walk steps
+      max_steps: 5 # Maximum random walk steps

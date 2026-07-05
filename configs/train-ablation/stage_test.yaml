@@ -1,0 +1,34 @@
+_yaml_: "stage_1.yaml"
+
+data:
+  ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
+  data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
+  train_datasets:
+    # RCSB PDB
+    - _yaml_: "../dataset/rcsb-train.yaml"
+      name: rcsb-train
+      weight: 3.0
+
+    # Disordered PDB datasets
+    - _yaml_: "../dataset/disordered_pdb.yaml"
+      name: disordered_pdb
+      weight: 1.0
+
+    # Protein Monomer
+    - _yaml_: "../dataset/distill-monomer.yaml"
+      name: AF2-MGnify-short
+      weight: 1.0
+
+    # RNA Monomer
+    - _yaml_: "../dataset/distill-rna-monomer.yaml"
+      name: Rfam
+      weight: 1.0
+
+    # Protein-ligand, TPD
+    - _yaml_: "../dataset/distill-interface.yaml"
+      name: TPD
+      weight: 1.0
+
+  val_datasets:
+    - _yaml_: "../dataset/rcsb-val.yaml"
+      name: rcsb-val
