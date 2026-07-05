@@ -44,6 +44,19 @@ distogram_head:
 confidence_head:
   _yaml_: "module/confidence_head.yaml"
 
+patch_pair_geometry:
+  enabled: false
+  channel_z: 256
+  num_bins: 64
+  min_dist: 2.0
+  max_dist: 22.0
+  patch_size: 16
+  max_patches_per_chain: 8
+  max_patch_pairs: 256
+  interface_cutoff: 12.0
+  positive_cutoff: 12.0
+  hard_negative_cutoff: 22.0
+
 # Training preconditioning
 diffusion_conditioning_drop_rate: 0.2
 confidence_conditioning_drop_rate: 0.2

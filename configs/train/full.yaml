@@ -129,12 +129,22 @@ loss:
     chain_com: 0.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
+    patch_geometry: 3e-2
 
   # Distogram loss
   distogram_loss:
     num_bins: 64
     min_dist: 2.0
     max_dist: 22.0
+
+  # Patch-pair COM geometry auxiliary loss.
+  # This is inert unless model.patch_pair_geometry.enabled=true.
+  patch_geometry_loss:
+    num_bins: 64
+    min_dist: 2.0
+    max_dist: 22.0
+    near_cutoff: 12.0
+    hard_negative_weight: 1.0
 
   # Diffusion loss
   diffusion_loss:
