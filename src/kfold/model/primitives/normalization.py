@@ -46,29 +46,34 @@ class LayerNorm(nn.Module):
 
     def forward(self, x) -> torch.Tensor:
         d = x.dtype
-        if self.precision is not None:
-            d = self.precision
+        # if self.precision is not None:
+        #     d = self.precision
 
-        if d is torch.bfloat16:
-            with torch.autocast(x.device.type, enabled=False):
-                x = x.to(d)
-                weight = self.weight.to(d) if self.weight is not None else None
-                bias = self.bias.to(d) if self.bias is not None else None
-                out = nn.functional.layer_norm(
-                    input=x,
-                    normalized_shape=(self.normalized_shape,),
-                    weight=weight,
-                    bias=bias,
-                    eps=self.eps,
-                )
-        else:
-            out = nn.functional.layer_norm(
-                input=x,
-                normalized_shape=(self.normalized_shape,),
-                weight=self.weight,
-                bias=self.bias,
-                eps=self.eps,
-            )
+        # if d is torch.bfloat16:
+        #     with torch.autocast(x.device.type, enabled=False):
+        #         x = x.to(d)
+        #         weight = self.weight.to(d) if self.weight is not None else None
+        #         bias = self.bias.to(d) if self.bias is not None else None
+        #         out = nn.functional.layer_norm(
+        #             input=x,
+        #             normalized_shape=(self.normalized_shape,),
+        #             weight=weight,
+        #             bias=bias,
+        #             eps=self.eps,
+        #         )
+        # else:
+        # NOTE: Adamw 안정성 - AF3 방식
+        # NOTE: DiT 논문에서는 Adamw 쓰되 weight decay는 0으로 했었음.
+        # ESMFold2는 어떻게 쓰는지 체크 필요.
+        # 어느 모듈마다 어떤 optimizer 쓰는지 체크 필요
+        # NOTE: Adamw vs layernorm 안정성 체크 필요
+        out = nn.functional.layer_norm(
+            input=x.float(),
+            normalized_shape=(self.normalized_shape,),
+            weight=self.weight,
+            bias=self.bias,
+            eps=self.eps,
+        ).to(d)
         return out
 
 

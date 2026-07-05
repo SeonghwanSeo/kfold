@@ -33,6 +33,10 @@ from .metrics import structure_metrics as validation_metrics
 from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
 
+_PARCAE_RECURRENCE_BASE_SEED = 42
+_PARCAE_RECURRENCE_SCHEDULE_SIZE = 100_000
+_PARCAE_RECURRENCE_SAMPLING_MODES = {"shared", "rank_independent"}
+
 
 class _Config:
     @classmethod
@@ -83,6 +87,69 @@ class OptimizerConfig(_Config):
 
 
 @dataclasses.dataclass(kw_only=True)
+class ParcaeTrainConfig:
+    """Training-time Parcae recycle-count sampling configuration."""
+
+    max_recycles: int = 5
+    min_recycles: int = 0
+    poisson_mean: float = 2.0
+    grad_recurrence_steps: int = 1
+    recurrence_sampling_mode: str = "shared"
+
+
+def _validate_parcae_train_config(config: ParcaeTrainConfig) -> ParcaeTrainConfig:
+    if config.min_recycles < 0:
+        raise ValueError(
+            "ParcaeTrainConfig.min_recycles must be non-negative, "
+            f"got {config.min_recycles}."
+        )
+    if config.max_recycles < config.min_recycles:
+        raise ValueError(
+            "ParcaeTrainConfig.max_recycles must be >= min_recycles, got "
+            f"{config.max_recycles} < {config.min_recycles}."
+        )
+    if config.poisson_mean < 0.0:
+        raise ValueError(
+            "ParcaeTrainConfig.poisson_mean must be non-negative, "
+            f"got {config.poisson_mean}."
+        )
+    if config.grad_recurrence_steps < 1:
+        raise ValueError(
+            "ParcaeTrainConfig.grad_recurrence_steps must be >= 1, "
+            f"got {config.grad_recurrence_steps}."
+        )
+    if config.recurrence_sampling_mode not in _PARCAE_RECURRENCE_SAMPLING_MODES:
+        raise ValueError(
+            "ParcaeTrainConfig.recurrence_sampling_mode must be one of "
+            f"{sorted(_PARCAE_RECURRENCE_SAMPLING_MODES)}, got "
+            f"{config.recurrence_sampling_mode!r}."
+        )
+    return config
+
+
+def _build_clamped_poisson_recycle_schedule(
+    config: ParcaeTrainConfig,
+    seed: int,
+    size: int = _PARCAE_RECURRENCE_SCHEDULE_SIZE,
+) -> np.ndarray:
+    rng = np.random.default_rng(seed=seed)
+    sampled_recycles = rng.poisson(
+        lam=config.poisson_mean,
+        size=size,
+    )
+    return np.clip(
+        sampled_recycles,
+        config.min_recycles,
+        config.max_recycles,
+    ).astype(np.int64)
+
+
+def _select_recycle_count(schedule: np.ndarray, global_step: int) -> int:
+    idx = global_step % len(schedule)
+    return int(schedule[idx])
+
+
+@dataclasses.dataclass(kw_only=True)
 class TrainingConfig(_Config):
     """Training step configuration."""
 
@@ -91,8 +158,10 @@ class TrainingConfig(_Config):
     train_diffusion_head: bool = True
     train_confidence_head: bool = False
 
-    # trunk recycling
+    # trunk recycling; Parcae training-time sampling below owns the active
+    # recycle schedule, and this value is kept for config/checkpoint compatibility.
     num_recycles: int = 3
+    parcae: ParcaeTrainConfig = dataclasses.field(default_factory=ParcaeTrainConfig)
     # for structure model training
     diffusion_batch_size: int = 48
     # for confidence module training
@@ -110,6 +179,35 @@ class TrainingConfig(_Config):
     # Entity count is computed as unique(token.asym_id) among valid tokens.
     # Logs `train/{metric}_entity_interval{1..10}` where interval10 means >=10.
     log_entity_binned_losses: bool = False
+
+
+def _get_diffusion_time_for_binning(
+    diffusion_out: dict[str, Any],
+) -> torch.Tensor | None:
+    """Return the diffusion time tensor used by generic time-bin logging."""
+    t_hat = diffusion_out.get("t_hat")
+    if torch.is_tensor(t_hat):
+        return t_hat
+    t = diffusion_out.get("t")
+    if torch.is_tensor(t):
+        return t
+    return None
+
+
+def _get_structure_module_for_binning(model: Any) -> Any:
+    """Return the structure module that defines time/sigma bounds for binning."""
+    diffusion_head = getattr(model, "diffusion_head", None)
+    if diffusion_head is not None:
+        return diffusion_head
+
+    structure_module = getattr(model, "structure_module", None)
+    if structure_module is not None:
+        return structure_module
+
+    raise AttributeError(
+        "Model must expose either diffusion_head or structure_module for "
+        "time-binned loss logging."
+    )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -149,6 +247,9 @@ class KFoldTrainingModule(pl.LightningModule):
         self.config: TrainConfig = config.train
         self.training_config: TrainingConfig = TrainingConfig.from_dict(
             self.config.training
+        )
+        self.parcae_train_config: ParcaeTrainConfig = _validate_parcae_train_config(
+            self.training_config.parcae
         )
         self.validation_config: ValidationConfig = ValidationConfig.from_dict(
             self.config.validation
@@ -201,14 +302,22 @@ class KFoldTrainingModule(pl.LightningModule):
         # Create writer
         self.writer: KFoldWriter = KFoldWriter()
 
-        # Pre-sample recycling steps for training
-        # This ensures all GPUs use the same recycling schedule
-        rng = np.random.default_rng(seed=42)
-        self.recycles_per_step: np.ndarray = rng.integers(
-            0,
-            self.training_config.num_recycles + 1,
-            size=100_000,
+        # Parcae methodology: pre-sample a clamped-Poisson recycle schedule for
+        # training. The trunk still runs num_recycles + 1 loops, and the number
+        # of recurrent trunk steps saved for backprop is controlled by
+        # parcae.grad_recurrence_steps. "shared" preserves the previous
+        # cross-rank lockstep schedule; "rank_independent" lazily builds a
+        # deterministic rank-specific schedule once Lightning rank is known.
+        self._shared_recycles_per_step: np.ndarray = (
+            _build_clamped_poisson_recycle_schedule(
+                self.parcae_train_config,
+                seed=_PARCAE_RECURRENCE_BASE_SEED,
+            )
         )
+        self._rank_independent_recycles_per_step: np.ndarray | None = None
+        self._rank_independent_recycles_rank: int | None = None
+        # Backward-compatible alias for code/tests that read the existing attr.
+        self.recycles_per_step: np.ndarray = self._shared_recycles_per_step
 
         # Time-binned logging state (populated only when enabled)
         self._timebin_enabled: bool = bool(self.training_config.log_time_binned_losses)
@@ -238,6 +347,37 @@ class KFoldTrainingModule(pl.LightningModule):
             EntityBinConfig(enabled=self._entitybin_enabled, nbins=10)
         )
 
+    def _get_recurrence_schedule_rank(self) -> int:
+        trainer = getattr(self, "_trainer", None)
+        if trainer is None:
+            return 0
+        return int(getattr(trainer, "global_rank", 0))
+
+    def _get_active_recycles_per_step(self) -> np.ndarray:
+        if self.parcae_train_config.recurrence_sampling_mode == "shared":
+            self.recycles_per_step = self._shared_recycles_per_step
+            return self.recycles_per_step
+
+        rank = self._get_recurrence_schedule_rank()
+        if (
+            self._rank_independent_recycles_per_step is None
+            or self._rank_independent_recycles_rank != rank
+        ):
+            self._rank_independent_recycles_per_step = (
+                _build_clamped_poisson_recycle_schedule(
+                    self.parcae_train_config,
+                    seed=_PARCAE_RECURRENCE_BASE_SEED + rank,
+                )
+            )
+            self._rank_independent_recycles_rank = rank
+
+        self.recycles_per_step = self._rank_independent_recycles_per_step
+        return self.recycles_per_step
+
+    def _get_num_recycles_for_current_step(self) -> int:
+        schedule = self._get_active_recycles_per_step()
+        return _select_recycle_count(schedule, int(self.global_step))
+
     def freeze_submodules(self):
         """Freeze submodules based on the training configuration."""
         # FIXME: (SeonghwanSeo) I did not test this function yet.
@@ -262,6 +402,11 @@ class KFoldTrainingModule(pl.LightningModule):
                 continue
             for param in module.parameters():
                 param.requires_grad_(False)
+
+        # freeze trunk Parcae params directly, as they are not treated as modules
+        for param_name in self.model.get_trunk_parameter_names():
+            param = getattr(self.model, param_name)
+            param.requires_grad_(False)
 
     def train(self, mode: bool = True):
         """Override train() to set sub-modules to eval mode if frozen."""
@@ -367,11 +512,13 @@ class KFoldTrainingModule(pl.LightningModule):
         num_samples: int = 1,
         diffusion_batch_size: int = 48,
         mode: str = "train",
+        grad_recurrence_steps: int = 1,
     ) -> dict[str, dict[str, torch.Tensor]]:
         if mode == "train":
             return self.model.forward_train(
                 f_input,
                 num_recycles=num_recycles,
+                grad_recurrence_steps=grad_recurrence_steps,
                 num_mini_rollout_steps=num_steps,
                 num_mini_rollout_samples=num_samples,
                 diffusion_batch_size=diffusion_batch_size,
@@ -400,15 +547,13 @@ class KFoldTrainingModule(pl.LightningModule):
 
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
-        # Sample recycling steps
-        # Use shared recycling schedule across all the gpus
-        idx = self.global_step % len(self.recycles_per_step)
-        num_recycles = int(self.recycles_per_step[idx])
+        num_recycles = self._get_num_recycles_for_current_step()
 
         # Compute the forward pass
         out: dict[str, torch.Tensor] = self(
             f_input=f_input,
             num_recycles=num_recycles,
+            grad_recurrence_steps=self.parcae_train_config.grad_recurrence_steps,
             num_steps=training_config.num_mini_rollout_steps,
             num_samples=training_config.num_mini_rollout_samples,
             diffusion_batch_size=training_config.diffusion_batch_size,
@@ -418,21 +563,18 @@ class KFoldTrainingModule(pl.LightningModule):
             loss, metrics = self.compute_losses(batch, out)
 
         if self._binned_cache_enabled and self.train_diffusion_head:
-            t_hat = out.get("diffusion", {}).get("t_hat", None)
+            diffusion_out = out.get("diffusion", {})
+            t_for_bins = _get_diffusion_time_for_binning(diffusion_out)
             diffusion_per_sample = self._timebin_last_diffusion_per_sample
             distogram_loss_per_batch = self._timebin_last_distogram_loss_per_batch
 
             # These caches are populated inside compute_losses/compute_diffusion_loss.
             # Skip if anything is missing for this batch.
-            if (
-                torch.is_tensor(t_hat)
-                and diffusion_per_sample is not None
-                and distogram_loss_per_batch is not None
-            ):
-                if self._timebin_enabled:
+            if diffusion_per_sample is not None and distogram_loss_per_batch is not None:
+                if self._timebin_enabled and torch.is_tensor(t_for_bins):
                     self.time_binned_logger.update(
-                        t_hat=t_hat,
-                        structure_module=self.model.structure_module,
+                        t_hat=t_for_bins,
+                        structure_module=_get_structure_module_for_binning(self.model),
                         diffusion_per_sample=diffusion_per_sample,
                         distogram_loss_per_batch=distogram_loss_per_batch,
                         loss_weights=self.loss_weights,
@@ -520,10 +662,6 @@ class KFoldTrainingModule(pl.LightningModule):
             distogram_metrics | diffusion_metrics | confidence_metrics | sample_metrics
         )
         all_metrics["loss"] = loss.detach()
-
-        if self._binned_cache_enabled and self.train_diffusion_head:
-            # Used to compute per-time-bin total loss without recomputing distogram head.
-            self._timebin_last_distogram_loss_per_batch = distogram_loss.detach()
 
         return loss, all_metrics
 
@@ -705,8 +843,11 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
-        loss = self.distogram_loss(logits, f_input).mean()
+        loss_per_batch = self.distogram_loss(logits, f_input)
+        loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
+        if self._binned_cache_enabled and self.train_diffusion_head:
+            self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
         return loss, metrics
 
     def compute_diffusion_loss(

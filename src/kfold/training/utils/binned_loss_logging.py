@@ -34,15 +34,26 @@ def _entitybin_labels(nbins: int) -> list[str]:
 def _get_time_bounds(structure_module: Any) -> tuple[float, float]:
     """Return (t_min, t_max) bounds used for u-normalization.
 
-    - ECSI: sampling_time_min/max are already in [0, 1].
+    - ECSI: time_min/max are already in [0, 1].
+    - Legacy/config-wrapped ECSI: sampling.time_min/max are already in [0, 1].
     - EDM/AF3/Boltz-style: sigma_min/max are relative and typically scaled by sigma_data.
     """
     if hasattr(structure_module, "sampling"):
         t_min = float(structure_module.sampling.time_min)
         t_max = float(structure_module.sampling.time_max)
-    else:
+    elif hasattr(structure_module, "time_min") and hasattr(structure_module, "time_max"):
+        t_min = float(structure_module.time_min)
+        t_max = float(structure_module.time_max)
+    elif hasattr(structure_module, "sigma_min") and hasattr(
+        structure_module, "sigma_max"
+    ):
         t_min = float(structure_module.sigma_min)
         t_max = float(structure_module.sigma_max)
+    else:
+        raise AttributeError(
+            "structure_module must expose either sampling.time_min/time_max, "
+            "time_min/time_max, or sigma_min/sigma_max for time-binned logging."
+        )
     if hasattr(structure_module, "sigma_data") and t_max > 1.0:
         sigma_data = float(structure_module.sigma_data)
         t_min *= sigma_data
@@ -66,6 +77,52 @@ def _per_bin_update(
             continue
         m = bin_sum[b_idx] / c
         metrics[f"{label}__{name}"].update(m, c)
+
+
+def _as_batch_vector(
+    values: torch.Tensor,
+    *,
+    batch_size: int,
+    name: str,
+) -> torch.Tensor:
+    """Return values as a [B] tensor, broadcasting scalar losses if needed."""
+    if values.ndim == 0:
+        return values.reshape(1).expand(batch_size)
+    if values.ndim == 1 and values.shape[0] == batch_size:
+        return values
+    if values.ndim == 1 and values.shape[0] == 1:
+        return values.expand(batch_size)
+    raise ValueError(
+        f"{name} must be scalar or shape [B], got shape {tuple(values.shape)} "
+        f"for batch size {batch_size}."
+    )
+
+
+def _total_loss_per_sample(
+    *,
+    diffusion_per_sample: dict[str, torch.Tensor],
+    distogram_loss_per_batch: torch.Tensor,
+    loss_weights: dict[str, float],
+) -> torch.Tensor:
+    """Compute weighted total loss with shape [B, Nsample]."""
+    diffusion_weight = float(loss_weights["diffusion"])
+    distogram_weight = float(loss_weights["distogram"])
+    diffusion_term = diffusion_per_sample["diffusion_loss"] * diffusion_weight  # [B, N]
+    if diffusion_term.ndim < 2:
+        raise ValueError(
+            "diffusion_per_sample['diffusion_loss'] must have shape [B, Nsample], "
+            f"got shape {tuple(diffusion_term.shape)}."
+        )
+    batch_size = int(diffusion_term.shape[0])
+    disto_term = (
+        _as_batch_vector(
+            distogram_loss_per_batch,
+            batch_size=batch_size,
+            name="distogram_loss_per_batch",
+        )
+        * distogram_weight
+    )  # [B]
+    return diffusion_term + disto_term[:, None]
 
 
 class TimeBinnedLossLogger(torch.nn.Module):
@@ -118,13 +175,11 @@ class TimeBinnedLossLogger(torch.nn.Module):
                 self.metrics, self.labels, name, values, bin_index, self.nbins
             )
 
-        diffusion_weight = float(loss_weights["diffusion"])
-        distogram_weight = float(loss_weights["distogram"])
-        disto_term = distogram_loss_per_batch * distogram_weight  # [B]
-        diffusion_term = (
-            diffusion_per_sample["diffusion_loss"] * diffusion_weight
-        )  # [B, N]
-        total_per_sample = diffusion_term + disto_term[:, None]
+        total_per_sample = _total_loss_per_sample(
+            diffusion_per_sample=diffusion_per_sample,
+            distogram_loss_per_batch=distogram_loss_per_batch,
+            loss_weights=loss_weights,
+        )
         _per_bin_update(
             self.metrics,
             self.labels,
@@ -141,6 +196,8 @@ class TimeBinnedLossLogger(torch.nn.Module):
 
         out: dict[str, torch.Tensor] = {}
         for key, m in self.metrics.items():
+            if float(m.weight.item()) <= 0.0:
+                continue
             v = m.compute()
             if not v.isfinite().all():
                 continue
@@ -207,13 +264,11 @@ class EntityBinnedLossLogger(torch.nn.Module):
                 self.metrics, self.labels, name, values, bin_index, self.nbins
             )
 
-        diffusion_weight = float(loss_weights["diffusion"])
-        distogram_weight = float(loss_weights["distogram"])
-        disto_term = distogram_loss_per_batch * distogram_weight  # [B]
-        diffusion_term = (
-            diffusion_per_sample["diffusion_loss"] * diffusion_weight
-        )  # [B, N]
-        total_per_sample = diffusion_term + disto_term[:, None]
+        total_per_sample = _total_loss_per_sample(
+            diffusion_per_sample=diffusion_per_sample,
+            distogram_loss_per_batch=distogram_loss_per_batch,
+            loss_weights=loss_weights,
+        )
         _per_bin_update(
             self.metrics,
             self.labels,
@@ -229,6 +284,8 @@ class EntityBinnedLossLogger(torch.nn.Module):
 
         out: dict[str, torch.Tensor] = {}
         for key, m in self.metrics.items():
+            if float(m.weight.item()) <= 0.0:
+                continue
             v = m.compute()
             if not v.isfinite().all():
                 continue

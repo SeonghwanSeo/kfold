@@ -9,7 +9,6 @@ This test uses two synthetic molecular conformations to validate:
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-
 from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI, SamplingConfig
 
 
@@ -358,10 +357,7 @@ if __name__ == "__main__":
     )
 
     structure_module = KFoldECSI(ecsi_config, MockScoreModel())
-    print(
-        "Created KFoldECSI with "
-        f"gamma_max={structure_module.gamma_max}"
-    )
+    print(f"Created KFoldECSI with gamma_max={structure_module.gamma_max}")
 
     # Create synthetic molecules
     num_atoms = 10
