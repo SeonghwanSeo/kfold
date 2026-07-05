@@ -24,7 +24,13 @@ The pre-processed dataset structure for RCSB PDB data is as follows:
     ccd-test.pkl                # CCD for model inference
     /dataset/
         /rcsb-train/
-            /apo/               # Apo structures (e.g., from AFDB, ESMFold)
+            /apo/               # Raw apo/prior archives by chain type and source
+            /apo_lmdb/          # Source-specific apo LMDBs
+            /prior_lmdb/        # Chain-type prior stack LMDBs
+            /apo_tok_lmdb/      # Protein apo structure tokens by source
+            apo_multimer_lookup.msgpack
+            /apo_multimer_lmdb/ # Source-specific multimer apo LMDBs
+            /prior_multimer_lmdb/
             /embedding/
               /sequence/        # Pre-trained sequence embeddings
               /structure/       # Pre-trained structure embeddings
@@ -32,7 +38,13 @@ The pre-processed dataset structure for RCSB PDB data is as follows:
             metadata.json       # Metadata file with cluster ids
             metadata.msgpack    # Binary metadata file
         /rcsb-val/
-            /apo/               # Apo structures (e.g., from AFDB, ESMFold)
+            /apo/               # Raw apo/prior archives by chain type and source
+            /apo_lmdb/          # Source-specific apo LMDBs
+            /prior_lmdb/        # Chain-type prior stack LMDBs
+            /apo_tok_lmdb/      # Protein apo structure tokens by source
+            apo_multimer_lookup.msgpack
+            /apo_multimer_lmdb/ # Source-specific multimer apo LMDBs
+            /prior_multimer_lmdb/
             /embedding/
               /sequence/        # Pre-trained sequence embeddings
               /structure/       # Pre-trained structure embeddings
@@ -87,12 +99,12 @@ Run the following script to prepare the Chemical Component Dictionary (CCD):
 ```bash
 # Run the preparation script
 # For data preprocessing and inference
-python scripts/process/rcsb/a_prepare_ccd.py \
+python scripts/process/rcsb/a_process_ccd.py \
     --cif_path /raw_data/RCSB/components.cif \
     --out_path /data/processed/ccd-test.pkl
 
 # For model training (up to 10 cached conformers per molecule)
-python scripts/process/rcsb/a_prepare_ccd.py \
+python scripts/process/rcsb/a_process_ccd.py \
     --cif_path /raw_data/RCSB/components.cif \
     --out_path /data/processed/ccd-train.pkl \
     --train
@@ -104,13 +116,13 @@ Run the following script to process mmCIF files.
 
 ```bash
 # Step 3-1. Extract sequences
-python scripts/process/rcsb/b_extract_all_sequences.py \
+python scripts/process/rcsb/b_extract_all_sequence.py \
     --cif_dir /raw_data/RCSB/mmCIF/ \
     --data_dir /data/processed/dataset \
     --split train \
     --num_workers 128
 
-python scripts/process/rcsb/b_extract_all_sequences.py \
+python scripts/process/rcsb/b_extract_all_sequence.py \
     --cif_dir /raw_data/RCSB/mmCIF/ \
     --data_dir /data/processed/dataset \
     --split val \
@@ -186,37 +198,93 @@ esm-extract \
     ...
 ```
 
-### ESMFold apo structure preparation
-
-For K-Fold model training, you may also need to prepare apo structures using ESMFold.
-Since ESMFold returns unresolved residues when the input sequence contains `X` tokens, we replace `X` with Alanine (`A`) before running ESMFold.
-
-```bash
-python scripts/process/rcsb/f1_prepare_esmfold_input.py \
-    --data_dir /data/processed/dataset \
-    --split train
-
-python scripts/process/rcsb/f1_prepare_esmfold_input.py \
-    --data_dir /data/processed/dataset \
-    --split val
-
-# Run ESMFold structure prediction (example command)
-mkdir -p /data/processed/dataset/rcsb-train/apo/esmfold/
-esm-fold -i /data/processed/dataset/rcsb-train/sequences/esmfold_input.fasta -o /data/processed/dataset/rcsb-train/apo/esmfold/
-```
-
 ### Deterministic DNA apo structure preparation
 
-DNA apo records are generated from `unique_dna_sequences.fasta` as idealized
-single-stranded helices. By default the script writes zstd-compressed PDB files
-under `apo/dna/`, and the apo LMDB creation step parses them into atom29 records.
+DNA apo records are generated for DNA entities in `all_sequences.fasta` as
+idealized single-stranded helices. By default the script writes
+zstd-compressed `{pdb_id}_{entity_id}.pdb.zst` files under `apo/dna/dna_helix/`,
+and the apo/prior LMDB creation step parses them into atom29 records.
 
 ```bash
-python scripts/process/rcsb/f2b_create_dna_apo.py \
+python scripts/process/rcsb/f1_create_dna_apo.py \
     --data_dir /data/processed/dataset \
     --split train
 
-python scripts/process/rcsb/f2b_create_dna_apo.py \
+python scripts/process/rcsb/f1_create_dna_apo.py \
     --data_dir /data/processed/dataset \
     --split val
+```
+
+### Sampler Apo And Prior LMDBs
+
+Raw sampler outputs are stored under:
+
+```text
+rcsb-{split}/apo/
+  protein/{source}/{pdb_id}_{entity_id}/...
+  rna/{source}/{pdb_id}_{entity_id}/...
+  dna/dna_helix/{pdb_id}_{entity_id}.pdb.zst
+```
+
+Build the source-specific apo LMDBs and chain-type prior stack LMDBs:
+
+```bash
+python scripts/process/rcsb/f2_create_apo_prior_lmdb.py \
+    --data_dir /data/processed/dataset \
+    --split train \
+    --num_workers 128 \
+    --map_size_gb 1024 \
+    --overwrite
+```
+
+This writes:
+
+```text
+rcsb-{split}/apo_lookup.msgpack
+rcsb-{split}/apo_lmdb/{chain_type}/{source}.lmdb
+rcsb-{split}/prior_lmdb/{chain_type}.lmdb
+```
+
+### Antibody/Protein Multimer Apo And Prior LMDBs
+
+SAbDab heavy/light pairs are resolved during preprocessing and stored as
+runtime lookup metadata.  Multimer CIF chain IDs are sequence-matched to the
+SAbDab H/L sequences before records are written with internal integer
+`asym_id` keys.
+
+```bash
+python scripts/process/rcsb/g1_extract_sabdab_pairs.py \
+    --data_dir /data/processed/dataset \
+    --splits train val \
+    --out_path /data/processed/dataset/rcsb-train/sequences/sabdab_heavy_light_pairs.csv
+
+python scripts/process/rcsb/g2_create_apo_multimer_lookup.py \
+    --data_dir /data/processed/dataset \
+    --split train \
+    --source prot_m_sampler \
+    --source_dir /data/source/rcsb-train/apo-sampler/protein_multimer/prot_m_sampler_seed1-5_step200
+
+python scripts/process/rcsb/g3_create_apo_multimer_lmdb.py \
+    --data_dir /data/processed/dataset \
+    --split train \
+    --source prot_m_sampler \
+    --source_dir /data/source/rcsb-train/apo-sampler/protein_multimer/prot_m_sampler_seed1-5_step200 \
+    --num_workers 64 \
+    --overwrite
+```
+
+This writes:
+
+```text
+rcsb-{split}/apo_multimer_lookup.msgpack
+rcsb-{split}/apo_multimer_lmdb/protein/{source}.lmdb
+rcsb-{split}/prior_multimer_lmdb/protein/{source}.lmdb
+```
+
+Protein apo structure tokens are generated from `apo_lmdb/protein/*.lmdb`:
+
+```bash
+python scripts/process/rcsb/h1_tokenize_apo_monomer.py --data_dir /data/processed/dataset --split train
+python scripts/process/rcsb/h2_tokenize_apo_multimer.py --data_dir /data/processed/dataset --split train
+python scripts/process/rcsb/h3_combine_apo_token_lmdb.py --data_dir /data/processed/dataset --split train
 ```

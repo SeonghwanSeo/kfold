@@ -1,17 +1,47 @@
 """Tokenize the apo structures directly from LMDB."""
 
 import argparse
-import io
 import pathlib
 
 import lmdb
 import numpy as np
 import torch
-from kfold.model.modules.structure_encoder.triprorep import TriProRep, restype_order
 from tqdm import tqdm
+
+from kfold.data.utils.io.apo import unpack_apo_record
+from kfold.model.layers.struct_enc import BackboneTokenizer, FullAtomTokenizer
+from kfold.model.modules.structure_encoder import restype_order
 
 PADDING_SIZES = [32, 64, 128, 256, 384, 512, 640, 768, 1024, 1280]
 BATCH_THRESHOLD = 1280
+
+
+def load_tokenizers(
+    ckpt_path: pathlib.Path,
+    device: torch.device | str = "cuda",
+) -> tuple[BackboneTokenizer, FullAtomTokenizer]:
+    state_dict = torch.load(ckpt_path, map_location="cpu")
+    bb_state_dict = {
+        k.removeprefix("bb_tok."): v
+        for k, v in state_dict.items()
+        if k.startswith("bb_tok.")
+    }
+    fa_state_dict = {
+        k.removeprefix("fa_tok."): v
+        for k, v in state_dict.items()
+        if k.startswith("fa_tok.")
+    }
+    if not bb_state_dict or not fa_state_dict:
+        raise KeyError(
+            "Expected a standalone StructureEncoder checkpoint containing "
+            "'bb_tok.' and 'fa_tok.' weights."
+        )
+
+    bb_tok = BackboneTokenizer().to(torch.bfloat16)
+    fa_tok = FullAtomTokenizer().to(torch.bfloat16)
+    bb_tok.load_state_dict(bb_state_dict, strict=True)
+    fa_tok.load_state_dict(fa_state_dict, strict=True)
+    return bb_tok.eval().to(device), fa_tok.eval().to(device)
 
 
 def parse_args():
@@ -45,6 +75,12 @@ def parse_args():
         type=int,
         default=0,
     )
+    parser.add_argument(
+        "--sources",
+        nargs="+",
+        default=None,
+        help="Optional apo source names to tokenize, e.g. esmfold afdb.",
+    )
     args = parser.parse_args()
     return args
 
@@ -71,21 +107,22 @@ class LmdbDataset(torch.utils.data.Dataset):
                 meminit=False,
             )
 
-        full_key = self.keys[index]
-        # Key format is "apo_type:raw_id"
-        raw_id = full_key.split(":", 1)[1]
+        raw_id = self.keys[index]
 
         try:
             with self.env.begin() as txn:
-                value = txn.get(full_key.encode("utf-8"))
+                value = txn.get(raw_id.encode("utf-8"))
 
-            with io.BytesIO(value) as buffer:
-                data = np.load(buffer)
-                seq_arr = data["seq"]
-                coords = data["coords"]
+            record = unpack_apo_record(value)
+            seq = record["seq"]
+            coords = record["coords"]
+            chain_type = record.get("chain_type", "protein")
+            if chain_type != "protein" or coords.shape[1:] != (37, 3):
+                raise ValueError(
+                    f"Expected protein atom37 record, got chain_type={chain_type}, "
+                    f"coords_shape={coords.shape}"
+                )
 
-            # Convert numpy 'S1' byte array back to python string
-            seq = b"".join(seq_arr).decode("utf-8")
             aatypes = [restype_order.get(res, 0) for res in seq]
 
             return (
@@ -94,17 +131,16 @@ class LmdbDataset(torch.utils.data.Dataset):
                 torch.tensor(coords, dtype=torch.float32),
             )
         except Exception as e:
-            print(f"Error processing {full_key}: {e}")
+            print(f"Error processing {raw_id}: {e}")
             return (raw_id, None, None)
 
 
 def collate_fn(batch):
     """Collate function to filter out failed samples."""
+    batch = [item for item in batch if item[1] is not None and item[2] is not None]
+    if len(batch) == 0:
+        return [], None, None, None
     keys, seq_token_ids, coords_list = zip(*batch, strict=True)
-    seq_token_ids = [s for s in seq_token_ids if s is not None]
-    coords_list = [c for c in coords_list if c is not None]
-    if len(seq_token_ids) == 0 or len(coords_list) == 0:
-        return keys, None, None, None
     lengths = [len(s) for s in seq_token_ids]
     max_len = max(lengths)
     # Choose the smallest padding size that can fit the longest sequence
@@ -129,40 +165,38 @@ def main():
     chunk_i = args.chunk
     num_chunk = args.num_chunk
 
-    in_lmdb_path = data_dir / "apo.lmdb"
-    assert in_lmdb_path.exists(), f"Input LMDB not found at {in_lmdb_path}"
+    in_root = data_dir / "apo_lmdb" / "protein"
+    assert in_root.exists(), f"Input protein apo LMDB directory not found at {in_root}"
 
-    out_dir = data_dir / "apo_tok_chunk/"
-    out_dir.mkdir(exist_ok=True)
+    out_dir = data_dir / "apo_tok_chunk" / "protein"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize tokenizer
-    tok = TriProRep(TriProRep.Config(path=args.ckpt_path))
-    bb_tok = tok.bb_tok.cuda()
-    fa_tok = tok.fa_tok.cuda()
-    del tok
+    bb_tok, fa_tok = load_tokenizers(args.ckpt_path, device="cuda")
 
-    # Read all keys from the input LMDB and group them by apo_type
-    apo_type_to_items = {}
+    lmdb_paths = sorted(in_root.glob("*.lmdb"))
+    if args.sources is not None:
+        requested_sources = set(args.sources)
+        lmdb_paths = [path for path in lmdb_paths if path.stem in requested_sources]
+        found_sources = {path.stem for path in lmdb_paths}
+        missing_sources = sorted(requested_sources - found_sources)
+        if missing_sources:
+            raise FileNotFoundError(
+                f"Requested apo source LMDBs not found under {in_root}: {missing_sources}"
+            )
+    print(f"Found {len(lmdb_paths)} protein apo sources: {[p.stem for p in lmdb_paths]}")
 
-    env_in = lmdb.open(str(in_lmdb_path), readonly=True, lock=False)
-    with env_in.begin() as txn:
-        cursor = txn.cursor()
-        for k, v in cursor:
-            full_key = k.decode("utf-8")
-            apo_type = full_key.split(":")[0]
-
-            if apo_type not in apo_type_to_items:
-                apo_type_to_items[apo_type] = []
-
-            # Store (full_key, byte_size) to mimic the previous file size sorting
-            apo_type_to_items[apo_type].append((full_key, len(v)))
-    env_in.close()
-    print(f"Found {len(apo_type_to_items)} apo types: {list(apo_type_to_items.keys())}")
-
-    for apo_type, items in apo_type_to_items.items():
+    for in_lmdb_path in lmdb_paths:
+        source = in_lmdb_path.stem
         torch.cuda.empty_cache()
-        print(f"Processing {apo_type}...")
+        print(f"Processing {source}...")
 
+        items = []
+        env_in = lmdb.open(str(in_lmdb_path), readonly=True, lock=False)
+        with env_in.begin() as txn:
+            for k, v in txn.cursor():
+                items.append((k.decode("utf-8"), len(v)))
+        env_in.close()
         # Sort by value size (small to large) to minimize OOM risk
         items.sort(key=lambda x: x[1])
         keys = [x[0] for x in items]
@@ -172,11 +206,11 @@ def main():
             keys = keys[chunk_i::num_chunk]
 
         if len(keys) == 0:
-            print(f"No samples for chunk {chunk_i}/{num_chunk} in {apo_type}. Skipping.")
+            print(f"No samples for chunk {chunk_i}/{num_chunk} in {source}. Skipping.")
             continue
 
         print(
-            f"Total samples for {apo_type}: {len(keys)}. "
+            f"Total samples for {source}: {len(keys)}. "
             f"Processing chunk {chunk_i}/{num_chunk} with {len(keys)} samples."
         )
 
@@ -191,8 +225,8 @@ def main():
         )
 
         # Create output lmdb
-        out_subdir = out_dir / apo_type
-        out_subdir.mkdir(exist_ok=True)
+        out_subdir = out_dir / source
+        out_subdir.mkdir(parents=True, exist_ok=True)
         out_lmdb_path = out_subdir / f"{args.chunk}_{args.num_chunk}.lmdb"
         env_out = lmdb.open(
             str(out_lmdb_path),
@@ -203,8 +237,10 @@ def main():
         )
 
         with env_out.begin(write=True) as txn:
-            for batch in (pbar := tqdm(dataloader, desc=f"Tokenizing {apo_type}")):
+            for batch in (pbar := tqdm(dataloader, desc=f"Tokenizing {source}")):
                 keys, aatypes, coords, lengths = batch
+                if aatypes is None or coords is None:
+                    continue
 
                 aatypes = aatypes.to("cuda", non_blocking=True)
                 coords = coords.to("cuda", non_blocking=True)
