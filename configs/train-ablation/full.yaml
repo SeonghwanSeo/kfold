@@ -53,11 +53,9 @@ data:
     use_ot_permutation: true # Only for training.
     ligand_augmentation_scale: 0.3
     use_holo_if_apo_unavailable: true
-    prob_bioprior_perturbation: 1.0
+    prob_perturbation: 0.5
     bioprior:
-      min_steps: 1
       max_steps: 8
-      log_level: "INFO"
     train: true # Only for train/val
 
 # Lightning Trainer Configuration

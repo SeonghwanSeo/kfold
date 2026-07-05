@@ -601,16 +601,21 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
 
             eid: int = c.entity_id
             ek: str = f"{entry_id}:{eid}"  # For logging purpose
+            ctype_str = str(c.ctype)
 
             if eid not in chain_lookup:
-                self.logger.warning(f"No apo info found for entity '{ek}' in lookup.")
+                self.logger.warning(
+                    f"No apo info found for {ctype_str} entity '{ek}' in lookup."
+                )
                 continue
 
             if eid not in selected_by_entity:
                 entity_apo_infos: list[dict] = chain_lookup[eid]
                 num_apos = len(entity_apo_infos)
                 # Select apo structure (randomly if multiple)
-                assert num_apos > 0, f"Empty apo info found for entity '{ek}' in lookup."
+                assert num_apos > 0, (
+                    f"Empty apo info found for {ctype_str} entity '{ek}' in lookup."
+                )
                 apo_info = entity_apo_infos[rng.integers(0, num_apos)]
                 loaded = self._load_apo_info_from_lmdb(apo_info, context=f"entity {ek}")
                 selected_by_entity[eid] = loaded
@@ -683,7 +688,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             apo_info = apo_lookup.get(asym_id)
             if apo_info is None:
                 self.logger.warning(
-                    f"No apo info for chain `{ek}` in apo lookup. Skipping this entry"
+                    f"No apo info for protein chain `{ek}` in apo lookup. "
+                    f"Skipping this entry"
                 )
                 continue
 

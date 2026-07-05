@@ -49,11 +49,9 @@ data:
     use_ot_permutation: true # Only for training.
     ligand_augmentation_scale: 0.3
     use_holo_if_apo_unavailable: true
-    prob_bioprior_perturbation: 1.0
+    prob_perturbation: 0.5
     bioprior:
-      min_steps: 1
-      max_steps: 4
-      log_level: "INFO"
+      max_steps: 8
     train: true # Only for train/val
 
 # Lightning Trainer Configuration
@@ -97,7 +95,7 @@ training:
     max_recycles: 5
     poisson_mean: 2.0
     grad_recurrence_steps: 2
-    recurrence_sampling_mode: shared  # NOTE: `rank_independent` for sample-level recurrence count sampling
+    recurrence_sampling_mode: shared # NOTE: `rank_independent` for sample-level recurrence count sampling
 
 validation:
   # Validation step hyperparameters

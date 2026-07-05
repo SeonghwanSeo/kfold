@@ -26,6 +26,4 @@ apo_init:
     prob_rieprody: 0.0 # Default: use metric-free BioPrior perturbation
     rieprody: null
     bioprior:
-      min_steps: 1 # Minimum random walk steps
       max_steps: 5 # Maximum random walk steps
-      log_level: "INFO" # Logging level

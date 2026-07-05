@@ -19,8 +19,6 @@ class BioPriorConfig:
     ----------
     noise_scale : float
         Scale of the noise applied during perturbation.
-    min_steps : int
-        Minimum number of perturbation steps.
     max_steps : int
         Maximum number of perturbation steps.
     scale_length : bool
@@ -34,7 +32,7 @@ class BioPriorConfig:
 
     noise_scale: float = 1.0
     min_steps: int = 1
-    max_steps: int = 8
+    max_steps: int = 5
     scale_length: bool = False
     max_rmsd: float | None = None
     log_level: int | str = "INFO"

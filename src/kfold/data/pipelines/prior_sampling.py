@@ -33,7 +33,7 @@ class PriorSamplerConfig:
         Whether to apply optimal transport-based permutation
     ligand_augmentation_scale : float
         Scale of random noise augmentation for ligand coordinates (in Angstrom).
-    prob_bioprior_perturbation : float
+    prob_perturbation : float
         Probability of applying BioPrior perturbation to protein priors.
     use_holo_if_apo_unavailable : bool
         Whether to seed missing polymer priors from holo coordinates before
@@ -45,7 +45,7 @@ class PriorSamplerConfig:
     chain_translation_scale: float = 24.0  # Angstrom
     use_ot_permutation: bool = False
     ligand_augmentation_scale: float = 0.3  # Angstrom
-    prob_bioprior_perturbation: float = 0.0
+    prob_perturbation: float = 0.0
     use_holo_if_apo_unavailable: bool = True
     bioprior: BioPriorConfig = dataclasses.field(default_factory=BioPriorConfig)
     train: bool = False
@@ -57,7 +57,7 @@ class PriorSamplerConfig:
             chain_translation_scale=24.0,
             use_ot_permutation=False,
             ligand_augmentation_scale=0.3,
-            prob_bioprior_perturbation=0.0,
+            prob_perturbation=0.0,
             use_holo_if_apo_unavailable=True,
             train=False,
         )
@@ -80,11 +80,10 @@ class PriorSampler:
         self.train: bool = config.train
         self.ligand_augmentation_scale: float = config.ligand_augmentation_scale
         self.use_holo_if_apo_unavailable: bool = config.use_holo_if_apo_unavailable
-        self.prob_bioprior_perturbation: float = config.prob_bioprior_perturbation
-        if not 0.0 <= self.prob_bioprior_perturbation <= 1.0:
+        self.prob_perturbation: float = config.prob_perturbation
+        if not 0.0 <= self.prob_perturbation <= 1.0:
             raise ValueError(
-                "prob_bioprior_perturbation must be in [0, 1], got "
-                f"{self.prob_bioprior_perturbation}."
+                f"prob_perturbation must be in [0, 1], got {self.prob_perturbation}."
             )
         self.bioprior = BioPriorPerturbation(config.bioprior)
 
@@ -424,7 +423,7 @@ class PriorSampler:
         """Apply BioPrior perturbation to a protein prior in chain atom order."""
         if not chain.is_protein:
             return coords
-        if rng.random() >= self.prob_bioprior_perturbation:
+        if rng.random() >= self.prob_perturbation:
             return coords
 
         atom37_coords = self._chain_coords_to_atom37(coords, chain)

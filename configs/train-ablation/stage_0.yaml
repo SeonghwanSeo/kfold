@@ -35,9 +35,9 @@ data:
       weight: 0.010
 
     # Protein-DNA (2%) - not yet
-    - _yaml_: "../dataset/distill-complex.yaml"
-      name: JASPAR
-      weight: 0.020
+    # - _yaml_: "../dataset/distill-complex.yaml"
+    #   name: JASPAR
+    #   weight: 0.020
 
     # Protein-ligand, TPD (2%)
     - _yaml_: "../dataset/distill-interface.yaml"
