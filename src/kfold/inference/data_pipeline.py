@@ -422,7 +422,6 @@ class InputDataPipeline:
                     continue
                 chain_info = apo_info.copy()
                 chain_info["apo_uid"] = chain.asym_id
-                chain_info["skip_perturbation"] = chain.is_nucleic_acid
                 chain_info["use_struct_token"] = use_struct_token
                 lookup[chain.asym_id] = chain_info
         return lookup

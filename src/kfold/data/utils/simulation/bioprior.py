@@ -34,7 +34,7 @@ class BioPriorConfig:
 
     noise_scale: float = 1.0
     min_steps: int = 1
-    max_steps: int = 15
+    max_steps: int = 8
     scale_length: bool = False
     max_rmsd: float | None = None
     log_level: int | str = "INFO"

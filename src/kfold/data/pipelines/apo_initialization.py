@@ -1,13 +1,11 @@
 import dataclasses
 import logging
-from functools import lru_cache
 from typing import Self
 
 import numpy as np
 
-import kfold.constants as C
 from kfold.data.types.structure import Chain, RefStructure
-from kfold.data.utils.dna_utils import build_dna_single_helix_for_chain
+from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.misc import spawn_rng
 
 from ._protein_perturbation import ProteinPerturbation, ProteinPerturbationConfig
@@ -27,28 +25,6 @@ def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
     # Convert to 0-based indexing
     # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
     return res_st - 1, res_end, apo_st - 1, apo_end
-
-
-@lru_cache(maxsize=128)
-def get_atom_order_in_residue(res_name: str, ctype: C.ChainType) -> tuple[int, ...]:
-    """Get apo-coordinate indices for atoms in a residue."""
-    res_name: C.ResidueName = C.ResidueName[res_name]
-    if ctype.is_protein:
-        atom_order = C.atom.protein_atom37_order
-    elif ctype.is_rna or ctype.is_dna:
-        atom_order = C.atom.nucleic_acid_atom29_order
-    else:
-        raise ValueError(f"Unsupported apo chain type: {ctype}")
-    return tuple(atom_order[an.value] for an in C.atom.RESIDUE_ATOMS[res_name])
-
-
-def get_expected_apo_num_atoms(ctype: C.ChainType) -> int:
-    """Return the per-residue apo coordinate width for a polymer type."""
-    if ctype.is_protein:
-        return 37
-    if ctype.is_rna or ctype.is_dna:
-        return 29
-    raise ValueError(f"Unsupported apo chain type: {ctype}")
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -75,11 +51,7 @@ class ApoInitializerConfig:
 
     @classmethod
     def inference_mode(cls, use_perturbation: bool = False) -> Self:
-        """Get ApoSampler instance for inference mode.
-
-        Accepts and ignores any additional positional or keyword arguments
-        for backward/forward compatibility.
-        """
+        """Get ApoSampler instance for inference mode."""
         prob_perturbation = 1.0 if use_perturbation else 0.0
         return cls(prob_perturbation=prob_perturbation)
 
@@ -118,11 +90,7 @@ class ApoInitializer:
 
     @classmethod
     def inference_mode(cls, use_perturbation: bool = False) -> Self:
-        """Get ApoInitializer instance for inference mode.
-
-        Accepts and ignores any additional positional or keyword arguments
-        for backward/forward compatibility.
-        """
+        """Get ApoInitializer instance for inference mode."""
         return cls(ApoInitializerConfig.inference_mode(use_perturbation))
 
     def __call__(
@@ -130,6 +98,7 @@ class ApoInitializer:
         struct: RefStructure,
         lookup: dict[int, dict],
         rng: np.random.Generator | None = None,
+        apply_perturbation: bool = True,
     ) -> dict[int, np.ndarray]:
         """Populate apo structure coordinates into the reference structure.
 
@@ -147,23 +116,26 @@ class ApoInitializer:
                     Optional key for using pre-computed perturbation with rieprody.
                 - residue_map: residue index mapping between holo and apo
                     e.g., "11:100->66:155"
-                - skip_perturbation: bool
-                    Whether to bypass apo perturbation for grouped complex apo.
         rng : np.random.Generator
             Random number generator for stochastic operations.
+        apply_perturbation : bool
+            Whether to apply protein apo perturbation before sequence alignment.
 
         Returns
         -------
         apo_coords_dict : dict[int, np.ndarray]
             Mapping from asym_id to apo coordinates of shape [Natoms, 3].
         """
-        return self.sample_apo_structure(struct, lookup, rng)
+        return self.sample_apo_structure(
+            struct, lookup, rng, apply_perturbation=apply_perturbation
+        )
 
     def sample_apo_structure(
         self,
         struct: RefStructure,
         lookup: dict[int, dict],
         rng: np.random.Generator | None = None,
+        apply_perturbation: bool = True,
     ) -> dict[int, np.ndarray]:
         """Populate apo structure coordinates into the reference structure.
 
@@ -182,10 +154,10 @@ class ApoInitializer:
                     rieprody.
                 - residue_map: residue index mapping between holo and apo
                     e.g., "11:100->66:155"
-                - skip_perturbation: bool
-                    Whether to bypass apo perturbation for grouped complex apo.
         rng : np.random.Generator
             Random number generator for stochastic operations.
+        apply_perturbation : bool
+            Whether to apply protein apo perturbation before sequence alignment.
 
         Returns
         -------
@@ -198,26 +170,33 @@ class ApoInitializer:
         # === Collect the apo coordinates for supported polymer chains === #
         apo_coords_dict: dict[int, np.ndarray] = {}
         entity_cache: dict[int, np.ndarray] = {}
+        polymer_asym_ids = {c.asym_id for c in struct.chains if c.is_polymer}
+        unknown_keys = set(lookup) - polymer_asym_ids
+        if unknown_keys:
+            raise KeyError(
+                "Apo/Prior lookup must be keyed by polymer asym_id. "
+                f"Unknown keys for structure {struct.id}: {sorted(unknown_keys)}"
+            )
         for c in struct.chains:
-            if not (c.ctype.is_protein or c.ctype.is_nucleic_acid):
+            if not c.is_polymer:
                 # Only protein/nucleic-acid chains have apo structures.
                 continue
 
-            lookup_key = c.asym_id if c.asym_id in lookup else c.entity_id
-            apo_info = lookup.get(lookup_key)
-            skip_perturbation = (
-                False
-                if apo_info is None
-                else bool(apo_info.get("skip_perturbation", False))
+            apo_info = lookup.get(c.asym_id)
+            is_multimer_record = apo_info is not None and (
+                bool(apo_info.get("is_multimer_apo", False))
+                or bool(apo_info.get("is_multimer_prior", False))
             )
-            if not skip_perturbation and c.entity_id in entity_cache:
+            if not is_multimer_record and c.entity_id in entity_cache:
                 apo_coords_dict[c.asym_id] = entity_cache[c.entity_id].copy()
                 continue
 
             chain_key = f"{struct.id}_{c.asym_id}"
-            apo_coords = self._sample_apo_structure_for_chain(c, apo_info, chain_key, rng)
+            apo_coords = self._sample_apo_structure_for_chain(
+                c, apo_info, chain_key, rng, apply_perturbation=apply_perturbation
+            )
             apo_coords_dict[c.asym_id] = apo_coords
-            if not skip_perturbation:
+            if not is_multimer_record:
                 entity_cache[c.entity_id] = apo_coords.copy()
 
         return apo_coords_dict
@@ -228,14 +207,13 @@ class ApoInitializer:
         apo_info: dict | None,
         chain_key: str,
         rng: np.random.Generator,
+        apply_perturbation: bool,
     ) -> np.ndarray:
         """Sample apo structure coordinates for a single polymer chain."""
-        assert chain.is_protein or chain.is_nucleic_acid, (
+        assert chain.is_polymer, (
             "Apo structure sampling is only applicable to protein/RNA/DNA chains."
         )
         if apo_info is None:
-            if chain.is_dna:
-                return build_dna_single_helix_for_chain(chain)
             if self.use_holo_if_apo_unavailable:
                 self.logger.warning(
                     f"Apo structure not found for chain {chain_key} in lookup. "
@@ -246,30 +224,23 @@ class ApoInitializer:
                 apo_coords = np.full_like(chain.atom.coords, np.nan)
             return apo_coords
 
-        if "seq" not in apo_info or "coords" not in apo_info:
-            raise ValueError(
-                f"Apo info must contain 'seq' and 'coords' keys: {apo_info.keys()}"
-            )
         apo_seq: str = apo_info["seq"]
         apo_coords: np.ndarray = apo_info["coords"].copy()
-        expected_num_atoms = get_expected_apo_num_atoms(chain.ctype)
-        if apo_coords.shape != (len(apo_seq), expected_num_atoms, 3):
-            raise ValueError(
-                f"Apo coordinates shape mismatch: expected "
-                f"({len(apo_seq)}, {expected_num_atoms}, 3), "
-                f"got {apo_coords.shape}"
-            )
+        expected_num_atoms = chain.get_polymer_residue_coord_width()
+        assert apo_coords.shape == (len(apo_seq), expected_num_atoms, 3), (
+            f"Apo coordinates shape mismatch: expected "
+            f"({len(apo_seq)}, {expected_num_atoms}, 3), got {apo_coords.shape}"
+        )
         res_map = apo_info.get("residue_map", None)
         assert not chain.is_nucleic_acid or res_map is None, (
             "Nucleic-acid apo structures must be full-length records without "
             "residue_map/apo_range."
         )
         rieprody_key = apo_info.get("key", None)
-        skip_perturbation = bool(apo_info.get("skip_perturbation", False))
 
         # === Random perturbation === #
         if (
-            not skip_perturbation
+            apply_perturbation
             and chain.is_protein
             and self.perturbation is not None
             and rng.random() < self.prob_perturbation
@@ -294,48 +265,17 @@ class ApoInitializer:
                 apo_coords = padded_apo_coords
         else:
             # No residue map provided, assume apo_coords is already aligned.
-            assert apo_coords.shape[0] == length, (
-                f"Apo coordinates length {apo_coords.shape[0]} does not match "
-                f"sequence length {length} and no residue_map provided."
-            )
+            if apo_coords.shape[0] != length:
+                self.logger.warning(
+                    f"Apo coordinates length {apo_coords.shape[0]} does not match "
+                    f"sequence length {length} for chain {chain_key}, and no "
+                    "residue_map was provided. Filling apo coordinates with NaN."
+                )
+                return np.full_like(chain.atom.coords, np.nan)
 
-        # === Map apo coordinates to full atom set === #
-        if chain.is_protein:
-            atom_order = C.atom.protein_atom37_order
-        elif chain.is_rna or chain.is_dna:
-            atom_order = C.atom.nucleic_acid_atom29_order
-        else:
-            raise ValueError(f"Unsupported apo chain type: {chain.ctype}")
-
-        # Insert apo coordinates into chain according to atom order
-        # [L, Natom, 3] -> [Nallatoms, 3]
-        src_res_indices: list[int] = []
-        src_atom_indices: list[int] = []
-        dst_atom_indices: list[int] = []
-        ccd_sequence: list[str] = chain.get_ccd_sequence()
-        atom_names: list[str] = chain.atom.name.tolist()  # pre-converted to list
-        for res_i in range(chain.num_residues):
-            residue_index = res_i + 1  # 1-based residue index
-            if chain.residue.is_standard[res_i]:
-                # Standard residues are assumed to have complete atom sets.
-                atom_st = chain.residue.atom_starts[res_i]
-                atom_orders = get_atom_order_in_residue(ccd_sequence[res_i], chain.ctype)
-                natoms = len(atom_orders)
-                src_res_indices.extend([res_i] * natoms)
-                src_atom_indices.extend(atom_orders)
-                dst_atom_indices.extend(range(atom_st, atom_st + natoms))
-
-            else:
-                for atom_i in chain.residue.iter_residue_atoms(residue_index):
-                    an = atom_names[atom_i]
-                    if an in atom_order:
-                        src_res_indices.append(res_i)
-                        src_atom_indices.append(atom_order[an])
-                        dst_atom_indices.append(atom_i)
-
-        apo_flat = np.full((chain.num_atoms, 3), np.nan, dtype=np.float32)
-        apo_flat[dst_atom_indices] = apo_coords[src_res_indices, src_atom_indices]
-        return apo_flat
+        return chain.map_polymer_residue_coords_to_atom_coords(
+            apo_coords, context="Apo coordinates"
+        )
 
     def _apply_perturbation(
         self,
@@ -345,7 +285,7 @@ class ApoInitializer:
         backend: str = "auto",
         rieprody_key: str | None = None,
     ) -> np.ndarray:
-        """Augment apo structure coordinates with perturbation.
+        """Augment apo coordinates, then rigid-align them back to the input frame.
 
         Parameters
         ----------
@@ -363,12 +303,24 @@ class ApoInitializer:
         augmented_coords : np.ndarray
             Augmented structure coordinates of shape [L, Natom, 3].
         """
+        assert self.perturbation is not None, (
+            "Protein perturbation module is not initialized."
+        )
         apo_mask = np.isfinite(apo_coords).all(axis=-1)
         if not apo_mask.any():
             # No valid apo coordinates, return as is
             return apo_coords
+        original_coords = apo_coords.copy()
         aug_coords = self.perturbation(
             sequence, apo_coords, rng=rng, backend=backend, rieprody_key=rieprody_key
         )
-        aug_coords[~apo_mask] = np.nan
+        aug_mask = np.isfinite(aug_coords).all(axis=-1)
+        align_mask = apo_mask & aug_mask
+        if align_mask.any():
+            aug_coords = rigid_align(
+                aug_coords.reshape(-1, 3),
+                original_coords.reshape(-1, 3),
+                align_mask.reshape(-1),
+            ).reshape(aug_coords.shape)
+        aug_coords[~align_mask] = np.nan
         return aug_coords

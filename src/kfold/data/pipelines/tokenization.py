@@ -678,9 +678,17 @@ def _insert_apo_coordinates(
     ccd_sequence_dict: dict[int, list[str]],
     chain_atom_dict: dict[int, list[str]],
 ):
+    polymer_asym_ids = {c.asym_id for c in struct.chains if c.is_polymer}
+    unknown_keys = set(apo_coords_dict) - polymer_asym_ids
+    if unknown_keys:
+        raise KeyError(
+            "Apo coordinates must be keyed by polymer asym_id. "
+            f"Unknown keys for structure {struct.id}: {sorted(unknown_keys)}"
+        )
+
     g_tok_i = 0
     for c in struct.chains:
-        if not (c.is_protein or c.is_nucleic_acid):
+        if not c.is_polymer:
             g_tok_i += c.num_tokens
             continue
 
@@ -690,9 +698,8 @@ def _insert_apo_coordinates(
         m = tok.atom.pad_mask[st:end]  # (chain_tokens, 24)
 
         # Insert apo coordinates if available
-        apo_key = c.asym_id if c.asym_id in apo_coords_dict else c.entity_id
-        if apo_key in apo_coords_dict:
-            _coords = apo_coords_dict[apo_key]
+        if c.asym_id in apo_coords_dict:
+            _coords = apo_coords_dict[c.asym_id]
             tok.atom.apo_coords[st:end][m] = _coords
 
         # Iterate residues in the chain and fill token and some atom info

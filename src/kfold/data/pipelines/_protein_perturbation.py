@@ -24,7 +24,7 @@ class ProteinPerturbationConfig:
         return cls(
             rieprody=None,
             bioprior=BioPriorConfig(
-                max_steps=10,  # Weaker perturbation for inference.
+                max_steps=5,  # Weaker perturbation for inference.
                 scale_length=True,  # No cropping during inference.
                 log_level="CRITICAL",  # Suppress BioPrior logging during inference
             ),
