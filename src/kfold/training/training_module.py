@@ -210,6 +210,25 @@ def _get_structure_module_for_binning(model: Any) -> Any:
     )
 
 
+def _binary_average_precision(
+    score: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor | None:
+    score = score[mask]
+    target = target[mask]
+    if score.numel() == 0 or not target.any() or target.all():
+        return None
+
+    order = torch.argsort(score, descending=True)
+    sorted_target = target[order].to(score.dtype)
+    rank = torch.arange(
+        1, sorted_target.numel() + 1, device=score.device, dtype=score.dtype
+    )
+    precision = sorted_target.cumsum(dim=0) / rank
+    return (precision * sorted_target).sum() / sorted_target.sum().clamp(min=1.0)
+
+
 @dataclasses.dataclass(kw_only=True)
 class ValidationConfig(_Config):
     """Validation step configuration."""
@@ -231,6 +250,7 @@ class LossConfig(_Config):
     distogram_loss: Any
     diffusion_loss: Any
     confidence_loss: Any
+    patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -425,6 +445,9 @@ class KFoldTrainingModule(pl.LightningModule):
         self.distogram_loss = loss_fn.distogram.DistogramLoss(
             **loss_config.distogram_loss
         )
+        self.patch_geometry_loss = loss_fn.patch_geometry.PatchPairGeometryLoss(
+            **loss_config.patch_geometry_loss
+        )
 
         # Diffusion loss
         diffusion_loss_config = loss_config.diffusion_loss
@@ -605,6 +628,16 @@ class KFoldTrainingModule(pl.LightningModule):
                 logits=model_output["distogram"]["logits"],
                 f_input=f_input,
             )
+            patch_weight = self.loss_weights.get("patch_geometry", 0.0)
+            if patch_weight > 0 and "patch_geometry" in model_output:
+                patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
+                    model_output["patch_geometry"]
+                )
+            else:
+                patch_geometry_loss, patch_geometry_metrics = 0.0, {}
+        else:
+            distogram_loss, distogram_metrics = 0.0, {}
+            patch_geometry_loss, patch_geometry_metrics = 0.0, {}
 
         if self.train_diffusion_head:
             diffusion_out = model_output["diffusion"]
@@ -616,7 +649,6 @@ class KFoldTrainingModule(pl.LightningModule):
             )
 
         else:
-            distogram_loss, distogram_metrics = 0.0, {}
             diffusion_loss, diffusion_metrics = 0.0, {}
 
         if self.train_confidence_head:
@@ -654,12 +686,17 @@ class KFoldTrainingModule(pl.LightningModule):
             loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
             + loss_weights["confidence"] * confidence_loss
+            + loss_weights.get("patch_geometry", 0.0) * patch_geometry_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
         # Log loss and metrics
         all_metrics = (
-            distogram_metrics | diffusion_metrics | confidence_metrics | sample_metrics
+            distogram_metrics
+            | patch_geometry_metrics
+            | diffusion_metrics
+            | confidence_metrics
+            | sample_metrics
         )
         all_metrics["loss"] = loss.detach()
 
@@ -846,9 +883,78 @@ class KFoldTrainingModule(pl.LightningModule):
         loss_per_batch = self.distogram_loss(logits, f_input)
         loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
+        if hasattr(self.distogram_loss, "boundaries") and hasattr(f_input, "token"):
+            metrics |= self.compute_distogram_diagnostic_metrics(logits, f_input)
         if self._binned_cache_enabled and self.train_diffusion_head:
             self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
         return loss, metrics
+
+    def compute_distogram_diagnostic_metrics(
+        self,
+        logits: torch.Tensor,
+        f_input: FoldingInput,
+        near_cutoff: float = 12.0,
+        far_cutoff: float = 22.0,
+    ) -> dict[str, torch.Tensor]:
+        """Log inter-chain near-ranking and false-positive pressure diagnostics."""
+        with torch.no_grad():
+            boundaries = self.distogram_loss.boundaries.to(logits.device)
+            gt_coords = f_input.token.repr_coords
+            diff = gt_coords[..., None, :, :] - gt_coords[..., :, None, :]
+            d_repr = diff.norm(dim=-1)
+
+            repr_mask = f_input.token.repr_mask
+            pair_mask = repr_mask[..., None, :] & repr_mask[..., :, None]
+            asym_id = f_input.token.asym_id
+            inter_chain = asym_id[..., None, :] != asym_id[..., :, None]
+            upper_tri = torch.ones(
+                logits.shape[-3],
+                logits.shape[-2],
+                dtype=torch.bool,
+                device=logits.device,
+            ).triu(diagonal=1)
+            valid = pair_mask & inter_chain & upper_tri
+
+            if not valid.any():
+                zero = logits.sum().detach() * 0.0
+                return {
+                    "distogram_inter_chain_valid_pairs": zero,
+                    "distogram_inter_chain_near_pairs": zero,
+                    "distogram_inter_chain_far_pairs": zero,
+                }
+
+            bin_size = float(boundaries[1].item() - boundaries[0].item())
+            near_bin = int((near_cutoff - float(boundaries[0].item())) / bin_size)
+            near_bin = max(0, min(near_bin, logits.shape[-1] - 1))
+            p_near = torch.softmax(logits.float(), dim=-1)[..., : near_bin + 1].sum(
+                dim=-1
+            )
+
+            true_near = (d_repr < near_cutoff) & valid
+            true_far = (d_repr > far_cutoff) & valid
+            ap = _binary_average_precision(p_near, true_near, valid)
+
+            valid_count = valid.float().sum().clamp(min=1.0)
+            metrics = {
+                "distogram_inter_chain_valid_pairs": valid.float().sum().detach(),
+                "distogram_inter_chain_near_pairs": true_near.float().sum().detach(),
+                "distogram_inter_chain_far_pairs": true_far.float().sum().detach(),
+                "distogram_inter_chain_target_near_rate": (
+                    true_near.float().sum() / valid_count
+                ).detach(),
+                "distogram_inter_chain_pred_near_mass": p_near[valid].mean().detach(),
+            }
+            if ap is not None:
+                metrics["distogram_inter_chain_near_ap"] = ap.detach()
+            if true_near.any():
+                metrics["distogram_inter_chain_p_near_true_near"] = (
+                    p_near[true_near].mean().detach()
+                )
+            if true_far.any():
+                metrics["distogram_inter_chain_false_positive_near_mass"] = (
+                    p_near[true_far].mean().detach()
+                )
+            return metrics
 
     def compute_diffusion_loss(
         self,
