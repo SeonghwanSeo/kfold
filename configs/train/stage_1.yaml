@@ -8,4 +8,4 @@ global_hparams:
 data:
   max_chains: 20
   max_tokens: 384
-  max_sequence_tokens: 448
+  max_sequence_tokens: 512

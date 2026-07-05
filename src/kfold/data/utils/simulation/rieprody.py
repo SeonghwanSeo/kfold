@@ -67,7 +67,7 @@ class RieProdyConfig:
     metric_comp: MetricCompConfig = dataclasses.field(default_factory=MetricCompConfig)
     random_walk: RandomWalkConfig = dataclasses.field(default_factory=RandomWalkConfig)
     max_length: int = 800
-    rmsd_threshold: float = 10.0
+    rmsd_threshold: float = 6.0
     metric_lmdb_path: Path | str | None = None
     log_stats: bool = False
     log_stats_interval: int = 1000

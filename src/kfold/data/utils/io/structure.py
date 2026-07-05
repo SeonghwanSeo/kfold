@@ -2,14 +2,67 @@ from pathlib import Path
 
 import gemmi
 import numpy as np
+import zstandard as zstd
 
 import kfold.constants as C
 
 # Constants
 atom37_order: dict[str, int] = C.atom.protein_atom37_order
+atom29_order: dict[str, int] = C.atom.nucleic_acid_atom29_order
 protein_one_letter_to_residue_name: dict[str, C.ResidueName] = (
     C.residue.protein_one_letter_to_residue_name
 )
+
+
+def get_structure_filetype(path: str | Path) -> str:
+    """Infer the underlying structure file type."""
+    name = Path(path).name.lower()
+    for filetype in ("pdb", "cif"):
+        if (
+            name.endswith(f".{filetype}")
+            or name.endswith(f".{filetype}.gz")
+            or name.endswith(f".{filetype}.zst")
+        ):
+            return filetype
+    raise ValueError(f"Unsupported file type: {name}")
+
+
+def read_gemmi_structure(path: str | Path) -> gemmi.Structure:
+    """Read PDB/mmCIF files, including zstd-compressed archives."""
+    path = Path(path)
+    filetype = get_structure_filetype(path)
+    if path.name.lower().endswith(".zst"):
+        with path.open("rb") as compressed:
+            with zstd.ZstdDecompressor().stream_reader(compressed) as reader:
+                text = reader.read().decode("utf-8")
+        if filetype == "pdb":
+            return gemmi.read_pdb_string(text)
+        return gemmi.read_structure_string(text)
+    if filetype == "cif":
+        return gemmi.read_structure(str(path))
+    return gemmi.read_pdb(str(path))
+
+
+def _read_protein_chain(raw_chain: gemmi.Chain) -> tuple[str, np.ndarray]:
+    """Read one gemmi chain as atom37 protein coordinates."""
+    L = len(raw_chain)
+    coords = np.full((L, 37, 3), np.nan, dtype=np.float32)
+    aa_list: list[str] = []
+    for res_i, res in enumerate(raw_chain):
+        res: gemmi.Residue
+        res_name: C.ResidueName = C.residue.get_residue_name_with_unk(
+            res.name, C.ChainType.PROTEIN
+        )
+        aa_list.append(res_name.one_letter)
+
+        for atom in res:
+            atom: gemmi.Atom
+            atom_name = atom.name
+            aidx = atom37_order.get(atom_name, None)
+            if aidx is not None:
+                coords[res_i, aidx] = atom.pos.tolist()
+    sequence = "".join(aa_list)
+    return sequence, coords
 
 
 def read_protein_structure(path: str | Path) -> tuple[str, np.ndarray]:
@@ -28,36 +81,84 @@ def read_protein_structure(path: str | Path) -> tuple[str, np.ndarray]:
         Array of shape (N, 37, 3) containing the coordinates
     """
 
-    filetype = Path(path).name.split(".", 1)[-1].lower()
-    assert filetype in {"pdb", "pdb.gz", "cif", "cif.gz"}, (
-        f"Unsupported file type: {filetype}"
-    )
+    structure = read_gemmi_structure(path)
+    raw_chain = structure[0].subchains()[0]
+    return _read_protein_chain(raw_chain)
 
-    structure: gemmi.Structure
-    if filetype in {"cif", "cif.gz"}:
-        structure = gemmi.read_structure(str(path))
-    else:
-        structure = gemmi.read_pdb(str(path))
+
+def read_protein_multimer_structure(path: str | Path) -> dict[str, dict]:
+    """Load all protein chains in a multimer structure.
+
+    Returns a dictionary keyed by chain identifier.  Coordinates are kept in the
+    original shared frame, so relative chain placement is preserved.
+    """
+    structure = read_gemmi_structure(path)
+    chains: dict[str, dict] = {}
+    for raw_chain in structure[0]:
+        if len(raw_chain) == 0:
+            continue
+        chain_id = raw_chain.name
+        sequence, coords = _read_protein_chain(raw_chain)
+        chains[chain_id] = {
+            "seq": sequence,
+            "coords": coords,
+            "chain_type": "protein",
+        }
+    return chains
+
+
+def read_rna_structure(path: str | Path) -> tuple[str, np.ndarray]:
+    """Load an RNA structure from file as atom29 representation.
+
+    Returns
+    -------
+    sequence : str
+        RNA sequence in one-letter code.
+    coords : np.ndarray
+        Array of shape (N, 29, 3) containing coordinates in
+        `C.atom.nucleic_acid_atom29` order.
+    """
+
+    structure = read_gemmi_structure(path)
     raw_chain = structure[0].subchains()[0]
 
-    # Get sequence
     L = len(raw_chain)
-    coords = np.full((L, 37, 3), np.nan, dtype=np.float32)
-    aa_list: list[str] = []
+    coords = np.full((L, 29, 3), np.nan, dtype=np.float32)
+    base_list: list[str] = []
     for res_i, res in enumerate(raw_chain):
-        res: gemmi.Residue
         res_name: C.ResidueName = C.residue.get_residue_name_with_unk(
-            res.name, C.ChainType.PROTEIN
+            res.name, C.ChainType.RNA
         )
-        aa_list.append(res_name.one_letter)
+        base_list.append(res_name.one_letter)
 
         for atom in res:
-            atom: gemmi.Atom
-            atom_name = atom.name
-            aidx = atom37_order.get(atom_name, None)
+            aidx = atom29_order.get(atom.name, None)
             if aidx is not None:
                 coords[res_i, aidx] = atom.pos.tolist()
-    sequence = "".join(aa_list)
+    sequence = "".join(base_list)
+    return sequence, coords
+
+
+def read_dna_structure(path: str | Path) -> tuple[str, np.ndarray]:
+    """Load a DNA structure from file as atom29 representation."""
+
+    structure = read_gemmi_structure(path)
+    raw_chain = structure[0].subchains()[0]
+
+    L = len(raw_chain)
+    coords = np.full((L, 29, 3), np.nan, dtype=np.float32)
+    base_list: list[str] = []
+    for res_i, res in enumerate(raw_chain):
+        res_name: C.ResidueName = C.residue.get_residue_name_with_unk(
+            res.name, C.ChainType.DNA
+        )
+        base_list.append(res_name.one_letter)
+
+        for atom in res:
+            aidx = atom29_order.get(atom.name, None)
+            if aidx is not None:
+                coords[res_i, aidx] = atom.pos.tolist()
+    sequence = "".join(base_list)
     return sequence, coords
 
 

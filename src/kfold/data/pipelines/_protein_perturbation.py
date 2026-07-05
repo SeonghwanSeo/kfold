@@ -14,6 +14,7 @@ ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
 
 @dataclasses.dataclass(kw_only=True)
 class ProteinPerturbationConfig:
+    prob_rieprody: float = 0.0
     rieprody: RieProdyConfig | None = None
     bioprior: BioPriorConfig = dataclasses.field(default_factory=BioPriorConfig)
 
@@ -23,7 +24,7 @@ class ProteinPerturbationConfig:
         return cls(
             rieprody=None,
             bioprior=BioPriorConfig(
-                max_steps=10,  # Weaker perturbation for inference.
+                max_steps=5,  # Weaker perturbation for inference.
                 scale_length=True,  # No cropping during inference.
                 log_level="CRITICAL",  # Suppress BioPrior logging during inference
             ),
@@ -36,6 +37,11 @@ class ProteinPerturbation:
     def __init__(self, config: ProteinPerturbationConfig) -> None:
         """Initialize ProteinPerturbation."""
         self.config: ProteinPerturbationConfig = config
+        self.prob_rieprody: float = config.prob_rieprody
+        if not 0.0 <= self.prob_rieprody <= 1.0:
+            raise ValueError(
+                f"prob_rieprody must be in [0, 1], got {self.prob_rieprody}."
+            )
         if config.rieprody is not None:
             self.rieprody = RieProdyPerturbation(config.rieprody)
         else:
@@ -53,7 +59,7 @@ class ProteinPerturbation:
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-        backend: str = "bioprior",
+        backend: str = "auto",
         **kwargs,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates."""
@@ -65,7 +71,7 @@ class ProteinPerturbation:
         coords: np.ndarray,
         mask: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-        backend: str = "bioprior",
+        backend: str = "auto",
         **kwargs,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates.
@@ -97,6 +103,10 @@ class ProteinPerturbation:
             # Create mask based on finite coordinates
             # HACK: assumes that missing atoms are represented by NaN/Inf
             mask: np.ndarray = np.isfinite(coords).all(axis=-1)
+
+        if backend == "auto":
+            use_rieprody = self.rieprody is not None and rng.random() < self.prob_rieprody
+            backend = "rieprody" if use_rieprody else "bioprior"
 
         if self.rieprody is not None and backend == "rieprody":
             assert "rieprody_key" in kwargs, (

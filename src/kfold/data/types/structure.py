@@ -2,7 +2,7 @@ import copy
 import dataclasses
 import io
 import pathlib
-from functools import cached_property
+from functools import cached_property, lru_cache
 from typing import Self
 
 import numpy as np
@@ -15,6 +15,20 @@ __all__ = ["RefStructure"]
 
 
 # === Helper functions === #
+@lru_cache(maxsize=128)
+def _get_polymer_atom_order_in_residue(res_name: str, chain_type: int) -> tuple[int, ...]:
+    """Get residue-major coordinate atom indices for atoms in a residue."""
+    ctype = C.ChainType(chain_type)
+    residue_name: C.ResidueName = C.ResidueName[res_name]
+    if ctype.is_protein:
+        atom_order = C.atom.protein_atom37_order
+    elif ctype.is_rna or ctype.is_dna:
+        atom_order = C.atom.nucleic_acid_atom29_order
+    else:
+        raise ValueError(f"Unsupported polymer chain type: {ctype}")
+    return tuple(atom_order[an.value] for an in C.atom.RESIDUE_ATOMS[residue_name])
+
+
 def pack_metadata(metadata: Metadata) -> np.ndarray:
     """Pack Metadata into a numpy bytes array."""
     import msgpack
@@ -223,6 +237,64 @@ class Chain:
     def get_ccd_sequence(self) -> list[str]:
         """Get the amino acid / nucleotide sequence of the chain."""
         return self.residue.name.tolist()
+
+    def get_polymer_residue_coord_width(self) -> int:
+        """Return residue-major coordinate width for this polymer chain."""
+        if self.is_protein:
+            return 37
+        if self.is_rna or self.is_dna:
+            return 29
+        raise ValueError(f"Unsupported polymer chain type: {self.ctype}")
+
+    def map_polymer_residue_coords_to_atom_coords(
+        self,
+        residue_coords: np.ndarray,
+        *,
+        context: str = "Polymer coordinates",
+    ) -> np.ndarray:
+        """Map atom37/atom29 residue coordinates to this chain's atom order."""
+        if not self.is_polymer:
+            raise ValueError("Only polymer chains have residue-major coordinates.")
+        expected_num_atoms = self.get_polymer_residue_coord_width()
+        assert residue_coords.shape == (self.num_residues, expected_num_atoms, 3), (
+            f"{context} shape mismatch for chain {self.asym_id}: expected "
+            f"{(self.num_residues, expected_num_atoms, 3)}, got {residue_coords.shape}."
+        )
+
+        if self.is_protein:
+            atom_order = C.atom.protein_atom37_order
+        elif self.is_rna or self.is_dna:
+            atom_order = C.atom.nucleic_acid_atom29_order
+        else:
+            raise ValueError(f"Unsupported polymer chain type: {self.ctype}")
+
+        src_res_indices: list[int] = []
+        src_atom_indices: list[int] = []
+        dst_atom_indices: list[int] = []
+        ccd_sequence = self.get_ccd_sequence()
+        atom_names = self.atom.name.tolist()
+        for res_i in range(self.num_residues):
+            residue_index = res_i + 1
+            if self.residue.is_standard[res_i]:
+                atom_st = self.residue.atom_starts[res_i]
+                atom_orders = _get_polymer_atom_order_in_residue(
+                    ccd_sequence[res_i], self.chain_type
+                )
+                natoms = len(atom_orders)
+                src_res_indices.extend([res_i] * natoms)
+                src_atom_indices.extend(atom_orders)
+                dst_atom_indices.extend(range(atom_st, atom_st + natoms))
+            else:
+                for atom_i in self.residue.iter_residue_atoms(residue_index):
+                    atom_name = atom_names[atom_i]
+                    if atom_name in atom_order:
+                        src_res_indices.append(res_i)
+                        src_atom_indices.append(atom_order[atom_name])
+                        dst_atom_indices.append(atom_i)
+
+        atom_coords = np.full((self.num_atoms, 3), np.nan, dtype=np.float32)
+        atom_coords[dst_atom_indices] = residue_coords[src_res_indices, src_atom_indices]
+        return atom_coords
 
     def find_atom_index(self, residue_index: int, atom_name: str) -> int:
         """Find atom index given residue index and atom name.
