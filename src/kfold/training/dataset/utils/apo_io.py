@@ -121,9 +121,7 @@ def pack_apo_multimer_record(chains: dict[int, dict]) -> bytes:
         chain = chains[chain_id]
         arrays[f"seq_{i}"] = encode_sequence(chain["seq"])
         arrays[f"coords_{i}"] = chain["coords"]
-        arrays[f"chain_type_{i}"] = np.array(
-            chain_type_to_name(chain.get("chain_type", "protein"))
-        )
+        arrays[f"chain_type_{i}"] = np.array(chain_type_to_name(chain["chain_type"]))
 
     with io.BytesIO() as buffer:
         np.savez_compressed(buffer, **arrays)
@@ -162,9 +160,7 @@ def pack_prior_multimer_stack_record(
         chain = chains[chain_id]
         arrays[f"seq_{i}"] = encode_sequence(chain["seq"])
         arrays[f"coords_{i}"] = chain["coords"].astype(np.float32, copy=False)
-        arrays[f"chain_type_{i}"] = np.array(
-            chain_type_to_name(chain.get("chain_type", "protein"))
-        )
+        arrays[f"chain_type_{i}"] = np.array(chain_type_to_name(chain["chain_type"]))
     if ptm is not None:
         arrays["ptm"] = np.asarray(ptm, dtype=np.float32)
     if avg_plddt is not None:

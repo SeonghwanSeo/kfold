@@ -173,6 +173,9 @@ class TrainingDataset(BaseLMDBDataset):
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
+        if cfg.apo_init is None:
+            self.logger.warning("Apo initialization is disabled for training set.")
+            return
         if cfg.apo_init.perturbation is None:
             self.logger.warning("Protein perturbation is disabled for training set.")
 
@@ -227,8 +230,10 @@ class TrainingDataset(BaseLMDBDataset):
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
 
+        prior_coords = self.sample_prior_coords(ref_struct, rng)
+
         # Tokenization
-        tokenized = self.tokenize(ref_struct, apo_dict, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)
 
         # Populate structure tokens for apo structure (in-place)
         self.populate_structure_tokens(tokenized, apo_lookup)
@@ -276,11 +281,10 @@ class TrainingDataset(BaseLMDBDataset):
         self,
         ref_struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
+        prior_coords: np.ndarray,
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        # Sample prior coordinates for diffusion bridge model
-        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
         # Sample the constraints
         constraints = self.constraint_sampling(ref_struct, rng)
         # Tokenize the structure
