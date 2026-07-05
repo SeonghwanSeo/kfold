@@ -25,6 +25,7 @@ Processed outputs are written under:
     uniq_sequences.fasta
   apo_lookup.msgpack
   apo_lmdb/{protein,dna,rna}/{source}.lmdb
+  prior_lmdb/{protein,dna,rna}.lmdb
   apo_tok_lmdb/protein/{source}.lmdb
 ```
 
@@ -53,6 +54,8 @@ to `disordered_pdb/apo/{chain_type}/{source}/`, and writes
 `disordered_pdb/sequences/rcsb_apo_mapping.msgpack` for lookup construction.
 If `rcsb-train/apo_tok_lmdb/protein/{source}.lmdb` exists, protein apo tokens
 are copied directly to `disordered_pdb/apo_tok_lmdb/protein/{source}.lmdb`.
+Matched RCSB prior stacks are also copied to
+`disordered_pdb/prior_lmdb/{protein,dna,rna}.lmdb`.
 
 ```bash
 .venv/bin/python scripts/process/disordered_pdb/b1_fetch_rcsb_train_apo.py \
@@ -73,6 +76,10 @@ python scripts/process/disordered_pdb/b2_make_lookup.py \
 python scripts/process/disordered_pdb/b3_create_apo_lmdb.py \
   --data_dir /cache/wykim_lab/icl_shwan/kfold_data/v260701_af3 \
   --num_workers 128 \
+  --overwrite
+
+python scripts/process/disordered_pdb/b4_create_prior_lmdb.py \
+  --data_dir /cache/wykim_lab/icl_shwan/kfold_data/v260701_af3 \
   --overwrite
 ```
 

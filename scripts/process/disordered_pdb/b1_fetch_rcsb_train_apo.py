@@ -427,6 +427,85 @@ def copy_protein_tokens(
     return dict(stats)
 
 
+def copy_prior_stacks(
+    records: list[FetchRecord],
+    *,
+    rcsb_dir: pathlib.Path,
+    disordered_root: pathlib.Path,
+    overwrite: bool,
+) -> dict[str, int]:
+    """Copy matched RCSB prior stack records under disordered entity keys."""
+    prior_records: dict[str, dict[str, str]] = {}
+    for record in records:
+        key = f"{record.chain_type}:{record.output_name}"
+        prior_records.setdefault(
+            key,
+            {
+                "chain_type": record.chain_type,
+                "input_key": f"{record.entry_id}_{record.rcsb_entity_id}",
+                "output_key": record.output_name,
+            },
+        )
+
+    if not prior_records:
+        return {}
+
+    stats: dict[str, int] = defaultdict(int)
+    records_by_chain_type: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for record in prior_records.values():
+        records_by_chain_type[record["chain_type"]].append(record)
+
+    out_root = disordered_root / "prior_lmdb"
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    for chain_type, chain_records in sorted(records_by_chain_type.items()):
+        in_lmdb = rcsb_dir / "prior_lmdb" / f"{chain_type}.lmdb"
+        if not in_lmdb.exists():
+            stats[f"prior_source_missing:{chain_type}"] += len(chain_records)
+            continue
+
+        out_lmdb = out_root / f"{chain_type}.lmdb"
+        if out_lmdb.exists():
+            if not overwrite:
+                raise FileExistsError(f"{out_lmdb} already exists. Use --overwrite.")
+            shutil.rmtree(out_lmdb)
+
+        env_in = lmdb.open(str(in_lmdb), readonly=True, lock=False, readahead=False)
+        env_out = lmdb.open(
+            str(out_lmdb),
+            map_size=128 * 1024 * 1024 * 1024,
+            meminit=False,
+            map_async=True,
+            sync=False,
+        )
+        copied = 0
+        missing = 0
+        with env_in.begin(write=False) as txn_in:
+            txn_out = env_out.begin(write=True)
+            try:
+                for record in sorted(chain_records, key=lambda item: item["output_key"]):
+                    value = txn_in.get(record["input_key"].encode("utf-8"))
+                    if value is None:
+                        missing += 1
+                        continue
+                    txn_out.put(record["output_key"].encode("utf-8"), value)
+                    copied += 1
+                    if copied % 10000 == 0:
+                        txn_out.commit()
+                        txn_out = env_out.begin(write=True)
+                txn_out.commit()
+            except Exception:
+                txn_out.abort()
+                raise
+        env_in.close()
+        env_out.sync()
+        env_out.close()
+        stats[f"prior_copied:{chain_type}"] = copied
+        stats[f"prior_missing:{chain_type}"] = missing
+
+    return dict(stats)
+
+
 def write_outputs(
     records: list[FetchRecord],
     mapping: dict[str, dict[str, list[dict]]],
@@ -461,6 +540,12 @@ def write_outputs(
         disordered_root=disordered_root,
         overwrite=overwrite,
     )
+    prior_stats = copy_prior_stacks(
+        records,
+        rcsb_dir=rcsb_dir,
+        disordered_root=disordered_root,
+        overwrite=overwrite,
+    )
 
     mapping_msgpack.parent.mkdir(parents=True, exist_ok=True)
     with mapping_msgpack.open("wb") as f:
@@ -475,6 +560,7 @@ def write_outputs(
                     "copied": copied,
                     "skipped_existing": skipped_existing,
                     **token_stats,
+                    **prior_stats,
                 },
                 "records": [asdict(record) for record in records[:1000]],
             },
@@ -504,6 +590,11 @@ def main() -> None:
     if args.dry_run:
         print("Dry run: no files copied.")
         return
+    if not records and not mapping:
+        raise RuntimeError(
+            "No apo records were found. Refusing to overwrite existing mapping files. "
+            "Check that the RCSB raw apo source files are available."
+        )
 
     write_outputs(
         records,
