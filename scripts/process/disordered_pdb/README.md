@@ -1,206 +1,83 @@
-# RCSB Data Preprocessing Scripts
+# Disordered PDB Preprocessing
 
-## Contents
+These scripts build the `disordered_pdb` training dataset from mmCIF files and
+RCSB train apo products.
 
-- [Overview](#overview)
-- [Download the pre-processed data](#download-the-pre-processed-data)
-- [Processing from raw RCSB data](#processing-from-raw-rcsb-data)
-  - [Raw data download and preparation](#raw-data-download-and-preparation)
-  - [Data pre-processing steps](#data-pre-processing-steps)
-    - [Step 1: Create output directories](#step-1-create-output-directories)
-    - [Step 2: Prepare CCD](#step-2-prepare-ccd)
-    - [Step 3: Prepare training set](#step-3-prepare-training-set)
-    - [Step 4-1: Prepare validation split](#step-4-1-prepare-validation-split)
-    - [Step 4-2: Construct validation set lmdb database](#step-4-2-construct-validation-set-lmdb-database)
-  - [Pre-trained embedding extraction](#pre-trained-embedding-extraction)
+## Expected Layout
 
-## Overview
+Raw CIF files are expected under a directory such as:
 
-The pre-processed dataset structure for RCSB PDB data is as follows:
-
-```
-/data/processed/
-    ccd-train.pkl               # CCD for model training
-    ccd-test.pkl                # CCD for model inference
-    /dataset/
-        /rcsb-train/
-            /apo/               # Apo structures (e.g., from AFDB, ESMFold)
-            /embedding/
-              /sequence/        # Pre-trained sequence embeddings
-              /structure/       # Pre-trained structure embeddings
-            structure.lmdb      # Training set lmdb database
-            metadata.json       # Metadata file with cluster ids
-            metadata.msgpack    # Binary metadata file
-        /rcsb-val/
-            /apo/               # Apo structures (e.g., from AFDB, ESMFold)
-            /embedding/
-              /sequence/        # Pre-trained sequence embeddings
-              /structure/       # Pre-trained structure embeddings
-            validation_ids.txt  # Validation pdb ids
-            structure.lmdb      # Validation set lmdb database
-            metadata.json       # Metadata file
-            metadata.msgpack    # Binary metadata file
+```text
+/cache/wykim_lab/icl_shwan/disordered_pdb/
+  1abc/1abc.cif
+  2xyz/2xyz.cif
 ```
 
-## Download the pre-processed data
+Processed outputs are written under:
 
-TODO
+```text
+{data_dir}/disordered_pdb/
+  npz/
+  structure.lmdb
+  manifest.msgpack
+  sequences/
+    all_sequences.fasta
+    uniq_sequences.fasta
+  apo_lookup.msgpack
+  apo_lmdb/{protein,dna,rna}/{source}.lmdb
+  apo_tok_lmdb/protein/{source}.lmdb
+```
 
-## Processing from raw RCSB data
-
-The following instructions guide you through the steps to process raw RCSB PDB data into a training set suitable for model training and validation.
-
-Prerequisites:
-- Environment with necessary dependencies installed `pip install -e .[train,dev]`
-- Access to `mmseqs2` binary for clustering and similarity searches
-- Sufficient disk space for raw and processed data (~100GB)
-    - After removing intermediate files, ~40GB will be used
-
-### Raw data download and preparation
-You can download the raw data files from the RCSB PDB website using the following script:
+## Structure Dataset
 
 ```bash
-# Create your own raw data directory
-mkdir /raw_data/RCSB
+python scripts/process/disordered_pdb/a1_process_cifs.py \
+  --cif_dir /cache/wykim_lab/icl_shwan/disordered_pdb \
+  --ccd_path /path/to/ccd-train.pkl \
+  --data_dir /cache/wykim_lab/icl_shwan/kfold_data/v260701_af3 \
+  --num_workers 128
 
-# mmCIF files for each structure
-rsync -rlpt -v -z --delete --port=33444 rsync.rcsb.org::ftp_data/structures/divided/mmCIF/ /raw_data/RCSB/mmCIF/
+.venv/bin/python scripts/process/disordered_pdb/a2_extract_manifest_from_rcsb_train.py \
+  --data_dir /cache/wykim_lab/icl_shwan/kfold_data/v260701_af3 \
+  --num_workers 128
 
-# Component mmCIF file
-wget "https://files.wwpdb.org/pub/pdb/data/monomers/components.cif" -O /raw_data/RCSB/components.cif
+python scripts/process/disordered_pdb/a3_construct_training_set.py \
+  --data_dir /cache/wykim_lab/icl_shwan/kfold_data/v260701_af3
 ```
 
+## Apo LMDB
 
-### Data pre-processing steps
-
-**Step 1**: Create output directories
+Materialize apo structures from already processed RCSB train apo archives.
+This matches by entry id and exact polymer sequence, writes copied structures
+to `disordered_pdb/apo/{chain_type}/{source}/`, and writes
+`disordered_pdb/sequences/rcsb_apo_mapping.msgpack` for lookup construction.
+If `rcsb-train/apo_tok_lmdb/protein/{source}.lmdb` exists, protein apo tokens
+are copied directly to `disordered_pdb/apo_tok_lmdb/protein/{source}.lmdb`.
 
 ```bash
-# All processed data will be saved under /data/processed
-mkdir -p /data/processed
+.venv/bin/python scripts/process/disordered_pdb/b1_fetch_rcsb_train_apo.py \
+  --data_dir /cache/wykim_lab/icl_shwan/kfold_data/v260701_af3 \
+  --overwrite
 ```
 
-**Step 2**: Prepare CCD
+Default sources are `esmfold`, `prot_sampler_*`, `rna_sampler_seed1_step100`,
+and `dna_helix`. `afdb` is not used because its residue mapping is more
+complicated.
 
-Run the following script to prepare the Chemical Component Dictionary (CCD):
+Then build lookup and source-specific apo LMDBs:
 
 ```bash
-# Run the preparation script
-# For data preprocessing and inference
-python scripts/process/rcsb/a_prepare_ccd.py \
-    --cif_path /raw_data/RCSB/components.cif \
-    --out_path /data/processed/ccd-test.pkl
+python scripts/process/disordered_pdb/b2_make_lookup.py \
+  --data_dir /cache/wykim_lab/icl_shwan/kfold_data/v260701_af3
 
-# For model training (up to 10 cached conformers per molecule)
-python scripts/process/rcsb/a_prepare_ccd.py \
-    --cif_path /raw_data/RCSB/components.cif \
-    --out_path /data/processed/ccd-train.pkl \
-    --train
+python scripts/process/disordered_pdb/b3_create_apo_lmdb.py \
+  --data_dir /cache/wykim_lab/icl_shwan/kfold_data/v260701_af3 \
+  --num_workers 128 \
+  --overwrite
 ```
 
-**Step 3**: Pre-process cif files
+## Apo Tokens
 
-Run the following script to process mmCIF files.
-
-```bash
-# Step 3-1. Extract sequences
-python scripts/process/rcsb/b_extract_all_sequences.py \
-    --cif_dir /raw_data/RCSB/mmCIF/ \
-    --data_dir /data/processed/dataset \
-    --split train \
-    --num_workers 128
-
-python scripts/process/rcsb/b_extract_all_sequences.py \
-    --cif_dir /raw_data/RCSB/mmCIF/ \
-    --data_dir /data/processed/dataset \
-    --split val \
-    --num_workers 128
-
-# Step 3-2: Pre-process structures as npz files
-python scripts/process/rcsb/c_process_cifs.py \
-    --cif_path /raw_data/RCSB/mmCIF/ \
-    --data_dir /data/processed/dataset \
-    --split train \
-    --num_workers 128
-
-python scripts/process/rcsb/c_process_cifs.py \
-    --cif_path /raw_data/RCSB/mmCIF/ \
-    --data_dir /data/processed/dataset \
-    --split val \
-    --num_workers 128
-```
-
-**Step 3**: Construct training set
-
-Run the following script to construct the training set lmdb database:
-
-```bash
-# Step 3-1: Run clustering and save metadata with cluster ids
-python scripts/process/rcsb/d1_cluster.py \
-    --data_dir /data/processed/dataset \
-    --mmseqs "mmseqs2-binary-path" \
-    --num_workers 128
-
-# Step 3-2: Combine all npz files into a single lmdb database
-python scripts/process/rcsb/d2_construct_training_set.py \
-    --data_dir /data/processed/dataset
-```
-
-Finally, you can get the training set lmdb database at `/data/processed/dataset/rcsb-train/structure.lmdb` and the metadata file at `/data/processed/dataset/rcsb-train/metadata.json`.
-
-**Step 4**: Construct validation set
-
-Run the following scripts to construct the validation set lmdb database:
-
-```bash
-# Step 4-1: Get validation pdb ids
-python scripts/process/rcsb/e1_get_val_ids.py \
-    --data_dir /data/processed/dataset \
-    --ccd_path /data/processed/ccd-test.pkl \
-    --mmseqs "mmseqs2-binary-path" \
-    --num_workers 128
-
-# Step 4-2: Construct validation set
-python scripts/process/rcsb/e2_construct_val_set.py \
-    --data_dir /data/processed/dataset
-
-# Step 4-3: (Optional) Get validation set statistics
-python scripts/process/rcsb/e3_get_val_statistics.py \
-    --data_dir /data/processed/dataset
-```
-
-Finally, you can get the validation set lmdb database at `/data/processed/dataset/rcsb-val/structure.lmdb` and the metadata file at `/data/processed/dataset/rcsb-val/metadata.json`.
-The validation pdb ids are saved at `/data/processed/dataset/rcsb-val/validation_ids.txt`.
-
-### Pre-trained embedding extraction
-
-After Step 3 and Step 4, you can access unique polymer sequences from the training and validation sets: `/data/processed/dataset/rcsb-train/sequences/` and `/data/processed/dataset/rcsb-val/sequences/`.
-You can use these sequences to extract pre-trained embeddings using your preferred protein language model (e.g., ESM).
-
-```bash
-# Example command for ESM-2 embedding extraction
-esm-extract \
-    --model esm2_t33_650M_UR50D \
-    --input_fasta /data/processed/dataset/rcsb-train/sequences/unique_proteins.fasta \
-    --output_dir /data/processed/dataset/rcsb-train/embedding/sequence/esm2-650m/ \
-    ...
-```
-
-### ESMFold apo structure preparation
-
-For K-Fold model training, you may also need to prepare apo structures using ESMFold.
-Since ESMFold returns unresolved residues when the input sequence contains `X` tokens, we replace `X` with Alanine (`A`) before running ESMFold.
-
-```bash
-python scripts/process/rcsb/f1_prepare_esmfold_input.py \
-    --data_dir /data/processed/dataset \
-    --split train
-
-python scripts/process/rcsb/f1_prepare_esmfold_input.py \
-    --data_dir /data/processed/dataset \
-    --split val
-
-# Run ESMFold structure prediction (example command)
-mkdir -p /data/processed/dataset/rcsb-train/apo/esmfold/
-esm-fold -i /data/processed/dataset/rcsb-train/sequences/esmfold_input.fasta -o /data/processed/dataset/rcsb-train/apo/esmfold/
-```
+Protein apo tokens are fetched by `b1_fetch_rcsb_train_apo.py` when
+`rcsb-train/apo_tok_lmdb/protein/{source}.lmdb` exists. No local tokenization
+script is kept in this directory.
