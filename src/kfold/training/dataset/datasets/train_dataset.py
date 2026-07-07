@@ -5,6 +5,7 @@ from pathlib import Path
 
 import lmdb
 import numpy as np
+import torch
 
 from kfold.data.pipelines import featurization, prior_sampling, tokenization
 from kfold.data.types.ccd import CCD
@@ -242,10 +243,11 @@ class TrainingDataset(BaseLMDBDataset):
         self.drop_apo_structure(tokenized, rng)
 
         # Cropping
-        cropped = self.crop_structure(tokenized, metadata, rng=rng, **kwargs)
+        cropped, crop_mode = self.crop_structure(tokenized, metadata, rng=rng, **kwargs)
 
         # Featurization
         f_input = self.featurize(cropped)
+        f_input = f_input.copy_with(crop_mode=torch.tensor(crop_mode, dtype=torch.long))
 
         # Pad the features.
         f_input = self.pad_input(f_input)
@@ -322,9 +324,10 @@ class TrainingDataset(BaseLMDBDataset):
         metadata: Metadata,
         rng: np.random.Generator,
         **kwargs,
-    ) -> TokenizedStructure:
+    ) -> tuple[TokenizedStructure, int]:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
+        crop_mode = 0
         if self.max_tokens < tokenized.num_tokens:
             # Crop the tokenized structure
             tokenized = self.cropper.crop(
@@ -335,7 +338,8 @@ class TrainingDataset(BaseLMDBDataset):
                 bias_asym_id=asym_ids,
                 rng=rng,
             )
-        return tokenized
+            crop_mode = int(getattr(self.cropper, "last_crop_mode", 0))
+        return tokenized, crop_mode
 
     def drop_apo_structure(
         self, tokenized: TokenizedStructure, rng: np.random.Generator

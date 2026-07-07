@@ -803,6 +803,7 @@ class FoldingInput:
     bond: BondTensor
     sequence: SequenceTensor
     constraint: ConstraintTensor
+    crop_mode: torch.Tensor | None = None
 
     def __post_init__(self):
         # check all layouts are on the same device and have same batch status
@@ -820,6 +821,20 @@ class FoldingInput:
                 assert layout.batch_size == batch_size, (
                     f"{name} layout must have the same batch size as chain layout."
                 )
+        if self.crop_mode is None:
+            shape = (batch_size,) if is_batched else ()
+            crop_mode = torch.zeros(shape, dtype=torch.long, device=device)
+            object.__setattr__(self, "crop_mode", crop_mode)
+        else:
+            assert self.crop_mode.device == device, (
+                "crop_mode must be on the same device as the layouts."
+            )
+            assert self.crop_mode.dtype == torch.long, "crop_mode must be long."
+            expected_shape = (batch_size,) if is_batched else ()
+            assert self.crop_mode.shape == expected_shape, (
+                f"crop_mode must have shape {expected_shape}, got "
+                f"{tuple(self.crop_mode.shape)}."
+            )
 
     def to(self, device: str | torch.device) -> Self:
         return self.__class__(
@@ -829,6 +844,7 @@ class FoldingInput:
             bond=self.bond.to(device),
             sequence=self.sequence.to(device),
             constraint=self.constraint.to(device),
+            crop_mode=self.crop_mode.to(device),
         )
 
     @property
@@ -879,6 +895,11 @@ class FoldingInput:
             bond=self.bond.add_batch_dim(deepcopy),
             sequence=self.sequence.add_batch_dim(deepcopy),
             constraint=self.constraint.add_batch_dim(deepcopy),
+            crop_mode=(
+                self.crop_mode.unsqueeze(0).clone()
+                if deepcopy
+                else self.crop_mode.unsqueeze(0)
+            ),
         )
 
     @classmethod
@@ -966,6 +987,7 @@ class FoldingInput:
         batched_constraint = ConstraintTensor.from_list(
             [data.constraint for data in data_list]
         )
+        batched_crop_mode = torch.stack([data.crop_mode for data in data_list], dim=0)
 
         return cls(
             chain=batched_chain,
@@ -974,6 +996,7 @@ class FoldingInput:
             bond=batched_bond,
             sequence=batched_sequence,
             constraint=batched_constraint,
+            crop_mode=batched_crop_mode,
         )
 
     def to_list(self, deepcopy: bool = False) -> list[Self]:
@@ -995,6 +1018,9 @@ class FoldingInput:
                     bond=bond_list[b],
                     sequence=sequence_list[b],
                     constraint=constraint_list[b],
+                    crop_mode=(
+                        self.crop_mode[b].clone() if deepcopy else self.crop_mode[b]
+                    ),
                 )
             )
         return data_list
@@ -1104,4 +1130,5 @@ class FoldingInput:
             bond=self.bond.pad(max_bonds),
             sequence=self.sequence.pad(max_sequence_tokens),
             constraint=self.constraint.pad(max_constraints),
+            crop_mode=self.crop_mode,
         )

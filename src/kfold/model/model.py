@@ -14,6 +14,7 @@ from kfold.model.modules import (
     confidence_head,
     distogram_head,
     input_embedder,
+    patch_geometry,
     sequence_encoder,
     structure_encoder,
     tri_stack,
@@ -104,6 +105,9 @@ class KFoldConfig:
     diffusion_head: sample_diffusion.BaseStructureModule.Config
     distogram_head: distogram_head.DistogramHead.Config
     confidence_head: confidence_head.ConfidenceHead.Config
+    patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config = dataclasses.field(
+        default_factory=patch_geometry.PatchPairGeometryHead.Config
+    )
 
     # Kernel configurations
     kernel_cuequivariance: bool = True
@@ -255,6 +259,15 @@ class KFold(torch.nn.Module):
             config.diffusion_head, score_model=self.score_model
         )
         self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
+        patch_pair_geometry_cfg = getattr(
+            config,
+            "patch_pair_geometry",
+            patch_geometry.PatchPairGeometryHead.Config(),
+        )
+        self.patch_pair_geometry_head = patch_geometry.PatchPairGeometryHead(
+            patch_pair_geometry_cfg,
+            channel_z=self.channel_z,
+        )
         self.confidence_head = confidence_head.ConfidenceHead(
             config.confidence_head, kernel_config=kernel_config
         )
@@ -686,6 +699,9 @@ class KFold(torch.nn.Module):
         dict_out["distogram"] = {
             "logits": self.distogram_head(z),
         }
+        patch_geometry_out = self.patch_pair_geometry_head(f_input, z)
+        if patch_geometry_out:
+            dict_out["patch_geometry"] = patch_geometry_out
 
         if train_diffusion_head:
             # Diffusion head
@@ -759,6 +775,7 @@ class KFold(torch.nn.Module):
             "main_stack",
             "linear_refine",
             "refine_stack",
+            "patch_pair_geometry_head",
         ]
 
     def get_trunk_parameter_names(self) -> list[str]:
