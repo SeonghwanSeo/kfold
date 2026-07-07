@@ -100,46 +100,7 @@ class PriorSampler:
         """Get a PriorSampler instance configured for inference."""
         return cls(PriorSamplerConfig.inference_mode(), ccd)
 
-    def __call__(
-        self,
-        struct: RefStructure,
-        prior_coords_dict: dict[int, np.ndarray] | None,
-        num_samples: int,
-        rng: np.random.Generator | None = None,
-    ) -> np.ndarray:
-        """Sample prior coordinates for the given structure.
-
-        Parameters
-        ----------
-        struct : RefStructure
-            Reference structure containing apo coordinates.
-        prior_coords_dict : dict[int, np.ndarray] | None
-            Optional dictionary mapping asym_id to source prior coordinates in
-            chain atom order.
-        num_samples : int
-            Number of prior samples to generate.
-        rng : np.random.Generator
-            Random number generator for stochastic operations.
-
-        Returns
-        -------
-        prior_coords : np.ndarray
-            Sampled prior coordinates of shape [num_priors, N_atoms, 3].
-        """
-        return self.sample_prior_coordinates(struct, prior_coords_dict, num_samples, rng)
-
-    def sample_prior_lookup(
-        self,
-        struct: RefStructure,
-        prior_lookup: dict[int, dict],
-        num_samples: int,
-        rng: np.random.Generator | None = None,
-    ) -> np.ndarray:
-        """Map prior lookup records, then sample prior coordinates."""
-        prior_coords_dict = self.map_prior_lookup_to_chain_coords(struct, prior_lookup)
-        return self.sample_prior_coordinates(struct, prior_coords_dict, num_samples, rng)
-
-    def sample_prior_coordinates(
+    def sample(
         self,
         struct: RefStructure,
         prior_coords_dict: dict[int, np.ndarray] | None,
@@ -153,8 +114,8 @@ class PriorSampler:
         struct : RefStructure
             Reference structure containing apo coordinates.
         prior_coords_dict : dict[int, np.ndarray] | None
-            Optional dictionary mapping asym_id to source prior coordinates in
-            chain atom order.
+            Optional dictionary mapping polymer asym_id to stacked residue-order
+            coordinates of shape [Nsample, L, 37/29, 3].
         num_samples : int
             Number of prior samples to generate.
         rng : np.random.Generator
@@ -171,35 +132,22 @@ class PriorSampler:
         if num_samples <= 0:
             return np.empty((0, struct.num_atoms, 3), dtype=np.float32)
 
-        # === 1. Prepare source prior coordinates for each chain === #
-        chain_coords_list = self.prepare_chain_prior_coords(
-            struct, prior_coords_dict, rng
-        )
-        for i, coords in enumerate(chain_coords_list):
-            c = struct.chains[i]
-            if coords.shape != (c.num_atoms, 3):
-                if c.is_polymer:
-                    raise ValueError(
-                        f"Apo coordinates for chain {i} have incorrect shape "
-                        f"{coords.shape}, expected {(struct.chains[i].num_atoms, 3)}."
-                    )
-                else:
-                    # NOTE: For non-polymer chains (e.g. ligands), the number of
-                    # atoms can be mismatched due to different bonding
-                    chain_coords_list[i] = np.zeros((c.num_atoms, 3), dtype=np.float32)
-
-        # === 2. Sample priors with augmentation and optional permutation === #
         prior_uids = self.get_chain_prior_uids(struct)
         skip_ot_permutation = len(set(prior_uids)) < len(prior_uids)
         prior_coords_list: list[np.ndarray] = []
         for _ in range(num_samples):
+            # Prepare source prior coordinates for each chain.
+            chain_coords_list = self.prepare_chain_prior_coords(
+                struct, prior_coords_dict, rng
+            )
+
             # Apply random augmentation to each prior rigid group.
             _chain_coords_list = self.apply_group_random_augmentation(
                 chain_coords_list, prior_uids, rng
             )
 
             if self.use_ot_permutation and not skip_ot_permutation:
-                # Optimal transport permutation
+                # Optimal transport permutation during training.
                 _chain_coords_list = self.match_optimal_transport_permutation(
                     _chain_coords_list, struct, rng
                 )
@@ -239,41 +187,24 @@ class PriorSampler:
                 "Prior coordinates must be keyed by polymer asym_id. "
                 f"Unknown keys for structure {struct.id}: {sorted(unknown_keys)}"
             )
-        prior_uids = self.get_chain_prior_uids(struct)
-        prior_uid_counts = {
-            prior_uid: prior_uids.count(prior_uid) for prior_uid in set(prior_uids)
-        }
-        skip_bioprior_asym_ids = {
-            chain.asym_id
-            for chain, prior_uid in zip(struct.chains, prior_uids, strict=True)
-            if prior_uid_counts[prior_uid] > 1
-        }
+
         for c in struct.chains:
             chain_key = f"{struct.id}_{c.asym_id}"
             if c.is_polymer:
                 if c.asym_id in prior_coords_dict:
-                    coords = prior_coords_dict[c.asym_id]
-                    coords = self.langevin_relaxation(coords.copy(), c, rng)
-                    if c.asym_id not in skip_bioprior_asym_ids:
-                        coords = self.bioprior_perturbation(coords, c, rng)
+                    coords = self.sample_polymer_prior_coords(
+                        c, prior_coords_dict[c.asym_id], rng
+                    )
+                elif self.use_holo_if_apo_unavailable:
+                    self.logger.warning(
+                        f"{str(c.ctype)} chain {chain_key} has no prior "
+                        "coordinates. Seeding from holo coordinates."
+                    )
+                    coords = c.atom.coords.copy()
                 else:
-                    chain_kind = str(c.ctype)
-                    if self.use_holo_if_apo_unavailable:
-                        self.logger.warning(
-                            f"{chain_kind} chain {chain_key} has no prior "
-                            "coordinates. Seeding from holo coordinates."
-                        )
-                        coords = c.atom.coords.copy()
-                    else:
-                        self.logger.warning(
-                            f"{chain_kind} chain {chain_key} has no prior "
-                            "coordinates. Sampling with Langevin dynamics."
-                        )
-                        coords = self.langevin_sampling(c, rng)
-                    coords = self.langevin_relaxation(coords, c, rng)
-                    if c.asym_id not in skip_bioprior_asym_ids:
-                        coords = self.bioprior_perturbation(coords, c, rng)
-
+                    raise ValueError(
+                        f"{str(c.ctype)} chain {chain_key} has no prior coordinates."
+                    )
             else:
                 # For ligands, use ETKDG conformer.
                 if c.smiles is not None:
@@ -307,72 +238,58 @@ class PriorSampler:
                                 dst_atom_indices.append(atom_i)
                         coords[dst_atom_indices] = ref_pos[src_atom_indices]
 
-                # Relax with Langevin dynamics
-                coords = self.langevin_relaxation(coords, c, rng)
+            # Relax with Langevin dynamics
+            coords = self.langevin_relaxation(coords, c, rng)
 
+            if c.is_protein:
+                # Apply apo perturbation with probability prob_perturbation
+                if rng.random() < self.prob_perturbation:
+                    coords = self.apo_perturbation(coords, c, rng)
+            elif c.is_ligand:
                 # Apply random noise augmentation to ligand coordinates
                 scale = self.ligand_augmentation_scale
                 if scale > 0.0:
                     noise = rng.normal(scale=scale, size=coords.shape)
                     coords += noise
 
+            if coords.shape != (c.num_atoms, 3):
+                if c.is_polymer:
+                    raise ValueError(
+                        f"Prior coordinates for chain {chain_key} have shape "
+                        f"{coords.shape}, expected {(c.num_atoms, 3)}."
+                    )
+                # NOTE: For non-polymer chains (e.g. ligands), the number of
+                # atoms can be mismatched due to different bonding.
+                coords = np.zeros((c.num_atoms, 3), dtype=np.float32)
+
             chain_prior_coords.append(coords)
 
         return chain_prior_coords
 
-    def map_prior_lookup_to_chain_coords(
-        self,
-        struct: RefStructure,
-        prior_lookup: dict[int, dict],
-    ) -> dict[int, np.ndarray]:
-        """Map prior lookup records to chain atom-order coordinates.
-
-        Prior LMDB records are stored as per-residue atom37/atom29 arrays.
-        Prior sampling consumes coordinates in the reference chain's atom order,
-        so this performs only residue/atom mapping.  It does not perturb,
-        fallback, or sample missing chains.
-        """
-        polymer_asym_ids = {c.asym_id for c in struct.chains if c.is_polymer}
-        unknown_keys = set(prior_lookup) - polymer_asym_ids
-        if unknown_keys:
-            raise KeyError(
-                "Prior lookup must be keyed by polymer asym_id. "
-                f"Unknown keys for structure {struct.id}: {sorted(unknown_keys)}"
-            )
-
-        prior_coords_dict: dict[int, np.ndarray] = {}
-        for chain in struct.chains:
-            if not chain.is_polymer or chain.asym_id not in prior_lookup:
-                continue
-            prior_coords_dict[chain.asym_id] = self._map_prior_record_to_chain_coords(
-                chain, prior_lookup[chain.asym_id]
-            )
-        return prior_coords_dict
-
-    def _map_prior_record_to_chain_coords(
+    def sample_polymer_prior_coords(
         self,
         chain: Chain,
-        prior_info: dict,
+        prior_coords: np.ndarray,
+        rng: np.random.Generator,
     ) -> np.ndarray:
-        """Map one prior record to full chain atom order."""
-        prior_seq: str = prior_info["seq"]
-        prior_coords: np.ndarray = prior_info["coords"].copy()
-        if "residue_map" in prior_info:
+        """Sample one stacked residue-order prior and map it to chain atom order."""
+        expected_width = chain.get_polymer_residue_coord_width()
+        expected_shape = (chain.num_residues, expected_width, 3)
+        if prior_coords.ndim != 4 or prior_coords.shape[1:] != expected_shape:
             raise ValueError(
-                f"Prior record for chain {chain.asym_id} contains residue_map. "
-                "Prior records must be full-length and already aligned."
+                f"Prior coordinates for chain {chain.asym_id} have shape "
+                f"{prior_coords.shape}; expected (Nsample, {chain.num_residues}, "
+                f"{expected_width}, 3)."
             )
-        expected_num_atoms = chain.get_polymer_residue_coord_width()
-        assert prior_coords.shape == (len(prior_seq), expected_num_atoms, 3), (
-            f"Prior coordinates shape mismatch: expected "
-            f"({len(prior_seq)}, {expected_num_atoms}, 3), got {prior_coords.shape}"
-        )
-        assert prior_coords.shape[0] == chain.num_residues, (
-            f"Prior coordinates length {prior_coords.shape[0]} does not match "
-            f"sequence length {chain.num_residues}. Prior records must be full-length."
-        )
+        if prior_coords.shape[0] <= 0:
+            raise ValueError(
+                f"Prior coordinate stack for chain {chain.asym_id} is empty."
+            )
+
+        sample_i = int(rng.integers(0, prior_coords.shape[0]))
+        residue_coords = prior_coords[sample_i]
         return chain.map_polymer_residue_coords_to_atom_coords(
-            prior_coords, context="Prior coordinates"
+            residue_coords, context="Prior coordinates"
         )
 
     def langevin_sampling(
@@ -414,18 +331,13 @@ class PriorSampler:
             coords, residue_index, rng=rng, is_constraint=is_resolved
         )
 
-    def bioprior_perturbation(
+    def apo_perturbation(
         self,
         coords: np.ndarray,
         chain: Chain,
         rng: np.random.Generator,
     ) -> np.ndarray:
         """Apply BioPrior perturbation to a protein prior in chain atom order."""
-        if not chain.is_protein:
-            return coords
-        if rng.random() >= self.prob_perturbation:
-            return coords
-
         atom37_coords = self._chain_coords_to_atom37(coords, chain)
         sequence = chain.get_sequence(map_to_standard=True)
         perturbed_atom37 = self.bioprior.run(sequence, atom37_coords, rng=rng)

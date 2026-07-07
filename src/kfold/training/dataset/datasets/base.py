@@ -455,10 +455,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         if self.num_priors <= 0 or self.prior_sampler is None:
             return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
 
-        prior_lookup = self.get_prior_lookup(ref_struct, rng)
-        return self.prior_sampler.sample_prior_lookup(
-            ref_struct, prior_lookup, self.num_priors, rng
-        )
+        prior_coords = self.get_prior_coords(ref_struct, rng)
+        return self.prior_sampler.sample(ref_struct, prior_coords, self.num_priors, rng)
 
     def tokenize(
         self,
@@ -501,22 +499,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             return "rna"
         return "dna"
 
-    @staticmethod
-    def _copy_sample_metadata(out: dict, record: dict, sample_i: int) -> None:
-        sample_names = record["sample_names"]
-        if sample_i < len(sample_names):
-            out["sample_name"] = sample_names[sample_i]
-        # Quality fields are optional because some sampler outputs do not emit
-        # confidence jsons.  Missing values are stored as NaN and omitted here.
-        for field in ("ptm", "avg_plddt"):
-            values = record.get(field)
-            if (
-                values is not None
-                and sample_i < len(values)
-                and np.isfinite(values[sample_i])
-            ):
-                out[field] = float(values[sample_i])
-
     def _load_apo_info_from_lmdb(
         self,
         apo_info: dict,
@@ -545,9 +527,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         entry_id: str,
         entity_id: int,
         chain_type: str,
-        rng: np.random.Generator,
-    ) -> dict | None:
-        """Sample one prior from an entity-level stacked prior LMDB record."""
+    ) -> np.ndarray | None:
+        """Load an entity-level stacked prior LMDB record."""
         entity_key = f"{entry_id}_{entity_id}"
         prior_lmdb_path = self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
         if not prior_lmdb_path.exists():
@@ -566,18 +547,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                 f"Prior stack {entity_key} has shape {coords.shape}; expected "
                 "(N, L, A, 3)."
             )
-        sample_i = int(rng.integers(0, coords.shape[0]))
-        out = {
-            "key": entity_key,
-            "name": entity_key,
-            "chain_type": chain_type,
-            "seq": record["seq"],
-            "coords": coords[sample_i].copy(),
-            "num_samples": int(coords.shape[0]),
-            "sample_index": sample_i,
-        }
-        self._copy_sample_metadata(out, record, sample_i)
-        return out
+        return coords
 
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
@@ -631,14 +601,14 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
 
         return apo_lookup
 
-    def get_prior_lookup(
+    def get_prior_coords(
         self,
         ref_struct: RefStructure,
         rng: np.random.Generator,
-    ) -> dict[int, dict]:
-        """Sample per-chain priors from entity-level stacked prior LMDB records."""
+    ) -> dict[int, np.ndarray]:
+        """Load per-chain priors as stacked residue-order coordinates."""
         entry_id: str = ref_struct.id
-        prior_lookup: dict[int, dict] = {}
+        prior_coords: dict[int, np.ndarray] = {}
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
 
         for c in ref_struct.chains:
@@ -649,22 +619,18 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             if not (c.ctype.is_protein or c.ctype.is_nucleic_acid):
                 continue
 
-            if c.asym_id in prior_lookup:
+            if c.asym_id in prior_coords:
                 continue
 
             eid: int = c.entity_id
             chain_type = self._chain_type_name(c)
-            loaded = self._load_prior_stack_info_from_lmdb(entry_id, eid, chain_type, rng)
+            loaded = self._load_prior_stack_info_from_lmdb(entry_id, eid, chain_type)
             if loaded is None:
                 continue
 
-            prior_info = loaded.copy()
-            prior_info["asym_id"] = c.asym_id
-            prior_info["prior_uid"] = c.asym_id
-            prior_info["is_multimer_prior"] = False
-            prior_lookup[c.asym_id] = prior_info
+            prior_coords[c.asym_id] = loaded
 
-        return prior_lookup
+        return prior_coords
 
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]

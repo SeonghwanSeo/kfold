@@ -108,8 +108,8 @@ class RCSBTrainingDataset(TrainingDataset):
         self,
         group: dict,
         rng: np.random.Generator,
-    ) -> dict[int, dict] | None:
-        """Sample one prior from a source-specific multimer prior stack record."""
+    ) -> dict[int, np.ndarray] | None:
+        """Load a source-specific multimer prior stack record."""
         source = group["source"]
         name = group["name"]
         chain_type = group["chain_type"]
@@ -130,7 +130,7 @@ class RCSBTrainingDataset(TrainingDataset):
         num_samples = int(first_chain["coords"].shape[0])
         sample_i = int(rng.integers(0, num_samples))
 
-        out: dict[int, dict] = {}
+        out: dict[int, np.ndarray] = {}
         for asym_id, chain in record["chains"].items():
             coords = chain["coords"]
             if coords.ndim != 4:
@@ -143,18 +143,7 @@ class RCSBTrainingDataset(TrainingDataset):
                     f"Prior multimer stack {source}:{name} has inconsistent "
                     f"sample counts."
                 )
-            info = {
-                "key": f"{source}:{name}",
-                "name": name,
-                "source": source,
-                "chain_type": chain["chain_type"],
-                "seq": chain["seq"],
-                "coords": coords[sample_i].copy(),
-                "num_samples": num_samples,
-                "sample_index": sample_i,
-            }
-            self._copy_sample_metadata(info, record, sample_i)
-            out[int(asym_id)] = info
+            out[int(asym_id)] = coords[sample_i : sample_i + 1].copy()
         return out
 
     def get_apo_lookup(
@@ -202,15 +191,15 @@ class RCSBTrainingDataset(TrainingDataset):
 
         return apo_lookup
 
-    def get_prior_lookup(
+    def get_prior_coords(
         self,
         ref_struct: RefStructure,
         rng: np.random.Generator,
-    ) -> dict[int, dict]:
+    ) -> dict[int, np.ndarray]:
         """Sample monomer priors with optional RCSB antibody multimer overlay."""
         entry_id = ref_struct.id
-        prior_lookup: dict[int, dict] = {}
-        selected_multimer_by_name: dict[str, dict[int, dict] | None] = {}
+        prior_coords: dict[int, np.ndarray] = {}
+        selected_multimer_by_name: dict[str, dict[int, np.ndarray] | None] = {}
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
         protein_asym_ids = {c.asym_id for c in ref_struct.chains if c.ctype.is_protein}
 
@@ -243,31 +232,23 @@ class RCSBTrainingDataset(TrainingDataset):
                             f"Prior multimer {group['source']}:{group['name']} for "
                             f"entry {entry_id} does not contain asym_id {asym_id}."
                         )
-                    prior_info = multimer_prior[asym_id].copy()
-                    prior_info["asym_id"] = asym_id
-                    prior_info["prior_uid"] = prior_uid
-                    prior_info["is_multimer_prior"] = True
-                    prior_lookup[asym_id] = prior_info
+                    prior_coords[asym_id] = multimer_prior[asym_id]
                     if asym_id in metadata_by_asym_id:
                         metadata_by_asym_id[asym_id].prior_uid = prior_uid
 
         for c in ref_struct.chains:
             if not (c.ctype.is_protein or c.ctype.is_nucleic_acid):
                 continue
-            if c.asym_id in prior_lookup:
+            if c.asym_id in prior_coords:
                 continue
             eid = c.entity_id
             chain_type = self._chain_type_name(c)
-            loaded = self._load_prior_stack_info_from_lmdb(entry_id, eid, chain_type, rng)
+            loaded = self._load_prior_stack_info_from_lmdb(entry_id, eid, chain_type)
             if loaded is None:
                 continue
-            prior_info = loaded.copy()
-            prior_info["asym_id"] = c.asym_id
-            prior_info["prior_uid"] = c.asym_id
-            prior_info["is_multimer_prior"] = False
-            prior_lookup[c.asym_id] = prior_info
+            prior_coords[c.asym_id] = loaded
 
-        return prior_lookup
+        return prior_coords
 
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]

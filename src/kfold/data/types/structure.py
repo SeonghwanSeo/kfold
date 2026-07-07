@@ -296,6 +296,43 @@ class Chain:
         atom_coords[dst_atom_indices] = residue_coords[src_res_indices, src_atom_indices]
         return atom_coords
 
+    def map_atom_coords_to_polymer_residue_coords(
+        self,
+        atom_coords: np.ndarray,
+        *,
+        context: str = "Atom coordinates",
+    ) -> np.ndarray:
+        """Map this chain's atom-order coordinates to atom37/atom29 residue order."""
+        if not self.is_polymer:
+            raise ValueError("Only polymer chains have residue-major coordinates.")
+        if atom_coords.shape != (self.num_atoms, 3):
+            raise ValueError(
+                f"{context} shape mismatch for chain {self.asym_id}: expected "
+                f"{(self.num_atoms, 3)}, got {atom_coords.shape}."
+            )
+
+        if self.is_protein:
+            atom_order = C.atom.protein_atom37_order
+        elif self.is_rna or self.is_dna:
+            atom_order = C.atom.nucleic_acid_atom29_order
+        else:
+            raise ValueError(f"Unsupported polymer chain type: {self.ctype}")
+
+        residue_coords = np.full(
+            (self.num_residues, self.get_polymer_residue_coord_width(), 3),
+            np.nan,
+            dtype=np.float32,
+        )
+        atom_names = self.atom.name.tolist()
+        for res_i in range(self.num_residues):
+            residue_index = res_i + 1
+            for atom_i in self.residue.iter_residue_atoms(residue_index):
+                atom_name = atom_names[atom_i]
+                atom_j = atom_order.get(atom_name)
+                if atom_j is not None:
+                    residue_coords[res_i, atom_j] = atom_coords[atom_i]
+        return residue_coords
+
     def find_atom_index(self, residue_index: int, atom_name: str) -> int:
         """Find atom index given residue index and atom name.
 
