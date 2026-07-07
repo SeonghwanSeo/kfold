@@ -202,9 +202,6 @@ class KFold(torch.nn.Module):
 
         # Initialize trunk
         self.layernorm_z = LayerNorm(self.channel_z)
-        # Retained for checkpoint compatibility; the Parcae/ESMFold2 recurrence
-        # below uses parcae_b_cont for normalized pair-input injection.
-        self.linear_z = LinearNoBias(self.channel_z, self.channel_z, init="final")
 
         # Parcae theory: learn a continuous negative-diagonal state transition
         # and an Euler-discretized input injection for the pair recurrence.
@@ -758,7 +755,6 @@ class KFold(torch.nn.Module):
             "rna_seq_to_pair",
             "prot_struct_to_pair",
             "layernorm_z",
-            "linear_z",
             "lm_stack",
             "main_stack",
             "linear_refine",
