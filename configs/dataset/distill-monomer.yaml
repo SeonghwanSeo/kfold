@@ -2,7 +2,7 @@ _yaml_: "default-train.yaml"
 
 name: af2-long
 type: "monomer-distillation"
-prob_drop_apo: 1.0
+prob_drop_apo: 0.75
 prob_drop_struct_token: 1.0
 
 sampler: null
@@ -14,4 +14,8 @@ cropper:
   w_spatial: 0.75
   w_spatial_interface: 0.0
 
-apo_init: null
+apo_init:
+  perturbation:
+    prob_rieprody: 0.0
+    bioprior:
+      max_steps: 10 # Maximum random walk steps
