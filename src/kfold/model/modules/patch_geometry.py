@@ -1,4 +1,5 @@
 import math
+import time
 from typing import TypedDict
 
 import torch
@@ -25,6 +26,16 @@ class _Patch(TypedDict):
 class _PatchPair(TypedDict):
     patch_i: int
     patch_j: int
+    target: torch.Tensor
+    weight: torch.Tensor
+    hard_negative: torch.Tensor
+
+
+class _PatchPairBatch(TypedDict):
+    idx_i: torch.Tensor
+    idx_j: torch.Tensor
+    mask_i: torch.Tensor
+    mask_j: torch.Tensor
     target: torch.Tensor
     weight: torch.Tensor
     hard_negative: torch.Tensor
@@ -93,30 +104,63 @@ class PatchPairGeometryHead(nn.Module):
                 zero = zero + param.to(dtype=ref.dtype).sum() * 0.0
         return zero
 
+    def _timing_start(self, ref: torch.Tensor) -> object:
+        if ref.is_cuda:
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+            return event
+        return time.perf_counter()
+
+    def _timing_stop(self, start: object, ref: torch.Tensor) -> tuple[object, object]:
+        if ref.is_cuda:
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+            return start, event
+        return start, time.perf_counter()
+
+    def _timing_sum_ms(self, records: list[tuple[object, object]]) -> float:
+        total = 0.0
+        for start, end in records:
+            if isinstance(start, torch.cuda.Event) and isinstance(
+                end,
+                torch.cuda.Event,
+            ):
+                total += float(start.elapsed_time(end))
+            else:
+                total += 1000.0 * (float(end) - float(start))
+        return total
+
     def forward(self, f_input: FoldingInput, z: torch.Tensor) -> dict[str, torch.Tensor]:
         if not self.enabled:
             return {}
         if not f_input.is_batched:
             raise ValueError("PatchPairGeometryHead expects batched FoldingInput.")
 
+        total_timing = self._timing_start(z)
+        timing_records: dict[str, list[tuple[object, object]]] = {
+            "build_ms": [],
+            "pool_ms": [],
+            "pack_ms": [],
+        }
         per_batch_logits: list[torch.Tensor] = []
         per_batch_targets: list[torch.Tensor] = []
         per_batch_weights: list[torch.Tensor] = []
         per_batch_hard_negative: list[torch.Tensor] = []
 
         for b in range(z.shape[0]):
-            patches, patch_pairs = self._build_patch_pairs(f_input, b)
-            if patch_pairs:
-                logits_b = self._pool_patch_pairs(z[b], patches, patch_pairs)
-                targets_b = torch.stack([p["target"] for p in patch_pairs], dim=0)
-                weights_b = torch.stack([p["weight"] for p in patch_pairs], dim=0).to(
+            build_timing = self._timing_start(z)
+            patch_pairs = self._build_patch_pairs(f_input, b)
+            timing_records["build_ms"].append(self._timing_stop(build_timing, z))
+            if patch_pairs is not None and patch_pairs["target"].numel() > 0:
+                pool_timing = self._timing_start(z)
+                logits_b = self._pool_patch_pairs(z[b], patch_pairs)
+                timing_records["pool_ms"].append(self._timing_stop(pool_timing, z))
+                targets_b = patch_pairs["target"]
+                weights_b = patch_pairs["weight"].to(device=z.device, dtype=z.dtype)
+                hard_b = patch_pairs["hard_negative"].to(
                     device=z.device,
-                    dtype=z.dtype,
+                    dtype=torch.bool,
                 )
-                hard_b = torch.stack(
-                    [p["hard_negative"] for p in patch_pairs],
-                    dim=0,
-                ).to(device=z.device, dtype=torch.bool)
             else:
                 logits_b = z.new_zeros((0, self.num_bins))
                 targets_b = torch.zeros((0,), device=z.device, dtype=torch.long)
@@ -149,6 +193,7 @@ class PatchPairGeometryHead(nn.Module):
         )
         logits_out = logits_out + self._zero_active_param_sum(z)
 
+        pack_timing = self._timing_start(z)
         for b, logits_b in enumerate(per_batch_logits):
             n = logits_b.shape[0]
             if n == 0:
@@ -158,6 +203,11 @@ class PatchPairGeometryHead(nn.Module):
             weights_out[b, :n] = per_batch_weights[b]
             hard_out[b, :n] = per_batch_hard_negative[b]
             valid_out[b, :n] = True
+        timing_records["pack_ms"].append(self._timing_stop(pack_timing, z))
+        total_record = self._timing_stop(total_timing, z)
+        timing_records["total_ms"] = [total_record]
+        if z.is_cuda:
+            total_record[1].synchronize()
 
         return {
             "logits": logits_out,
@@ -165,13 +215,17 @@ class PatchPairGeometryHead(nn.Module):
             "weight": weights_out,
             "hard_negative": hard_out,
             "valid_mask": valid_out,
+            "timing": {
+                name: z.new_tensor(self._timing_sum_ms(records))
+                for name, records in timing_records.items()
+            },
         }
 
     def _build_patch_pairs(
         self,
         f_input: FoldingInput,
         batch_idx: int,
-    ) -> tuple[list[_Patch], list[_PatchPair]]:
+    ) -> _PatchPairBatch | None:
         with torch.no_grad():
             coords = f_input.token.repr_coords[batch_idx]
             repr_mask = f_input.token.repr_mask[batch_idx]
@@ -185,7 +239,7 @@ class PatchPairGeometryHead(nn.Module):
                 int(x) for x in asym_id[valid].unique().detach().cpu().tolist()
             )
             if len(chain_ids) < 2:
-                return [], []
+                return None
 
             token_dist2 = self._token_squared_dist(coords)
             if crop_mode == CROP_SPATIAL_INTERFACE:
@@ -218,7 +272,7 @@ class PatchPairGeometryHead(nn.Module):
                 crop_mode,
                 token_dist2,
             )
-        return patches, patch_pairs
+        return patch_pairs
 
     def _token_squared_dist(self, coords: torch.Tensor) -> torch.Tensor:
         coords = coords.float()
@@ -434,10 +488,10 @@ class PatchPairGeometryHead(nn.Module):
         coords: torch.Tensor,
         crop_mode: int,
         token_dist2: torch.Tensor,
-    ) -> list[_PatchPair]:
+    ) -> _PatchPairBatch | None:
         n_patches = len(patches)
         if n_patches < 2:
-            return []
+            return None
 
         device = coords.device
         chain_id = torch.tensor(
@@ -493,7 +547,7 @@ class PatchPairGeometryHead(nn.Module):
         )
         inter_chain = chain_id[patch_i] != chain_id[patch_j]
         if not inter_chain.any():
-            return []
+            return None
 
         patch_i = patch_i[inter_chain]
         patch_j = patch_j[inter_chain]
@@ -517,7 +571,7 @@ class PatchPairGeometryHead(nn.Module):
         )
         keep = weight > 0
         if not keep.any():
-            return []
+            return None
 
         patch_i = patch_i[keep]
         patch_j = patch_j[keep]
@@ -535,29 +589,52 @@ class PatchPairGeometryHead(nn.Module):
         )
         n_select = min(self.max_patch_pairs, priority.numel())
         selected = torch.argsort(priority, descending=True, stable=True)[:n_select]
+        selected_i = patch_i[selected].detach().cpu().tolist()
+        selected_j = patch_j[selected].detach().cpu().tolist()
+        idx_i_list = [patches[i]["pool_idx"] for i in selected_i]
+        idx_j_list = [patches[j]["pool_idx"] for j in selected_j]
+        max_i = max(idx.numel() for idx in idx_i_list)
+        max_j = max(idx.numel() for idx in idx_j_list)
 
-        selected_i = patch_i[selected].tolist()
-        selected_j = patch_j[selected].tolist()
-        selected_target = target[selected].unbind(dim=0)
-        selected_weight = weight[selected].unbind(dim=0)
-        selected_hard = hard_negative[selected].unbind(dim=0)
-        return [
-            {
-                "patch_i": i,
-                "patch_j": j,
-                "target": t,
-                "weight": w,
-                "hard_negative": h,
-            }
-            for i, j, t, w, h in zip(
-                selected_i,
-                selected_j,
-                selected_target,
-                selected_weight,
-                selected_hard,
-                strict=True,
-            )
-        ]
+        idx_i = torch.zeros(
+            (n_select, max_i),
+            device=device,
+            dtype=torch.long,
+        )
+        idx_j = torch.zeros(
+            (n_select, max_j),
+            device=device,
+            dtype=torch.long,
+        )
+        mask_i = torch.zeros(
+            (n_select, max_i),
+            device=device,
+            dtype=torch.bool,
+        )
+        mask_j = torch.zeros(
+            (n_select, max_j),
+            device=device,
+            dtype=torch.bool,
+        )
+        for pair_idx, (patch_i_idx, patch_j_idx) in enumerate(
+            zip(idx_i_list, idx_j_list, strict=True)
+        ):
+            n_i = patch_i_idx.numel()
+            n_j = patch_j_idx.numel()
+            idx_i[pair_idx, :n_i] = patch_i_idx
+            idx_j[pair_idx, :n_j] = patch_j_idx
+            mask_i[pair_idx, :n_i] = True
+            mask_j[pair_idx, :n_j] = True
+
+        return {
+            "idx_i": idx_i,
+            "idx_j": idx_j,
+            "mask_i": mask_i,
+            "mask_j": mask_j,
+            "target": target[selected],
+            "weight": weight[selected],
+            "hard_negative": hard_negative[selected],
+        }
 
     def _patch_pair_weight_tensor(
         self,
@@ -671,87 +748,51 @@ class PatchPairGeometryHead(nn.Module):
             return 2.0 + min(distance, 100.0) / 1000.0
         return 1.0
 
-    def _pool_patch_pair(
-        self,
-        z: torch.Tensor,
-        patch_i: _Patch,
-        patch_j: _Patch,
-    ) -> torch.Tensor:
-        idx_i = patch_i["pool_idx"]
-        idx_j = patch_j["pool_idx"]
-        z_ij = z[idx_i][:, idx_j]
-        z_ji = z[idx_j][:, idx_i].transpose(0, 1)
-        pair_z = 0.5 * (z_ij + z_ji)
-        flat_z = self.norm_z(pair_z.reshape(-1, self.channel_z))
-        score = self.pool_score(flat_z).squeeze(-1)
-        alpha = score.float().softmax(dim=-1).to(flat_z.dtype)
-        value = self.pool_value(flat_z)
-        pooled = torch.einsum("n,nc->c", alpha, value)
-        pooled = pooled + self.transition(pooled)
-        return self.out(pooled)
-
     def _pool_patch_pairs(
         self,
         z: torch.Tensor,
-        patches: list[_Patch],
-        patch_pairs: list[_PatchPair],
+        patch_pairs: _PatchPairBatch,
     ) -> torch.Tensor:
         chunk_size = max(1, self.pool_chunk_size)
+        n_pairs = patch_pairs["target"].numel()
+        if n_pairs == 0:
+            return z.new_zeros((0, self.num_bins))
         logits = []
-        for start in range(0, len(patch_pairs), chunk_size):
+        z_flat = z.reshape(-1, self.channel_z)
+        seq_len = z.shape[0]
+        for start in range(0, n_pairs, chunk_size):
+            end = min(start + chunk_size, n_pairs)
             logits.append(
                 self._pool_patch_pair_chunk(
-                    z,
-                    patches,
-                    patch_pairs[start : start + chunk_size],
+                    z_flat,
+                    seq_len,
+                    patch_pairs["idx_i"][start:end],
+                    patch_pairs["idx_j"][start:end],
+                    patch_pairs["mask_i"][start:end],
+                    patch_pairs["mask_j"][start:end],
                 )
             )
         return torch.cat(logits, dim=0)
 
     def _pool_patch_pair_chunk(
         self,
-        z: torch.Tensor,
-        patches: list[_Patch],
-        patch_pairs: list[_PatchPair],
+        z_flat: torch.Tensor,
+        seq_len: int,
+        idx_i: torch.Tensor,
+        idx_j: torch.Tensor,
+        mask_i: torch.Tensor,
+        mask_j: torch.Tensor,
     ) -> torch.Tensor:
-        idx_i_list = [patches[p["patch_i"]]["pool_idx"] for p in patch_pairs]
-        idx_j_list = [patches[p["patch_j"]]["pool_idx"] for p in patch_pairs]
-        n_pairs = len(patch_pairs)
-        max_i = max(idx.numel() for idx in idx_i_list)
-        max_j = max(idx.numel() for idx in idx_j_list)
-
-        idx_i = torch.zeros(
-            (n_pairs, max_i),
-            device=z.device,
-            dtype=torch.long,
+        n_pairs = idx_i.shape[0]
+        flat_idx_ij = (idx_i[:, :, None] * seq_len + idx_j[:, None, :]).reshape(-1)
+        flat_idx_ji = (idx_j[:, None, :] * seq_len + idx_i[:, :, None]).reshape(-1)
+        z_ij = z_flat.index_select(0, flat_idx_ij).view(
+            n_pairs,
+            idx_i.shape[1],
+            idx_j.shape[1],
+            self.channel_z,
         )
-        idx_j = torch.zeros(
-            (n_pairs, max_j),
-            device=z.device,
-            dtype=torch.long,
-        )
-        mask_i = torch.zeros(
-            (n_pairs, max_i),
-            device=z.device,
-            dtype=torch.bool,
-        )
-        mask_j = torch.zeros(
-            (n_pairs, max_j),
-            device=z.device,
-            dtype=torch.bool,
-        )
-        for pair_idx, (patch_i_idx, patch_j_idx) in enumerate(
-            zip(idx_i_list, idx_j_list, strict=True)
-        ):
-            n_i = patch_i_idx.numel()
-            n_j = patch_j_idx.numel()
-            idx_i[pair_idx, :n_i] = patch_i_idx
-            idx_j[pair_idx, :n_j] = patch_j_idx
-            mask_i[pair_idx, :n_i] = True
-            mask_j[pair_idx, :n_j] = True
-
-        z_ij = z[idx_i[:, :, None], idx_j[:, None, :]]
-        z_ji = z[idx_j[:, None, :], idx_i[:, :, None]]
+        z_ji = z_flat.index_select(0, flat_idx_ji).view_as(z_ij)
         pair_z = 0.5 * (z_ij + z_ji)
         flat_z = self.norm_z(pair_z.reshape(n_pairs, -1, self.channel_z))
 
@@ -760,7 +801,7 @@ class PatchPairGeometryHead(nn.Module):
         score = self.pool_score(flat_z).squeeze(-1).float()
         score = score.masked_fill(~flat_mask, torch.finfo(score.dtype).min)
         alpha = score.softmax(dim=-1).to(flat_z.dtype)
-        value = self.pool_value(flat_z)
-        pooled = torch.einsum("pn,pnc->pc", alpha, value)
+        pooled_z = torch.einsum("pn,pnc->pc", alpha, flat_z)
+        pooled = self.pool_value(pooled_z)
         pooled = pooled + self.transition(pooled)
         return self.out(pooled)
