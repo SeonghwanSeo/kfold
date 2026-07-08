@@ -633,6 +633,12 @@ class KFoldTrainingModule(pl.LightningModule):
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
                     model_output["patch_geometry"]
                 )
+                patch_geometry_metrics |= {
+                    f"patch_geometry_timing_{name}": value.detach()
+                    for name, value in model_output["patch_geometry"]
+                    .get("timing", {})
+                    .items()
+                }
             else:
                 patch_geometry_loss, patch_geometry_metrics = 0.0, {}
         else:
@@ -883,7 +889,11 @@ class KFoldTrainingModule(pl.LightningModule):
         loss_per_batch = self.distogram_loss(logits, f_input)
         loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
-        if hasattr(self.distogram_loss, "boundaries") and hasattr(f_input, "token"):
+        if (
+            hasattr(self.distogram_loss, "boundaries")
+            and hasattr(f_input, "token")
+            and self.global_step % 10 == 0
+        ):
             metrics |= self.compute_distogram_diagnostic_metrics(logits, f_input)
         if self._binned_cache_enabled and self.train_diffusion_head:
             self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
