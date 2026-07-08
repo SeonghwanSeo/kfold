@@ -130,7 +130,29 @@ class MonomerDistillationDataset(DistillationDataset):
     ) -> dict[int, dict]:
         """Return no trunk apo coordinates for protein monomer distillation."""
         # Monomer distillation does not use apo structures as trunk input.
-        return {}
+        c = ref_struct.chains[0]
+        seq = c.get_sequence()
+        ccd_sequence = c.get_ccd_sequence()
+
+        res_atom_dict = C.atom.residue_atoms
+        atom37_order = C.atom.protein_atom37_order
+
+        # Convert to atom37 format
+        apo_coords = c.atom.coords  # [Natom, 3]
+        apo_coords_37 = np.full((c.num_residues, 37, 3), np.nan, dtype=np.float32)
+        g_atom_i = 0
+        for i, restype in enumerate(ccd_sequence):
+            atoms = res_atom_dict[restype]
+            natoms = len(atoms)
+            st, end = g_atom_i, g_atom_i + natoms
+            atom_indices = [atom37_order[a] for a in atoms]
+            apo_coords_37[i, atom_indices] = apo_coords[st:end]
+            g_atom_i += natoms
+        assert g_atom_i == c.num_atoms, (
+            f"Total atom counts {g_atom_i} does not match chain.num_atoms {c.num_atoms}."
+        )
+
+        return {c.asym_id: {"coords": apo_coords_37.copy(), "seq": seq}}
 
     def sample_prior_coords(
         self,
@@ -225,15 +247,6 @@ class RNAMonomerDistillationDataset(DistillationDataset):
             chains=[chain], connections=[], metadata=metadata.copy()
         )
         return ref_struct
-
-    def load_lookup_table(self) -> dict:
-        return {}
-
-    def get_apo_lookup(
-        self, ref_struct: RefStructure, rng: np.random.Generator
-    ) -> dict[int, dict]:
-        # Monomer distillation does not use apo structures as trunk input.
-        return {}
 
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]

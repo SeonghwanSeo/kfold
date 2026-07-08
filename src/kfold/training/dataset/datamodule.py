@@ -195,6 +195,8 @@ class TrainingDataModule(pl.LightningDataModule):
             )
             # For validation, we should not use OT permutation.
             prior_sampler.use_ot_permutation = False
+            # For validation, we should not perturb.
+            prior_sampler.prob_perturbation = 0.0
         else:
             prior_sampler = None
 
