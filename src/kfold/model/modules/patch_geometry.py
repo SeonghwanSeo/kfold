@@ -40,6 +40,7 @@ class PatchPairGeometryHead(nn.Module):
         patch_size: int = 16
         max_patches_per_chain: int = 8
         max_patch_pairs: int = 256
+        pool_chunk_size: int = 32
         interface_cutoff: float = 12.0
         positive_cutoff: float = 12.0
         hard_negative_cutoff: float = 22.0
@@ -54,6 +55,7 @@ class PatchPairGeometryHead(nn.Module):
         self.patch_size: int = int(cfg.patch_size)
         self.max_patches_per_chain: int = int(cfg.max_patches_per_chain)
         self.max_patch_pairs: int = int(cfg.max_patch_pairs)
+        self.pool_chunk_size: int = int(getattr(cfg, "pool_chunk_size", 32))
         self.interface_cutoff: float = float(cfg.interface_cutoff)
         self.positive_cutoff: float = float(cfg.positive_cutoff)
         self.hard_negative_cutoff: float = float(cfg.hard_negative_cutoff)
@@ -98,12 +100,8 @@ class PatchPairGeometryHead(nn.Module):
 
         for b in range(z.shape[0]):
             patches, patch_pairs = self._build_patch_pairs(f_input, b)
-            logits = [
-                self._pool_patch_pair(z[b], patches[p["patch_i"]], patches[p["patch_j"]])
-                for p in patch_pairs
-            ]
-            if logits:
-                logits_b = torch.stack(logits, dim=0)
+            if patch_pairs:
+                logits_b = self._pool_patch_pairs(z[b], patches, patch_pairs)
                 targets_b = torch.stack([p["target"] for p in patch_pairs], dim=0)
                 weights_b = z.new_tensor([p["weight"] for p in patch_pairs])
                 hard_b = torch.tensor(
@@ -485,5 +483,80 @@ class PatchPairGeometryHead(nn.Module):
         alpha = score.float().softmax(dim=-1).to(flat_z.dtype)
         value = self.pool_value(flat_z)
         pooled = torch.einsum("n,nc->c", alpha, value)
+        pooled = pooled + self.transition(pooled)
+        return self.out(pooled)
+
+    def _pool_patch_pairs(
+        self,
+        z: torch.Tensor,
+        patches: list[_Patch],
+        patch_pairs: list[_PatchPair],
+    ) -> torch.Tensor:
+        chunk_size = max(1, self.pool_chunk_size)
+        logits = []
+        for start in range(0, len(patch_pairs), chunk_size):
+            logits.append(
+                self._pool_patch_pair_chunk(
+                    z,
+                    patches,
+                    patch_pairs[start : start + chunk_size],
+                )
+            )
+        return torch.cat(logits, dim=0)
+
+    def _pool_patch_pair_chunk(
+        self,
+        z: torch.Tensor,
+        patches: list[_Patch],
+        patch_pairs: list[_PatchPair],
+    ) -> torch.Tensor:
+        idx_i_list = [patches[p["patch_i"]]["idx"] for p in patch_pairs]
+        idx_j_list = [patches[p["patch_j"]]["idx"] for p in patch_pairs]
+        n_pairs = len(patch_pairs)
+        max_i = max(idx.numel() for idx in idx_i_list)
+        max_j = max(idx.numel() for idx in idx_j_list)
+
+        idx_i = torch.zeros(
+            (n_pairs, max_i),
+            device=z.device,
+            dtype=torch.long,
+        )
+        idx_j = torch.zeros(
+            (n_pairs, max_j),
+            device=z.device,
+            dtype=torch.long,
+        )
+        mask_i = torch.zeros(
+            (n_pairs, max_i),
+            device=z.device,
+            dtype=torch.bool,
+        )
+        mask_j = torch.zeros(
+            (n_pairs, max_j),
+            device=z.device,
+            dtype=torch.bool,
+        )
+        for pair_idx, (patch_i_idx, patch_j_idx) in enumerate(
+            zip(idx_i_list, idx_j_list, strict=True)
+        ):
+            n_i = patch_i_idx.numel()
+            n_j = patch_j_idx.numel()
+            idx_i[pair_idx, :n_i] = patch_i_idx
+            idx_j[pair_idx, :n_j] = patch_j_idx
+            mask_i[pair_idx, :n_i] = True
+            mask_j[pair_idx, :n_j] = True
+
+        z_ij = z[idx_i[:, :, None], idx_j[:, None, :]]
+        z_ji = z[idx_j[:, None, :], idx_i[:, :, None]]
+        pair_z = 0.5 * (z_ij + z_ji)
+        flat_z = self.norm_z(pair_z.reshape(n_pairs, -1, self.channel_z))
+
+        pair_mask = mask_i[:, :, None] & mask_j[:, None, :]
+        flat_mask = pair_mask.reshape(n_pairs, -1)
+        score = self.pool_score(flat_z).squeeze(-1).float()
+        score = score.masked_fill(~flat_mask, torch.finfo(score.dtype).min)
+        alpha = score.softmax(dim=-1).to(flat_z.dtype)
+        value = self.pool_value(flat_z)
+        pooled = torch.einsum("pn,pnc->pc", alpha, value)
         pooled = pooled + self.transition(pooled)
         return self.out(pooled)
