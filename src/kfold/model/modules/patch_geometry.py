@@ -26,9 +26,8 @@ class _PatchPair(TypedDict):
     patch_i: int
     patch_j: int
     target: torch.Tensor
-    weight: float
-    hard_negative: bool
-    priority: float
+    weight: torch.Tensor
+    hard_negative: torch.Tensor
 
 
 class PatchPairGeometryHead(nn.Module):
@@ -110,12 +109,14 @@ class PatchPairGeometryHead(nn.Module):
             if patch_pairs:
                 logits_b = self._pool_patch_pairs(z[b], patches, patch_pairs)
                 targets_b = torch.stack([p["target"] for p in patch_pairs], dim=0)
-                weights_b = z.new_tensor([p["weight"] for p in patch_pairs])
-                hard_b = torch.tensor(
-                    [p["hard_negative"] for p in patch_pairs],
+                weights_b = torch.stack([p["weight"] for p in patch_pairs], dim=0).to(
                     device=z.device,
-                    dtype=torch.bool,
+                    dtype=z.dtype,
                 )
+                hard_b = torch.stack(
+                    [p["hard_negative"] for p in patch_pairs],
+                    dim=0,
+                ).to(device=z.device, dtype=torch.bool)
             else:
                 logits_b = z.new_zeros((0, self.num_bins))
                 targets_b = torch.zeros((0,), device=z.device, dtype=torch.long)
@@ -180,11 +181,21 @@ class PatchPairGeometryHead(nn.Module):
             asym_id = f_input.token.asym_id[batch_idx]
             crop_mode = self._crop_mode(f_input, batch_idx)
 
-            chain_ids = sorted(int(x.item()) for x in asym_id[valid].unique())
+            chain_ids = sorted(
+                int(x) for x in asym_id[valid].unique().detach().cpu().tolist()
+            )
             if len(chain_ids) < 2:
                 return [], []
 
-            interface_mask = self._interface_token_mask(coords, asym_id, valid)
+            token_dist2 = self._token_squared_dist(coords)
+            if crop_mode == CROP_SPATIAL_INTERFACE:
+                interface_mask = self._interface_token_mask(
+                    asym_id,
+                    valid,
+                    token_dist2,
+                )
+            else:
+                interface_mask = torch.zeros_like(valid)
             patches: list[_Patch] = []
             for chain_id in chain_ids:
                 idx = torch.where(valid & (asym_id == chain_id))[0]
@@ -201,30 +212,40 @@ class PatchPairGeometryHead(nn.Module):
                     )
                 )
 
-            patch_pairs = self._select_patch_pairs(patches, coords, crop_mode)
+            patch_pairs = self._select_patch_pairs(
+                patches,
+                coords,
+                crop_mode,
+                token_dist2,
+            )
         return patches, patch_pairs
+
+    def _token_squared_dist(self, coords: torch.Tensor) -> torch.Tensor:
+        coords = coords.float()
+        diff = coords[:, None, :] - coords[None, :, :]
+        return (diff * diff).sum(dim=-1)
 
     def _crop_mode(self, f_input: FoldingInput, batch_idx: int) -> int:
         crop_mode = getattr(f_input, "crop_mode", None)
         if crop_mode is None:
             return CROP_UNKNOWN
         if crop_mode.ndim == 0:
-            return int(crop_mode.item())
-        return int(crop_mode[batch_idx].item())
+            return int(crop_mode.detach().cpu().tolist())
+        return int(crop_mode[batch_idx].detach().cpu().tolist())
 
     def _interface_token_mask(
         self,
-        coords: torch.Tensor,
         asym_id: torch.Tensor,
         valid: torch.Tensor,
+        token_dist2: torch.Tensor,
     ) -> torch.Tensor:
         interface = torch.zeros_like(valid)
         idx = torch.where(valid)[0]
         if idx.numel() < 2:
             return interface
-        d = torch.cdist(coords[idx], coords[idx])
+        d2 = token_dist2[idx][:, idx]
         inter_chain = asym_id[idx, None] != asym_id[idx][None, :]
-        near = (d < self.interface_cutoff) & inter_chain
+        near = (d2 < self.interface_cutoff**2) & inter_chain
         interface[idx] = near.any(dim=-1)
         return interface
 
@@ -383,7 +404,7 @@ class PatchPairGeometryHead(nn.Module):
             return [idx_global]
 
         n_clusters = min(n_clusters, idx_global.numel())
-        centers = [0]
+        centers = [torch.zeros((), device=coords_local.device, dtype=torch.long)]
         min_dist = torch.full(
             (idx_global.numel(),),
             float("inf"),
@@ -392,12 +413,14 @@ class PatchPairGeometryHead(nn.Module):
         )
         for _ in range(1, n_clusters):
             last = coords_local[centers[-1]].unsqueeze(0)
-            dist = torch.cdist(coords_local, last).squeeze(-1)
+            diff = coords_local - last
+            dist = (diff * diff).sum(dim=-1)
             min_dist = torch.minimum(min_dist, dist)
-            centers.append(int(torch.argmax(min_dist).item()))
+            centers.append(torch.argmax(min_dist))
 
-        center_coords = coords_local[centers]
-        assign = torch.cdist(coords_local, center_coords).argmin(dim=-1)
+        center_coords = coords_local[torch.stack(centers)]
+        diff = coords_local[:, None, :] - center_coords[None, :, :]
+        assign = (diff * diff).sum(dim=-1).argmin(dim=-1)
         clusters = []
         for cluster_i in range(n_clusters):
             cluster = idx_global[assign == cluster_i]
@@ -410,50 +433,197 @@ class PatchPairGeometryHead(nn.Module):
         patches: list[_Patch],
         coords: torch.Tensor,
         crop_mode: int,
+        token_dist2: torch.Tensor,
     ) -> list[_PatchPair]:
-        pairs: list[_PatchPair] = []
-        for i, patch_i in enumerate(patches):
-            for j, patch_j in enumerate(patches[i + 1 :], start=i + 1):
-                if patch_i["chain_id"] == patch_j["chain_id"]:
-                    continue
+        n_patches = len(patches)
+        if n_patches < 2:
+            return []
 
-                coords_i = coords[patch_i["idx"]]
-                coords_j = coords[patch_j["idx"]]
-                com_i = coords_i.mean(dim=0)
-                com_j = coords_j.mean(dim=0)
-                com_dist = torch.linalg.norm(com_i - com_j)
-                token_min_dist = torch.cdist(coords_i, coords_j).min()
-                positive = bool((token_min_dist < self.positive_cutoff).item())
-                hard_negative = bool((token_min_dist > self.hard_negative_cutoff).item())
-                weight = self._patch_pair_weight(
-                    crop_mode,
-                    patch_i,
-                    patch_j,
-                    positive=positive,
-                    hard_negative=hard_negative,
-                )
-                if weight <= 0:
-                    continue
-                target = (com_dist.unsqueeze(-1) > self.boundaries).sum(dim=-1).long()
-                priority = self._patch_pair_priority(
-                    crop_mode,
-                    positive=positive,
-                    hard_negative=hard_negative,
-                    distance=float(com_dist.item()),
-                )
-                pairs.append(
-                    {
-                        "patch_i": i,
-                        "patch_j": j,
-                        "target": target,
-                        "weight": weight,
-                        "hard_negative": hard_negative,
-                        "priority": priority,
-                    }
-                )
+        device = coords.device
+        chain_id = torch.tensor(
+            [p["chain_id"] for p in patches],
+            device=device,
+            dtype=torch.long,
+        )
+        is_interface = torch.tensor(
+            [p["is_interface"] for p in patches],
+            device=device,
+            dtype=torch.bool,
+        )
+        is_background = torch.tensor(
+            [p["is_background"] for p in patches],
+            device=device,
+            dtype=torch.bool,
+        )
+        com = torch.stack([coords[p["idx"]].float().mean(dim=0) for p in patches])
 
-        pairs.sort(key=lambda x: x["priority"], reverse=True)
-        return pairs[: self.max_patch_pairs]
+        token_patch = torch.full(
+            (coords.shape[0],),
+            -1,
+            device=device,
+            dtype=torch.long,
+        )
+        for patch_idx, patch in enumerate(patches):
+            token_patch[patch["idx"]] = patch_idx
+
+        token_patch_i = token_patch[:, None]
+        token_patch_j = token_patch[None, :]
+        token_pair_valid = ((token_patch_i >= 0) & (token_patch_j >= 0)).reshape(-1)
+        token_pair_patch = (token_patch_i * n_patches + token_patch_j).reshape(-1)
+        patch_min_dist2 = torch.full(
+            (n_patches * n_patches,),
+            float("inf"),
+            device=device,
+            dtype=token_dist2.dtype,
+        )
+        patch_min_dist2.scatter_reduce_(
+            0,
+            token_pair_patch[token_pair_valid],
+            token_dist2.reshape(-1)[token_pair_valid],
+            reduce="amin",
+            include_self=True,
+        )
+        patch_min_dist2 = patch_min_dist2.view(n_patches, n_patches)
+
+        patch_i, patch_j = torch.triu_indices(
+            n_patches,
+            n_patches,
+            offset=1,
+            device=device,
+        )
+        inter_chain = chain_id[patch_i] != chain_id[patch_j]
+        if not inter_chain.any():
+            return []
+
+        patch_i = patch_i[inter_chain]
+        patch_j = patch_j[inter_chain]
+        token_min_dist2 = patch_min_dist2[patch_i, patch_j]
+        positive = token_min_dist2 < self.positive_cutoff**2
+        hard_negative = token_min_dist2 > self.hard_negative_cutoff**2
+
+        com_diff = com[patch_i] - com[patch_j]
+        com_dist = (com_diff * com_diff).sum(dim=-1).sqrt()
+        target = (com_dist[:, None] > self.boundaries).sum(dim=-1).long()
+
+        any_background = is_background[patch_i] | is_background[patch_j]
+        both_interface = is_interface[patch_i] & is_interface[patch_j]
+        weight = self._patch_pair_weight_tensor(
+            crop_mode,
+            positive=positive,
+            hard_negative=hard_negative,
+            any_background=any_background,
+            both_interface=both_interface,
+            dtype=coords.dtype,
+        )
+        keep = weight > 0
+        if not keep.any():
+            return []
+
+        patch_i = patch_i[keep]
+        patch_j = patch_j[keep]
+        target = target[keep]
+        weight = weight[keep]
+        hard_negative = hard_negative[keep]
+        positive = positive[keep]
+        com_dist = com_dist[keep]
+
+        priority = self._patch_pair_priority_tensor(
+            crop_mode,
+            positive=positive,
+            hard_negative=hard_negative,
+            distance=com_dist,
+        )
+        n_select = min(self.max_patch_pairs, priority.numel())
+        selected = torch.argsort(priority, descending=True, stable=True)[:n_select]
+
+        selected_i = patch_i[selected].tolist()
+        selected_j = patch_j[selected].tolist()
+        selected_target = target[selected].unbind(dim=0)
+        selected_weight = weight[selected].unbind(dim=0)
+        selected_hard = hard_negative[selected].unbind(dim=0)
+        return [
+            {
+                "patch_i": i,
+                "patch_j": j,
+                "target": t,
+                "weight": w,
+                "hard_negative": h,
+            }
+            for i, j, t, w, h in zip(
+                selected_i,
+                selected_j,
+                selected_target,
+                selected_weight,
+                selected_hard,
+                strict=True,
+            )
+        ]
+
+    def _patch_pair_weight_tensor(
+        self,
+        crop_mode: int,
+        positive: torch.Tensor,
+        hard_negative: torch.Tensor,
+        any_background: torch.Tensor,
+        both_interface: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        one = positive.new_tensor(1.0, dtype=dtype)
+        if crop_mode == CROP_CONTIGUOUS:
+            return torch.where(
+                hard_negative,
+                positive.new_tensor(2.0, dtype=dtype),
+                torch.where(positive, one, positive.new_tensor(0.5, dtype=dtype)),
+            )
+
+        if crop_mode == CROP_SPATIAL_INTERFACE:
+            return torch.where(
+                any_background,
+                positive.new_tensor(0.1, dtype=dtype),
+                torch.where(
+                    positive & both_interface,
+                    positive.new_tensor(1.5, dtype=dtype),
+                    torch.where(
+                        hard_negative & both_interface,
+                        one,
+                        torch.where(
+                            positive,
+                            one,
+                            positive.new_tensor(0.25, dtype=dtype),
+                        ),
+                    ),
+                ),
+            )
+
+        return torch.where(
+            any_background,
+            positive.new_tensor(0.1, dtype=dtype),
+            torch.where(
+                hard_negative,
+                positive.new_tensor(0.5, dtype=dtype),
+                torch.where(positive, one, positive.new_tensor(0.25, dtype=dtype)),
+            ),
+        )
+
+    def _patch_pair_priority_tensor(
+        self,
+        crop_mode: int,
+        positive: torch.Tensor,
+        hard_negative: torch.Tensor,
+        distance: torch.Tensor,
+    ) -> torch.Tensor:
+        dist_term = torch.minimum(distance, distance.new_tensor(100.0)) / 1000.0
+        if crop_mode == CROP_CONTIGUOUS:
+            return torch.where(
+                hard_negative,
+                4.0 + dist_term,
+                torch.where(positive, 3.0 - dist_term, distance.new_ones(())),
+            )
+        return torch.where(
+            positive,
+            3.0 - dist_term,
+            torch.where(hard_negative, 2.0 + dist_term, distance.new_ones(())),
+        )
 
     def _patch_pair_weight(
         self,
