@@ -53,7 +53,8 @@ patch_pair_geometry:
   patch_size: 16
   max_patches_per_chain: 8
   max_patch_pairs: 256
-  pool_chunk_size: 8
+  pool_chunk_size: 16
+  pool_max_tokens_per_patch: 16
   interface_cutoff: 12.0
   positive_cutoff: 12.0
   hard_negative_cutoff: 18.0
