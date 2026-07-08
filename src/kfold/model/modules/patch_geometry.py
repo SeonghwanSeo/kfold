@@ -16,6 +16,7 @@ CROP_SPATIAL_INTERFACE = 3
 
 class _Patch(TypedDict):
     idx: torch.Tensor
+    pool_idx: torch.Tensor
     chain_id: int
     is_interface: bool
     is_background: bool
@@ -41,6 +42,7 @@ class PatchPairGeometryHead(nn.Module):
         max_patches_per_chain: int = 8
         max_patch_pairs: int = 256
         pool_chunk_size: int = 32
+        pool_max_tokens_per_patch: int = 0
         interface_cutoff: float = 12.0
         positive_cutoff: float = 12.0
         hard_negative_cutoff: float = 22.0
@@ -56,9 +58,14 @@ class PatchPairGeometryHead(nn.Module):
         self.max_patches_per_chain: int = int(cfg.max_patches_per_chain)
         self.max_patch_pairs: int = int(cfg.max_patch_pairs)
         self.pool_chunk_size: int = int(getattr(cfg, "pool_chunk_size", 32))
+        self.pool_max_tokens_per_patch: int = int(
+            getattr(cfg, "pool_max_tokens_per_patch", 0)
+        )
         self.interface_cutoff: float = float(cfg.interface_cutoff)
         self.positive_cutoff: float = float(cfg.positive_cutoff)
         self.hard_negative_cutoff: float = float(cfg.hard_negative_cutoff)
+        if self.pool_max_tokens_per_patch < 0:
+            raise ValueError("pool_max_tokens_per_patch must be non-negative.")
 
         bin_size = (self.max_dist - self.min_dist) / self.num_bins
         first_bin = self.min_dist + bin_size
@@ -262,12 +269,12 @@ class PatchPairGeometryHead(nn.Module):
             max(1, math.ceil(idx.numel() / self.patch_size)),
         )
         return [
-            {
-                "idx": chunk,
-                "chain_id": chain_id,
-                "is_interface": False,
-                "is_background": False,
-            }
+            self._make_patch(
+                idx=chunk,
+                chain_id=chain_id,
+                is_interface=False,
+                is_background=False,
+            )
             for chunk in torch.tensor_split(idx, n_patches)
             if chunk.numel() > 0
         ]
@@ -288,12 +295,12 @@ class PatchPairGeometryHead(nn.Module):
         )
         clusters = self._fps_clusters(coords[idx], idx, n_patches)
         return [
-            {
-                "idx": cluster,
-                "chain_id": chain_id,
-                "is_interface": is_interface,
-                "is_background": is_background,
-            }
+            self._make_patch(
+                idx=cluster,
+                chain_id=chain_id,
+                is_interface=is_interface,
+                is_background=is_background,
+            )
             for cluster in clusters
             if cluster.numel() > 0
         ]
@@ -330,14 +337,41 @@ class PatchPairGeometryHead(nn.Module):
 
         if bg_idx.numel() > 0 and len(patches) < self.max_patches_per_chain:
             patches.append(
-                {
-                    "idx": bg_idx,
-                    "chain_id": chain_id,
-                    "is_interface": False,
-                    "is_background": True,
-                }
+                self._make_patch(
+                    idx=bg_idx,
+                    chain_id=chain_id,
+                    is_interface=False,
+                    is_background=True,
+                )
             )
         return patches
+
+    def _make_patch(
+        self,
+        idx: torch.Tensor,
+        chain_id: int,
+        is_interface: bool,
+        is_background: bool,
+    ) -> _Patch:
+        return {
+            "idx": idx,
+            "pool_idx": self._pool_limited_idx(idx),
+            "chain_id": chain_id,
+            "is_interface": is_interface,
+            "is_background": is_background,
+        }
+
+    def _pool_limited_idx(self, idx: torch.Tensor) -> torch.Tensor:
+        max_tokens = self.pool_max_tokens_per_patch
+        if max_tokens <= 0 or idx.numel() <= max_tokens:
+            return idx
+        take = torch.linspace(
+            0,
+            idx.numel() - 1,
+            steps=max_tokens,
+            device=idx.device,
+        ).round()
+        return idx[take.long()]
 
     def _fps_clusters(
         self,
@@ -473,8 +507,8 @@ class PatchPairGeometryHead(nn.Module):
         patch_i: _Patch,
         patch_j: _Patch,
     ) -> torch.Tensor:
-        idx_i = patch_i["idx"]
-        idx_j = patch_j["idx"]
+        idx_i = patch_i["pool_idx"]
+        idx_j = patch_j["pool_idx"]
         z_ij = z[idx_i][:, idx_j]
         z_ji = z[idx_j][:, idx_i].transpose(0, 1)
         pair_z = 0.5 * (z_ij + z_ji)
@@ -510,8 +544,8 @@ class PatchPairGeometryHead(nn.Module):
         patches: list[_Patch],
         patch_pairs: list[_PatchPair],
     ) -> torch.Tensor:
-        idx_i_list = [patches[p["patch_i"]]["idx"] for p in patch_pairs]
-        idx_j_list = [patches[p["patch_j"]]["idx"] for p in patch_pairs]
+        idx_i_list = [patches[p["patch_i"]]["pool_idx"] for p in patch_pairs]
+        idx_j_list = [patches[p["patch_j"]]["pool_idx"] for p in patch_pairs]
         n_pairs = len(patch_pairs)
         max_i = max(idx.numel() for idx in idx_i_list)
         max_j = max(idx.numel() for idx in idx_j_list)
