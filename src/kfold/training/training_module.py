@@ -883,7 +883,11 @@ class KFoldTrainingModule(pl.LightningModule):
         loss_per_batch = self.distogram_loss(logits, f_input)
         loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
-        if hasattr(self.distogram_loss, "boundaries") and hasattr(f_input, "token"):
+        if (
+            hasattr(self.distogram_loss, "boundaries")
+            and hasattr(f_input, "token")
+            and self.global_step % 10 == 0
+        ):
             metrics |= self.compute_distogram_diagnostic_metrics(logits, f_input)
         if self._binned_cache_enabled and self.train_diffusion_head:
             self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
