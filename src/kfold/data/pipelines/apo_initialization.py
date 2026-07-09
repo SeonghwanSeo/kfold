@@ -4,6 +4,7 @@ from typing import Self
 
 import numpy as np
 
+from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import Chain, RefStructure
 from kfold.utils.geometry.rigid_align import rigid_align
 from kfold.utils.misc import spawn_rng
@@ -70,9 +71,11 @@ class ApoInitializer:
     model input consistency between training and inference.
     """
 
-    def __init__(self, config: ApoInitializerConfig) -> None:
+    def __init__(self, config: ApoInitializerConfig, ccd: CCD | None = None) -> None:
         self.config: ApoInitializerConfig = config
+        self.ccd = ccd
         self.prob_perturbation: float = config.prob_perturbation
+        self.use_cached_conformer_only: bool = config.use_cached_conformer_only
         self.use_holo_if_apo_unavailable: bool = config.use_holo_if_apo_unavailable
 
         # Apo protein perturbation module
@@ -89,9 +92,11 @@ class ApoInitializer:
         self.logger = logging.getLogger("ApoInitializer")
 
     @classmethod
-    def inference_mode(cls, use_perturbation: bool = False) -> Self:
+    def inference_mode(
+        cls, use_perturbation: bool = False, ccd: CCD | None = None
+    ) -> Self:
         """Get ApoInitializer instance for inference mode."""
-        return cls(ApoInitializerConfig.inference_mode(use_perturbation))
+        return cls(ApoInitializerConfig.inference_mode(use_perturbation), ccd=ccd)
 
     def __call__(
         self,
@@ -167,7 +172,7 @@ class ApoInitializer:
         # Create new rng for this sampling to avoid affecting global state
         rng = spawn_rng(rng)
 
-        # === Collect the apo coordinates for supported polymer chains === #
+        # === Collect apo coordinates for polymers and ligand conformers === #
         apo_coords_dict: dict[int, np.ndarray] = {}
         entity_cache: dict[int, np.ndarray] = {}
         polymer_asym_ids = {c.asym_id for c in struct.chains if c.is_polymer}
@@ -178,6 +183,9 @@ class ApoInitializer:
                 f"Unknown keys for structure {struct.id}: {sorted(unknown_keys)}"
             )
         for c in struct.chains:
+            if c.is_ligand:
+                apo_coords_dict[c.asym_id] = self._sample_ligand_conformer(c, rng)
+                continue
             if not c.is_polymer:
                 # Only protein/nucleic-acid chains have apo structures.
                 continue
@@ -200,6 +208,104 @@ class ApoInitializer:
                 entity_cache[c.entity_id] = apo_coords.copy()
 
         return apo_coords_dict
+
+    def _sample_ligand_conformer(
+        self,
+        chain: Chain,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Sample a ligand apo conformer in chain atom order.
+
+        Atoms that cannot be matched to the generated/reference conformer are
+        intentionally left as NaN; PriorSampler fills them by Langevin relaxation.
+        """
+        assert chain.is_ligand, "Ligand conformer sampling only applies to ligands."
+
+        coords = np.full_like(chain.atom.coords, np.nan, dtype=np.float32)
+        ccd_sequence = chain.get_ccd_sequence()
+        if chain.smiles is not None:
+            assert chain.num_residues == 1, "Multiple residues with SMILES not supported."
+            comp = Component.from_smiles(ccd_sequence[0], chain.smiles)
+            ref_pos = self._get_ligand_ref_conformer(comp, rng)
+            return self._insert_component_conformer(
+                coords,
+                chain,
+                residue_index=1,
+                component=comp,
+                ref_pos=ref_pos,
+                allow_order_fallback=True,
+            )
+
+        if self.ccd is None:
+            self.logger.warning(
+                f"CCD is unavailable for ligand chain {chain.asym_id}. "
+                "Filling apo coordinates with NaN."
+            )
+            return coords
+
+        for res_i, code in enumerate(ccd_sequence):
+            residue_index = res_i + 1
+            if code not in self.ccd:
+                self.logger.warning(
+                    f"CCD code {code} not found for ligand chain {chain.asym_id}. "
+                    "Filling missing atoms with NaN."
+                )
+                continue
+            comp = self.ccd[code]
+            ref_pos = self._get_ligand_ref_conformer(comp, rng)
+            coords = self._insert_component_conformer(
+                coords,
+                chain,
+                residue_index=residue_index,
+                component=comp,
+                ref_pos=ref_pos,
+                allow_order_fallback=False,
+            )
+        return coords
+
+    def _get_ligand_ref_conformer(
+        self,
+        component: Component,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        conformer_type = "train" if self.use_cached_conformer_only else "auto"
+        timeout = 5 if self.use_cached_conformer_only else 30
+        coords = component.get_conformer(conformer_type, rng=rng, timeout=timeout)
+        if coords is None:
+            coords = component.get_conformer("nan", rng=rng)
+        assert coords is not None
+        return coords.astype(np.float32)
+
+    @staticmethod
+    def _insert_component_conformer(
+        coords: np.ndarray,
+        chain: Chain,
+        residue_index: int,
+        component: Component,
+        ref_pos: np.ndarray,
+        allow_order_fallback: bool,
+    ) -> np.ndarray:
+        ref_atom_order = component.get_atom_index_map()
+        atom_names = chain.atom.name.tolist()
+        residue_atom_indices = list(chain.residue.iter_residue_atoms(residue_index))
+
+        src_atom_indices: list[int] = []
+        dst_atom_indices: list[int] = []
+        for atom_i in residue_atom_indices:
+            atom_name = atom_names[atom_i]
+            src_i = ref_atom_order.get(atom_name)
+            if src_i is None:
+                continue
+            src_atom_indices.append(src_i)
+            dst_atom_indices.append(atom_i)
+
+        if src_atom_indices:
+            coords[dst_atom_indices] = ref_pos[src_atom_indices]
+            return coords
+
+        if allow_order_fallback and len(residue_atom_indices) == ref_pos.shape[0]:
+            coords[residue_atom_indices] = ref_pos
+        return coords
 
     def _sample_apo_structure_for_chain(
         self,

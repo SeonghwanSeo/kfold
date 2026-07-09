@@ -231,7 +231,7 @@ class TrainingDataset(BaseLMDBDataset):
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
 
-        prior_coords = self.sample_prior_coords(ref_struct, rng)
+        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
 
         # Tokenization
         tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)

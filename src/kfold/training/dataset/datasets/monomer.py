@@ -157,17 +157,16 @@ class MonomerDistillationDataset(DistillationDataset):
     def sample_prior_coords(
         self,
         ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> np.ndarray:
         """Use label coordinates directly as protein monomer prior source."""
+        del apo_dict
         if self.num_priors <= 0 or self.prior_sampler is None:
             return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
         chain = ref_struct.chains[0]
-        prior_coords = chain.map_atom_coords_to_polymer_residue_coords(
-            chain.atom.coords, context="Prior coordinates"
-        )[None]
         return self.prior_sampler.sample(
-            ref_struct, {chain.asym_id: prior_coords}, self.num_priors, rng
+            ref_struct, {chain.asym_id: chain.atom.coords.copy()}, self.num_priors, rng
         )
 
     def populate_structure_tokens(

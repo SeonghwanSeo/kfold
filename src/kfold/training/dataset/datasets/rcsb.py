@@ -188,6 +188,7 @@ class RCSBTrainingDataset(TrainingDataset):
                 apo_lookup[asym_id] = loaded
                 if asym_id in metadata_by_asym_id:
                     metadata_by_asym_id[asym_id].apo_uid = apo_uid
+                    metadata_by_asym_id[asym_id].prior_uid = apo_uid
 
         return apo_lookup
 

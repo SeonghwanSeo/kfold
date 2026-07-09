@@ -115,7 +115,7 @@ class InputDataPipeline:
         self.ccd: CCD = ccd
 
         # Initialize apo initializer
-        self.apo_initializer = apo_initialization.ApoInitializer.inference_mode()
+        self.apo_initializer = apo_initialization.ApoInitializer.inference_mode(ccd=ccd)
         self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd)
         self.num_samples = num_samples
 
@@ -187,16 +187,8 @@ class InputDataPipeline:
         apo_lookup = self.load_apo_structures(ref_struct, input)
         apo_dict = self.apo_initializer(ref_struct, apo_lookup, rng)
 
-        # Sample prior coordinates for diffusion bridge model
-        chain_by_asym_id = {chain.asym_id: chain for chain in ref_struct.chains}
-        prior_coords_dict = {
-            asym_id: chain_by_asym_id[asym_id].map_atom_coords_to_polymer_residue_coords(
-                coords, context="Prior coordinates"
-            )[None]
-            for asym_id, coords in apo_dict.items()
-        }
         prior_coords = self.prior_sampler.sample(
-            ref_struct, prior_coords_dict, self.num_samples, rng
+            ref_struct, apo_dict, self.num_samples, rng
         )
 
         # Tokenize structure

@@ -47,17 +47,13 @@ data:
     # If null, no prior sampling
     chain_translation_scale: 24.0 # Angstroms
     use_ot_permutation: true # Only for training.
-    ligand_augmentation_scale: 0.3
     use_holo_if_apo_unavailable: true
-    prob_perturbation: 0.5
-    bioprior:
-      max_steps: 8
     train: true # Only for train/val
 
 # Lightning Trainer Configuration
 trainer:
   accelerator: "auto"
-  strategy: "auto"
+  strategy: "ddp_find_unused_parameters_true"
   devices: "auto"
   num_nodes: 1
   precision: bf16-mixed

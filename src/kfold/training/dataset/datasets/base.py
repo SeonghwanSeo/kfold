@@ -203,7 +203,9 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         # === Initialize modules === #
         self.apo_initializer: apo_initialization.ApoInitializer | None = None
         if config.apo_init is not None:
-            self.apo_initializer = apo_initialization.ApoInitializer(config.apo_init)
+            self.apo_initializer = apo_initialization.ApoInitializer(
+                config.apo_init, ccd=ccd
+            )
         self.tokenizer: tokenization.Tokenizer = tokenizer
         self.featurizer: featurization.InputFeaturizer = featurizer
         self.prior_sampler: prior_sampling.PriorSampler | None = prior_sampler
@@ -369,7 +371,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
 
         # Fetch prior coordinates
-        prior_coords = self.sample_prior_coords(ref_struct, rng)
+        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
 
         # Tokenization
         tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)
@@ -439,24 +441,25 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         """Return the apo coordinates for the given reference structure.
         Key: asym_id, Value: apo coordinates of shape [Natoms, 3]
         """
-        if not apo_lookup:
+        if self.apo_initializer is None:
+            if apo_lookup:
+                raise RuntimeError(
+                    f"Dataset '{self.name}' has apo lookup records but apo_init is null."
+                )
             return {}
-        assert self.apo_initializer is not None, (
-            f"Dataset '{self.name}' has apo lookup records but apo_init is null."
-        )
         return self.apo_initializer(ref_struct, apo_lookup, rng)
 
     def sample_prior_coords(
         self,
         ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> np.ndarray:
         """Sample prior coordinates for the given structure."""
         if self.num_priors <= 0 or self.prior_sampler is None:
             return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
 
-        prior_coords = self.get_prior_coords(ref_struct, rng)
-        return self.prior_sampler.sample(ref_struct, prior_coords, self.num_priors, rng)
+        return self.prior_sampler.sample(ref_struct, apo_dict, self.num_priors, rng)
 
     def tokenize(
         self,
@@ -565,6 +568,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         for c in ref_struct.chains:
             if c.asym_id in metadata_by_asym_id:
                 metadata_by_asym_id[c.asym_id].apo_uid = c.asym_id
+                metadata_by_asym_id[c.asym_id].prior_uid = c.asym_id
             if c.is_ligand:
                 # For ligand, we use ETKDG conformers as apo.
                 continue
