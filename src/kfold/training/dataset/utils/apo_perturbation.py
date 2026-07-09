@@ -1,4 +1,7 @@
-"""Apo structure perturbation module using RieProDy and Langevin dynamics."""
+"""Apo structure perturbation module using RieProDy or BioPrior.
+NOTE: This module is designed for training.
+For inference, we only use BioPrior perturbation.
+"""
 
 import dataclasses
 
@@ -13,89 +16,82 @@ ATOM37_ORDER: dict[str, int] = C.atom.protein_atom37_order
 
 
 @dataclasses.dataclass(kw_only=True)
-class ProteinPerturbationConfig:
+class ApoPerturbationConfig:
     prob_rieprody: float = 0.0
     rieprody: RieProdyConfig | None = None
     bioprior: BioPriorConfig = dataclasses.field(default_factory=BioPriorConfig)
 
-    @classmethod
-    def infererence_mode(cls) -> "ProteinPerturbationConfig":
-        """Configuration for inference mode (no RieProDy perturbation)."""
-        return cls(
-            rieprody=None,
-            bioprior=BioPriorConfig(
-                max_steps=5,  # Weaker perturbation for inference.
-                scale_length=True,  # No cropping during inference.
-                log_level="CRITICAL",  # Suppress BioPrior logging during inference
-            ),
-        )
 
-
-class ProteinPerturbation:
+class ApoPerturbation:
     """Class to handle protein apo structure perturbation"""
 
-    def __init__(self, config: ProteinPerturbationConfig) -> None:
-        """Initialize ProteinPerturbation."""
-        self.config: ProteinPerturbationConfig = config
+    def __init__(self, config: ApoPerturbationConfig) -> None:
+        """Initialize ApoPerturbation."""
+        self.config: ApoPerturbationConfig = config
         self.prob_rieprody: float = config.prob_rieprody
-        if not 0.0 <= self.prob_rieprody <= 1.0:
-            raise ValueError(
-                f"prob_rieprody must be in [0, 1], got {self.prob_rieprody}."
-            )
         if config.rieprody is not None:
             self.rieprody = RieProdyPerturbation(config.rieprody)
         else:
             self.rieprody = None
         self.bioprior = BioPriorPerturbation(config.bioprior)
 
-    @classmethod
-    def inference_mode(cls) -> "ProteinPerturbation":
-        """Factory method for inference mode (no RieProDy perturbation)."""
-        return cls(ProteinPerturbationConfig.infererence_mode())
-
     def __call__(
         self,
+        chain_type: C.ChainType,
         sequence: str,
         coords: np.ndarray,
-        mask: np.ndarray | None = None,
+        mask: np.ndarray | None,
         rng: np.random.Generator | None = None,
-        backend: str = "auto",
-        **kwargs,
-    ) -> np.ndarray:
-        """Apply perturbation to apo structure coordinates."""
-        return self.run(sequence, coords, mask, rng, backend, **kwargs)
-
-    def run(
-        self,
-        sequence: str,
-        coords: np.ndarray,
-        mask: np.ndarray | None = None,
-        rng: np.random.Generator | None = None,
-        backend: str = "auto",
         **kwargs,
     ) -> np.ndarray:
         """Apply perturbation to apo structure coordinates.
 
         Parameters
         ----------
+        chain_type : C.ChainType
+            Type of the chain (e.g., Protein, DNA, RNA, Ligand).
         sequence : str
-            Amino acid sequence of the protein.
+            Sequence of the chain.
         coords : np.ndarray
-            Apo protein structure coordinates of shape [L, 37, 3].
+            Apo structure coordinates of shape [L, A, 3].
+            A is the number of atoms (37 for protein, 14 for DNA/RNA, etc.).
         mask : np.ndarray
-            Mask indicating valid atoms of shape [L, 37].
+            Mask indicating valid atoms of shape [L, A].
         rng : np.random.Generator
             Random number generator for stochastic operations.
-        backend : str
-            Perturbation backend, either "rieprody" or "bioprior".
 
         Returns
         -------
         perturbed_coords : np.ndarray
-            Perturbed apo structure coordinates of shape [L, 37, 3].
+            Perturbed apo structure coordinates of shape [L, A, 3].
         """
-        rng = spawn_rng(rng)
+        return self.run(chain_type, sequence, coords, mask, rng, **kwargs)
 
+    def run(
+        self,
+        chain_type: C.ChainType,
+        sequence: str,
+        coords: np.ndarray,
+        mask: np.ndarray | None = None,
+        rng: np.random.Generator | None = None,
+        **kwargs,
+    ) -> np.ndarray:
+        rng = spawn_rng(rng)
+        if chain_type.is_protein:
+            return self.run_protein_perturbation(sequence, coords, mask, rng, **kwargs)
+        else:
+            raise NotImplementedError(
+                "Perturbation is only implemented for protein chains."
+            )
+
+    def run_protein_perturbation(
+        self,
+        sequence: str,
+        coords: np.ndarray,
+        mask: np.ndarray | None,
+        rng: np.random.Generator,
+        **kwargs,
+    ) -> np.ndarray:
         assert coords.ndim == 3 and coords.shape[1] == 37, (
             f"Expected apo_coords shape [L, 37, 3], got {coords.shape}"
         )
@@ -104,9 +100,8 @@ class ProteinPerturbation:
             # HACK: assumes that missing atoms are represented by NaN/Inf
             mask: np.ndarray = np.isfinite(coords).all(axis=-1)
 
-        if backend == "auto":
-            use_rieprody = self.rieprody is not None and rng.random() < self.prob_rieprody
-            backend = "rieprody" if use_rieprody else "bioprior"
+        use_rieprody = self.rieprody is not None and rng.random() < self.prob_rieprody
+        backend = "rieprody" if use_rieprody else "bioprior"
 
         if self.rieprody is not None and backend == "rieprody":
             assert "rieprody_key" in kwargs, (
@@ -124,8 +119,10 @@ class ProteinPerturbation:
         if perturbed_coords is None:
             # Fallback to original coordinates if both perturbations fail
             return coords
-        else:
-            return perturbed_coords
+
+        # Keep the original apo availability contract after perturbation.
+        perturbed_coords[~mask] = np.nan
+        return perturbed_coords
 
     def rieprody_perturbation(
         self,
