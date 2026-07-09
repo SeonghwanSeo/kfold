@@ -45,7 +45,7 @@ confidence_head:
   _yaml_: "module/confidence_head.yaml"
 
 patch_pair_geometry:
-  enabled: true
+  enabled: false
   channel_z: 256
   num_bins: 64
   min_dist: 2.0

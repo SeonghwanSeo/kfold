@@ -46,8 +46,8 @@ data:
   prior_sampler:
     # If null, no prior sampling
     chain_translation_scale: 24.0 # Angstroms
+    ligand_augmentation_scale: 0.3
     use_ot_permutation: true # Only for training.
-    use_holo_if_apo_unavailable: true
     train: true # Only for train/val
 
 # Lightning Trainer Configuration

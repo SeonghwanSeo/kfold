@@ -10,7 +10,6 @@ rcsb-train/
     structure.lmdb
     apo_lmdb/{chain_type}/{source}.lmdb
     apo_tok_lmdb/protein/{source}.lmdb
-    prior_lmdb/{chain_type}.lmdb
     apo_lookup.json     # mapping from each chain to apo structure(s).
 af2-long/ ...           # simple dataset with AF2 structures.
     manifest.json
@@ -70,7 +69,6 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.utils.apo_io import (
     unpack_apo_record,
-    unpack_prior_stack_record,
 )
 from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.misc import hash_seq
@@ -117,22 +115,16 @@ class DatasetConfig:
         Optional path to the custom manifest file.
     seed : int | None
         Random seed for data loading.
-    apo_init : ApoInitializerConfig | None
+    apo_init : ApoInitializerConfig
         Configuration for apo structure initialization.
-    prob_use_complex_apo : float
-        RCSB-specific multimer apo selection probability. Ignored by base datasets.
-    prob_use_complex_prior : float
-        RCSB-specific multimer prior selection probability. Ignored by base datasets.
     """
 
     name: str
     data_path: str | Path | None = None
     manifest_path: str | Path | None = None
     seed: int | None = None
-    apo_init: apo_initialization.ApoInitializerConfig | None
+    apo_init: apo_initialization.ApoInitializerConfig
     prior_sampler: prior_sampling.PriorSamplerConfig | None
-    prob_use_complex_apo: float = 0.0
-    prob_use_complex_prior: float = 0.0
 
 
 def next_multiple(n: int, divisor: int) -> int:
@@ -201,11 +193,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         self.lookup_table: dict = self.load_lookup_table()
 
         # === Initialize modules === #
-        self.apo_initializer: apo_initialization.ApoInitializer | None = None
-        if config.apo_init is not None:
-            self.apo_initializer = apo_initialization.ApoInitializer(
-                config.apo_init, ccd=ccd
-            )
+        self.apo_initializer = apo_initialization.ApoInitializer(config.apo_init)
         self.tokenizer: tokenization.Tokenizer = tokenizer
         self.featurizer: featurization.InputFeaturizer = featurizer
         self.prior_sampler: prior_sampling.PriorSampler | None = prior_sampler
@@ -292,21 +280,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             "_apo_tok_source_lmdb_envs", "apo_tok_lmdb", chain_type, source
         )
 
-    def _get_prior_stack_lmdb_env(self, chain_type: str) -> lmdb.Environment:
-        cache = getattr(self, "_prior_stack_lmdb_envs", None)
-        if cache is None:
-            cache = {}
-            self._prior_stack_lmdb_envs = cache
-        if chain_type not in cache:
-            cache[chain_type] = _open_lmdb(
-                self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
-            )
-        return cache[chain_type]
-
     def __del__(self):
-        if hasattr(self, "_prior_stack_lmdb_envs"):
-            for env in self._prior_stack_lmdb_envs.values():
-                env.close()
         if hasattr(self, "_apo_tok_source_lmdb_envs"):
             for env in self._apo_tok_source_lmdb_envs.values():
                 env.close()
@@ -370,11 +344,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
 
-        # Fetch prior coordinates
-        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
-
         # Tokenization
-        tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, rng)
 
         # Populate structure tokens for apo structure (in-place)
         # NOTE: For inference, this will be done on-the-fly.
@@ -439,14 +410,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
         """Return the apo coordinates for the given reference structure.
-        Key: asym_id, Value: apo coordinates of shape [Natoms, 3]
+        Key: entity_id, Value: apo coordinates of shape [Natoms, 3]
         """
-        if self.apo_initializer is None:
-            if apo_lookup:
-                raise RuntimeError(
-                    f"Dataset '{self.name}' has apo lookup records but apo_init is null."
-                )
-            return {}
         return self.apo_initializer(ref_struct, apo_lookup, rng)
 
     def sample_prior_coords(
@@ -458,17 +423,19 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         """Sample prior coordinates for the given structure."""
         if self.num_priors <= 0 or self.prior_sampler is None:
             return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
-
-        return self.prior_sampler.sample(ref_struct, apo_dict, self.num_priors, rng)
+        else:
+            return self.prior_sampler(ref_struct, apo_dict, self.num_priors, rng)
 
     def tokenize(
         self,
         ref_struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
-        prior_coords: np.ndarray,
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
+        # Sample prior coordinates for diffusion bridge model
+        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
+        # Tokenization
         return self.tokenizer(
             ref_struct,
             rng,
@@ -494,14 +461,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         )
 
     # === Helper methods for apo structure handling === #
-    @staticmethod
-    def _chain_type_name(chain) -> str:
-        if chain.ctype.is_protein:
-            return "protein"
-        if chain.ctype.is_rna:
-            return "rna"
-        return "dna"
-
     def _load_apo_info_from_lmdb(
         self,
         apo_info: dict,
@@ -525,116 +484,48 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         loaded.update(unpack_apo_record(value_bytes))
         return loaded
 
-    def _load_prior_stack_info_from_lmdb(
-        self,
-        entry_id: str,
-        entity_id: int,
-        chain_type: str,
-    ) -> np.ndarray | None:
-        """Load an entity-level stacked prior LMDB record."""
-        entity_key = f"{entry_id}_{entity_id}"
-        prior_lmdb_path = self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
-        if not prior_lmdb_path.exists():
-            return None
-
-        env = self._get_prior_stack_lmdb_env(chain_type)
-        with env.begin(write=False) as txn:
-            value_bytes = txn.get(entity_key.encode("utf-8"))
-        if value_bytes is None:
-            return None
-
-        record = unpack_prior_stack_record(value_bytes)
-        coords = record["coords"]
-        if coords.ndim != 4:
-            raise ValueError(
-                f"Prior stack {entity_key} has shape {coords.shape}; expected "
-                "(N, L, A, 3)."
-            )
-        return coords
-
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
         """Get the apo lookup for the given reference structure."""
         entry_id: str = ref_struct.id
-        chain_lookup: dict[int, list[dict]] = self.lookup_table[entry_id]
+        entry_lookup: dict[int, list[dict]] = self.lookup_table[entry_id]
 
         # Match apo structure for each protein entries.
-        apo_lookup: dict[int, dict] = {}  # asym_id -> apo_info dict
-        # Symmetric chains share an entity-level apo choice.
-        selected_by_entity: dict[int, dict] = {}
-        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
-
+        apo_lookup: dict[int, dict] = {}  # entity_id -> apo_info dict
+        visited_entity_ids: set[int] = set()
         for c in ref_struct.chains:
-            if c.asym_id in metadata_by_asym_id:
-                metadata_by_asym_id[c.asym_id].apo_uid = c.asym_id
-                metadata_by_asym_id[c.asym_id].prior_uid = c.asym_id
-            if c.is_ligand:
-                # For ligand, we use ETKDG conformers as apo.
+            if not c.ctype.is_protein:
+                # Currently we only provide apo structures for protein chains.
                 continue
 
             eid: int = c.entity_id
             ek: str = f"{entry_id}:{eid}"  # For logging purpose
-            ctype_str = str(c.ctype)
 
-            if eid not in chain_lookup:
-                self.logger.warning(
-                    f"No apo info found for {ctype_str} entity '{ek}' in lookup."
-                )
+            if eid in visited_entity_ids:
+                continue  # already populated from another chain with same entity_id
+            visited_entity_ids.add(eid)
+
+            if eid not in entry_lookup:
+                self.logger.warning(f"No apo info found for entity '{ek}' in lookup.")
                 continue
 
-            if eid not in selected_by_entity:
-                entity_apo_infos: list[dict] = chain_lookup[eid]
-                num_apos = len(entity_apo_infos)
-                # Select apo structure (randomly if multiple)
-                assert num_apos > 0, (
-                    f"Empty apo info found for {ctype_str} entity '{ek}' in lookup."
-                )
-                apo_info = entity_apo_infos[rng.integers(0, num_apos)]
-                loaded = self._load_apo_info_from_lmdb(apo_info, context=f"entity {ek}")
-                selected_by_entity[eid] = loaded
+            entity_apo_infos: list[dict] = entry_lookup[eid]
+            num_apos = len(entity_apo_infos)
+            # Select apo structure (randomly if multiple)
+            if num_apos == 0:
+                self.logger.warning(f"Empty apo info found for entity '{ek}' in lookup.")
+                continue
+            apo_info = entity_apo_infos[rng.integers(0, num_apos)]
 
-            apo_info = selected_by_entity[eid].copy()
-            # ApoInitializer consumes asym_id-keyed records after sub-complex
-            # extraction; keep the sampled entity-level payload but bind it to
-            # this physical chain.
-            apo_info["asym_id"] = c.asym_id
-            apo_info["apo_uid"] = c.asym_id
-            apo_info["is_multimer_apo"] = False
-            apo_lookup[c.asym_id] = apo_info
+            try:
+                apo_lookup[eid] = self._load_apo_info_from_lmdb(
+                    apo_info, context=f"entity {ek}"
+                )
+            except KeyError as e:
+                self.logger.warning(str(e))
 
         return apo_lookup
-
-    def get_prior_coords(
-        self,
-        ref_struct: RefStructure,
-        rng: np.random.Generator,
-    ) -> dict[int, np.ndarray]:
-        """Load per-chain priors as stacked residue-order coordinates."""
-        entry_id: str = ref_struct.id
-        prior_coords: dict[int, np.ndarray] = {}
-        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
-
-        for c in ref_struct.chains:
-            if c.asym_id in metadata_by_asym_id:
-                metadata_by_asym_id[c.asym_id].prior_uid = c.asym_id
-
-        for c in ref_struct.chains:
-            if not (c.ctype.is_protein or c.ctype.is_nucleic_acid):
-                continue
-
-            if c.asym_id in prior_coords:
-                continue
-
-            eid: int = c.entity_id
-            chain_type = self._chain_type_name(c)
-            loaded = self._load_prior_stack_info_from_lmdb(entry_id, eid, chain_type)
-            if loaded is None:
-                continue
-
-            prior_coords[c.asym_id] = loaded
-
-        return prior_coords
 
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
@@ -646,20 +537,19 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         tokenized : TokenizedStructure
             The tokenized structure to populate tokens for in-place.
         apo_lookup : dict[int, dict]
-            Mapping from asym_id to apo structure dictionary metadata.
+            Mapping from entity ID to apo structure dictionary metadata.
         """
         for c_i in range(tokenized.num_chains):
             if tokenized.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
                 continue  # only populate structure tokens for protein chains
 
-            asym_id = int(tokenized.chain.asym_id[c_i])
-            ek = f"{tokenized.id}:{asym_id}"  # For logging purpose
+            entity_id = int(tokenized.chain.entity_id[c_i])
+            ek = f"{tokenized.id}:{entity_id}"  # For logging purpose
 
-            apo_info = apo_lookup.get(asym_id)
+            apo_info = apo_lookup.get(entity_id)
             if apo_info is None:
                 self.logger.warning(
-                    f"No apo info for protein chain `{ek}` in apo lookup. "
-                    f"Skipping this entry"
+                    f"No apo info for entity `{ek}` in apo lookup. Skipping this entry"
                 )
                 continue
 

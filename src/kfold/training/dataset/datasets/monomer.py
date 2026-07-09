@@ -36,11 +36,11 @@ from .distillation import DistillationDataset
 StructInfo = dict
 
 
-def get_chain_info(chain_type: C.ChainType) -> ChainInfo:
+def get_chain_info() -> ChainInfo:
     """Get the ChainInfo for the monomer"""
     return ChainInfo(
         name="A",
-        type=chain_type.value,
+        type=C.ChainType.PROTEIN.value,
         entity_id=1,
         asym_id=1,
         sym_id=1,
@@ -67,7 +67,7 @@ class MonomerDistillationDataset(DistillationDataset):
                 id=metadata_dict["id"],
                 source="pred",
                 pred=PredictionRecord(**metadata_dict["pred"]),
-                chains=[get_chain_info(C.ChainType.PROTEIN)],
+                chains=[get_chain_info()],
             )
             try:
                 return self.get_item(metadata, asym_ids=sample.asym_id)
@@ -128,8 +128,7 @@ class MonomerDistillationDataset(DistillationDataset):
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
-        """Return no trunk apo coordinates for protein monomer distillation."""
-        # Monomer distillation does not use apo structures as trunk input.
+        """Get the apo lookup for the given reference structure."""
         c = ref_struct.chains[0]
         seq = c.get_sequence()
         ccd_sequence = c.get_ccd_sequence()
@@ -152,22 +151,7 @@ class MonomerDistillationDataset(DistillationDataset):
             f"Total atom counts {g_atom_i} does not match chain.num_atoms {c.num_atoms}."
         )
 
-        return {c.asym_id: {"coords": apo_coords_37.copy(), "seq": seq}}
-
-    def sample_prior_coords(
-        self,
-        ref_struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Use label coordinates directly as protein monomer prior source."""
-        del apo_dict
-        if self.num_priors <= 0 or self.prior_sampler is None:
-            return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
-        chain = ref_struct.chains[0]
-        return self.prior_sampler.sample(
-            ref_struct, {chain.asym_id: chain.atom.coords.copy()}, self.num_priors, rng
-        )
+        return {c.entity_id: {"coords": apo_coords_37, "seq": seq}}
 
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
@@ -192,7 +176,7 @@ class RNAMonomerDistillationDataset(DistillationDataset):
                 id=metadata_dict["id"],
                 source="pred",
                 pred=PredictionRecord(**metadata_dict["pred"]),
-                chains=[get_chain_info(C.ChainType.RNA)],
+                chains=[get_chain_info()],
             )
             try:
                 return self.get_item(metadata, asym_ids=sample.asym_id)
@@ -246,6 +230,14 @@ class RNAMonomerDistillationDataset(DistillationDataset):
             chains=[chain], connections=[], metadata=metadata.copy()
         )
         return ref_struct
+
+    def load_lookup_table(self) -> dict:
+        return {}
+
+    def get_apo_lookup(
+        self, ref_struct: RefStructure, rng: np.random.Generator
+    ) -> dict[int, dict]:
+        return {}
 
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]

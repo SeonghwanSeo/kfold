@@ -292,20 +292,12 @@ class ApoEmbedding(torch.nn.Module):
 
         # Get pair mask
         pair_mask = get_pair_mask(f_input.token.apo_repr_mask)  # [B, L, L]
-        # Apo is defined within an apo rigid group.
+        # Apo is only defined for intra-chain pairs.
         asym_id = f_input.token.asym_id  # [B, L]
-        apo_uid = f_input.token.apo_uid  # [B, L]
-        same_chain = asym_id[..., :, None] == asym_id[..., None, :]  # [B, L, L]
-        same_apo_group = apo_uid[..., :, None] == apo_uid[..., None, :]  # [B, L, L]
-        pair_mask &= same_apo_group
-
-        # Mask out same-chain pairs that are too far in sequence. Cross-chain pairs
-        # in the same apo rigid group keep their relative complex geometry.
+        pair_mask &= asym_id[..., :, None] == asym_id[..., None, :]  # [B, L, L]
+        # Mask out pairs that are too far in sequence
         res_idx = f_input.token.residue_index  # [B, L]
-        close_in_chain = (
-            res_idx[..., :, None] - res_idx[..., None, :]
-        ).abs() <= self.max_r
-        pair_mask &= (~same_chain) | close_in_chain
+        pair_mask &= (res_idx[..., :, None] - res_idx[..., None, :]).abs() <= self.max_r
 
         feat.masked_fill_(~pair_mask[..., None], 0.0)
         return feat  # [B, L, L, num_bins + 1 + 3 + 1]

@@ -168,11 +168,7 @@ class HomodimerDistillationDataset(DistillationDataset):
             f"Total atom counts {g_atom_i} does not match chain.num_atoms {c.num_atoms}."
         )
 
-        return {
-            chain.asym_id: {"coords": apo_coords_37.copy(), "seq": seq}
-            for chain in ref_struct.chains
-            if chain.is_protein
-        }
+        return {c.entity_id: {"coords": apo_coords_37, "seq": seq}}
 
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]

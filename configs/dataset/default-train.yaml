@@ -5,8 +5,6 @@ name: ???
 type: ???
 prob_drop_apo: 0.1 # Probability of dropping apo structures during training
 prob_drop_struct_token: 0.1 # Probability of dropping structure tokens during training
-prob_use_complex_apo: 0.0 # Probability of using grouped complex apo records
-prob_use_complex_prior: 0.0 # Probability of using grouped complex prior records
 weight: 1.0 # sample weight for this dataset
 
 # Random seed for data augmentation.
