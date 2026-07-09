@@ -292,21 +292,6 @@ class PriorSampler:
             residue_coords, context="Prior coordinates"
         )
 
-    def langevin_sampling(
-        self,
-        chain: Chain,
-        rng: np.random.Generator,
-        scale: float = 16.0,
-    ) -> np.ndarray:
-        """Sample coordinates for a chain using Langevin dynamics"""
-        num_residues = chain.num_residues
-        residue_index = np.repeat(np.arange(num_residues), chain.residue.num_atoms)
-        # Start from random noise
-        noise = rng.standard_normal(size=chain.atom.coords.shape, dtype=np.float32)
-        noise *= scale
-        # Run Langevin dynamics to sample coordinates
-        return self.langevin_simulator(noise, residue_index, rng=rng)
-
     def langevin_relaxation(
         self,
         coords: np.ndarray,
