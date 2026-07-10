@@ -184,7 +184,18 @@ class InputDataPipeline:
         apo_lookup = self.load_apo_structures(ref_struct, input)
         apo_dict = self.apo_initializer(ref_struct, apo_lookup, rng)
 
-        prior_coords = self.prior_sampler(ref_struct, apo_dict, self.num_samples, rng)
+        chain_by_entity_id = {chain.entity_id: chain for chain in ref_struct.chains}
+        prior_coords_dict = {
+            entity_id: chain_by_entity_id[
+                entity_id
+            ].map_atom_coords_to_polymer_residue_coords(
+                coords, context="Prior coordinates"
+            )[None]
+            for entity_id, coords in apo_dict.items()
+        }
+        prior_coords = self.prior_sampler.sample(
+            ref_struct, prior_coords_dict, self.num_samples, rng
+        )
 
         # Tokenize structure
         # NOTE: We feed apo structure tokens during model forward pass (gpu required).

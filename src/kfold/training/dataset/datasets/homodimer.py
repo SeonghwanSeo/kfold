@@ -170,6 +170,19 @@ class HomodimerDistillationDataset(DistillationDataset):
 
         return {c.entity_id: {"coords": apo_coords_37, "seq": seq}}
 
+    def get_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        apo_lookup: dict[int, dict],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        del apo_lookup
+        c = ref_struct.chains[rng.integers(0, 2)]
+        prior_coords = c.map_atom_coords_to_polymer_residue_coords(
+            c.atom.coords, context="Prior coordinates"
+        )
+        return {c.entity_id: prior_coords}
+
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
     ) -> None:

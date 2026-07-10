@@ -10,6 +10,7 @@ rcsb-train/
     structure.lmdb
     apo_lmdb/{chain_type}/{source}.lmdb
     apo_tok_lmdb/protein/{source}.lmdb
+    prior_lmdb/{chain_type}.lmdb
     apo_lookup.json     # mapping from each chain to apo structure(s).
 af2-long/ ...           # simple dataset with AF2 structures.
     manifest.json
@@ -69,6 +70,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.utils.apo_io import (
     unpack_apo_record,
+    unpack_prior_stack_record,
 )
 from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.misc import hash_seq
@@ -280,7 +282,21 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             "_apo_tok_source_lmdb_envs", "apo_tok_lmdb", chain_type, source
         )
 
+    def _get_prior_stack_lmdb_env(self, chain_type: str) -> lmdb.Environment:
+        cache = getattr(self, "_prior_stack_lmdb_envs", None)
+        if cache is None:
+            cache = {}
+            self._prior_stack_lmdb_envs = cache
+        if chain_type not in cache:
+            cache[chain_type] = _open_lmdb(
+                self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
+            )
+        return cache[chain_type]
+
     def __del__(self):
+        if hasattr(self, "_prior_stack_lmdb_envs"):
+            for env in self._prior_stack_lmdb_envs.values():
+                env.close()
         if hasattr(self, "_apo_tok_source_lmdb_envs"):
             for env in self._apo_tok_source_lmdb_envs.values():
                 env.close()
@@ -344,8 +360,11 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
 
+        # Sample prior coordinates for diffusion bridge model.
+        prior_coords = self.sample_prior_coords(ref_struct, apo_lookup, rng)
+
         # Tokenization
-        tokenized = self.tokenize(ref_struct, apo_dict, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)
 
         # Populate structure tokens for apo structure (in-place)
         # NOTE: For inference, this will be done on-the-fly.
@@ -417,25 +436,24 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     def sample_prior_coords(
         self,
         ref_struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
+        apo_lookup: dict[int, dict],
         rng: np.random.Generator,
     ) -> np.ndarray:
         """Sample prior coordinates for the given structure."""
         if self.num_priors <= 0 or self.prior_sampler is None:
             return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
-        else:
-            return self.prior_sampler(ref_struct, apo_dict, self.num_priors, rng)
+
+        prior_coords = self.get_prior_coords(ref_struct, apo_lookup, rng)
+        return self.prior_sampler.sample(ref_struct, prior_coords, self.num_priors, rng)
 
     def tokenize(
         self,
         ref_struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
+        prior_coords: np.ndarray,
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        # Sample prior coordinates for diffusion bridge model
-        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
-        # Tokenization
         return self.tokenizer(
             ref_struct,
             rng,
@@ -461,6 +479,14 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         )
 
     # === Helper methods for apo structure handling === #
+    @staticmethod
+    def _chain_type_name(chain) -> str:
+        if chain.ctype.is_protein:
+            return "protein"
+        if chain.ctype.is_rna:
+            return "rna"
+        return "dna"
+
     def _load_apo_info_from_lmdb(
         self,
         apo_info: dict,
@@ -483,6 +509,82 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         loaded["lmdb_key"] = lmdb_key
         loaded.update(unpack_apo_record(value_bytes))
         return loaded
+
+    def _load_prior_stack_from_lmdb(
+        self,
+        entry_id: str,
+        entity_id: int,
+        chain_type: str,
+    ) -> np.ndarray | None:
+        """Load an entity-level stacked prior record if it exists."""
+        prior_lmdb_path = self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
+        if not prior_lmdb_path.exists():
+            return None
+
+        entity_key = f"{entry_id}_{entity_id}"
+        env = self._get_prior_stack_lmdb_env(chain_type)
+        with env.begin(write=False) as txn:
+            value_bytes = txn.get(entity_key.encode("utf-8"))
+        if value_bytes is None:
+            return None
+
+        record = unpack_prior_stack_record(value_bytes)
+        coords = record["coords"]
+        if coords.ndim != 4:
+            raise ValueError(
+                f"Prior stack {entity_key} has shape {coords.shape}; expected "
+                "(N, L, A, 3)."
+            )
+        return coords
+
+    def get_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        apo_lookup: dict[int, dict],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Use raw apo LMDB coordinates as prior sources for this ablation."""
+        del rng
+        prior_coords: dict[int, np.ndarray] = {}
+        visited_entity_ids: set[int] = set()
+
+        for c in ref_struct.chains:
+            if not c.ctype.is_protein:
+                continue
+
+            eid = c.entity_id
+            if eid in visited_entity_ids:
+                continue
+            visited_entity_ids.add(eid)
+
+            apo_info = apo_lookup.get(eid)
+            if apo_info is None:
+                continue
+            apo_seq = apo_info["seq"]
+            apo_coords = apo_info["coords"].copy()
+            if apo_coords.shape != (len(apo_seq), 37, 3):
+                raise ValueError(
+                    f"Apo prior source {ref_struct.id}_{eid} has shape "
+                    f"{apo_coords.shape}; expected ({len(apo_seq)}, 37, 3)."
+                )
+
+            residue_map = apo_info.get("residue_map")
+            if residue_map is None:
+                if apo_coords.shape[0] != c.num_residues:
+                    raise ValueError(
+                        f"Apo prior source {ref_struct.id}_{eid} length "
+                        f"{apo_coords.shape[0]} does not match chain length "
+                        f"{c.num_residues} without residue_map."
+                    )
+            else:
+                res_st, res_end, apo_st, apo_end = parse_residue_map(residue_map)
+                padded = np.full((c.num_residues, 37, 3), np.nan, dtype=np.float32)
+                padded[res_st:res_end] = apo_coords[apo_st:apo_end]
+                apo_coords = padded
+
+            prior_coords[eid] = apo_coords
+
+        return prior_coords
 
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
