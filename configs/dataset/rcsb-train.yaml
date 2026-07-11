@@ -18,30 +18,29 @@ cropper:
   w_spatial: 0.4
   w_spatial_interface: 0.4
 
-apo_init:
-  perturbation:
-    prob_rieprody: 0.8
-    # Apo structure perturbation settings (if use_perturbation is true)
-    rieprody:
-      # Metric-based RieProDy perturbation settings
-      metric_lmdb_path: null # NOTE: This is automatically set in the dataset.
-      rmsd_threshold: 6.0 # RMSD threshold for fallback
-      max_length: 800 # Maximum number of residues for RieProDy perturbation
-      metric_comp:
-        apo_internal_coord_metric_save_precision: "float16"
-      random_walk:
-        # Riemannian random walk settings
-        consider_side_chain_in_metric: false
-        num_steps: 1 # Number of random walk steps per perturbation
-        total_time: 10.0 # Maximum total simulation time (sampled uniformly in [total_time_min, total_time) per call)
-        total_time_min: 0.0 # Minimum total simulation time for uniform sampling
-        total_time_sampling_power: 3.0 # Sampling power for total_time (1.0 = uniform, >1.0 = favor larger time)
-        total_time_uniform_ratio: 0.3 # Probability of sampling uniformly (mixture with power law)
-        metric_calculation_period: 100
-        metric: "lagrangian"
-      log_stats: false # Whether to log perturbation statistics periodically
-      log_stats_interval: 1000 # Log statistics every N chain perturbations
-      log_level: "CRITICAL" # Logging level
-    bioprior:
-      # Metric-free BioPrior perturbation settings (fallback if RieProDy is not used or fails)
-      max_steps: 5 # Maximum random walk steps
+apo_perturb:
+  prob_rieprody: 0.8
+  # Apo structure perturbation settings
+  rieprody:
+    # Metric-based RieProDy perturbation settings
+    metric_lmdb_path: null # NOTE: This is automatically set in the dataset.
+    rmsd_threshold: 6.0 # RMSD threshold for fallback
+    max_length: 800 # Maximum number of residues for RieProDy perturbation
+    metric_comp:
+      apo_internal_coord_metric_save_precision: "float16"
+    random_walk:
+      # Riemannian random walk settings
+      consider_side_chain_in_metric: false
+      num_steps: 1 # Number of random walk steps per perturbation
+      total_time: 10.0 # Maximum total simulation time (sampled uniformly in [total_time_min, total_time) per call)
+      total_time_min: 0.0 # Minimum total simulation time for uniform sampling
+      total_time_sampling_power: 3.0 # Sampling power for total_time (1.0 = uniform, >1.0 = favor larger time)
+      total_time_uniform_ratio: 0.3 # Probability of sampling uniformly (mixture with power law)
+      metric_calculation_period: 100
+      metric: "lagrangian"
+    log_stats: false # Whether to log perturbation statistics periodically
+    log_stats_interval: 1000 # Log statistics every N chain perturbations
+    log_level: "CRITICAL" # Logging level
+  bioprior:
+    # Metric-free BioPrior perturbation settings (fallback if RieProDy is not used or fails)
+    max_steps: 5 # Maximum random walk steps

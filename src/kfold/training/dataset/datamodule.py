@@ -53,7 +53,9 @@ class DataModuleConfig(BaseConfig):
     val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
 
     # === Other configs === #
-    prior_sampler: prior_sampling.PriorSamplerConfig | None
+    prior_sampler: prior_sampling.PriorSamplerConfig = dataclasses.field(
+        default_factory=prior_sampling.PriorSamplerConfig
+    )
 
 
 class MultiTrainingDataset(torch.utils.data.Dataset):
@@ -148,12 +150,7 @@ class TrainingDataModule(pl.LightningDataModule):
 
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
-        if self.config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(
-                self.config.prior_sampler, self.ccd
-            )
-        else:
-            prior_sampler = None
+        prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
 
         multi_ds = MultiTrainingDataset(
             configs=self.config.train_datasets,
@@ -189,14 +186,9 @@ class TrainingDataModule(pl.LightningDataModule):
 
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
-        if self.config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(
-                self.config.prior_sampler, self.ccd
-            )
-            # For validation, we should not use OT permutation.
-            prior_sampler.use_ot_permutation = False
-        else:
-            prior_sampler = None
+        prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
+        # For validation, we should not use OT permutation.
+        prior_sampler.use_ot_permutation = False
 
         ds = ValidationDataset(
             config=self.config.val_datasets[0],

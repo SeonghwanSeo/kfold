@@ -15,7 +15,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.cropper import BaseCropper
 from kfold.training.dataset.sampler import BaseSampler, Sample
-from kfold.training.dataset.utils import constraint_sampling, pre_crop
+from kfold.training.dataset.utils import apo_perturbation, constraint_sampling, pre_crop
 from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.registry import Registry
 
@@ -44,6 +44,14 @@ class TrainingDatasetConfig(DatasetConfig):
         Cropper configuration for cropping structures.
     """
 
+    # default
+    name: str
+    data_path: str | Path | None = None
+    manifest_path: str | Path | None = None
+    seed: int | None = None
+    prob_perturbation: float = 0.9
+    apo_perturb: apo_perturbation.ApoPerturbationConfig | None = None
+    # train only
     type: str
     weight: float = 1.0
     prob_drop_apo: float = 0.0  # probability of dropping apo structure
@@ -59,20 +67,6 @@ def _open_lmdb(lmdb_path: str | Path) -> lmdb.Environment:
     return lmdb.open(
         str(lmdb_path), readonly=True, lock=False, readahead=False, meminit=False
     )
-
-
-def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
-    """Parse residue map string into start and end indices.
-    Example: "1:100->5:104" -> (0, 100, 4, 104)
-    """
-    res_range, apo_range = residue_map.split("->")
-    res_st, res_end = map(int, res_range.split(":"))
-    apo_st, apo_end = map(int, apo_range.split(":"))
-    if (res_end - res_st) != (apo_end - apo_st):
-        return -1, -1, -1, -1  # invalid mapping
-    # Convert to 0-based indexing
-    # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
-    return res_st - 1, res_end, apo_st - 1, apo_end
 
 
 # === Training Dataset === #
@@ -174,8 +168,8 @@ class TrainingDataset(BaseLMDBDataset):
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
-        if cfg.apo_init.perturbation is None:
-            self.logger.warning("Protein perturbation is disabled for training set.")
+        if cfg.apo_perturb is None:
+            self.logger.warning("Apo perturbation is disabled for training set.")
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -229,7 +223,7 @@ class TrainingDataset(BaseLMDBDataset):
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
 
         # Sample prior coordinates for diffusion bridge model.
-        prior_coords = self.sample_prior_coords(ref_struct, apo_lookup, rng)
+        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
 
         # Tokenization
         tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)

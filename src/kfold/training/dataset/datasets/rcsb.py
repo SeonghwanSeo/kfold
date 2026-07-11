@@ -23,10 +23,10 @@ class RCSBTrainingDataset(TrainingDataset):
         """Perform sanity checks on the dataset."""
         cfg = self.config
         # Check if perturbation is enabled for training set, and validate files.
-        if cfg.apo_init.perturbation is None:
+        if cfg.apo_perturb is None:
             self.logger.warning("Protein perturbation is disabled.")
         else:
-            if cfg.apo_init.perturbation.rieprody is None:
+            if cfg.apo_perturb.rieprody is None:
                 self.logger.info("RieProDy perturbation is disabled.")
             else:
                 rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
@@ -36,7 +36,7 @@ class RCSBTrainingDataset(TrainingDataset):
                         f"while rieprody is enabled."
                     )
                 # If rieprody perturbation is enabled, we need to provide the LMDB path
-                cfg.apo_init.perturbation.rieprody.metric_lmdb_path = rieprody_lmdb_path
+                cfg.apo_perturb.rieprody.metric_lmdb_path = rieprody_lmdb_path
 
     def determine_confidence_train_data(self, metadata: Metadata) -> bool:
         # For RCSB training dataset, we only train confidence head on the

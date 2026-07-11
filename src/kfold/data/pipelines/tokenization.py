@@ -33,16 +33,6 @@ def get_apo_uid_by_asym_id(struct: RefStructure) -> dict[int, int]:
     return {c.asym_id: int(c.apo_uid) for c in struct.metadata.chains}
 
 
-def get_frame_atom_indices(
-    res_name: C.ResidueName, ctype: C.ChainType
-) -> tuple[int, int, int]:
-    """Get residue-local atom indices for the polymer frame atoms."""
-    return tuple(
-        C.atom.get_residue_atom_index(res_name, atom_name)
-        for atom_name in C.atom.CHAIN_FRAME_ATOMS[ctype]
-    )
-
-
 class Tokenizer:
     def __init__(self, ccd: CCD, mode: str = "inference"):
         """Tokenizer for structures.
@@ -79,9 +69,11 @@ class Tokenizer:
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
         apo_coords : dict[int, np.ndarray]
-            A dictionary mapping entity id to apo coordinates for that chain.
+            A dictionary mapping chain asym_id to apo coordinates.
         prior_coords : np.ndarray | None, optional
             Prior coordinates, by shape (num_priors, num_atoms, 3).
+        constraints : list[Constraint] | None, optional
+            List of additional constraints to include.
 
         Returns
         -------
@@ -111,12 +103,14 @@ class Tokenizer:
         ----------
         struct : RefStructure
             The input structure.
-        apo_coords : dict[int, np.ndarray]
-            A dictionary mapping entity id to apo coordinates for that chain.
         rng : np.random.Generator, optional
             Random number generator for stochastic processes, by default None.
-        num_priors : int, optional
-            Number of prior conformers to include, by default 0.
+        apo_coords : dict[int, np.ndarray]
+            A dictionary mapping chain asym_id to apo coordinates.
+        prior_coords : np.ndarray | None, optional
+            Prior coordinates, by shape (num_priors, num_atoms, 3).
+        constraints : list[Constraint] | None, optional
+            List of additional constraints to include.
 
         Returns
         -------
@@ -157,7 +151,7 @@ def tokenize_structure(
     train : bool, optional
         Whether in training mode, by default False.
     apo_coords_dict : dict[int, np.ndarray], optional
-        A dictionary mapping entity id to apo coordinates for that chain, by default None.
+        A dictionary mapping chain asym_id to apo coordinates.
     prior_coords : np.ndarray | None, optional
         Prior coordinates, by shape (num_priors, num_atoms, 3), by default
     constraints : list[Constraint] | None, optional
@@ -269,9 +263,7 @@ def tokenize_structure(
     _insert_frame_structures(tok, struct, chain_atom_dict, ccd_components, train)
     if apo_coords_dict:
         # Fill apo coordinates
-        _insert_apo_coordinates(
-            tok, struct, apo_coords_dict, ccd_sequence_dict, chain_atom_dict
-        )
+        _insert_apo_coordinates(tok, struct, apo_coords_dict)
     if prior_coords is not None and prior_coords.shape[0] > 0:
         # Fill prior coordinates
         _insert_prior_coordinates(tok, prior_coords)
@@ -675,66 +667,41 @@ def _insert_apo_coordinates(
     tok: TokenizedStructure,
     struct: RefStructure,
     apo_coords_dict: dict[int, np.ndarray],
-    ccd_sequence_dict: dict[int, list[str]],
-    chain_atom_dict: dict[int, list[str]],
 ):
     g_tok_i = 0
     for c in struct.chains:
-        if not c.is_protein:
-            g_tok_i += c.num_tokens
-            continue
-
-        ccd_sequence: list[str] = ccd_sequence_dict[c.asym_id]
-        all_atom_names: list[str] = chain_atom_dict[c.asym_id]
         st, end = g_tok_i, g_tok_i + c.num_tokens
         m = tok.atom.pad_mask[st:end]  # (chain_tokens, 24)
 
         # Insert apo coordinates if available
-        if c.is_protein and c.entity_id in apo_coords_dict:
-            _coords = apo_coords_dict[c.entity_id]
-            tok.atom.apo_coords[st:end][m] = _coords
-
-        # Iterate residues in the chain and fill token and some atom info
-        for res_i in range(c.num_residues):
-            res_idx = res_i + 1  # 1-based index
-            # Get residue info
-            ccd_name = ccd_sequence[res_i]
-            res_name = C.residue.get_residue_name_with_unk(ccd_name, c.ctype)
-            is_standard = c.residue.is_standard[res_i]
-
-            if is_standard:
-                center_idx = C.atom.CENTER_ATOM_INDEX[res_name]
-                repr_idx = C.atom.PSEUDO_BETA_ATOM_INDEX[res_name]
-                frame_indices = get_frame_atom_indices(res_name, c.ctype)
-                center_coords = tok.atom.apo_coords[g_tok_i, center_idx]
-                repr_coords = tok.atom.apo_coords[g_tok_i, repr_idx]
-                frame_coords = tok.atom.apo_coords[g_tok_i, frame_indices]
-
-                tok.token.apo_center_coords[g_tok_i] = center_coords
-                tok.token.apo_repr_coords[g_tok_i] = repr_coords
-                tok.token.apo_frame_coords[g_tok_i] = frame_coords
-                g_tok_i += 1
-
+        if c.asym_id in apo_coords_dict:
+            coords = apo_coords_dict[c.asym_id]
+            if c.is_polymer:
+                atom_coords = c.map_residue_coords_to_atom_coords(coords)
             else:
-                atom_names = all_atom_names[c.residue.get_atom_slice(res_idx)]
-                atom_index = {n: i for i, n in enumerate(atom_names)}
-                atom_coords = {
-                    an: tok.atom.apo_coords[g_tok_i + atom_index[an], 0]
-                    if an in atom_names
-                    else np.full(3, np.nan)
-                    for an in ["N", "CA", "C", "CB"]
-                }
-                center_coords = atom_coords["CA"]
-                repr_coords = atom_coords["CB"]
-                frame_coords = np.stack([atom_coords[an] for an in ["N", "CA", "C"]])
+                atom_coords = coords.reshape(-1, 3)
+            assert atom_coords.shape == (c.num_atoms, 3), (
+                f"Apo coordinates for chain {c.asym_id} have shape "
+                f"{atom_coords.shape}, expected {(c.num_atoms, 3)}."
+            )
+            tok.atom.apo_coords[st:end][m] = atom_coords
 
-                # Modifications
-                _st = g_tok_i
-                _end = g_tok_i + len(atom_names)
-                tok.token.apo_center_coords[_st:_end] = center_coords
-                tok.token.apo_repr_coords[_st:_end] = repr_coords
-                tok.token.apo_frame_coords[_st:_end] = frame_coords
-                g_tok_i = _end
+        g_tok_i = end
+
+    for tok_i in range(tok.num_tokens):
+        center_idx = int(tok.token.center_index[tok_i])
+        repr_idx = int(tok.token.repr_index[tok_i])
+        if center_idx >= 0:
+            tok.token.apo_center_coords[tok_i] = tok.atom.apo_coords[tok_i, center_idx]
+        if repr_idx >= 0:
+            tok.token.apo_repr_coords[tok_i] = tok.atom.apo_coords[tok_i, repr_idx]
+
+        frame_token_indices = tok.token.frame_token_index[tok_i]
+        frame_atom_indices = tok.token.frame_atom_index[tok_i]
+        if np.all(frame_token_indices >= 0) and np.all(frame_atom_indices >= 0):
+            tok.token.apo_frame_coords[tok_i] = tok.atom.apo_coords[
+                frame_token_indices, frame_atom_indices
+            ]
 
     # Update apo masks at once
     tok.atom.apo_mask[:] = get_mask(tok.atom.apo_coords)

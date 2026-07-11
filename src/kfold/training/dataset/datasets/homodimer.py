@@ -144,44 +144,14 @@ class HomodimerDistillationDataset(DistillationDataset):
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
-        """Get the apo lookup for the given reference structure."""
-        # randomly pick one chain as the apo structure
-        c = ref_struct.chains[rng.integers(0, 2)]
-        seq = c.get_sequence()
-        ccd_sequence = c.get_ccd_sequence()
-
-        res_atom_dict = C.atom.residue_atoms
-        atom37_order = C.atom.protein_atom37_order
-
-        # Convert to atom37 format
-        apo_coords = c.atom.coords  # [Natom, 3]
-        apo_coords_37 = np.full((c.num_residues, 37, 3), np.nan, dtype=np.float32)
-        g_atom_i = 0
-        for i, restype in enumerate(ccd_sequence):
-            atoms = res_atom_dict[restype]
-            natoms = len(atoms)
-            st, end = g_atom_i, g_atom_i + natoms
-            atom_indices = [atom37_order[a] for a in atoms]
-            apo_coords_37[i, atom_indices] = apo_coords[st:end]
-            g_atom_i += natoms
-        assert g_atom_i == c.num_atoms, (
-            f"Total atom counts {g_atom_i} does not match chain.num_atoms {c.num_atoms}."
-        )
-
-        return {c.entity_id: {"coords": apo_coords_37, "seq": seq}}
-
-    def get_prior_coords(
-        self,
-        ref_struct: RefStructure,
-        apo_lookup: dict[int, dict],
-        rng: np.random.Generator,
-    ) -> dict[int, np.ndarray]:
-        del apo_lookup
-        c = ref_struct.chains[rng.integers(0, 2)]
-        prior_coords = c.map_atom_coords_to_polymer_residue_coords(
-            c.atom.coords, context="Prior coordinates"
-        )
-        return {c.entity_id: prior_coords}
+        """Use one randomly selected holo chain as the shared synthetic apo source."""
+        src_chain = ref_struct.chains[rng.integers(0, 2)]
+        apo_info = {
+            "key": f"{ref_struct.id}:{src_chain.asym_id}",
+            "seq": src_chain.get_sequence(map_to_standard=True),
+            "coords": src_chain.map_atom_coords_to_residue_coords(src_chain.atom.coords),
+        }
+        return {chain.asym_id: apo_info.copy() for chain in ref_struct.chains}
 
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]

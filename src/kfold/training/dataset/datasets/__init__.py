@@ -2,7 +2,7 @@ from .train_dataset import TrainingDataset, TrainingDatasetConfig  # noqa
 from .val_dataset import ValidationDataset, ValidationDatasetConfig
 from .rcsb import DisorderedPDBTrainingDataset, RCSBTrainingDataset
 from .distillation import DistillationDataset
-from .monomer import MonomerDistillationDataset, RNAMonomerDistillationDataset
+from .monomer import ProteinMonomerDistillationDataset, RNAMonomerDistillationDataset
 from .homodimer import HomodimerDistillationDataset
 
 
@@ -16,8 +16,8 @@ def get_training_dataset_cls(
             return DisorderedPDBTrainingDataset
         case "distillation":
             return DistillationDataset
-        case "monomer-distillation":
-            return MonomerDistillationDataset
+        case "protein-monomer-distillation":
+            return ProteinMonomerDistillationDataset
         case "rna-monomer-distillation":
             return RNAMonomerDistillationDataset
         case "homodimer-distillation":
