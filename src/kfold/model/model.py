@@ -331,7 +331,7 @@ class KFold(torch.nn.Module):
         f_input : FoldingInput
             Input data for folding model.
         apo_dict : dict[int, dict]
-            Dictionary mapping entity_id to apo structure information.
+            Dictionary mapping asym_id to apo structure tokenization information.
         num_recycles : int
             Number of recycling cycles in trunk.
         num_steps : int
@@ -366,12 +366,10 @@ class KFold(torch.nn.Module):
             )
 
         # Tokenize apo structure and feed into structure encoder input features
-        for entity_id, apo_info in apo_dict.items():  # noqa
+        for asym_id, apo_info in apo_dict.items():  # noqa
             for k in ["seq", "coords", "mappings"]:
                 if k not in apo_info:
-                    raise KeyError(
-                        f"Apo info for entity_id {entity_id} is missing key: {k}"
-                    )
+                    raise KeyError(f"Apo info for asym_id {asym_id} is missing key: {k}")
             seq, coords = apo_info["seq"], apo_info["coords"]
             tokens = self.prot_struct_encoder.tokenize(seq, coords)
             bb_tok, fa_tok = tokens["bb_token_id"], tokens["fa_token_id"]
