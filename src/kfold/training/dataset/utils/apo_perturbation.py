@@ -119,8 +119,10 @@ class ApoPerturbation:
         if perturbed_coords is None:
             # Fallback to original coordinates if both perturbations fail
             return coords
-        else:
-            return perturbed_coords
+
+        # Keep the original apo availability contract after perturbation.
+        perturbed_coords[~mask] = np.nan
+        return perturbed_coords
 
     def rieprody_perturbation(
         self,
