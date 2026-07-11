@@ -8,19 +8,18 @@ import torch
 
 import kfold.constants as C
 from kfold.data.pipelines import (
-    apo_initialization,
     featurization,
     prior_sampling,
     structure_preparation,
     tokenization,
 )
-from kfold.data.types.ccd import CCD
+from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.constraint import Constraint
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
-from kfold.data.utils.io.structure import read_protein_structure
+from kfold.data.utils.io.structure import read_protein_structure, read_rna_structure
 
 from . import query
 
@@ -111,9 +110,7 @@ class InputDataPipeline:
 
         self.ccd: CCD = ccd
 
-        # Initialize apo initializer
-        self.apo_initializer = apo_initialization.ApoInitializer.inference_mode()
-        self.prior_sampler = prior_sampling.PriorSampler.inference_mode(ccd)
+        self.prior_sampler = prior_sampling.PriorSampler.inference_mode()
         self.num_samples = num_samples
 
         # Initialize tokenizer
@@ -182,17 +179,10 @@ class InputDataPipeline:
 
         # Get apo structure
         apo_lookup = self.load_apo_structures(ref_struct, input)
-        apo_dict = self.apo_initializer(ref_struct, apo_lookup, rng)
+        apo_dict = self.sample_apo_structures(ref_struct, apo_lookup)
 
-        chain_by_entity_id = {chain.entity_id: chain for chain in ref_struct.chains}
-        prior_coords_dict = {
-            entity_id: chain_by_entity_id[
-                entity_id
-            ].map_atom_coords_to_polymer_residue_coords(
-                coords, context="Prior coordinates"
-            )[None]
-            for entity_id, coords in apo_dict.items()
-        }
+        # Sample prior coordinates for diffusion bridge model.
+        prior_coords_dict = self.prepare_prior_source_dict(ref_struct, apo_dict, rng)
         prior_coords = self.prior_sampler.sample(
             ref_struct, prior_coords_dict, self.num_samples, rng
         )
@@ -362,15 +352,33 @@ class InputDataPipeline:
 
         lookup: dict[int, dict] = {}
         for entity_id, seq in enumerate(input.sequences, start=1):
-            if not isinstance(seq, query.ProteinSequence):
+            if isinstance(seq, query.ProteinSequence):
+                read_structure = read_protein_structure
+                use_struct_token = True
+            elif isinstance(seq, query.DNASequence):
+                assert seq.apo is None, (
+                    "DNA apo files are not accepted in query inputs. "
+                    "DNA apo coordinates are generated heuristically."
+                )
+                assert seq.apo_range is None, (
+                    "DNA apo_range is not accepted in query inputs."
+                )
+                continue
+            elif isinstance(seq, query.RNASequence) and seq.apo is not None:
+                assert seq.apo_range is None, (
+                    "RNA apo_range is not accepted in query inputs."
+                )
+                read_structure = read_rna_structure
+                use_struct_token = False
+            else:
                 continue
             seq_id = f"{input.name}:{list(seq.ids)}"
 
             path = pathlib.Path(seq.apo)
-            sequence, coords = read_protein_structure(path)
-            if seq.apo_range is not None:
+            sequence, coords = read_structure(path)
+            if isinstance(seq, query.ProteinSequence) and seq.apo_range is not None:
                 apo_range = seq.apo_range
-            else:
+            elif isinstance(seq, query.ProteinSequence):
                 # If no residue_map is provided, check if sequence lengths match
                 ref_chain = entity_to_ref_chain[entity_id]
                 length = len(sequence)
@@ -391,6 +399,13 @@ class InputDataPipeline:
                         f"sequence {seq_id}, "
                         f"but lengths do not match. Inferred apo_range: {apo_range}"
                     )
+            else:
+                ref_chain = entity_to_ref_chain[entity_id]
+                assert len(sequence) == ref_chain.num_residues, (
+                    f"{seq.ctype.name.lower()} apo length {len(sequence)} must match "
+                    f"reference sequence length {ref_chain.num_residues}."
+                )
+                apo_range = None
 
             apo_info = {
                 "path": path,
@@ -399,8 +414,151 @@ class InputDataPipeline:
             }
             if apo_range is not None:
                 apo_info["residue_map"] = apo_range
-            lookup[entity_id] = apo_info
+            for chain in ref_struct.chains:
+                if chain.entity_id != entity_id or chain.ctype != seq.ctype:
+                    continue
+                chain_info = apo_info.copy()
+                chain_info["apo_uid"] = chain.asym_id
+                chain_info["use_struct_token"] = use_struct_token
+                lookup[chain.asym_id] = chain_info
         return lookup
+
+    def sample_apo_structures(
+        self,
+        ref_struct: RefStructure,
+        apo_lookup: dict[int, dict],
+    ) -> dict[int, np.ndarray]:
+        """Return residue-major apo coordinates keyed by physical chain asym_id."""
+        polymer_asym_ids = {c.asym_id for c in ref_struct.chains if c.is_polymer}
+        unknown_keys = set(apo_lookup) - polymer_asym_ids
+        if unknown_keys:
+            raise KeyError(
+                "Apo lookup must be keyed by polymer asym_id. "
+                f"Unknown keys for structure {ref_struct.id}: {sorted(unknown_keys)}"
+            )
+
+        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
+        apo_dict: dict[int, np.ndarray] = {}
+        for chain in ref_struct.chains:
+            if not chain.is_polymer:
+                continue
+
+            apo_info = apo_lookup.get(chain.asym_id)
+            if apo_info is not None and "apo_uid" in apo_info:
+                metadata_by_asym_id[chain.asym_id].apo_uid = int(apo_info["apo_uid"])
+            apo_dict[chain.asym_id] = self._sample_polymer_apo_structure(
+                chain, apo_info, ref_struct.id
+            )
+
+        return apo_dict
+
+    def _sample_polymer_apo_structure(
+        self,
+        chain: Chain,
+        apo_info: dict | None,
+        entry_id: str,
+    ) -> np.ndarray:
+        """Map one loaded apo record to the chain residue-major coordinate shape."""
+        assert chain.is_polymer
+        expected_width = 37 if chain.is_protein else 29
+        expected_shape = (chain.num_residues, expected_width, 3)
+
+        if apo_info is None:
+            return np.full(expected_shape, np.nan, dtype=np.float32)
+
+        apo_seq: str = apo_info["seq"]
+        coords: np.ndarray = apo_info["coords"].astype(np.float32, copy=True)
+        assert coords.shape == (len(apo_seq), expected_width, 3), (
+            f"Apo coordinates for chain {entry_id}:{chain.asym_id} have shape "
+            f"{coords.shape}; expected ({len(apo_seq)}, {expected_width}, 3)."
+        )
+
+        res_map = apo_info.get("residue_map", None)
+        assert not chain.is_nucleic_acid or res_map is None, (
+            "Nucleic-acid apo structures must be full-length records without "
+            "residue_map/apo_range."
+        )
+
+        if res_map is not None:
+            res_st, res_end, apo_st, apo_end = parse_residue_map(res_map)
+            if res_st == 0 and res_end == chain.num_residues:
+                coords = coords[apo_st:apo_end]
+            else:
+                padded_coords = np.full(expected_shape, np.nan, dtype=np.float32)
+                padded_coords[res_st:res_end] = coords[apo_st:apo_end]
+                coords = padded_coords
+        elif coords.shape[0] != chain.num_residues:
+            self.logger.warning(
+                f"Apo coordinates length {coords.shape[0]} does not match sequence "
+                f"length {chain.num_residues} for chain {entry_id}:{chain.asym_id}, "
+                "and no residue_map was provided. Filling apo coordinates with NaN."
+            )
+            coords = np.full(expected_shape, np.nan, dtype=np.float32)
+
+        assert coords.shape == expected_shape, (
+            f"Apo coordinates for chain {entry_id}:{chain.asym_id} have shape "
+            f"{coords.shape}; expected {expected_shape}."
+        )
+        return coords
+
+    def prepare_prior_source_dict(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Prepare one prior source per physical chain, keyed by asym_id."""
+        prior_source_dict: dict[int, np.ndarray] = {}
+        for chain in ref_struct.chains:
+            if chain.is_polymer:
+                if chain.asym_id in apo_dict:
+                    prior_source_dict[chain.asym_id] = apo_dict[chain.asym_id]
+                else:
+                    width = 37 if chain.is_protein else 29
+                    prior_source_dict[chain.asym_id] = np.full(
+                        (chain.num_residues, width, 3), np.nan, dtype=np.float32
+                    )
+            else:
+                prior_source_dict[chain.asym_id] = self._get_ligand_prior_source(
+                    chain, rng
+                )
+        return prior_source_dict
+
+    def _get_ligand_prior_source(
+        self,
+        chain: Chain,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Generate one ligand conformer in residue-major prior-source format."""
+        assert chain.is_ligand
+        if chain.smiles is not None:
+            ref_comp = Component.from_smiles("LIG", chain.smiles)
+            coords = ref_comp.get_ref_conformer(rng, train=False)
+        else:
+            coords = np.full_like(chain.atom.coords, np.nan)
+            ccd_sequence = chain.get_ccd_sequence()
+            for res_i, code in enumerate(ccd_sequence):
+                if code not in self.ccd:
+                    self.logger.warning(
+                        f"CCD code {code} not found for ligand chain "
+                        f"{chain.asym_id}. Filling with NaN coordinates."
+                    )
+                    continue
+
+                ref_comp = self.ccd[code]
+                ref_pos = ref_comp.get_ref_conformer(rng, train=False)
+                ref_atom_order = ref_comp.get_atom_index_map()
+                src_atom_indices: list[int] = []
+                dst_atom_indices: list[int] = []
+                res_idx = res_i + 1
+                for atom_i in chain.residue.iter_residue_atoms(res_idx):
+                    atom_name = chain.atom.name[atom_i]
+                    if atom_name in ref_atom_order:
+                        src_atom_indices.append(ref_atom_order[atom_name])
+                        dst_atom_indices.append(atom_i)
+                coords[dst_atom_indices] = ref_pos[src_atom_indices]
+
+        return np.expand_dims(coords, axis=1).astype(np.float32)
 
     def prepare_struct_tok_input(
         self,
@@ -419,21 +577,23 @@ class InputDataPipeline:
 
         Returns
         dict[int, dict]
-            A dictionary mapping entity_id to a tuple of (aatypes, coords) for
+            A dictionary mapping asym_id to a tuple of (aatypes, coords) for
             structure tokenization.
         """
         struct_tok_input: dict[int, dict] = {}
-        for entity_id, info in apo_lookup.items():
+        for asym_id, info in apo_lookup.items():
+            if not info.get("use_struct_token", True):
+                continue
             seq = info["seq"]
             length = len(seq)
             coords = torch.from_numpy(info["coords"]).float()
 
             # Find the corresponding indices in the featurized input.
             mappings = []
-            indices = torch.where(f_input.sequence.entity_id == entity_id)[0]
+            indices = torch.where(f_input.sequence.asym_id == asym_id)[0]
             if len(indices) == 0:
                 raise ValueError(
-                    f"No sequence indices found for entity_id {entity_id} "
+                    f"No sequence indices found for chain with asym_id {asym_id} "
                     "in the featurized input."
                 )
 
@@ -449,12 +609,12 @@ class InputDataPipeline:
             if (seq_end - seq_st) != (apo_end - apo_st):
                 raise ValueError(
                     f"Sequence range does not match apo range for chain "
-                    f"with entity_id {entity_id}: seq range ({seq_st}:{seq_end}) "
+                    f"with asym_id {asym_id}: seq range ({seq_st}:{seq_end}) "
                     f"vs apo range ({apo_st}:{apo_end})"
                 )
             mappings.append((seq_st, seq_end, apo_st, apo_end))
 
-            struct_tok_input[entity_id] = {
+            struct_tok_input[asym_id] = {
                 "seq": seq,
                 "coords": coords,
                 "mappings": mappings,

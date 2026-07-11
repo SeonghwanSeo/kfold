@@ -228,6 +228,8 @@ class PriorSampler:
         """Apply BioPrior perturbation to one protein prior source."""
         assert chain.is_protein
         mask = np.isfinite(coords).all(axis=-1)
+        if not mask.any():
+            return coords
         sequence = chain.get_sequence(map_to_standard=True)
         perturbed = self.bioprior.run(sequence, coords, rng=rng)
         if perturbed is None:
