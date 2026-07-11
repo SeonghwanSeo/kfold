@@ -523,6 +523,11 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         """Fetch the apo coordinates for a protein chain."""
         assert chain.is_polymer
 
+        # NOTE: we found that dna apo structure hurt the model performance,
+        # so we decide that we do not use apo structure for dna chains.
+        if chain.is_dna:
+            return np.full_like((chain.num_residues, 29, 3), np.nan)
+
         def fallback():
             return chain.map_atom_coords_to_residue_coords(chain.atom.coords)
 
