@@ -278,7 +278,21 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             "_apo_tok_source_lmdb_envs", "apo_tok_lmdb", chain_type, source
         )
 
+    def _get_prior_stack_lmdb_env(self, chain_type: str) -> lmdb.Environment:
+        cache = getattr(self, "_prior_stack_lmdb_envs", None)
+        if cache is None:
+            cache = {}
+            self._prior_stack_lmdb_envs = cache
+        if chain_type not in cache:
+            cache[chain_type] = _open_lmdb(
+                self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
+            )
+        return cache[chain_type]
+
     def __del__(self):
+        if hasattr(self, "_prior_stack_lmdb_envs"):
+            for env in self._prior_stack_lmdb_envs.values():
+                env.close()
         if hasattr(self, "_apo_tok_source_lmdb_envs"):
             for env in self._apo_tok_source_lmdb_envs.values():
                 env.close()
@@ -459,6 +473,33 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             apo_info["tokens"] = apo_tok
             return True
 
+    def _load_prior_stack_info_from_lmdb(
+        self,
+        entry_id: str,
+        entity_id: int,
+        chain_type: str,
+    ) -> np.ndarray | None:
+        """Load an entity-level stacked prior LMDB record."""
+        entity_key = f"{entry_id}_{entity_id}"
+        prior_lmdb_path = self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
+        if not prior_lmdb_path.exists():
+            return None
+
+        env = self._get_prior_stack_lmdb_env(chain_type)
+        with env.begin(write=False) as txn:
+            value_bytes = txn.get(entity_key.encode("utf-8"))
+        if value_bytes is None:
+            return None
+
+        record = apo_io.unpack_prior_stack_record(value_bytes)
+        coords = record["coords"]
+        if coords.ndim != 4:
+            raise ValueError(
+                f"Prior stack {entity_key} has shape {coords.shape}; expected "
+                "(N, L, A, 3)."
+            )
+        return coords
+
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
@@ -466,21 +507,14 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         entry_id: str = ref_struct.id
         entry_lookup: dict[int, list[dict]] = self.lookup_table[entry_id]
 
-        # Match apo structure for each protein entries.
+        # Match apo structure independently for each asymmetric polymer chain.
         apo_lookup: dict[int, dict] = {}  # asym_id -> apo_info dict
-        cache: dict[int, dict] = {}  # entity_id -> apo_info dict
         for c in ref_struct.chains:
             if not c.is_polymer:
                 # We do not save ligand etkdg conformers in apo_lookup.
                 continue
-            if c.entity_id in cache:
-                # NOTE: This is essential: for prior sampling, we need to
-                # conduct OT permutation alignment between apo and holo structures.
-                # If we use different apo structures for the same entity,
-                # the alignment will be inconsistent.
-                apo_info = cache[c.entity_id].copy()
-                apo_info["chain_key"] = f"{entry_id}_{c.asym_id}"
-                apo_lookup[c.asym_id] = apo_info
+            if c.is_dna:
+                # DNA apo structures are intentionally disabled for trunk input.
                 continue
 
             eid: int = c.entity_id
@@ -510,7 +544,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             _ = self._load_apo_tok_from_lmdb(apo_info)
 
             apo_lookup[c.asym_id] = apo_info
-            cache[eid] = apo_info  # cache for other chains of the same entity
 
         return apo_lookup
 
@@ -526,7 +559,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         # NOTE: we found that dna apo structure hurt the model performance,
         # so we decide that we do not use apo structure for dna chains.
         if chain.is_dna:
-            return np.full_like((chain.num_residues, 29, 3), np.nan)
+            return np.full((chain.num_residues, 29, 3), np.nan, dtype=np.float32)
 
         def fallback():
             return chain.map_atom_coords_to_residue_coords(chain.atom.coords)
@@ -672,7 +705,69 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         if self.num_priors <= 0 or self.prior_sampler is None:
             return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
 
-        return self.prior_sampler(ref_struct, apo_dict, self.num_priors, rng)
+        prior_coords_list = []
+        for _ in range(self.num_priors):
+            prior_apo_dict = self.get_prior_coords(ref_struct, apo_dict, rng)
+            prior_coords = self.prior_sampler(ref_struct, prior_apo_dict, 1, rng)
+            assert prior_coords.shape == (1, ref_struct.num_atoms, 3)
+            prior_coords_list.append(prior_coords[0])
+        return np.stack(prior_coords_list, axis=0)
+
+    def get_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Sample one per-chain apo-like dict for prior sampling."""
+        del apo_dict
+        entry_id: str = ref_struct.id
+        prior_apo_dict: dict[int, np.ndarray] = {}
+        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
+
+        for c in ref_struct.chains:
+            if c.asym_id in metadata_by_asym_id:
+                metadata_by_asym_id[c.asym_id].prior_uid = c.asym_id
+
+            if c.is_dna:
+                # DNA apo structures are intentionally disabled.
+                coords = np.full((c.num_residues, 29, 3), np.nan, dtype=np.float32)
+                prior_apo_dict[c.asym_id] = coords
+                continue
+
+            if c.is_ligand:
+                # For ligand chains, use etkdg conformer as prior apo coordinates.
+                key = f"{entry_id}_{c.asym_id}"
+                prior_apo_dict[c.asym_id] = self._get_ligand_apo_coords(c, rng, key)
+                continue
+
+            chain_type = self._chain_type_name(c)
+            loaded = self._load_prior_stack_info_from_lmdb(
+                entry_id, c.entity_id, chain_type
+            )
+            if loaded is None:
+                if self.train:
+                    coords = c.map_atom_coords_to_residue_coords(c.atom.coords)
+                    prior_apo_dict[c.asym_id] = coords
+                else:
+                    raise KeyError(
+                        f"Prior stack not found for chain {entry_id}:{c.asym_id}."
+                    )
+                continue
+
+            width = 37 if c.is_protein else 29
+            expected_shape = (c.num_residues, width, 3)
+            assert loaded.shape[1:] == expected_shape, (
+                f"Prior stack for chain {entry_id}:{c.asym_id} has shape "
+                f"{loaded.shape}; expected (N, {c.num_residues}, {width}, 3)."
+            )
+            assert loaded.shape[0] > 0, (
+                f"Prior stack for chain {entry_id}:{c.asym_id} is empty."
+            )
+            sample_i = int(rng.integers(0, loaded.shape[0]))
+            prior_apo_dict[c.asym_id] = loaded[sample_i]
+
+        return prior_apo_dict
 
     def tokenize(
         self,

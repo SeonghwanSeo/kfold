@@ -63,6 +63,7 @@ class MonomerDistillationDataset(DistillationDataset):
 
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
+        super().sanity_check()
         cfg = self.config
         if cfg.prob_perturbation != 1.0:
             self.logger.warning(
@@ -127,6 +128,13 @@ class ProteinMonomerDistillationDataset(MonomerDistillationDataset):
     Since it is very large, we directly use the apo coordinates as label structure.
     """
 
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the dataset."""
+        super().sanity_check()
+        assert self.config.apo_perturb is not None, (
+            "apo_perturb must be provided for protein monomer distillation dataset."
+        )
+
     def load_ref_structure(self, metadata: Metadata) -> RefStructure:
         """Get the structure for the given index."""
         name = metadata.id
@@ -180,9 +188,32 @@ class ProteinMonomerDistillationDataset(MonomerDistillationDataset):
             }
         }
 
+    def get_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Use the label monomer structure as the prior apo-like source."""
+        del apo_dict
+        chain = ref_struct.chains[0]
+        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
+        if chain.asym_id in metadata_by_asym_id:
+            metadata_by_asym_id[chain.asym_id].prior_uid = chain.asym_id
+
+        coords = chain.map_atom_coords_to_residue_coords(chain.atom.coords)
+
+        # Perturb the label coordinates to apply harsh perturbation.
+        assert self.apo_perturb is not None
+        seq = chain.get_sequence(map_to_standard=True)
+        coords = self.apo_perturb.run_protein_perturbation(
+            seq, coords, mask=None, rng=rng
+        )
+        return {chain.asym_id: coords}
+
 
 class RNAMonomerDistillationDataset(MonomerDistillationDataset):
-    """Training dataset for rna monomer distillation."""
+    """Training dataset for rna monomer distillation with apo/prior LMDB."""
 
     ctype: C.ChainType = C.ChainType.RNA
 

@@ -48,6 +48,9 @@ data:
     chain_translation_scale: 24.0 # Angstroms
     use_ot_permutation: true # Only for training.
     ligand_augmentation_scale: 0.3
+    bioprior:
+      noise_scale: 0.3
+      max_steps: 10
     train: true # Only for train/val
 
 # Lightning Trainer Configuration

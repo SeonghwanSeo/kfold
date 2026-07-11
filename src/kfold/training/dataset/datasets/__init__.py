@@ -3,7 +3,7 @@ from .val_dataset import ValidationDataset, ValidationDatasetConfig
 from .rcsb import DisorderedPDBTrainingDataset, RCSBTrainingDataset
 from .distillation import DistillationDataset
 from .monomer import ProteinMonomerDistillationDataset, RNAMonomerDistillationDataset
-from .homodimer import HomodimerDistillationDataset
+from .dimer import HomodimerDistillationDataset
 
 
 def get_training_dataset_cls(

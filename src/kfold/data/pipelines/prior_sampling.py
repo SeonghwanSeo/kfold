@@ -8,6 +8,7 @@ import numpy as np
 
 import kfold.constants as C
 from kfold.data.types.structure import Chain, RefStructure
+from kfold.data.utils.simulation.bioprior import BioPriorConfig, BioPriorPerturbation
 from kfold.data.utils.simulation.langevin_dynamics import LangevinDynamicsSimulator
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import compute_rmsd
@@ -31,11 +32,16 @@ class PriorSamplerConfig:
         Whether to apply optimal transport-based permutation
     ligand_augmentation_scale : float
         Scale of random noise augmentation for ligand coordinates (in Angstrom).
+    bioprior : BioPriorConfig
+        BioPrior perturbation configuration for protein prior sources.
     """
 
     chain_translation_scale: float = 24.0  # Angstrom
     use_ot_permutation: bool = False
     ligand_augmentation_scale: float = 0.3  # Angstrom
+    bioprior: BioPriorConfig = dataclasses.field(
+        default_factory=lambda: BioPriorConfig(noise_scale=0.3, max_steps=10)
+    )
     train: bool = False
 
     @classmethod
@@ -63,6 +69,7 @@ class PriorSampler:
         # Ligand augmentation scale
         self.train: bool = config.train
         self.ligand_augmentation_scale: float = config.ligand_augmentation_scale
+        self.bioprior: BioPriorPerturbation = BioPriorPerturbation(config.bioprior)
 
         # Langevin dynamics simulator for relaxing missing atoms
         self.langevin_simulator = LangevinDynamicsSimulator.default()
@@ -89,10 +96,13 @@ class PriorSampler:
         Parameters
         ----------
         struct : RefStructure
-            Reference structure containing apo coordinates.
+            Reference structure to sample priors for.
         apo_dict : dict[int, np.ndarray]
-            Dictionary mapping asym_id to apo coordinates of shape [L, A, 3].
-            A is 37 for proteins, 29 for nucleic acids, and 1 for ligands.
+            Dictionary mapping asym_id to one apo-like coordinate source.
+            Callers may build it from apo_lmdb, prior_lmdb, holo fallback, or
+            ligand conformer sampling. Shapes are [L, A, 3] for polymers and
+            [Natom, 1, 3] for ligands, where A is 37 for proteins and 29 for
+            nucleic acids.
         num_samples : int
             Number of prior samples to generate.
         rng : np.random.Generator
@@ -118,7 +128,7 @@ class PriorSampler:
         if num_samples <= 0:
             return np.empty((0, struct.num_atoms, 3), dtype=np.float32)
 
-        # Prepare one source prior coordinate set for each chain. This follows
+        # Prepare one apo-like coordinate source for each chain. This follows
         # the backup sampler style: sampled priors differ by augmentation and
         # optional OT permutation, not by resampling the source.
         chain_coords_list = self.prepare_chain_coords(struct, apo_dict, rng)
@@ -150,7 +160,7 @@ class PriorSampler:
         apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> list[np.ndarray]:
-        """Prepare a list of prior coordinates for each chain in the structure."""
+        """Prepare one atom-order apo-like source for each chain."""
         unknown_keys = set(apo_dict) - set(c.asym_id for c in struct.chains)
         if unknown_keys:
             raise KeyError(
@@ -163,14 +173,13 @@ class PriorSampler:
             chain_key = f"{struct.id}:{c.asym_id}"
 
             assert c.asym_id in apo_dict, (
-                f"Missing apo for chain {c.asym_id} in {struct.id}"
+                f"Missing apo source for chain {c.asym_id} in {struct.id}"
             )
             coords = apo_dict[c.asym_id]  # [L, A, 3]
 
             # Apply perturbation
             if c.is_protein:
-                # TODO: add on-the-fly perturbation
-                pass
+                coords = self.perturb_protein_apo_coords(c, coords, rng)
             elif c.is_nucleic_acid:
                 # No perturbation for nucleic acids yet
                 pass
@@ -199,6 +208,22 @@ class PriorSampler:
             chain_coords.append(coords)
 
         return chain_coords
+
+    def perturb_protein_apo_coords(
+        self,
+        chain: Chain,
+        coords: np.ndarray,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Apply BioPrior perturbation to one protein apo-like source."""
+        assert chain.is_protein
+        mask = np.isfinite(coords).all(axis=-1)
+        sequence = chain.get_sequence(map_to_standard=True)
+        perturbed = self.bioprior.run(sequence, coords, rng=rng)
+        if perturbed is None:
+            perturbed = coords.copy()  # Fallback to original coordinates
+        perturbed[~mask] = np.nan
+        return perturbed
 
     def langevin_sampling(
         self,
