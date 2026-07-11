@@ -184,7 +184,7 @@ class ProteinMonomerDistillationDataset(MonomerDistillationDataset):
             chain.asym_id: {
                 "key": f"{ref_struct.id}:{chain.asym_id}",
                 "seq": chain.get_sequence(map_to_standard=True),
-                "coords": chain.map_atom_coords_to_residue_coords(chain.atom.coords),
+                "coords": self._center_label_residue_coords(chain),
             }
         }
 
@@ -194,14 +194,14 @@ class ProteinMonomerDistillationDataset(MonomerDistillationDataset):
         apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
-        """Use the label monomer structure as the prior apo-like source."""
+        """Use the label monomer structure as the prior source."""
         del apo_dict
         chain = ref_struct.chains[0]
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
         if chain.asym_id in metadata_by_asym_id:
             metadata_by_asym_id[chain.asym_id].prior_uid = chain.asym_id
 
-        coords = chain.map_atom_coords_to_residue_coords(chain.atom.coords)
+        coords = self._center_label_residue_coords(chain)
 
         # Perturb the label coordinates to apply harsh perturbation.
         assert self.apo_perturb is not None

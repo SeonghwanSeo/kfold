@@ -98,7 +98,7 @@ class PriorSampler:
         struct : RefStructure
             Reference structure to sample priors for.
         apo_dict : dict[int, np.ndarray]
-            Dictionary mapping asym_id to one apo-like coordinate source.
+            Dictionary mapping asym_id to one prior coordinate source.
             Callers may build it from apo_lmdb, prior_lmdb, holo fallback, or
             ligand conformer sampling. Shapes are [L, A, 3] for polymers and
             [Natom, 1, 3] for ligands, where A is 37 for proteins and 29 for
@@ -128,20 +128,20 @@ class PriorSampler:
         if num_samples <= 0:
             return np.empty((0, struct.num_atoms, 3), dtype=np.float32)
 
-        # Prepare one apo-like coordinate source for each chain. This follows
-        # the backup sampler style: sampled priors differ by augmentation and
-        # optional OT permutation, not by resampling the source.
+        # Prepare one coordinate source for each chain. Resampling happens in
+        # the dataset; the sampler handles perturbation, augmentation, and OT.
         chain_coords_list = self.prepare_chain_coords(struct, apo_dict, rng)
+        prior_uids = self.get_chain_prior_uids(struct)
+        skip_ot_permutation = len(set(prior_uids)) < len(prior_uids)
 
         prior_coords_list: list[np.ndarray] = []
         for _ in range(num_samples):
-            # Apply random augmentation to each chain's prior coordinates.
-            _chain_coords_list = [
-                self.apply_random_augmentation(coords, rng)
-                for coords in chain_coords_list
-            ]
+            # Apply one random augmentation per prior rigid group.
+            _chain_coords_list = self.apply_group_random_augmentation(
+                chain_coords_list, prior_uids, rng
+            )
 
-            if self.use_ot_permutation:
+            if self.use_ot_permutation and not skip_ot_permutation:
                 # Optimal transport permutation during training.
                 _chain_coords_list = self.match_optimal_transport_permutation(
                     _chain_coords_list, struct, rng
@@ -154,13 +154,23 @@ class PriorSampler:
         return np.stack(prior_coords_list, axis=0)
 
     # === Helper methods for preparing prior coordinates and sampling priors === #
+    def get_chain_prior_uids(self, struct: RefStructure) -> list[int]:
+        """Get prior rigid-group IDs in the same order as `struct.chains`."""
+        metadata_by_asym_id = {c.asym_id: c for c in struct.metadata.chains}
+        prior_uids = []
+        for chain in struct.chains:
+            chain_info = metadata_by_asym_id.get(chain.asym_id)
+            prior_uid = chain.asym_id if chain_info is None else chain_info.prior_uid
+            prior_uids.append(int(prior_uid))
+        return prior_uids
+
     def prepare_chain_coords(
         self,
         struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> list[np.ndarray]:
-        """Prepare one atom-order apo-like source for each chain."""
+        """Prepare one atom-order prior source for each chain."""
         unknown_keys = set(apo_dict) - set(c.asym_id for c in struct.chains)
         if unknown_keys:
             raise KeyError(
@@ -215,7 +225,7 @@ class PriorSampler:
         coords: np.ndarray,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        """Apply BioPrior perturbation to one protein apo-like source."""
+        """Apply BioPrior perturbation to one protein prior source."""
         assert chain.is_protein
         mask = np.isfinite(coords).all(axis=-1)
         sequence = chain.get_sequence(map_to_standard=True)
@@ -314,6 +324,35 @@ class PriorSampler:
             coords, mask, s_trans=s_trans, rng=rng, mask_to_zero=False
         )
         return augmented_coords
+
+    def apply_group_random_augmentation(
+        self,
+        chain_coords_list: list[np.ndarray],
+        prior_uids: list[int],
+        rng: np.random.Generator,
+    ) -> list[np.ndarray]:
+        """Apply one random augmentation per prior_uid rigid group."""
+        assert len(chain_coords_list) == len(prior_uids), (
+            "Number of chain coordinate arrays must match number of prior_uids."
+        )
+
+        group_to_indices: dict[int, list[int]] = defaultdict(list)
+        for c_i, prior_uid in enumerate(prior_uids):
+            group_to_indices[prior_uid].append(c_i)
+
+        augmented_coords_list: list[np.ndarray] = [
+            np.empty_like(coords) for coords in chain_coords_list
+        ]
+        for indices in group_to_indices.values():
+            group_coords = [chain_coords_list[i] for i in indices]
+            group_sizes = [coords.shape[0] for coords in group_coords]
+            coords = np.concatenate(group_coords, axis=0)
+            coords = self.apply_random_augmentation(coords, rng)
+            split_coords = np.split(coords, np.cumsum(group_sizes)[:-1])
+            for i, chain_coords in zip(indices, split_coords, strict=True):
+                augmented_coords_list[i] = chain_coords
+
+        return augmented_coords_list
 
     def match_optimal_transport_permutation(
         self,

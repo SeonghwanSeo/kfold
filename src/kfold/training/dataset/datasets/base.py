@@ -65,6 +65,7 @@ from kfold.data.types.structure import Chain, RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.utils import apo_io, apo_perturbation
 from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
+from kfold.utils.geometry.random_augment import do_centering
 from kfold.utils.misc import hash_seq
 
 # Type alias
@@ -109,6 +110,10 @@ class DatasetConfig:
         Optional path to the custom manifest file.
     seed : int | None
         Random seed for data loading.
+    prob_use_complex_apo : float
+        Multimer apo selection probability for datasets that provide complex records.
+    prob_use_complex_prior : float
+        Multimer prior selection probability for datasets that provide complex records.
     """
 
     name: str
@@ -117,6 +122,8 @@ class DatasetConfig:
     seed: int | None = None
     prob_perturbation: float = 0.0
     apo_perturb: apo_perturbation.ApoPerturbationConfig | None = None
+    prob_use_complex_apo: float = 0.0
+    prob_use_complex_prior: float = 0.0
 
 
 def next_multiple(n: int, divisor: int) -> int:
@@ -427,6 +434,13 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             return "rna"
         return "dna"
 
+    @staticmethod
+    def _center_label_residue_coords(chain: Chain) -> np.ndarray:
+        """Return centered label coordinates in residue-major atom order."""
+        coords = chain.map_atom_coords_to_residue_coords(chain.atom.coords)
+        mask = np.isfinite(coords).all(axis=-1)
+        return do_centering(coords, mask=mask, mask_to_zero=False)
+
     def _load_apo_info_from_lmdb(self, apo_info: dict) -> bool:
         """Attach `seq` and `coords` from source-specific apo LMDB to a lookup record."""
         source = apo_info["source"]
@@ -519,9 +533,12 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
 
             eid: int = c.entity_id
             ek: str = f"{entry_id}:{eid}"  # For logging purpose
+            ctype = c.ctype
 
             if eid not in entry_lookup:
-                self.logger.warning(f"No apo info found for entity '{ek}' in lookup.")
+                self.logger.warning(
+                    f"No apo info found for {ctype} entity '{ek}' in lookup."
+                )
                 continue
 
             # Select one apo structure randomly
@@ -555,6 +572,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     ) -> np.ndarray:
         """Fetch the apo coordinates for a protein chain."""
         assert chain.is_polymer
+        ctype = chain.ctype
 
         # NOTE: we found that dna apo structure hurt the model performance,
         # so we decide that we do not use apo structure for dna chains.
@@ -562,20 +580,21 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             return np.full((chain.num_residues, 29, 3), np.nan, dtype=np.float32)
 
         def fallback():
-            return chain.map_atom_coords_to_residue_coords(chain.atom.coords)
+            return self._center_label_residue_coords(chain)
 
         # If the apo structure is not found, use the original coordinates as apo
         # for training. For validation, raise an error.
         if chain.asym_id not in apo_lookup:
             if self.train:
                 self.logger.warning(
-                    f"Apo structure not found for chain {chain.asym_id} in lookup."
-                    f"Use the original coordinates as apo."
+                    f"Apo structure not found for {ctype} chain {chain.asym_id} "
+                    "in lookup. Use the original coordinates as apo."
                 )
                 return fallback()
             else:
                 raise KeyError(
-                    f"Apo structure not found for chain {chain.asym_id} in lookup."
+                    f"Apo structure not found for {ctype} chain {chain.asym_id} "
+                    f"in lookup."
                 )
 
         # Get the apo coordinates from the lookup
@@ -588,8 +607,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             # NOTE: While res mapping is also allowed for inference,
             # we enforce that there is no missing residues in the apo for simplicity.
             assert res_map is None, (
-                f"Residue map {res_map} found for chain {chain.asym_id} in lookup."
-                f"Residue mapping is only allowed for training."
+                f"Residue map {res_map} found for {ctype} chain {chain.asym_id} "
+                f"in lookup. Residue mapping is only allowed for training."
             )
 
         # Perturb the apo coordinates
@@ -609,7 +628,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             res_st, res_end, apo_st, apo_end = parse_residue_map(res_map)
             if res_st == -1:
                 self.logger.warning(
-                    f"Invalid residue map {res_map} for chain {key}. "
+                    f"Invalid residue map {res_map} for {ctype} chain {key}. "
                     f"Use the original coordinates as apo."
                 )
                 return fallback()
@@ -719,7 +738,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
-        """Sample one per-chain apo-like dict for prior sampling."""
+        """Sample one per-chain prior source dict."""
         del apo_dict
         entry_id: str = ref_struct.id
         prior_apo_dict: dict[int, np.ndarray] = {}
@@ -747,7 +766,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             )
             if loaded is None:
                 if self.train:
-                    coords = c.map_atom_coords_to_residue_coords(c.atom.coords)
+                    coords = self._center_label_residue_coords(c)
                     prior_apo_dict[c.asym_id] = coords
                 else:
                     raise KeyError(

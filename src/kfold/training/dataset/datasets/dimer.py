@@ -165,7 +165,7 @@ class HomodimerDistillationDataset(DistillationDataset):
         apo_info = {
             "key": f"{ref_struct.id}:{src_chain.asym_id}",
             "seq": src_chain.get_sequence(map_to_standard=True),
-            "coords": src_chain.map_atom_coords_to_residue_coords(src_chain.atom.coords),
+            "coords": self._center_label_residue_coords(src_chain),
         }
         return {chain.asym_id: apo_info.copy() for chain in ref_struct.chains}
 
@@ -185,7 +185,7 @@ class HomodimerDistillationDataset(DistillationDataset):
         prior_coords_dict = {}
         for chain in ref_struct.chains:
             c = ref_struct.chains[0] if rng.random() < 0.5 else ref_struct.chains[1]
-            coords = c.map_atom_coords_to_residue_coords(c.atom.coords)
+            coords = self._center_label_residue_coords(c)
 
             # Apply harsh perturbation to the prior coordinates.
             assert self.apo_perturb is not None
