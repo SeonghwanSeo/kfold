@@ -2,7 +2,7 @@ _yaml_: "default-train.yaml"
 
 name: rfam
 type: "rna-monomer-distillation"
-prob_drop_apo: 1.0
+prob_drop_apo: 0.75
 prob_drop_struct_token: 1.0
 
 sampler: null
