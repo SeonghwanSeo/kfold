@@ -5,10 +5,7 @@ type: "homodimer-distillation"
 prob_drop_apo: 1.0
 prob_drop_struct_token: 1.0
 
-sampler:
-  _registry_: "data_sampler"
-  _class_: UniformSampler
-  level: interface
+sampler: null
 
 cropper:
   _registry_: "data_cropper"
