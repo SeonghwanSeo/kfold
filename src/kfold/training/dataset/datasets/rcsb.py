@@ -21,7 +21,7 @@ class RCSBTrainingDataset(TrainingDataset):
     """Training dataset for RCSB structures with experimental metadata."""
 
     def setup(self) -> None:
-        """Load RCSB-specific multimer apo/prior lookup products."""
+        """Load multimer apo/prior lookup products."""
         self.prob_use_complex_apo = self.config.prob_use_complex_apo
         self.prob_use_complex_prior = self.config.prob_use_complex_prior
         self.apo_multimer_lookup_table = self.load_apo_multimer_lookup_table()
@@ -62,14 +62,11 @@ class RCSBTrainingDataset(TrainingDataset):
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
-        if cfg.apo_init is None:
-            self.logger.warning("Apo initialization is disabled.")
-            return
         # Check if perturbation is enabled for training set, and validate files.
-        if cfg.apo_init.perturbation is None:
+        if cfg.apo_perturb is None:
             self.logger.warning("Protein perturbation is disabled.")
         else:
-            if cfg.apo_init.perturbation.rieprody is None:
+            if cfg.apo_perturb.rieprody is None:
                 self.logger.info("RieProDy perturbation is disabled.")
             else:
                 rieprody_lmdb_path = self.data_root / "rieprody_metric.lmdb"
@@ -79,7 +76,7 @@ class RCSBTrainingDataset(TrainingDataset):
                         f"while rieprody is enabled."
                     )
                 # If rieprody perturbation is enabled, we need to provide the LMDB path
-                cfg.apo_init.perturbation.rieprody.metric_lmdb_path = rieprody_lmdb_path
+                cfg.apo_perturb.rieprody.metric_lmdb_path = rieprody_lmdb_path
 
     def _load_apo_multimer_info_from_lmdb(
         self,
@@ -109,7 +106,7 @@ class RCSBTrainingDataset(TrainingDataset):
         group: dict,
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray] | None:
-        """Load a source-specific multimer prior stack record."""
+        """Load and sample one source-specific multimer prior stack record."""
         source = group["source"]
         name = group["name"]
         chain_type = group["chain_type"]
@@ -143,13 +140,13 @@ class RCSBTrainingDataset(TrainingDataset):
                     f"Prior multimer stack {source}:{name} has inconsistent "
                     f"sample counts."
                 )
-            out[int(asym_id)] = coords[sample_i : sample_i + 1].copy()
+            out[int(asym_id)] = coords[sample_i].copy()
         return out
 
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
-        """Get monomer apo lookup, then overlay RCSB antibody multimer apo."""
+        """Get monomer apo lookup, then optionally overlay RCSB multimer apo."""
         apo_lookup = super().get_apo_lookup(ref_struct, rng)
         entry_id = ref_struct.id
         multimer_groups: list[dict] = self.apo_multimer_lookup_table.get(entry_id, [])
@@ -194,59 +191,46 @@ class RCSBTrainingDataset(TrainingDataset):
     def get_prior_coords(
         self,
         ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
-        """Sample monomer priors with optional RCSB antibody multimer overlay."""
+        """Sample monomer priors with optional RCSB multimer prior overlay."""
+        prior_coords = super().get_prior_coords(ref_struct, apo_dict, rng)
         entry_id = ref_struct.id
-        prior_coords: dict[int, np.ndarray] = {}
+        multimer_groups: list[dict] = self.apo_multimer_lookup_table.get(entry_id, [])
+        if not multimer_groups or rng.random() >= self.prob_use_complex_prior:
+            return prior_coords
+
         selected_multimer_by_name: dict[str, dict[int, np.ndarray] | None] = {}
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
         protein_asym_ids = {c.asym_id for c in ref_struct.chains if c.ctype.is_protein}
 
-        for c in ref_struct.chains:
-            if c.asym_id in metadata_by_asym_id:
-                metadata_by_asym_id[c.asym_id].prior_uid = c.asym_id
+        for group in multimer_groups:
+            prior_uid = int(group["apo_uid"])
+            group_asym_ids = [int(aid) for aid in group["asym_ids"]]
+            active_asym_ids = [
+                asym_id for asym_id in group_asym_ids if asym_id in protein_asym_ids
+            ]
+            if not active_asym_ids:
+                continue
 
-        if (
-            self.apo_multimer_lookup_table.get(entry_id)
-            and rng.random() < self.prob_use_complex_prior
-        ):
-            for group in self.apo_multimer_lookup_table[entry_id]:
-                prior_uid = int(group["apo_uid"])
-                group_asym_ids = [int(aid) for aid in group["asym_ids"]]
-                active_asym_ids = [
-                    asym_id for asym_id in group_asym_ids if asym_id in protein_asym_ids
-                ]
-                if not active_asym_ids:
-                    continue
-                if group["name"] not in selected_multimer_by_name:
-                    selected_multimer_by_name[group["name"]] = (
-                        self._load_prior_multimer_stack_info_from_lmdb(group, rng)
+            if group["name"] not in selected_multimer_by_name:
+                selected_multimer_by_name[group["name"]] = (
+                    self._load_prior_multimer_stack_info_from_lmdb(group, rng)
+                )
+            multimer_prior = selected_multimer_by_name[group["name"]]
+            if multimer_prior is None:
+                continue
+
+            for asym_id in active_asym_ids:
+                if asym_id not in multimer_prior:
+                    raise KeyError(
+                        f"Prior multimer {group['source']}:{group['name']} for "
+                        f"entry {entry_id} does not contain asym_id {asym_id}."
                     )
-                multimer_prior = selected_multimer_by_name[group["name"]]
-                if multimer_prior is None:
-                    continue
-                for asym_id in active_asym_ids:
-                    if asym_id not in multimer_prior:
-                        raise KeyError(
-                            f"Prior multimer {group['source']}:{group['name']} for "
-                            f"entry {entry_id} does not contain asym_id {asym_id}."
-                        )
-                    prior_coords[asym_id] = multimer_prior[asym_id]
-                    if asym_id in metadata_by_asym_id:
-                        metadata_by_asym_id[asym_id].prior_uid = prior_uid
-
-        for c in ref_struct.chains:
-            if not (c.ctype.is_protein or c.ctype.is_nucleic_acid):
-                continue
-            if c.asym_id in prior_coords:
-                continue
-            eid = c.entity_id
-            chain_type = self._chain_type_name(c)
-            loaded = self._load_prior_stack_info_from_lmdb(entry_id, eid, chain_type)
-            if loaded is None:
-                continue
-            prior_coords[c.asym_id] = loaded
+                prior_coords[asym_id] = multimer_prior[asym_id]
+                if asym_id in metadata_by_asym_id:
+                    metadata_by_asym_id[asym_id].prior_uid = prior_uid
 
         return prior_coords
 
@@ -265,6 +249,7 @@ class RCSBTrainingDataset(TrainingDataset):
         for c_i in range(tokenized.num_chains):
             if tokenized.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
                 continue
+
             asym_id = int(tokenized.chain.asym_id[c_i])
             ek = f"{tokenized.id}:{asym_id}"
             apo_info = apo_lookup.get(asym_id)
@@ -296,11 +281,8 @@ class RCSBTrainingDataset(TrainingDataset):
             self._insert_structure_tokens(
                 tokenized,
                 c_i,
-                apo_info,
                 multimer_token_cache[cache_key][asym_id],
-                source=source,
-                key=key,
-                ek=ek,
+                key=f"{source}:{key}",
             )
 
     def determine_confidence_train_data(self, metadata: Metadata) -> bool:
@@ -325,21 +307,10 @@ class DisorderedPDBTrainingDataset(RCSBTrainingDataset):
     AlphaFold-multimer"""
 
     def setup(self) -> None:
-        """Disable RCSB antibody multimer apo/prior policy for disordered PDB."""
+        """Disable RCSB multimer apo policy for disordered PDB."""
         self.prob_use_complex_apo = 0.0
         self.prob_use_complex_prior = 0.0
         self.apo_multimer_lookup_table = {}
-
-    def sanity_check(self) -> None:
-        cfg = self.config
-        if (
-            cfg.apo_init is not None
-            and cfg.apo_init.perturbation is not None
-            and cfg.apo_init.perturbation.rieprody is not None
-        ):
-            self.logger.warning("Disordered PDB disables RieProDy perturbation.")
-            cfg.apo_init.perturbation.rieprody = None
-        TrainingDataset.sanity_check(self)
 
     def determine_confidence_train_data(self, metadata: Metadata) -> bool:
         return False

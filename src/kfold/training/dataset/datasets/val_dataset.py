@@ -44,8 +44,8 @@ class ValidationDataset(BaseLMDBDataset):
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
-        if cfg.apo_init.perturbation is not None:
-            self.logger.warning("Protein perturbation is enabled.")
+        if cfg.apo_perturb is not None:
+            self.logger.warning("Apo perturbation is enabled for validation dataset.")
 
     def setup(self) -> None:
         """Additional setup for subclasses."""

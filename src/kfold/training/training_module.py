@@ -410,6 +410,11 @@ class KFoldTrainingModule(pl.LightningModule):
             self.frozen_modules += self.model.get_trunk_module_names()
             self.frozen_modules += self.model.get_distogram_head_module_names()
 
+            # freeze trunk Parcae params directly, as they are not treated as modules
+            for param_name in self.model.get_trunk_parameter_names():
+                param = getattr(self.model, param_name)
+                param.requires_grad_(False)
+
         if self.train_diffusion_head is False:
             self.frozen_modules += self.model.get_diffusion_head_module_names()
 
@@ -422,11 +427,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 continue
             for param in module.parameters():
                 param.requires_grad_(False)
-
-        # freeze trunk Parcae params directly, as they are not treated as modules
-        for param_name in self.model.get_trunk_parameter_names():
-            param = getattr(self.model, param_name)
-            param.requires_grad_(False)
 
     def train(self, mode: bool = True):
         """Override train() to set sub-modules to eval mode if frozen."""

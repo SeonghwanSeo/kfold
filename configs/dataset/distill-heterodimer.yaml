@@ -1,15 +1,14 @@
-# RCSB training dataset configuration.
 _yaml_: "default-train.yaml"
 
-name: "disordered_pdb"
-type: "disordered_pdb"
+name: AFDB-heterodimer
+type: "heterodimer-distillation"
+prob_drop_apo: 0.0
+prob_drop_struct_token: 0.0
 
 sampler:
   _registry_: "data_sampler"
-  _class_: ClusterSampler
-  beta_chain: 0.5
-  beta_interface: 1.0
-  allow_redundant: False
+  _class_: UniformSampler
+  level: interface
 
 cropper:
   _registry_: "data_cropper"
@@ -18,6 +17,7 @@ cropper:
   w_spatial: 0.4
   w_spatial_interface: 0.4
 
+prob_perturbation: 1.0
 apo_perturb:
   bioprior:
-    max_steps: 5 # Maximum random walk steps
+    max_steps: 10
