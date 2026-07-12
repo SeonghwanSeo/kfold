@@ -147,6 +147,7 @@ class DiffusionStack(nn.Module):
 
     def __init__(
         self,
+        channel_a: int = 768,
         channel_s: int = 384,
         channel_z: int = 256,
         channel_atom: int = 128,
@@ -166,6 +167,8 @@ class DiffusionStack(nn.Module):
 
         Parameters
         ----------
+        channel_a : int
+            The token representation dimension.
         channel_s : int
             The single representation dimension.
         channel_z : int
@@ -219,7 +222,6 @@ class DiffusionStack(nn.Module):
         self.single_conditioning = SingleConditioning(channel_s, dim_fourier=256)
 
         # === Local atom-level attention encoder === #
-        channel_token = channel_s * 2
         if separate_endpoint_atom_encoder and channel_coords != 6:
             raise ValueError(
                 "separate_endpoint_atom_encoder expects channel_coords=6 "
@@ -239,7 +241,7 @@ class DiffusionStack(nn.Module):
         self.atom_attention_encoder = AtomAttentionEncoder(
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
-            channel_token=channel_token,
+            channel_token=channel_a,
             channel_coords=atom_encoder_channel_coords,
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
@@ -249,17 +251,17 @@ class DiffusionStack(nn.Module):
             self.endpoint_atom_attention_encoder = AtomAttentionEncoder(
                 channel_atom=channel_atom,
                 channel_atompair=channel_atompair,
-                channel_token=channel_token,
+                channel_token=channel_a,
                 channel_coords=atom_encoder_channel_coords,
                 num_blocks=atom_encoder_blocks,
                 num_heads=atom_encoder_heads,
                 use_structure=True,
             )
-            self.layernorm_a_t = LayerNorm(channel_token, create_offset=False)
-            self.layernorm_a_endpoint = LayerNorm(channel_token, create_offset=False)
+            self.layernorm_a_t = LayerNorm(channel_a, create_offset=False)
+            self.layernorm_a_endpoint = LayerNorm(channel_a, create_offset=False)
             self.endpoint_fusion = LinearNoBias(
-                channel_token * 2,
-                channel_token,
+                channel_a * 2,
+                channel_a,
                 init="final",
                 precision=32,
             )
@@ -267,7 +269,7 @@ class DiffusionStack(nn.Module):
         # === Full token-level attention === #
         self.layernorm_s = LayerNorm(channel_s, create_offset=False)
         self.linear_s_to_a = LinearNoBias(
-            channel_s, channel_token, init="final", precision=32
+            channel_s, channel_a, init="final", precision=32
         )
         self.layernorm_z = LayerNorm(channel_z, create_offset=False)
         self.linear_z_to_bias = LinearNoBias(
@@ -275,18 +277,18 @@ class DiffusionStack(nn.Module):
         )
 
         self.token_transformer = CachedGlobalTransformerStack(
-            channel_a=channel_token,
+            channel_a=channel_a,
             channel_s=channel_s,
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             blocks_per_ckpt=blocks_per_ckpt,
         )
 
-        self.layernorm_a = LayerNorm(channel_token, create_offset=False)
+        self.layernorm_a = LayerNorm(channel_a, create_offset=False)
 
         # === Local token-level attention decoder === #
         self.atom_attention_decoder = AtomAttentionDecoder(
-            channel_a=channel_token,
+            channel_a=channel_a,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             num_blocks=atom_decoder_blocks,

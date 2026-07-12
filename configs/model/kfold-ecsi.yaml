@@ -31,6 +31,8 @@ trunk:
 
 score_model:
   _yaml_: "module/score_model.yaml"
+  channel_a: 1024
+  token_transformer_blocks: 16
   channel_coords: 6
   separate_endpoint_atom_encoder: true
   endpoint_branch_dropout: 0.0
