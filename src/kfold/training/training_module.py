@@ -1161,7 +1161,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        if self.trainer.global_step % 50 == 0:
+        if self.trainer.global_step % 10 == 0:
             self.log_model_state()
 
     def log_model_state(self):

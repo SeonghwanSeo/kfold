@@ -56,7 +56,7 @@ data:
 # Lightning Trainer Configuration
 trainer:
   accelerator: "auto"
-  strategy: "ddp_find_unused_parameters_true"
+  strategy: "auto"
   devices: "auto"
   num_nodes: 1
   precision: bf16-mixed

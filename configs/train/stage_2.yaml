@@ -1,4 +1,4 @@
-_yaml_: "stage_0.yaml"
+_yaml_: "full.yaml"
 
 seed: 2
 
@@ -13,3 +13,60 @@ data:
   max_chains: 20
   max_tokens: 640
   max_sequence_tokens: 768
+
+  ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
+  data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
+  train_datasets:
+    # RCSB PDB (60%)
+    - _yaml_: "../dataset/rcsb-train.yaml"
+      name: rcsb-train
+      weight: 0.600
+
+    # Disordered PDB datasets (1%)
+    - _yaml_: "../dataset/disordered_pdb.yaml"
+      name: disordered_pdb
+      weight: 0.010
+
+    # Protein Monomer (30%)
+    - _yaml_: "../dataset/distill-monomer.yaml"
+      name: AF2-MGnify-long
+      weight: 0.250
+    - _yaml_: "../dataset/distill-monomer.yaml"
+      name: AF2-MGnify-short
+      weight: 0.001
+
+    - _yaml_: "../dataset/distill-monomer.yaml"
+      name: AFDB-long
+      weight: 0.045
+    - _yaml_: "../dataset/distill-monomer.yaml"
+      name: AFDB-short
+      weight: 0.004
+
+    # RNA Monomer (1%)
+    - _yaml_: "../dataset/distill-rna-monomer.yaml"
+      name: Rfam
+      weight: 0.010
+
+    # Protein-DNA (2%)
+    - _yaml_: "../dataset/distill-complex.yaml"
+      name: JASPAR
+      weight: 0.020
+
+    # Protein-Protein (10%)
+    - _yaml_: "../dataset/distill-homodimer.yaml"
+      name: AFDB-homodimer
+      weight: 0.080
+
+    - _yaml_: "../dataset/distill-heterodimer.yaml"
+      name: AFDB-heterodimer
+      weight: 0.020
+
+    # Protein-ligand, TPD (2%)
+    - _yaml_: "../dataset/distill-interface.yaml"
+      name: TPD
+      weight: 0.020
+
+  val_datasets:
+    - _yaml_: "../dataset/rcsb-val.yaml"
+      name: rcsb-val
+      data_path: /cache/wykim_lab/kfold_data/v260522/dataset/rcsb-val/
