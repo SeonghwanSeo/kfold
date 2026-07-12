@@ -117,20 +117,41 @@ class KFoldConfig:
     confidence_conditioning_drop_rate: float = 0.0
 
 
-class LMToPair(torch.nn.Module):
-    def __init__(self, channel_lm: int, n_layers: int, channel_z: int):
+class LMEncoder(torch.nn.Module):
+    def __init__(self, channel_lm: int, n_layers: int, channel_s: int):
         super().__init__()
-        # Combine the hidden states
         self.channel_lm: int = channel_lm
         self.n_layers: int = n_layers
+        self.channel_s: int = channel_s
+
+        self.w_lm_layer = torch.nn.Parameter(torch.zeros(n_layers + 1))
+        self.proj_lm = torch.nn.Sequential(
+            LayerNorm(channel_lm, create_offset=False),
+            LinearNoBias(channel_lm, channel_s),
+        )
+
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Merge encoder block features and project to the shared LM single dim."""
+        if hidden_states.ndim == 4:
+            w = self.w_lm_layer.softmax(-1)  # [Nlayer+1]
+            hidden_states = torch.einsum("n, b l n d -> b l d", w, hidden_states)
+        elif hidden_states.ndim != 3:
+            raise ValueError(
+                "LMEncoder expects hidden states with shape [B, L, D] or "
+                f"[B, L, Nlayer+1, D], got {hidden_states.shape}."
+            )
+        return self.proj_lm(hidden_states)
+
+
+class LMToPair(torch.nn.Module):
+    def __init__(self, channel_s: int, channel_z: int):
+        super().__init__()
+        self.channel_s: int = channel_s
         self.channel_z: int = channel_z
 
-        self.proj_lm = torch.nn.Sequential(
-            LayerNorm(channel_lm), LinearNoBias(channel_lm, channel_z)
+        self.proj = torch.nn.Sequential(
+            LayerNorm(channel_s), Linear(channel_s, channel_z * 2)
         )
-        self.w_lm_layer = torch.nn.Parameter(torch.zeros(n_layers + 1))
-        # MLP
-        self.linear = Linear(channel_z, channel_z)
         self.mlp = torch.nn.Sequential(
             Linear(2 * channel_z, channel_z),
             torch.nn.GELU(),
@@ -138,28 +159,12 @@ class LMToPair(torch.nn.Module):
         )
         self.layernorm_pair = LayerNorm(channel_z)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        # Weighted sum of hidden states from all layers
-        hs = self.proj_lm(hidden_states)  # [B, L, Nlayer+1, D_z]
-        w = self.w_lm_layer.softmax(-1)  # [Nlayer+1]
-        x = torch.einsum("n, b l n d -> b l d", w, hs)  # [B, L, D]
-
+    def forward(self, s_lm: torch.Tensor) -> torch.Tensor:
         # Outer product to get pairwise features
-        x = self.linear(x)  # [B, L, D]
-        xi, xj = x.unsqueeze(-2), x.unsqueeze(-3)  # [B, L, 1, D], [B, 1, L, D]
+        xi, xj = torch.chunk(self.proj(s_lm), 2, dim=-1)  # [B, L, D], [B, L, D]
+        xi, xj = xi.unsqueeze(-2), xj.unsqueeze(-3)  # [B, L, 1, D], [B, 1, L, D]
         z = self.mlp(torch.cat([xi * xj, xi - xj], dim=-1))  # [B, L, L, D]
         z = self.layernorm_pair(z)
-        return z
-
-    def from_zero_embedding(self, device: torch.device) -> torch.Tensor:
-        """Return a pairwise representation from zero-initialized sequence embedding.
-
-        Return shape: [1, 1, 1, D] where D is channel_z.
-        """
-        x = torch.zeros((1, 1, self.channel_z), device=device)
-        x = self.linear(x)
-        xi, xj = x.unsqueeze(-2), x.unsqueeze(-3)
-        z = self.mlp(torch.cat([xi * xj, xi - xj], dim=-1))
         return z
 
 
@@ -194,15 +199,17 @@ class KFold(torch.nn.Module):
             config.protein_structure_encoder
         )
 
-        self.prot_seq_to_pair = LMToPair(
-            self.prot_seq_encoder.d_model, self.prot_seq_encoder.n_layers, self.channel_z
+        self.prot_seq_to_s_lm = LMEncoder(
+            self.prot_seq_encoder.d_model, self.prot_seq_encoder.n_layers, self.channel_s
         )
-        self.rna_seq_to_pair = LMToPair(
-            self.rna_seq_encoder.d_model, self.rna_seq_encoder.n_layers, self.channel_z
+        self.rna_seq_to_s_lm = LMEncoder(
+            self.rna_seq_encoder.d_model, self.rna_seq_encoder.n_layers, self.channel_s
         )
-        self.prot_struct_to_pair = LMToPair(
-            self.prot_struct_encoder.d_model, 0, self.channel_z
+        self.prot_struct_to_s_lm = torch.nn.Sequential(
+            LayerNorm(self.prot_struct_encoder.d_model, create_offset=False),
+            LinearNoBias(self.prot_struct_encoder.d_model, self.channel_s),
         )
+        self.lm_to_pair = LMToPair(self.channel_s, self.channel_z)
 
         # Initialize trunk
         self.layernorm_z = LayerNorm(self.channel_z)
@@ -304,6 +311,7 @@ class KFold(torch.nn.Module):
         self.prot_seq_encoder = torch.compile(self.prot_seq_encoder, **opts)
         self.rna_seq_encoder = torch.compile(self.rna_seq_encoder, **opts)
         self.prot_struct_encoder = torch.compile(self.prot_struct_encoder, **opts)
+
         self.lm_stack = torch.compile(self.lm_stack, **opts)
         self.main_stack = torch.compile(self.main_stack, **opts)
         self.refine_stack = torch.compile(self.refine_stack, **opts)
@@ -462,7 +470,7 @@ class KFold(torch.nn.Module):
 
         # Trunk with recycling
         st = time.time()
-        z = self.run_trunk(z_init, f_input, num_recycles)
+        z, s_lm = self.run_trunk(z_init, f_input, num_recycles)
         z = z.float()
         et = time.time()
         time_logs["trunk"] = et - st
@@ -470,6 +478,7 @@ class KFold(torch.nn.Module):
         if return_embeddings:
             dict_out["trunk"] = {
                 "s_inputs": s_inputs,
+                "s_lm": s_lm,
                 "z": z,
             }
 
@@ -498,7 +507,7 @@ class KFold(torch.nn.Module):
         st = time.time()
         coords = dict_out["diffusion"]["coordinates"]
         dict_out["confidence"] = self.confidence_head.forward_inference(
-            f_input, s_inputs, z, coords
+            f_input, s_inputs, s_lm, z, coords
         )
         et = time.time()
         time_logs["confidence_head"] = et - st
@@ -515,7 +524,7 @@ class KFold(torch.nn.Module):
         f_input: FoldingInput,
         num_recycles: int,
         grad_recurrence_steps: int = 1,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
         Parameters
@@ -534,6 +543,8 @@ class KFold(torch.nn.Module):
         -------
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
+        s_lm: torch.Tensor
+            The merged LM single representation of shape (B, L, c_s_lm).
         """
         use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
 
@@ -543,16 +554,18 @@ class KFold(torch.nn.Module):
         prot_seq_encoder = get_model(self.prot_seq_encoder)
         rna_seq_encoder = get_model(self.rna_seq_encoder)
         prot_struct_encoder = get_model(self.prot_struct_encoder)
+
         lm_stack = get_model(self.lm_stack)
         main_stack = get_model(self.main_stack)
         refine_stack = get_model(self.refine_stack)
 
-        # Initial pairwise representation from pretrained encoders.
-        z_lm = (
-            self.prot_seq_to_pair(prot_seq_encoder(f_input))
-            + self.rna_seq_to_pair(rna_seq_encoder(f_input))
-            + self.prot_struct_to_pair(prot_struct_encoder(f_input).unsqueeze(-2))
+        # Merge pretrained encoder block features into one shared LM single.
+        s_lm = (
+            self.prot_seq_to_s_lm(prot_seq_encoder(f_input))
+            + self.rna_seq_to_s_lm(rna_seq_encoder(f_input))
+            + self.prot_struct_to_s_lm(prot_struct_encoder(f_input))
         )
+        z_lm = self.lm_to_pair(s_lm)
 
         # ESMFold2 cofolding adaptation: initialize an independent pair-state
         # z_0 instead of recycling from zeros.
@@ -592,7 +605,7 @@ class KFold(torch.nn.Module):
         # Refinement iteration
         z = refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
 
-        return z
+        return z, s_lm
 
     # ============================================================
     # Training Methods
@@ -687,7 +700,7 @@ class KFold(torch.nn.Module):
 
         # Trunk with recycling
         z_init = z_init.float()  # cast to float32 for numerical stability
-        z = self.run_trunk(
+        z, s_lm = self.run_trunk(
             z_init,
             f_input,
             num_recycles,
@@ -733,6 +746,7 @@ class KFold(torch.nn.Module):
                 "coordinates": coordinates,
             }
             _s_inputs = s_inputs.detach()
+            _s_lm = s_lm.detach()
             _z = z.detach()
 
             # Randomly drop conditioning information for confidence head.
@@ -744,7 +758,7 @@ class KFold(torch.nn.Module):
 
             # Forward pass through confidence head
             pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
-                f_input, _s_inputs, _z, coordinates
+                f_input, _s_inputs, _s_lm, _z, coordinates
             )
             dict_out["confidence"] = {
                 "pae_logits": pae_logits,
@@ -767,9 +781,10 @@ class KFold(torch.nn.Module):
         """Get the names of trunk modules."""
         return [
             "input_embedder",
-            "prot_seq_to_pair",
-            "rna_seq_to_pair",
-            "prot_struct_to_pair",
+            "prot_seq_to_s_lm",
+            "rna_seq_to_s_lm",
+            "prot_struct_to_s_lm",
+            "lm_to_pair",
             "layernorm_z",
             "lm_stack",
             "main_stack",
