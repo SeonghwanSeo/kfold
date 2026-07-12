@@ -3,7 +3,7 @@ from .val_dataset import ValidationDataset, ValidationDatasetConfig
 from .rcsb import DisorderedPDBTrainingDataset, RCSBTrainingDataset
 from .distillation import DistillationDataset
 from .monomer import ProteinMonomerDistillationDataset, RNAMonomerDistillationDataset
-from .dimer import HomodimerDistillationDataset
+from .dimer import HeterodimerDistillationDataset, HomodimerDistillationDataset
 
 
 def get_training_dataset_cls(
@@ -22,5 +22,7 @@ def get_training_dataset_cls(
             return RNAMonomerDistillationDataset
         case "homodimer-distillation":
             return HomodimerDistillationDataset
+        case "heterodimer-distillation":
+            return HeterodimerDistillationDataset
         case _:
             raise ValueError(f"Unsupported training dataset type: {train_config.type}")

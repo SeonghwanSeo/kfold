@@ -14,6 +14,7 @@ cropper:
   w_spatial: 0.75
   w_spatial_interface: 0.0
 
+prob_perturbation: 1.0
 apo_perturb:
   prob_rieprody: 0.0
   bioprior:

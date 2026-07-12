@@ -17,10 +17,13 @@ Metadata: each sample has a simple metadata dict containing:
         'asym_id': str, the asym_id of the chain
         'entity_id': int, the entity_id of the chain
 
-There is major difference between monomer distillation dataset and other datasets:
+Homodimer distillation uses synthetic apo/prior data from label coordinates:
     - No apo coordinates (trunk) -> Fill to NaN.
     - No apo structure tokens (trunk) -> Fill to 0.0.
     - Use perturbed label coordinates as prior (diffusion bridge)
+
+Heterodimer distillation uses externally built apo/prior LMDBs and apo structure-token
+LMDBs through the base training dataset pipeline.
 """
 
 import io
