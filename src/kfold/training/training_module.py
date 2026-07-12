@@ -494,6 +494,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     dataset_metrics[f"{prefix}/{k}"] = MeanMetric()
             for k in validation_metrics.monitor_metric_names:
                 dataset_metrics[f"monitor/{k}"] = MeanMetric()
+            dataset_metrics["monitor/distogram_loss"] = MeanMetric()
             val_metrics.append(MetricCollection(dataset_metrics, prefix=f"{name}/"))
         self.val_metrics = torch.nn.ModuleList(val_metrics)
 
@@ -752,6 +753,10 @@ class KFoldTrainingModule(pl.LightningModule):
         ref_struct_aligned: list[RefStructure] = []
         sample_metrics: list[dict[str, Any]] = []
         with torch.autocast("cuda", torch.float32):
+            distogram_loss = self.compute_validation_distogram_loss(
+                distogram_out, f_input
+            )
+
             # Permute predicted and true coordinates to align
             for i in range(num_samples):
                 pred_coords_i = diffusion_out["coordinates"][i, :n_atoms]
@@ -798,6 +803,7 @@ class KFoldTrainingModule(pl.LightningModule):
             _m = aggr_metrics["monitor"]
             if k in _m:
                 metrics[f"monitor/{k}"].update(_m[k])
+        metrics["monitor/distogram_loss"].update(distogram_loss)
 
         # Save validation predictions if needed
         if val_config.save_predictions:
@@ -865,6 +871,23 @@ class KFoldTrainingModule(pl.LightningModule):
         torch.cuda.empty_cache()
 
     # === Loss functions === #
+    def compute_validation_distogram_loss(
+        self,
+        distogram_out: dict[str, torch.Tensor],
+        f_input: FoldingInput,
+    ) -> torch.Tensor:
+        """Compute validation distogram loss from inference outputs."""
+        logits = distogram_out.get("logits")
+        if logits is None:
+            logits = distogram_out["distogram"]
+        if not f_input.is_batched:
+            f_input = f_input.add_batch_dim()
+        if logits.ndim == 3:
+            logits = logits.unsqueeze(0)
+
+        loss_per_batch = self.distogram_loss(logits, f_input)
+        return loss_per_batch.mean().detach()
+
     def compute_distogram_loss(
         self,
         logits: torch.Tensor,
