@@ -266,13 +266,8 @@ class KFold(torch.nn.Module):
             config.diffusion_head, score_model=self.score_model
         )
         self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
-        patch_pair_geometry_cfg = getattr(
-            config,
-            "patch_pair_geometry",
-            patch_geometry.PatchPairGeometryHead.Config(),
-        )
         self.patch_pair_geometry_head = patch_geometry.PatchPairGeometryHead(
-            patch_pair_geometry_cfg,
+            config.patch_pair_geometry,
             channel_z=self.channel_z,
         )
         self.confidence_head = confidence_head.ConfidenceHead(
@@ -318,6 +313,12 @@ class KFold(torch.nn.Module):
         self.score_model.do_compile(**opts)
         self.confidence_head.do_compile(**opts)
 
+    def _get_model_module(self, module: torch.nn.Module) -> torch.nn.Module:
+        """Return the underlying module when a compiled wrapper is not used."""
+        if self.is_compiled and not self.training:
+            return getattr(module, "_orig_mod", module)
+        return module
+
     # ============================================================
     # Inference Methods
     # ============================================================
@@ -325,21 +326,18 @@ class KFold(torch.nn.Module):
     def inference(
         self,
         f_input: FoldingInput,
-        apo_dict: dict[int, dict],
         num_recycles: int = 10,
         num_steps: int = 200,
         num_samples: int = 5,
         return_embeddings: bool = False,
         return_traj: bool = False,
     ) -> tuple[dict[str, dict[str, torch.Tensor]], dict[str, float]]:
-        """Forward pass of KFold model for model training.
+        """Run KFold structure prediction from a fully prepared input.
 
         Parameters
         ----------
         f_input : FoldingInput
             Input data for folding model.
-        apo_dict : dict[int, dict]
-            Dictionary mapping asym_id to apo structure tokenization information.
         num_recycles : int
             Number of recycling cycles in trunk.
         num_steps : int
@@ -372,20 +370,6 @@ class KFold(torch.nn.Module):
             raise NotImplementedError(
                 "Batched input with batch_size > 1 is not supported for inference yet."
             )
-
-        # Tokenize apo structure and feed into structure encoder input features
-        for asym_id, apo_info in apo_dict.items():  # noqa
-            for k in ["seq", "coords", "mappings"]:
-                if k not in apo_info:
-                    raise KeyError(f"Apo info for asym_id {asym_id} is missing key: {k}")
-            seq, coords = apo_info["seq"], apo_info["coords"]
-            tokens = self.prot_struct_encoder.tokenize(seq, coords)
-            bb_tok, fa_tok = tokens["bb_token_id"], tokens["fa_token_id"]
-            for mapping in apo_info["mappings"]:
-                seq_st, seq_ed, apo_st, apo_ed = mapping
-                seq_sl, apo_sl = slice(seq_st, seq_ed), slice(apo_st, apo_ed)
-                f_input.sequence.bb_struct_token_id[0, seq_sl] = bb_tok[apo_sl]
-                f_input.sequence.fa_struct_token_id[0, seq_sl] = fa_tok[apo_sl]
 
         # Sample structures
         model_out, time_logs = self.sample(
@@ -518,6 +502,18 @@ class KFold(torch.nn.Module):
                 dict_out[key] = {k: v.squeeze(0) for k, v in dict_out[key].items()}
         return dict_out, time_logs
 
+    def _encode_lm_single(self, f_input: FoldingInput) -> torch.Tensor:
+        """Merge the enabled pretrained encoders into the shared LM single."""
+        prot_seq_encoder = self._get_model_module(self.prot_seq_encoder)
+        rna_seq_encoder = self._get_model_module(self.rna_seq_encoder)
+        prot_struct_encoder = self._get_model_module(self.prot_struct_encoder)
+
+        return (
+            self.prot_seq_to_s_lm(prot_seq_encoder(f_input))
+            + self.rna_seq_to_s_lm(rna_seq_encoder(f_input))
+            + self.prot_struct_to_s_lm(prot_struct_encoder(f_input))
+        )
+
     def run_trunk(
         self,
         z_init: torch.Tensor,
@@ -548,23 +544,12 @@ class KFold(torch.nn.Module):
         """
         use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
 
-        def get_model(mod: torch.nn.Module) -> torch.nn.Module:
-            return mod._orig_mod if (self.is_compiled and not self.training) else mod
-
-        prot_seq_encoder = get_model(self.prot_seq_encoder)
-        rna_seq_encoder = get_model(self.rna_seq_encoder)
-        prot_struct_encoder = get_model(self.prot_struct_encoder)
-
-        lm_stack = get_model(self.lm_stack)
-        main_stack = get_model(self.main_stack)
-        refine_stack = get_model(self.refine_stack)
+        lm_stack = self._get_model_module(self.lm_stack)
+        main_stack = self._get_model_module(self.main_stack)
+        refine_stack = self._get_model_module(self.refine_stack)
 
         # Merge pretrained encoder block features into one shared LM single.
-        s_lm = (
-            self.prot_seq_to_s_lm(prot_seq_encoder(f_input))
-            + self.rna_seq_to_s_lm(rna_seq_encoder(f_input))
-            + self.prot_struct_to_s_lm(prot_struct_encoder(f_input))
-        )
+        s_lm = self._encode_lm_single(f_input)
         z_lm = self.lm_to_pair(s_lm)
 
         # ESMFold2 cofolding adaptation: initialize an independent pair-state

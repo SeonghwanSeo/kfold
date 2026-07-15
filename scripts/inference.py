@@ -14,6 +14,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.query import Query, parse_input_files
+from kfold.inference.structure_tokenization import apply_apo_structure_tokens
 from kfold.model import KFold
 from kfold.utils import confidence_metrics
 
@@ -32,23 +33,20 @@ def set_seed(seed: int):
 def parse_args():
     parser = argparse.ArgumentParser(description="KFold Inference Script")
     parser.add_argument(
-        "--config",
+        "--weight",
         type=pathlib.Path,
-        required=True,
-        help="Path to the model configuration file.",
+        help="Path to the model weight file. Required unless --dry-run is used.",
     )
     parser.add_argument(
-        "--checkpoint",
+        "--config",
         type=pathlib.Path,
-        required=True,
-        help="Path to the model checkpoint file.",
+        default=pathlib.Path("configs/model/kfold-ecsi.yaml"),
+        help="Path to the model configuration file.",
     )
     parser.add_argument(
         "--ccd",
         type=pathlib.Path,
-        default=pathlib.Path(
-            "/mnt/parallel_storage/wykim_lab/icl_shwan/data/ccd-test.pkl"
-        ),
+        required=True,
         help="Path to the CCD data file.",
     )
     parser.add_argument(
@@ -60,7 +58,7 @@ def parse_args():
     )
     parser.add_argument(
         "-o",
-        "--out_dir",
+        "--out-dir",
         type=pathlib.Path,
         default=pathlib.Path("./inference_results/"),
         help="Root directory to save inference results.",
@@ -69,41 +67,41 @@ def parse_args():
         "--seed",
         nargs="+",
         type=int,
-        default=[42],
+        default=[1],
         help="Random seed for inference reproducibility.",
     )
     parser.add_argument(
-        "--num_recycles",
+        "--num-recycles",
         type=int,
         default=10,
         help="Number of trunk cycles to run during inference.",
     )
     parser.add_argument(
-        "--num_steps",
+        "--num-steps",
         type=int,
         default=200,
         help="Number of diffusion steps to run during inference.",
     )
     parser.add_argument(
-        "--num_samples",
+        "--num-samples",
         type=int,
         default=5,
         help="Number of samples to generate per input.",
     )
     parser.add_argument(
-        "--save_trajectory",
+        "--save-trajectory",
         action="store_true",
         help="Whether to save diffusion trajectory.",
     )
     parser.add_argument(
-        "--cpu",
+        "--save-confidence",
         action="store_true",
-        help="Use CPU for inference instead of GPU.",
+        help="Whether to save raw confidence scores",
     )
     parser.add_argument(
-        "--num_workers",
+        "--num-workers",
         type=int,
-        default=4,
+        default=8,
         help="Number of worker threads for data loading.",
     )
     parser.add_argument(
@@ -112,22 +110,70 @@ def parse_args():
         help="Whether to overwrite existing inference results.",
     )
     parser.add_argument(
-        "--override",
-        type=str,
-        nargs="+",
-        help="Override configuration options using 'key=value' format.",
+        "--dry-run",
+        action="store_true",
+        help="Perform a dry run without model inference",
     )
     return parser.parse_args()
 
 
+def dry_run(args):
+    # Load CCD data
+    logger.info(f"Loading CCD data from: {args.ccd}")
+    ccd: CCD = CCD.load(args.ccd)
+    logger.info("CCD data loaded successfully.")
+
+    # Parse input query(s)
+    # If directory is provided, invalid files are skipped.
+    logger.info(f"Parsing input queries from: {args.input}")
+    input_queries: list[Query] = parse_input_files(
+        args.input, ccd, args.seed, skip_invalid=True
+    )
+    npredict = len(input_queries)
+    nseed = len(args.seed)
+    nquery = npredict // nseed
+    logger.info(
+        f"Parsed {npredict} valid input queries: {nquery} samples x {nseed} seeds."
+    )
+    if len(input_queries) == 0:
+        logger.warning("No valid input queries to process. Exiting.")
+        return
+
+    # Create data loader
+    dataset = InferenceDataset(input_queries, ccd)
+    dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
+    )
+
+    # Run inference
+    logger.info("Starting inference...")
+    st = time.time()
+    for input in (pbar := tqdm(dataloader, desc="Inference")):
+        if input is None:
+            continue  # skip invalid batch
+        # Unpack input
+        query, ref_struct, f_input, struct_token_inputs = input  # noqa
+        pbar.set_postfix({"query": query.name, "num_tokens": ref_struct.num_tokens})
+
+    et = time.time()
+    logger.info(f"Dry run completed. ({et - st:.2f} seconds)")
+
+
 @torch.inference_mode()
 def main():
+    args = parse_args()
+
+    if args.dry_run:
+        logger.info("Performing dry run...")
+        dry_run(args)
+        return
+    if args.weight is None:
+        raise ValueError("--weight is required unless --dry-run is used.")
+
     # Setup environment
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
     torch.set_float32_matmul_precision("highest")
-
-    args = parse_args()
 
     # Check output directory
     logger.info(f"Output directory: {args.out_dir}")
@@ -137,9 +183,6 @@ def main():
             f"Use --overwrite to overwrite existing results."
         )
         return
-
-    if args.cpu:
-        raise NotImplementedError("CPU inference is not implemented yet.")
 
     # Load CCD data
     logger.info(f"Loading CCD data from: {args.ccd}")
@@ -172,16 +215,14 @@ def main():
         query.save(query_path)
 
     # Create data loader
-    dataset = InferenceDataset(input_queries, ccd, args.num_samples)
+    dataset = InferenceDataset(input_queries, ccd)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )
 
     # Load model
-    logger.info(f"Loading model from checkpoint: {args.checkpoint}")
-    model: KFold = KFold.from_checkpoint(
-        args.config, args.checkpoint, override_args=args.override
-    )
+    logger.info(f"Loading model from weight: {args.weight}")
+    model: KFold = KFold.from_checkpoint(args.config, args.weight)
     model = model.eval().cuda()
     logger.info("Model loaded successfully.")
 
@@ -191,17 +232,17 @@ def main():
     # Run inference
     logger.info("Starting inference...")
     st = time.time()
-    for batch in tqdm(dataloader, desc="Inference"):
-        if batch is None:
+    for input in (pbar := tqdm(dataloader, desc="Inference")):
+        if input is None:
             continue  # skip invalid batch
 
-        # Unpack batch
-        query: Query = batch[0]
-        ref_struct: RefStructure = batch[1]
-        f_input: FoldingInput = batch[2]
-        apo_dict: dict[int, dict] = batch[3]  # (entity_id -> apo_info)
-        if f_input.is_batched:
-            raise NotImplementedError("Batching is not supported for inference.")
+        # Unpack input
+        query: Query
+        ref_struct: RefStructure
+        f_input: FoldingInput
+        struct_token_inputs: dict[int, dict]
+        query, ref_struct, f_input, struct_token_inputs = input
+        pbar.set_postfix({"query": query.name, "num_tokens": ref_struct.num_tokens})
 
         name: str = query.name
         seed: int = query.seed
@@ -212,17 +253,16 @@ def main():
         set_seed(seed)
 
         # Move to device
-        to_cuda = lambda x: x.cuda() if isinstance(x, torch.Tensor) else x  # noqa
         f_input = f_input.to("cuda")
-        apo_dict = {
-            eid: {k: to_cuda(v) for k, v in dic.items()} for eid, dic in apo_dict.items()
-        }
 
         # Run model
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            if hasattr(model, "prot_struct_encoder"):
+                apply_apo_structure_tokens(
+                    f_input, struct_token_inputs, model.prot_struct_encoder
+                )
             model_out, time_log = model.inference(  # noqa
                 f_input,
-                apo_dict,
                 num_recycles=args.num_recycles,
                 num_steps=args.num_steps,
                 num_samples=args.num_samples,
@@ -272,13 +312,14 @@ def main():
                 json.dump(summary_i, f, indent=2)
 
             # Save confidence scores in npz format
-            confidence_npz_path = save_dir / f"{sample_name}_confidences.npz"
-            np.savez_compressed(
-                confidence_npz_path,
-                plddt=score_i["plddt"],
-                pae=score_i["pae"],
-                pde=score_i["pde"],
-            )
+            if args.save_confidence:
+                confidence_npz_path = save_dir / f"{sample_name}_confidences.npz"
+                np.savez_compressed(
+                    confidence_npz_path,
+                    plddt=score_i["plddt"],
+                    pae=score_i["pae"],
+                    pde=score_i["pde"],
+                )
 
         if args.save_trajectory:
             # Save trajectory

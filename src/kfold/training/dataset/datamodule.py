@@ -187,8 +187,8 @@ class TrainingDataModule(pl.LightningDataModule):
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
         prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
-        # For validation, we should not use OT permutation.
-        prior_sampler.use_ot_permutation = False
+        # For validation, disable OT permutation.
+        prior_sampler.train = False
 
         ds = ValidationDataset(
             config=self.config.val_datasets[0],

@@ -28,8 +28,6 @@ class PriorSamplerConfig:
     ----------
     chain_translation_scale : float
         Scale of random translation augmentation for each chain (in Angstrom).
-    use_ot_permutation : bool
-        Whether to apply optimal transport-based permutation
     ligand_augmentation_scale : float
         Scale of random noise augmentation for ligand coordinates (in Angstrom).
     bioprior : BioPriorConfig
@@ -37,7 +35,6 @@ class PriorSamplerConfig:
     """
 
     chain_translation_scale: float = 24.0  # Angstrom
-    use_ot_permutation: bool = False
     ligand_augmentation_scale: float = 0.3  # Angstrom
     bioprior: BioPriorConfig = dataclasses.field(
         default_factory=lambda: BioPriorConfig(noise_scale=0.3, max_steps=10)
@@ -49,8 +46,8 @@ class PriorSamplerConfig:
         """Get a PriorSampler config configured for inference."""
         return cls(
             chain_translation_scale=24.0,
-            use_ot_permutation=False,
             ligand_augmentation_scale=0.3,
+            bioprior=BioPriorConfig(noise_scale=0.3, max_steps=5),
             train=False,
         )
 
@@ -64,20 +61,14 @@ class PriorSampler:
 
         self.chain_translation_scale: float = config.chain_translation_scale
 
-        self.use_ot_permutation: bool = config.use_ot_permutation
-
         # Ligand augmentation scale
-        self.train: bool = config.train
         self.ligand_augmentation_scale: float = config.ligand_augmentation_scale
         self.bioprior: BioPriorPerturbation = BioPriorPerturbation(config.bioprior)
 
         # Langevin dynamics simulator for relaxing missing atoms
         self.langevin_simulator = LangevinDynamicsSimulator.default()
 
-        if self.use_ot_permutation and not self.train:
-            raise ValueError(
-                "Optimal transport permutation should only be used during training."
-            )
+        self.train: bool = config.train
 
     @classmethod
     def inference_mode(cls) -> Self:
@@ -141,7 +132,7 @@ class PriorSampler:
                 chain_coords_list, prior_uids, rng
             )
 
-            if self.use_ot_permutation and not skip_ot_permutation:
+            if self.train and not skip_ot_permutation:
                 # Optimal transport permutation during training.
                 _chain_coords_list = self.match_optimal_transport_permutation(
                     _chain_coords_list, struct, rng

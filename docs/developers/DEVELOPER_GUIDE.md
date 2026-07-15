@@ -59,7 +59,7 @@ It serves as a reference for developers and contributors working with the K-Fold
     - **`pipelines/`**: Data processing pipelines
       - `structure_preparation.py`: Structure preparation pipeline.
       - `cif_factory.py`: Training data processing pipeline from mmCIF files.
-      - `apo_initialization.py`: Apo structure population and augmentation.
+      - `prior_sampling.py`: Prior structure sampling and augmentation.
       - `tokenization.py`: Tokenization pipeline converting `RefStructure` to `TokenizedStructure`.
       - `featurization.py`: Featurization pipeline converting `TokenizedStructure` to `FoldingInput`.
     - **`utils/`**: Utility functions for data processing
