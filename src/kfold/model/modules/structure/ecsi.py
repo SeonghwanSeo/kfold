@@ -840,25 +840,33 @@ class KFoldECSI(BaseStructureModule):
 
         mask = atom_mask.to(dtype=x.dtype)
         mask_4d = mask.unsqueeze(-1)
-        num_real = mask.sum(dim=-1).clamp_min(1.0)
-        denominator = (3.0 * num_samples * num_real).clamp_min(1.0)
 
-        deviation = (x - x.mean(dim=1, keepdim=True)) * mask_4d
+        if x.dtype in (torch.float16, torch.bfloat16):
+            deviation = x.float()
+            deviation.sub_(deviation.mean(dim=1, keepdim=True))
+            deviation.mul_(mask_4d)
+        else:
+            deviation = (x - x.mean(dim=1, keepdim=True)) * mask_4d
+        deviation_flat = deviation.flatten(start_dim=2)
+        distance_flat = deviation_flat
+
+        num_real = mask.sum(dim=-1, dtype=distance_flat.dtype).clamp_min(1.0)
+        denominator = (3.0 * num_samples * num_real).clamp_min(1.0)
         spread_rms = torch.sqrt(
-            (deviation * deviation).sum(dim=(1, 2, 3)).clamp_min(0.0)
+            (distance_flat * distance_flat).sum(dim=(1, 2)).clamp_min(0.0)
             / denominator.squeeze(-1)
         )
         if float(spread_rms.max()) <= self.svgd_skip_rms:
             return x
 
-        x_i = x.unsqueeze(2)
-        x_j = x.unsqueeze(1)
-        difference = x_i - x_j
-        pair_mask = mask_4d.unsqueeze(1)
-        squared_distance = ((difference * difference) * pair_mask).sum(
-            dim=(-1, -2)
-        )
-        distance_sq = squared_distance / (3.0 * num_real.unsqueeze(-1))
+        # Avoid materializing pairwise atom-coordinate differences.
+        distance_sq = torch.bmm(distance_flat, distance_flat.transpose(1, 2))
+        norm_sq = distance_sq.diagonal(dim1=1, dim2=2).clone()
+        distance_sq.mul_(-2.0)
+        distance_sq.add_(norm_sq.unsqueeze(2))
+        distance_sq.add_(norm_sq.unsqueeze(1))
+        distance_sq.clamp_min_(0.0)
+        distance_sq.div_(3.0 * num_real.unsqueeze(-1))
 
         off_diagonal = ~torch.eye(
             num_samples,
@@ -869,14 +877,22 @@ class KFoldECSI(BaseStructureModule):
         bandwidth = bandwidth.clamp_min(self.svgd_num_eps)
         bandwidth = bandwidth.view(-1, 1, 1)
 
-        kernel = torch.exp(-distance_sq / bandwidth)
-        coefficient = (kernel * kernel) * (2.0 / bandwidth)
-        displacement = (
-            torch.einsum("bij,bijnc->binc", coefficient, difference) / num_samples
-        )
-        displacement = displacement * mask_4d
-        displacement = displacement - displacement.mean(dim=1, keepdim=True)
-        displacement = displacement * mask_4d
+        kernel = distance_sq.div_(bandwidth).neg_().exp_()
+        coefficient = kernel.square_()
+        coefficient.mul_(2.0 / bandwidth)
+        coefficient.masked_fill_(~off_diagonal.unsqueeze(0), 0.0)
+
+        row_sum = coefficient.sum(dim=-1, keepdim=True)
+        displacement_flat = torch.bmm(coefficient, distance_flat).neg_()
+        displacement_flat.addcmul_(distance_flat, row_sum)
+        displacement_flat.div_(num_samples)
+        del coefficient, distance_flat, deviation_flat, deviation
+        del norm_sq, distance_sq, kernel, bandwidth, row_sum
+        displacement = displacement_flat.reshape_as(x)
+        del displacement_flat
+        displacement.mul_(mask_4d)
+        displacement.sub_(displacement.mean(dim=1, keepdim=True))
+        displacement.mul_(mask_4d)
 
         displacement_rms = torch.sqrt(
             (displacement * displacement).sum(dim=(1, 2, 3))
@@ -885,9 +901,13 @@ class KFoldECSI(BaseStructureModule):
         )
         cap = self.svgd_cap_frac * spread_rms
         scale = (cap / displacement_rms.clamp_min(self.svgd_num_eps)).clamp_max(1.0)
-        displacement = displacement * scale.view(-1, 1, 1, 1)
+        displacement.mul_(scale.view(-1, 1, 1, 1))
+        if displacement.dtype != x.dtype:
+            displacement = displacement.to(dtype=x.dtype)
+            displacement.sub_(displacement.mean(dim=1, keepdim=True))
+            displacement.mul_(mask_4d)
 
-        output = x + self.svgd_step * displacement
+        output = torch.add(x, displacement, alpha=self.svgd_step)
         if not torch.isfinite(output).all():
             raise RuntimeError("svgd-spread-t24: non-finite repulsion output")
         return output
