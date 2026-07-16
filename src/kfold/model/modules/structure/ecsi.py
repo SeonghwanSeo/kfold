@@ -175,6 +175,8 @@ class KFoldECSI(BaseStructureModule):
             mirrors the step scale convention used by AF3/EDM samplers.
         churn_factor : float
             The factor controlling the magnitude of forward-pinned churn noise.
+        churn_max_multiplier : float
+            Maximum multiplier applied to churn_factor in the high-time ramp.
         churn_end_time : float
             The time value at which to end forward-pinned churn.
 
@@ -185,6 +187,17 @@ class KFoldECSI(BaseStructureModule):
             The exponent controlling the time schedule for churn steps.
         ode_step_power : float
             The exponent controlling the time schedule for ODE steps.
+        stepwarp_power : float
+            Exponent used to redistribute high-churn schedule knots. A value of
+            1.0 preserves the native schedule without applying the warp.
+        svgd_step : float
+            Multiplier for the SVGD repulsion displacement.
+        svgd_cap_frac : float
+            Maximum SVGD displacement relative to the ensemble spread.
+        svgd_num_eps : float
+            Numerical floor used by the SVGD bandwidth and normalization.
+        svgd_skip_rms : float
+            Spread threshold below which SVGD is skipped.
 
         # Training time scheduling
         train_time_schedule : str
@@ -215,10 +228,18 @@ class KFoldECSI(BaseStructureModule):
         sampler_after_switch_mode: str = "ode"
         sampler_after_switch_ode_type: str = "si"
         churn_factor: float = 0.1
+        churn_max_multiplier: float = 4.0
         churn_end_time: float = 0.5
         churn_step_fraction: float = 0.4
         churn_step_power: float = 1.0
-        ode_step_power: float = 4.0
+        ode_step_power: float = 2.0
+        stepwarp_power: float = 0.5
+
+        # SVGD sample spreading
+        svgd_step: float = 1.0
+        svgd_cap_frac: float = 0.05
+        svgd_num_eps: float = 1e-8
+        svgd_skip_rms: float = 1e-6
 
         # Train time scheduling
         train_time_schedule: str = "logistic"
@@ -276,6 +297,19 @@ class KFoldECSI(BaseStructureModule):
             raise ValueError("ECSI sampler_step_scale must be positive.")
         if cfg.sampler_switch_gamma is not None and cfg.sampler_switch_gamma < 0:
             raise ValueError("ECSI sampler_switch_gamma must be non-negative.")
+        if cfg.svgd_num_eps <= 0:
+            raise ValueError("ECSI svgd_num_eps must be positive.")
+        if any(
+            value < 0
+            for value in (
+                cfg.churn_max_multiplier,
+                cfg.stepwarp_power,
+                cfg.svgd_step,
+                cfg.svgd_cap_frac,
+                cfg.svgd_skip_rms,
+            )
+        ):
+            raise ValueError("ECSI sampler parameters must be non-negative.")
         self.sampler_mode: str = cfg.sampler_mode
         self.sampler_ode_type: str = cfg.sampler_ode_type
         self.sampler_step_scale: float = cfg.sampler_step_scale
@@ -283,10 +317,16 @@ class KFoldECSI(BaseStructureModule):
         self.sampler_after_switch_mode: str = cfg.sampler_after_switch_mode
         self.sampler_after_switch_ode_type: str = cfg.sampler_after_switch_ode_type
         self.churn_factor: float = cfg.churn_factor
+        self.churn_max_multiplier: float = cfg.churn_max_multiplier
         self.churn_end_time: float = cfg.churn_end_time
         self.churn_step_fraction: float = cfg.churn_step_fraction
         self.churn_step_power: float = cfg.churn_step_power
         self.ode_step_power: float = cfg.ode_step_power
+        self.stepwarp_power: float = cfg.stepwarp_power
+        self.svgd_step: float = cfg.svgd_step
+        self.svgd_cap_frac: float = cfg.svgd_cap_frac
+        self.svgd_num_eps: float = cfg.svgd_num_eps
+        self.svgd_skip_rms: float = cfg.svgd_skip_rms
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation()
@@ -557,7 +597,7 @@ class KFoldECSI(BaseStructureModule):
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         z: torch.Tensor,
-        num_steps: int = 200,
+        num_steps: int = 100,
         num_samples: int = 1,
         chunk_size: int | None = None,
         return_traj: bool = False,
@@ -580,6 +620,19 @@ class KFoldECSI(BaseStructureModule):
 
         # Get time schedule (from t_max toward t_min)
         times = self.get_sampling_schedule(num_steps)
+
+        # Concentrate knots in the early high-churn band without changing NFE.
+        t_hi = float(times[0])
+        t_lo = self.churn_end_time
+        times = list(times)
+        band = [i for i, time in enumerate(times) if t_lo < float(time) < t_hi]
+        if band and self.stepwarp_power != 1.0:
+            lo_i, hi_i = band[0], band[-1]
+            n = hi_i - lo_i + 1
+            for k, i in enumerate(range(lo_i, hi_i + 1)):
+                fraction = (k + 1) / (n + 1)
+                warped_fraction = 1.0 - (1.0 - fraction) ** self.stepwarp_power
+                times[i] = t_hi - (t_hi - t_lo) * warped_fraction
 
         # Sample x_T from prior (apo structures)
         x_T = self.sample_prior(f_input, num_samples)  # (B, N, Natom, 3)
@@ -614,7 +667,21 @@ class KFoldECSI(BaseStructureModule):
             t_next = times[step_idx + 1]
 
             # Early-stage forward-pinned churn.
-            x_noisy, t = self._apply_forward_pinned_churn(x_t, x_T, mask, t)
+            span = float(times[0]) - self.churn_end_time
+            weight = (
+                (float(t) - self.churn_end_time) / span if span > 0.0 else 0.0
+            )
+            weight = min(max(weight, 0.0), 1.0) ** 2
+            effective_churn_factor = self.churn_factor * (
+                1.0 + (self.churn_max_multiplier - 1.0) * weight
+            )
+            x_noisy, t = self._apply_forward_pinned_churn(
+                x_t,
+                x_T,
+                mask,
+                t,
+                churn_factor=effective_churn_factor,
+            )
 
             # Get denoised prediction \hat{x}_0
             x_0_hat = run_step(x_noisy, t)
@@ -625,6 +692,9 @@ class KFoldECSI(BaseStructureModule):
 
             # Centering the predicted x_0_hat
             x_0_hat = do_centering(x_0_hat, mask=mask)
+
+            # Redistribute endpoint estimates without another score evaluation.
+            x_0_hat = self._apply_svgd_spread(x_0_hat, mask)
 
             sampler_mode, sampler_ode_type = self._select_update_method(t)
 
@@ -758,6 +828,70 @@ class KFoldECSI(BaseStructureModule):
         x_out = c_skip * x_t + c_out * r_update
         return x_out
 
+    def _apply_svgd_spread(
+        self,
+        x: torch.Tensor,
+        atom_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Spread endpoint samples without moving their masked centroid."""
+        num_samples = x.shape[1]
+        if num_samples < 2:
+            return x
+
+        mask = atom_mask.to(dtype=x.dtype)
+        mask_4d = mask.unsqueeze(-1)
+        num_real = mask.sum(dim=-1).clamp_min(1.0)
+        denominator = (3.0 * num_samples * num_real).clamp_min(1.0)
+
+        deviation = (x - x.mean(dim=1, keepdim=True)) * mask_4d
+        spread_rms = torch.sqrt(
+            (deviation * deviation).sum(dim=(1, 2, 3)).clamp_min(0.0)
+            / denominator.squeeze(-1)
+        )
+        if float(spread_rms.max()) <= self.svgd_skip_rms:
+            return x
+
+        x_i = x.unsqueeze(2)
+        x_j = x.unsqueeze(1)
+        difference = x_i - x_j
+        pair_mask = mask_4d.unsqueeze(1)
+        squared_distance = ((difference * difference) * pair_mask).sum(
+            dim=(-1, -2)
+        )
+        distance_sq = squared_distance / (3.0 * num_real.unsqueeze(-1))
+
+        off_diagonal = ~torch.eye(
+            num_samples,
+            dtype=torch.bool,
+            device=x.device,
+        )
+        bandwidth = distance_sq[:, off_diagonal].median(dim=-1).values
+        bandwidth = bandwidth.clamp_min(self.svgd_num_eps)
+        bandwidth = bandwidth.view(-1, 1, 1)
+
+        kernel = torch.exp(-distance_sq / bandwidth)
+        coefficient = (kernel * kernel) * (2.0 / bandwidth)
+        displacement = (
+            torch.einsum("bij,bijnc->binc", coefficient, difference) / num_samples
+        )
+        displacement = displacement * mask_4d
+        displacement = displacement - displacement.mean(dim=1, keepdim=True)
+        displacement = displacement * mask_4d
+
+        displacement_rms = torch.sqrt(
+            (displacement * displacement).sum(dim=(1, 2, 3))
+            / denominator.squeeze(-1)
+            + self.svgd_num_eps
+        )
+        cap = self.svgd_cap_frac * spread_rms
+        scale = (cap / displacement_rms.clamp_min(self.svgd_num_eps)).clamp_max(1.0)
+        displacement = displacement * scale.view(-1, 1, 1, 1)
+
+        output = x + self.svgd_step * displacement
+        if not torch.isfinite(output).all():
+            raise RuntimeError("svgd-spread-t24: non-finite repulsion output")
+        return output
+
     def get_sampling_schedule(self, num_steps: int) -> list[float]:
         r"""Get the time schedule for diffusion sampling.
 
@@ -812,12 +946,17 @@ class KFoldECSI(BaseStructureModule):
         x_T: torch.Tensor,
         mask: torch.Tensor,
         t: float,
+        *,
+        churn_factor: float | None = None,
     ) -> tuple[torch.Tensor, float]:
         if t <= self.churn_end_time:
             # No churn applied before or at churn_end
             return x_t, t
 
-        dt = (1 - t) * self.churn_factor
+        effective_churn_factor = (
+            self.churn_factor if churn_factor is None else churn_factor
+        )
+        dt = (1 - t) * effective_churn_factor
 
         C = self.coeff
         alpha_t, beta_t = C.alpha(t), C.beta(t)

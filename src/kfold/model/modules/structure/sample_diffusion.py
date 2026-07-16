@@ -25,7 +25,7 @@ class BaseStructureModule(ABC):
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
         z: torch.Tensor,
-        num_steps: int = 200,
+        num_steps: int = 100,
         num_samples: int = 1,
         chunk_size: int | None = None,
         return_traj: bool = False,
