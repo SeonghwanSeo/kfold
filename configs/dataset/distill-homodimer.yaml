@@ -17,4 +17,4 @@ cropper:
 prob_perturbation: 1.0
 apo_perturb:
   bioprior:
-    max_steps: 10
+    max_steps: 20
