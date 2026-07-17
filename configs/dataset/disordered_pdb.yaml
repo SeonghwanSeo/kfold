@@ -17,7 +17,3 @@ cropper:
   w_contiguous: 0.2
   w_spatial: 0.4
   w_spatial_interface: 0.4
-
-apo_perturb:
-  bioprior:
-    max_steps: 5 # Maximum random walk steps

@@ -18,7 +18,7 @@ data:
   data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
   train_datasets:
     # RCSB PDB (55%)
-    - _yaml_: "../dataset/rcsb-train.yaml"
+    - _yaml_: "../dataset/rcsb-train-ft.yaml"
       name: rcsb-train
       weight: 0.550
 

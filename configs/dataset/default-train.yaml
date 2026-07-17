@@ -24,4 +24,4 @@ apo_perturb:
   prob_rieprody: 0.0 # Default: use metric-free BioPrior perturbation
   rieprody: null
   bioprior:
-    max_steps: 5 # Maximum random walk steps
+    max_steps: 10 # Maximum random walk steps

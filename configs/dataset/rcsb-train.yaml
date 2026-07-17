@@ -45,4 +45,4 @@ apo_perturb:
     log_level: "CRITICAL" # Logging level
   bioprior:
     # Metric-free BioPrior perturbation settings (fallback if RieProDy is not used or fails)
-    max_steps: 5 # Maximum random walk steps
+    max_steps: 10 # Maximum random walk steps

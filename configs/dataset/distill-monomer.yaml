@@ -2,7 +2,7 @@ _yaml_: "default-train.yaml"
 
 name: af2
 type: "protein-monomer-distillation"
-prob_drop_apo: 1.0
+prob_drop_apo: 0.8
 prob_drop_struct_token: 1.0
 
 sampler: null
@@ -18,5 +18,5 @@ prob_perturbation: 1.0
 apo_perturb:
   prob_rieprody: 0.0
   bioprior:
-    min_steps: 1 # Minimum random walk steps
+    min_steps: 5 # Minimum random walk steps
     max_steps: 20 # Maximum random walk steps
