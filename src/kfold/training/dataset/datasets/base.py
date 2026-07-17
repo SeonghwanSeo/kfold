@@ -441,6 +441,12 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         mask = np.isfinite(coords).all(axis=-1)
         return do_centering(coords, mask=mask, mask_to_zero=False)
 
+    @staticmethod
+    def _empty_residue_coords(chain: Chain) -> np.ndarray:
+        """Return centered label coordinates in residue-major atom order."""
+        width = 37 if chain.is_protein else 29
+        return np.full((chain.num_residues, width, 3), np.nan, dtype=np.float32)
+
     def _load_apo_info_from_lmdb(self, apo_info: dict) -> bool:
         """Attach `seq` and `coords` from source-specific apo LMDB to a lookup record."""
         source = apo_info["source"]
@@ -574,22 +580,26 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         assert chain.is_polymer
         ctype = chain.ctype
 
+        def fallback() -> np.ndarray:
+            return self._empty_residue_coords(chain)
+
         # NOTE: we found that dna apo structure hurt the model performance,
         # so we decide that we do not use apo structure for dna chains.
         if chain.is_dna:
-            return np.full((chain.num_residues, 29, 3), np.nan, dtype=np.float32)
-
-        def fallback():
-            return self._center_label_residue_coords(chain)
+            return fallback()
 
         # If the apo structure is not found, use the original coordinates as apo
         # for training. For validation, raise an error.
         if chain.asym_id not in apo_lookup:
             if self.train:
-                self.logger.warning(
-                    f"Apo structure not found for {ctype} chain {chain.asym_id} "
-                    "in lookup. Use the original coordinates as apo."
-                )
+                if ctype == C.ChainType.PROTEIN:
+                    # NOTE: Log a warning for protein chains only, since
+                    # there are many RNA chains without apo structures
+                    # in the training set.
+                    self.logger.warning(
+                        f"Apo structure not found for {ctype} chain {chain.asym_id} "
+                        "in lookup. Use NaN coordinates as apo."
+                    )
                 return fallback()
             else:
                 raise KeyError(
@@ -766,7 +776,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             )
             if loaded is None:
                 if self.train:
-                    coords = self._center_label_residue_coords(c)
+                    coords = self._empty_residue_coords(c)
                     prior_apo_dict[c.asym_id] = coords
                 else:
                     raise KeyError(
