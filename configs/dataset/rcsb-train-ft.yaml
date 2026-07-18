@@ -27,7 +27,7 @@ apo_perturb:
   rieprody:
     # Metric-based RieProDy perturbation settings
     metric_lmdb_path: null # NOTE: This is automatically set in the dataset.
-    rmsd_threshold: 6.0 # RMSD threshold for fallback
+    rmsd_threshold: 10.0 # RMSD threshold for fallback
     max_length: 800 # Maximum number of residues for RieProDy perturbation
     metric_comp:
       apo_internal_coord_metric_save_precision: "float16"
@@ -46,4 +46,4 @@ apo_perturb:
     log_level: "CRITICAL" # Logging level
   bioprior:
     # Metric-free BioPrior perturbation settings (fallback if RieProDy is not used or fails)
-    max_steps: 5 # Maximum random walk steps
+    max_steps: 10 # Maximum random walk steps

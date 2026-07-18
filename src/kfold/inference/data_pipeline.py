@@ -38,6 +38,101 @@ class ResolvedStructureSources:
     struct_token_records: list[dict]
 
 
+@dataclass
+class _AlignedStructureSource:
+    """One parsed structure aligned to its query sequence."""
+
+    sequence: str
+    coords: np.ndarray
+    target_coords: np.ndarray
+    mappings: list[tuple[int, int, int, int]]
+
+
+def _best_sequence_mapping(
+    target_sequence: str,
+    source_sequence: str,
+) -> tuple[list[tuple[int, int, int, int]], int]:
+    """Globally align two sequences and return contiguous diagonal runs.
+
+    Each returned tuple is ``(target_start, target_end, source_start,
+    source_end)``. Insertions in the source are omitted, while deletions in the
+    source become gaps between target ranges.
+    """
+    diagonal, target_gap, source_gap = 1, 2, 3
+    match_score, mismatch_score, gap_score = 2, -1, -2
+    target_length = len(target_sequence)
+    source_length = len(source_sequence)
+
+    trace = np.zeros((target_length + 1, source_length + 1), dtype=np.uint8)
+    trace[1:, 0] = target_gap
+    trace[0, 1:] = source_gap
+    previous_scores = [source_i * gap_score for source_i in range(source_length + 1)]
+
+    for target_i, target_residue in enumerate(target_sequence, start=1):
+        current_scores = [target_i * gap_score] + [0] * source_length
+        for source_i, source_residue in enumerate(source_sequence, start=1):
+            diagonal_score = previous_scores[source_i - 1] + (
+                match_score if target_residue == source_residue else mismatch_score
+            )
+            target_gap_score = previous_scores[source_i] + gap_score
+            source_gap_score = current_scores[source_i - 1] + gap_score
+            if diagonal_score >= target_gap_score and diagonal_score >= source_gap_score:
+                current_scores[source_i] = diagonal_score
+                trace[target_i, source_i] = diagonal
+            elif target_gap_score >= source_gap_score:
+                current_scores[source_i] = target_gap_score
+                trace[target_i, source_i] = target_gap
+            else:
+                current_scores[source_i] = source_gap_score
+                trace[target_i, source_i] = source_gap
+        previous_scores = current_scores
+
+    target_i = target_length
+    source_i = source_length
+    aligned_pairs: list[tuple[int, int]] = []
+    while target_i > 0 or source_i > 0:
+        direction = trace[target_i, source_i]
+        if direction == diagonal:
+            target_i -= 1
+            source_i -= 1
+            aligned_pairs.append((target_i, source_i))
+        elif direction == target_gap:
+            target_i -= 1
+        elif direction == source_gap:
+            source_i -= 1
+        else:
+            raise RuntimeError("Sequence alignment traceback reached an invalid state.")
+    aligned_pairs.reverse()
+
+    mappings: list[tuple[int, int, int, int]] = []
+    for mapped_target_i, mapped_source_i in aligned_pairs:
+        if mappings and (
+            mapped_target_i == mappings[-1][1] and mapped_source_i == mappings[-1][3]
+        ):
+            target_start, _, source_start, _ = mappings[-1]
+            mappings[-1] = (
+                target_start,
+                mapped_target_i + 1,
+                source_start,
+                mapped_source_i + 1,
+            )
+        else:
+            mappings.append(
+                (
+                    mapped_target_i,
+                    mapped_target_i + 1,
+                    mapped_source_i,
+                    mapped_source_i + 1,
+                )
+            )
+
+    num_matches = sum(
+        target_sequence[target_i] == source_sequence[source_i]
+        for target_i, source_i in aligned_pairs
+    )
+    return mappings, num_matches
+
+
 class InputDataPipeline:
     def __init__(self, ccd: CCD, num_prior_samples: int = 5) -> None:
         """Initialize the input data pipeline.
@@ -412,25 +507,31 @@ class InputDataPipeline:
             sequence.apo, sequence.prior, label
         )
 
-        apo_sequence, apo_source = self._read_polymer_source(
+        apo_source = self._read_polymer_source(
             apo_path, sequence.sequence, sequence.ctype, label
         )
         asym_ids = [metadata_by_name[name].asym_id for name in sequence.ids]
-        apo_coords = {asym_id: apo_source.copy() for asym_id in asym_ids}
+        apo_coords = {asym_id: apo_source.target_coords.copy() for asym_id in asym_ids}
 
         prior_sources: list[dict[int, np.ndarray]] = []
         for prior_path in prior_paths:
-            _, prior_source = self._read_polymer_source(
+            prior_source = self._read_polymer_source(
                 prior_path, sequence.sequence, sequence.ctype, label
             )
-            prior_sources.append({asym_id: prior_source.copy() for asym_id in asym_ids})
+            prior_sources.append(
+                {asym_id: prior_source.target_coords.copy() for asym_id in asym_ids}
+            )
 
         token_record = None
         if isinstance(sequence, query.ProteinSequence):
             token_record = {
-                "seq": apo_sequence,
-                "coords": apo_source,
-                "chains": [(asym_id, 0, len(apo_sequence)) for asym_id in asym_ids],
+                "seq": apo_source.sequence,
+                "coords": apo_source.coords,
+                "chains": [
+                    (asym_id, *mapping)
+                    for asym_id in asym_ids
+                    for mapping in apo_source.mappings
+                ],
             }
         return apo_coords, prior_sources, token_record
 
@@ -457,7 +558,7 @@ class InputDataPipeline:
             for component_i, chain_name in enumerate(id_pair):
                 asym_id = metadata_by_name[chain_name].asym_id
                 component_asym_ids[component_i].append(asym_id)
-                apo_coords[asym_id] = apo_components[component_i][1].copy()
+                apo_coords[asym_id] = apo_components[component_i].target_coords.copy()
 
         prior_sources: list[dict[int, np.ndarray]] = []
         for prior_path in prior_paths:
@@ -468,19 +569,21 @@ class InputDataPipeline:
             )
             source: dict[int, np.ndarray] = {}
             for component_i, asym_ids in enumerate(component_asym_ids):
-                coords = prior_components[component_i][1]
+                coords = prior_components[component_i].target_coords
                 source.update({asym_id: coords.copy() for asym_id in asym_ids})
             prior_sources.append(source)
 
         token_records = []
         for component_i, asym_ids in enumerate(component_asym_ids):
-            component_sequence, component_coords = apo_components[component_i]
+            component = apo_components[component_i]
             token_records.append(
                 {
-                    "seq": component_sequence,
-                    "coords": component_coords,
+                    "seq": component.sequence,
+                    "coords": component.coords,
                     "chains": [
-                        (asym_id, 0, len(component_sequence)) for asym_id in asym_ids
+                        (asym_id, *mapping)
+                        for asym_id in asym_ids
+                        for mapping in component.mappings
                     ],
                 }
             )
@@ -513,7 +616,7 @@ class InputDataPipeline:
         expected_sequence: str,
         chain_type: C.ChainType,
         label: str,
-    ) -> tuple[str, np.ndarray]:
+    ) -> _AlignedStructureSource:
         if chain_type.is_protein:
             sequence, coords = read_protein_structure(path)
             atom_width = 37
@@ -523,25 +626,88 @@ class InputDataPipeline:
         else:
             raise ValueError(f"Unsupported custom polymer source type: {chain_type}")
 
-        if sequence != expected_sequence:
-            raise ValueError(
-                f"Structure sequence mismatch for {label} in {path}: "
-                f"expected {expected_sequence}, got {sequence}."
-            )
-        expected_shape = (len(expected_sequence), atom_width, 3)
-        if coords.shape != expected_shape:
+        return self._align_structure_source(
+            path,
+            label,
+            expected_sequence,
+            sequence,
+            coords,
+            atom_width,
+        )
+
+    def _align_structure_source(
+        self,
+        path: str,
+        label: str,
+        expected_sequence: str,
+        source_sequence: str,
+        source_coords: np.ndarray,
+        atom_width: int,
+    ) -> _AlignedStructureSource:
+        source_shape = (len(source_sequence), atom_width, 3)
+        if source_coords.shape != source_shape:
             raise ValueError(
                 f"Structure coordinates for {label} in {path} have shape "
-                f"{coords.shape}; expected {expected_shape}."
+                f"{source_coords.shape}; expected {source_shape} for the parsed "
+                "structure sequence."
             )
-        return sequence, coords.astype(np.float32, copy=True)
+
+        source_coords = source_coords.astype(np.float32, copy=True)
+        if source_sequence == expected_sequence:
+            mappings = [(0, len(expected_sequence), 0, len(source_sequence))]
+            return _AlignedStructureSource(
+                sequence=source_sequence,
+                coords=source_coords,
+                target_coords=source_coords.copy(),
+                mappings=mappings,
+            )
+
+        mappings, num_matches = _best_sequence_mapping(expected_sequence, source_sequence)
+        if num_matches == 0:
+            raise ValueError(
+                f"Structure sequence mismatch for {label} in {path}: no matching "
+                f"residues between expected {expected_sequence} and got "
+                f"{source_sequence}."
+            )
+
+        target_coords = np.full(
+            (len(expected_sequence), atom_width, 3), np.nan, dtype=np.float32
+        )
+        for target_start, target_end, source_start, source_end in mappings:
+            target_coords[target_start:target_end] = source_coords[
+                source_start:source_end
+            ]
+
+        num_mapped = sum(
+            target_end - target_start for target_start, target_end, _, _ in mappings
+        )
+        self.logger.warning(
+            "Aligned structure sequence for %s in %s: query length %d, source "
+            "length %d, %d/%d mapped residues match, %d substitutions, %d "
+            "query residues without coordinates, and %d ignored source residues.",
+            label,
+            path,
+            len(expected_sequence),
+            len(source_sequence),
+            num_matches,
+            num_mapped,
+            num_mapped - num_matches,
+            len(expected_sequence) - num_mapped,
+            len(source_sequence) - num_mapped,
+        )
+        return _AlignedStructureSource(
+            sequence=source_sequence,
+            coords=source_coords,
+            target_coords=target_coords,
+            mappings=mappings,
+        )
 
     def _read_multimer_source(
         self,
         path: str,
         expected_sequences: tuple[str, str],
         label: str,
-    ) -> tuple[tuple[str, np.ndarray], tuple[str, np.ndarray]]:
+    ) -> tuple[_AlignedStructureSource, _AlignedStructureSource]:
         chain_records = list(read_protein_multimer_structure(pathlib.Path(path)).values())
         if len(chain_records) != 2:
             raise ValueError(
@@ -549,25 +715,23 @@ class InputDataPipeline:
                 f"exactly two non-empty protein chains, found {len(chain_records)}."
             )
 
-        components: list[tuple[str, np.ndarray]] = []
+        components: list[_AlignedStructureSource] = []
         for component_i, (record, expected_sequence) in enumerate(
             zip(chain_records, expected_sequences, strict=True), start=1
         ):
             sequence = record["seq"]
             coords = record["coords"]
-            if sequence != expected_sequence:
-                raise ValueError(
-                    f"Protein multimer component {component_i} sequence mismatch for "
-                    f"{label} in {path}: expected {expected_sequence}, got {sequence}."
+            component_label = f"Protein multimer component {component_i} for {label}"
+            components.append(
+                self._align_structure_source(
+                    path,
+                    component_label,
+                    expected_sequence,
+                    sequence,
+                    coords,
+                    37,
                 )
-            expected_shape = (len(expected_sequence), 37, 3)
-            if coords.shape != expected_shape:
-                raise ValueError(
-                    f"Protein multimer component {component_i} coordinates for "
-                    f"{label} in {path} have shape {coords.shape}; "
-                    f"expected {expected_shape}."
-                )
-            components.append((sequence, coords.astype(np.float32, copy=True)))
+            )
         return components[0], components[1]
 
     def _align_prior_sources(
@@ -659,7 +823,13 @@ class InputDataPipeline:
         struct_tok_input: dict[int, dict] = {}
         for record_i, record in enumerate(struct_token_records):
             mappings: list[tuple[int, int, int, int]] = []
-            for asym_id, source_st, source_end in record["chains"]:
+            for (
+                asym_id,
+                target_offset_st,
+                target_offset_end,
+                source_st,
+                source_end,
+            ) in record["chains"]:
                 indices = torch.where(f_input.sequence.asym_id == asym_id)[0]
                 if len(indices) == 0:
                     raise ValueError(f"No sequence indices found for asym_id {asym_id}.")
@@ -673,7 +843,15 @@ class InputDataPipeline:
 
                 # sequence.asym_id includes BOS and EOS. The target slice only
                 # covers residue tokens, matching the raw structure-token length.
-                target_st, target_end = st + 1, end - 1
+                residue_st, residue_end = st + 1, end - 1
+                target_st = residue_st + target_offset_st
+                target_end = residue_st + target_offset_end
+                if not residue_st <= target_st <= target_end <= residue_end:
+                    raise ValueError(
+                        f"Structure-token target mapping for asym_id {asym_id} is "
+                        f"outside its residue range: {target_st}:{target_end} not in "
+                        f"{residue_st}:{residue_end}."
+                    )
                 if target_end - target_st != source_end - source_st:
                     raise ValueError(
                         f"Structure-token mapping length mismatch for asym_id "

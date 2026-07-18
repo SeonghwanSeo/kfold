@@ -94,6 +94,11 @@ class BioPriorPerturbation:
             raise ValueError(
                 f"Input coords must have shape [L, 37, 3], got {coords.shape}"
             )
+
+        # If max_steps is 0, return original coordinates without perturbation
+        if self.config.max_steps == 0:
+            return coords
+
         rng = rng or np.random.default_rng()
 
         try:

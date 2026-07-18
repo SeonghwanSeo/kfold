@@ -257,3 +257,15 @@ class RNAMonomerDistillationDataset(MonomerDistillationDataset):
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
     ) -> None:
         return
+
+    def get_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Use the apo coordinates as the prior source."""
+        # 50% of the time, we drop the apo coordinates to simulate missing apo structure.
+        if rng.random() < 0.5:
+            apo_dict = {}
+        return super().get_prior_coords(ref_struct, apo_dict, rng)

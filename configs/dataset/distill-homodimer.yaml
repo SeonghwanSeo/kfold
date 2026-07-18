@@ -2,7 +2,7 @@ _yaml_: "default-train.yaml"
 
 name: AFDB-homodimer
 type: "homodimer-distillation"
-prob_drop_apo: 1.0
+prob_drop_apo: 0.8
 prob_drop_struct_token: 1.0
 
 sampler: null
@@ -17,4 +17,5 @@ cropper:
 prob_perturbation: 1.0
 apo_perturb:
   bioprior:
-    max_steps: 10
+    min_steps: 5
+    max_steps: 20
