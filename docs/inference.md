@@ -68,8 +68,10 @@ Protein entries under `sequences` use the following fields:
 | `apo` | `str` | Optional custom monomer apo structure. |
 | `prior` | `list[str]` | Optional custom monomer prior ensemble. |
 
-Every custom structure must contain exactly the expected protein sequence and
-must produce coordinates with shape `[L, 37, 3]` after parsing.
+Custom structures are globally aligned to the input sequence. Source insertions
+are ignored, and input residues missing from the source receive `NaN`
+coordinates and are excluded from apo structure-token mapping. A warning reports
+the alignment summary whenever the sequences differ.
 
 ### Protein multimers
 
@@ -87,9 +89,10 @@ but it is not antibody-specific.
 | `prior` | `list[str]` | Optional custom two-chain prior ensemble. |
 
 Each custom multimer file must contain exactly two non-empty protein chains in
-the same order as the two input sequences. Sequence equality and `[L, 37, 3]`
-coordinate shapes are validated for both components. The pair remains in one
-shared rigid frame during prior sampling.
+the same order as the two input sequences. Each component is globally aligned
+to its corresponding input sequence using the same insertion/deletion behavior
+as monomer sources. The pair remains in one shared rigid frame during prior
+sampling.
 
 ### Apo and prior resolution
 

@@ -47,7 +47,7 @@ class PriorSamplerConfig:
         return cls(
             chain_translation_scale=24.0,
             ligand_augmentation_scale=0.3,
-            bioprior=BioPriorConfig(noise_scale=0.3, max_steps=5),
+            bioprior=BioPriorConfig(max_steps=0),
             train=False,
         )
 
