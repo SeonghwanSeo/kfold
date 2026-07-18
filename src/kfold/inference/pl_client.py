@@ -197,7 +197,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
         # Create save directory for this query
         name = query.name
         seed = query.seed
-        save_dir = self.output_dir / name
+        save_dir = self.output_dir / name / f"{name}_seed-{seed}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
         # Save Diffusion Samples
