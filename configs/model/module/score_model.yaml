@@ -1,6 +1,7 @@
 _registry_: "score_model"
 _class_: "DiffusionModule"
 
+channel_a: 768
 channel_s: 384
 channel_z: 256
 channel_atom: 128

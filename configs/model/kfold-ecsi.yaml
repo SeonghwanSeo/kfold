@@ -31,6 +31,8 @@ trunk:
 
 score_model:
   _yaml_: "module/score_model.yaml"
+  channel_a: 1024
+  token_transformer_blocks: 16
   channel_coords: 6
   separate_endpoint_atom_encoder: true
   endpoint_branch_dropout: 0.0
@@ -53,6 +55,8 @@ patch_pair_geometry:
   patch_size: 16
   max_patches_per_chain: 8
   max_patch_pairs: 256
+  pool_chunk_size: 8
+  pool_max_tokens_per_patch: 16
   interface_cutoff: 12.0
   positive_cutoff: 12.0
   hard_negative_cutoff: 18.0

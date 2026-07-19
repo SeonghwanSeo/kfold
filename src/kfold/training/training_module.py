@@ -410,6 +410,11 @@ class KFoldTrainingModule(pl.LightningModule):
             self.frozen_modules += self.model.get_trunk_module_names()
             self.frozen_modules += self.model.get_distogram_head_module_names()
 
+            # freeze trunk Parcae params directly, as they are not treated as modules
+            for param_name in self.model.get_trunk_parameter_names():
+                param = getattr(self.model, param_name)
+                param.requires_grad_(False)
+
         if self.train_diffusion_head is False:
             self.frozen_modules += self.model.get_diffusion_head_module_names()
 
@@ -422,11 +427,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 continue
             for param in module.parameters():
                 param.requires_grad_(False)
-
-        # freeze trunk Parcae params directly, as they are not treated as modules
-        for param_name in self.model.get_trunk_parameter_names():
-            param = getattr(self.model, param_name)
-            param.requires_grad_(False)
 
     def train(self, mode: bool = True):
         """Override train() to set sub-modules to eval mode if frozen."""
@@ -494,6 +494,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     dataset_metrics[f"{prefix}/{k}"] = MeanMetric()
             for k in validation_metrics.monitor_metric_names:
                 dataset_metrics[f"monitor/{k}"] = MeanMetric()
+            dataset_metrics["monitor/distogram_loss"] = MeanMetric()
             val_metrics.append(MetricCollection(dataset_metrics, prefix=f"{name}/"))
         self.val_metrics = torch.nn.ModuleList(val_metrics)
 
@@ -633,6 +634,12 @@ class KFoldTrainingModule(pl.LightningModule):
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
                     model_output["patch_geometry"]
                 )
+                patch_geometry_metrics |= {
+                    f"patch_geometry_timing_{name}": value.detach()
+                    for name, value in model_output["patch_geometry"]
+                    .get("timing", {})
+                    .items()
+                }
             else:
                 patch_geometry_loss, patch_geometry_metrics = 0.0, {}
         else:
@@ -746,6 +753,10 @@ class KFoldTrainingModule(pl.LightningModule):
         ref_struct_aligned: list[RefStructure] = []
         sample_metrics: list[dict[str, Any]] = []
         with torch.autocast("cuda", torch.float32):
+            distogram_loss = self.compute_validation_distogram_loss(
+                distogram_out, f_input
+            )
+
             # Permute predicted and true coordinates to align
             for i in range(num_samples):
                 pred_coords_i = diffusion_out["coordinates"][i, :n_atoms]
@@ -792,6 +803,7 @@ class KFoldTrainingModule(pl.LightningModule):
             _m = aggr_metrics["monitor"]
             if k in _m:
                 metrics[f"monitor/{k}"].update(_m[k])
+        metrics["monitor/distogram_loss"].update(distogram_loss)
 
         # Save validation predictions if needed
         if val_config.save_predictions:
@@ -859,6 +871,23 @@ class KFoldTrainingModule(pl.LightningModule):
         torch.cuda.empty_cache()
 
     # === Loss functions === #
+    def compute_validation_distogram_loss(
+        self,
+        distogram_out: dict[str, torch.Tensor],
+        f_input: FoldingInput,
+    ) -> torch.Tensor:
+        """Compute validation distogram loss from inference outputs."""
+        logits = distogram_out.get("logits")
+        if logits is None:
+            logits = distogram_out["distogram"]
+        if not f_input.is_batched:
+            f_input = f_input.add_batch_dim()
+        if logits.ndim == 3:
+            logits = logits.unsqueeze(0)
+
+        loss_per_batch = self.distogram_loss(logits, f_input)
+        return loss_per_batch.mean().detach()
+
     def compute_distogram_loss(
         self,
         logits: torch.Tensor,
@@ -883,7 +912,11 @@ class KFoldTrainingModule(pl.LightningModule):
         loss_per_batch = self.distogram_loss(logits, f_input)
         loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
-        if hasattr(self.distogram_loss, "boundaries") and hasattr(f_input, "token"):
+        if (
+            hasattr(self.distogram_loss, "boundaries")
+            and hasattr(f_input, "token")
+            and self.global_step % 10 == 0
+        ):
             metrics |= self.compute_distogram_diagnostic_metrics(logits, f_input)
         if self._binned_cache_enabled and self.train_diffusion_head:
             self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
@@ -1128,7 +1161,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        if self.trainer.global_step % 50 == 0:
+        if self.trainer.global_step % 10 == 0:
             self.log_model_state()
 
     def log_model_state(self):

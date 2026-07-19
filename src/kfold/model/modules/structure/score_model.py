@@ -16,6 +16,8 @@ class DiffusionModule(torch.nn.Module):
 
         Parameters
         ----------
+        channel_a : int
+            The token transformer dimension.
         channel_s : int
             The single representation dimension.
         channel_z : int
@@ -47,6 +49,7 @@ class DiffusionModule(torch.nn.Module):
             The number of blocks per checkpoint, by default None.
         """
 
+        channel_a: int = 768
         channel_s: int = 384
         channel_z: int = 256
         channel_atom: int = 128
@@ -68,6 +71,7 @@ class DiffusionModule(torch.nn.Module):
         self.kernel_config = kernel_config
         self.is_compiled: bool = False
         self.diffusion_stack = DiffusionStack(
+            channel_a=cfg.channel_a,
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,

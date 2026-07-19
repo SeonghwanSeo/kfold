@@ -24,6 +24,5 @@ cropper:
   w_spatial: 0.4
   w_spatial_interface: 0.4
 
-apo_init:
-  prob_perturbation: 0.0
-  perturbation: null
+prob_perturbation: 0.0
+apo_perturb: null

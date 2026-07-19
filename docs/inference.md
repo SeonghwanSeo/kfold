@@ -1,215 +1,221 @@
 # K-Fold Inference Guide
 
-This document provides a guide on how to perform structural inference (prediction) using the K-Fold model. K-Fold is designed for biomolecular co-folding, allowing you to predict the structure of complexes involving proteins, DNA, RNA, and ligands.
+K-Fold accepts a YAML or JSON description of a biomolecular complex and predicts
+its three-dimensional structure. Protein and RNA inputs currently require a custom
+apo structure, a custom prior ensemble, or both. A two-chain protein source, such
+as an antibody Fab heavy/light pair, is represented by `multimer_sequences`.
 
-## Contents
-- [Overview](#overview)
-- [Input File Format](#input-file-format)
-    - [Proteins](#proteins)
-    - [DNA and RNA](#dna-and-rna)
-    - [Ligands](#ligands)
-    - [Covalent Bonds (Optional)](#covalent-bonds-optional)
-- [Running Inference](#running-inference)
-    - [Single-GPU Inference](#single-gpu-inference)
-    - [Multi-GPU Inference](#multi-gpu-inference)
-    - [Command Line Options](#command-line-options)
-- [Output Format](#output-format)
+## Input format
 
-## Overview
+The top-level input contains `sequences`, `multimer_sequences`, or both. Every
+physical chain ID must be unique across both sections.
 
-K-Fold takes a description of a molecular complex (sequences and optionally apo structures) and predicts its 3D coordinates. The model utilizes an **apo-to-holo** diffusion scheme, where providing an apo (unbound) structure can improve prediction accuracy for protein chains.
-
-## Input File Format
-
-K-Fold supports input in **YAML** or **JSON** format. An input file defines the "Query" for the model.
-
-### Basic Example (YAML)
 ```yaml
-name: "Example_Complex"
+name: Example_Complex
 sequences:
   - protein:
-      id: "A"
-      sequence: "MKT..."
-      apo: "apo/protein_a.pdb"
+      id: A
+      sequence: MKTAYIAK
+      apo: structures/protein_a_apo.pdb
+      prior:
+        - structures/protein_a_prior_1.pdb
+        - structures/protein_a_prior_2.pdb
   - dna:
-      id: "B"
-      sequence: "ACGTAA.."
-  - rna:
-      id: "C"
-      sequence: "ACGUCG.."
+      id: B
+      sequence: ACGTAA
   - ligand:
-      id: "D"
-      smiles: "c1ccccc1"
+      id: C
+      ccd: MOV
+
+multimer_sequences:
+  - protein:
+      id: H:L
+      sequence: EVQLVESGG:DIQMTQSP
+      apo: structures/fab_apo.pdb
+      prior:
+        - structures/fab_prior_1.pdb
+        - structures/fab_prior_2.pdb
 ```
 
-### Basic Example (JSON)
-```json
-{
-  "name": "Example_Complex",
-  "sequences": [
-    {
-      "protein": {
-        "id": "A",
-        "sequence": "MKT...",
-        "apo": "apo/protein_a.pdb"
-      }
-    },
-    {
-      "ligand": {
-        "id": "B",
-        "ccd": "MOV"
-      }
-    }
-  ]
-}
+An `id` may be a string or a list. Lists create copies of the same entity:
+
+```yaml
+sequences:
+  - protein:
+      id: [A, B]
+      sequence: MKTAYIAK
+      apo: monomer.pdb
+
+multimer_sequences:
+  - protein:
+      id: [H:L, M:N]
+      sequence: EVQLVESGG:DIQMTQSP
+      apo: fab.pdb
 ```
 
-### Proteins
-Protein chains require a sequence and an **apo structure** (PDB format).
+The second example creates two physical copies of the same two-entity pair:
+`H:L` and `M:N`.
+
+### Protein monomers
+
+Protein entries under `sequences` use the following fields:
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
-| `id` | `str` or `list[str]` | Chain identifier(s), e.g., `"A"` or `["A", "B"]` for homomers. |
-| `sequence` | `str` | Standard amino acid sequence. |
-| `apo` | `str` | Path to the apo PDB file. |
-| `apo_range` | `str` | (Optional) Mapping between sequence and apo file. Format: `seq_st:seq_end->apo_st:apo_end` (1-indexed). |
+| `id` | `str` or `list[str]` | One or more physical chain IDs. |
+| `sequence` | `str` | Amino-acid sequence. |
+| `modifications` | `dict[int, str]` | Optional 1-based residue index to CCD code mapping. |
+| `apo` | `str` | Optional custom monomer apo structure. |
+| `prior` | `list[str]` | Optional custom monomer prior ensemble. |
 
-**Apo Path Resolution:**
-Paths to apo files are resolved in the following priority:
-1. **Absolute Path**: If an absolute path is provided, it is used directly.
-2. **Relative to CWD**: If the path exists relative to your **current working directory** (where you run the command), it is used.
-3. **Relative to Input File**: If neither of the above works, the path is resolved relative to the **directory containing the input YAML/JSON file**.
+Custom structures are globally aligned to the input sequence. Source insertions
+are ignored, and input residues missing from the source receive `NaN`
+coordinates and are excluded from apo structure-token mapping. A warning reports
+the alignment summary whenever the sequences differ.
 
-> [!NOTE]
-> **Future Improvements (TODO):**
-> - **Auto-ESMFold**: We plan to support automatic generation of apo structures via ESMFold if no path is provided.
-> - **Improved Folding Model**: We are developing a next-generation protein folding model intended to provide superior apo structure predictions compared to existing benchmarks.
+### Protein multimers
 
+`multimer_sequences` currently supports exactly two protein components per
+entry. It is intended for a shared-frame custom source such as an antibody Fab,
+but it is not antibody-specific.
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `id` | `str` or `list[str]` | Pair IDs in `chain1:chain2` format. |
+| `sequence` | `str` | Two sequences in `sequence1:sequence2` format. |
+| `modifications1` | `dict[int, str]` | Optional modifications for component 1. |
+| `modifications2` | `dict[int, str]` | Optional modifications for component 2. |
+| `apo` | `str` | Optional custom two-chain apo structure. |
+| `prior` | `list[str]` | Optional custom two-chain prior ensemble. |
+
+Each custom multimer file must contain exactly two non-empty protein chains in
+the same order as the two input sequences. Each component is globally aligned
+to its corresponding input sequence using the same insertion/deletion behavior
+as monomer sources. The pair remains in one shared rigid frame during prior
+sampling.
+
+### Apo and prior resolution
+
+Protein monomers, RNA chains, and protein multimers follow one source-resolution
+contract:
+
+| Input | Resolved apo | Resolved priors |
+| :--- | :--- | :--- |
+| `apo` and `prior` | `apo` | `prior` |
+| `apo` only | `apo` | `[apo]` |
+| `prior` only | `prior[0]` with a warning | `prior` |
+| neither | Error until the external apo sampler is integrated | — |
+
+Different prior ensemble sizes are independently shuffled from the query seed
+and cycled to the largest ensemble size. `--num-samples` controls diffusion
+samples only; it does not change the number of prior sources.
+
+Structure paths may be absolute, relative to the current working directory, or
+relative to the input YAML/JSON file.
 
 ### DNA and RNA
-Nucleic acids are specified by their sequence.
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
-| `id` | `str` or `list[str]` | Chain identifier(s). |
-| `sequence` | `str` | Nucleotide sequence (A, C, G, T for DNA; A, C, G, U for RNA). |
+| `id` | `str` or `list[str]` | One or more physical chain IDs. |
+| `sequence` | `str` | DNA uses A/C/G/T; RNA uses A/C/G/U. |
+| `modifications` | `dict[int, str]` | Optional 1-based residue index to CCD code mapping. |
+
+DNA does not accept custom apo or prior files. Its apo coordinates are left
+missing and its prior coordinates are initialized by the existing prior sampler.
+RNA accepts `apo` and `prior` with the source-resolution rules above, and at
+least one of them is required until the external apo sampler is integrated.
 
 ### Ligands
-Ligands can be specified using **SMILES** or **CCD** (Chemical Component Dictionary) codes.
 
 | Field | Type | Description |
 | :--- | :--- | :--- |
-| `id` | `str` or `list[str]` | Chain identifier(s). |
-| `smiles` | `str` | SMILES string for the ligand. |
-| `ccd` | `str` or `list[str]` | CCD code(s). Use a list for multi-residue ligands (e.g., `["GLY", "TYR"]`). |
+| `id` | `str` or `list[str]` | One or more physical chain IDs. |
+| `smiles` | `str` | A SMILES representation. |
+| `ccd` | `str` or `list[str]` | One CCD code or a multi-residue CCD sequence. |
 
-*Note: You must provide either `smiles` or `ccd`, but not both.*
+Specify exactly one of `smiles` and `ccd`.
 
-### Constraint (Optional)
+### Constraints
+
+The top-level field is `constraints`:
 
 ```yaml
-name: "Covalent_Complex"
-sequences:
-  - protein:
-      id: "A"
-      sequence: "MKT..."
-  - dna:
-      id: "B"
-      sequence: "ACGTAA.."
-  - ligand:
-      id: "C"
-      ccd: "WF1"
-  - ligand:
-      id: "D"
-      smiles: "CNCBr"
-constraint:
+constraints:
   - bond:
-      atom1: ["A", 20, "NZ"]  # Chain A, residue 20, atom NZ
-      atom2: ["C", 1, "C08"]  # Chain B, residue 1, atom C08
+      atom1: [A, 20, NZ]
+      atom2: [C, 1, C08]
   - distance:
-      atom1: ["A", 10, "CA"]  # Chain A, residue 20, atom CA
-      atom2: ["B", 3, "C1'"]  # Chain B, residue 3, atom C1'
-      range: [4, 8]       # Desired distance range in Angstroms
+      atom1: [A, 10, CA]
+      atom2: [B, 3, "C1'"]
+      range: [4, 8]
 ```
 
-#### Covalent Bonds
+Atom references use `[chain_id, one_based_residue_index, atom_name]`. Distance
+constraints are experimental; if `range` is omitted it defaults to `[2.0, 8.0]`.
 
-You can specify custom covalent bonds between atoms in different chains using the `bond` entry within the `constraint` list.
+## Running inference
 
-Each `bond` requires two atoms, `atom1` and `atom2`, specified as `[chain_id, residue_number, atom_name]`.
-- **chain_id**: The identifier assigned in the `sequences` section (e.g., `"A"`).
-- **residue_number**: 1-based index of the residue in the sequence.
-- **atom_name**: The atom name according to the following rules:
-    - For **Proteins/DNA/RNA**, atom names are not explicitly respected in the model.
-    - For ligands defined by **CCD**, names are taken from the CCD definition (e.g., [WF1](https://files.rcsb.org/ligands/view/WF1.cif)).
-    - (Experimental) For ligands defined by **SMILES**, names are assigned as `<Element><Index>` based on their order in the SMILES string (e.g., the atom names in `CNCBr` would be `C1`, `N2`, `C3`, `Br4`).
-
-#### Distance Constraints (Experimental)
-
-Distance constraints allow you to enforce spatial relationships between atoms. This is useful for incorporating experimental data like NOEs or cross-linking constraints.
-
-A `distance` entry includes:
-- `atom1`, `atom2`: The two atoms to be constrained, using the same `[chain_id, residue_number, atom_name]` format as bonds.
-    - **Note**: For proteins and nucleic acids, the model always uses the center atoms (`CA` for protein, `C1'` for DNA/RNA), regardless of the `atom_name` provided.
-- `range`: A list `[lower_bound, upper_bound]` in Angstroms.
-    - The valid range for constrained distances is between 2.0Å and 22.0Å.
-    - Set a bound to `-1` to leave the upper bound unconstrained (e.g., `[5, -1]` for a minimum distance of 5Å)
-
-
-## Running Inference
-
-### Single-GPU Inference
-Use `scripts/inference.py` for standard inference tasks. This script processes requires a single input file or a directory of input files.
+Single GPU:
 
 ```bash
 python scripts/inference.py \
   --config configs/model/kfold-ecsi.yaml \
-  --checkpoint checkpoints/model.ckpt \
+  --weight checkpoints/model.ckpt \
+  --ccd path/to/ccd.pkl \
   --input query.yaml \
-  --out_dir ./results/
+  --out-dir results
 ```
 
-### Multi-GPU Inference
-For high-throughput prediction, use `scripts/inference_multigpu.py`. This script automatically distributes queries across available GPUs.
+Multiple GPUs:
 
 ```bash
 python scripts/inference_multigpu.py \
   --config configs/model/kfold-ecsi.yaml \
-  --checkpoint checkpoints/model.ckpt \
-  --input ./input_directory/ \
-  --out_dir ./results/ \
-  --num_gpus 4
+  --weight checkpoints/model.ckpt \
+  --ccd path/to/ccd.pkl \
+  --input queries \
+  --out-dir results \
+  --num-gpus 4
 ```
 
-### Command Line Options
+Common options:
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `--config` | (Required) | Path to the model YAML configuration. |
-| `--checkpoint` | (Required) | Path to the trained model checkpoint (.ckpt). |
-| `--input` | (Required) | Path to a single YAML/JSON file or a directory of files. |
-| `--out_dir` | `./inference_results/` | Root directory to save results. |
-| `--seed` | `42` | Random seed(s). You can provide multiple seeds for ensemble prediction. |
-| `--num_samples` | `5` | Number of diffusion samples to generate for each query. |
-| `--num_recycles` | `10` | Number of recycling iterations. |
-| `--num_steps` | `200` | Number of diffusion steps. |
-| `--save_trajectory`| `False` | Save the full diffusion trajectory as a PDB file. |
-| `--overwrite` | `False` | Overwrite existing results in the output directory. |
+| `--config` | `configs/model/kfold-ecsi.yaml` | KFold model configuration. |
+| `--weight` | Required | Weight file for the selected model version. |
+| `--ccd` | Required | Serialized CCD data file. |
+| `--input` | Required | One YAML/JSON file or a directory. |
+| `--out-dir` | `inference_results` | Output root. |
+| `--seed` | `1` | One or more query seeds. |
+| `--num-samples` | `5` | Diffusion samples per query and seed. |
+| `--num-recycles` | `10` | Trunk recycle count. |
+| `--num-steps` | `200` | Diffusion step count. |
+| `--num-workers` | `8` | DataLoader worker count. GPU structure tokenization is not run in workers. |
+| `--overwrite` | `False` | Allow an existing output directory. |
 
----
+Single-GPU inference additionally supports `--save-trajectory`,
+`--save-confidence`, and `--dry-run`. A dry run does not need `--weight`; it
+parses the queries and runs the CPU data pipeline without loading a model or
+writing predictions. Multi-GPU inference accepts `--num-gpus`; if omitted, all
+visible GPUs are used.
 
-## Output Format
+## Output
 
-The inference script creates a subdirectory for each query name in the `--out_dir`.
+Each query gets its own directory containing the stored query description and
+predicted mmCIF structures:
 
 ```text
 results/
 └── Example_Complex/
-    ├── query.yaml                      # Copy of the input query
-    ├── Example_Complex_seed-42_sample-0.cif # Predicted structure (mmCIF)
-    ├── Example_Complex_seed-42_sample-1.cif
-    ...
-    └── Example_Complex_seed-42_sample-0_traj.pdb # Optional trajectory
+    ├── query.yaml
+    ├── Example_Complex_seed-1_sample-0.cif
+    ├── Example_Complex_seed-1_sample-0_confidences.json
+    └── Example_Complex_seed-1_sample-0_confidences.npz  # single GPU with --save-confidence
 ```
 
-Predictions are saved in **mmCIF** format. If `--save_trajectory` is enabled, the diffusion path is saved as a multi-model **PDB** file.
+Every successful sample writes an mmCIF file and a confidence-summary JSON file.
+The single-GPU script writes raw pLDDT/PAE/PDE arrays to NPZ only when
+`--save-confidence` is set. The multi-GPU script currently does not write NPZ
+confidence arrays or diffusion trajectories.

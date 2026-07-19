@@ -2,26 +2,20 @@
 
 Intermediate results:
 --- Cluster-based sampling ---
-# Multimer:
-  Protein-Protein: 1707 -> 600
-  Protein-DNA: 398 -> 200
-  Protein-RNA: 183 -> 183
-  Protein-Ligand: 1928 -> 500
-  DNA-DNA: 282 -> 100
-  DNA-RNA: 30 -> 30
-  DNA-Ligand: 42 -> 42
-  RNA-RNA: 40 -> 40
-  RNA-Ligand: 11 -> 11
+  Protein-Protein: 2110 -> 600
+  Protein-DNA: 446 -> 200
+  Protein-RNA: 211 -> 200
+  Protein-Ligand: 2416 -> 500
+  DNA-DNA: 310 -> 100
+  DNA-RNA: 59 -> 50
+  DNA-Ligand: 70 -> 50
+  RNA-RNA: 73 -> 50
+  RNA-Ligand: 17 -> 17
 
-# Monomer:
-  DNA: 18
-  RNA: 21
-
---- Final sampling ---
-Multimer entries: 1262
-Monomer entries: 37
-Total entries: 1398
-Final entries: 1280
+Multimer filtering completed.
+Total interfaces after final sampling: 1767
+Multimer PDB entries: 1413
+Multimer PDB entries after size filtering: 1330
 """
 
 import argparse
@@ -625,14 +619,14 @@ def filter_monomers(
     # Run clustering
     clusters: dict[str, str] = run_clustering(filtered_polymers, mmseqs=mmseqs)
     # Interface-level clustering
-    clusters: dict[str, list[Seq]] = defaultdict(list)
+    cluster_sequences: dict[str, list[Seq]] = defaultdict(list)
     for seq in filtered_polymers:
         cluster_id = clusters[seq.id]
-        clusters[cluster_id].append(seq)
+        cluster_sequences[cluster_id].append(seq)
 
     print("\nStage 3-2: Sample one polymer per cluster...")
     sampled_polymers: list[Seq] = []
-    for cluster_id, polymers in clusters.items():
+    for cluster_id, polymers in cluster_sequences.items():
         rng = get_rng(cluster_id)
         sampled_polymers.append(polymers[rng.integers(len(polymers))])
 
@@ -865,28 +859,10 @@ def main():
     print(f"Multimer PDB entries after size filtering: {len(multimer_ids)}")
 
     # ======================================================================
-    # Monomer filtering
-    # ======================================================================
-    sampled_monomers: list[Seq] = filter_monomers(
-        all_polymers=monomers,
-        train_sequences=train_seqs,
-        mmseqs=args.mmseqs,
-    )
-    # Collect PDB IDs from monomer filtering
-    monomer_ids: set[str] = set()
-    for seq in sampled_monomers:
-        monomer_ids.add(seq.pdb_id)
-    print(f"Monomer PDB entries: {len(monomer_ids)}")
-
-    # Filter with max token limit
-    monomer_ids = {v for v in monomer_ids if MIN_TOKENS <= entry_size[v] <= MAX_TOKENS}
-    print(f"Monomer PDB entries after size filtering: {len(monomer_ids)}")
-
-    # ======================================================================
     # Final validation set sampling
     # ======================================================================
     print("\n" + "=" * 50)
-    sampled_ids = multimer_ids | monomer_ids
+    sampled_ids = multimer_ids
     if len(sampled_ids) > FINAL_VALIDATION_SET_SIZE:
         val_ids: list[str] = sorted(sampled_ids)
         sampled_indices = get_rng("final").choice(
@@ -896,8 +872,6 @@ def main():
     else:
         val_ids = sorted(sampled_ids)
     print("Validation Set Final Summary")
-    print(f"Multimer entries: {len(multimer_ids)}")
-    print(f"Monomer entries: {len(monomer_ids)}")
     print(f"Total entries: {len(sampled_ids)}")
     print(f"Final entries: {len(val_ids)}")
 

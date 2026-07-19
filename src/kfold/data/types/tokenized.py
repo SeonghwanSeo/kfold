@@ -47,6 +47,8 @@ class ChainArray(PlainLayout[np.ndarray]):
         Entity IDs of shape [Nchain,], starting from 1.
     asym_id: np.ndarray (int)
         Asymmetric unit IDs of shape [Nchain,], starting from 1.
+    apo_uid: np.ndarray (int)
+        Apo rigid-group IDs of shape [Nchain,], starting from 1.
     sym_id: np.ndarray (int)
         Symmetry IDs of shape [Nchain,], starting from 1.
     num_residues: np.ndarray (int)
@@ -75,6 +77,7 @@ class ChainArray(PlainLayout[np.ndarray]):
     chain_type: np.ndarray  # [Nchain,], int
     entity_id: np.ndarray  # [Nchain,], int
     asym_id: np.ndarray  # [Nchain,], int
+    apo_uid: np.ndarray  # [Nchain,], int
     sym_id: np.ndarray  # [Nchain,], int
     num_residues: np.ndarray  # [Nchain,], int
     num_tokens: np.ndarray  # [Nchain,], int
@@ -92,6 +95,7 @@ class ChainArray(PlainLayout[np.ndarray]):
             ("chain_type", np.integer, shape),
             ("entity_id", np.integer, shape),
             ("asym_id", np.integer, shape),
+            ("apo_uid", np.integer, shape),
             ("sym_id", np.integer, shape),
             ("num_residues", np.integer, shape),
             ("num_tokens", np.integer, shape),
@@ -137,6 +141,7 @@ class ChainArray(PlainLayout[np.ndarray]):
             chain_type=full_minus_one((num_chains,)),
             entity_id=full_minus_one((num_chains,)),
             asym_id=full_minus_one((num_chains,)),
+            apo_uid=full_minus_one((num_chains,)),
             sym_id=full_minus_one((num_chains,)),
             num_residues=full_minus_one((num_chains,)),
             num_tokens=full_minus_one((num_chains,)),
@@ -165,6 +170,8 @@ class TokenArray(PlainLayout[np.ndarray]):
         Entity IDs of shape [L,], starting from 1.
     asym_id: np.ndarray (int)
         Asymmetric unit IDs of shape [L,], starting from 1.
+    apo_uid: np.ndarray (int)
+        Apo rigid-group IDs of shape [L,], starting from 1.
     sym_id: np.ndarray (int)
         Symmetry IDs of shape [L,], starting from 1.
     res_type: np.ndarray (int)
@@ -219,6 +226,7 @@ class TokenArray(PlainLayout[np.ndarray]):
     chain_type: np.ndarray  # [L,], int
     entity_id: np.ndarray  # [L,], int
     asym_id: np.ndarray  # [L,], int, same to sequence_id
+    apo_uid: np.ndarray  # [L,], int
     sym_id: np.ndarray  # [L,], int
     res_type: np.ndarray  # [L,], int
     num_atoms: np.ndarray  # [L,], int
@@ -248,6 +256,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             ("chain_type", np.integer, shape),
             ("entity_id", np.integer, shape),
             ("asym_id", np.integer, shape),
+            ("apo_uid", np.integer, shape),
             ("sym_id", np.integer, shape),
             ("res_type", np.integer, shape),
             ("is_standard", np.bool_, shape),
@@ -296,6 +305,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             chain_type=full_minus_one((num_tokens,)),
             entity_id=full_minus_one((num_tokens,)),
             asym_id=full_minus_one((num_tokens,)),
+            apo_uid=full_minus_one((num_tokens,)),
             sym_id=full_minus_one((num_tokens,)),
             res_type=full_minus_one((num_tokens,)),
             num_atoms=full_minus_one((num_tokens,)),

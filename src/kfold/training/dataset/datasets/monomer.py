@@ -1,4 +1,4 @@
-"""Dataset classes for training with AF2 monomer distillation data.
+"""Dataset classes for training with Large-scale Monomer Distillation data.
 
 Since monomer distillation data is very large, we use a simplified
 data format and metadata format.
@@ -13,6 +13,12 @@ Metadata: each sample has a simple metadata dict containing:
     'pred': dict, the prediction record containing:
         'model': str, same to 'AF2'.
         'plddt': float, the average pLDDT-Cα of the structure.
+
+Apo coordinates: we do not pre-compute apo coordinates for monomer distillation dataset.
+Instead, we use the perturbed label coordinates as prior for diffusion bridge.
+
+# For RNA, which is relatively small and there is no perturbation code, we provide
+the apo structure distillation source for prior.
 
 There is major difference between monomer distillation dataset and other datasets:
     - No apo coordinates (trunk) -> Fill to NaN.
@@ -36,11 +42,11 @@ from .distillation import DistillationDataset
 StructInfo = dict
 
 
-def get_chain_info() -> ChainInfo:
+def get_chain_info(ctype: C.ChainType) -> ChainInfo:
     """Get the ChainInfo for the monomer"""
     return ChainInfo(
         name="A",
-        type=C.ChainType.PROTEIN.value,
+        type=ctype.value,
         entity_id=1,
         asym_id=1,
         sym_id=1,
@@ -52,6 +58,25 @@ def get_chain_info() -> ChainInfo:
 
 class MonomerDistillationDataset(DistillationDataset):
     """Training dataset for monomer distillation."""
+
+    ctype: C.ChainType = C.ChainType.PROTEIN
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the dataset."""
+        super().sanity_check()
+        cfg = self.config
+        if cfg.prob_perturbation != 1.0:
+            self.logger.warning(
+                "prob_perturbation is not 1.0 for monomer distillation dataset."
+            )
+        if cfg.prob_drop_apo != 1.0:
+            self.logger.warning(
+                "prob_drop_apo is not 1.0 for monomer distillation dataset."
+            )
+        if cfg.prob_drop_struct_token != 1.0:
+            self.logger.warning(
+                "prob_drop_struct_token is not 1.0 for monomer distillation dataset."
+            )
 
     def get_item_safe(
         self, index: int, num_trials: int = 100
@@ -67,7 +92,7 @@ class MonomerDistillationDataset(DistillationDataset):
                 id=metadata_dict["id"],
                 source="pred",
                 pred=PredictionRecord(**metadata_dict["pred"]),
-                chains=[get_chain_info()],
+                chains=[get_chain_info(self.ctype)],
             )
             try:
                 return self.get_item(metadata, asym_ids=sample.asym_id)
@@ -84,6 +109,30 @@ class MonomerDistillationDataset(DistillationDataset):
                 trials.append(sample)
         raise RuntimeError(
             f"Failed to load data after {num_trials} attempts. Tried: {trials}"
+        )
+
+    def load_ref_structure(self, metadata: Metadata) -> RefStructure:
+        """Get the structure for the given index."""
+        raise NotImplementedError(
+            "load_ref_structure is not implemented for monomer distillation dataset."
+        )
+
+    def populate_structure_tokens(
+        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
+    ) -> None:
+        return  # skip populating structure tokens for monomer distillation dataset
+
+
+class ProteinMonomerDistillationDataset(MonomerDistillationDataset):
+    """Training dataset for large-scale protein monomer distillation.
+    Since it is very large, we directly use the apo coordinates as label structure.
+    """
+
+    def sanity_check(self) -> None:
+        """Perform sanity checks on the dataset."""
+        super().sanity_check()
+        assert self.config.apo_perturb is not None, (
+            "apo_perturb must be provided for protein monomer distillation dataset."
         )
 
     def load_ref_structure(self, metadata: Metadata) -> RefStructure:
@@ -128,72 +177,45 @@ class MonomerDistillationDataset(DistillationDataset):
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, dict]:
-        """Get the apo lookup for the given reference structure."""
-        c = ref_struct.chains[0]
-        seq = c.get_sequence()
-        ccd_sequence = c.get_ccd_sequence()
+        """Use the label monomer structure as the synthetic apo/prior source."""
+        del rng
+        chain = ref_struct.chains[0]
+        return {
+            chain.asym_id: {
+                "key": f"{ref_struct.id}:{chain.asym_id}",
+                "seq": chain.get_sequence(map_to_standard=True),
+                "coords": self._center_label_residue_coords(chain),
+            }
+        }
 
-        res_atom_dict = C.atom.residue_atoms
-        atom37_order = C.atom.protein_atom37_order
+    def get_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Use the label monomer structure as the prior source."""
+        del apo_dict
+        chain = ref_struct.chains[0]
+        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
+        if chain.asym_id in metadata_by_asym_id:
+            metadata_by_asym_id[chain.asym_id].prior_uid = chain.asym_id
 
-        # Convert to atom37 format
-        apo_coords = c.atom.coords  # [Natom, 3]
-        apo_coords_37 = np.full((c.num_residues, 37, 3), np.nan, dtype=np.float32)
-        g_atom_i = 0
-        for i, restype in enumerate(ccd_sequence):
-            atoms = res_atom_dict[restype]
-            natoms = len(atoms)
-            st, end = g_atom_i, g_atom_i + natoms
-            atom_indices = [atom37_order[a] for a in atoms]
-            apo_coords_37[i, atom_indices] = apo_coords[st:end]
-            g_atom_i += natoms
-        assert g_atom_i == c.num_atoms, (
-            f"Total atom counts {g_atom_i} does not match chain.num_atoms {c.num_atoms}."
+        coords = self._center_label_residue_coords(chain)
+
+        # Perturb the label coordinates to apply harsh perturbation.
+        assert self.apo_perturb is not None
+        seq = chain.get_sequence(map_to_standard=True)
+        coords = self.apo_perturb.run_protein_perturbation(
+            seq, coords, mask=None, rng=rng
         )
-
-        return {c.entity_id: {"coords": apo_coords_37, "seq": seq}}
-
-    def populate_structure_tokens(
-        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
-    ) -> None:
-        return  # skip populating structure tokens for monomer distillation dataset
+        return {chain.asym_id: coords}
 
 
-class RNAMonomerDistillationDataset(DistillationDataset):
-    """Training dataset for rna monomer distillation."""
+class RNAMonomerDistillationDataset(MonomerDistillationDataset):
+    """Training dataset for rna monomer distillation with apo/prior LMDB."""
 
-    def get_item_safe(
-        self, index: int, num_trials: int = 100
-    ) -> tuple[FoldingInput, StructInfo]:
-        """Get the folding input for the given index, with retry on failure.
-        NOTE: This is overridden to use `self.samples` instead of `self.metadatas`.
-        """
-        trials = []
-        for _ in range(num_trials):
-            sample = self.samples[index]
-            metadata_dict = sample.metadata
-            metadata = Metadata(
-                id=metadata_dict["id"],
-                source="pred",
-                pred=PredictionRecord(**metadata_dict["pred"]),
-                chains=[get_chain_info()],
-            )
-            try:
-                return self.get_item(metadata, asym_ids=sample.asym_id)
-            except (KeyboardInterrupt, SystemExit) as e:
-                raise e
-            except Exception as e:
-                sample_id = sample.metadata["id"]
-                self.logger.error(
-                    f"Error loading index {sample_id}({index}): {e}. Retrying..."
-                )
-                if not self.safe_load:
-                    raise e
-                index = np.random.randint(0, len(self))
-                trials.append(sample)
-        raise RuntimeError(
-            f"Failed to load data after {num_trials} attempts. Tried: {trials}"
-        )
+    ctype: C.ChainType = C.ChainType.RNA
 
     def load_ref_structure(self, metadata: Metadata) -> RefStructure:
         """Get the structure for the given index."""
@@ -231,15 +253,19 @@ class RNAMonomerDistillationDataset(DistillationDataset):
         )
         return ref_struct
 
-    def load_lookup_table(self) -> dict:
-        return {}
-
-    def get_apo_lookup(
-        self, ref_struct: RefStructure, rng: np.random.Generator
-    ) -> dict[int, dict]:
-        return {}
-
     def populate_structure_tokens(
         self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
     ) -> None:
         return
+
+    def get_prior_coords(
+        self,
+        ref_struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Use the apo coordinates as the prior source."""
+        # 50% of the time, we drop the apo coordinates to simulate missing apo structure.
+        if rng.random() < 0.5:
+            apo_dict = {}
+        return super().get_prior_coords(ref_struct, apo_dict, rng)

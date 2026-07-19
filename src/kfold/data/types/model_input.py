@@ -26,6 +26,8 @@ class ChainTensor(TensorLayout):
         Entity IDs of shape [Nchain,], starting from 1.
     asym_id: torch.Tensor (long)
         Asymmetric unit IDs of shape [Nchain,], starting from 1.
+    apo_uid: torch.Tensor (long)
+        Apo rigid-group IDs of shape [Nchain,], starting from 1.
     sym_id: torch.Tensor (long)
         Symmetry IDs of shape [Nchain,], starting from 1.
     num_tokens: torch.Tensor (long)
@@ -45,6 +47,7 @@ class ChainTensor(TensorLayout):
     chain_type: torch.Tensor  # [Nchain,], long
     entity_id: torch.Tensor  # [Nchain,], long
     asym_id: torch.Tensor  # [Nchain,], long
+    apo_uid: torch.Tensor  # [Nchain,], long
     sym_id: torch.Tensor  # [Nchain,], long
     num_tokens: torch.Tensor  # [Nchain,], long
     num_residues: torch.Tensor  # [Nchain,], long
@@ -68,6 +71,7 @@ class ChainTensor(TensorLayout):
             ("chain_type", torch.long, shape),
             ("entity_id", torch.long, shape),
             ("asym_id", torch.long, shape),
+            ("apo_uid", torch.long, shape),
             ("sym_id", torch.long, shape),
             ("num_tokens", torch.long, shape),
             ("num_residues", torch.long, shape),
@@ -92,6 +96,7 @@ class ChainTensor(TensorLayout):
             "chain_type": -1,
             "entity_id": -1,
             "asym_id": -1,
+            "apo_uid": -1,
             "sym_id": -1,
             "num_tokens": -1,
             "num_residues": -1,
@@ -198,6 +203,7 @@ class TokenTensor(TensorLayout):
     chain_type: torch.Tensor  # [Ntoken,], long
     entity_id: torch.Tensor  # [Ntoken,], long
     asym_id: torch.Tensor  # [Ntoken,], long, same to sequence_id
+    apo_uid: torch.Tensor  # [Ntoken,], long
     sym_id: torch.Tensor  # [Ntoken,], long
     res_type: torch.Tensor  # [Ntoken, 32], float32
     is_standard: torch.Tensor  # [Ntoken,], bool
@@ -241,6 +247,7 @@ class TokenTensor(TensorLayout):
             ("chain_type", torch.long, shape),
             ("entity_id", torch.long, shape),
             ("asym_id", torch.long, shape),
+            ("apo_uid", torch.long, shape),
             ("sym_id", torch.long, shape),
             ("res_type", torch.float32, (*shape, 32)),
             ("is_standard", torch.bool, shape),
@@ -311,6 +318,7 @@ class TokenTensor(TensorLayout):
             "chain_type": -1,
             "entity_id": -1,
             "asym_id": -1,
+            "apo_uid": -1,
             "sym_id": -1,
             "residue_index": -1,
             "repr_index": -1,

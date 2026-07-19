@@ -5,6 +5,8 @@ name: ???
 type: ???
 prob_drop_apo: 0.1 # Probability of dropping apo structures during training
 prob_drop_struct_token: 0.1 # Probability of dropping structure tokens during training
+prob_use_complex_apo: 0.0
+prob_use_complex_prior: 0.0
 weight: 1.0 # sample weight for this dataset
 
 # Random seed for data augmentation.
@@ -16,14 +18,10 @@ sampler: ???
 
 cropper: ???
 
-apo_init:
-  # Enable perturbation during training
-  prob_perturbation: 0.95
-  use_holo_if_apo_unavailable: true
-  perturbation:
-    prob_rieprody: 0.0 # Default: use metric-free BioPrior perturbation
-    rieprody: null
-    bioprior:
-      min_steps: 1 # Minimum random walk steps
-      max_steps: 15 # Maximum random walk steps
-      log_level: "INFO" # Logging level
+# Enable perturbation during training
+prob_perturbation: 0.95
+apo_perturb:
+  prob_rieprody: 0.0 # Default: use metric-free BioPrior perturbation
+  rieprody: null
+  bioprior:
+    max_steps: 15 # Maximum random walk steps

@@ -18,6 +18,7 @@ from kfold.utils import confidence_metrics
 
 from .dataset import InferenceInput
 from .query import Query
+from .structure_tokenization import apply_apo_structure_tokens
 
 
 @dataclass
@@ -61,11 +62,14 @@ class KFoldInferenceClient(pl.LightningModule):
 
     # === Main forward method === #
     def forward(
-        self, f_input: FoldingInput, apo_dict: dict[int, dict]
+        self, f_input: FoldingInput, struct_token_inputs: dict[int, dict]
     ) -> dict[str, dict[str, torch.Tensor]]:
+        if hasattr(self.model, "prot_struct_encoder"):
+            apply_apo_structure_tokens(
+                f_input, struct_token_inputs, self.model.prot_struct_encoder
+            )
         dict_out, _ = self.model.inference(
             f_input,
-            apo_dict,
             num_recycles=self.num_trunk_recycles,
             num_steps=self.num_diffusion_steps,
             num_samples=self.num_samples,
@@ -83,7 +87,7 @@ class KFoldInferenceClient(pl.LightningModule):
             - Query: the input query.
             - RefStructure: the reference structure for the query.
             - FoldingInput: the input features for the model.
-            - apo_dict: a dictionary for apo structure tokenization.
+            - struct_token_inputs: raw apo structures and sequence mappings.
 
         Returns
         -------
@@ -96,7 +100,7 @@ class KFoldInferenceClient(pl.LightningModule):
             return None  # Skip empty batch (occured by processing error)
 
         # Unpack batch and validate
-        query, ref_struct, f_input, apo_dict = batch
+        query, ref_struct, f_input, struct_token_inputs = batch
         assert query.seed >= 0  # seed should be overridden by user input
 
         # HACK: Set random seed for reproducibility
@@ -105,7 +109,7 @@ class KFoldInferenceClient(pl.LightningModule):
 
         # === Run model inference === #
         try:
-            model_out = self(f_input, apo_dict)
+            model_out = self(f_input, struct_token_inputs)
         except Exception as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 name = query.name
@@ -127,6 +131,8 @@ class KFoldPredictionWriter(BasePredictionWriter):
         self,
         output_dir: str | pathlib.Path,
         queries: list[Query],
+        save_trajectory: bool = False,  # TODO: implement trajectory saving
+        save_confidence_scores: bool = True,  # TODO: implement confidence score saving
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "batch",
     ):
         super().__init__(write_interval)
@@ -136,6 +142,10 @@ class KFoldPredictionWriter(BasePredictionWriter):
         self.writer = KFoldWriter()
         # Logger
         self.logger = logging.getLogger("KFoldPredictionWriter")
+
+        # Save options
+        self.save_trajectory = save_trajectory
+        self.save_confidence_scores = save_confidence_scores
 
     def on_predict_start(self, trainer, pl_module) -> None:
         """Called at the start of prediction."""
@@ -187,7 +197,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
         # Create save directory for this query
         name = query.name
         seed = query.seed
-        save_dir = self.output_dir / name
+        save_dir = self.output_dir / name / f"{name}_seed-{seed}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
         # Save Diffusion Samples
@@ -214,13 +224,18 @@ class KFoldPredictionWriter(BasePredictionWriter):
                 json.dump(summary_i, f, indent=2)
 
             # Save confidence scores in npz format
-            confidence_npz_path = save_dir / f"{sample_name}_confidences.npz"
-            np.savez_compressed(
-                confidence_npz_path,
-                plddt=score_i["plddt"],
-                pae=score_i["pae"],
-                pde=score_i["pde"],
-            )
+            if self.save_confidence_scores:
+                confidence_npz_path = save_dir / f"{sample_name}_confidences.npz"
+                np.savez_compressed(
+                    confidence_npz_path,
+                    plddt=score_i["plddt"],
+                    pae=score_i["pae"],
+                    pde=score_i["pde"],
+                )
+
+            # Save trajectory if requested
+            if self.save_trajectory:
+                raise NotImplementedError("Trajectory saving is not implemented yet.")
 
         # Free up memory
         model_out.clear()
