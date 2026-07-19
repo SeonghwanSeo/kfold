@@ -1,0 +1,23 @@
+model:
+  _yaml_: "model/kfold-ecsi.yaml"
+  protein_sequence_encoder:
+    path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_seq_3b-upd.pth
+  rna_sequence_encoder:
+    path: /mnt/parallel_storage/share/kfold_weights/pretrained/rna_seq_300m.pth
+  protein_structure_encoder:
+    path: /mnt/parallel_storage/share/kfold_weights/pretrained/prot_struct_3b.pth
+  trunk:
+    blocks_per_ckpt: 4
+  score_model:
+    blocks_per_ckpt: 3
+  confidence_head:
+    blocks_per_ckpt: 1
+
+train:
+  _yaml_: "train/stage_2.yaml"
+  name: ecsi
+
+  loss:
+    diffusion_loss:
+      smooth_lddt_loss:
+        chunk_size: 1
