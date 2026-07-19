@@ -19,9 +19,9 @@ sampler: ???
 cropper: ???
 
 # Enable perturbation during training
-prob_perturbation: 0.5
+prob_perturbation: 0.95
 apo_perturb:
   prob_rieprody: 0.0 # Default: use metric-free BioPrior perturbation
   rieprody: null
   bioprior:
-    max_steps: 10 # Maximum random walk steps
+    max_steps: 15 # Maximum random walk steps

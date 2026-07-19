@@ -48,7 +48,7 @@ data:
     chain_translation_scale: 24.0 # Angstroms
     ligand_augmentation_scale: 0.3
     bioprior:
-      noise_scale: 0.3
+      noise_scale: 0.5
       max_steps: 10
     train: true # Only for train/val
 
