@@ -17,8 +17,8 @@ Metadata: each sample has a simple metadata dict containing:
 Apo coordinates: we do not pre-compute apo coordinates for monomer distillation dataset.
 Instead, we use the perturbed label coordinates as prior for diffusion bridge.
 
-# For RNA, which is relatively small and there is no perturbation code, we provide
-the apo structure distillation source for prior.
+RNA does not use an external apo/prior source. Like DNA, it receives masked apo
+coordinates and a Langevin-generated prior.
 
 There is major difference between monomer distillation dataset and other datasets:
     - No apo coordinates (trunk) -> Fill to NaN.
@@ -118,7 +118,9 @@ class MonomerDistillationDataset(DistillationDataset):
         )
 
     def populate_structure_tokens(
-        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
+        self,
+        tokenized: TokenizedStructure,
+        apo_lookup: dict[int, list[dict | None]],
     ) -> None:
         return  # skip populating structure tokens for monomer distillation dataset
 
@@ -176,17 +178,16 @@ class ProteinMonomerDistillationDataset(MonomerDistillationDataset):
 
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
-    ) -> dict[int, dict]:
+    ) -> dict[int, list[dict | None]]:
         """Use the label monomer structure as the synthetic apo/prior source."""
         del rng
         chain = ref_struct.chains[0]
-        return {
-            chain.asym_id: {
-                "key": f"{ref_struct.id}:{chain.asym_id}",
-                "seq": chain.get_sequence(map_to_standard=True),
-                "coords": self._center_label_residue_coords(chain),
-            }
+        apo_info = {
+            "key": f"{ref_struct.id}:{chain.asym_id}",
+            "seq": chain.get_sequence(map_to_standard=True),
+            "coords": self._center_label_residue_coords(chain),
         }
+        return {chain.asym_id: [apo_info] + [None] * (self.max_apo - 1)}
 
     def get_prior_coords(
         self,
@@ -213,7 +214,7 @@ class ProteinMonomerDistillationDataset(MonomerDistillationDataset):
 
 
 class RNAMonomerDistillationDataset(MonomerDistillationDataset):
-    """Training dataset for rna monomer distillation with apo/prior LMDB."""
+    """RNA monomer distillation without external apo/prior sources."""
 
     ctype: C.ChainType = C.ChainType.RNA
 
@@ -254,18 +255,17 @@ class RNAMonomerDistillationDataset(MonomerDistillationDataset):
         return ref_struct
 
     def populate_structure_tokens(
-        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
+        self,
+        tokenized: TokenizedStructure,
+        apo_lookup: dict[int, list[dict | None]],
     ) -> None:
         return
 
-    def get_prior_coords(
-        self,
-        ref_struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
-        rng: np.random.Generator,
-    ) -> dict[int, np.ndarray]:
-        """Use the apo coordinates as the prior source."""
-        # 50% of the time, we drop the apo coordinates to simulate missing apo structure.
-        if rng.random() < 0.5:
-            apo_dict = {}
-        return super().get_prior_coords(ref_struct, apo_dict, rng)
+    def load_lookup_table(self) -> dict:
+        return {}
+
+    def get_apo_lookup(
+        self, ref_struct: RefStructure, rng: np.random.Generator
+    ) -> dict[int, list[dict | None]]:
+        """Disable external apo structures for RNA, matching DNA handling."""
+        return {}
