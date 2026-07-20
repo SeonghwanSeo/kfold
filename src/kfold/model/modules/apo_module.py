@@ -6,8 +6,11 @@ from functools import partial
 import torch
 
 from kfold.data.types.model_input import FoldingInput
+from kfold.model.layers.folding.embeddings import RelativePositionEncoding
 from kfold.model.layers.folding.transition import Transition
 from kfold.model.primitives import (
+    DropoutColumnwise,
+    DropoutRowwise,
     LayerNorm,
     LinearNoBias,
     TriangleAttentionEndingNode,
@@ -28,18 +31,22 @@ class PairformerStack(torch.nn.Module):
         channel_z: int = 64,
         num_tri_heads: int = 4,
         num_blocks: int = 48,
+        dropout: float = 0.1,
         blocks_per_ckpt: int | None = None,
     ):
         """Initialize the Pairformer module."""
         super().__init__()
         self.channel_z: int = channel_z
         self.num_blocks: int = num_blocks
+        self.dropout: float = dropout
 
         self.blocks_per_ckpt: int | None = blocks_per_ckpt
 
         self.blocks = torch.nn.ModuleList()
         for _ in range(num_blocks):
-            self.blocks.append(PairformerBlock(self.channel_z, num_tri_heads))
+            self.blocks.append(
+                PairformerBlock(self.channel_z, num_tri_heads, self.dropout)
+            )
 
     def forward(
         self,
@@ -84,7 +91,12 @@ class PairformerStack(torch.nn.Module):
 class PairformerBlock(torch.nn.Module):
     """Pairformer block."""
 
-    def __init__(self, channel_z: int = 64, num_tri_heads: int = 4):
+    def __init__(
+        self,
+        channel_z: int = 64,
+        num_tri_heads: int = 4,
+        dropout: float = 0.1,
+    ):
         """Initialize the Pairformer module.
 
         Parameters
@@ -92,7 +104,7 @@ class PairformerBlock(torch.nn.Module):
         channel_z : int
             The token pairwise embedding size.
         dropout : float, optional
-            The dropout rate, by default 0.25
+            The dropout rate, by default 0.1
         """
         super().__init__()
         self.channel_z: int = channel_z
@@ -101,6 +113,8 @@ class PairformerBlock(torch.nn.Module):
         self.tri_att_start = TriangleAttentionStartingNode(channel_z, num_tri_heads)
         self.tri_att_end = TriangleAttentionEndingNode(channel_z, num_tri_heads)
         self.transition_z = Transition(channel_z, expansion_factor=2)
+        self.dropout_rowwise_z = DropoutRowwise(dropout)
+        self.dropout_columnwise_z = DropoutColumnwise(dropout)
 
     def forward(
         self,
@@ -113,12 +127,32 @@ class PairformerBlock(torch.nn.Module):
         """
         _add = partial(add, inplace=not self.training)
 
-        z = _add(z, self.tri_mul_out(z, pair_mask, use_cuequiv_kernels))
-        z = _add(z, self.tri_mul_in(z, pair_mask, use_cuequiv_kernels))
-        z = _add(z, self.tri_att_start(z, pair_mask, use_cuequiv_kernels))
-        z = _add(z, self.tri_att_end(z, pair_mask, use_cuequiv_kernels))
+        z = _add(
+            z,
+            self.dropout_rowwise_z(
+                self.tri_mul_out(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
+        )
+        z = _add(
+            z,
+            self.dropout_rowwise_z(
+                self.tri_mul_in(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
+        )
+        z = _add(
+            z,
+            self.dropout_rowwise_z(
+                self.tri_att_start(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
+        )
+        z = _add(
+            z,
+            self.dropout_columnwise_z(
+                self.tri_att_end(z, pair_mask, use_kernels=use_cuequiv_kernels)
+            ),
+        )
         z = _add(z, self.transition_z(z))
-        return z
+        return z * pair_mask[..., None]
 
 
 def compute_distogram(
@@ -212,6 +246,7 @@ class ApoModule(torch.nn.Module):
         channel_apo: int = 64
         num_blocks: int = 2
         num_tri_heads: int = 4
+        dropout: float = 0.1
         num_distogram_bins: int = 39
         min_dist: float = 3.25
         max_dist: float = 50.75
@@ -230,10 +265,15 @@ class ApoModule(torch.nn.Module):
             cfg.num_distogram_bins + 1 + 3 + 1 + 2 * 32
         )  # distogram, pseudo_beta_mask, restype_i, restype_j, unit_vector, backbone_mask
         self.linear_apo = LinearNoBias(input_dim, self.channel_apo, init="relu")
+        self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
+        self.linear_rel_pos = LinearNoBias(
+            self.rel_pos_encoding.dimension, self.channel_apo
+        )
         self.stack = PairformerStack(
             channel_z=self.channel_apo,
             num_tri_heads=cfg.num_tri_heads,
             num_blocks=cfg.num_blocks,
+            dropout=cfg.dropout,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
         )
         self.layernorm_out = LayerNorm(self.channel_apo)
@@ -314,6 +354,8 @@ class ApoModule(torch.nn.Module):
         # Apo structures are independent and share the same stack weights, so
         # process the apo axis as part of the batch dimension.
         v = self.linear_apo(a)
+        rel_pos = self.linear_rel_pos(self.rel_pos_encoding(f_input, v.dtype))
+        v = v + rel_pos[:, None] * pair_mask[..., None]
         v = self.stack(
             v.flatten(0, 1),
             pair_mask.flatten(0, 1),
