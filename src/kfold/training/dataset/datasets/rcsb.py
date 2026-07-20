@@ -145,9 +145,10 @@ class RCSBTrainingDataset(TrainingDataset):
 
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
-    ) -> dict[int, dict]:
+    ) -> dict[int, list[dict | None]]:
         """Get monomer apo lookup, then optionally overlay RCSB multimer apo."""
-        apo_lookup = super().get_apo_lookup(ref_struct, rng)
+        num_apo = self.sample_num_apo(rng)
+        apo_lookup = self.get_monomer_apo_lookup(ref_struct, rng, num_apo)
         entry_id = ref_struct.id
         multimer_groups: list[dict] = self.apo_multimer_lookup_table.get(entry_id, [])
         if not multimer_groups or rng.random() >= self.prob_use_complex_apo:
@@ -156,7 +157,12 @@ class RCSBTrainingDataset(TrainingDataset):
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
         protein_asym_ids = {c.asym_id for c in ref_struct.chains if c.ctype.is_protein}
 
-        for group in multimer_groups:
+        num_multimer = min(num_apo, len(multimer_groups))
+        selected_group_indices = rng.choice(
+            len(multimer_groups), size=num_multimer, replace=False
+        )
+        for apo_i, group_i in enumerate(selected_group_indices):
+            group = multimer_groups[int(group_i)]
             apo_uid = int(group["apo_uid"])
             group_asym_ids = [int(aid) for aid in group["asym_ids"]]
             active_asym_ids = [
@@ -182,8 +188,8 @@ class RCSBTrainingDataset(TrainingDataset):
                 loaded["asym_id"] = asym_id
                 loaded["apo_uid"] = apo_uid
                 loaded["is_multimer_apo"] = True
-                apo_lookup[asym_id] = loaded
-                if asym_id in metadata_by_asym_id:
+                apo_lookup.setdefault(asym_id, [None] * self.max_apo)[apo_i] = loaded
+                if apo_i == 0 and asym_id in metadata_by_asym_id:
                     metadata_by_asym_id[asym_id].apo_uid = apo_uid
 
         return apo_lookup
@@ -235,13 +241,19 @@ class RCSBTrainingDataset(TrainingDataset):
         return prior_coords
 
     def populate_structure_tokens(
-        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
+        self,
+        tokenized: TokenizedStructure,
+        apo_lookup: dict[int, list[dict | None]],
     ) -> None:
         """Populate monomer and RCSB multimer apo structure tokens."""
         monomer_apo_lookup = {
-            asym_id: apo_info
-            for asym_id, apo_info in apo_lookup.items()
-            if not apo_info.get("is_multimer_apo", False)
+            asym_id: [
+                None
+                if apo_info is not None and apo_info.get("is_multimer_apo", False)
+                else apo_info
+                for apo_info in apo_infos
+            ]
+            for asym_id, apo_infos in apo_lookup.items()
         }
         super().populate_structure_tokens(tokenized, monomer_apo_lookup)
 
@@ -252,38 +264,39 @@ class RCSBTrainingDataset(TrainingDataset):
 
             asym_id = int(tokenized.chain.asym_id[c_i])
             ek = f"{tokenized.id}:{asym_id}"
-            apo_info = apo_lookup.get(asym_id)
-            if apo_info is None:
-                continue
-            if not apo_info.get("is_multimer_apo", False):
-                continue
+            for apo_i, apo_info in enumerate(apo_lookup.get(asym_id, [])):
+                if apo_info is None or not apo_info.get("is_multimer_apo", False):
+                    continue
 
-            source = apo_info["source"]
-            key = apo_info["name"]
-            cache_key = (source, key)
-            if cache_key not in multimer_token_cache:
-                env = self._get_apo_tok_source_lmdb_env("protein_multimer", source)
-                with env.begin(write=False) as txn:
-                    value = txn.get(key.encode("utf-8"))
-                if value is None:
+                source = apo_info["source"]
+                key = apo_info["name"]
+                cache_key = (source, key)
+                if cache_key not in multimer_token_cache:
+                    env = self._get_apo_tok_source_lmdb_env("protein_multimer", source)
+                    with env.begin(write=False) as txn:
+                        value = txn.get(key.encode("utf-8"))
+                    if value is None:
+                        self.logger.warning(
+                            f"Apo multimer structure tokens {source}:{key} not found "
+                            f"in LMDB for chain `{ek}`. Skipping this entry"
+                        )
+                        continue
+                    multimer_token_cache[cache_key] = unpack_apo_multimer_token_record(
+                        value
+                    )
+                if asym_id not in multimer_token_cache[cache_key]:
                     self.logger.warning(
-                        f"Apo multimer structure tokens {source}:{key} not found "
-                        f"in LMDB for chain `{ek}`. Skipping this entry"
+                        f"Apo multimer structure tokens {source}:{key} do not contain "
+                        f"asym_id {asym_id}. Skipping chain `{ek}`."
                     )
                     continue
-                multimer_token_cache[cache_key] = unpack_apo_multimer_token_record(value)
-            if asym_id not in multimer_token_cache[cache_key]:
-                self.logger.warning(
-                    f"Apo multimer structure tokens {source}:{key} do not contain "
-                    f"asym_id {asym_id}. Skipping chain `{ek}`."
+                self._insert_structure_tokens(
+                    tokenized,
+                    c_i,
+                    apo_i,
+                    multimer_token_cache[cache_key][asym_id],
+                    key=f"{source}:{key}",
                 )
-                continue
-            self._insert_structure_tokens(
-                tokenized,
-                c_i,
-                multimer_token_cache[cache_key][asym_id],
-                key=f"{source}:{key}",
-            )
 
     def determine_confidence_train_data(self, metadata: Metadata) -> bool:
         # For RCSB training dataset, we only train confidence head on the

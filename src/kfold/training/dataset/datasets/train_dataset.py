@@ -82,6 +82,7 @@ class TrainingDataset(BaseLMDBDataset):
         prior_sampler: prior_sampling.PriorSampler | None,
         safe_load: bool,
         max_chains: int,
+        max_apo: int,
         max_tokens: int,
         max_sequence_tokens: int,
     ) -> None:
@@ -120,6 +121,7 @@ class TrainingDataset(BaseLMDBDataset):
             prior_sampler,
             safe_load=safe_load,
             train=True,
+            max_apo=max_apo,
         )
         self.config: TrainingDatasetConfig = config
         if self.seed is not None:
@@ -130,6 +132,7 @@ class TrainingDataset(BaseLMDBDataset):
 
         # For pre-cropping (RefStructure)
         self.max_chains: int = max_chains
+        self.max_apo: int = max_apo
         # For main cropping (TokenizedStructure)
         self.max_tokens: int = max_tokens
         self.max_sequence_tokens: int = max_sequence_tokens
@@ -221,12 +224,13 @@ class TrainingDataset(BaseLMDBDataset):
 
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
+        apo_uid_dict = self.get_apo_uids(ref_struct, apo_lookup)
 
         # Sample prior coordinates for diffusion bridge model.
         prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
 
         # Tokenization
-        tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, apo_uid_dict, prior_coords, rng)
 
         # Populate structure tokens for apo structure (in-place)
         self.populate_structure_tokens(tokenized, apo_lookup)
@@ -275,6 +279,7 @@ class TrainingDataset(BaseLMDBDataset):
         self,
         ref_struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
+        apo_uid_dict: dict[int, np.ndarray],
         prior_coords: np.ndarray,
         rng: np.random.Generator,
     ) -> TokenizedStructure:
@@ -286,6 +291,8 @@ class TrainingDataset(BaseLMDBDataset):
             ref_struct,
             rng,
             apo_coords=apo_dict,
+            apo_uids=apo_uid_dict,
+            num_apo=self.max_apo,
             prior_coords=prior_coords,
             constraints=constraints,
         )
