@@ -11,8 +11,8 @@ loss:
 
 data:
   max_chains: 20
-  max_tokens: 512
-  max_sequence_tokens: 1024
+  max_tokens: 640
+  max_sequence_tokens: 1280
 
   ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
   data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
@@ -42,12 +42,12 @@ data:
       name: AFDB-short
       weight: 0.004
 
-    # RNA Monomer (0.5%)
+    # RNA Monomer (2.0%)
     - _yaml_: "../dataset/distill-rna-monomer.yaml"
       name: Rfam
-      weight: 0.005
+      weight: 0.020
 
-    # Protein-Protein (14%)
+    # Protein-Protein (13.5%)
     - _yaml_: "../dataset/distill-homodimer.yaml"
       manifest_path: /cache/wykim_lab/kfold_data/v260701_af3/dataset/AFDB-homodimer/manifest_08.msgpack
       name: AFDB-homodimer
@@ -58,9 +58,9 @@ data:
       name: AFDB-heterodimer
       weight: 0.030
 
-    - _yaml_: "../dataset/distill-synthetic.yaml"
+    - _yaml_: "../dataset/distill-interface.yaml"
       name: Biogrid
-      weight: 0.010
+      weight: 0.005
 
     # Protein-DNA (2%)
     - _yaml_: "../dataset/distill-complex.yaml"
@@ -68,14 +68,14 @@ data:
       weight: 0.020
 
     # Protein-RNA (0.5%)
-    - _yaml_: "../dataset/distill-synthetic.yaml"
+    - _yaml_: "../dataset/distill-interface.yaml"
       name: ENCORE
       weight: 0.005
 
-    # Protein-ligand, TPD (2%)
+    # Protein-ligand, TPD (1%)
     - _yaml_: "../dataset/distill-interface.yaml"
       name: TPD
-      weight: 0.020
+      weight: 0.010
 
   val_datasets:
     - _yaml_: "../dataset/rcsb-val.yaml"
