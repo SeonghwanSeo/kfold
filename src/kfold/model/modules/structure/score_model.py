@@ -1,17 +1,20 @@
+from dataclasses import dataclass
+
 import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.folding.diffusion import DiffusionStack
-from kfold.utils.registry import SCORE_MODEL, BaseConfig
+from kfold.utils.config import configurable
 
 
-@SCORE_MODEL.register()
+@configurable
 class DiffusionModule(torch.nn.Module):
     """Diffusion module
     Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
     """
 
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Initialize the diffusion module.
 
         Parameters

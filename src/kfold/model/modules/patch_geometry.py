@@ -1,5 +1,6 @@
 import math
 import time
+from dataclasses import dataclass
 from typing import TypedDict
 
 import torch
@@ -7,7 +8,7 @@ import torch.nn as nn
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives import LayerNorm, Linear
-from kfold.utils.registry import BaseConfig
+from kfold.utils.config import configurable
 
 CROP_UNKNOWN = 0
 CROP_CONTIGUOUS = 1
@@ -41,8 +42,10 @@ class _PatchPairBatch(TypedDict):
     hard_negative: torch.Tensor
 
 
+@configurable
 class PatchPairGeometryHead(nn.Module):
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         enabled: bool = False
         channel_z: int = 256
         num_bins: int = 64

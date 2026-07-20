@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import torch
 
 from kfold.data.types.model_input import FoldingInput
@@ -8,14 +10,15 @@ from kfold.model.layers.folding.embeddings import (
 )
 from kfold.model.layers.folding.input_encoder import InputFeatureEmbedder
 from kfold.model.primitives import LinearNoBias
-from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
+from kfold.utils.config import configurable
 
 
-@INPUT_EMBEDDER.register()
+@configurable
 class InputEmbedder(torch.nn.Module):
     """Input embedding module for KFold model."""
 
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Configuration for the Input embedding module.
 
         Parameters

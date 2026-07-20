@@ -3,12 +3,10 @@
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.utils.registry import MAIN_MODULE
 
 from .model import KFold, KFoldConfig
 
 
-@MAIN_MODULE.register()
 class KFold_Light(KFold):
     """KFold without protein structure-encoder conditioning."""
 

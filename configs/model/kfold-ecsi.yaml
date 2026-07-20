@@ -1,7 +1,4 @@
 # === Model Configuration === #
-_registry_: "main_module"
-_class_: KFold
-
 # kernel settings
 kernel_cuequivariance: true
 
@@ -28,6 +25,10 @@ trunk:
   num_refine_blocks: 2
   dropout: 0.25
   blocks_per_ckpt: null
+
+parcae:
+  state_init: trunc_normal
+  decay_init: 0.4472135954999579
 
 score_model:
   _yaml_: "module/score_model.yaml"

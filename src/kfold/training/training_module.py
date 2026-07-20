@@ -26,7 +26,6 @@ from kfold.training.utils.binned_loss_logging import (
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
 from kfold.utils import confidence_metrics
 from kfold.utils.geometry.rigid_align import compute_rmsd
-from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
 from .metrics import structure_metrics as validation_metrics
@@ -290,8 +289,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Initialize model here
         model_config: KFoldConfig = self.global_config.model
-        model_cls = MAIN_MODULE[model_config._class_]
-        self.model: KFold = model_cls(model_config)
+        self.model = KFold(model_config)
 
         # Compile
         if self.compile_config.enabled:

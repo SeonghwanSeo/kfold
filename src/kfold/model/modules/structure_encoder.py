@@ -1,4 +1,5 @@
 import contextlib
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -10,7 +11,7 @@ from kfold.model.layers.struct_enc import (
     FullAtomTokenizer,
     ProteinNetEncoder,
 )
-from kfold.utils.registry import STRUCTURE_ENCODER, BaseConfig
+from kfold.utils.config import configurable
 
 # AF2 residue types
 restypes = [
@@ -20,13 +21,14 @@ restypes = [
 restype_order = {restype: i for i, restype in enumerate(restypes)}
 
 
-@STRUCTURE_ENCODER.register()
+@configurable
 class StructureEncoder(torch.nn.Module):
     bb_tok: BackboneTokenizer
     fa_tok: FullAtomTokenizer
     encoder: ProteinNetEncoder
 
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Configuration for UniTok structure encoder.
 
         Attributes
