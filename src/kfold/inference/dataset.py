@@ -18,7 +18,7 @@ class InferenceInput(NamedTuple):
     query: Query
     ref_struct: RefStructure
     f_input: FoldingInput
-    struct_token_inputs: dict[int, dict]
+    struct_token_records: list[list[dict]]
 
 
 def next_multiple(n: int, divisor: int) -> int:
@@ -53,12 +53,12 @@ class InferenceDataset(torch.utils.data.Dataset):
         query: Query = self.queries[index]
 
         # Prepare input data
-        ref_struct, _, f_input, struct_token_inputs = self.data_pipeline.run(query)
+        ref_struct, _, f_input, struct_token_records = self.data_pipeline.run(query)
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
 
-        return InferenceInput(query, ref_struct, f_input, struct_token_inputs)
+        return InferenceInput(query, ref_struct, f_input, struct_token_records)
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 64"""

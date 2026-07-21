@@ -152,7 +152,7 @@ def dry_run(args):
         if input is None:
             continue  # skip invalid batch
         # Unpack input
-        query, ref_struct, f_input, struct_token_inputs = input  # noqa
+        query, ref_struct, f_input, struct_token_records = input  # noqa
         pbar.set_postfix({"query": query.name, "num_tokens": ref_struct.num_tokens})
 
     et = time.time()
@@ -240,8 +240,8 @@ def main():
         query: Query
         ref_struct: RefStructure
         f_input: FoldingInput
-        struct_token_inputs: dict[int, dict]
-        query, ref_struct, f_input, struct_token_inputs = input
+        struct_token_records: list[list[dict]]
+        query, ref_struct, f_input, struct_token_records = input
         pbar.set_postfix({"query": query.name, "num_tokens": ref_struct.num_tokens})
 
         name: str = query.name
@@ -259,7 +259,7 @@ def main():
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             if hasattr(model, "prot_struct_encoder"):
                 apply_apo_structure_tokens(
-                    f_input, struct_token_inputs, model.prot_struct_encoder
+                    f_input, struct_token_records, model.prot_struct_encoder
                 )
             model_out, time_log = model.inference(  # noqa
                 f_input,

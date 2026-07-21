@@ -62,11 +62,11 @@ class KFoldInferenceClient(pl.LightningModule):
 
     # === Main forward method === #
     def forward(
-        self, f_input: FoldingInput, struct_token_inputs: dict[int, dict]
+        self, f_input: FoldingInput, struct_token_records: list[list[dict]]
     ) -> dict[str, dict[str, torch.Tensor]]:
         if hasattr(self.model, "prot_struct_encoder"):
             apply_apo_structure_tokens(
-                f_input, struct_token_inputs, self.model.prot_struct_encoder
+                f_input, struct_token_records, self.model.prot_struct_encoder
             )
         dict_out, _ = self.model.inference(
             f_input,
@@ -87,7 +87,7 @@ class KFoldInferenceClient(pl.LightningModule):
             - Query: the input query.
             - RefStructure: the reference structure for the query.
             - FoldingInput: the input features for the model.
-            - struct_token_inputs: raw apo structures and sequence mappings.
+            - struct_token_records: raw apo structures and target ranges.
 
         Returns
         -------
@@ -100,7 +100,7 @@ class KFoldInferenceClient(pl.LightningModule):
             return None  # Skip empty batch (occured by processing error)
 
         # Unpack batch and validate
-        query, ref_struct, f_input, struct_token_inputs = batch
+        query, ref_struct, f_input, struct_token_records = batch
         assert query.seed >= 0  # seed should be overridden by user input
 
         # HACK: Set random seed for reproducibility
@@ -109,7 +109,7 @@ class KFoldInferenceClient(pl.LightningModule):
 
         # === Run model inference === #
         try:
-            model_out = self(f_input, struct_token_inputs)
+            model_out = self(f_input, struct_token_records)
         except Exception as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 name = query.name
@@ -171,7 +171,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
         pl_module: KFoldInferenceClient,
         prediction: tuple[Query, RefStructure, FoldingInput, dict],
         batch_indices: list[int],
-        batch: list[tuple[Query, RefStructure, FoldingInput, dict[int, dict]]],
+        batch: list[tuple[Query, RefStructure, FoldingInput, list[list[dict]]]],
         batch_idx: int,
         dataloader_idx: int,
     ) -> None:

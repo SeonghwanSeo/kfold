@@ -9,8 +9,16 @@ sequences:
       id: ["A", "B"]
       sequence: "GKMS..."
       description: "Example protein chain" (optional)
-      apo: "protein_apo.pdb" (optional)
-      prior: ["protein_prior_1.pdb", "protein_prior_2.pdb"] (optional)
+      apo: [
+        "protein_apo_1.pdb",
+        "protein_apo_2.pdb",
+        ...
+      ]
+      prior: [
+        "protein_prior_1.pdb",
+        "protein_prior_2.pdb",
+        ...
+      ] (optional)
       modifications:
         "1": "6OG"
         "4": "SEP"
@@ -26,7 +34,7 @@ multimer_sequences:
       id: ["H:L", "M:N"]
       sequence: "GKMS:ACDEFGHIKLMNPQRSTVWY"
       description: "Antibody Fab"
-      apo: "fab_apo.pdb" (optional)
+      apo: ["fab_apo_1.pdb", "fab_apo_2.pdb", ...]
       prior: ["fab_prior_1.pdb", "fab_prior_2.pdb"] (optional)
 ```
 """
@@ -179,11 +187,6 @@ class PolymerSequence(BaseSequence):
     sequence: str
     modifications: dict[int, str] = dataclasses.field(default_factory=dict)
 
-    # Optional custom apo and prior files for protein and RNA sequences
-    # WARN: This is experimental and not fully supported yet. Use with caution.
-    apo: str | None = None
-    prior: list[str] | None = None
-
     def __len__(self) -> int:
         """Return the number of residues in the protein sequence."""
         return len(self.sequence)
@@ -198,23 +201,6 @@ class PolymerSequence(BaseSequence):
                     f"Invalid residue/base '{restype}' for chain type {self.ctype}. "
                     f"Allowed tokens: {allowed_tokens}"
                 )
-
-        # Check that the apo and prior files exist if provided
-        if self.apo is not None:
-            if not isinstance(self.apo, str) or not self.apo:
-                raise ValueError("Apo must be a non-empty file path string.")
-            if not Path(self.apo).exists():
-                raise ValueError(f"Apo file does not exist: {self.apo}")
-        if self.prior is not None:
-            if not isinstance(self.prior, list) or not self.prior:
-                raise ValueError("Prior must be a non-empty list of file path strings.")
-            for prior_file in self.prior:
-                if not isinstance(prior_file, str) or not prior_file:
-                    raise ValueError(
-                        f"Prior file paths must be non-empty strings, got: {prior_file!r}"
-                    )
-                if not Path(prior_file).exists():
-                    raise ValueError(f"Prior file does not exist: {prior_file}")
 
     @functools.cached_property
     def ccd_sequence(self) -> list[str]:
@@ -236,6 +222,25 @@ class ProteinSequence(PolymerSequence):
     ctype: ClassVar[C.ChainType] = C.ChainType.PROTEIN
     seqtype: ClassVar[str] = "protein"
 
+    # One or more apo structures may be provided for protein sequences.
+    apo: list[str] | None = None
+    prior: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.apo is None:
+            raise NotImplementedError("Apo sampling is not integrated yet.")
+        if self.apo is not None:
+            if len(self.apo) == 0:
+                raise ValueError("Apo must be a non-empty list of file path strings.")
+            for apo_file in self.apo:
+                if not Path(apo_file).is_file():
+                    raise ValueError(f"Apo file does not exist: {apo_file}")
+        if self.prior is not None:
+            for prior_file in self.prior:
+                if not Path(prior_file).is_file():
+                    raise ValueError(f"Prior file does not exist: {prior_file}")
+
 
 @dataclasses.dataclass(kw_only=True)
 class DNASequence(PolymerSequence):
@@ -243,20 +248,6 @@ class DNASequence(PolymerSequence):
 
     ctype: ClassVar[C.ChainType] = C.ChainType.DNA
     seqtype: ClassVar[str] = "dna"
-
-    def __post_init__(self):
-        # NOTE: For DNA sequences, we do not support apo and prior.
-        if self.apo is not None:
-            raise NotImplementedError(
-                "Apo files are not supported for DNA sequences. "
-                "Please remove the 'apo' field from the input YAML/JSON file."
-            )
-        if self.prior is not None:
-            raise NotImplementedError(
-                "Prior files are not supported for DNA sequences. "
-                "Please remove the 'prior' field from the input YAML/JSON file."
-            )
-        super().__post_init__()
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -315,7 +306,7 @@ class ProteinMultimerSequence(BaseSequenceGroup):
     sequence2: str
     modifications1: dict[int, str] = dataclasses.field(default_factory=dict)
     modifications2: dict[int, str] = dataclasses.field(default_factory=dict)
-    apo: str | None = None
+    apo: list[str] | None = None
     prior: list[str] | None = None
 
     def __len__(self) -> int:
@@ -350,26 +341,21 @@ class ProteinMultimerSequence(BaseSequenceGroup):
                         f"Invalid residue '{aa}' in protein multimer sequence{index}."
                     )
 
+        if self.apo is None:
+            raise NotImplementedError("Apo sampling is not integrated yet.")
+
         if self.apo is not None:
-            if not isinstance(self.apo, str) or not self.apo:
+            if len(self.apo) == 0:
                 raise ValueError(
-                    "Protein multimer 'apo' must be a non-empty file path string."
+                    "Protein multimer 'apo' must be a non-empty list of "
+                    "file path strings."
                 )
-            if not Path(self.apo).exists():
-                raise ValueError(f"Apo file does not exist: {self.apo}")
+            for apo_file in self.apo:
+                if not Path(apo_file).is_file():
+                    raise ValueError(f"Apo file does not exist: {apo_file}")
         if self.prior is not None:
-            if not isinstance(self.prior, list) or not self.prior:
-                raise ValueError(
-                    "Protein multimer 'prior' must be a non-empty list of file "
-                    "path strings."
-                )
             for prior_file in self.prior:
-                if not isinstance(prior_file, str) or not prior_file:
-                    raise ValueError(
-                        "Protein multimer prior paths must be non-empty strings, "
-                        f"got: {prior_file!r}"
-                    )
-                if not Path(prior_file).exists():
+                if not Path(prior_file).is_file():
                     raise ValueError(f"Prior file does not exist: {prior_file}")
 
     @functools.cached_property
@@ -459,7 +445,7 @@ class Query:
             f.write(self.yaml)
 
 
-def resolve_structure_path(structure_path: str, input_dir: str | Path) -> str:
+def resolve_structure_path(structure_path: str | Path, input_dir: str | Path) -> str:
     """Resolve a custom structure path based on the search priority.
 
     Paths are resolved in the following priority:
@@ -543,13 +529,15 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
                 sequence_info["sequence"], sequence_info.get("modifications", {})
             )
 
-        if chain_type in {"protein", "rna"}:
+        if chain_type == "protein":
             # Resolve apo path and prior paths
             input_dir = Path(json_or_yaml_path).parent
             if sequence_info.get("apo", None) is not None:
-                sequence_info["apo"] = resolve_structure_path(
-                    sequence_info["apo"], input_dir
-                )
+                apo = sequence_info["apo"]
+                apo = [apo] if isinstance(apo, str) else apo
+                sequence_info["apo"] = [
+                    resolve_structure_path(apo_path, input_dir) for apo_path in apo
+                ]
 
             if sequence_info.get("prior", None) is not None:
                 sequence_info["prior"] = [
@@ -558,7 +546,7 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
                 ]
             elif sequence_info.get("apo", None) is not None:
                 # If apo is provided but prior is not, set prior to be the same as apo
-                sequence_info["prior"] = [sequence_info["apo"]]
+                sequence_info["prior"] = sequence_info["apo"].copy()
 
         match chain_type:
             case "protein":
@@ -597,7 +585,11 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
         # Resolve apo path and prior paths
         input_dir = Path(json_or_yaml_path).parent
         if multimer_info.get("apo", None) is not None:
-            multimer_info["apo"] = resolve_structure_path(multimer_info["apo"], input_dir)
+            apo = multimer_info["apo"]
+            apo = [apo] if isinstance(apo, str) else apo
+            multimer_info["apo"] = [
+                resolve_structure_path(apo_path, input_dir) for apo_path in apo
+            ]
 
         if multimer_info.get("prior", None) is not None:
             multimer_info["prior"] = [
@@ -606,7 +598,7 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
             ]
         elif multimer_info.get("apo", None) is not None:
             # If apo is provided but prior is not, set prior to be the same as apo
-            multimer_info["prior"] = [multimer_info["apo"]]
+            multimer_info["prior"] = multimer_info["apo"].copy()
 
         mseq = ProteinMultimerSequence(**multimer_info)
         multimer_sequences.append(mseq)
@@ -795,11 +787,25 @@ def validate_input_dicts(
                     "Ligand chain cannot have both 'smiles' and 'ccd' fields."
                 )
 
-        if chain_type in {"protein", "rna"}:
+        if chain_type in {"dna", "rna"} and (
+            "apo" in chain_info or "prior" in chain_info
+        ):
+            raise ValueError(
+                f"'{chain_type}' entries do not support 'apo' or 'prior' fields."
+            )
+
+        if chain_type == "protein":
             apo = chain_info.get("apo")
-            if apo is not None and (not isinstance(apo, str) or not apo):
+            valid_apo = isinstance(apo, str) and bool(apo)
+            valid_apo = valid_apo or (
+                isinstance(apo, list)
+                and bool(apo)
+                and all(isinstance(path, str) and path for path in apo)
+            )
+            if apo is not None and not valid_apo:
                 raise ValueError(
-                    f"'{chain_type}' apo must be a non-empty file path string."
+                    "'protein' apo must be a file path string or a non-empty list "
+                    "of file path strings."
                 )
 
             prior = chain_info.get("prior")
@@ -895,8 +901,18 @@ def validate_multimer_input_dicts(
             )
 
         apo = chain_info.get("apo")
-        if apo is not None and (not isinstance(apo, str) or not apo):
-            raise ValueError("Protein multimer 'apo' must be a file path string.")
+        if apo is not None and not (
+            (isinstance(apo, str) and bool(apo))
+            or (
+                isinstance(apo, list)
+                and bool(apo)
+                and all(isinstance(path, str) and path for path in apo)
+            )
+        ):
+            raise ValueError(
+                "Protein multimer 'apo' must be a file path string or a non-empty "
+                "list of file path strings."
+            )
 
         prior = chain_info.get("prior")
         if prior is not None and (
