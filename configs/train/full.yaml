@@ -99,7 +99,7 @@ training:
 validation:
   # Validation step hyperparameters
   num_recycles: 3
-  num_steps: 200
+  num_steps: 100
   num_diffusion_samples: 5
   save_predictions: false
   return_traj: false
