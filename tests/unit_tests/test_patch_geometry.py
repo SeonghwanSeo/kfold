@@ -76,33 +76,6 @@ def test_patch_geometry_head_and_loss_on_spatial_hard_negatives():
     assert all(p.grad is not None for p in _active_params(head))
 
 
-def test_patch_geometry_post_pool_layers_run_once_across_chunks():
-    head = PatchPairGeometryHead(
-        PatchPairGeometryHead.Config(
-            enabled=True,
-            channel_z=16,
-            patch_size=4,
-            max_patches_per_chain=2,
-            max_patch_pairs=8,
-            pool_chunk_size=1,
-        )
-    )
-    calls = 0
-
-    def count_calls(*_):
-        nonlocal calls
-        calls += 1
-
-    handle = head.transition.register_forward_hook(count_calls)
-    try:
-        out = head(_fake_input(), torch.randn(1, 16, 16, 16))
-    finally:
-        handle.remove()
-
-    assert out["logits"].shape[0] > 1
-    assert calls == 1
-
-
 def test_patch_geometry_head_touches_active_params_without_patch_pairs():
     head = PatchPairGeometryHead(
         PatchPairGeometryHead.Config(

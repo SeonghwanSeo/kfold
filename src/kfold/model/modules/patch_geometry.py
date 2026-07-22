@@ -38,7 +38,6 @@ class PatchPairGeometryHead(nn.Module):
         patch_size: int = 16
         max_patches_per_chain: int = 8
         max_patch_pairs: int = 256
-        pool_chunk_size: int = 32
         pool_max_tokens_per_patch: int = 0
         interface_cutoff: float = 12.0
         positive_cutoff: float = 12.0
@@ -54,7 +53,6 @@ class PatchPairGeometryHead(nn.Module):
         self.patch_size: int = int(cfg.patch_size)
         self.max_patches_per_chain: int = int(cfg.max_patches_per_chain)
         self.max_patch_pairs: int = int(cfg.max_patch_pairs)
-        self.pool_chunk_size: int = int(getattr(cfg, "pool_chunk_size", 32))
         self.pool_max_tokens_per_patch: int = int(
             getattr(cfg, "pool_max_tokens_per_patch", 0)
         )
@@ -336,54 +334,35 @@ class PatchPairGeometryHead(nn.Module):
         z: torch.Tensor,
         patch_pairs: _PatchPairBatch,
     ) -> torch.Tensor:
-        chunk_size = max(1, self.pool_chunk_size)
         n_pairs = patch_pairs["target"].numel()
         if n_pairs == 0:
             return z.new_zeros((0, self.num_bins))
-        pooled_chunks = []
+
         z_flat = z.reshape(-1, self.channel_z)
         seq_len = z.shape[0]
-        for start in range(0, n_pairs, chunk_size):
-            end = min(start + chunk_size, n_pairs)
-            pooled_chunks.append(
-                self._pool_patch_pair_chunk(
-                    z_flat,
-                    seq_len,
-                    patch_pairs["idx_i"][start:end],
-                    patch_pairs["idx_j"][start:end],
-                    patch_pairs["mask_i"][start:end],
-                    patch_pairs["mask_j"][start:end],
-                )
-            )
-        pooled_z = torch.cat(pooled_chunks, dim=0)
-        pooled = self.pool_value(pooled_z)
-        pooled = pooled + self.transition(pooled)
-        return self.out(pooled)
-
-    def _pool_patch_pair_chunk(
-        self,
-        z_flat: torch.Tensor,
-        seq_len: int,
-        idx_i: torch.Tensor,
-        idx_j: torch.Tensor,
-        mask_i: torch.Tensor,
-        mask_j: torch.Tensor,
-    ) -> torch.Tensor:
-        n_pairs = idx_i.shape[0]
+        idx_i = patch_pairs["idx_i"]
+        idx_j = patch_pairs["idx_j"]
         flat_idx_ij = (idx_i[:, :, None] * seq_len + idx_j[:, None, :]).reshape(-1)
         flat_idx_ji = (idx_j[:, None, :] * seq_len + idx_i[:, :, None]).reshape(-1)
-        pair_z = z_flat.index_select(0, flat_idx_ij).view(
+        directional_z = z_flat.index_select(
+            0,
+            torch.cat((flat_idx_ij, flat_idx_ji)),
+        ).view(
+            2,
             n_pairs,
             idx_i.shape[1],
             idx_j.shape[1],
             self.channel_z,
         )
-        pair_z.add_(z_flat.index_select(0, flat_idx_ji).view_as(pair_z)).mul_(0.5)
+        pair_z = directional_z[0] + directional_z[1]
         flat_z = self.norm_z(pair_z.reshape(n_pairs, -1, self.channel_z))
 
-        pair_mask = mask_i[:, :, None] & mask_j[:, None, :]
+        pair_mask = patch_pairs["mask_i"][:, :, None] & patch_pairs["mask_j"][:, None, :]
         flat_mask = pair_mask.reshape(n_pairs, -1)
         score = self.pool_score(flat_z).squeeze(-1).float()
         score = score.masked_fill(~flat_mask, torch.finfo(score.dtype).min)
         alpha = score.softmax(dim=-1).to(flat_z.dtype)
-        return torch.einsum("pn,pnc->pc", alpha, flat_z)
+        pooled_z = torch.einsum("pn,pnc->pc", alpha, flat_z)
+        pooled = self.pool_value(pooled_z)
+        pooled = pooled + self.transition(pooled)
+        return self.out(pooled)
