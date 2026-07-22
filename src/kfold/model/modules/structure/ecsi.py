@@ -668,9 +668,7 @@ class KFoldECSI(BaseStructureModule):
 
             # Early-stage forward-pinned churn.
             span = float(times[0]) - self.churn_end_time
-            weight = (
-                (float(t) - self.churn_end_time) / span if span > 0.0 else 0.0
-            )
+            weight = (float(t) - self.churn_end_time) / span if span > 0.0 else 0.0
             weight = min(max(weight, 0.0), 1.0) ** 2
             effective_churn_factor = self.churn_factor * (
                 1.0 + (self.churn_max_multiplier - 1.0) * weight
@@ -873,7 +871,13 @@ class KFoldECSI(BaseStructureModule):
             dtype=torch.bool,
             device=x.device,
         )
-        bandwidth = distance_sq[:, off_diagonal].median(dim=-1).values
+
+        # NOTE: This is same to median(dim=...), but deterministic.
+        pairwise_distance_sq = distance_sq[:, off_diagonal]
+        pairwise_distance_sq = pairwise_distance_sq.sort(dim=-1).values
+        median_index = (pairwise_distance_sq.shape[-1] - 1) // 2
+        bandwidth = pairwise_distance_sq[:, median_index]
+
         bandwidth = bandwidth.clamp_min(self.svgd_num_eps)
         bandwidth = bandwidth.view(-1, 1, 1)
 
@@ -895,8 +899,7 @@ class KFoldECSI(BaseStructureModule):
         displacement.mul_(mask_4d)
 
         displacement_rms = torch.sqrt(
-            (displacement * displacement).sum(dim=(1, 2, 3))
-            / denominator.squeeze(-1)
+            (displacement * displacement).sum(dim=(1, 2, 3)) / denominator.squeeze(-1)
             + self.svgd_num_eps
         )
         cap = self.svgd_cap_frac * spread_rms
