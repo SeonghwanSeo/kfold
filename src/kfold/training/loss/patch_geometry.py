@@ -2,25 +2,6 @@ import torch
 import torch.nn.functional as F
 
 
-def _binary_average_precision(
-    score: torch.Tensor,
-    target: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor | None:
-    score = score[mask]
-    target = target[mask]
-    if score.numel() == 0 or not target.any() or target.all():
-        return None
-
-    order = torch.argsort(score, descending=True)
-    sorted_target = target[order].to(score.dtype)
-    rank = torch.arange(
-        1, sorted_target.numel() + 1, device=score.device, dtype=score.dtype
-    )
-    precision = sorted_target.cumsum(dim=0) / rank
-    return (precision * sorted_target).sum() / sorted_target.sum().clamp(min=1.0)
-
-
 class PatchPairGeometryLoss(torch.nn.Module):
     def __init__(
         self,
@@ -51,32 +32,19 @@ class PatchPairGeometryLoss(torch.nn.Module):
         logits = patch_output["logits"]
         target = patch_output["target"]
         weight = patch_output["weight"]
-        valid_mask = patch_output["valid_mask"]
-        hard_negative = patch_output["hard_negative"] & valid_mask
+        hard_negative = patch_output["hard_negative"]
 
-        if logits.numel() == 0 or not valid_mask.any():
-            zero = logits.sum() * 0.0
-            return zero, {
-                "patch_geometry_loss": zero.detach(),
-                "patch_geometry_ce_loss": zero.detach(),
-                "patch_geometry_hard_negative_loss": zero.detach(),
-                "patch_geometry_valid_pairs": zero.detach(),
-            }
+        log_prob = F.log_softmax(logits, dim=-1)
+        ce = -log_prob.gather(dim=-1, index=target[:, None]).squeeze(-1)
 
-        b, m, _ = logits.shape
-        ce = F.cross_entropy(
-            logits.reshape(b * m, self.num_bins),
-            target.reshape(b * m),
-            reduction="none",
-        ).view(b, m)
+        denom = weight.sum().clamp(min=1.0)
+        ce_loss = (ce * weight).sum() / denom
 
-        valid_weight = weight * valid_mask.to(weight.dtype)
-        denom = valid_weight.sum().clamp(min=1.0)
-        ce_loss = (ce * valid_weight).sum() / denom
-
-        prob = torch.softmax(logits, dim=-1)
-        p_near = prob[..., : self.near_bin + 1].sum(dim=-1)
-        hard_weight = valid_weight * hard_negative.to(valid_weight.dtype)
+        p_near = torch.logsumexp(
+            log_prob[..., : self.near_bin + 1],
+            dim=-1,
+        ).exp()
+        hard_weight = weight * hard_negative.to(weight.dtype)
         hard_denom = hard_weight.sum().clamp(min=1.0)
         hard_loss = (
             -torch.log1p(-p_near.clamp(max=1.0 - self.eps)) * hard_weight
@@ -84,34 +52,35 @@ class PatchPairGeometryLoss(torch.nn.Module):
 
         loss = ce_loss + self.hard_negative_weight * hard_loss
         with torch.no_grad():
-            near_target = (target <= self.near_bin) & valid_mask
-            far_target = (target > self.near_bin) & valid_mask
-            ap = _binary_average_precision(p_near.detach(), near_target, valid_mask)
+            near_target = target <= self.near_bin
+            far_target = ~near_target
+            pair_count = torch.ones_like(weight).sum()
+            near_count = near_target.to(weight.dtype).sum()
+            far_count = far_target.to(weight.dtype).sum()
+            hard_count = hard_negative.to(weight.dtype).sum()
 
         metrics = {
             "patch_geometry_loss": loss.detach(),
             "patch_geometry_ce_loss": ce_loss.detach(),
             "patch_geometry_hard_negative_loss": hard_loss.detach(),
-            "patch_geometry_valid_pairs": valid_mask.float().sum().detach(),
-            "patch_geometry_hard_negative_pairs": hard_negative.float().sum().detach(),
-            "patch_geometry_near_pairs": near_target.float().sum().detach(),
-            "patch_geometry_far_pairs": far_target.float().sum().detach(),
-            "patch_geometry_target_near_rate": near_target.float().sum().detach()
-            / valid_mask.float().sum().clamp(min=1.0).detach(),
-            "patch_geometry_pred_near_mass": p_near[valid_mask].mean().detach(),
+            "patch_geometry_valid_pairs": pair_count.detach(),
+            "patch_geometry_hard_negative_pairs": hard_count.detach(),
+            "patch_geometry_near_pairs": near_count.detach(),
+            "patch_geometry_far_pairs": far_count.detach(),
+            "patch_geometry_target_near_rate": (
+                near_count / pair_count.clamp(min=1.0)
+            ).detach(),
+            "patch_geometry_pred_near_mass": (
+                p_near.sum() / pair_count.clamp(min=1.0)
+            ).detach(),
+            "patch_geometry_p_near_true_near": (
+                (p_near * near_target).sum() / near_count.clamp(min=1.0)
+            ).detach(),
+            "patch_geometry_false_positive_near_mass": (
+                (p_near * far_target).sum() / far_count.clamp(min=1.0)
+            ).detach(),
+            "patch_geometry_hard_negative_p_near": (
+                (p_near * hard_negative).sum() / hard_count.clamp(min=1.0)
+            ).detach(),
         }
-        if ap is not None:
-            metrics["patch_geometry_near_ap"] = ap.detach()
-        if near_target.any():
-            metrics["patch_geometry_p_near_true_near"] = (
-                p_near[near_target].mean().detach()
-            )
-        if far_target.any():
-            metrics["patch_geometry_false_positive_near_mass"] = (
-                p_near[far_target].mean().detach()
-            )
-        if hard_negative.any():
-            metrics["patch_geometry_hard_negative_p_near"] = (
-                p_near[hard_negative].mean().detach()
-            )
         return loss, metrics

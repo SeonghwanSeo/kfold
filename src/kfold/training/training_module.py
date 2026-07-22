@@ -592,12 +592,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
                     model_output["patch_geometry"]
                 )
-                patch_geometry_metrics |= {
-                    f"patch_geometry_timing_{name}": value.detach()
-                    for name, value in model_output["patch_geometry"]
-                    .get("timing", {})
-                    .items()
-                }
             else:
                 patch_geometry_loss, patch_geometry_metrics = 0.0, {}
         else:
