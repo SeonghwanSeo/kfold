@@ -79,7 +79,7 @@ def parse_args():
     parser.add_argument(
         "--num-steps",
         type=int,
-        default=200,
+        default=100,
         help="Number of diffusion steps to run during inference.",
     )
     parser.add_argument(

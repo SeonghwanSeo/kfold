@@ -36,7 +36,7 @@ class InferenceConfig:
     """
 
     num_recycles: int = 10
-    num_steps: int = 200
+    num_steps: int = 100
     num_samples: int = 5
     # TODO: add more hyperparameters as needed
 
