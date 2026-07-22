@@ -81,7 +81,7 @@ class OptimizerConfig(_Config):
     ema_decay: float = 0.999
     validate_with_ema_after_n_steps: int = 10000
     # multi-phase training
-    load_opt_state_from_checkpoint: bool = True
+    load_opt_state: bool = True
     final_training_stage: bool = False
 
 
@@ -282,6 +282,7 @@ class KFoldTrainingModule(pl.LightningModule):
             submodules_to_ignore=self.submodules_to_ignore_for_ema,
         )
         self.stored_weights: dict[str, torch.Tensor] | None = None
+        self.last_lr_step = -1
 
         # Setup losses and metrics
         self.setup_losses()
@@ -480,9 +481,14 @@ class KFoldTrainingModule(pl.LightningModule):
         else:
             raise NotImplementedError(f"Optimizer {config.opt} not implemented yet.")
 
+        if self.last_lr_step != -1:
+            for param_group in optimizer.param_groups:
+                param_group.setdefault("initial_lr", config.base_lr)
+
         if config.lr_scheduler == "af3":
             scheduler = AF3LRScheduler(
                 optimizer,
+                last_epoch=self.last_lr_step,
                 base_lr=config.base_lr,
                 max_lr=config.max_lr,
                 warmup_no_steps=config.lr_warmup_no_steps,
@@ -1239,15 +1245,6 @@ class KFoldTrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        if self.config.optimizer.load_opt_state_from_checkpoint is False:
-            # When loading optimizer state from checkpoint is disabled,
-            # replace the optimizer state in the checkpoint with the initialized state.
-            state = checkpoint["optimizer_states"][0]
-            init_state = self.configure_optimizers()[0][0].state_dict()
-            state["state"] = init_state["state"]
-            state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
-            # checkpoint.pop("lr_schedulers", None)
-            #
         # Load EMA state dict
         self.load_ema_state_dict(checkpoint["ema"])
 

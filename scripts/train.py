@@ -265,6 +265,23 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
     return trainer
 
 
+def fit_with_initialized_optimizer_state(
+    trainer: pl.Trainer,
+    model_module: KFoldTrainingModule,
+    data_module: TrainingDataModule,
+    checkpoint_path: str,
+) -> None:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    model_module.load_state_dict(checkpoint["state_dict"], strict=True)
+    model_module.on_load_checkpoint(checkpoint)
+    model_module.last_lr_step = checkpoint["global_step"]
+    trainer.fit_loop.load_state_dict(checkpoint["loops"]["fit_loop"])
+    del checkpoint  # Free memory
+
+    trainer.fit(model_module, datamodule=data_module)
+
+
 def train(args) -> None:
     # To ignore warning
     torch.set_float32_matmul_precision("high")
@@ -283,11 +300,23 @@ def train(args) -> None:
     if trainer.is_global_zero:
         print_config(cfg)
 
-    trainer.fit(
-        model_module,
-        datamodule=data_module,
-        ckpt_path=args.resume_from_checkpoint,
-    )
+    if cfg.train.optimizer.load_opt_state:
+        trainer.fit(
+            model_module,
+            datamodule=data_module,
+            ckpt_path=args.resume_from_checkpoint,
+        )
+    else:
+        if args.resume_from_checkpoint is None:
+            raise ValueError(
+                "--resume_from_checkpoint is required when load_opt_state is false."
+            )
+        fit_with_initialized_optimizer_state(
+            trainer,
+            model_module,
+            data_module,
+            args.resume_from_checkpoint,
+        )
 
 
 if __name__ == "__main__":
