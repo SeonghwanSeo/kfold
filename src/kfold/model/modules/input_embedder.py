@@ -34,7 +34,14 @@ class InputEmbedder(torch.nn.Module):
             The atom encoder blocks.
         atom_encoder_heads: int
             The atom encoder heads.
-            The number of bins for apo distance map encoding.
+        ckpt_atom_stack : bool
+            Whether to checkpoint the complete atom transformer stack.
+        constraint_min_dist : float
+            The minimum distance for constraint encoding.
+        constraint_max_dist : float
+            The maximum distance for constraint encoding.
+        constraint_bin_size : float
+            The distance bin width for constraint encoding.
         """
 
         channel_s: int = 384
@@ -43,6 +50,7 @@ class InputEmbedder(torch.nn.Module):
         channel_atompair: int = 16
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
+        ckpt_atom_stack: bool = False
         # Constraint-related parameters
         constraint_min_dist: float = 2.0
         constraint_max_dist: float = 20.0
@@ -62,6 +70,7 @@ class InputEmbedder(torch.nn.Module):
             channel_atompair=cfg.channel_atompair,
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
+            ckpt_atom_stack=cfg.ckpt_atom_stack,
         )
 
         # Initial linear layers for single and pair representations

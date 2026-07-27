@@ -50,6 +50,8 @@ class DiffusionModule(torch.nn.Module):
             The number of heads in the atom decoder, by default 4.
         blocks_per_ckpt : int | None, optional
             The number of blocks per checkpoint, by default None.
+        ckpt_atom_stack : bool, optional
+            Whether to checkpoint each complete atom transformer stack.
         """
 
         channel_a: int = 768
@@ -67,6 +69,7 @@ class DiffusionModule(torch.nn.Module):
         atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
         blocks_per_ckpt: int | None = None
+        ckpt_atom_stack: bool = False
 
     def __init__(self, cfg, kernel_config):
         super().__init__()
@@ -89,6 +92,7 @@ class DiffusionModule(torch.nn.Module):
             atom_decoder_blocks=cfg.atom_decoder_blocks,
             atom_decoder_heads=cfg.atom_decoder_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
+            ckpt_atom_stack=cfg.ckpt_atom_stack,
         )
 
     def do_compile(self, **kwargs):

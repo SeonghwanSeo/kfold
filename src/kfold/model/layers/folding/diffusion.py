@@ -162,6 +162,7 @@ class DiffusionStack(nn.Module):
         atom_decoder_blocks: int = 3,
         atom_decoder_heads: int = 4,
         blocks_per_ckpt: int | None = None,
+        ckpt_atom_stack: bool = False,
     ) -> None:
         """Initialize the diffusion module.
 
@@ -200,6 +201,8 @@ class DiffusionStack(nn.Module):
         blocks_per_ckpt : int | None, optional
             The number of blocks per checkpoint for gradient checkpointing,
             by default None.
+        ckpt_atom_stack : bool, optional
+            Whether to checkpoint each complete atom transformer stack.
 
         """
         super().__init__()
@@ -246,6 +249,7 @@ class DiffusionStack(nn.Module):
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
             use_structure=True,
+            ckpt_atom_stack=ckpt_atom_stack,
         )
         if separate_endpoint_atom_encoder:
             self.endpoint_atom_attention_encoder = AtomAttentionEncoder(
@@ -256,6 +260,7 @@ class DiffusionStack(nn.Module):
                 num_blocks=atom_encoder_blocks,
                 num_heads=atom_encoder_heads,
                 use_structure=True,
+                ckpt_atom_stack=ckpt_atom_stack,
             )
             self.layernorm_a_t = LayerNorm(channel_a, create_offset=False)
             self.layernorm_a_endpoint = LayerNorm(channel_a, create_offset=False)
@@ -293,6 +298,7 @@ class DiffusionStack(nn.Module):
             channel_atompair=channel_atompair,
             num_blocks=atom_decoder_blocks,
             num_heads=atom_decoder_heads,
+            ckpt_atom_stack=ckpt_atom_stack,
         )
 
     # === Main forward function for training === #

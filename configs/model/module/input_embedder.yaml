@@ -4,3 +4,4 @@ channel_atom: 128
 channel_atompair: 16
 atom_encoder_blocks: 3
 atom_encoder_heads: 4
+ckpt_atom_stack: false

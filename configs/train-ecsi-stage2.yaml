@@ -9,9 +9,10 @@ model:
   trunk:
     blocks_per_ckpt: 4
   score_model:
-    blocks_per_ckpt: 3
+    blocks_per_ckpt: 4
+    ckpt_atom_stack: true
   confidence_head:
-    blocks_per_ckpt: 1
+    blocks_per_ckpt: 2
 
 train:
   _yaml_: "train/stage_2.yaml"

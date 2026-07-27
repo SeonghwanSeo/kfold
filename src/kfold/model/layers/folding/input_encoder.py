@@ -19,6 +19,7 @@ class InputFeatureEmbedder(torch.nn.Module):
         channel_atompair: int = 16,
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
+        ckpt_atom_stack: bool = False,
     ) -> None:
         """Initialize the Input feature embedding module.
 
@@ -34,6 +35,8 @@ class InputFeatureEmbedder(torch.nn.Module):
             The number of blocks in atom encoder.
         atom_encoder_heads: int,
             The number of heads in atom encoder.
+        ckpt_atom_stack : bool, optional
+            Whether to checkpoint the complete atom transformer stack.
         """
         super().__init__()
 
@@ -50,6 +53,7 @@ class InputFeatureEmbedder(torch.nn.Module):
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
             use_structure=False,
+            ckpt_atom_stack=ckpt_atom_stack,
         )
 
         # residue info
