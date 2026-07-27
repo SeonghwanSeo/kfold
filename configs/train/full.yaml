@@ -168,14 +168,13 @@ loss:
     near_cutoff: 12.0
     hard_negative_weight: 3.0
 
-  # FN-priority contact supervision on active inter-chain interfaces.
+  # Hard-pair exact-bin CE on active inter-chain interfaces.
   # This is inactive unless loss.weights.interface_contact is positive.
   interface_contact_loss:
     num_bins: 64
     min_dist: 2.0
     max_dist: 22.0
     contact_cutoff: 8.0
-    far_cutoff: 20.0
     positive_weight: 0.75
     negative_weight: 0.25
     focal_gamma: 2.0
