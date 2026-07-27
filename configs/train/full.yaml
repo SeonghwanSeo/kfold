@@ -151,6 +151,7 @@ loss:
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
     patch_geometry: 5e-2
+    interface_contact: 5e-2
 
   # Distogram loss
   distogram_loss:
@@ -166,6 +167,19 @@ loss:
     max_dist: 22.0
     near_cutoff: 12.0
     hard_negative_weight: 3.0
+
+  # Hard-pair exact-bin CE on active inter-chain interfaces.
+  # This is inactive unless loss.weights.interface_contact is positive.
+  interface_contact_loss:
+    num_bins: 64
+    min_dist: 2.0
+    max_dist: 22.0
+    contact_cutoff: 8.0
+    positive_weight: 0.75
+    negative_weight: 0.25
+    focal_gamma: 2.0
+    fp_budget_ratio: 4.0
+    eps: 1e-6
 
   # Diffusion loss
   diffusion_loss:
