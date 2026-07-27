@@ -11,7 +11,8 @@ supplied CCD/ETKDG conformer; it is not NeuralPLexer3 Algorithm S3.
 """
 
 import dataclasses
-from typing import Self
+import functools
+from typing import Any, Self
 
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
@@ -111,6 +112,8 @@ class LigandLangevinDynamicsConfig:
     """Configuration for bond-angle harmonic ligand prior perturbation."""
 
     enabled: bool = False
+    backend: str = "vectorized"
+    initial_noise_scale: float = 0.0
     num_steps: int = 100
     dt: float = 0.01
     temperature: float = 1.0
@@ -139,6 +142,12 @@ class LigandLangevinDynamicsSimulator:
 
     @staticmethod
     def _validate_config(config: LigandLangevinDynamicsConfig) -> None:
+        if config.backend not in {"vectorized", "numba"}:
+            raise ValueError(
+                "Ligand Langevin backend must be 'vectorized' or 'numba'."
+            )
+        if config.initial_noise_scale < 0.0:
+            raise ValueError("Initial ligand noise scale must be non-negative.")
         if config.num_steps < 0:
             raise ValueError("num_steps must be non-negative.")
         if config.dt <= 0.0:
@@ -175,7 +184,7 @@ class LigandLangevinDynamicsSimulator:
         num_samples: int,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
-        """Run vectorized restrained Langevin dynamics.
+        """Run restrained Langevin dynamics with the configured backend.
 
         Parameters
         ----------
@@ -214,13 +223,52 @@ class LigandLangevinDynamicsSimulator:
         rng = rng or np.random.default_rng()
         dtype = x_init.dtype
         initial_center = x_init.mean(axis=0, keepdims=True)
-        bond_incidence = _make_incidence_matrix(bond_indices, num_atoms, dtype)
+        if self.config.initial_noise_scale > 0.0:
+            initial_noise = rng.standard_normal(size=x.shape, dtype=dtype)
+            initial_noise *= np.asarray(
+                self.config.initial_noise_scale,
+                dtype=dtype,
+            )
+            x += initial_noise
+            x -= x.mean(axis=1, keepdims=True) - initial_center[None, ...]
         rest_bond_lengths = rest_bond_lengths.astype(dtype, copy=False)
         rest_angles = rest_angles.astype(dtype, copy=False)
-        noise_scale = np.asarray(
-            np.sqrt(2.0 * self.config.temperature * self.config.dt), dtype=dtype
+        # Historical ligand SDE: dx = -grad(U) dt + sqrt(2 T dt) dW.
+        # The NP3 polymer sampler below intentionally uses 2 sqrt(dt).
+        noise_scale = np.sqrt(
+            np.asarray(2, dtype=dtype)
+            * np.asarray(self.config.temperature, dtype=dtype)
+            * np.asarray(self.config.dt, dtype=dtype)
         )
+        stochastic_noise = np.empty(
+            (self.config.num_steps, *x.shape),
+            dtype=dtype,
+        )
+        for step_index in range(self.config.num_steps):
+            stochastic_noise[step_index] = rng.standard_normal(
+                size=x.shape,
+                dtype=dtype,
+            )
+        stochastic_noise *= noise_scale
 
+        if self.config.backend == "numba":
+            kernel = _get_numba_ligand_kernel()
+            return kernel(
+                x,
+                bond_indices,
+                angle_indices,
+                rest_bond_lengths,
+                rest_angles,
+                stochastic_noise,
+                np.asarray(self.config.dt, dtype=dtype),
+                np.asarray(self.config.bond_strength, dtype=dtype),
+                np.asarray(self.config.angle_strength, dtype=dtype),
+                self.config.relaxation_steps,
+                np.asarray(self.config.relaxation_dt, dtype=dtype),
+                initial_center,
+            )
+
+        bond_incidence = _make_incidence_matrix(bond_indices, num_atoms, dtype)
         bond_i = bond_indices[:, 0]
         bond_j = bond_indices[:, 1]
         if len(angle_indices) > 0:
@@ -287,15 +335,146 @@ class LigandLangevinDynamicsSimulator:
             )
             drift *= step_dt
             if is_stochastic_step:
-                noise = rng.standard_normal(size=x.shape, dtype=dtype)
-                noise *= noise_scale
-                drift += noise
+                drift += stochastic_noise[step_index]
             x += drift
 
         # Remove the translational zero mode without constraining rotation.
         x -= x.mean(axis=1, keepdims=True) - initial_center[None, ...]
 
         return x
+
+
+def _run_ligand_langevin_numba_kernel(
+    x: np.ndarray,
+    bond_indices: np.ndarray,
+    angle_indices: np.ndarray,
+    rest_bond_lengths: np.ndarray,
+    rest_angles: np.ndarray,
+    stochastic_noise: np.ndarray,
+    dt: np.floating,
+    bond_strength: np.floating,
+    angle_strength: np.floating,
+    num_relaxation_steps: int,
+    relaxation_dt: np.floating,
+    initial_center: np.ndarray,
+) -> np.ndarray:
+    """Sparse bond-angle integration implementation for Numba."""
+    num_samples, num_atoms, _ = x.shape
+    num_stochastic_steps = len(stochastic_noise)
+    drift = np.empty_like(x)
+    zero = np.float32(0)
+    one = np.float32(1)
+    eps = one / np.float32(100_000_000)
+    cos_limit = np.float32(9_999_999) / np.float32(10_000_000)
+
+    for step_index in range(num_stochastic_steps + num_relaxation_steps):
+        drift.fill(zero)
+        for sample_index in range(num_samples):
+            for bond_index in range(len(bond_indices)):
+                atom_i = bond_indices[bond_index, 0]
+                atom_j = bond_indices[bond_index, 1]
+                dx = x[sample_index, atom_i, 0] - x[sample_index, atom_j, 0]
+                dy = x[sample_index, atom_i, 1] - x[sample_index, atom_j, 1]
+                dz = x[sample_index, atom_i, 2] - x[sample_index, atom_j, 2]
+                distance = np.sqrt(dx * dx + dy * dy + dz * dz)
+                if distance < eps:
+                    continue
+                extension = distance - rest_bond_lengths[bond_index]
+                coefficient = -bond_strength * extension / distance
+                for coordinate, displacement in enumerate((dx, dy, dz)):
+                    force = coefficient * displacement
+                    drift[sample_index, atom_i, coordinate] += force
+                    drift[sample_index, atom_j, coordinate] -= force
+
+            for angle_index in range(len(angle_indices)):
+                atom_i = angle_indices[angle_index, 0]
+                atom_j = angle_indices[angle_index, 1]
+                atom_k = angle_indices[angle_index, 2]
+                vector_i = (
+                    x[sample_index, atom_i] - x[sample_index, atom_j]
+                )
+                vector_k = (
+                    x[sample_index, atom_k] - x[sample_index, atom_j]
+                )
+                norm_i = np.sqrt(
+                    vector_i[0] ** 2
+                    + vector_i[1] ** 2
+                    + vector_i[2] ** 2
+                )
+                norm_k = np.sqrt(
+                    vector_k[0] ** 2
+                    + vector_k[1] ** 2
+                    + vector_k[2] ** 2
+                )
+                if norm_i < eps or norm_k < eps:
+                    continue
+                unit_i = vector_i / norm_i
+                unit_k = vector_k / norm_k
+                cos_angle = (
+                    unit_i[0] * unit_k[0]
+                    + unit_i[1] * unit_k[1]
+                    + unit_i[2] * unit_k[2]
+                )
+                cos_angle = min(cos_limit, max(-cos_limit, cos_angle))
+                angle = np.arccos(cos_angle)
+                sin_angle = np.sqrt(
+                    max(one - cos_angle * cos_angle, eps)
+                )
+                extension = angle - rest_angles[angle_index]
+                scale = angle_strength * extension / sin_angle
+                gradient_i = (cos_angle * unit_i - unit_k) * (
+                    scale / norm_i
+                )
+                gradient_k = (cos_angle * unit_k - unit_i) * (
+                    scale / norm_k
+                )
+                for coordinate in range(3):
+                    drift[sample_index, atom_i, coordinate] -= gradient_i[
+                        coordinate
+                    ]
+                    drift[sample_index, atom_k, coordinate] -= gradient_k[
+                        coordinate
+                    ]
+                    drift[sample_index, atom_j, coordinate] += (
+                        gradient_i[coordinate] + gradient_k[coordinate]
+                    )
+
+        step_dt = (
+            dt if step_index < num_stochastic_steps else relaxation_dt
+        )
+        for sample_index in range(num_samples):
+            for atom_index in range(num_atoms):
+                for coordinate in range(3):
+                    update = step_dt * drift[
+                        sample_index,
+                        atom_index,
+                        coordinate,
+                    ]
+                    if step_index < num_stochastic_steps:
+                        update += stochastic_noise[
+                            step_index,
+                            sample_index,
+                            atom_index,
+                            coordinate,
+                        ]
+                    x[sample_index, atom_index, coordinate] += update
+
+    for sample_index in range(num_samples):
+        center = np.zeros(3, dtype=x.dtype)
+        for atom_index in range(num_atoms):
+            center += x[sample_index, atom_index]
+        center /= num_atoms
+        for atom_index in range(num_atoms):
+            x[sample_index, atom_index] -= center - initial_center[0]
+    return x
+
+
+@functools.cache
+def _get_numba_ligand_kernel() -> Any:
+    """Compile the sparse ligand kernel only when the backend is requested."""
+    from numba import njit
+
+    return njit(cache=True)(_run_ligand_langevin_numba_kernel)
 
 
 def _build_angle_indices(bond_indices: np.ndarray, num_atoms: int) -> np.ndarray:

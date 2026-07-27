@@ -52,18 +52,20 @@ data:
     bioprior:
       noise_scale: 0.5
       max_steps: 10
-    # Generate independent internal ligand conformers around the ETKDG/CCD
-    # initial structure. A short noise-free harmonic correction removes the
-    # larger-step integration bias while preserving approximately 1 A coverage.
+    # Displace the ETKDG/CCD conformer once, then run standard T=1 stochastic
+    # bond-angle Langevin updates. Every step is stochastic; there is no
+    # deterministic correction tail. This gives approximately 2 A aligned
+    # RMSD coverage on sampled real training ligands.
     ligand_langevin:
       enabled: true
-      num_steps: 100
-      dt: 0.01
+      backend: numba
+      initial_noise_scale: 4.0
+      num_steps: 25
+      dt: 0.0075
       temperature: 1.0
-      bond_strength: 50.0
-      angle_strength: 10.0
-      relaxation_steps: 2
-      relaxation_dt: 0.00125
+      bond_strength: 30.0
+      angle_strength: 15.0
+      relaxation_steps: 0
       # Optional safety filters. Null disables sample rejection.
       max_bond_deviation: null
       max_aligned_rmsd: null
