@@ -593,10 +593,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 logits=model_output["distogram"]["logits"],
                 f_input=f_input,
             )
-            interface_contact_weight = self.loss_weights.get(
-                "interface_contact",
-                0.0,
-            )
+            interface_contact_weight = self.loss_weights["interface_contact"]
             if interface_contact_weight > 0:
                 interface_contact_loss, interface_contact_metrics = (
                     self.interface_contact_loss(
@@ -606,7 +603,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 )
             else:
                 interface_contact_loss, interface_contact_metrics = 0.0, {}
-            patch_weight = self.loss_weights.get("patch_geometry", 0.0)
+            patch_weight = self.loss_weights["patch_geometry"]
             if patch_weight > 0 and "patch_geometry" in model_output:
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
                     model_output["patch_geometry"]
@@ -665,8 +662,8 @@ class KFoldTrainingModule(pl.LightningModule):
             loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
             + loss_weights["confidence"] * confidence_loss
-            + loss_weights.get("patch_geometry", 0.0) * patch_geometry_loss
-            + loss_weights.get("interface_contact", 0.0) * interface_contact_loss
+            + loss_weights["patch_geometry"] * patch_geometry_loss
+            + loss_weights["interface_contact"] * interface_contact_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
