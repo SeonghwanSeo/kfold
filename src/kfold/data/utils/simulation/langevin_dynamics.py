@@ -4,7 +4,11 @@ Algorithm S3 "Sampling from the Globular Polymer Prior via Short Langevin Dynami
 
 NOTE (SeonghwanSeo): Since bond information is not constructed in current data pipeline,
 I modified the original algorithm to approximate bond forces using residue centers.
-."""
+
+The ligand simulator below is a separate K-Fold prior perturbation path. It
+restores the historical bond-length and bond-angle harmonic potential around a
+supplied CCD/ETKDG conformer; it is not NeuralPLexer3 Algorithm S3.
+"""
 
 import dataclasses
 from typing import Self
@@ -100,6 +104,273 @@ class LangevinDynamicsSimulator:
             is_constraint=is_constraint,
             rng=rng,
         )
+
+
+@dataclasses.dataclass(kw_only=True)
+class LigandLangevinDynamicsConfig:
+    """Configuration for bond-angle harmonic ligand prior perturbation."""
+
+    enabled: bool = False
+    num_steps: int = 100
+    dt: float = 0.01
+    temperature: float = 1.0
+    bond_strength: float = 50.0
+    angle_strength: float = 10.0
+    relaxation_steps: int = 2
+    relaxation_dt: float = 0.00125
+    max_bond_deviation: float | None = None
+    max_aligned_rmsd: float | None = None
+
+    @classmethod
+    def from_config(cls, config: DictConfig | Self) -> Self:
+        """Create a validated config from a structured or OmegaConf config."""
+        base_cfg = OmegaConf.structured(cls)
+        merged_cfg = OmegaConf.merge(base_cfg, config)
+        return OmegaConf.to_object(merged_cfg)
+
+
+class LigandLangevinDynamicsSimulator:
+    """Sample local ligand conformers around a supplied initial structure."""
+
+    def __init__(self, config: LigandLangevinDynamicsConfig) -> None:
+        config = LigandLangevinDynamicsConfig.from_config(config)
+        self._validate_config(config)
+        self.config = config
+
+    @staticmethod
+    def _validate_config(config: LigandLangevinDynamicsConfig) -> None:
+        if config.num_steps < 0:
+            raise ValueError("num_steps must be non-negative.")
+        if config.dt <= 0.0:
+            raise ValueError("dt must be positive.")
+        if config.temperature < 0.0:
+            raise ValueError("temperature must be non-negative.")
+        if config.bond_strength < 0.0 or config.angle_strength < 0.0:
+            raise ValueError("Harmonic restraint strengths must be non-negative.")
+        if config.relaxation_steps < 0:
+            raise ValueError("relaxation_steps must be non-negative.")
+        if config.relaxation_dt <= 0.0:
+            raise ValueError("relaxation_dt must be positive.")
+        if (
+            config.max_bond_deviation is not None
+            and config.max_bond_deviation <= 0.0
+        ):
+            raise ValueError("max_bond_deviation must be positive.")
+        if config.max_aligned_rmsd is not None and config.max_aligned_rmsd <= 0.0:
+            raise ValueError("max_aligned_rmsd must be positive.")
+
+    def __call__(
+        self,
+        x_init: np.ndarray,
+        bond_indices: np.ndarray,
+        num_samples: int,
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
+        return self.simulate(x_init, bond_indices, num_samples, rng)
+
+    def simulate(
+        self,
+        x_init: np.ndarray,
+        bond_indices: np.ndarray,
+        num_samples: int,
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
+        """Run vectorized restrained Langevin dynamics.
+
+        Parameters
+        ----------
+        x_init : np.ndarray
+            Complete initial ligand coordinates, shape ``[Natom, 3]``.
+        bond_indices : np.ndarray
+            Chain-local bonded atom pairs, shape ``[Nbond, 2]``.
+        num_samples : int
+            Number of independent internal conformers to sample.
+        rng : np.random.Generator, optional
+            Random number generator.
+
+        Returns
+        -------
+        np.ndarray
+            Perturbed coordinates with shape ``[Nsample, Natom, 3]``.
+        """
+        if x_init.ndim != 2 or x_init.shape[-1] != 3:
+            raise ValueError(f"x_init must have shape [Natom, 3], got {x_init.shape}.")
+        if not np.isfinite(x_init).all():
+            raise ValueError("x_init must contain only finite coordinates.")
+        if num_samples < 0:
+            raise ValueError("num_samples must be non-negative.")
+        if num_samples == 0:
+            return np.empty((0, *x_init.shape), dtype=x_init.dtype)
+
+        num_atoms = len(x_init)
+        bond_indices = _normalize_pair_indices(bond_indices, num_atoms)
+        angle_indices = _build_angle_indices(bond_indices, num_atoms)
+        rest_bond_lengths = _compute_bond_lengths(x_init, bond_indices)
+        rest_angles = _compute_angles(x_init, angle_indices)
+        x = np.repeat(x_init[None, ...], num_samples, axis=0)
+        if self.config.num_steps == 0 and self.config.relaxation_steps == 0:
+            return x
+
+        rng = rng or np.random.default_rng()
+        dtype = x_init.dtype
+        initial_center = x_init.mean(axis=0, keepdims=True)
+        bond_incidence = _make_incidence_matrix(bond_indices, num_atoms, dtype)
+        rest_bond_lengths = rest_bond_lengths.astype(dtype, copy=False)
+        rest_angles = rest_angles.astype(dtype, copy=False)
+        noise_scale = np.asarray(
+            np.sqrt(2.0 * self.config.temperature * self.config.dt), dtype=dtype
+        )
+
+        bond_i = bond_indices[:, 0]
+        bond_j = bond_indices[:, 1]
+        if len(angle_indices) > 0:
+            angle_i, angle_j, angle_k = angle_indices.T
+            angle_i_incidence = _make_incidence_matrix(
+                np.stack([angle_i, angle_j], axis=-1), num_atoms, dtype
+            )
+            angle_k_incidence = _make_incidence_matrix(
+                np.stack([angle_k, angle_j], axis=-1), num_atoms, dtype
+            )
+        eps = np.asarray(1e-8, dtype=dtype)
+        cos_limit = np.asarray(1.0 - 1e-7, dtype=dtype)
+        total_steps = self.config.num_steps + self.config.relaxation_steps
+        for step_index in range(total_steps):
+            is_stochastic_step = step_index < self.config.num_steps
+            drift = np.zeros_like(x)
+            if len(bond_indices) > 0:
+                displacement = x[:, bond_i] - x[:, bond_j]
+                distance = np.sqrt(
+                    np.einsum("...d,...d->...", displacement, displacement)
+                )
+                is_valid_bond = distance >= eps
+                extension = distance - rest_bond_lengths[None, :]
+                safe_distance = np.maximum(distance, eps)
+                coefficient = -self.config.bond_strength * extension / safe_distance
+                coefficient *= is_valid_bond
+                bond_drift = displacement * coefficient[..., None]
+                drift += np.matmul(bond_incidence, bond_drift)
+
+            if len(angle_indices) > 0:
+                vector_i = x[:, angle_i] - x[:, angle_j]
+                vector_k = x[:, angle_k] - x[:, angle_j]
+                norm_i = np.sqrt(
+                    np.einsum("...d,...d->...", vector_i, vector_i)
+                )
+                norm_k = np.sqrt(
+                    np.einsum("...d,...d->...", vector_k, vector_k)
+                )
+                is_valid_angle = (norm_i >= eps) & (norm_k >= eps)
+                safe_norm_i = np.maximum(norm_i, eps)
+                safe_norm_k = np.maximum(norm_k, eps)
+                unit_i = vector_i / safe_norm_i[..., None]
+                unit_k = vector_k / safe_norm_k[..., None]
+                cos_angle = np.einsum("...d,...d->...", unit_i, unit_k)
+                np.clip(cos_angle, -cos_limit, cos_limit, out=cos_angle)
+                angle = np.arccos(cos_angle)
+                sin_angle = np.sqrt(np.maximum(1.0 - cos_angle**2, eps))
+                angle_extension = angle - rest_angles[None, :]
+                scale = self.config.angle_strength * angle_extension / sin_angle
+                scale *= is_valid_angle
+                angle_gradient_i = (
+                    cos_angle[..., None] * unit_i - unit_k
+                ) * (scale / safe_norm_i)[..., None]
+                angle_gradient_k = (
+                    cos_angle[..., None] * unit_k - unit_i
+                ) * (scale / safe_norm_k)[..., None]
+                drift -= np.matmul(angle_i_incidence, angle_gradient_i)
+                drift -= np.matmul(angle_k_incidence, angle_gradient_k)
+
+            step_dt = (
+                self.config.dt
+                if is_stochastic_step
+                else self.config.relaxation_dt
+            )
+            drift *= step_dt
+            if is_stochastic_step:
+                noise = rng.standard_normal(size=x.shape, dtype=dtype)
+                noise *= noise_scale
+                drift += noise
+            x += drift
+
+        # Remove the translational zero mode without constraining rotation.
+        x -= x.mean(axis=1, keepdims=True) - initial_center[None, ...]
+
+        return x
+
+
+def _build_angle_indices(bond_indices: np.ndarray, num_atoms: int) -> np.ndarray:
+    """Return all unique graph angles ``i-j-k`` induced by ligand bonds."""
+    neighbors: list[list[int]] = [[] for _ in range(num_atoms)]
+    for atom_i, atom_j in bond_indices:
+        neighbors[int(atom_i)].append(int(atom_j))
+        neighbors[int(atom_j)].append(int(atom_i))
+
+    angle_indices: list[tuple[int, int, int]] = []
+    for center, center_neighbors in enumerate(neighbors):
+        for first_index in range(len(center_neighbors) - 1):
+            for second_index in range(first_index + 1, len(center_neighbors)):
+                angle_indices.append(
+                    (
+                        center_neighbors[first_index],
+                        center,
+                        center_neighbors[second_index],
+                    )
+                )
+    return np.asarray(angle_indices, dtype=np.int64).reshape(-1, 3)
+
+
+def _compute_bond_lengths(
+    coords: np.ndarray, bond_indices: np.ndarray
+) -> np.ndarray:
+    """Compute bond lengths for a fixed ligand topology."""
+    if len(bond_indices) == 0:
+        return np.empty((0,), dtype=coords.dtype)
+    displacement = coords[bond_indices[:, 0]] - coords[bond_indices[:, 1]]
+    return np.linalg.norm(displacement, axis=-1)
+
+
+def _compute_angles(coords: np.ndarray, angle_indices: np.ndarray) -> np.ndarray:
+    """Compute bond angles in radians for a fixed ligand topology."""
+    if len(angle_indices) == 0:
+        return np.empty((0,), dtype=coords.dtype)
+    atom_i, atom_j, atom_k = angle_indices.T
+    vector_i = coords[atom_i] - coords[atom_j]
+    vector_k = coords[atom_k] - coords[atom_j]
+    norm_i = np.linalg.norm(vector_i, axis=-1)
+    norm_k = np.linalg.norm(vector_k, axis=-1)
+    denominator = np.maximum(norm_i * norm_k, 1e-8)
+    cos_angle = np.einsum("...d,...d->...", vector_i, vector_k) / denominator
+    return np.arccos(np.clip(cos_angle, -1.0 + 1e-7, 1.0 - 1e-7))
+
+
+def _normalize_pair_indices(pair_indices: np.ndarray, num_atoms: int) -> np.ndarray:
+    """Validate, canonicalize, and deduplicate undirected atom pairs."""
+    pair_indices = np.asarray(pair_indices, dtype=np.int64)
+    if pair_indices.size == 0:
+        return np.empty((0, 2), dtype=np.int64)
+    if pair_indices.ndim != 2 or pair_indices.shape[1] != 2:
+        raise ValueError(
+            f"pair_indices must have shape [Npair, 2], got {pair_indices.shape}."
+        )
+    if pair_indices.min() < 0 or pair_indices.max() >= num_atoms:
+        raise ValueError("pair_indices contains an out-of-range atom index.")
+    if np.any(pair_indices[:, 0] == pair_indices[:, 1]):
+        raise ValueError("pair_indices cannot contain self edges.")
+    pair_indices = np.sort(pair_indices, axis=1)
+    return np.unique(pair_indices, axis=0)
+
+
+def _make_incidence_matrix(
+    pair_indices: np.ndarray,
+    num_atoms: int,
+    dtype: np.dtype,
+) -> np.ndarray:
+    """Return an atom-by-edge incidence matrix for vectorized force scatter."""
+    incidence = np.zeros((num_atoms, len(pair_indices)), dtype=dtype)
+    edge_index = np.arange(len(pair_indices))
+    incidence[pair_indices[:, 0], edge_index] = 1.0
+    incidence[pair_indices[:, 1], edge_index] = -1.0
+    return incidence
 
 
 def run_langevin_dynamics(
