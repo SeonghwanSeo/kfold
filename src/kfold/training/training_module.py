@@ -220,6 +220,7 @@ class LossConfig(_Config):
     diffusion_loss: Any
     confidence_loss: Any
     patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
+    interface_contact_loss: Any = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -417,6 +418,11 @@ class KFoldTrainingModule(pl.LightningModule):
         self.patch_geometry_loss = loss_fn.patch_geometry.PatchPairGeometryLoss(
             **loss_config.patch_geometry_loss
         )
+        self.interface_contact_loss = (
+            loss_fn.interface_contact.InterfaceContactBalancedLoss(
+                **loss_config.interface_contact_loss
+            )
+        )
 
         # Diffusion loss
         diffusion_loss_config = loss_config.diffusion_loss
@@ -587,6 +593,19 @@ class KFoldTrainingModule(pl.LightningModule):
                 logits=model_output["distogram"]["logits"],
                 f_input=f_input,
             )
+            interface_contact_weight = self.loss_weights.get(
+                "interface_contact",
+                0.0,
+            )
+            if interface_contact_weight > 0:
+                interface_contact_loss, interface_contact_metrics = (
+                    self.interface_contact_loss(
+                        logits=model_output["distogram"]["logits"],
+                        f_input=f_input,
+                    )
+                )
+            else:
+                interface_contact_loss, interface_contact_metrics = 0.0, {}
             patch_weight = self.loss_weights.get("patch_geometry", 0.0)
             if patch_weight > 0 and "patch_geometry" in model_output:
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
@@ -596,6 +615,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 patch_geometry_loss, patch_geometry_metrics = 0.0, {}
         else:
             distogram_loss, distogram_metrics = 0.0, {}
+            interface_contact_loss, interface_contact_metrics = 0.0, {}
             patch_geometry_loss, patch_geometry_metrics = 0.0, {}
 
         if self.train_diffusion_head:
@@ -646,12 +666,14 @@ class KFoldTrainingModule(pl.LightningModule):
             + loss_weights["distogram"] * distogram_loss
             + loss_weights["confidence"] * confidence_loss
             + loss_weights.get("patch_geometry", 0.0) * patch_geometry_loss
+            + loss_weights.get("interface_contact", 0.0) * interface_contact_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
         # Log loss and metrics
         all_metrics = (
             distogram_metrics
+            | interface_contact_metrics
             | patch_geometry_metrics
             | diffusion_metrics
             | confidence_metrics
