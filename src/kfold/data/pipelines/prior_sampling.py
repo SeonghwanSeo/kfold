@@ -58,7 +58,7 @@ class PriorSamplerConfig:
             chain_translation_scale=24.0,
             ligand_augmentation_scale=0.3,
             bioprior=BioPriorConfig(max_steps=0),
-            ligand_langevin=LigandLangevinDynamicsConfig(enabled=True),
+            ligand_langevin=LigandLangevinDynamicsConfig(enabled=False),
             train=False,
         )
 
