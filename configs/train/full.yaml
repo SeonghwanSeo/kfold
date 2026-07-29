@@ -151,7 +151,7 @@ loss:
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
     patch_geometry: 5e-2
-    interface_contact: 5e-2
+    interface_contact: 0
 
   # Distogram loss
   distogram_loss:

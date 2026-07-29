@@ -58,7 +58,7 @@ class PriorSamplerConfig:
             chain_translation_scale=24.0,
             ligand_augmentation_scale=0.3,
             bioprior=BioPriorConfig(max_steps=0),
-            ligand_langevin=LigandLangevinDynamicsConfig(enabled=False),
+            ligand_langevin=LigandLangevinDynamicsConfig(enabled=True),
             train=False,
         )
 
@@ -322,9 +322,7 @@ class PriorSampler:
             return np.repeat(coords[None, ...], num_samples, axis=0)
 
         bond_indices = self.get_ligand_bond_indices(chain)
-        samples = self.ligand_langevin_simulator(
-            coords, bond_indices, num_samples, rng
-        )
+        samples = self.ligand_langevin_simulator(coords, bond_indices, num_samples, rng)
 
         is_valid = self.get_valid_ligand_prior_mask(coords, samples, bond_indices)
         samples[~is_valid] = coords
