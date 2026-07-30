@@ -3,11 +3,23 @@ _yaml_: "full.yaml"
 seed: 3
 
 global_hparams:
-  diffusion_batch_size: 24
+  diffusion_batch_size: 32
+
+init_from_ema:
+  - trunk
 
 loss:
   weights:
     bond: 1.0 # Turn on bond loss (See Section 5.2 for the AF3 paper)
+
+optimizer:
+  max_lr: 0.001
+  lr_decay_factor: 1.0
+
+training:
+  train_trunk: false
+  train_diffusion_head: true
+  train_confidence_head: true
 
 data:
   max_chains: 20

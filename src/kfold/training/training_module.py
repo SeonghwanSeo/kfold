@@ -56,6 +56,9 @@ class TrainConfig:
     validation: "ValidationConfig"
     optimizer: "OptimizerConfig"
     loss: "LossConfig"
+    # Multi-stage training
+    load_opt_state: bool = True
+    init_from_ema: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -80,9 +83,6 @@ class OptimizerConfig(_Config):
     # ema
     ema_decay: float = 0.999
     validate_with_ema_after_n_steps: int = 10000
-    # multi-phase training
-    load_opt_state: bool = True
-    final_training_stage: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -371,7 +371,7 @@ class KFoldTrainingModule(pl.LightningModule):
     def freeze_submodules(self):
         """Freeze submodules based on the training configuration."""
         # FIXME: (SeonghwanSeo) I did not test this function yet.
-        # This is required when we train the confidence module only (Final-training-stage)
+        # This is required when only selected model components are trained.
 
         self.frozen_modules = []
         self.frozen_modules += self.model.get_pretrained_module_names()
@@ -1260,21 +1260,6 @@ class KFoldTrainingModule(pl.LightningModule):
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         # Load EMA state dict
         self.load_ema_state_dict(checkpoint["ema"])
-
-        if self.config.optimizer.final_training_stage:
-            # Confidence-only training, so replace the structure-related
-            # parameters to EMA's parameters.
-            ema_state_dict = self.ema.state_dict()
-            override_prefixes = tuple(self.frozen_modules)
-            n = 0
-            for k, v in ema_state_dict["shadow_params"].items():
-                if k.startswith(override_prefixes):
-                    n += 1
-                    self.model.state_dict()[k].copy_(v)
-            print(
-                f"Override {n} parameters from EMA for final training stage "
-                f"with prefixes {override_prefixes}."
-            )
 
     def load_state_dict(
         self, state_dict: dict[str, Any], strict: bool = True, assign: bool = False

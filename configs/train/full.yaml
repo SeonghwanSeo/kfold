@@ -5,6 +5,11 @@ out_dir: ./experiments/
 # Reproducibility
 seed: 1 # NOTE: You may have to set different seeds for different stages
 
+# Multi-stage training
+load_opt_state: true
+# Parameter groups initialized from checkpoint EMA when optimizer state is reset.
+init_from_ema: []
+
 # Training parameters for multi-gpu setup.
 global_hparams:
   batch_size: 1
@@ -137,8 +142,6 @@ optimizer:
   lr_decay_factor: 0.95
   ema_decay: 0.999
   validate_with_ema_after_n_steps: 5000
-  load_opt_state: true
-  final_training_stage: false
 
 loss:
   weights:

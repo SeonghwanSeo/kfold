@@ -59,6 +59,18 @@ class KFoldForTrain(KFold):
         """Get the names of confidence head modules."""
         return ["confidence_head"]
 
+    def get_parameter_group_names(self) -> dict[str, list[str]]:
+        """Get model parameter prefixes grouped by training component."""
+        return {
+            "trunk": [
+                *self.get_trunk_module_names(),
+                *self.get_trunk_parameter_names(),
+            ],
+            "distogram_head": self.get_distogram_head_module_names(),
+            "diffusion_head": self.get_diffusion_head_module_names(),
+            "confidence_head": self.get_confidence_head_module_names(),
+        }
+
     def do_compile(self, mode: str = "default", dynamic: bool = False):
         """Compile the trunk and score model."""
         opts = {"mode": mode, "dynamic": dynamic}
