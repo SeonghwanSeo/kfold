@@ -206,7 +206,8 @@ Single-GPU inference additionally supports `--save-trajectory`,
 `--save-confidence`, and `--dry-run`. A dry run does not need `--weight`; it
 parses the queries and runs the CPU data pipeline without loading a model or
 writing predictions. Multi-GPU inference accepts `--num-gpus`; if omitted, all
-visible GPUs are used.
+visible GPUs are used. It also accepts `--save-distogram`, which writes the
+unpadded distogram logits and distance-bin edges to a compressed NPZ file.
 
 ## Output
 
@@ -225,4 +226,8 @@ results/
 Every successful sample writes an mmCIF file and a confidence-summary JSON file.
 The single-GPU script writes raw pLDDT/PAE/PDE arrays to NPZ only when
 `--save-confidence` is set. The multi-GPU script currently does not write NPZ
-confidence arrays or diffusion trajectories.
+confidence arrays or diffusion trajectories. With `--save-distogram`, each
+multi-GPU query/seed directory also contains
+`Example_Complex_seed-1_distogram.npz`. Its `distogram_logits` array has shape
+`[Ntoken, Ntoken, Nbin]`, and its `distance_bin_edges` array contains the
+`Nbin - 1` distance boundaries in angstroms.

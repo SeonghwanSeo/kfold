@@ -134,6 +134,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
         save_trajectory: bool = False,  # TODO: implement trajectory saving
         save_confidence_scores: bool = True,  # TODO: implement confidence score saving
         write_interval: Literal["batch", "epoch", "batch_and_epoch"] = "batch",
+        save_distogram: bool = False,
     ):
         super().__init__(write_interval)
         self.output_dir = pathlib.Path(output_dir)
@@ -146,6 +147,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
         # Save options
         self.save_trajectory = save_trajectory
         self.save_confidence_scores = save_confidence_scores
+        self.save_distogram = save_distogram
 
     def on_predict_start(self, trainer, pl_module) -> None:
         """Called at the start of prediction."""
@@ -199,6 +201,25 @@ class KFoldPredictionWriter(BasePredictionWriter):
         seed = query.seed
         save_dir = self.output_dir / name / f"{name}_seed-{seed}"
         save_dir.mkdir(parents=True, exist_ok=True)
+
+        # The distogram is shared by all diffusion samples for this query.
+        if self.save_distogram:
+            token_mask = f_input.token.pad_mask
+            distogram_out = model_out["distogram"]
+            logits = distogram_out["distogram"][token_mask][:, token_mask]
+            distogram_head = pl_module.model.distogram_head
+            distance_bin_edges = torch.linspace(
+                distogram_head.first_bin,
+                distogram_head.last_bin,
+                distogram_head.num_bins - 1,
+                dtype=torch.float32,
+            )
+            distogram_path = save_dir / f"{name}_seed-{seed}_distogram.npz"
+            np.savez_compressed(
+                distogram_path,
+                distogram_logits=logits.float().cpu().numpy(),
+                distance_bin_edges=distance_bin_edges.numpy(),
+            )
 
         # Save Diffusion Samples
         for i in range(sample_coords.shape[0]):

@@ -116,6 +116,11 @@ def parse_args():
         action="store_true",
         help="Whether to overwrite existing inference results.",
     )
+    parser.add_argument(
+        "--save-distogram",
+        action="store_true",
+        help="Save distogram logits and distance-bin edges in NPZ format.",
+    )
 
     return parser.parse_args()
 
@@ -168,6 +173,7 @@ def main():
         args.out_dir,
         input_queries,
         save_confidence_scores=False,
+        save_distogram=args.save_distogram,
     )
     trainer = pl.Trainer(
         accelerator="gpu",
