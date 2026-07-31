@@ -419,6 +419,15 @@ class InputDataPipeline:
                 )
 
         prior_sources = self._sample_prior_sources(ref_struct, prior_groups, rng)
+        for chain in ref_struct.chains:
+            if not chain.is_ligand:
+                continue
+            conformer = self._get_ligand_conformer_source(chain, rng)
+            apo_coords[chain.asym_id] = np.stack(
+                [conformer]
+                + [np.full_like(conformer, np.nan) for _ in range(num_apo - 1)]
+            )
+
         return ResolvedStructureSources(
             num_apo=num_apo,
             apo_coords=apo_coords,
@@ -634,18 +643,18 @@ class InputDataPipeline:
                         dtype=np.float32,
                     )
                 else:
-                    global_source[chain.asym_id] = self._get_ligand_prior_source(
+                    global_source[chain.asym_id] = self._get_ligand_conformer_source(
                         chain, rng
                     )
             global_sources.append(global_source)
         return global_sources
 
-    def _get_ligand_prior_source(
+    def _get_ligand_conformer_source(
         self,
         chain: Chain,
         rng: np.random.Generator,
     ) -> np.ndarray:
-        """Generate one ligand conformer in residue-major prior-source format."""
+        """Generate one ligand conformer in residue-major source format."""
         assert chain.is_ligand
         if chain.smiles is not None:
             ref_comp = Component.from_smiles("LIG", chain.smiles)

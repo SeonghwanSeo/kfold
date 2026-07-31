@@ -143,6 +143,10 @@ sampler.
 
 Specify exactly one of `smiles` and `ccd`.
 
+Inference generates one ligand conformer for the first trunk apo slot; any
+remaining apo ensemble slots are masked. Ligand conformers for diffusion priors
+are sampled independently.
+
 ### Constraints
 
 The top-level field is `constraints`:
