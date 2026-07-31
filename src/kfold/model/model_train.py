@@ -282,13 +282,14 @@ class KFoldForTrain(KFold):
         s_inputs, s_lm, z = self.run_trunk(f_input, num_recycles, grad_recurrence_steps)
         z = z.float()
 
-        # Distogram head
-        dict_out["distogram"] = {
-            "logits": self.distogram_head(z),
-        }
-        patch_geometry_out = self.patch_pair_geometry_head(f_input, z)
-        if patch_geometry_out:
-            dict_out["patch_geometry"] = patch_geometry_out
+        if train_trunk:
+            # Distogram head
+            dict_out["distogram"] = {
+                "logits": self.distogram_head(z),
+            }
+            patch_geometry_out = self.patch_pair_geometry_head(f_input, z)
+            if patch_geometry_out:
+                dict_out["patch_geometry"] = patch_geometry_out
 
         if train_diffusion_head:
             # Diffusion head
