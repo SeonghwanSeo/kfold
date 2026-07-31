@@ -8,15 +8,15 @@ global_hparams:
 data:
   max_chains: 20
   max_tokens: 384
-  max_sequence_tokens: 512
+  max_sequence_tokens: 768
 
   ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
   data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
   train_datasets:
-    # RCSB PDB (60%)
+    # RCSB PDB (50%)
     - _yaml_: "../dataset/rcsb-train.yaml"
       name: rcsb-train
-      weight: 0.600
+      weight: 0.500
 
     # Disordered PDB datasets (1%)
     - _yaml_: "../dataset/disordered_pdb.yaml"
@@ -38,10 +38,10 @@ data:
       name: AFDB-short
       weight: 0.004
 
-    # RNA Monomer (1%)
+    # RNA Monomer (5%)
     - _yaml_: "../dataset/distill-rna-monomer.yaml"
       name: Rfam
-      weight: 0.010
+      weight: 0.050
 
     # Protein-DNA (2%)
     - _yaml_: "../dataset/distill-complex.yaml"

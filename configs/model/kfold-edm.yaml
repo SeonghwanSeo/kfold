@@ -1,7 +1,4 @@
 # === Model Configuration === #
-_registry_: "main_module"
-_class_: KFold
-
 # kernel settings
 kernel_cuequivariance: true
 
@@ -12,6 +9,9 @@ dropout: 0.25
 
 input_embedder:
   _yaml_: "module/input_embedder.yaml"
+
+apo_module:
+  _yaml_: "module/apo_module.yaml"
 
 protein_sequence_encoder:
   _yaml_: "module/protein_sequence_encoder.yaml"
@@ -28,6 +28,10 @@ trunk:
   num_refine_blocks: 2
   dropout: 0.25
   blocks_per_ckpt: null
+
+parcae:
+  state_init: trunc_normal
+  decay_init: 0.4472135954999579
 
 score_model:
   _yaml_: "module/score_model.yaml"
@@ -50,7 +54,6 @@ patch_pair_geometry:
   patch_size: 16
   max_patches_per_chain: 8
   max_patch_pairs: 256
-  pool_chunk_size: 16
   pool_max_tokens_per_patch: 16
   interface_cutoff: 12.0
   positive_cutoff: 12.0

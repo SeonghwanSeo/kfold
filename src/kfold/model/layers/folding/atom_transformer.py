@@ -6,6 +6,7 @@ import torch.nn as nn
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives import LayerNorm, LinearNoBias
+from kfold.utils.checkpointing import checkpoint_fn
 
 from .diffusion_transformer import LocalTransformerStack
 from .utils import (
@@ -251,6 +252,7 @@ class AtomAttentionEncoder(nn.Module):
         num_blocks=3,
         num_heads=4,
         use_structure: bool = False,
+        ckpt_atom_stack: bool = False,
     ):
         """Initialize the atom attention encoder.
 
@@ -268,9 +270,12 @@ class AtomAttentionEncoder(nn.Module):
             The number of transformer heads, by default 4.
         use_structure : bool, optional
             Whether to use structure information, by default True.
+        ckpt_atom_stack : bool, optional
+            Whether to checkpoint the complete atom transformer stack.
         """
         super().__init__()
         self.use_structure: bool = use_structure
+        self.ckpt_atom_stack: bool = ckpt_atom_stack
         if use_structure:
             self.linear_r_to_q = LinearNoBias(
                 channel_coords, channel_atom, init="default", precision=32
@@ -336,7 +341,17 @@ class AtomAttentionEncoder(nn.Module):
             assert r_noisy is None, "r_noisy must be None if use_structure is False"
 
         # Run Transformer
-        q = self.transformer(q, c, p, mask)
+        if self.ckpt_atom_stack and torch.is_grad_enabled():
+            q = checkpoint_fn(
+                self.transformer,
+                q,
+                c,
+                p,
+                mask,
+                use_reentrant=False,
+            )
+        else:
+            q = self.transformer(q, c, p, mask)
 
         # Aggregate atom representations to token representations
         # [*, La, c_atom] -> [*, Lt, c_token]
@@ -360,6 +375,7 @@ class AtomAttentionDecoder(nn.Module):
         channel_atompair: int,
         num_blocks: int = 3,
         num_heads: int = 4,
+        ckpt_atom_stack: bool = False,
     ):
         """Initialize the atom attention decoder.
 
@@ -375,8 +391,11 @@ class AtomAttentionDecoder(nn.Module):
             The number of transformer blocks, by default 3.
         num_heads : int, optional
             The number of transformer heads, by default 4.
+        ckpt_atom_stack : bool, optional
+            Whether to checkpoint the complete atom transformer stack.
         """
         super().__init__()
+        self.ckpt_atom_stack: bool = ckpt_atom_stack
 
         self.linear_a_to_q = LinearNoBias(channel_a, channel_atom, init="default")
         self.transformer = LocalTransformerStack(
@@ -428,7 +447,17 @@ class AtomAttentionDecoder(nn.Module):
         q = q + q_skip  # [*, La, c_atom]
 
         #  Run Transformer
-        q = self.transformer(q, c_skip, p_skip, mask)
+        if self.ckpt_atom_stack and torch.is_grad_enabled():
+            q = checkpoint_fn(
+                self.transformer,
+                q,
+                c_skip,
+                p_skip,
+                mask,
+                use_reentrant=False,
+            )
+        else:
+            q = self.transformer(q, c_skip, p_skip, mask)
 
         # Project atom representation to updated coordinates
         r_update = self.linear_q_to_r(self.layernorm_q(q.float()))  # [*, N, La, 3]

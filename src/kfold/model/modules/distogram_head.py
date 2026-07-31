@@ -1,14 +1,17 @@
+from dataclasses import dataclass
+
 import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives import LinearNoBias
 from kfold.model.primitives.utils import permute_final_dims
-from kfold.utils.registry import DISTOGRAM_HEAD, BaseConfig
+from kfold.utils.config import configurable
 
 
-@DISTOGRAM_HEAD.register()
+@configurable
 class DistogramHead(torch.nn.Module):
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Base configuration class for distogram head modules.
 
         Parameters

@@ -16,7 +16,7 @@ from kfold.config import to_dict
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
-from kfold.model.model import KFold, KFoldConfig
+from kfold.model.model_train import KFoldConfig, KFoldForTrain
 from kfold.training.utils.binned_loss_logging import (
     EntityBinConfig,
     EntityBinnedLossLogger,
@@ -26,7 +26,6 @@ from kfold.training.utils.binned_loss_logging import (
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
 from kfold.utils import confidence_metrics
 from kfold.utils.geometry.rigid_align import compute_rmsd
-from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
 from .metrics import structure_metrics as validation_metrics
@@ -57,6 +56,9 @@ class TrainConfig:
     validation: "ValidationConfig"
     optimizer: "OptimizerConfig"
     loss: "LossConfig"
+    # Multi-stage training
+    load_opt_state: bool = True
+    init_from_ema: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -81,50 +83,17 @@ class OptimizerConfig(_Config):
     # ema
     ema_decay: float = 0.999
     validate_with_ema_after_n_steps: int = 10000
-    # multi-phase training
-    load_opt_state_from_checkpoint: bool = True
-    final_training_stage: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
-class ParcaeTrainConfig:
+class ParcaeTrainConfig(_Config):
     """Training-time Parcae recycle-count sampling configuration."""
 
     max_recycles: int = 5
     min_recycles: int = 0
     poisson_mean: float = 2.0
-    grad_recurrence_steps: int = 1
+    grad_recurrence_steps: int = 2
     recurrence_sampling_mode: str = "shared"
-
-
-def _validate_parcae_train_config(config: ParcaeTrainConfig) -> ParcaeTrainConfig:
-    if config.min_recycles < 0:
-        raise ValueError(
-            "ParcaeTrainConfig.min_recycles must be non-negative, "
-            f"got {config.min_recycles}."
-        )
-    if config.max_recycles < config.min_recycles:
-        raise ValueError(
-            "ParcaeTrainConfig.max_recycles must be >= min_recycles, got "
-            f"{config.max_recycles} < {config.min_recycles}."
-        )
-    if config.poisson_mean < 0.0:
-        raise ValueError(
-            "ParcaeTrainConfig.poisson_mean must be non-negative, "
-            f"got {config.poisson_mean}."
-        )
-    if config.grad_recurrence_steps < 1:
-        raise ValueError(
-            "ParcaeTrainConfig.grad_recurrence_steps must be >= 1, "
-            f"got {config.grad_recurrence_steps}."
-        )
-    if config.recurrence_sampling_mode not in _PARCAE_RECURRENCE_SAMPLING_MODES:
-        raise ValueError(
-            "ParcaeTrainConfig.recurrence_sampling_mode must be one of "
-            f"{sorted(_PARCAE_RECURRENCE_SAMPLING_MODES)}, got "
-            f"{config.recurrence_sampling_mode!r}."
-        )
-    return config
 
 
 def _build_clamped_poisson_recycle_schedule(
@@ -251,6 +220,7 @@ class LossConfig(_Config):
     diffusion_loss: Any
     confidence_loss: Any
     patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
+    interface_contact_loss: Any = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -268,7 +238,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self.training_config: TrainingConfig = TrainingConfig.from_dict(
             self.config.training
         )
-        self.parcae_train_config: ParcaeTrainConfig = _validate_parcae_train_config(
+        self.parcae_train_config: ParcaeTrainConfig = ParcaeTrainConfig.from_dict(
             self.training_config.parcae
         )
         self.validation_config: ValidationConfig = ValidationConfig.from_dict(
@@ -290,8 +260,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Initialize model here
         model_config: KFoldConfig = self.global_config.model
-        model_cls = MAIN_MODULE[model_config._class_]
-        self.model: KFold = model_cls(model_config)
+        self.model = KFoldForTrain(model_config)
 
         # Compile
         if self.compile_config.enabled:
@@ -314,6 +283,7 @@ class KFoldTrainingModule(pl.LightningModule):
             submodules_to_ignore=self.submodules_to_ignore_for_ema,
         )
         self.stored_weights: dict[str, torch.Tensor] | None = None
+        self.last_lr_step = -1
 
         # Setup losses and metrics
         self.setup_losses()
@@ -401,7 +371,7 @@ class KFoldTrainingModule(pl.LightningModule):
     def freeze_submodules(self):
         """Freeze submodules based on the training configuration."""
         # FIXME: (SeonghwanSeo) I did not test this function yet.
-        # This is required when we train the confidence module only (Final-training-stage)
+        # This is required when only selected model components are trained.
 
         self.frozen_modules = []
         self.frozen_modules += self.model.get_pretrained_module_names()
@@ -447,6 +417,11 @@ class KFoldTrainingModule(pl.LightningModule):
         )
         self.patch_geometry_loss = loss_fn.patch_geometry.PatchPairGeometryLoss(
             **loss_config.patch_geometry_loss
+        )
+        self.interface_contact_loss = (
+            loss_fn.interface_contact.InterfaceContactBalancedLoss(
+                **loss_config.interface_contact_loss
+            )
         )
 
         # Diffusion loss
@@ -512,9 +487,14 @@ class KFoldTrainingModule(pl.LightningModule):
         else:
             raise NotImplementedError(f"Optimizer {config.opt} not implemented yet.")
 
+        if self.last_lr_step != -1:
+            for param_group in optimizer.param_groups:
+                param_group.setdefault("initial_lr", config.base_lr)
+
         if config.lr_scheduler == "af3":
             scheduler = AF3LRScheduler(
                 optimizer,
+                last_epoch=self.last_lr_step,
                 base_lr=config.base_lr,
                 max_lr=config.max_lr,
                 warmup_no_steps=config.lr_warmup_no_steps,
@@ -529,34 +509,30 @@ class KFoldTrainingModule(pl.LightningModule):
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def forward(
-        self,
-        f_input: FoldingInput,
-        num_recycles: int = 3,
-        num_steps: int = 20,
-        num_samples: int = 1,
-        diffusion_batch_size: int = 48,
-        mode: str = "train",
-        grad_recurrence_steps: int = 1,
+        self, f_input: FoldingInput, mode: str
     ) -> dict[str, dict[str, torch.Tensor]]:
         if mode == "train":
+            training_config = self.training_config
+            num_recycles = self._get_num_recycles_for_current_step()
             return self.model.forward_train(
                 f_input,
                 num_recycles=num_recycles,
-                grad_recurrence_steps=grad_recurrence_steps,
-                num_mini_rollout_steps=num_steps,
-                num_mini_rollout_samples=num_samples,
-                diffusion_batch_size=diffusion_batch_size,
+                grad_recurrence_steps=self.parcae_train_config.grad_recurrence_steps,
+                num_mini_rollout_steps=training_config.num_mini_rollout_steps,
+                num_mini_rollout_samples=training_config.num_mini_rollout_samples,
+                diffusion_batch_size=training_config.diffusion_batch_size,
+                train_trunk=self.train_trunk,
                 train_diffusion_head=self.train_diffusion_head,
                 train_confidence_module=self.train_confidence_head,
             )
         elif mode == "validation":
-            return_traj = self.validation_config.return_traj
-            dict_out, _ = self.model.sample(
+            val_config = self.validation_config
+            dict_out = self.model.sample_validation(
                 f_input,
-                num_recycles=num_recycles,
-                num_steps=num_steps,
-                num_samples=num_samples,
-                return_traj=return_traj,
+                num_recycles=val_config.num_recycles,
+                num_steps=val_config.num_steps,
+                num_samples=val_config.num_diffusion_samples,
+                return_traj=val_config.return_traj,
             )
             return dict_out
         else:
@@ -567,22 +543,10 @@ class KFoldTrainingModule(pl.LightningModule):
         batch: tuple[FoldingInput, list[dict]],
         batch_idx: int,
     ) -> torch.Tensor:
-        training_config = self.training_config
-
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
-        num_recycles = self._get_num_recycles_for_current_step()
-
         # Compute the forward pass
-        out: dict[str, torch.Tensor] = self(
-            f_input=f_input,
-            num_recycles=num_recycles,
-            grad_recurrence_steps=self.parcae_train_config.grad_recurrence_steps,
-            num_steps=training_config.num_mini_rollout_steps,
-            num_samples=training_config.num_mini_rollout_samples,
-            diffusion_batch_size=training_config.diffusion_batch_size,
-            mode="train",
-        )
+        out: dict[str, torch.Tensor] = self(f_input=f_input, mode="train")
         with torch.autocast("cuda", dtype=torch.float32):
             loss, metrics = self.compute_losses(batch, out)
 
@@ -629,21 +593,26 @@ class KFoldTrainingModule(pl.LightningModule):
                 logits=model_output["distogram"]["logits"],
                 f_input=f_input,
             )
-            patch_weight = self.loss_weights.get("patch_geometry", 0.0)
+            interface_contact_weight = self.loss_weights["interface_contact"]
+            if interface_contact_weight > 0:
+                interface_contact_loss, interface_contact_metrics = (
+                    self.interface_contact_loss(
+                        logits=model_output["distogram"]["logits"],
+                        f_input=f_input,
+                    )
+                )
+            else:
+                interface_contact_loss, interface_contact_metrics = 0.0, {}
+            patch_weight = self.loss_weights["patch_geometry"]
             if patch_weight > 0 and "patch_geometry" in model_output:
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
                     model_output["patch_geometry"]
                 )
-                patch_geometry_metrics |= {
-                    f"patch_geometry_timing_{name}": value.detach()
-                    for name, value in model_output["patch_geometry"]
-                    .get("timing", {})
-                    .items()
-                }
             else:
                 patch_geometry_loss, patch_geometry_metrics = 0.0, {}
         else:
             distogram_loss, distogram_metrics = 0.0, {}
+            interface_contact_loss, interface_contact_metrics = 0.0, {}
             patch_geometry_loss, patch_geometry_metrics = 0.0, {}
 
         if self.train_diffusion_head:
@@ -693,13 +662,15 @@ class KFoldTrainingModule(pl.LightningModule):
             loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
             + loss_weights["confidence"] * confidence_loss
-            + loss_weights.get("patch_geometry", 0.0) * patch_geometry_loss
+            + loss_weights["patch_geometry"] * patch_geometry_loss
+            + loss_weights["interface_contact"] * interface_contact_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
         # Log loss and metrics
         all_metrics = (
             distogram_metrics
+            | interface_contact_metrics
             | patch_geometry_metrics
             | diffusion_metrics
             | confidence_metrics
@@ -725,11 +696,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         try:
             model_out: dict[str, dict[str, torch.Tensor]] = self(
-                f_input=f_input,
-                num_recycles=val_config.num_recycles,
-                num_steps=val_config.num_steps,
-                num_samples=num_samples,
-                mode="validation",
+                f_input=f_input, mode="validation"
             )
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
@@ -1291,32 +1258,8 @@ class KFoldTrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        if self.config.optimizer.load_opt_state_from_checkpoint is False:
-            # When loading optimizer state from checkpoint is disabled,
-            # replace the optimizer state in the checkpoint with the initialized state.
-            state = checkpoint["optimizer_states"][0]
-            init_state = self.configure_optimizers()[0][0].state_dict()
-            state["state"] = init_state["state"]
-            state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
-            # checkpoint.pop("lr_schedulers", None)
-            #
         # Load EMA state dict
         self.load_ema_state_dict(checkpoint["ema"])
-
-        if self.config.optimizer.final_training_stage:
-            # Confidence-only training, so replace the structure-related
-            # parameters to EMA's parameters.
-            ema_state_dict = self.ema.state_dict()
-            override_prefixes = tuple(self.frozen_modules)
-            n = 0
-            for k, v in ema_state_dict["shadow_params"].items():
-                if k.startswith(override_prefixes):
-                    n += 1
-                    self.model.state_dict()[k].copy_(v)
-            print(
-                f"Override {n} parameters from EMA for final training stage "
-                f"with prefixes {override_prefixes}."
-            )
 
     def load_state_dict(
         self, state_dict: dict[str, Any], strict: bool = True, assign: bool = False

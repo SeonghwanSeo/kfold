@@ -162,7 +162,7 @@ class HomodimerDistillationDataset(DistillationDataset):
 
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
-    ) -> dict[int, dict]:
+    ) -> dict[int, list[dict | None]]:
         """Use one randomly selected holo chain as the shared synthetic apo source."""
         src_chain = ref_struct.chains[rng.integers(0, 2)]
         apo_info = {
@@ -170,7 +170,10 @@ class HomodimerDistillationDataset(DistillationDataset):
             "seq": src_chain.get_sequence(map_to_standard=True),
             "coords": self._center_label_residue_coords(src_chain),
         }
-        return {chain.asym_id: apo_info.copy() for chain in ref_struct.chains}
+        return {
+            chain.asym_id: [apo_info.copy()] + [None] * (self.max_apo - 1)
+            for chain in ref_struct.chains
+        }
 
     def get_prior_coords(
         self,
@@ -202,7 +205,9 @@ class HomodimerDistillationDataset(DistillationDataset):
         return prior_coords_dict
 
     def populate_structure_tokens(
-        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
+        self,
+        tokenized: TokenizedStructure,
+        apo_lookup: dict[int, list[dict | None]],
     ) -> None:
         return  # skip populating structure tokens for monomer distillation dataset
 

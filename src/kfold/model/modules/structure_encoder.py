@@ -1,4 +1,5 @@
 import contextlib
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -10,7 +11,7 @@ from kfold.model.layers.struct_enc import (
     FullAtomTokenizer,
     ProteinNetEncoder,
 )
-from kfold.utils.registry import STRUCTURE_ENCODER, BaseConfig
+from kfold.utils.config import configurable
 
 # AF2 residue types
 restypes = [
@@ -20,13 +21,14 @@ restypes = [
 restype_order = {restype: i for i, restype in enumerate(restypes)}
 
 
-@STRUCTURE_ENCODER.register()
+@configurable
 class StructureEncoder(torch.nn.Module):
     bb_tok: BackboneTokenizer
     fa_tok: FullAtomTokenizer
     encoder: ProteinNetEncoder
 
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Configuration for UniTok structure encoder.
 
         Attributes
@@ -267,9 +269,10 @@ class StructureEncoder(torch.nn.Module):
         """
         # NOTE: padding tokens have bb_token_ids of -1, which will be masked out
         # in the attention computation.
-        seq_token_ids = f_input.sequence.seq_token_id
-        bb_token_ids = f_input.sequence.bb_struct_token_id
-        fa_token_ids = f_input.sequence.fa_struct_token_id
+        seq_token_ids = f_input.sequence.seq_token_id  # [B, L]
+        bb_token_ids = f_input.sequence.bb_struct_token_id  # [B, L, Napo]
+        fa_token_ids = f_input.sequence.fa_struct_token_id  # [B, L, Napo]
+        batch_size, seq_len, num_apo = bb_token_ids.shape
 
         # HACK: (Seonghwan) Since we use the shared sequence vocab for both sequence
         # and structure encoder, structure encoder does not have vocab ids for
@@ -279,6 +282,19 @@ class StructureEncoder(torch.nn.Module):
 
         seq_id = f_input.sequence.asym_id
         pos_id = f_input.sequence.pos_id
+
+        def expand_over_apo(x: torch.Tensor) -> torch.Tensor:
+            return (
+                x[:, None, :]
+                .expand(batch_size, num_apo, seq_len)
+                .reshape(batch_size * num_apo, seq_len)
+            )
+
+        seq_token_ids = expand_over_apo(seq_token_ids)
+        seq_id = expand_over_apo(seq_id)
+        pos_id = expand_over_apo(pos_id)
+        bb_token_ids = bb_token_ids.transpose(1, 2).reshape(batch_size * num_apo, seq_len)
+        fa_token_ids = fa_token_ids.transpose(1, 2).reshape(batch_size * num_apo, seq_len)
 
         # Mask out unallowed tokens
         allow_mask = bb_token_ids != -1  # we set bb_token_id to -1 for invalid tokens.
@@ -292,6 +308,10 @@ class StructureEncoder(torch.nn.Module):
             pos_id=pos_id,
         )
         x = x * allow_mask[..., None]  # mask out invalid tokens
+        x = x.reshape(batch_size, num_apo, seq_len, -1)
+        allow_mask = allow_mask.reshape(batch_size, num_apo, seq_len)
+        num_valid = allow_mask.sum(dim=1).clamp(min=1)
+        x = x.sum(dim=1) / num_valid[..., None]
 
         # sequence -> token index mapping
         batch_index = torch.arange(x.shape[0], device=x.device)[:, None]

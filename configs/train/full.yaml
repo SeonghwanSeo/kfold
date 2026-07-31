@@ -5,6 +5,11 @@ out_dir: ./experiments/
 # Reproducibility
 seed: 1 # NOTE: You may have to set different seeds for different stages
 
+# Multi-stage training
+load_opt_state: true
+# Parameter groups initialized from checkpoint EMA when optimizer state is reset.
+init_from_ema: []
+
 # Training parameters for multi-gpu setup.
 global_hparams:
   batch_size: 1
@@ -26,6 +31,7 @@ data:
   max_chains: ???
   max_tokens: ???
   max_sequence_tokens: ???
+  max_apo: 4
 
   # DataLoader
   train_batch_size: 1 # NOTE: Overridden by global_hparam
@@ -46,10 +52,28 @@ data:
   prior_sampler:
     # If null, no prior sampling
     chain_translation_scale: 24.0 # Angstroms
+    # Legacy IID atom noise, used only when ligand_langevin.enabled is false.
     ligand_augmentation_scale: 0.3
     bioprior:
       noise_scale: 0.5
       max_steps: 10
+    # Displace the ETKDG/CCD conformer once, then run standard T=1 stochastic
+    # bond-angle Langevin updates. Every step is stochastic; there is no
+    # deterministic correction tail. This gives approximately 2 A aligned
+    # RMSD coverage on sampled real training ligands.
+    ligand_langevin:
+      enabled: true
+      backend: numba
+      initial_noise_scale: 4.0
+      num_steps: 25
+      dt: 0.0075
+      temperature: 1.0
+      bond_strength: 30.0
+      angle_strength: 15.0
+      relaxation_steps: 0
+      # Optional safety filters. Null disables sample rejection.
+      max_bond_deviation: null
+      max_aligned_rmsd: null
     train: true # Only for train/val
 
 # Lightning Trainer Configuration
@@ -118,8 +142,6 @@ optimizer:
   lr_decay_factor: 0.95
   ema_decay: 0.999
   validate_with_ema_after_n_steps: 5000
-  load_opt_state_from_checkpoint: true
-  final_training_stage: false
 
 loss:
   weights:
@@ -132,6 +154,7 @@ loss:
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
     patch_geometry: 5e-2
+    interface_contact: 0
 
   # Distogram loss
   distogram_loss:
@@ -147,6 +170,19 @@ loss:
     max_dist: 22.0
     near_cutoff: 12.0
     hard_negative_weight: 3.0
+
+  # Hard-pair exact-bin CE on active inter-chain interfaces.
+  # This is inactive unless loss.weights.interface_contact is positive.
+  interface_contact_loss:
+    num_bins: 64
+    min_dist: 2.0
+    max_dist: 22.0
+    contact_cutoff: 8.0
+    positive_weight: 0.75
+    negative_weight: 0.25
+    focal_gamma: 2.0
+    fp_budget_ratio: 4.0
+    eps: 1e-6
 
   # Diffusion loss
   diffusion_loss:

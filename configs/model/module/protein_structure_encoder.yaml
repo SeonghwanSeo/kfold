@@ -1,5 +1,3 @@
-_registry_: "structure_encoder"
-_class_: "StructureEncoder"
 path: ???
 chain_type: 'protein'
 d_model: 2560
