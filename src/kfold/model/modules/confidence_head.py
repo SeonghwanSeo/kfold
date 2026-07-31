@@ -11,7 +11,7 @@ from kfold.model.modules.tri_stack import TriangularBlock
 from kfold.model.primitives import LayerNorm, LinearNoBias
 from kfold.model.primitives.utils import add, gather_dim, get_context_dtype
 from kfold.utils.checkpointing import checkpoint_blocks
-from kfold.utils.registry import CONFIDENCE_HEAD, BaseConfig
+from kfold.utils.config import configurable
 
 
 def to_atom_layout(
@@ -144,14 +144,14 @@ class ConfidencePairSingleBlock(torch.nn.Module):
         return z, s
 
 
-@CONFIDENCE_HEAD.register()
+@configurable
 class ConfidenceHead(torch.nn.Module):
     """Base class for confidence head modules.
     See Section 4.3.5 Algorithm 31 Confidence head
     """
 
-    @dataclass
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Base configuration class for confidence head modules.
 
         Parameters

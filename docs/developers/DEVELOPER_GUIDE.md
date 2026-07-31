@@ -116,13 +116,33 @@ python scripts/inference.py --config <config_path> --checkpoint <checkpoint_path
 **TODO Writing...**
 
 ### Module Structure
-I introduce `Registry` to manage different implementations of modules such as sequence encoders, structure modules, etc.
-When you want to add a new module, please cite the following code snippets:
+Model submodules are instantiated directly from their typed configs. The registry is
+reserved for structure modules because ECSI and EDM are selected at runtime.
+
+#### Implementing a model submodule
+
+```python
+from dataclasses import dataclass
+
+from kfold.utils.config import configurable
+
+@configurable
+class MyModule:
+  @dataclass(kw_only=True)
+  class Config:
+    width: int = 128
+
+  def __init__(self, cfg: Config, runtime_dependency):
+    self.cfg = cfg
+```
+
+`@configurable` accepts a typed `Config`, mapping, or `DictConfig`. Partial mappings
+override dataclass defaults and are converted to the module's `Config` object.
 
 #### Implementing a new Structure Module
 - Separate config class style
   ```python
-  from kfold.models.modules.registry import STRUCTURE_MODULES, BaseConfig
+  from kfold.utils.registry import STRUCTURE_MODULE, BaseConfig
 
   from .base import BaseStructureModule
 
@@ -132,15 +152,15 @@ When you want to add a new module, please cite the following code snippets:
     param1: int = 128
     param2: float = 0.1
 
-  @STRUCTURE_MODULES.register(config_cls=MyStructureModuleConfig)
+  @STRUCTURE_MODULE.register(config_cls=MyStructureModuleConfig)
   class MyStructureModule(BaseStructureModule):
-    def __init__(self, config: MyStructureModuleConfig):
+    def __init__(self, config: Config):
       super().__init__(config)
   ```
 
 - Nested config class style
   ```python
-  @STRUCTURE_MODULES.register()
+  @STRUCTURE_MODULE.register()
   class MyStructureModule(BaseStructureModule):
     class Config(BaseConfig):
       param1: int = 128
@@ -153,12 +173,12 @@ When you want to add a new module, please cite the following code snippets:
 #### Using the registered module in model
 
 ```python
-from kfold.models.modules.registry import Registry
+from kfold.utils.registry import Registry
 
 model_config = DictConfig({
-    "_register_": "structure_module",
+    "_registry_": "structure_module",
     "_class_": "MyStructureModule",
     "param1": 256,
     "param2": 0.2,
 })
-model = Registry.instantiate(model_config)
+model = Registry.instantiate(model_config, score_model=score_model)

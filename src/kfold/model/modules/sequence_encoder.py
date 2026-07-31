@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 
 from kfold.constants.sequence import MASK_TOKEN_INDEX, PAD_TOKEN_INDEX
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.seq_enc.transformer_stack import TransformerStack
-from kfold.utils.registry import SEQUENCE_ENCODER, BaseConfig
+from kfold.utils.config import configurable
 
 
-@SEQUENCE_ENCODER.register()
+@configurable
 class SequenceEncoder(torch.nn.Module):
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Configuration for ESM-C sequence encoder.
 
         Attributes

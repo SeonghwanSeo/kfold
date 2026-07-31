@@ -1,6 +1,3 @@
-_registry_: "score_model"
-_class_: "DiffusionModule"
-
 channel_a: 768
 channel_s: 384
 channel_z: 256
@@ -16,3 +13,4 @@ token_transformer_heads: 16
 atom_decoder_blocks: 3
 atom_decoder_heads: 4
 blocks_per_ckpt: null
+ckpt_atom_stack: false

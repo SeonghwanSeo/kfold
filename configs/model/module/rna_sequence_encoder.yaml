@@ -1,5 +1,3 @@
-_registry_: "sequence_encoder"
-_class_: "SequenceEncoder"
 path: ???
 chain_type: 'rna'
 vocab_size: 64

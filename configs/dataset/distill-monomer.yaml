@@ -16,7 +16,6 @@ cropper:
 
 prob_perturbation: 1.0
 apo_perturb:
-  prob_rieprody: 0.0
   bioprior:
     min_steps: 5 # Minimum random walk steps
     max_steps: 20 # Maximum random walk steps

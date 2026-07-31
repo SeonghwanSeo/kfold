@@ -10,6 +10,7 @@ from omegaconf import DictConfig
 
 from kfold.config import load_config, print_config, save_config, to_dict
 from kfold.training.dataset.datamodule import TrainingDataModule
+from kfold.training.optim.ema import initialize_parameter_groups_from_ema
 from kfold.training.training_module import KFoldTrainingModule
 
 
@@ -265,6 +266,44 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
     return trainer
 
 
+def fit_with_initialized_optimizer_state(
+    trainer: pl.Trainer,
+    model_module: KFoldTrainingModule,
+    data_module: TrainingDataModule,
+    checkpoint_path: str,
+) -> None:
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    state_dict = checkpoint["state_dict"]
+    init_from_ema = tuple(model_module.config.init_from_ema)
+    if init_from_ema:
+        if "ema" not in checkpoint:
+            raise KeyError(
+                "Checkpoint does not contain EMA parameters required by "
+                f"init_from_ema={list(init_from_ema)}."
+            )
+        state_dict, initialized_keys = initialize_parameter_groups_from_ema(
+            state_dict=state_dict,
+            ema_params=checkpoint["ema"]["shadow_params"],
+            parameter_groups=model_module.model.get_parameter_group_names(),
+            groups_to_initialize=init_from_ema,
+        )
+        if trainer.is_global_zero:
+            logging.info(
+                "Initialized %d model parameters from EMA for groups %s.",
+                len(initialized_keys),
+                list(init_from_ema),
+            )
+
+    model_module.load_state_dict(state_dict, strict=True)
+    model_module.on_load_checkpoint(checkpoint)
+    model_module.last_lr_step = checkpoint["global_step"]
+    trainer.fit_loop.load_state_dict(checkpoint["loops"]["fit_loop"])
+    del checkpoint  # Free memory
+
+    trainer.fit(model_module, datamodule=data_module)
+
+
 def train(args) -> None:
     # To ignore warning
     torch.set_float32_matmul_precision("high")
@@ -283,11 +322,23 @@ def train(args) -> None:
     if trainer.is_global_zero:
         print_config(cfg)
 
-    trainer.fit(
-        model_module,
-        datamodule=data_module,
-        ckpt_path=args.resume_from_checkpoint,
-    )
+    if cfg.train.load_opt_state:
+        trainer.fit(
+            model_module,
+            datamodule=data_module,
+            ckpt_path=args.resume_from_checkpoint,
+        )
+    else:
+        if args.resume_from_checkpoint is None:
+            raise ValueError(
+                "--resume_from_checkpoint is required when load_opt_state is false."
+            )
+        fit_with_initialized_optimizer_state(
+            trainer,
+            model_module,
+            data_module,
+            args.resume_from_checkpoint,
+        )
 
 
 if __name__ == "__main__":

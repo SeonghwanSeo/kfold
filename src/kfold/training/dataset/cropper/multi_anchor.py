@@ -90,7 +90,6 @@ class MultiAnchorCropper(BaseCropper):
 
     def __init__(self, config: Config):
         self.config = config
-        self.last_crop_mode: int = 0
 
         assert (
             self.config.w_contiguous
@@ -139,16 +138,13 @@ class MultiAnchorCropper(BaseCropper):
         v = rng.random()
         if v < self.w_contiguous:
             # Contiguous cropping
-            self.last_crop_mode = 1
             crop_indices = self.crop_contiguous(struct, metadata, max_tokens, rng=rng)
         elif v < self.w_contiguous + self.w_spatial:
             # Spatial cropping
-            self.last_crop_mode = 2
             crop_indices = self.crop_spatial(
                 struct, metadata, max_tokens, bias_asym_id, rng=rng
             )
         else:  # Spatial interface cropping
-            self.last_crop_mode = 3
             crop_indices = self.crop_spatial_interface(
                 struct, metadata, max_tokens, bias_asym_id, rng=rng
             )

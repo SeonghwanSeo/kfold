@@ -1,1 +1,1 @@
-from . import confidence, diffusion, distogram, patch_geometry
+from . import confidence, diffusion, distogram, interface_contact, patch_geometry

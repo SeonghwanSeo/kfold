@@ -1,4 +1,5 @@
 from . import (
+    apo_module,
     confidence_head,
     distogram_head,
     input_embedder,

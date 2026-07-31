@@ -143,6 +143,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         prior_sampler: prior_sampling.PriorSampler | None,
         safe_load: bool,
         train: bool,
+        max_apo: int = 1,
     ) -> None:
         """
         Parameters
@@ -168,6 +169,10 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         self.seed: int | None = config.seed
         self.safe_load: bool = safe_load
         self.train: bool = train
+        assert max_apo >= 1, "max_apo must be positive."
+        if not train:
+            assert max_apo == 1, "Validation supports exactly one apo structure."
+        self.max_apo: int = max_apo
 
         if train:
             self.logger = logging.getLogger(f"[Training Dataset:{self.name}]")
@@ -274,6 +279,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         return cache[cache_key]
 
     def _get_apo_source_lmdb_env(self, chain_type: str, source: str) -> lmdb.Environment:
+        assert chain_type == "protein"
         return self._get_source_lmdb_env(
             "_apo_source_lmdb_envs", "apo_lmdb", chain_type, source
         )
@@ -281,11 +287,13 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     def _get_apo_tok_source_lmdb_env(
         self, chain_type: str, source: str
     ) -> lmdb.Environment:
+        assert chain_type in ("protein", "protein_multimer")
         return self._get_source_lmdb_env(
             "_apo_tok_source_lmdb_envs", "apo_tok_lmdb", chain_type, source
         )
 
     def _get_prior_stack_lmdb_env(self, chain_type: str) -> lmdb.Environment:
+        assert chain_type == "protein"
         cache = getattr(self, "_prior_stack_lmdb_envs", None)
         if cache is None:
             cache = {}
@@ -362,12 +370,13 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
 
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
+        apo_uid_dict = self.get_apo_uids(ref_struct, apo_lookup)
 
         # Sample prior coordinates for diffusion bridge model.
         prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
 
         # Tokenization
-        tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, apo_uid_dict, prior_coords, rng)
 
         # Populate structure tokens for apo structure (in-place)
         # NOTE: For inference, this will be done on-the-fly.
@@ -426,14 +435,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         return ref_struct
 
     # === Helper methods for apo structure handling === #
-    @staticmethod
-    def _chain_type_name(chain) -> str:
-        if chain.ctype.is_protein:
-            return "protein"
-        if chain.ctype.is_rna:
-            return "rna"
-        return "dna"
-
     @staticmethod
     def _center_label_residue_coords(chain: Chain) -> np.ndarray:
         """Return centered label coordinates in residue-major atom order."""
@@ -520,21 +521,28 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             )
         return coords
 
-    def get_apo_lookup(
-        self, ref_struct: RefStructure, rng: np.random.Generator
-    ) -> dict[int, dict]:
-        """Get the apo lookup for the given reference structure."""
+    def sample_num_apo(self, rng: np.random.Generator) -> int:
+        """Sample the requested number of apo structures for one example."""
+        if not self.train:
+            assert self.max_apo == 1
+            return 1
+        return int(rng.integers(1, self.max_apo + 1))
+
+    def get_monomer_apo_lookup(
+        self,
+        ref_struct: RefStructure,
+        rng: np.random.Generator,
+        num_apo: int,
+    ) -> dict[int, list[dict | None]]:
+        """Sample monomer apo sources independently for each protein chain."""
         entry_id: str = ref_struct.id
         entry_lookup: dict[int, list[dict]] = self.lookup_table[entry_id]
 
         # Match apo structure independently for each asymmetric polymer chain.
-        apo_lookup: dict[int, dict] = {}  # asym_id -> apo_info dict
+        apo_lookup: dict[int, list[dict | None]] = {}
         for c in ref_struct.chains:
-            if not c.is_polymer:
-                # We do not save ligand etkdg conformers in apo_lookup.
-                continue
-            if c.is_dna:
-                # DNA apo structures are intentionally disabled for trunk input.
+            if not c.is_protein:
+                # Skip non-protein chains for apo lookup.
                 continue
 
             eid: int = c.entity_id
@@ -547,68 +555,63 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                 )
                 continue
 
-            # Select one apo structure randomly
+            # Validation deterministically uses the first source. Training samples
+            # without replacement and keeps empty slots when fewer sources exist.
             entity_apo_infos: list[dict] = entry_lookup[eid]
-            num_apos = len(entity_apo_infos)
-            assert num_apos > 0, f"No apo info for entity '{ek}' in lookup."
-            apo_info = entity_apo_infos[rng.integers(0, num_apos)].copy()
+            num_available = len(entity_apo_infos)
+            assert num_available > 0, f"No apo info for entity '{ek}' in lookup."
+            num_selected = min(num_apo, num_available)
+            if self.train:
+                selected = rng.choice(num_available, size=num_selected, replace=False)
+            else:
+                assert num_apo == 1
+                selected = np.array([0], dtype=np.int64)
 
-            # Add key
-            apo_info["key"] = f"{apo_info['source']}:{apo_info['name']}"
-            apo_info["chain_key"] = f"{entry_id}_{c.asym_id}"
-            apo_info["entity_key"] = f"{entry_id}:{c.entity_id}"
+            selected_infos: list[dict | None] = [None] * self.max_apo
+            for apo_i, source_i in enumerate(selected):
+                apo_info = entity_apo_infos[int(source_i)].copy()
+                apo_info["key"] = f"{apo_info['source']}:{apo_info['name']}"
+                apo_info["chain_key"] = f"{entry_id}_{c.asym_id}"
+                apo_info["entity_key"] = f"{entry_id}:{c.entity_id}"
+                apo_info["apo_uid"] = c.asym_id
 
-            # Load the apo structure from LMDB (if not already loaded)
-            success = self._load_apo_info_from_lmdb(apo_info)
-            if not success:
-                continue
+                if not self._load_apo_info_from_lmdb(apo_info):
+                    continue
+                _ = self._load_apo_tok_from_lmdb(apo_info)
+                selected_infos[apo_i] = apo_info
 
-            # Load the apo structure tokens
-            _ = self._load_apo_tok_from_lmdb(apo_info)
-
-            apo_lookup[c.asym_id] = apo_info
+            apo_lookup[c.asym_id] = selected_infos
 
         return apo_lookup
 
-    def _get_polymer_apo_coords(
+    def get_apo_lookup(
+        self, ref_struct: RefStructure, rng: np.random.Generator
+    ) -> dict[int, list[dict | None]]:
+        """Get sampled apo sources for the given reference structure."""
+        num_apo = self.sample_num_apo(rng)
+        return self.get_monomer_apo_lookup(ref_struct, rng, num_apo)
+
+    def _get_protein_apo_coords(
         self,
         chain: Chain,
-        apo_lookup: dict[int, dict],
+        apo_info: dict | None,
         rng: np.random.Generator,
     ) -> np.ndarray:
         """Fetch the apo coordinates for a protein chain."""
-        assert chain.is_polymer
-        ctype = chain.ctype
+        assert chain.is_protein
 
         def fallback() -> np.ndarray:
             return self._empty_residue_coords(chain)
 
-        # NOTE: we found that dna apo structure hurt the model performance,
-        # so we decide that we do not use apo structure for dna chains.
-        if chain.is_dna:
-            return fallback()
-
-        # If the apo structure is not found, use the original coordinates as apo
-        # for training. For validation, raise an error.
-        if chain.asym_id not in apo_lookup:
+        # If the apo structure is not found, mask the apo input for training.
+        # Validation requires an explicit apo structure.
+        if apo_info is None:
             if self.train:
-                if ctype == C.ChainType.PROTEIN:
-                    # NOTE: Log a warning for protein chains only, since
-                    # there are many RNA chains without apo structures
-                    # in the training set.
-                    self.logger.warning(
-                        f"Apo structure not found for {ctype} chain {chain.asym_id} "
-                        "in lookup. Use NaN coordinates as apo."
-                    )
                 return fallback()
             else:
-                raise KeyError(
-                    f"Apo structure not found for {ctype} chain {chain.asym_id} "
-                    f"in lookup."
-                )
+                raise KeyError(f"Apo structure not found for {chain.asym_id} in lookup.")
 
         # Get the apo coordinates from the lookup
-        apo_info = apo_lookup[chain.asym_id]
         key = apo_info["key"]
         seq = apo_info["seq"]
         coords = apo_info["coords"]
@@ -617,7 +620,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             # NOTE: While res mapping is also allowed for inference,
             # we enforce that there is no missing residues in the apo for simplicity.
             assert res_map is None, (
-                f"Residue map {res_map} found for {ctype} chain {chain.asym_id} "
+                f"Residue map {res_map} found for {chain.asym_id} "
                 f"in lookup. Residue mapping is only allowed for training."
             )
 
@@ -638,8 +641,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             res_st, res_end, apo_st, apo_end = parse_residue_map(res_map)
             if res_st == -1:
                 self.logger.warning(
-                    f"Invalid residue map {res_map} for {ctype} chain {key}. "
-                    f"Use the original coordinates as apo."
+                    f"Invalid residue map {res_map} for {key}. "
+                    "Use masked coordinates as apo."
                 )
                 return fallback()
             if res_st == 0 and res_end == length:
@@ -697,7 +700,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     def fetch_apo_structures(
         self,
         ref_struct: RefStructure,
-        apo_lookup: dict[int, dict],
+        apo_lookup: dict[int, list[dict | None]],
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
         """Return the apo coordinates for the given reference structure.
@@ -710,19 +713,52 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         chain_coords: dict[int, np.ndarray] = {}
         for c in ref_struct.chains:
             key = f"{ref_struct.id}_{c.asym_id}"
-            if c.is_polymer:
-                coords = self._get_polymer_apo_coords(c, apo_lookup, rng)
+            if c.is_protein:
+                coords = np.stack(
+                    [
+                        self._get_protein_apo_coords(c, apo_info, rng)
+                        for apo_info in apo_lookup.get(c.asym_id, [None] * self.max_apo)
+                    ],
+                    axis=0,
+                )
+            elif c.is_nucleic_acid:
+                # For nucleic acid chains, we do not use apo structures for now.
+                coords = np.stack(
+                    [self._empty_residue_coords(c) for _ in range(self.max_apo)], axis=0
+                )
             else:
                 # For ligand chains, use etkdg conformer.
-                coords = self._get_ligand_apo_coords(c, rng, key)
+                coords = np.stack(
+                    [self._get_ligand_apo_coords(c, rng, key)]
+                    + [
+                        np.full((c.num_atoms, 1, 3), np.nan, dtype=np.float32)
+                        for _ in range(self.max_apo - 1)
+                    ],
+                    axis=0,
+                )
             if c.is_protein:
-                assert coords.shape == (c.num_residues, 37, 3)
+                assert coords.shape == (self.max_apo, c.num_residues, 37, 3)
             elif c.is_nucleic_acid:
-                assert coords.shape == (c.num_residues, 29, 3)
+                assert coords.shape == (self.max_apo, c.num_residues, 29, 3)
             else:
-                assert coords.shape == (c.num_atoms, 1, 3)
+                assert coords.shape == (self.max_apo, c.num_atoms, 1, 3)
             chain_coords[c.asym_id] = coords
         return chain_coords
+
+    def get_apo_uids(
+        self,
+        ref_struct: RefStructure,
+        apo_lookup: dict[int, list[dict | None]],
+    ) -> dict[int, np.ndarray]:
+        """Return per-chain rigid-group IDs for every apo ensemble slot."""
+        apo_uids = {}
+        for chain in ref_struct.chains:
+            uids = np.full((self.max_apo,), chain.asym_id, dtype=np.int64)
+            for apo_i, apo_info in enumerate(apo_lookup.get(chain.asym_id, [])):
+                if apo_info is not None:
+                    uids[apo_i] = int(apo_info.get("apo_uid", chain.asym_id))
+            apo_uids[chain.asym_id] = uids
+        return apo_uids
 
     def sample_prior_coords(
         self,
@@ -758,8 +794,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             if c.asym_id in metadata_by_asym_id:
                 metadata_by_asym_id[c.asym_id].prior_uid = c.asym_id
 
-            if c.is_dna:
-                # DNA apo structures are intentionally disabled.
+            if c.is_nucleic_acid:
+                # RNA/DNA apo structures are intentionally disabled.
                 coords = np.full((c.num_residues, 29, 3), np.nan, dtype=np.float32)
                 prior_apo_dict[c.asym_id] = coords
                 continue
@@ -770,13 +806,12 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                 prior_apo_dict[c.asym_id] = self._get_ligand_apo_coords(c, rng, key)
                 continue
 
-            chain_type = self._chain_type_name(c)
             loaded = self._load_prior_stack_info_from_lmdb(
-                entry_id, c.entity_id, chain_type
+                entry_id, c.entity_id, "protein"
             )
             if loaded is None:
                 if self.train:
-                    coords = self._empty_residue_coords(c)
+                    coords = self._center_label_residue_coords(c)
                     prior_apo_dict[c.asym_id] = coords
                 else:
                     raise KeyError(
@@ -802,6 +837,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         self,
         ref_struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
+        apo_uid_dict: dict[int, np.ndarray],
         prior_coords: np.ndarray,
         rng: np.random.Generator,
     ) -> TokenizedStructure:
@@ -810,6 +846,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             ref_struct,
             rng,
             apo_coords=apo_dict,
+            apo_uids=apo_uid_dict,
+            num_apo=self.max_apo,
             prior_coords=prior_coords,
         )
 
@@ -831,7 +869,9 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         )
 
     def populate_structure_tokens(
-        self, tokenized: TokenizedStructure, apo_lookup: dict[int, dict]
+        self,
+        tokenized: TokenizedStructure,
+        apo_lookup: dict[int, list[dict | None]],
     ) -> None:
         """Populate the structure tokens for the given tokenized structure."""
         for c_i in range(tokenized.num_chains):
@@ -841,24 +881,33 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             asym_id = int(tokenized.chain.asym_id[c_i])
             k = f"{tokenized.id}-{asym_id}"  # For logging purpose
 
-            apo_info = apo_lookup.get(asym_id)
-            if apo_info is None:
+            apo_infos = apo_lookup.get(asym_id)
+            if not apo_infos:
                 self.logger.warning(
                     f"No apo info for chain `{k}` in apo lookup. Skipping."
                 )
                 continue
 
-            tok = apo_info.get("tokens", None)
-            res_map = apo_info.get("residue_map", None)
-
-            if tok is not None:
-                key = apo_info["key"]
-                self._insert_structure_tokens(tokenized, c_i, tok, res_map, key=key)
+            for apo_i, apo_info in enumerate(apo_infos):
+                if apo_info is None:
+                    continue
+                tok = apo_info.get("tokens", None)
+                res_map = apo_info.get("residue_map", None)
+                if tok is not None:
+                    self._insert_structure_tokens(
+                        tokenized,
+                        c_i,
+                        apo_i,
+                        tok,
+                        res_map,
+                        key=apo_info["key"],
+                    )
 
     def _insert_structure_tokens(
         self,
         tokenized: TokenizedStructure,
         c_i: int,
+        apo_i: int,
         apo_tok: np.ndarray,
         res_map: str | None = None,
         *,
@@ -884,8 +933,8 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                     f"chain {c_i} without residue map. Skipping."
                 )
                 return
-            bb_struct_token_id[seq_start + 1 : seq_end - 1] = bb_tok
-            fa_struct_token_id[seq_start + 1 : seq_end - 1] = fa_tok
+            bb_struct_token_id[seq_start + 1 : seq_end - 1, apo_i] = bb_tok
+            fa_struct_token_id[seq_start + 1 : seq_end - 1, apo_i] = fa_tok
         else:
             res_st, res_end, apo_st, apo_end = parse_residue_map(res_map)
             if res_st == -1:
@@ -900,5 +949,5 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                 )
                 return
             _st, _end = seq_start + 1 + res_st, seq_start + 1 + res_end
-            bb_struct_token_id[_st:_end] = bb_tok[apo_st:apo_end]
-            fa_struct_token_id[_st:_end] = fa_tok[apo_st:apo_end]
+            bb_struct_token_id[_st:_end, apo_i] = bb_tok[apo_st:apo_end]
+            fa_struct_token_id[_st:_end, apo_i] = fa_tok[apo_st:apo_end]

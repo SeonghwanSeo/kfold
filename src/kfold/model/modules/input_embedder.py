@@ -1,21 +1,23 @@
+from dataclasses import dataclass
+
 import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.folding.embeddings import (
-    ApoEmbedding,
     ConstraintEncoding,
     RelativePositionEncoding,
 )
 from kfold.model.layers.folding.input_encoder import InputFeatureEmbedder
 from kfold.model.primitives import LinearNoBias
-from kfold.utils.registry import INPUT_EMBEDDER, BaseConfig
+from kfold.utils.config import configurable
 
 
-@INPUT_EMBEDDER.register()
+@configurable
 class InputEmbedder(torch.nn.Module):
     """Input embedding module for KFold model."""
 
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Configuration for the Input embedding module.
 
         Parameters
@@ -32,7 +34,14 @@ class InputEmbedder(torch.nn.Module):
             The atom encoder blocks.
         atom_encoder_heads: int
             The atom encoder heads.
-            The number of bins for apo distance map encoding.
+        ckpt_atom_stack : bool
+            Whether to checkpoint the complete atom transformer stack.
+        constraint_min_dist : float
+            The minimum distance for constraint encoding.
+        constraint_max_dist : float
+            The maximum distance for constraint encoding.
+        constraint_bin_size : float
+            The distance bin width for constraint encoding.
         """
 
         channel_s: int = 384
@@ -41,11 +50,7 @@ class InputEmbedder(torch.nn.Module):
         channel_atompair: int = 16
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
-        # Apo embedding parameters
-        num_bins: int = 39
-        min_dist: float = 3.25
-        max_dist: float = 50.75
-        max_r: int = 64
+        ckpt_atom_stack: bool = False
         # Constraint-related parameters
         constraint_min_dist: float = 2.0
         constraint_max_dist: float = 20.0
@@ -65,25 +70,15 @@ class InputEmbedder(torch.nn.Module):
             channel_atompair=cfg.channel_atompair,
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
+            ckpt_atom_stack=cfg.ckpt_atom_stack,
         )
 
         # Initial linear layers for single and pair representations
-        self.linear_z_init1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
-        self.linear_z_init2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
+        self.linear_z_inputs1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
+        self.linear_z_inputs2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
         self.linear_rel_pos = LinearNoBias(self.rel_pos_encoding.dimension, cfg.channel_z)
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
-
-        # Apo embedding
-        self.apo_embedding = ApoEmbedding(
-            num_bins=cfg.num_bins,
-            min_dist=cfg.min_dist,
-            max_dist=cfg.max_dist,
-            max_r=cfg.max_r,
-        )
-        self.linear_apo = LinearNoBias(
-            self.apo_embedding.num_channels, cfg.channel_z, init="default"
-        )
 
         # Constraint-related
         self.constraint_encoding = ConstraintEncoding(
@@ -95,11 +90,7 @@ class InputEmbedder(torch.nn.Module):
             self.constraint_encoding.num_bins, cfg.channel_z
         )
 
-    def forward(
-        self,
-        f_input: FoldingInput,
-        **kwargs,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of embedding module.
         See Section 3 Algorithm 1 and Algorithm 2 of AlphaFold3 paper.
         Algorithm 1 Line[1-5]
@@ -112,10 +103,9 @@ class InputEmbedder(torch.nn.Module):
         Returns
         -------
         s_inputs : torch.Tensor
-            Tensor of shape (B, L, C_s) containing input single features
-        z_init: torch.Tensor
-            Tensor of shape (B, L, L, C_z) containing initial pair representation
-            before trunk.
+            Tensor of shape (B, L, C_s) containing input single features.
+        z_inputs: torch.Tensor
+            Tensor of shape (B, L, L, C_z) containing input pair representation.
         """
         inplace = not self.training
         add = (lambda x, y: x.add_(y)) if inplace else (lambda x, y: x + y)  # noqa
@@ -123,30 +113,29 @@ class InputEmbedder(torch.nn.Module):
         # Get input single representation
         s_inputs = self.input_embedder(f_input)  # [B, L, c_s]
 
-        # Get initial pair representation
-        z_init = (
-            self.linear_z_init1(s_inputs)[..., None, :, :]
-            + self.linear_z_init2(s_inputs)[..., :, None, :]
+        # Get input representation
+        z_inputs = (
+            self.linear_z_inputs1(s_inputs)[..., None, :, :]
+            + self.linear_z_inputs2(s_inputs)[..., :, None, :]
         )  # [B, L, L, c_z]
-        dtype = z_init.dtype
+        dtype = z_inputs.dtype
 
         # Add relative positional encoding
-        z_init = add(z_init, self.linear_rel_pos(self.rel_pos_encoding(f_input, dtype)))
+        z_inputs = add(
+            z_inputs, self.linear_rel_pos(self.rel_pos_encoding(f_input, dtype))
+        )
 
         # Add bond adjacency matrix
-        z_init = add(
-            z_init, self.linear_bond(self.get_bond_adj(f_input, dtype).unsqueeze(-1))
+        z_inputs = add(
+            z_inputs, self.linear_bond(self.get_bond_adj(f_input, dtype).unsqueeze(-1))
         )
-
-        # Add apo embedding
-        z_init = add(z_init, self.linear_apo(self.apo_embedding(f_input)))
 
         # Add constraing embedding
-        z_init = add(
-            z_init, self.linear_constraint(self.constraint_encoding(f_input, dtype))
+        z_inputs = add(
+            z_inputs, self.linear_constraint(self.constraint_encoding(f_input, dtype))
         )
 
-        return s_inputs, z_init
+        return s_inputs, z_inputs
 
     def get_bond_adj(
         self,
