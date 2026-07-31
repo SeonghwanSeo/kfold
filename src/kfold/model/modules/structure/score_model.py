@@ -1,21 +1,26 @@
+from dataclasses import dataclass
+
 import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.folding.diffusion import DiffusionStack
-from kfold.utils.registry import SCORE_MODEL, BaseConfig
+from kfold.utils.config import configurable
 
 
-@SCORE_MODEL.register()
+@configurable
 class DiffusionModule(torch.nn.Module):
     """Diffusion module
     Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
     """
 
-    class Config(BaseConfig):
+    @dataclass(kw_only=True)
+    class Config:
         """Initialize the diffusion module.
 
         Parameters
         ----------
+        channel_a : int
+            The token transformer dimension.
         channel_s : int
             The single representation dimension.
         channel_z : int
@@ -26,6 +31,11 @@ class DiffusionModule(torch.nn.Module):
             The atom pair representation dimension.
         channel_coords : int
             The coordinate dimension, default to 3 for (x, y, z).
+        separate_endpoint_atom_encoder : bool, optional
+            Split 6-channel ECSI coordinates into separate current-state and
+            endpoint atom encoders before shared token-level attention.
+        endpoint_branch_dropout : float, optional
+            Dropout probability for the encoded endpoint token branch.
         atom_encoder_blocks : int, optional
             The number of blocks of the atom encoder, by default 3.
         atom_encoder_heads : int, optional
@@ -40,13 +50,18 @@ class DiffusionModule(torch.nn.Module):
             The number of heads in the atom decoder, by default 4.
         blocks_per_ckpt : int | None, optional
             The number of blocks per checkpoint, by default None.
+        ckpt_atom_stack : bool, optional
+            Whether to checkpoint each complete atom transformer stack.
         """
 
+        channel_a: int = 768
         channel_s: int = 384
         channel_z: int = 256
         channel_atom: int = 128
         channel_atompair: int = 16
         channel_coords: int = 3
+        separate_endpoint_atom_encoder: bool = False
+        endpoint_branch_dropout: float = 0.0
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
         token_transformer_blocks: int = 12
@@ -54,6 +69,7 @@ class DiffusionModule(torch.nn.Module):
         atom_decoder_blocks: int = 3
         atom_decoder_heads: int = 4
         blocks_per_ckpt: int | None = None
+        ckpt_atom_stack: bool = False
 
     def __init__(self, cfg, kernel_config):
         super().__init__()
@@ -61,11 +77,14 @@ class DiffusionModule(torch.nn.Module):
         self.kernel_config = kernel_config
         self.is_compiled: bool = False
         self.diffusion_stack = DiffusionStack(
+            channel_a=cfg.channel_a,
             channel_s=cfg.channel_s,
             channel_z=cfg.channel_z,
             channel_atom=cfg.channel_atom,
             channel_atompair=cfg.channel_atompair,
             channel_coords=cfg.channel_coords,
+            separate_endpoint_atom_encoder=cfg.separate_endpoint_atom_encoder,
+            endpoint_branch_dropout=cfg.endpoint_branch_dropout,
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
             token_transformer_blocks=cfg.token_transformer_blocks,
@@ -73,6 +92,7 @@ class DiffusionModule(torch.nn.Module):
             atom_decoder_blocks=cfg.atom_decoder_blocks,
             atom_decoder_heads=cfg.atom_decoder_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
+            ckpt_atom_stack=cfg.ckpt_atom_stack,
         )
 
     def do_compile(self, **kwargs):

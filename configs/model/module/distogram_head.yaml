@@ -1,5 +1,3 @@
-_registry_: "distogram_head"
-_class_: "DistogramHead"
 channel_z: 256
 num_bins: 64
 min_dist: 2.0

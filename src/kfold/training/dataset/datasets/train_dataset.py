@@ -14,7 +14,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.cropper import BaseCropper
 from kfold.training.dataset.sampler import BaseSampler, Sample
-from kfold.training.dataset.utils import constraint_sampling, pre_crop
+from kfold.training.dataset.utils import apo_perturbation, constraint_sampling, pre_crop
 from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.registry import Registry
 
@@ -43,6 +43,14 @@ class TrainingDatasetConfig(DatasetConfig):
         Cropper configuration for cropping structures.
     """
 
+    # default
+    name: str
+    data_path: str | Path | None = None
+    manifest_path: str | Path | None = None
+    seed: int | None = None
+    prob_perturbation: float = 0.9
+    apo_perturb: apo_perturbation.ApoPerturbationConfig | None = None
+    # train only
     type: str
     weight: float = 1.0
     prob_drop_apo: float = 0.0  # probability of dropping apo structure
@@ -60,20 +68,6 @@ def _open_lmdb(lmdb_path: str | Path) -> lmdb.Environment:
     )
 
 
-def parse_residue_map(residue_map: str) -> tuple[int, int, int, int]:
-    """Parse residue map string into start and end indices.
-    Example: "1:100->5:104" -> (0, 100, 4, 104)
-    """
-    res_range, apo_range = residue_map.split("->")
-    res_st, res_end = map(int, res_range.split(":"))
-    apo_st, apo_end = map(int, apo_range.split(":"))
-    if (res_end - res_st) != (apo_end - apo_st):
-        return -1, -1, -1, -1  # invalid mapping
-    # Convert to 0-based indexing
-    # 1:100 means residues 1 to 100 inclusive -> coords[0:100]
-    return res_st - 1, res_end, apo_st - 1, apo_end
-
-
 # === Training Dataset === #
 class TrainingDataset(BaseLMDBDataset):
     """Training dataset with AF3-style sampling and cropping."""
@@ -87,6 +81,7 @@ class TrainingDataset(BaseLMDBDataset):
         prior_sampler: prior_sampling.PriorSampler | None,
         safe_load: bool,
         max_chains: int,
+        max_apo: int,
         max_tokens: int,
         max_sequence_tokens: int,
     ) -> None:
@@ -125,6 +120,7 @@ class TrainingDataset(BaseLMDBDataset):
             prior_sampler,
             safe_load=safe_load,
             train=True,
+            max_apo=max_apo,
         )
         self.config: TrainingDatasetConfig = config
         if self.seed is not None:
@@ -135,6 +131,7 @@ class TrainingDataset(BaseLMDBDataset):
 
         # For pre-cropping (RefStructure)
         self.max_chains: int = max_chains
+        self.max_apo: int = max_apo
         # For main cropping (TokenizedStructure)
         self.max_tokens: int = max_tokens
         self.max_sequence_tokens: int = max_sequence_tokens
@@ -173,8 +170,8 @@ class TrainingDataset(BaseLMDBDataset):
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
-        if cfg.apo_init.perturbation is None:
-            self.logger.warning("Protein perturbation is disabled for training set.")
+        if cfg.apo_perturb is None:
+            self.logger.warning("Apo perturbation is disabled for training set.")
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -226,9 +223,13 @@ class TrainingDataset(BaseLMDBDataset):
 
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
+        apo_uid_dict = self.get_apo_uids(ref_struct, apo_lookup)
+
+        # Sample prior coordinates for diffusion bridge model.
+        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
 
         # Tokenization
-        tokenized = self.tokenize(ref_struct, apo_dict, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, apo_uid_dict, prior_coords, rng)
 
         # Populate structure tokens for apo structure (in-place)
         self.populate_structure_tokens(tokenized, apo_lookup)
@@ -276,11 +277,11 @@ class TrainingDataset(BaseLMDBDataset):
         self,
         ref_struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
+        apo_uid_dict: dict[int, np.ndarray],
+        prior_coords: np.ndarray,
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        # Sample prior coordinates for diffusion bridge model
-        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
         # Sample the constraints
         constraints = self.constraint_sampling(ref_struct, rng)
         # Tokenize the structure
@@ -288,6 +289,8 @@ class TrainingDataset(BaseLMDBDataset):
             ref_struct,
             rng,
             apo_coords=apo_dict,
+            apo_uids=apo_uid_dict,
+            num_apo=self.max_apo,
             prior_coords=prior_coords,
             constraints=constraints,
         )

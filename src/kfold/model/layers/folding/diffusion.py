@@ -147,11 +147,14 @@ class DiffusionStack(nn.Module):
 
     def __init__(
         self,
+        channel_a: int = 768,
         channel_s: int = 384,
         channel_z: int = 256,
         channel_atom: int = 128,
         channel_atompair: int = 16,
         channel_coords: int = 3,
+        separate_endpoint_atom_encoder: bool = False,
+        endpoint_branch_dropout: float = 0.0,
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
         token_transformer_blocks: int = 24,
@@ -159,11 +162,14 @@ class DiffusionStack(nn.Module):
         atom_decoder_blocks: int = 3,
         atom_decoder_heads: int = 4,
         blocks_per_ckpt: int | None = None,
+        ckpt_atom_stack: bool = False,
     ) -> None:
         """Initialize the diffusion module.
 
         Parameters
         ----------
+        channel_a : int
+            The token representation dimension.
         channel_s : int
             The single representation dimension.
         channel_z : int
@@ -174,6 +180,12 @@ class DiffusionStack(nn.Module):
             The atom pair representation dimension.
         channel_coords : int
             The atom coordinates dimension, by default 3.
+        separate_endpoint_atom_encoder : bool, optional
+            Whether to split a 6-channel ECSI coordinate input into separate
+            current-state and endpoint atom encoders, by default False.
+        endpoint_branch_dropout : float, optional
+            Dropout probability applied to the encoded endpoint token branch when
+            separate_endpoint_atom_encoder is enabled, by default 0.0.
         atom_encoder_blocks : int, optional
             The number of blocks in the atom encoder, by default 3.
         atom_encoder_heads : int, optional
@@ -189,6 +201,8 @@ class DiffusionStack(nn.Module):
         blocks_per_ckpt : int | None, optional
             The number of blocks per checkpoint for gradient checkpointing,
             by default None.
+        ckpt_atom_stack : bool, optional
+            Whether to checkpoint each complete atom transformer stack.
 
         """
         super().__init__()
@@ -197,6 +211,8 @@ class DiffusionStack(nn.Module):
         self.channel_atom: int = channel_atom
         self.channel_atompair: int = channel_atompair
         self.channel_coords: int = channel_coords
+        self.separate_endpoint_atom_encoder: bool = separate_endpoint_atom_encoder
+        self.endpoint_branch_dropout: float = endpoint_branch_dropout
         self.atom_encoder_blocks: int = atom_encoder_blocks
         self.atom_encoder_heads: int = atom_encoder_heads
         self.token_transformer_blocks: int = token_transformer_blocks
@@ -209,7 +225,16 @@ class DiffusionStack(nn.Module):
         self.single_conditioning = SingleConditioning(channel_s, dim_fourier=256)
 
         # === Local atom-level attention encoder === #
-        channel_token = channel_s * 2
+        if separate_endpoint_atom_encoder and channel_coords != 6:
+            raise ValueError(
+                "separate_endpoint_atom_encoder expects channel_coords=6 "
+                "for [r_t, r_T] ECSI inputs."
+            )
+        if not 0.0 <= endpoint_branch_dropout < 1.0:
+            raise ValueError("endpoint_branch_dropout must be in [0, 1).")
+        atom_encoder_channel_coords = (
+            3 if separate_endpoint_atom_encoder else channel_coords
+        )
         self.atom_embedder = AtomEmbedder(
             channel_z=channel_z,
             channel_atom=channel_atom,
@@ -219,17 +244,37 @@ class DiffusionStack(nn.Module):
         self.atom_attention_encoder = AtomAttentionEncoder(
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
-            channel_token=channel_token,
-            channel_coords=channel_coords,
+            channel_token=channel_a,
+            channel_coords=atom_encoder_channel_coords,
             num_blocks=atom_encoder_blocks,
             num_heads=atom_encoder_heads,
             use_structure=True,
+            ckpt_atom_stack=ckpt_atom_stack,
         )
+        if separate_endpoint_atom_encoder:
+            self.endpoint_atom_attention_encoder = AtomAttentionEncoder(
+                channel_atom=channel_atom,
+                channel_atompair=channel_atompair,
+                channel_token=channel_a,
+                channel_coords=atom_encoder_channel_coords,
+                num_blocks=atom_encoder_blocks,
+                num_heads=atom_encoder_heads,
+                use_structure=True,
+                ckpt_atom_stack=ckpt_atom_stack,
+            )
+            self.layernorm_a_t = LayerNorm(channel_a, create_offset=False)
+            self.layernorm_a_endpoint = LayerNorm(channel_a, create_offset=False)
+            self.endpoint_fusion = LinearNoBias(
+                channel_a * 2,
+                channel_a,
+                init="final",
+                precision=32,
+            )
 
         # === Full token-level attention === #
         self.layernorm_s = LayerNorm(channel_s, create_offset=False)
         self.linear_s_to_a = LinearNoBias(
-            channel_s, channel_token, init="final", precision=32
+            channel_s, channel_a, init="final", precision=32
         )
         self.layernorm_z = LayerNorm(channel_z, create_offset=False)
         self.linear_z_to_bias = LinearNoBias(
@@ -237,22 +282,23 @@ class DiffusionStack(nn.Module):
         )
 
         self.token_transformer = CachedGlobalTransformerStack(
-            channel_a=channel_token,
+            channel_a=channel_a,
             channel_s=channel_s,
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             blocks_per_ckpt=blocks_per_ckpt,
         )
 
-        self.layernorm_a = LayerNorm(channel_token, create_offset=False)
+        self.layernorm_a = LayerNorm(channel_a, create_offset=False)
 
         # === Local token-level attention decoder === #
         self.atom_attention_decoder = AtomAttentionDecoder(
-            channel_a=channel_token,
+            channel_a=channel_a,
             channel_atom=channel_atom,
             channel_atompair=channel_atompair,
             num_blocks=atom_decoder_blocks,
             num_heads=atom_decoder_heads,
+            ckpt_atom_stack=ckpt_atom_stack,
         )
 
     # === Main forward function for training === #
@@ -453,15 +499,53 @@ class DiffusionStack(nn.Module):
 
         # NOTE: Add extra dimension for the number of diffusion samples, N.
         r_noisy = r_noisy * atom_mask[..., None]
-        a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
-            q,  # [B, 1, La, c_atom]
-            c,  # [B, 1, La, c_atom]
-            p,  # [B, 1, W, Lq, Lk, c_atompair]
-            r_noisy=r_noisy,  # [B, N, La, 3]
-            token_index=token_index,  # [B, 1, Lt]
-            mask=atom_mask,  # [B, 1, La]
-            num_tokens=token_mask.shape[-1],
-        )
+
+        if self.separate_endpoint_atom_encoder:
+            r_t, r_T = r_noisy[..., :3], r_noisy[..., 3:]
+            a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
+                q,  # [B, 1, La, c_atom]
+                c,  # [B, 1, La, c_atom]
+                p,  # [B, 1, W, Lq, Lk, c_atompair]
+                r_noisy=r_t,  # [B, N, La, 3]
+                token_index=token_index,  # [B, 1, Lt]
+                mask=atom_mask,  # [B, 1, La]
+                num_tokens=token_mask.shape[-1],
+            )
+            a_endpoint, _, _, _ = self.endpoint_atom_attention_encoder(
+                q,  # [B, 1, La, c_atom]
+                c,  # [B, 1, La, c_atom]
+                p,  # [B, 1, W, Lq, Lk, c_atompair]
+                r_noisy=r_T,  # [B, N, La, 3]
+                token_index=token_index,  # [B, 1, Lt]
+                mask=atom_mask,  # [B, 1, La]
+                num_tokens=token_mask.shape[-1],
+            )
+            if self.training and self.endpoint_branch_dropout > 0.0:
+                keep_prob = 1.0 - self.endpoint_branch_dropout
+                keep = (
+                    torch.rand(
+                        (*a_endpoint.shape[:2], 1, 1),
+                        device=a_endpoint.device,
+                    )
+                    < keep_prob
+                )
+                a_endpoint = a_endpoint * keep.to(a_endpoint.dtype) / keep_prob
+            a = self.endpoint_fusion(
+                torch.cat(
+                    (self.layernorm_a_t(a), self.layernorm_a_endpoint(a_endpoint)),
+                    dim=-1,
+                )
+            )
+        else:
+            a, q_skip, c_skip, p_skip = self.atom_attention_encoder(
+                q,  # [B, 1, La, c_atom]
+                c,  # [B, 1, La, c_atom]
+                p,  # [B, 1, W, Lq, Lk, c_atompair]
+                r_noisy=r_noisy,  # [B, N, La, 3]
+                token_index=token_index,  # [B, 1, Lt]
+                mask=atom_mask,  # [B, 1, La]
+                num_tokens=token_mask.shape[-1],
+            )
         del q, c, p, r_noisy
 
         # Shape:

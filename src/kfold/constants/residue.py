@@ -134,11 +134,23 @@ DNA_BASES: tuple[str, ...] = ("A", "G", "C", "T", "N")
 DNA_RESIDUES_STR: tuple[str, ...] = ("DA", "DG", "DC", "DT", "DN")
 DNA_BASES_SET: set[str] = set(DNA_BASES)
 DNA_RESIDUES_STR_SET: set[str] = set(DNA_RESIDUES_STR)
+DNA_ONE_TO_THREE: dict[str, str] = {
+    s: t for s, t in zip(DNA_BASES, DNA_RESIDUES_STR, strict=True)
+}
+DNA_THREE_TO_ONE: dict[str, str] = {
+    t: s for s, t in zip(DNA_BASES, DNA_RESIDUES_STR, strict=True)
+}
 
 RNA_BASES: tuple[str, ...] = ("A", "G", "C", "U", "N")
 RNA_RESIDUES_STR: tuple[str, ...] = ("A", "G", "C", "U", "N")
 RNA_BASES_SET: set[str] = set(RNA_BASES)
 RNA_RESIDUES_STR_SET: set[str] = set(RNA_RESIDUES_STR)
+RNA_ONE_TO_THREE: dict[str, str] = {
+    s: t for s, t in zip(RNA_BASES, RNA_RESIDUES_STR, strict=True)
+}
+RNA_THREE_TO_ONE: dict[str, str] = {
+    t: s for s, t in zip(RNA_BASES, RNA_RESIDUES_STR, strict=True)
+}
 
 STANDARD_RESIDUES_STR: tuple[str, ...] = (
     *PROTEIN_RESIDUES_STR,

@@ -1,8 +1,61 @@
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import torch
+
+
+def initialize_parameter_groups_from_ema(
+    state_dict: Mapping[str, torch.Tensor],
+    ema_params: Mapping[str, torch.Tensor],
+    parameter_groups: Mapping[str, Sequence[str]],
+    groups_to_initialize: Sequence[str],
+) -> tuple[dict[str, torch.Tensor], list[str]]:
+    """Replace selected model parameter groups with checkpoint EMA values."""
+    unknown_groups = set(groups_to_initialize) - set(parameter_groups)
+    if unknown_groups:
+        raise ValueError(
+            f"Unknown EMA initialization groups: {sorted(unknown_groups)}. "
+            f"Available groups: {sorted(parameter_groups)}"
+        )
+
+    initialized_state_dict = dict(state_dict)
+    initialized_keys: list[str] = []
+
+    for group_name in groups_to_initialize:
+        prefixes = parameter_groups[group_name]
+        group_keys: list[str] = []
+
+        for ema_name, ema_param in ema_params.items():
+            if not any(
+                ema_name == prefix or ema_name.startswith(f"{prefix}.")
+                for prefix in prefixes
+            ):
+                continue
+
+            state_name = f"model.{ema_name}"
+            if state_name not in initialized_state_dict:
+                raise KeyError(
+                    f"EMA parameter '{ema_name}' from group '{group_name}' "
+                    f"is missing from the model state dict."
+                )
+            if initialized_state_dict[state_name].shape != ema_param.shape:
+                raise ValueError(
+                    f"Shape mismatch for '{state_name}': "
+                    f"model {initialized_state_dict[state_name].shape} vs "
+                    f"EMA {ema_param.shape}"
+                )
+
+            initialized_state_dict[state_name] = ema_param
+            group_keys.append(state_name)
+
+        if not group_keys:
+            raise ValueError(
+                f"No EMA parameters found for initialization group '{group_name}'."
+            )
+        initialized_keys.extend(group_keys)
+
+    return initialized_state_dict, initialized_keys
 
 
 class ExponentialMovingAverage:

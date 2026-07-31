@@ -47,6 +47,8 @@ class ChainArray(PlainLayout[np.ndarray]):
         Entity IDs of shape [Nchain,], starting from 1.
     asym_id: np.ndarray (int)
         Asymmetric unit IDs of shape [Nchain,], starting from 1.
+    apo_uid: np.ndarray (int)
+        Apo rigid-group IDs of shape [Nchain,], starting from 1.
     sym_id: np.ndarray (int)
         Symmetry IDs of shape [Nchain,], starting from 1.
     num_residues: np.ndarray (int)
@@ -75,6 +77,7 @@ class ChainArray(PlainLayout[np.ndarray]):
     chain_type: np.ndarray  # [Nchain,], int
     entity_id: np.ndarray  # [Nchain,], int
     asym_id: np.ndarray  # [Nchain,], int
+    apo_uid: np.ndarray  # [Nchain,], int
     sym_id: np.ndarray  # [Nchain,], int
     num_residues: np.ndarray  # [Nchain,], int
     num_tokens: np.ndarray  # [Nchain,], int
@@ -92,6 +95,7 @@ class ChainArray(PlainLayout[np.ndarray]):
             ("chain_type", np.integer, shape),
             ("entity_id", np.integer, shape),
             ("asym_id", np.integer, shape),
+            ("apo_uid", np.integer, shape),
             ("sym_id", np.integer, shape),
             ("num_residues", np.integer, shape),
             ("num_tokens", np.integer, shape),
@@ -137,6 +141,7 @@ class ChainArray(PlainLayout[np.ndarray]):
             chain_type=full_minus_one((num_chains,)),
             entity_id=full_minus_one((num_chains,)),
             asym_id=full_minus_one((num_chains,)),
+            apo_uid=full_minus_one((num_chains,)),
             sym_id=full_minus_one((num_chains,)),
             num_residues=full_minus_one((num_chains,)),
             num_tokens=full_minus_one((num_chains,)),
@@ -165,6 +170,8 @@ class TokenArray(PlainLayout[np.ndarray]):
         Entity IDs of shape [L,], starting from 1.
     asym_id: np.ndarray (int)
         Asymmetric unit IDs of shape [L,], starting from 1.
+    apo_uid: np.ndarray (int)
+        Apo rigid-group IDs of shape [L,], starting from 1.
     sym_id: np.ndarray (int)
         Symmetry IDs of shape [L,], starting from 1.
     res_type: np.ndarray (int)
@@ -219,6 +226,7 @@ class TokenArray(PlainLayout[np.ndarray]):
     chain_type: np.ndarray  # [L,], int
     entity_id: np.ndarray  # [L,], int
     asym_id: np.ndarray  # [L,], int, same to sequence_id
+    apo_uid: np.ndarray  # [L, Napo], int
     sym_id: np.ndarray  # [L,], int
     res_type: np.ndarray  # [L,], int
     num_atoms: np.ndarray  # [L,], int
@@ -231,12 +239,12 @@ class TokenArray(PlainLayout[np.ndarray]):
     frame_token_index: np.ndarray  # [L, 3], int
     frame_atom_index: np.ndarray  # [L, 3], int
     # Apo state indices.
-    apo_center_coords: np.ndarray  # [L, 3], float32
-    apo_repr_coords: np.ndarray  # [L, 3], float32
-    apo_frame_coords: np.ndarray  # [L, 3, 3], float32
-    apo_center_mask: np.ndarray  # [L,], bool
-    apo_repr_mask: np.ndarray  # [L,], bool
-    apo_frame_mask: np.ndarray  # [L,], bool
+    apo_center_coords: np.ndarray  # [L, Napo, 3], float32
+    apo_repr_coords: np.ndarray  # [L, Napo, 3], float32
+    apo_frame_coords: np.ndarray  # [L, Napo, 3, 3], float32
+    apo_center_mask: np.ndarray  # [L, Napo], bool
+    apo_repr_mask: np.ndarray  # [L, Napo], bool
+    apo_frame_mask: np.ndarray  # [L, Napo], bool
 
     @cached_property
     def layout_shape(self) -> tuple[int, ...]:
@@ -248,6 +256,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             ("chain_type", np.integer, shape),
             ("entity_id", np.integer, shape),
             ("asym_id", np.integer, shape),
+            ("apo_uid", np.integer, (*shape, -1)),
             ("sym_id", np.integer, shape),
             ("res_type", np.integer, shape),
             ("is_standard", np.bool_, shape),
@@ -259,12 +268,12 @@ class TokenArray(PlainLayout[np.ndarray]):
             ("repr_index", np.integer, shape),
             ("frame_token_index", np.integer, (*shape, 3)),
             ("frame_atom_index", np.integer, (*shape, 3)),
-            ("apo_center_coords", np.floating, (*shape, 3)),
-            ("apo_repr_coords", np.floating, (*shape, 3)),
-            ("apo_frame_coords", np.floating, (*shape, 3, 3)),
-            ("apo_center_mask", np.bool_, shape),
-            ("apo_repr_mask", np.bool_, shape),
-            ("apo_frame_mask", np.bool_, shape),
+            ("apo_center_coords", np.floating, (*shape, -1, 3)),
+            ("apo_repr_coords", np.floating, (*shape, -1, 3)),
+            ("apo_frame_coords", np.floating, (*shape, -1, 3, 3)),
+            ("apo_center_mask", np.bool_, (*shape, -1)),
+            ("apo_repr_mask", np.bool_, (*shape, -1)),
+            ("apo_frame_mask", np.bool_, (*shape, -1)),
         ]
         for name, dtype, shape in attributes:
             check_array(getattr(self, name), name=name, dtype=dtype, shape=shape)
@@ -290,12 +299,13 @@ class TokenArray(PlainLayout[np.ndarray]):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
     @classmethod
-    def get_empty(cls, num_tokens: int) -> Self:
+    def get_empty(cls, num_tokens: int, num_apo: int = 1) -> Self:
         """Get an empty TokenArray with the specified number of tokens."""
         return cls(
             chain_type=full_minus_one((num_tokens,)),
             entity_id=full_minus_one((num_tokens,)),
             asym_id=full_minus_one((num_tokens,)),
+            apo_uid=full_minus_one((num_tokens, num_apo)),
             sym_id=full_minus_one((num_tokens,)),
             res_type=full_minus_one((num_tokens,)),
             num_atoms=full_minus_one((num_tokens,)),
@@ -307,12 +317,12 @@ class TokenArray(PlainLayout[np.ndarray]):
             repr_index=full_minus_one((num_tokens,)),
             frame_token_index=full_minus_one((num_tokens, 3)),
             frame_atom_index=full_minus_one((num_tokens, 3)),
-            apo_center_coords=full_nan((num_tokens, 3)),
-            apo_repr_coords=full_nan((num_tokens, 3)),
-            apo_frame_coords=full_nan((num_tokens, 3, 3)),
-            apo_center_mask=full_false((num_tokens,)),
-            apo_repr_mask=full_false((num_tokens,)),
-            apo_frame_mask=full_false((num_tokens,)),
+            apo_center_coords=full_nan((num_tokens, num_apo, 3)),
+            apo_repr_coords=full_nan((num_tokens, num_apo, 3)),
+            apo_frame_coords=full_nan((num_tokens, num_apo, 3, 3)),
+            apo_center_mask=full_false((num_tokens, num_apo)),
+            apo_repr_mask=full_false((num_tokens, num_apo)),
+            apo_frame_mask=full_false((num_tokens, num_apo)),
         )
 
     def validate(self) -> None:
@@ -382,11 +392,11 @@ class AtomArray(PlainLayout[np.ndarray]):
     ref_charge: np.ndarray  # [Ntoken, 24], float
     ref_pos: np.ndarray  # [Ntoken, 24, 3], float32
     ref_mask: np.ndarray  # [Ntoken, 24], bool
-    apo_coords: np.ndarray  # [Ntoken, 24, 3], float32
+    apo_coords: np.ndarray  # [Ntoken, 24, Napo, 3], float32
     prior_coords: np.ndarray  # [Ntoken, 24, Nprior, 3], float32
     label_coords: np.ndarray  # [Ntoken, 24, 3], float32
     resolved_mask: np.ndarray  # [Ntoken, 24], bool
-    apo_mask: np.ndarray  # [Ntoken, 24], bool
+    apo_mask: np.ndarray  # [Ntoken, 24, Napo], bool
     pad_mask: np.ndarray  # [Ntoken, 24], bool
 
     @cached_property
@@ -403,10 +413,10 @@ class AtomArray(PlainLayout[np.ndarray]):
             ("ref_charge", np.floating, shape),
             ("ref_pos", np.floating, (*shape, 3)),
             ("ref_mask", np.bool_, shape),
-            ("apo_coords", np.floating, (*shape, 3)),
+            ("apo_coords", np.floating, (*shape, -1, 3)),
             ("prior_coords", np.floating, (*shape, -1, 3)),
             ("label_coords", np.floating, (*shape, 3)),
-            ("apo_mask", np.bool_, shape),
+            ("apo_mask", np.bool_, (*shape, -1)),
             ("pad_mask", np.bool_, shape),
             ("resolved_mask", np.bool_, shape),
         ]
@@ -417,6 +427,7 @@ class AtomArray(PlainLayout[np.ndarray]):
     def get_empty(
         cls,
         num_tokens: int,
+        num_apo: int = 1,
         num_priors: int = 0,
     ) -> Self:
         """Get an empty AtomArray with the specified number of tokens."""
@@ -429,10 +440,10 @@ class AtomArray(PlainLayout[np.ndarray]):
             ref_element=full_minus_one(shape),
             ref_charge=full_nan(shape),
             ref_pos=full_nan((*shape, 3)),
-            apo_coords=full_nan((*shape, 3)),
+            apo_coords=full_nan((*shape, num_apo, 3)),
             prior_coords=full_nan((*shape, num_priors, 3)),
             ref_mask=full_false(shape),
-            apo_mask=full_false(shape),
+            apo_mask=full_false((*shape, num_apo)),
             pad_mask=full_false(shape),
             label_coords=full_nan((*shape, 3)),
             resolved_mask=full_false(shape),
@@ -574,8 +585,8 @@ class SequenceArray(PlainLayout[np.ndarray]):
     chain_type: np.ndarray  # [L,], int
     asym_id: np.ndarray  # [L,], int
     seq_token_id: np.ndarray  # [L,], int
-    bb_struct_token_id: np.ndarray  # [L,], int
-    fa_struct_token_id: np.ndarray  # [L,], int
+    bb_struct_token_id: np.ndarray  # [L, Napo], int
+    fa_struct_token_id: np.ndarray  # [L, Napo], int
     pos_id: np.ndarray  # [L,], int
     mlm_mask: np.ndarray  # [L,], bool
 
@@ -589,8 +600,8 @@ class SequenceArray(PlainLayout[np.ndarray]):
             ("chain_type", np.integer, shape),
             ("asym_id", np.integer, shape),
             ("seq_token_id", np.integer, shape),
-            ("bb_struct_token_id", np.integer, shape),
-            ("fa_struct_token_id", np.integer, shape),
+            ("bb_struct_token_id", np.integer, (*shape, -1)),
+            ("fa_struct_token_id", np.integer, (*shape, -1)),
             ("pos_id", np.integer, shape),
             ("mlm_mask", np.bool_, shape),
         ]
@@ -618,14 +629,14 @@ class SequenceArray(PlainLayout[np.ndarray]):
         return self.chain_type == C.chain.ChainType.LIGAND.value
 
     @classmethod
-    def get_empty(cls, sequence_length: int) -> Self:
+    def get_empty(cls, sequence_length: int, num_apo: int = 1) -> Self:
         """Get an empty SequenceArray with the specified sequence length."""
         return cls(
             chain_type=full_minus_one((sequence_length,)),
             asym_id=full_minus_one((sequence_length,)),
             seq_token_id=full_minus_one((sequence_length,)),
-            bb_struct_token_id=full_minus_one((sequence_length,)),
-            fa_struct_token_id=full_minus_one((sequence_length,)),
+            bb_struct_token_id=full_minus_one((sequence_length, num_apo)),
+            fa_struct_token_id=full_minus_one((sequence_length, num_apo)),
             pos_id=full_minus_one((sequence_length,)),
             mlm_mask=full_false((sequence_length,)),
         )
@@ -793,16 +804,17 @@ class TokenizedStructure:
         num_bonds: int,
         num_sequence_tokens: int,
         num_constraints: int = 0,
+        num_apo: int = 1,
         num_priors: int = 0,
     ) -> Self:
         """Get an empty TokenizedStructure with the specified sizes."""
         return cls(
             id=id,
             chain=ChainArray.get_empty(num_chains),
-            token=TokenArray.get_empty(num_tokens),
-            atom=AtomArray.get_empty(num_tokens, num_priors=num_priors),
+            token=TokenArray.get_empty(num_tokens, num_apo=num_apo),
+            atom=AtomArray.get_empty(num_tokens, num_apo=num_apo, num_priors=num_priors),
             bond=BondArray.get_empty(num_bonds),
-            sequence=SequenceArray.get_empty(num_sequence_tokens),
+            sequence=SequenceArray.get_empty(num_sequence_tokens, num_apo=num_apo),
             constraint=ConstraintArray.get_empty(num_constraints),
         )
 

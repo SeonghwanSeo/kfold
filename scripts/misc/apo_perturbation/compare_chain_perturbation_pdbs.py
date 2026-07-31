@@ -12,15 +12,15 @@ from string import Template
 import numpy as np
 import torch
 from kfold.data.utils.writer.pdb import to_pdbstring
+from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
+from kfold.training.dataset.dataset import MultiTrainingDataset, TrainingDataset
 from omegaconf import DictConfig
 
 import kfold.model.modules as submodules  # noqa: F401
 from kfold.config import load_config
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.tokenized import TokenizedStructure
-from kfold.model.modules.structure_module.kfold_ecsi import KFoldECSI
 from kfold.training.dataset.datamodule import TrainingDataModule
-from kfold.training.dataset.dataset import MultiTrainingDataset, TrainingDataset
 from kfold.training.dataset.sampler.base import Sample
 from kfold.utils import errors
 from kfold.utils.registry import Registry

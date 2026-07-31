@@ -7,9 +7,13 @@ from typing import Self
 import numpy as np
 
 import kfold.constants as C
-from kfold.data.types.ccd import CCD, Component
 from kfold.data.types.structure import Chain, RefStructure
-from kfold.data.utils.simulation.langevin_dynamics import LangevinDynamicsSimulator
+from kfold.data.utils.simulation.bioprior import BioPriorConfig, BioPriorPerturbation
+from kfold.data.utils.simulation.langevin_dynamics import (
+    LangevinDynamicsSimulator,
+    LigandLangevinDynamicsConfig,
+    LigandLangevinDynamicsSimulator,
+)
 from kfold.utils.geometry.random_augment import center_random_augmentation
 from kfold.utils.geometry.rigid_align import compute_rmsd
 from kfold.utils.misc import spawn_rng
@@ -28,15 +32,23 @@ class PriorSamplerConfig:
     ----------
     chain_translation_scale : float
         Scale of random translation augmentation for each chain (in Angstrom).
-    use_ot_permutation : bool
-        Whether to apply optimal transport-based permutation
     ligand_augmentation_scale : float
-        Scale of random noise augmentation for ligand coordinates (in Angstrom).
+        Legacy scale of independent atom noise for ligand coordinates (in Angstrom).
+        Used only when ligand Langevin perturbation is disabled.
+    bioprior : BioPriorConfig
+        BioPrior perturbation configuration for protein prior sources.
+    ligand_langevin : LigandLangevinDynamicsConfig
+        Bond-angle harmonic Langevin perturbation around the initial conformer.
     """
 
     chain_translation_scale: float = 24.0  # Angstrom
-    use_ot_permutation: bool = False
     ligand_augmentation_scale: float = 0.3  # Angstrom
+    bioprior: BioPriorConfig = dataclasses.field(
+        default_factory=lambda: BioPriorConfig(noise_scale=0.3, max_steps=10)
+    )
+    ligand_langevin: LigandLangevinDynamicsConfig = dataclasses.field(
+        default_factory=LigandLangevinDynamicsConfig
+    )
     train: bool = False
 
     @classmethod
@@ -44,73 +56,47 @@ class PriorSamplerConfig:
         """Get a PriorSampler config configured for inference."""
         return cls(
             chain_translation_scale=24.0,
-            use_ot_permutation=False,
             ligand_augmentation_scale=0.3,
+            bioprior=BioPriorConfig(max_steps=0),
+            ligand_langevin=LigandLangevinDynamicsConfig(enabled=True),
             train=False,
         )
 
 
 class PriorSampler:
-    """Class to populate and augment apo structures."""
+    """Class to map, populate, and augment prior structures."""
 
-    def __init__(self, config: PriorSamplerConfig, ccd: CCD) -> None:
+    def __init__(self, config: PriorSamplerConfig) -> None:
         self.config: PriorSamplerConfig = config
         self.logger = logging.getLogger("PriorSampler")
 
-        self.ccd: CCD = ccd
-
         self.chain_translation_scale: float = config.chain_translation_scale
 
-        self.use_ot_permutation: bool = config.use_ot_permutation
-
         # Ligand augmentation scale
-        self.train: bool = config.train
         self.ligand_augmentation_scale: float = config.ligand_augmentation_scale
+        self.bioprior: BioPriorPerturbation = BioPriorPerturbation(config.bioprior)
+
+        # Bond-angle harmonic ligand perturbation. This is distinct from the
+        # missing-atom relaxation performed by LangevinDynamicsSimulator.
+        self.ligand_langevin_simulator = LigandLangevinDynamicsSimulator(
+            config.ligand_langevin
+        )
+        self.ligand_langevin_config = self.ligand_langevin_simulator.config
 
         # Langevin dynamics simulator for relaxing missing atoms
         self.langevin_simulator = LangevinDynamicsSimulator.default()
 
-        if self.use_ot_permutation and not self.train:
-            raise ValueError(
-                "Optimal transport permutation should only be used during training."
-            )
+        self.train: bool = config.train
 
     @classmethod
-    def inference_mode(cls, ccd: CCD) -> Self:
+    def inference_mode(cls) -> Self:
         """Get a PriorSampler instance configured for inference."""
-        return cls(PriorSamplerConfig.inference_mode(), ccd)
+        return cls(PriorSamplerConfig.inference_mode())
 
     def __call__(
         self,
         struct: RefStructure,
-        apo_coords_dict: dict[int, np.ndarray] | None,
-        num_samples: int,
-        rng: np.random.Generator | None = None,
-    ) -> np.ndarray:
-        """Sample prior coordinates for the given structure.
-
-        Parameters
-        ----------
-        struct : RefStructure
-            Reference structure containing apo coordinates.
-        apo_coords_dict : dict[int, np.ndarray] | None
-            Optional dictionary mapping entity id to apo structure.
-        num_samples : int
-            Number of prior samples to generate.
-        rng : np.random.Generator
-            Random number generator for stochastic operations.
-
-        Returns
-        -------
-        prior_coords : np.ndarray
-            Sampled prior coordinates of shape [num_priors, N_atoms, 3].
-        """
-        return self.sample_prior_coordinates(struct, apo_coords_dict, num_samples, rng)
-
-    def sample_prior_coordinates(
-        self,
-        struct: RefStructure,
-        apo_coords_dict: dict[int, np.ndarray] | None,
+        apo_dict: dict[int, np.ndarray],
         num_samples: int,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
@@ -119,9 +105,13 @@ class PriorSampler:
         Parameters
         ----------
         struct : RefStructure
-            Reference structure containing apo coordinates.
-        apo_coords_dict : dict[int, np.ndarray] | None
-            Optional dictionary mapping entity id to apo structure.
+            Reference structure to sample priors for.
+        apo_dict : dict[int, np.ndarray]
+            Dictionary mapping asym_id to one prior coordinate source.
+            Callers may build it from apo_lmdb, prior_lmdb, holo fallback, or
+            ligand conformer sampling. Shapes are [L, A, 3] for polymers and
+            [Natom, 1, 3] for ligands, where A is 37 for proteins and 29 for
+            nucleic acids.
         num_samples : int
             Number of prior samples to generate.
         rng : np.random.Generator
@@ -130,46 +120,38 @@ class PriorSampler:
         Returns
         -------
         prior_coords : np.ndarray
-            Sampled prior coordinates of shape [num_priors, N_atoms, 3].
+            Sampled prior coordinates of shape [num_priors, Natom, 3].
         """
+        return self.sample(struct, apo_dict, num_samples, rng)
+
+    def sample(
+        self,
+        struct: RefStructure,
+        apo_dict: dict[int, np.ndarray],
+        num_samples: int,
+        rng: np.random.Generator | None = None,
+    ) -> np.ndarray:
         # Use a separate RNG for sampling to avoid affecting global state
         rng = spawn_rng(rng)
 
         if num_samples <= 0:
             return np.empty((0, struct.num_atoms, 3), dtype=np.float32)
 
-        # === 1. Prepare apo coordinates for each entity === #
-        entity_prior_coords = self.prepare_entity_prior_coords(
-            struct, apo_coords_dict, rng
-        )
+        # Prepare one coordinate source for each chain. Resampling happens in
+        # the dataset; the sampler handles perturbation, augmentation, and OT.
+        chain_coords_list = self.prepare_chain_coords(struct, apo_dict, rng)
+        prior_uids = self.get_chain_prior_uids(struct)
+        skip_ot_permutation = len(set(prior_uids)) < len(prior_uids)
 
-        # === 2. Get chain prior coordinates === #
-        chain_coords_list: list[np.ndarray] = [
-            entity_prior_coords[c.entity_id] for c in struct.chains
-        ]
-        for i, coords in enumerate(chain_coords_list):
-            c = struct.chains[i]
-            if coords.shape != (c.num_atoms, 3):
-                if c.is_polymer:
-                    raise ValueError(
-                        f"Apo coordinates for chain {i} have incorrect shape "
-                        f"{coords.shape}, expected {(struct.chains[i].num_atoms, 3)}."
-                    )
-                else:
-                    # NOTE: For non-polymer chains (e.g. ligands), the number of
-                    # atoms can be mismatched due to different bonding
-                    chain_coords_list[i] = np.zeros((c.num_atoms, 3), dtype=np.float32)
-
-        # === 3. Sample priors with augmentation and optional permutation === #
         prior_coords_list: list[np.ndarray] = []
         for _ in range(num_samples):
-            # Apply random augmentation to each chain's apo coordinates
-            _chain_coords_list: list[np.ndarray] = [
-                self.apply_random_augmentation(x, rng) for x in chain_coords_list
-            ]
+            # Apply one random augmentation per prior rigid group.
+            _chain_coords_list = self.apply_group_random_augmentation(
+                chain_coords_list, prior_uids, rng
+            )
 
-            if self.use_ot_permutation:
-                # Optimal transport permutation
+            if self.train and not skip_ot_permutation:
+                # Optimal transport permutation during training.
                 _chain_coords_list = self.match_optimal_transport_permutation(
                     _chain_coords_list, struct, rng
                 )
@@ -180,115 +162,95 @@ class PriorSampler:
 
         return np.stack(prior_coords_list, axis=0)
 
-    # === Helper methods for preparing apo coordinates and sampling priors === #
-    def prepare_entity_prior_coords(
+    # === Helper methods for preparing prior coordinates and sampling priors === #
+    def get_chain_prior_uids(self, struct: RefStructure) -> list[int]:
+        """Get prior rigid-group IDs in the same order as `struct.chains`."""
+        metadata_by_asym_id = {c.asym_id: c for c in struct.metadata.chains}
+        prior_uids = []
+        for chain in struct.chains:
+            chain_info = metadata_by_asym_id.get(chain.asym_id)
+            prior_uid = chain.asym_id if chain_info is None else chain_info.prior_uid
+            prior_uids.append(int(prior_uid))
+        return prior_uids
+
+    def prepare_chain_coords(
         self,
         struct: RefStructure,
-        apo_coords_dict: dict[int, np.ndarray] | None,
+        apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
-    ) -> dict[int, np.ndarray]:
-        """Sample prior coordinates (xT) for the given structure.
+    ) -> list[np.ndarray]:
+        """Prepare one atom-order prior source for each chain."""
+        unknown_keys = set(apo_dict) - set(c.asym_id for c in struct.chains)
+        if unknown_keys:
+            raise KeyError(
+                "Prior coordinates must be keyed by asym_id. "
+                f"Unknown keys for structure {struct.id}: {sorted(unknown_keys)}"
+            )
 
-        Parameters
-        ----------
-        struct : RefStructure
-            Reference structure containing apo coordinates.
-        apo_coords_dict : dict[int, np.ndarray] | None
-            Optional dictionary mapping entity id to apo structure.
-        rng : np.random.Generator
-            Random number generator for stochastic operations.
-
-        Returns
-        -------
-        entity_prior_coords : dict[int, np.ndarray]
-            Dictionary mapping entity id to sampled prior coordinates.
-        """
-        if apo_coords_dict is None:
-            apo_coords_dict = {}
-
-        # === 1. Prepare apo coordinates for each entity === #
-        entity_prior_coords: dict[int, np.ndarray] = {}
+        chain_coords: list[np.ndarray] = []
         for c in struct.chains:
-            if c.entity_id in entity_prior_coords:
-                continue
-            entity_key = f"{struct.id}_{c.entity_id}"
+            chain_key = f"{struct.id}:{c.asym_id}"
+
+            assert c.asym_id in apo_dict, (
+                f"Missing apo source for chain {c.asym_id} in {struct.id}"
+            )
+            coords = apo_dict[c.asym_id]  # [L, A, 3]
+
+            # Apply perturbation
             if c.is_protein:
-                if c.entity_id in apo_coords_dict:
-                    # Get apo coordinates for this protein entity
-                    coords = apo_coords_dict[c.entity_id]
-                    # Relax with Langevin dynamics
-                    coords = self.langevin_relaxation(coords, c, rng)
-                else:
-                    # Return langevin-sampled coordinates.
-                    self.logger.warning(
-                        f"Protein entity {entity_key} has no apo coordinates."
-                        f" Sampling with Langevin dynamics."
-                    )
-                    coords = self.langevin_sampling(c, rng)
-
+                coords = self.perturb_protein_apo_coords(c, coords, rng)
             elif c.is_nucleic_acid:
-                # For nucleic acids, return langevin-sampled coordinates.
-                coords = self.langevin_sampling(c, rng)
+                # No perturbation for nucleic acids yet
+                pass
+            elif c.is_ligand:
+                # Preserve the legacy IID atom perturbation when this chain is
+                # outside the bond-angle harmonic ligand path.
+                if not self._use_ligand_langevin(c):
+                    scale = self.ligand_augmentation_scale
+                    if scale > 0.0:
+                        noise = rng.normal(scale=scale, size=coords.shape)
+                        coords = coords + noise
 
+            # Flatten coordinates: [L, A, 3] -> [Natom, 3]
+            if c.is_polymer:
+                coords = c.map_residue_coords_to_atom_coords(coords)
             else:
-                # For ligands, use ETKDG conformer.
-                if c.smiles is not None:
-                    assert c.num_residues == 1, (
-                        "Multiple residues with SMILES not supported."
-                    )
-                    ref_comp = Component.from_smiles("LIG", c.smiles)
-                    coords = ref_comp.get_ref_conformer(rng, self.train)
-                else:
-                    coords = np.full_like(c.atom.coords, np.nan)
-                    ccd_sequence = c.get_ccd_sequence()
-                    for res_i in range(c.num_residues):
-                        res_idx = res_i + 1  # 1-based
-                        code = ccd_sequence[res_i]
-                        if code not in self.ccd:
-                            self.logger.warning(
-                                f"CCD code {code} not found for ligand entity "
-                                f"{entity_key}. Filling with NaN coordinates."
-                            )
-                            continue
-                        ref_comp = self.ccd[code]
-                        ref_pos = ref_comp.get_ref_conformer(rng, self.train)
-                        ref_atom_order = ref_comp.get_atom_index_map()
-                        # Map reference conformer to chain's atom order
-                        src_atom_indices: list[int] = []
-                        dst_atom_indices: list[int] = []
-                        for atom_i in c.residue.iter_residue_atoms(res_idx):
-                            an = c.atom.name[atom_i]
-                            if an in ref_atom_order:
-                                src_atom_indices.append(ref_atom_order[an])
-                                dst_atom_indices.append(atom_i)
-                        coords[dst_atom_indices] = ref_pos[src_atom_indices]
+                coords = coords.reshape(-1, 3)
 
-                # Relax with Langevin dynamics
-                coords = self.langevin_relaxation(coords, c, rng)
+            if coords.shape != (c.num_atoms, 3):
+                raise ValueError(
+                    f"Prior coordinates for chain {chain_key} have shape "
+                    f"{coords.shape}, expected {(c.num_atoms, 3)}."
+                )
 
-                # Apply random noise augmentation to ligand coordinates
-                scale = self.ligand_augmentation_scale
-                if scale > 0.0:
-                    noise = rng.normal(scale=scale, size=coords.shape)
-                    coords += noise
+            # Fill missing coordinates using Langevin dynamics relaxation
+            coords = self.langevin_relaxation(coords, c, rng)
+            if self._use_ligand_langevin(c):
+                coords = self.sample_ligand_langevin_priors(
+                    coords, c, num_samples=1, rng=rng
+                )[0]
 
-            entity_prior_coords[c.entity_id] = coords
-        return entity_prior_coords
+            chain_coords.append(coords)
 
-    def langevin_sampling(
+        return chain_coords
+
+    def perturb_protein_apo_coords(
         self,
         chain: Chain,
+        coords: np.ndarray,
         rng: np.random.Generator,
-        scale: float = 16.0,
     ) -> np.ndarray:
-        """Sample coordinates for a chain using Langevin dynamics"""
-        num_residues = chain.num_residues
-        residue_index = np.repeat(np.arange(num_residues), chain.residue.num_atoms)
-        # Start from random noise
-        noise = rng.standard_normal(size=chain.atom.coords.shape, dtype=np.float32)
-        noise *= scale
-        # Run Langevin dynamics to sample coordinates
-        return self.langevin_simulator(noise, residue_index, rng=rng)
+        """Apply BioPrior perturbation to one protein prior source."""
+        assert chain.is_protein
+        mask = np.isfinite(coords).all(axis=-1)
+        if not mask.any():
+            return coords
+        sequence = chain.get_sequence(map_to_standard=True)
+        perturbed = self.bioprior.run(sequence, coords, rng=rng)
+        if perturbed is None:
+            perturbed = coords.copy()  # Fallback to original coordinates
+        perturbed[~mask] = np.nan
+        return perturbed
 
     def langevin_relaxation(
         self,
@@ -313,6 +275,145 @@ class PriorSampler:
         return self.langevin_simulator(
             coords, residue_index, rng=rng, is_constraint=is_resolved
         )
+
+    def _atom37_to_chain_coords(
+        self,
+        atom37_coords: np.ndarray,
+        original_coords: np.ndarray,
+        chain: Chain,
+    ) -> np.ndarray:
+        """Map perturbed protein atom37 coordinates back to chain atom order."""
+        atom_order = C.atom.protein_atom37_order
+        coords = original_coords.copy()
+        atom_names = chain.atom.name.tolist()
+        for res_i in range(chain.num_residues):
+            residue_index = res_i + 1
+            for atom_i in chain.residue.iter_residue_atoms(residue_index):
+                atom37_i = atom_order.get(atom_names[atom_i])
+                if atom37_i is None:
+                    continue
+                coord = atom37_coords[res_i, atom37_i]
+                if np.isfinite(coord).all():
+                    coords[atom_i] = coord
+        return coords
+
+    def _use_ligand_langevin(self, chain: Chain) -> bool:
+        """Whether to perturb this chain from its initial ligand conformer."""
+        return (
+            self.ligand_langevin_config.enabled
+            and chain.is_small_molecule
+            and chain.num_atoms > 1
+        )
+
+    def sample_ligand_langevin_priors(
+        self,
+        coords: np.ndarray,
+        chain: Chain,
+        num_samples: int,
+        rng: np.random.Generator,
+    ) -> np.ndarray:
+        """Sample and validate bond-angle harmonic priors for a ligand entity."""
+        if not np.isfinite(coords).all():
+            self.logger.warning(
+                "Skipping ligand Langevin perturbation for entity %s because its "
+                "initial conformer contains non-finite coordinates.",
+                chain.entity_id,
+            )
+            return np.repeat(coords[None, ...], num_samples, axis=0)
+
+        bond_indices = self.get_ligand_bond_indices(chain)
+        samples = self.ligand_langevin_simulator(coords, bond_indices, num_samples, rng)
+
+        is_valid = self.get_valid_ligand_prior_mask(coords, samples, bond_indices)
+        samples[~is_valid] = coords
+        rejected = int((~is_valid).sum())
+        if rejected > 0:
+            self.logger.warning(
+                "Rejected %d/%d ligand Langevin priors for entity %s; "
+                "falling back to the initial conformer.",
+                rejected,
+                num_samples,
+                chain.entity_id,
+            )
+        return samples
+
+    def get_ligand_bond_indices(self, chain: Chain) -> np.ndarray:
+        """Convert ligand bond records to chain-local atom index pairs."""
+        atom_pairs: list[tuple[int, int]] = []
+        for residue_indices, atom_names in zip(
+            chain.bond.residue_index,
+            chain.bond.atom_name,
+            strict=True,
+        ):
+            try:
+                atom_i = chain.find_atom_index(int(residue_indices[0]), atom_names[0])
+                atom_j = chain.find_atom_index(int(residue_indices[1]), atom_names[1])
+            except KeyError as exc:
+                self.logger.warning(
+                    "Skipping invalid ligand bond for entity %s: %s",
+                    chain.entity_id,
+                    exc,
+                )
+                continue
+            atom_pairs.append((atom_i, atom_j))
+        return np.asarray(atom_pairs, dtype=np.int64).reshape(-1, 2)
+
+    def is_valid_ligand_prior(
+        self,
+        initial_coords: np.ndarray,
+        sampled_coords: np.ndarray,
+        bond_indices: np.ndarray,
+    ) -> bool:
+        """Check finite coordinates, bond preservation, and local RMSD."""
+        if sampled_coords.shape != initial_coords.shape:
+            return False
+        return bool(
+            self.get_valid_ligand_prior_mask(
+                initial_coords,
+                sampled_coords[None, ...],
+                bond_indices,
+            )[0]
+        )
+
+    def get_valid_ligand_prior_mask(
+        self,
+        initial_coords: np.ndarray,
+        sampled_coords: np.ndarray,
+        bond_indices: np.ndarray,
+    ) -> np.ndarray:
+        """Validate a batch of ligand priors without a per-sample Python loop."""
+        if sampled_coords.ndim != 3 or sampled_coords.shape[1:] != initial_coords.shape:
+            raise ValueError(
+                "sampled_coords must have shape [Nsample, Natom, 3], got "
+                f"{sampled_coords.shape}."
+            )
+
+        is_valid = np.isfinite(sampled_coords).all(axis=(-2, -1))
+
+        cfg = self.ligand_langevin_config
+        if cfg.max_bond_deviation is not None and len(bond_indices) > 0:
+            atom_i, atom_j = bond_indices.T
+            initial_lengths = np.linalg.norm(
+                initial_coords[atom_i] - initial_coords[atom_j], axis=-1
+            )
+            sampled_lengths = np.linalg.norm(
+                sampled_coords[:, atom_i] - sampled_coords[:, atom_j], axis=-1
+            )
+            max_bond_deviation = np.max(
+                np.abs(sampled_lengths - initial_lengths[None, :]), axis=-1
+            )
+            is_valid &= max_bond_deviation <= cfg.max_bond_deviation
+
+        # Avoid passing non-finite or already rejected samples to the SVD.
+        valid_indices = np.flatnonzero(is_valid)
+        if cfg.max_aligned_rmsd is not None and len(valid_indices) > 0:
+            valid_samples = sampled_coords[valid_indices]
+            initial_batch = np.broadcast_to(initial_coords, valid_samples.shape)
+            aligned_rmsd = compute_rmsd(
+                initial_batch, valid_samples, mask=None, align=True
+            )
+            is_valid[valid_indices] &= aligned_rmsd <= cfg.max_aligned_rmsd
+        return is_valid
 
     # === Helper methods for augmentation and optimal transport permutation === #
     def apply_random_augmentation(
@@ -343,6 +444,35 @@ class PriorSampler:
             coords, mask, s_trans=s_trans, rng=rng, mask_to_zero=False
         )
         return augmented_coords
+
+    def apply_group_random_augmentation(
+        self,
+        chain_coords_list: list[np.ndarray],
+        prior_uids: list[int],
+        rng: np.random.Generator,
+    ) -> list[np.ndarray]:
+        """Apply one random augmentation per prior_uid rigid group."""
+        assert len(chain_coords_list) == len(prior_uids), (
+            "Number of chain coordinate arrays must match number of prior_uids."
+        )
+
+        group_to_indices: dict[int, list[int]] = defaultdict(list)
+        for c_i, prior_uid in enumerate(prior_uids):
+            group_to_indices[prior_uid].append(c_i)
+
+        augmented_coords_list: list[np.ndarray] = [
+            np.empty_like(coords) for coords in chain_coords_list
+        ]
+        for indices in group_to_indices.values():
+            group_coords = [chain_coords_list[i] for i in indices]
+            group_sizes = [coords.shape[0] for coords in group_coords]
+            coords = np.concatenate(group_coords, axis=0)
+            coords = self.apply_random_augmentation(coords, rng)
+            split_coords = np.split(coords, np.cumsum(group_sizes)[:-1])
+            for i, chain_coords in zip(indices, split_coords, strict=True):
+                augmented_coords_list[i] = chain_coords
+
+        return augmented_coords_list
 
     def match_optimal_transport_permutation(
         self,

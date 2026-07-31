@@ -41,6 +41,7 @@ class DataModuleConfig(BaseConfig):
 
     # === Training hyperparameters === #
     max_chains: int = 20
+    max_apo: int = 5
     max_tokens: int = 384
     max_sequence_tokens: int = 768
 
@@ -53,7 +54,9 @@ class DataModuleConfig(BaseConfig):
     val_datasets: list[ValidationDatasetConfig] = dataclasses.field(default_factory=list)
 
     # === Other configs === #
-    prior_sampler: prior_sampling.PriorSamplerConfig | None
+    prior_sampler: prior_sampling.PriorSamplerConfig = dataclasses.field(
+        default_factory=prior_sampling.PriorSamplerConfig
+    )
 
 
 class MultiTrainingDataset(torch.utils.data.Dataset):
@@ -67,6 +70,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         featurizer: featurization.InputFeaturizer,
         prior_sampler: prior_sampling.PriorSampler | None,
         max_chains: int,
+        max_apo: int,
         max_tokens: int,
         max_sequence_tokens: int,
         safe_load: bool = True,
@@ -80,6 +84,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
                 prior_sampler=prior_sampler,
                 safe_load=safe_load,
                 max_chains=max_chains,
+                max_apo=max_apo,
                 max_tokens=max_tokens,
                 max_sequence_tokens=max_sequence_tokens,
             )
@@ -148,12 +153,7 @@ class TrainingDataModule(pl.LightningDataModule):
 
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
-        if self.config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(
-                self.config.prior_sampler, self.ccd
-            )
-        else:
-            prior_sampler = None
+        prior_sampler = prior_sampling.PriorSampler(self.config.prior_sampler)
 
         multi_ds = MultiTrainingDataset(
             configs=self.config.train_datasets,
@@ -162,6 +162,7 @@ class TrainingDataModule(pl.LightningDataModule):
             prior_sampler=prior_sampler,
             ccd=self.ccd,
             max_chains=self.config.max_chains,
+            max_apo=self.config.max_apo,
             max_tokens=self.config.max_tokens,
             max_sequence_tokens=self.config.max_sequence_tokens,
             safe_load=self.config.safe_load,
@@ -189,14 +190,10 @@ class TrainingDataModule(pl.LightningDataModule):
 
         tokenizer = tokenization.Tokenizer(self.ccd, mode="train")
         featurizer = featurization.InputFeaturizer()
-        if self.config.prior_sampler is not None:
-            prior_sampler = prior_sampling.PriorSampler(
-                self.config.prior_sampler, self.ccd
-            )
-            # For validation, we should not use OT permutation.
-            prior_sampler.use_ot_permutation = False
-        else:
-            prior_sampler = None
+        prior_sampler = prior_sampling.PriorSampler.inference_mode()
+        prior_sampler.chain_translation_scale = (
+            self.config.prior_sampler.chain_translation_scale
+        )
 
         ds = ValidationDataset(
             config=self.config.val_datasets[0],

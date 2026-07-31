@@ -18,7 +18,7 @@ class InferenceInput(NamedTuple):
     query: Query
     ref_struct: RefStructure
     f_input: FoldingInput
-    struct_tok_input: dict
+    struct_token_records: list[list[dict]]
 
 
 def next_multiple(n: int, divisor: int) -> int:
@@ -33,7 +33,6 @@ class InferenceDataset(torch.utils.data.Dataset):
         self,
         queries: list[Query],
         ccd: CCD,
-        num_samples: int = 5,
     ) -> None:
         """
         Parameters
@@ -42,11 +41,9 @@ class InferenceDataset(torch.utils.data.Dataset):
             List of queries.
         ccd : CCD
             Component for handling common chemical components.
-        num_samples : int
-            Number of diffusion samples to generate for each query.
         """
         self.queries: list[Query] = queries
-        self.data_pipeline = InputDataPipeline(ccd, num_samples)
+        self.data_pipeline = InputDataPipeline(ccd)
 
     def __len__(self) -> int:
         return len(self.queries)
@@ -56,12 +53,12 @@ class InferenceDataset(torch.utils.data.Dataset):
         query: Query = self.queries[index]
 
         # Prepare input data
-        ref_struct, _, f_input, struct_tok_input = self.data_pipeline.run(query)
+        ref_struct, _, f_input, struct_token_records = self.data_pipeline.run(query)
 
         # Pad the folding input to multiple of 64 for LocalAtomAttention
         f_input = self.pad_input(f_input)
 
-        return InferenceInput(query, ref_struct, f_input, struct_tok_input)
+        return InferenceInput(query, ref_struct, f_input, struct_token_records)
 
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         """Pad the folding input to multiple of 64"""

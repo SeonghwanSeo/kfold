@@ -81,7 +81,7 @@ def parse_arguments():
     parser.add_argument(
         "--date_cutoff",
         type=str,
-        default="2023-12-31",  # train&validation split date
+        default="2021-09-30",  # train&validation split date
         help="Date cutoff for processing components (YYYY-MM-DD).",
     )
     return parser.parse_args()
@@ -277,9 +277,9 @@ def main():
         if args.num_conformers_standard_residues is None:
             logger.warning(
                 "Number of conformers for standard residues not specified. "
-                "Defaulting to 100 conformers for standard residues."
+                "Defaulting to 1000 conformers for standard residues."
             )
-            args.num_conformers_standard_residues = 100
+            args.num_conformers_standard_residues = 1000
         compute_symmetry = False
 
     if args.num_conformers > 0:

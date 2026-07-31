@@ -26,6 +26,8 @@ class ChainTensor(TensorLayout):
         Entity IDs of shape [Nchain,], starting from 1.
     asym_id: torch.Tensor (long)
         Asymmetric unit IDs of shape [Nchain,], starting from 1.
+    apo_uid: torch.Tensor (long)
+        Apo rigid-group IDs of shape [Nchain,], starting from 1.
     sym_id: torch.Tensor (long)
         Symmetry IDs of shape [Nchain,], starting from 1.
     num_tokens: torch.Tensor (long)
@@ -45,6 +47,7 @@ class ChainTensor(TensorLayout):
     chain_type: torch.Tensor  # [Nchain,], long
     entity_id: torch.Tensor  # [Nchain,], long
     asym_id: torch.Tensor  # [Nchain,], long
+    apo_uid: torch.Tensor  # [Nchain,], long
     sym_id: torch.Tensor  # [Nchain,], long
     num_tokens: torch.Tensor  # [Nchain,], long
     num_residues: torch.Tensor  # [Nchain,], long
@@ -68,6 +71,7 @@ class ChainTensor(TensorLayout):
             ("chain_type", torch.long, shape),
             ("entity_id", torch.long, shape),
             ("asym_id", torch.long, shape),
+            ("apo_uid", torch.long, shape),
             ("sym_id", torch.long, shape),
             ("num_tokens", torch.long, shape),
             ("num_residues", torch.long, shape),
@@ -92,6 +96,7 @@ class ChainTensor(TensorLayout):
             "chain_type": -1,
             "entity_id": -1,
             "asym_id": -1,
+            "apo_uid": -1,
             "sym_id": -1,
             "num_tokens": -1,
             "num_residues": -1,
@@ -198,6 +203,7 @@ class TokenTensor(TensorLayout):
     chain_type: torch.Tensor  # [Ntoken,], long
     entity_id: torch.Tensor  # [Ntoken,], long
     asym_id: torch.Tensor  # [Ntoken,], long, same to sequence_id
+    apo_uid: torch.Tensor  # [Ntoken, Napo], long
     sym_id: torch.Tensor  # [Ntoken,], long
     res_type: torch.Tensor  # [Ntoken, 32], float32
     is_standard: torch.Tensor  # [Ntoken,], bool
@@ -213,12 +219,12 @@ class TokenTensor(TensorLayout):
     pad_mask: torch.Tensor  # [Ntoken,], bool
 
     # Apo state indices.
-    apo_center_coords: torch.Tensor  # [Ntoken,], float32
-    apo_repr_coords: torch.Tensor  # [Ntoken,], float32
-    apo_frame_coords: torch.Tensor  # [Ntoken, 3, 3], float32
-    apo_center_mask: torch.Tensor  # [Ntoken,], bool
-    apo_repr_mask: torch.Tensor  # [Ntoken,], bool
-    apo_frame_mask: torch.Tensor  # [Ntoken,], bool
+    apo_center_coords: torch.Tensor  # [Ntoken, Napo, 3], float32
+    apo_repr_coords: torch.Tensor  # [Ntoken, Napo, 3], float32
+    apo_frame_coords: torch.Tensor  # [Ntoken, Napo, 3, 3], float32
+    apo_center_mask: torch.Tensor  # [Ntoken, Napo], bool
+    apo_repr_mask: torch.Tensor  # [Ntoken, Napo], bool
+    apo_frame_mask: torch.Tensor  # [Ntoken, Napo], bool
 
     # For model training
     center_coords: torch.Tensor  # [Ntoken, 3], float32
@@ -241,6 +247,7 @@ class TokenTensor(TensorLayout):
             ("chain_type", torch.long, shape),
             ("entity_id", torch.long, shape),
             ("asym_id", torch.long, shape),
+            ("apo_uid", torch.long, (*shape, -1)),
             ("sym_id", torch.long, shape),
             ("res_type", torch.float32, (*shape, 32)),
             ("is_standard", torch.bool, shape),
@@ -255,12 +262,12 @@ class TokenTensor(TensorLayout):
             ("pad_mask", torch.bool, shape),
             ("frame_mask", torch.bool, shape),
             # Apo features.
-            ("apo_center_coords", torch.float32, (*shape, 3)),
-            ("apo_repr_coords", torch.float32, (*shape, 3)),
-            ("apo_frame_coords", torch.float32, (*shape, 3, 3)),
-            ("apo_center_mask", torch.bool, shape),
-            ("apo_repr_mask", torch.bool, shape),
-            ("apo_frame_mask", torch.bool, shape),
+            ("apo_center_coords", torch.float32, (*shape, -1, 3)),
+            ("apo_repr_coords", torch.float32, (*shape, -1, 3)),
+            ("apo_frame_coords", torch.float32, (*shape, -1, 3, 3)),
+            ("apo_center_mask", torch.bool, (*shape, -1)),
+            ("apo_repr_mask", torch.bool, (*shape, -1)),
+            ("apo_frame_mask", torch.bool, (*shape, -1)),
             # For model training
             ("center_coords", torch.float32, (*shape, 3)),
             ("repr_coords", torch.float32, (*shape, 3)),
@@ -311,6 +318,7 @@ class TokenTensor(TensorLayout):
             "chain_type": -1,
             "entity_id": -1,
             "asym_id": -1,
+            "apo_uid": -1,
             "sym_id": -1,
             "residue_index": -1,
             "repr_index": -1,
@@ -399,9 +407,9 @@ class AtomTensor(TensorLayout):
     ref_space_uid: torch.Tensor  # [Natom,], long
     token_index: torch.Tensor  # [Natom,], long
     atom_index: torch.Tensor  # [Natom,], long
-    apo_coords: torch.Tensor  # [Natom, 3], float32
+    apo_coords: torch.Tensor  # [Natom, Napo, 3], float32
     prior_coords: torch.Tensor  # [Natom, Nprior, 3], float32
-    apo_mask: torch.Tensor  # [Natom,], bool
+    apo_mask: torch.Tensor  # [Natom, Napo], bool
     pad_mask: torch.Tensor  # [Natom,], bool
 
     # For model training
@@ -429,9 +437,9 @@ class AtomTensor(TensorLayout):
             ("ref_space_uid", torch.long, shape),
             ("token_index", torch.long, shape),
             ("atom_index", torch.long, shape),
-            ("apo_coords", torch.float32, (*shape, 3)),
+            ("apo_coords", torch.float32, (*shape, -1, 3)),
             ("prior_coords", torch.float32, (*shape, -1, 3)),
-            ("apo_mask", torch.bool, shape),
+            ("apo_mask", torch.bool, (*shape, -1)),
             ("pad_mask", torch.bool, shape),
             ("label_coords", torch.float32, (*shape, 3)),
             ("resolved_mask", torch.bool, shape),
@@ -612,8 +620,8 @@ class SequenceTensor(TensorLayout):
     chain_type: torch.Tensor  # [L,], int
     asym_id: torch.Tensor  # [L,], int
     seq_token_id: torch.Tensor  # [L,], int
-    bb_struct_token_id: torch.Tensor  # [L,], int
-    fa_struct_token_id: torch.Tensor  # [L,], int
+    bb_struct_token_id: torch.Tensor  # [L, Napo], int
+    fa_struct_token_id: torch.Tensor  # [L, Napo], int
     pos_id: torch.Tensor  # [L,], int
     mlm_mask: torch.Tensor  # [L,], bool
     pad_mask: torch.Tensor  # [L,], bool
@@ -633,8 +641,8 @@ class SequenceTensor(TensorLayout):
             ("chain_type", torch.long, shape),
             ("asym_id", torch.long, shape),
             ("seq_token_id", torch.long, shape),
-            ("bb_struct_token_id", torch.long, shape),
-            ("fa_struct_token_id", torch.long, shape),
+            ("bb_struct_token_id", torch.long, (*shape, -1)),
+            ("fa_struct_token_id", torch.long, (*shape, -1)),
             ("pos_id", torch.long, shape),
             ("mlm_mask", torch.bool, shape),
             ("pad_mask", torch.bool, shape),
@@ -958,7 +966,6 @@ class FoldingInput:
         batched_constraint = ConstraintTensor.from_list(
             [data.constraint for data in data_list]
         )
-
         return cls(
             chain=batched_chain,
             token=batched_token,

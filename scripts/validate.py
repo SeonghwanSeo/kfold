@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num_steps",
         type=int,
-        default=200,
+        default=100,
         help="Number of diffusion steps for validation",
     )
     parser.add_argument(

@@ -21,12 +21,12 @@ FAILED = 1
 
 def parse_args():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Process RCSB mmCIF files.")
+    parser = argparse.ArgumentParser(description="Process disordered PDB mmCIF files")
     parser.add_argument(
         "--cif_dir",
         type=pathlib.Path,
         required=True,
-        help="Path to the `mmCIF/` directory from RCSB.",
+        help="Path to the directory including disordered pdb files",
     )
     parser.add_argument(
         "--ccd_path",
@@ -149,7 +149,9 @@ def main():
     pdb_ids = set(m["id"].lower() for m in manifest)
     print(f"Loaded {len(pdb_ids)} training keys from {manifest_path}")
 
-    cif_paths = [file for file in cif_dir.rglob("*.cif.gz")]
+    cif_paths = sorted(
+        file for pattern in ("*.cif", "*.cif.gz") for file in cif_dir.rglob(pattern)
+    )
     print(f"Found {len(cif_paths)} mmCIF files in {cif_dir} before filtering.")
 
     cif_paths = [file for file in cif_paths if file.stem.split(".")[0].lower() in pdb_ids]

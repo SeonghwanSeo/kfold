@@ -93,6 +93,11 @@ def load_afdb_map(path: pathlib.Path) -> dict[str, dict]:
     return afdb_id_map
 
 
+def load_rcsb_apo_mapping(path: pathlib.Path) -> dict[str, dict[str, list[dict]]]:
+    with path.open("rb") as f:
+        return msgpack.unpack(f, raw=False, strict_map_key=False)
+
+
 def _prepare_protein_lookup(
     entry_name: str,
     entity_id: int,
@@ -108,6 +113,7 @@ def _prepare_protein_lookup(
     esmfold_apo: dict[str, str] = {
         "source": "esmfold",
         "name": seq_id,
+        "chain_type": "protein",
     }
     apo_infos.append(esmfold_apo)
 
@@ -121,15 +127,22 @@ def main():
 
     print("Loading ID mappings...")
     seq_dir = data_dir / "sequences"
-    SEQ_MAP = load_sequence_map(
-        seq_dir / "all_sequences.fasta",
-        seq_dir / "unique_protein_sequences.fasta",
-    )
-
-    prepare_protein_lookup = partial(
-        _prepare_protein_lookup,
-        polymer_seq_id_map=SEQ_MAP,
-    )
+    rcsb_apo_mapping_path = seq_dir / "rcsb_apo_mapping.msgpack"
+    if rcsb_apo_mapping_path.exists():
+        RCSB_APO_MAPPING = load_rcsb_apo_mapping(rcsb_apo_mapping_path)
+        SEQ_MAP = {}
+        prepare_protein_lookup = None
+        print(f"Using RCSB apo mapping: {rcsb_apo_mapping_path}")
+    else:
+        RCSB_APO_MAPPING = {}
+        SEQ_MAP = load_sequence_map(
+            seq_dir / "all_sequences.fasta",
+            seq_dir / "uniq_sequences.fasta",
+        )
+        prepare_protein_lookup = partial(
+            _prepare_protein_lookup,
+            polymer_seq_id_map=SEQ_MAP,
+        )
 
     # Load manifest
     manifest_path: pathlib.Path = data_dir / "manifest.msgpack"
@@ -139,13 +152,16 @@ def main():
 
     stats: dict[str, int] = {
         "total_entries": 0,
+        "polymer_chains": 0,
         "protein_chains": 0,
+        "dna_chains": 0,
+        "rna_chains": 0,
         "with_apo": 0,
         "without_apo": 0,
         "with_esmfold": 0,
-        "without_esmfold": 0,
-        "with_afdb": 0,
-        "without_afdb": 0,
+        "with_prot_sampler": 0,
+        "with_dna_helix": 0,
+        "with_rna_sampler": 0,
     }
     all_lookup: dict[str, dict[str, list[dict[str, str]]]] = {}
     for m in tqdm(metadatas, desc="Processing entries"):
@@ -159,26 +175,43 @@ def main():
             if entity_id in visited_entities:
                 continue
             visited_entities.add(entity_id)
-            if not c_m.ctype.is_protein:
+            if not (c_m.ctype.is_protein or c_m.ctype.is_nucleic_acid):
                 continue
 
-            stats["protein_chains"] += 1
-            apo_dicts = prepare_protein_lookup(entry_name, entity_id)
+            stats["polymer_chains"] += 1
+            if c_m.ctype.is_protein:
+                stats["protein_chains"] += 1
+            elif c_m.ctype.is_dna:
+                stats["dna_chains"] += 1
+            elif c_m.ctype.is_rna:
+                stats["rna_chains"] += 1
+
+            if RCSB_APO_MAPPING:
+                apo_dicts = RCSB_APO_MAPPING.get(entry_name, {}).get(str(entity_id), [])
+            else:
+                if not c_m.ctype.is_protein:
+                    continue
+                assert prepare_protein_lookup is not None
+                apo_dicts = prepare_protein_lookup(entry_name, entity_id)
             # Update apo statistics
             if len(apo_dicts) > 0:
                 stats["with_apo"] += 1
                 has_esmfold = any(
                     apo_info["source"] == "esmfold" for apo_info in apo_dicts
                 )
-                has_afdb = any(apo_info["source"] == "afdb" for apo_info in apo_dicts)
                 if has_esmfold:
                     stats["with_esmfold"] += 1
-                else:
-                    stats["without_esmfold"] += 1
-                if has_afdb:
-                    stats["with_afdb"] += 1
-                else:
-                    stats["without_afdb"] += 1
+                if any(
+                    apo_info["source"].startswith("prot_sampler")
+                    for apo_info in apo_dicts
+                ):
+                    stats["with_prot_sampler"] += 1
+                if any(apo_info["source"] == "dna_helix" for apo_info in apo_dicts):
+                    stats["with_dna_helix"] += 1
+                if any(
+                    apo_info["source"].startswith("rna_sampler") for apo_info in apo_dicts
+                ):
+                    stats["with_rna_sampler"] += 1
             else:
                 stats["without_apo"] += 1
 

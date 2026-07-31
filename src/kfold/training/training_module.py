@@ -16,7 +16,7 @@ from kfold.config import to_dict
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
-from kfold.model.model import KFold, KFoldConfig
+from kfold.model.model_train import KFoldConfig, KFoldForTrain
 from kfold.training.utils.binned_loss_logging import (
     EntityBinConfig,
     EntityBinnedLossLogger,
@@ -26,12 +26,15 @@ from kfold.training.utils.binned_loss_logging import (
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
 from kfold.utils import confidence_metrics
 from kfold.utils.geometry.rigid_align import compute_rmsd
-from kfold.utils.registry import MAIN_MODULE
 
 from . import loss as loss_fn
 from .metrics import structure_metrics as validation_metrics
 from .optim.ema import ExponentialMovingAverage
 from .optim.lr_scheduler import AF3LRScheduler
+
+_PARCAE_RECURRENCE_BASE_SEED = 42
+_PARCAE_RECURRENCE_SCHEDULE_SIZE = 100_000
+_PARCAE_RECURRENCE_SAMPLING_MODES = {"shared", "rank_independent"}
 
 
 class _Config:
@@ -53,6 +56,9 @@ class TrainConfig:
     validation: "ValidationConfig"
     optimizer: "OptimizerConfig"
     loss: "LossConfig"
+    # Multi-stage training
+    load_opt_state: bool = True
+    init_from_ema: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -77,9 +83,39 @@ class OptimizerConfig(_Config):
     # ema
     ema_decay: float = 0.999
     validate_with_ema_after_n_steps: int = 10000
-    # multi-phase training
-    load_opt_state_from_checkpoint: bool = True
-    final_training_stage: bool = False
+
+
+@dataclasses.dataclass(kw_only=True)
+class ParcaeTrainConfig(_Config):
+    """Training-time Parcae recycle-count sampling configuration."""
+
+    max_recycles: int = 5
+    min_recycles: int = 0
+    poisson_mean: float = 2.0
+    grad_recurrence_steps: int = 2
+    recurrence_sampling_mode: str = "shared"
+
+
+def _build_clamped_poisson_recycle_schedule(
+    config: ParcaeTrainConfig,
+    seed: int,
+    size: int = _PARCAE_RECURRENCE_SCHEDULE_SIZE,
+) -> np.ndarray:
+    rng = np.random.default_rng(seed=seed)
+    sampled_recycles = rng.poisson(
+        lam=config.poisson_mean,
+        size=size,
+    )
+    return np.clip(
+        sampled_recycles,
+        config.min_recycles,
+        config.max_recycles,
+    ).astype(np.int64)
+
+
+def _select_recycle_count(schedule: np.ndarray, global_step: int) -> int:
+    idx = global_step % len(schedule)
+    return int(schedule[idx])
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -91,8 +127,10 @@ class TrainingConfig(_Config):
     train_diffusion_head: bool = True
     train_confidence_head: bool = False
 
-    # trunk recycling
+    # trunk recycling; Parcae training-time sampling below owns the active
+    # recycle schedule, and this value is kept for config/checkpoint compatibility.
     num_recycles: int = 3
+    parcae: ParcaeTrainConfig = dataclasses.field(default_factory=ParcaeTrainConfig)
     # for structure model training
     diffusion_batch_size: int = 48
     # for confidence module training
@@ -110,6 +148,54 @@ class TrainingConfig(_Config):
     # Entity count is computed as unique(token.asym_id) among valid tokens.
     # Logs `train/{metric}_entity_interval{1..10}` where interval10 means >=10.
     log_entity_binned_losses: bool = False
+
+
+def _get_diffusion_time_for_binning(
+    diffusion_out: dict[str, Any],
+) -> torch.Tensor | None:
+    """Return the diffusion time tensor used by generic time-bin logging."""
+    t_hat = diffusion_out.get("t_hat")
+    if torch.is_tensor(t_hat):
+        return t_hat
+    t = diffusion_out.get("t")
+    if torch.is_tensor(t):
+        return t
+    return None
+
+
+def _get_structure_module_for_binning(model: Any) -> Any:
+    """Return the structure module that defines time/sigma bounds for binning."""
+    diffusion_head = getattr(model, "diffusion_head", None)
+    if diffusion_head is not None:
+        return diffusion_head
+
+    structure_module = getattr(model, "structure_module", None)
+    if structure_module is not None:
+        return structure_module
+
+    raise AttributeError(
+        "Model must expose either diffusion_head or structure_module for "
+        "time-binned loss logging."
+    )
+
+
+def _binary_average_precision(
+    score: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor | None:
+    score = score[mask]
+    target = target[mask]
+    if score.numel() == 0 or not target.any() or target.all():
+        return None
+
+    order = torch.argsort(score, descending=True)
+    sorted_target = target[order].to(score.dtype)
+    rank = torch.arange(
+        1, sorted_target.numel() + 1, device=score.device, dtype=score.dtype
+    )
+    precision = sorted_target.cumsum(dim=0) / rank
+    return (precision * sorted_target).sum() / sorted_target.sum().clamp(min=1.0)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -133,6 +219,8 @@ class LossConfig(_Config):
     distogram_loss: Any
     diffusion_loss: Any
     confidence_loss: Any
+    patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
+    interface_contact_loss: Any = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -149,6 +237,9 @@ class KFoldTrainingModule(pl.LightningModule):
         self.config: TrainConfig = config.train
         self.training_config: TrainingConfig = TrainingConfig.from_dict(
             self.config.training
+        )
+        self.parcae_train_config: ParcaeTrainConfig = ParcaeTrainConfig.from_dict(
+            self.training_config.parcae
         )
         self.validation_config: ValidationConfig = ValidationConfig.from_dict(
             self.config.validation
@@ -169,8 +260,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Initialize model here
         model_config: KFoldConfig = self.global_config.model
-        model_cls = MAIN_MODULE[model_config._class_]
-        self.model: KFold = model_cls(model_config)
+        self.model = KFoldForTrain(model_config)
 
         # Compile
         if self.compile_config.enabled:
@@ -193,6 +283,7 @@ class KFoldTrainingModule(pl.LightningModule):
             submodules_to_ignore=self.submodules_to_ignore_for_ema,
         )
         self.stored_weights: dict[str, torch.Tensor] | None = None
+        self.last_lr_step = -1
 
         # Setup losses and metrics
         self.setup_losses()
@@ -201,14 +292,22 @@ class KFoldTrainingModule(pl.LightningModule):
         # Create writer
         self.writer: KFoldWriter = KFoldWriter()
 
-        # Pre-sample recycling steps for training
-        # This ensures all GPUs use the same recycling schedule
-        rng = np.random.default_rng(seed=42)
-        self.recycles_per_step: np.ndarray = rng.integers(
-            0,
-            self.training_config.num_recycles + 1,
-            size=100_000,
+        # Parcae methodology: pre-sample a clamped-Poisson recycle schedule for
+        # training. The trunk still runs num_recycles + 1 loops, and the number
+        # of recurrent trunk steps saved for backprop is controlled by
+        # parcae.grad_recurrence_steps. "shared" preserves the previous
+        # cross-rank lockstep schedule; "rank_independent" lazily builds a
+        # deterministic rank-specific schedule once Lightning rank is known.
+        self._shared_recycles_per_step: np.ndarray = (
+            _build_clamped_poisson_recycle_schedule(
+                self.parcae_train_config,
+                seed=_PARCAE_RECURRENCE_BASE_SEED,
+            )
         )
+        self._rank_independent_recycles_per_step: np.ndarray | None = None
+        self._rank_independent_recycles_rank: int | None = None
+        # Backward-compatible alias for code/tests that read the existing attr.
+        self.recycles_per_step: np.ndarray = self._shared_recycles_per_step
 
         # Time-binned logging state (populated only when enabled)
         self._timebin_enabled: bool = bool(self.training_config.log_time_binned_losses)
@@ -238,10 +337,41 @@ class KFoldTrainingModule(pl.LightningModule):
             EntityBinConfig(enabled=self._entitybin_enabled, nbins=10)
         )
 
+    def _get_recurrence_schedule_rank(self) -> int:
+        trainer = getattr(self, "_trainer", None)
+        if trainer is None:
+            return 0
+        return int(getattr(trainer, "global_rank", 0))
+
+    def _get_active_recycles_per_step(self) -> np.ndarray:
+        if self.parcae_train_config.recurrence_sampling_mode == "shared":
+            self.recycles_per_step = self._shared_recycles_per_step
+            return self.recycles_per_step
+
+        rank = self._get_recurrence_schedule_rank()
+        if (
+            self._rank_independent_recycles_per_step is None
+            or self._rank_independent_recycles_rank != rank
+        ):
+            self._rank_independent_recycles_per_step = (
+                _build_clamped_poisson_recycle_schedule(
+                    self.parcae_train_config,
+                    seed=_PARCAE_RECURRENCE_BASE_SEED + rank,
+                )
+            )
+            self._rank_independent_recycles_rank = rank
+
+        self.recycles_per_step = self._rank_independent_recycles_per_step
+        return self.recycles_per_step
+
+    def _get_num_recycles_for_current_step(self) -> int:
+        schedule = self._get_active_recycles_per_step()
+        return _select_recycle_count(schedule, int(self.global_step))
+
     def freeze_submodules(self):
         """Freeze submodules based on the training configuration."""
         # FIXME: (SeonghwanSeo) I did not test this function yet.
-        # This is required when we train the confidence module only (Final-training-stage)
+        # This is required when only selected model components are trained.
 
         self.frozen_modules = []
         self.frozen_modules += self.model.get_pretrained_module_names()
@@ -249,6 +379,11 @@ class KFoldTrainingModule(pl.LightningModule):
         if self.train_trunk is False:
             self.frozen_modules += self.model.get_trunk_module_names()
             self.frozen_modules += self.model.get_distogram_head_module_names()
+
+            # freeze trunk Parcae params directly, as they are not treated as modules
+            for param_name in self.model.get_trunk_parameter_names():
+                param = getattr(self.model, param_name)
+                param.requires_grad_(False)
 
         if self.train_diffusion_head is False:
             self.frozen_modules += self.model.get_diffusion_head_module_names()
@@ -279,6 +414,14 @@ class KFoldTrainingModule(pl.LightningModule):
         # Distogram loss
         self.distogram_loss = loss_fn.distogram.DistogramLoss(
             **loss_config.distogram_loss
+        )
+        self.patch_geometry_loss = loss_fn.patch_geometry.PatchPairGeometryLoss(
+            **loss_config.patch_geometry_loss
+        )
+        self.interface_contact_loss = (
+            loss_fn.interface_contact.InterfaceContactBalancedLoss(
+                **loss_config.interface_contact_loss
+            )
         )
 
         # Diffusion loss
@@ -326,6 +469,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     dataset_metrics[f"{prefix}/{k}"] = MeanMetric()
             for k in validation_metrics.monitor_metric_names:
                 dataset_metrics[f"monitor/{k}"] = MeanMetric()
+            dataset_metrics["monitor/distogram_loss"] = MeanMetric()
             val_metrics.append(MetricCollection(dataset_metrics, prefix=f"{name}/"))
         self.val_metrics = torch.nn.ModuleList(val_metrics)
 
@@ -343,9 +487,14 @@ class KFoldTrainingModule(pl.LightningModule):
         else:
             raise NotImplementedError(f"Optimizer {config.opt} not implemented yet.")
 
+        if self.last_lr_step != -1:
+            for param_group in optimizer.param_groups:
+                param_group.setdefault("initial_lr", config.base_lr)
+
         if config.lr_scheduler == "af3":
             scheduler = AF3LRScheduler(
                 optimizer,
+                last_epoch=self.last_lr_step,
                 base_lr=config.base_lr,
                 max_lr=config.max_lr,
                 warmup_no_steps=config.lr_warmup_no_steps,
@@ -360,32 +509,30 @@ class KFoldTrainingModule(pl.LightningModule):
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def forward(
-        self,
-        f_input: FoldingInput,
-        num_recycles: int = 3,
-        num_steps: int = 20,
-        num_samples: int = 1,
-        diffusion_batch_size: int = 48,
-        mode: str = "train",
+        self, f_input: FoldingInput, mode: str
     ) -> dict[str, dict[str, torch.Tensor]]:
         if mode == "train":
+            training_config = self.training_config
+            num_recycles = self._get_num_recycles_for_current_step()
             return self.model.forward_train(
                 f_input,
                 num_recycles=num_recycles,
-                num_mini_rollout_steps=num_steps,
-                num_mini_rollout_samples=num_samples,
-                diffusion_batch_size=diffusion_batch_size,
+                grad_recurrence_steps=self.parcae_train_config.grad_recurrence_steps,
+                num_mini_rollout_steps=training_config.num_mini_rollout_steps,
+                num_mini_rollout_samples=training_config.num_mini_rollout_samples,
+                diffusion_batch_size=training_config.diffusion_batch_size,
+                train_trunk=self.train_trunk,
                 train_diffusion_head=self.train_diffusion_head,
                 train_confidence_module=self.train_confidence_head,
             )
         elif mode == "validation":
-            return_traj = self.validation_config.return_traj
-            dict_out, _ = self.model.sample(
+            val_config = self.validation_config
+            dict_out = self.model.sample_validation(
                 f_input,
-                num_recycles=num_recycles,
-                num_steps=num_steps,
-                num_samples=num_samples,
-                return_traj=return_traj,
+                num_recycles=val_config.num_recycles,
+                num_steps=val_config.num_steps,
+                num_samples=val_config.num_diffusion_samples,
+                return_traj=val_config.return_traj,
             )
             return dict_out
         else:
@@ -396,43 +543,26 @@ class KFoldTrainingModule(pl.LightningModule):
         batch: tuple[FoldingInput, list[dict]],
         batch_idx: int,
     ) -> torch.Tensor:
-        training_config = self.training_config
-
         f_input, _ = batch  # second one is full_structure_dict, not used in training step
 
-        # Sample recycling steps
-        # Use shared recycling schedule across all the gpus
-        idx = self.global_step % len(self.recycles_per_step)
-        num_recycles = int(self.recycles_per_step[idx])
-
         # Compute the forward pass
-        out: dict[str, torch.Tensor] = self(
-            f_input=f_input,
-            num_recycles=num_recycles,
-            num_steps=training_config.num_mini_rollout_steps,
-            num_samples=training_config.num_mini_rollout_samples,
-            diffusion_batch_size=training_config.diffusion_batch_size,
-            mode="train",
-        )
+        out: dict[str, torch.Tensor] = self(f_input=f_input, mode="train")
         with torch.autocast("cuda", dtype=torch.float32):
             loss, metrics = self.compute_losses(batch, out)
 
         if self._binned_cache_enabled and self.train_diffusion_head:
-            t_hat = out.get("diffusion", {}).get("t_hat", None)
+            diffusion_out = out.get("diffusion", {})
+            t_for_bins = _get_diffusion_time_for_binning(diffusion_out)
             diffusion_per_sample = self._timebin_last_diffusion_per_sample
             distogram_loss_per_batch = self._timebin_last_distogram_loss_per_batch
 
             # These caches are populated inside compute_losses/compute_diffusion_loss.
             # Skip if anything is missing for this batch.
-            if (
-                torch.is_tensor(t_hat)
-                and diffusion_per_sample is not None
-                and distogram_loss_per_batch is not None
-            ):
-                if self._timebin_enabled:
+            if diffusion_per_sample is not None and distogram_loss_per_batch is not None:
+                if self._timebin_enabled and torch.is_tensor(t_for_bins):
                     self.time_binned_logger.update(
-                        t_hat=t_hat,
-                        structure_module=self.model.structure_module,
+                        t_hat=t_for_bins,
+                        structure_module=_get_structure_module_for_binning(self.model),
                         diffusion_per_sample=diffusion_per_sample,
                         distogram_loss_per_batch=distogram_loss_per_batch,
                         loss_weights=self.loss_weights,
@@ -463,6 +593,27 @@ class KFoldTrainingModule(pl.LightningModule):
                 logits=model_output["distogram"]["logits"],
                 f_input=f_input,
             )
+            interface_contact_weight = self.loss_weights["interface_contact"]
+            if interface_contact_weight > 0:
+                interface_contact_loss, interface_contact_metrics = (
+                    self.interface_contact_loss(
+                        logits=model_output["distogram"]["logits"],
+                        f_input=f_input,
+                    )
+                )
+            else:
+                interface_contact_loss, interface_contact_metrics = 0.0, {}
+            patch_weight = self.loss_weights["patch_geometry"]
+            if patch_weight > 0 and "patch_geometry" in model_output:
+                patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
+                    model_output["patch_geometry"]
+                )
+            else:
+                patch_geometry_loss, patch_geometry_metrics = 0.0, {}
+        else:
+            distogram_loss, distogram_metrics = 0.0, {}
+            interface_contact_loss, interface_contact_metrics = 0.0, {}
+            patch_geometry_loss, patch_geometry_metrics = 0.0, {}
 
         if self.train_diffusion_head:
             diffusion_out = model_output["diffusion"]
@@ -474,7 +625,6 @@ class KFoldTrainingModule(pl.LightningModule):
             )
 
         else:
-            distogram_loss, distogram_metrics = 0.0, {}
             diffusion_loss, diffusion_metrics = 0.0, {}
 
         if self.train_confidence_head:
@@ -512,18 +662,21 @@ class KFoldTrainingModule(pl.LightningModule):
             loss_weights["diffusion"] * diffusion_loss
             + loss_weights["distogram"] * distogram_loss
             + loss_weights["confidence"] * confidence_loss
+            + loss_weights["patch_geometry"] * patch_geometry_loss
+            + loss_weights["interface_contact"] * interface_contact_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
         # Log loss and metrics
         all_metrics = (
-            distogram_metrics | diffusion_metrics | confidence_metrics | sample_metrics
+            distogram_metrics
+            | interface_contact_metrics
+            | patch_geometry_metrics
+            | diffusion_metrics
+            | confidence_metrics
+            | sample_metrics
         )
         all_metrics["loss"] = loss.detach()
-
-        if self._binned_cache_enabled and self.train_diffusion_head:
-            # Used to compute per-time-bin total loss without recomputing distogram head.
-            self._timebin_last_distogram_loss_per_batch = distogram_loss.detach()
 
         return loss, all_metrics
 
@@ -543,11 +696,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         try:
             model_out: dict[str, dict[str, torch.Tensor]] = self(
-                f_input=f_input,
-                num_recycles=val_config.num_recycles,
-                num_steps=val_config.num_steps,
-                num_samples=num_samples,
-                mode="validation",
+                f_input=f_input, mode="validation"
             )
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
@@ -571,6 +720,10 @@ class KFoldTrainingModule(pl.LightningModule):
         ref_struct_aligned: list[RefStructure] = []
         sample_metrics: list[dict[str, Any]] = []
         with torch.autocast("cuda", torch.float32):
+            distogram_loss = self.compute_validation_distogram_loss(
+                distogram_out, f_input
+            )
+
             # Permute predicted and true coordinates to align
             for i in range(num_samples):
                 pred_coords_i = diffusion_out["coordinates"][i, :n_atoms]
@@ -617,6 +770,7 @@ class KFoldTrainingModule(pl.LightningModule):
             _m = aggr_metrics["monitor"]
             if k in _m:
                 metrics[f"monitor/{k}"].update(_m[k])
+        metrics["monitor/distogram_loss"].update(distogram_loss)
 
         # Save validation predictions if needed
         if val_config.save_predictions:
@@ -684,6 +838,23 @@ class KFoldTrainingModule(pl.LightningModule):
         torch.cuda.empty_cache()
 
     # === Loss functions === #
+    def compute_validation_distogram_loss(
+        self,
+        distogram_out: dict[str, torch.Tensor],
+        f_input: FoldingInput,
+    ) -> torch.Tensor:
+        """Compute validation distogram loss from inference outputs."""
+        logits = distogram_out.get("logits")
+        if logits is None:
+            logits = distogram_out["distogram"]
+        if not f_input.is_batched:
+            f_input = f_input.add_batch_dim()
+        if logits.ndim == 3:
+            logits = logits.unsqueeze(0)
+
+        loss_per_batch = self.distogram_loss(logits, f_input)
+        return loss_per_batch.mean().detach()
+
     def compute_distogram_loss(
         self,
         logits: torch.Tensor,
@@ -705,9 +876,85 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
-        loss = self.distogram_loss(logits, f_input).mean()
+        loss_per_batch = self.distogram_loss(logits, f_input)
+        loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
+        if (
+            hasattr(self.distogram_loss, "boundaries")
+            and hasattr(f_input, "token")
+            and self.global_step % 10 == 0
+        ):
+            metrics |= self.compute_distogram_diagnostic_metrics(logits, f_input)
+        if self._binned_cache_enabled and self.train_diffusion_head:
+            self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
         return loss, metrics
+
+    def compute_distogram_diagnostic_metrics(
+        self,
+        logits: torch.Tensor,
+        f_input: FoldingInput,
+        near_cutoff: float = 12.0,
+        far_cutoff: float = 22.0,
+    ) -> dict[str, torch.Tensor]:
+        """Log inter-chain near-ranking and false-positive pressure diagnostics."""
+        with torch.no_grad():
+            boundaries = self.distogram_loss.boundaries.to(logits.device)
+            gt_coords = f_input.token.repr_coords
+            diff = gt_coords[..., None, :, :] - gt_coords[..., :, None, :]
+            d_repr = diff.norm(dim=-1)
+
+            repr_mask = f_input.token.repr_mask
+            pair_mask = repr_mask[..., None, :] & repr_mask[..., :, None]
+            asym_id = f_input.token.asym_id
+            inter_chain = asym_id[..., None, :] != asym_id[..., :, None]
+            upper_tri = torch.ones(
+                logits.shape[-3],
+                logits.shape[-2],
+                dtype=torch.bool,
+                device=logits.device,
+            ).triu(diagonal=1)
+            valid = pair_mask & inter_chain & upper_tri
+
+            if not valid.any():
+                zero = logits.sum().detach() * 0.0
+                return {
+                    "distogram_inter_chain_valid_pairs": zero,
+                    "distogram_inter_chain_near_pairs": zero,
+                    "distogram_inter_chain_far_pairs": zero,
+                }
+
+            bin_size = float(boundaries[1].item() - boundaries[0].item())
+            near_bin = int((near_cutoff - float(boundaries[0].item())) / bin_size)
+            near_bin = max(0, min(near_bin, logits.shape[-1] - 1))
+            p_near = torch.softmax(logits.float(), dim=-1)[..., : near_bin + 1].sum(
+                dim=-1
+            )
+
+            true_near = (d_repr < near_cutoff) & valid
+            true_far = (d_repr > far_cutoff) & valid
+            ap = _binary_average_precision(p_near, true_near, valid)
+
+            valid_count = valid.float().sum().clamp(min=1.0)
+            metrics = {
+                "distogram_inter_chain_valid_pairs": valid.float().sum().detach(),
+                "distogram_inter_chain_near_pairs": true_near.float().sum().detach(),
+                "distogram_inter_chain_far_pairs": true_far.float().sum().detach(),
+                "distogram_inter_chain_target_near_rate": (
+                    true_near.float().sum() / valid_count
+                ).detach(),
+                "distogram_inter_chain_pred_near_mass": p_near[valid].mean().detach(),
+            }
+            if ap is not None:
+                metrics["distogram_inter_chain_near_ap"] = ap.detach()
+            if true_near.any():
+                metrics["distogram_inter_chain_p_near_true_near"] = (
+                    p_near[true_near].mean().detach()
+                )
+            if true_far.any():
+                metrics["distogram_inter_chain_false_positive_near_mass"] = (
+                    p_near[true_far].mean().detach()
+                )
+            return metrics
 
     def compute_diffusion_loss(
         self,
@@ -881,7 +1128,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
-        if self.trainer.global_step % 50 == 0:
+        if self.trainer.global_step % 10 == 0:
             self.log_model_state()
 
     def log_model_state(self):
@@ -1011,32 +1258,8 @@ class KFoldTrainingModule(pl.LightningModule):
         checkpoint["ema"] = ema_state_dict
 
     def on_load_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        if self.config.optimizer.load_opt_state_from_checkpoint is False:
-            # When loading optimizer state from checkpoint is disabled,
-            # replace the optimizer state in the checkpoint with the initialized state.
-            state = checkpoint["optimizer_states"][0]
-            init_state = self.configure_optimizers()[0][0].state_dict()
-            state["state"] = init_state["state"]
-            state["param_groups"][0]["params"] = init_state["param_groups"][0]["params"]
-            # checkpoint.pop("lr_schedulers", None)
-            #
         # Load EMA state dict
         self.load_ema_state_dict(checkpoint["ema"])
-
-        if self.config.optimizer.final_training_stage:
-            # Confidence-only training, so replace the structure-related
-            # parameters to EMA's parameters.
-            ema_state_dict = self.ema.state_dict()
-            override_prefixes = tuple(self.frozen_modules)
-            n = 0
-            for k, v in ema_state_dict["shadow_params"].items():
-                if k.startswith(override_prefixes):
-                    n += 1
-                    self.model.state_dict()[k].copy_(v)
-            print(
-                f"Override {n} parameters from EMA for final training stage "
-                f"with prefixes {override_prefixes}."
-            )
 
     def load_state_dict(
         self, state_dict: dict[str, Any], strict: bool = True, assign: bool = False

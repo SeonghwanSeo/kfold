@@ -452,8 +452,8 @@ def prepare_ref_structure(
             # Check if all residues are in CCD
             is_valid_entity = True
             for res_name in ccd_sequences:
-                if res_name.startswith("LIG"):
-                    # TODO: Boltz-1/2 use custom ligand names like LIG.
+                if res_name.startswith("LIG") or res_name in smiles_dict:
+                    # Synthetic predictors use custom ligand names such as LIG or l01.
                     assert len(ccd_sequences) == 1, (
                         "Multi-residue custom ligands not supported in CIF parsing."
                     )
@@ -562,7 +562,9 @@ def prepare_ref_structure(
 
         # For ligand, identify smiles if available
         smiles: str | None = None
-        if ctype is C.ChainType.LIGAND and ccd_sequences[0].startswith("LIG"):
+        if ctype is C.ChainType.LIGAND and (
+            ccd_sequences[0].startswith("LIG") or ccd_sequences[0] in smiles_dict
+        ):
             ref_label_id: LabelId = entity.subchains[0]
             custom_id: str = ccd_sequences[0]
             assert custom_id in smiles_dict, (
