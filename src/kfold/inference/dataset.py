@@ -33,6 +33,7 @@ class InferenceDataset(torch.utils.data.Dataset):
         self,
         queries: list[Query],
         ccd: CCD,
+        num_samples: int,
         num_apo: int | None = None,
     ) -> None:
         """
@@ -46,7 +47,7 @@ class InferenceDataset(torch.utils.data.Dataset):
             Maximum number of apo structures to use per query. By default, use all.
         """
         self.queries: list[Query] = queries
-        self.data_pipeline = InputDataPipeline(ccd, num_apo=num_apo)
+        self.data_pipeline = InputDataPipeline(ccd, num_samples, num_apo)
 
     def __len__(self) -> int:
         return len(self.queries)
