@@ -147,7 +147,7 @@ def dry_run(args):
         return
 
     # Create data loader
-    dataset = InferenceDataset(input_queries, ccd, num_apo=args.num_apo)
+    dataset = InferenceDataset(input_queries, ccd, args.num_samples, args.num_apo)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )
