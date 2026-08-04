@@ -81,7 +81,12 @@ def _best_sequence_mapping(
 
 
 class InputDataPipeline:
-    def __init__(self, ccd: CCD, num_prior_samples: int = 5) -> None:
+    def __init__(
+        self,
+        ccd: CCD,
+        num_prior_samples: int = 5,
+        num_apo: int | None = None,
+    ) -> None:
         """Initialize the input data pipeline.
 
         Parameters
@@ -89,7 +94,9 @@ class InputDataPipeline:
         ccd : CCD
             The chemical component dictionary for residue information.
         num_prior_samples : int, optional
-            Number of heuristic DNA/ligand priors to create. Default is 5.
+            Number of diffusion priors to create. Default is 5.
+        num_apo : int, optional
+            Maximum number of apo structures to use. By default, use all inputs.
         """
 
         self.ccd: CCD = ccd
@@ -98,6 +105,9 @@ class InputDataPipeline:
         if num_prior_samples <= 0:
             raise ValueError("num_prior_samples must be positive.")
         self.num_prior_samples = num_prior_samples
+        if num_apo is not None and num_apo <= 0:
+            raise ValueError("num_apo must be positive or None.")
+        self.num_apo = num_apo
 
         # Initialize tokenizer
         self.tokenizer = tokenization.Tokenizer(self.ccd)
@@ -363,6 +373,15 @@ class InputDataPipeline:
         rng: np.random.Generator,
     ) -> ResolvedStructureSources:
         """Load custom sources and normalize them by asym_id."""
+
+        def _select_apo_paths(
+            paths: list[str], num_apo: int | None, _rng: np.random.Generator
+        ) -> list[str]:
+            if num_apo is None or len(paths) <= num_apo:
+                return paths
+            indices = _rng.choice(len(paths), size=num_apo, replace=False)
+            return [paths[int(i)] for i in indices]
+
         metadata_by_name = {chain.name: chain for chain in ref_struct.metadata.chains}
         apo_groups: list[list[dict[int, np.ndarray]]] = []
         prior_groups: list[list[dict[int, np.ndarray]]] = []
@@ -373,12 +392,11 @@ class InputDataPipeline:
                 continue
             assert sequence.apo is not None
             asym_ids = [metadata_by_name[name].asym_id for name in sequence.ids]
+            apo_paths = _select_apo_paths(sequence.apo, self.num_apo, rng)
+            prior_paths = sequence.prior or sequence.apo
+            source_key = f"{input.name}:{','.join(sequence.ids)}"
             apos, priors, records = self._load_monomer_sources(
-                asym_ids,
-                sequence.sequence,
-                sequence.apo,
-                sequence.prior or sequence.apo,
-                f"{input.name}:{','.join(sequence.ids)}",
+                asym_ids, sequence.sequence, apo_paths, prior_paths, source_key
             )
             apo_groups.append(apos)
             prior_groups.append(priors)
@@ -393,19 +411,19 @@ class InputDataPipeline:
                         metadata_by_name[chain_name].asym_id
                     )
 
+            pair_sequence = (sequence_group.sequence1, sequence_group.sequence2)
             physical_ids = [name for id_pair in sequence_group.ids for name in id_pair]
+            apo_paths = _select_apo_paths(sequence_group.apo, self.num_apo, rng)
+            prior_paths = sequence_group.prior or sequence_group.apo
+            source_key = f"{input.name}:{','.join(physical_ids)}"
             apos, priors, records = self._load_multimer_sources(
-                component_asym_ids,
-                (sequence_group.sequence1, sequence_group.sequence2),
-                sequence_group.apo,
-                sequence_group.prior or sequence_group.apo,
-                f"{input.name}:{','.join(physical_ids)}",
+                component_asym_ids, pair_sequence, apo_paths, prior_paths, source_key
             )
             apo_groups.append(apos)
             prior_groups.append(priors)
             struct_token_records.extend(records)
 
-        num_apo = min(max(map(len, apo_groups), default=1), 5)
+        num_apo = max(map(len, apo_groups), default=1)
         apo_coords: dict[int, np.ndarray] = {}
         for sources in apo_groups:
             for asym_id, first_coords in sources[0].items():

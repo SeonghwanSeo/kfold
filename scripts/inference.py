@@ -89,6 +89,13 @@ def parse_args():
         help="Number of samples to generate per input.",
     )
     parser.add_argument(
+        "--num-apo",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum number of apo structures to use per input (default: all).",
+    )
+    parser.add_argument(
         "--save-trajectory",
         action="store_true",
         help="Whether to save diffusion trajectory.",
@@ -140,7 +147,7 @@ def dry_run(args):
         return
 
     # Create data loader
-    dataset = InferenceDataset(input_queries, ccd)
+    dataset = InferenceDataset(input_queries, ccd, num_apo=args.num_apo)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )
@@ -215,7 +222,7 @@ def main():
         query.save(query_path)
 
     # Create data loader
-    dataset = InferenceDataset(input_queries, ccd)
+    dataset = InferenceDataset(input_queries, ccd, num_apo=args.num_apo)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )

@@ -92,9 +92,12 @@ but it is not antibody-specific.
 | `apo` | `str` or `list[str]` | Required custom two-chain apo structure ensemble. Each file must contain both components in one shared frame. |
 | `prior` | `list[str]` | Optional custom two-chain prior ensemble. |
 
-For both monomers and multimers, apo list order is preserved. When different
-entries provide different numbers of apo structures, missing slots in shorter
-lists are left unset. A single path is equivalent to a one-element list.
+`--num-apo` controls the maximum number of apo structures used. If it is
+omitted, all provided apo structures are used. If an entry contains more apo
+structures than requested, they are sampled without replacement for each query
+seed. Reusing a seed reproduces the same selection. When different entries
+provide different numbers of apo structures, missing slots in shorter lists are
+left unset. A single path is equivalent to a one-element list.
 
 Each custom multimer file must contain exactly two non-empty protein chains in
 the same order as the two input sequences. Each component is globally aligned
@@ -200,6 +203,7 @@ Common options:
 | `--input` | Required | One YAML/JSON file or a directory. |
 | `--out-dir` | `inference_results` | Output root. |
 | `--seed` | `1` | One or more query seeds. |
+| `--num-apo` | `None` | Maximum apo structures per protein entry; all are used when omitted. |
 | `--num-samples` | `5` | Diffusion samples per query and seed. |
 | `--num-recycles` | `10` | Trunk recycle count. |
 | `--num-steps` | `200` | Diffusion step count. |
