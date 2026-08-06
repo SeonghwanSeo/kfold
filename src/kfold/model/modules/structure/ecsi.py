@@ -52,27 +52,44 @@ def custom_rigid_align(
     target: torch.Tensor,
     mask: torch.Tensor | None,
     rotation_only: bool = False,
+    output_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Torch implementation of weighted rigid alignment.
+
+    `mask` selects the atoms that drive the fit; `output_mask` selects the atoms
+    that survive in the result, and defaults to `mask`.
     """
+    output_mask_was_none = output_mask is None
     if mask is None:
         mask = torch.ones(coords.shape[:-1], dtype=torch.bool, device=coords.device)
     if not mask.any():
-        return coords
+        if output_mask_was_none:
+            return coords
+        keep_mask = output_mask.bool().unsqueeze(-1)
+        return coords.masked_fill(~keep_mask, 0.0)
+    if output_mask is None:
+        output_mask = mask
 
     original_dtype = coords.dtype
-    mask_bool = mask.bool().unsqueeze(-1)
-    coords = coords.masked_fill(~mask_bool, 0.0)
-    target = target.masked_fill(~mask_bool, 0.0)
+    fit_mask = mask.bool().unsqueeze(-1)
+    keep_mask = output_mask.bool().unsqueeze(-1)
 
     with torch.autocast(device_type=coords.device.type, enabled=False):
         coords, target = coords.float(), target.float()
-        weights = mask.to(dtype=coords.dtype)
-        RT, T = get_rigid_transform_torch(coords, target, weights)
-        aligned_coords = coords @ RT
+
+        # Fit on the alignment overlap only.
+        fit_coords = coords.masked_fill(~fit_mask, 0.0)
+        fit_target = target.masked_fill(~fit_mask, 0.0)
+        weights = mask.to(dtype=fit_coords.dtype)
+        RT, T = get_rigid_transform_torch(fit_coords, fit_target, weights)
+
+        # Apply it to every atom the caller considers valid.
+        aligned_coords = coords.masked_fill(~keep_mask, 0.0) @ RT
         if not rotation_only:
-            aligned_coords += T.unsqueeze(-2)
+            aligned_coords = (aligned_coords + T.unsqueeze(-2)).masked_fill(
+                ~keep_mask, 0.0
+            )
 
     return aligned_coords.to(original_dtype)
 
@@ -425,6 +442,7 @@ class KFoldECSI(BaseStructureModule):
             s_inputs=s_inputs,  # [B, Lt, c_s]
             z=z,  # [B, Lt, Lt, c_z]
             x_T=x_T,  # [B, N, Natom, 3]
+            atom_mask=train_input["atom_mask"],  # [B, Natom]
         )  # [B, N, Natom, 3]
 
         loss_weights = self.loss_weights(t)  # [B, N]
@@ -446,6 +464,7 @@ class KFoldECSI(BaseStructureModule):
         s_inputs: torch.Tensor,
         z: torch.Tensor,
         x_T: torch.Tensor | None = None,
+        atom_mask: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """Forward pass through the score model with ECSI preconditioning.
@@ -464,6 +483,8 @@ class KFoldECSI(BaseStructureModule):
             Trunk pairwise embeddings. Shape (B, L, L, c_z).
         x_T : torch.Tensor | None
             Source (apo) coordinates x_T. Shape (B, N, L, 3).
+        atom_mask : torch.Tensor | None
+            Atoms the coordinate stack may attend to. Shape (B, L).
 
         Returns
         -------
@@ -488,6 +509,7 @@ class KFoldECSI(BaseStructureModule):
             c_noise=c_noise,  # [B, N]
             s_inputs=s_inputs,  # [B, Lt, c_s]
             z=z,  # [B, Lt, Lt, c_z]
+            atom_mask=atom_mask,  # [B, Natom]
         )
 
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
@@ -558,13 +580,22 @@ class KFoldECSI(BaseStructureModule):
         num_prior = x_apo.shape[-3]
         idx = [i % num_prior for i in range(num_samples)]
         x_T = x_apo[:, idx, :, :]  # [B, N, Natom, 3]
-        x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, Natom]
+
+        # Atoms the coordinate stack may see. Unresolved atoms have no holo target,
+        # so x_0 is 0 there and any interpolant through it is meaningless. Hiding
+        # them keeps that meaningless coordinate out of every geometric operation
+        # below and out of the score model's attention. Inference has no
+        # `resolved_mask`, so it keeps using the full `pad_mask`.
+        train_mask = apo_mask & holo_mask  # [B, Natom]
+        x_T_mask = train_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Apply centering/coordinate augmentation
         x_0 = self.random_augmentation(x_0, mask=x_0_mask)
 
         # Rotate x_T toward x_0 while preserving the prior translation distribution.
-        x_T = custom_rigid_align(x_T, x_0, x_0_mask, rotation_only=True)
+        x_T = custom_rigid_align(
+            x_T, x_0, x_0_mask, rotation_only=True, output_mask=x_T_mask
+        )
 
         # === Interpolate to get x_t === #
         C = self.coeff
@@ -577,7 +608,8 @@ class KFoldECSI(BaseStructureModule):
         # ECSI interpolation with atom-wise noise.
         x_t = alpha_t * x_0 + beta_t * x_T + gamma_t * noise
 
-        # Mask out unresolved/pad atoms.
+        # Zero the hidden atoms as well as the padding, so that a code path which
+        # forgets `train_mask` sees the origin rather than a prior-scale offset.
         x_0.masked_fill_(~x_0_mask[..., None], 0.0)
         x_T.masked_fill_(~x_T_mask[..., None], 0.0)
         x_t.masked_fill_(~x_T_mask[..., None], 0.0)
@@ -587,6 +619,7 @@ class KFoldECSI(BaseStructureModule):
             "x_0": x_0,
             "x_t": x_t,
             "x_T": x_T,
+            "atom_mask": train_mask,
         }
 
     # ============================================================
