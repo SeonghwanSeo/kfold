@@ -133,9 +133,7 @@ def dry_run(args):
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
     logger.info(f"Parsing input queries from: {args.input}")
-    input_queries: list[Query] = parse_input_files(
-        args.input, ccd, args.seed, skip_invalid=True
-    )
+    input_queries: list[Query] = parse_input_files(args.input, ccd, args.seed)
     npredict = len(input_queries)
     nseed = len(args.seed)
     nquery = npredict // nseed
@@ -199,9 +197,7 @@ def main():
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
     logger.info(f"Parsing input queries from: {args.input}")
-    input_queries: list[Query] = parse_input_files(
-        args.input, ccd, args.seed, skip_invalid=True
-    )
+    input_queries: list[Query] = parse_input_files(args.input, ccd, args.seed)
     npredict = len(input_queries)
     nseed = len(args.seed)
     nquery = npredict // nseed
@@ -222,7 +218,7 @@ def main():
         query.save(query_path)
 
     # Create data loader
-    dataset = InferenceDataset(input_queries, ccd, num_apo=args.num_apo)
+    dataset = InferenceDataset(input_queries, ccd, args.num_samples, args.num_apo)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )
