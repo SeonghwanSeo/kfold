@@ -309,6 +309,7 @@ class DiffusionStack(nn.Module):
         c_noise: torch.Tensor,
         s_inputs: torch.Tensor,
         z: torch.Tensor,
+        atom_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Training forward pass of the AF3 diffusion module
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
@@ -326,6 +327,11 @@ class DiffusionStack(nn.Module):
             The input single representation, shape [B, Lt, c_s].
         z: torch.Tensor
             The trunk pair representation, shape [B, Lt, Lt, c_z].
+        atom_mask: torch.Tensor | None
+            Atoms the coordinate stack may attend to and pool from, shape [B, La].
+            Defaults to `f_input.atom.pad_mask`. A caller may narrow it to hide
+            atoms whose coordinates are undefined; the reference-conformer features
+            built by `get_atom_embeddings` still cover the full `pad_mask`.
 
         Returns
         -------
@@ -333,7 +339,8 @@ class DiffusionStack(nn.Module):
             The scaled updated atom positions, shape [B, N, La, 3].
         """
         token_index = f_input.atom.token_index  # [B, Lt]
-        atom_mask = f_input.atom.pad_mask  # [B, La]
+        if atom_mask is None:
+            atom_mask = f_input.atom.pad_mask  # [B, La]
         token_mask = f_input.token.pad_mask  # [B, Lt]
 
         s = self.get_single_conditioning(s_inputs, c_noise)  # [B, N, Lt, c_s]

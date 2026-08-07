@@ -118,6 +118,7 @@ class DiffusionModule(torch.nn.Module):
         c_noise: torch.Tensor,
         s_inputs: torch.Tensor,
         z: torch.Tensor,
+        atom_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Training forward pass of the AF3 diffusion module.
         See Section 3.7 Algorithm 20: Diffusion Module in the AF3 paper.
@@ -137,6 +138,9 @@ class DiffusionModule(torch.nn.Module):
             The input single representation, shape [B, Lt, c_s].
         z : torch.Tensor
             The trunk pair representation, shape [B, Lt, c_z].
+        atom_mask : torch.Tensor | None
+            Atoms the coordinate stack may attend to, shape [B, La].
+            Defaults to `f_input.atom.pad_mask`.
 
         Returns
         -------
@@ -150,6 +154,7 @@ class DiffusionModule(torch.nn.Module):
             c_noise,
             s_inputs,
             z,
+            atom_mask=atom_mask,
         )
 
     # === Inference step ===
