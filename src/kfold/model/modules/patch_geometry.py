@@ -142,9 +142,17 @@ class PatchPairGeometryHead(nn.Module):
             finite_mask = torch.isfinite(coords).all(dim=-1)
             valid = token_mask & repr_mask & finite_mask
             asym_id = f_input.token.asym_id[batch_idx]
+            entity_id = f_input.token.entity_id[batch_idx]
             chain_ids = asym_id[valid].unique(sorted=True)
             if chain_ids.numel() < 2:
                 return None
+            has_repeated_entity = entity_id[valid].unique().numel() < chain_ids.numel()
+
+            local_atom_index = torch.full_like(asym_id, -1)
+            repr_index = f_input.token.repr_index[batch_idx]
+            local_atom_index[valid] = f_input.atom.atom_index[batch_idx][
+                repr_index[valid]
+            ]
 
             patches: list[_Patch] = []
             for chain_id in chain_ids.unbind():
@@ -157,7 +165,14 @@ class PatchPairGeometryHead(nn.Module):
                     )
                 )
 
-            patch_pairs = self._select_patch_pairs(patches, coords)
+            patch_pairs = self._select_patch_pairs(
+                patches=patches,
+                coords=coords,
+                asym_id=asym_id,
+                entity_id=entity_id,
+                local_atom_index=local_atom_index,
+                has_repeated_entity=has_repeated_entity,
+            )
         return patch_pairs
 
     def _spatial_patches(
@@ -234,6 +249,10 @@ class PatchPairGeometryHead(nn.Module):
         self,
         patches: list[_Patch],
         coords: torch.Tensor,
+        asym_id: torch.Tensor,
+        entity_id: torch.Tensor,
+        local_atom_index: torch.Tensor,
+        has_repeated_entity: bool,
     ) -> _PatchPairBatch:
         n_patches = len(patches)
         device = coords.device
@@ -262,6 +281,9 @@ class PatchPairGeometryHead(nn.Module):
         assigned = token_patch >= 0
         assigned_patch = token_patch[assigned]
         assigned_coords = coords[assigned].float()
+        assigned_asym_id = asym_id[assigned]
+        assigned_entity_id = entity_id[assigned]
+        assigned_local_atom_index = local_atom_index[assigned]
         token_pair_patch = (
             assigned_patch[:, None] * n_patches + assigned_patch[None, :]
         ).reshape(-1)
@@ -293,6 +315,22 @@ class PatchPairGeometryHead(nn.Module):
         patch_j = patch_j[inter_chain]
         token_min_dist = patch_min_dist[patch_i, patch_j]
         positive = token_min_dist < self.positive_cutoff
+
+        if has_repeated_entity:
+            symmetry_contact = self._symmetry_equivalent_patch_contact(
+                assigned_asym_id=assigned_asym_id,
+                assigned_entity_id=assigned_entity_id,
+                assigned_local_atom_index=assigned_local_atom_index,
+                token_pair_patch=token_pair_patch,
+                token_dist=token_dist,
+                n_patches=n_patches,
+            )
+            copy_ambiguous = symmetry_contact[patch_i, patch_j] & ~positive
+            keep = ~copy_ambiguous
+            patch_i = patch_i[keep]
+            patch_j = patch_j[keep]
+            token_min_dist = token_min_dist[keep]
+            positive = positive[keep]
         hard_negative = token_min_dist > self.hard_negative_cutoff
 
         com_diff = com[patch_i] - com[patch_j]
@@ -328,6 +366,62 @@ class PatchPairGeometryHead(nn.Module):
             "weight": weight[selected],
             "hard_negative": hard_negative[selected],
         }
+
+    def _symmetry_equivalent_patch_contact(
+        self,
+        assigned_asym_id: torch.Tensor,
+        assigned_entity_id: torch.Tensor,
+        assigned_local_atom_index: torch.Tensor,
+        token_pair_patch: torch.Tensor,
+        token_dist: torch.Tensor,
+        n_patches: int,
+    ) -> torch.Tensor:
+        # Same entity and chain-local representative atom index identifies a
+        # corresponding token position across interchangeable chain copies.
+        symmetry_position = torch.stack(
+            (assigned_entity_id, assigned_local_atom_index),
+            dim=-1,
+        )
+        symmetry_positions, symmetry_index = torch.unique(
+            symmetry_position,
+            dim=0,
+            return_inverse=True,
+        )
+        n_symmetry_positions = symmetry_positions.shape[0]
+
+        symmetry_pair = (
+            symmetry_index[:, None] * n_symmetry_positions + symmetry_index[None, :]
+        ).reshape(-1)
+        inter_chain = (assigned_asym_id[:, None] != assigned_asym_id[None, :]).reshape(-1)
+        contact = inter_chain & (token_dist < self.positive_cutoff)
+
+        symmetry_contact = torch.zeros(
+            n_symmetry_positions * n_symmetry_positions,
+            device=token_dist.device,
+            dtype=torch.bool,
+        )
+        symmetry_contact.scatter_reduce_(
+            0,
+            symmetry_pair,
+            contact,
+            reduce="amax",
+            include_self=True,
+        )
+        equivalent_contact = symmetry_contact[symmetry_pair] & inter_chain
+
+        patch_contact = torch.zeros(
+            n_patches * n_patches,
+            device=token_dist.device,
+            dtype=torch.bool,
+        )
+        patch_contact.scatter_reduce_(
+            0,
+            token_pair_patch,
+            equivalent_contact,
+            reduce="amax",
+            include_self=True,
+        )
+        return patch_contact.view(n_patches, n_patches)
 
     def _pool_patch_pairs(
         self,
