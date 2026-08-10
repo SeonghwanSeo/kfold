@@ -25,9 +25,11 @@ sampler_after_switch_mode: ode
 sampler_after_switch_ode_type: si
 # Reverse-update routing. [all] preserves the global profile above; [] uses SI
 # ODE for every atom. A molecular list uses SI ODE for unselected atoms and the
-# existing SDE/ECSI-to-SI schedule for selected components. Valid classes:
-# protein, ligand, peptide, rna, dna. Churn remains global and is never routed
-# by atom class. For example: [ligand].
+# existing SDE/ECSI-to-SI schedule for selected atoms. Valid classes: protein,
+# ligand, peptide, rna, dna. [ligand] selects only ligand-token atoms; it does
+# not expand into a covalently bonded protein chain. Modified protein-chain
+# residues are not ligand tokens. Churn remains global and is never routed by
+# atom class. A target with no selected atoms uses SI ODE for every atom.
 sampler_sde_atom_classes: [all]
 churn_factor: 0.1
 churn_max_multiplier: 4.0

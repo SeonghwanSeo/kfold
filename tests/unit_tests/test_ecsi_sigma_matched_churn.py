@@ -36,20 +36,21 @@ def make_state() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
 
 def make_class_routing_input() -> SimpleNamespace:
-    """Return a minimal batched input with a covalent ligand-chain component."""
+    """Return a minimal batched input with a ligand bonded to protein."""
     return SimpleNamespace(
         chain=SimpleNamespace(
+            asym_id=torch.tensor([[10, 20, 30, 40, 50]]),
+            pad_mask=torch.tensor([[True, True, True, True, True]]),
+            is_protein=torch.tensor([[True, False, True, False, False]]),
+            num_residues=torch.tensor([[100, 1, 8, 12, 12]]),
+        ),
+        token=SimpleNamespace(
             asym_id=torch.tensor([[10, 20, 30, 40, 50]]),
             pad_mask=torch.tensor([[True, True, True, True, True]]),
             is_protein=torch.tensor([[True, False, True, False, False]]),
             is_ligand=torch.tensor([[False, True, False, False, False]]),
             is_rna=torch.tensor([[False, False, False, True, False]]),
             is_dna=torch.tensor([[False, False, False, False, True]]),
-            num_residues=torch.tensor([[100, 1, 8, 12, 12]]),
-        ),
-        token=SimpleNamespace(
-            asym_id=torch.tensor([[10, 20, 30, 40, 50]]),
-            pad_mask=torch.tensor([[True, True, True, True, True]]),
         ),
         atom=SimpleNamespace(
             token_index=torch.tensor([[0, 1, 2, 3, 4, 0]]),
@@ -79,7 +80,7 @@ def test_global_sampler_defaults_are_the_fixed_sde_hybrid_bundle() -> None:
     assert not hasattr(config, "svgd_step")
 
 
-def test_class_sde_mask_selects_classes_and_covalent_components() -> None:
+def test_class_sde_mask_selects_only_requested_atoms() -> None:
     sampler = make_sampler(sampler_sde_atom_classes=("ligand", "peptide", "rna"))
 
     selected = sampler._get_sde_atom_mask(make_class_routing_input())
@@ -87,18 +88,29 @@ def test_class_sde_mask_selects_classes_and_covalent_components() -> None:
     assert selected is not None
     assert torch.equal(
         selected,
-        torch.tensor([[True, True, True, True, False, False]]),
+        torch.tensor([[False, True, True, True, False, False]]),
     )
 
 
-def test_protein_class_selects_protein_and_covalent_components() -> None:
+def test_ligand_class_does_not_expand_to_covalently_bonded_protein() -> None:
+    sampler = make_sampler(sampler_sde_atom_classes=("ligand",))
+
+    selected = sampler._get_sde_atom_mask(make_class_routing_input())
+
+    assert torch.equal(
+        selected,
+        torch.tensor([[False, True, False, False, False, False]]),
+    )
+
+
+def test_protein_class_selects_only_protein_tokens() -> None:
     sampler = make_sampler(sampler_sde_atom_classes=("protein",))
 
     selected = sampler._get_sde_atom_mask(make_class_routing_input())
 
     assert torch.equal(
         selected,
-        torch.tensor([[True, True, True, False, False, False]]),
+        torch.tensor([[True, False, True, False, False, False]]),
     )
 
 
@@ -242,6 +254,13 @@ def test_sigma_matched_churn_clamps_to_trained_time_support() -> None:
     x_high, t_high = sampler._apply_sigma_matched_churn(x_t, x_T, mask, 0.8, chi=0.5)
     assert t_high == 0.8
     torch.testing.assert_close(x_high, x_t, rtol=0.0, atol=0.0)
+
+
+def test_churn_ramp_reaches_multiplier_at_configured_upper_bound() -> None:
+    sampler = make_sampler(time_max=0.8, churn_max_time=0.7)
+
+    assert sampler._churn_factor_at_time(CHURN_END_TIME) == pytest.approx(0.1)
+    assert sampler._churn_factor_at_time(0.7) == pytest.approx(0.4)
 
 
 def test_class_selective_update_keeps_unselected_atoms_on_si_ode() -> None:

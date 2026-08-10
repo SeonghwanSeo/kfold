@@ -206,7 +206,8 @@ class KFoldECSI(BaseStructureModule):
         sampler_sde_atom_classes : tuple[str, ...]
             Explicit classes that receive the sampler profile. ``("all",)``
             preserves the global sampler, while ``()`` makes every atom use SI
-            ODE. Covalently connected chains are routed as one component.
+            ODE. Molecular classes select their matching token atoms only; they
+            do not expand over covalent bonds.
         churn_factor : float
             Fractional effective-noise inflation ``chi`` before the fixed
             high-time ramp. This is the only numerical sampler knob.
@@ -679,32 +680,8 @@ class KFoldECSI(BaseStructureModule):
             "atom_mask": train_mask,
         }
 
-    @staticmethod
-    def _expand_covalent_chain_components(
-        f_input: FoldingInput,
-        selected_chain: torch.Tensor,
-    ) -> torch.Tensor:
-        """Expand a chain selection over valid covalent bond components."""
-        chain_ids = f_input.chain.asym_id
-        bond_ids = f_input.bond.asym_id
-        chain_matches_bond = chain_ids[:, :, None, None] == bond_ids[:, None, :, :]
-        expanded = selected_chain
-
-        # At most one round per chain is sufficient for transitive components.
-        # The fixed loop avoids a device synchronization for every bond graph.
-        for _ in range(expanded.shape[1]):
-            selected_bond_ends = (
-                chain_matches_bond & expanded[:, :, None, None]
-            ).any(dim=1)
-            connected_bonds = selected_bond_ends.any(dim=-1) & f_input.bond.pad_mask
-            connected_chains = (
-                chain_matches_bond & connected_bonds[:, None, :, None]
-            ).any(dim=(2, 3))
-            expanded = expanded | (connected_chains & f_input.chain.pad_mask)
-        return expanded
-
     def _get_sde_atom_mask(self, f_input: FoldingInput) -> torch.Tensor:
-        """Return selected atom components for class-routed SDE updates.
+        """Return selected atoms for class-routed SDE updates.
 
         Global churn is deliberately outside this selector: every atom reaches
         the same post-churn time before the shared score-model call.
@@ -712,31 +689,27 @@ class KFoldECSI(BaseStructureModule):
         if self.sampler_sde_atom_classes == ("all",):
             return f_input.atom.pad_mask
 
-        selected_chain = torch.zeros_like(f_input.chain.pad_mask)
+        selected_token = torch.zeros_like(f_input.token.pad_mask)
         if "protein" in self.sampler_sde_atom_classes:
-            selected_chain |= f_input.chain.is_protein
+            selected_token |= f_input.token.is_protein
         if "ligand" in self.sampler_sde_atom_classes:
-            selected_chain |= f_input.chain.is_ligand
+            selected_token |= f_input.token.is_ligand
         if "rna" in self.sampler_sde_atom_classes:
-            selected_chain |= f_input.chain.is_rna
+            selected_token |= f_input.token.is_rna
         if "dna" in self.sampler_sde_atom_classes:
-            selected_chain |= f_input.chain.is_dna
+            selected_token |= f_input.token.is_dna
         if "peptide" in self.sampler_sde_atom_classes:
-            selected_chain |= f_input.chain.is_protein & (
+            peptide_chain = f_input.chain.is_protein & (
                 f_input.chain.num_residues < 16
             )
-        selected_chain &= f_input.chain.pad_mask
-        selected_chain = self._expand_covalent_chain_components(
-            f_input,
-            selected_chain,
-        )
-
-        token_matches_chain = (
-            f_input.token.asym_id[:, :, None] == f_input.chain.asym_id[:, None, :]
-        )
-        selected_token = (
-            token_matches_chain & selected_chain[:, None, :]
-        ).any(dim=-1)
+            peptide_chain &= f_input.chain.pad_mask
+            token_matches_peptide = (
+                f_input.token.asym_id[:, :, None]
+                == f_input.chain.asym_id[:, None, :]
+            )
+            selected_token |= (
+                token_matches_peptide & peptide_chain[:, None, :]
+            ).any(dim=-1)
         selected_token &= f_input.token.pad_mask
         selected_atom = torch.gather(
             selected_token,
@@ -1081,7 +1054,7 @@ class KFoldECSI(BaseStructureModule):
         return x_hat, t_hat
 
     def _churn_factor_at_time(self, t: float) -> float:
-        span = self.time_max - self.churn_end_time
+        span = self.churn_max_time - self.churn_end_time
         weight = (t - self.churn_end_time) / span if span > 0.0 else 0.0
         weight = min(max(weight, 0.0), 1.0) ** 2
         return self.churn_factor * (1.0 + (self.churn_max_multiplier - 1.0) * weight)
