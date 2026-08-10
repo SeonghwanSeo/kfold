@@ -34,9 +34,9 @@ class TrainingDatasetConfig(DatasetConfig):
     weight : float
         Weight of the dataset during training.
     prob_drop_apo : float
-        Probability of dropping apo structure for each chain.
+        Probability of dropping apo structure for the entire complex.
     prob_drop_struct_token : float
-        Probability of dropping structure tokens for each chain.
+        Probability of dropping structure tokens for the entire complex.
     sampler : BaseSampler.Config | None
         Sampler configuration for generating samples.
     cropper : BaseCropper.Config | None
@@ -319,9 +319,9 @@ class TrainingDataset(BaseLMDBDataset):
     def drop_apo_structure(
         self, tokenized: TokenizedStructure, rng: np.random.Generator
     ) -> None:
-        """Drop the apo coords / structure tokens"""
-        # Optionally drop apo structure for trunk input during training
-        if rng.random() < self.config.prob_drop_apo:
+        """Drop complex-level apo conditioning with hierarchical masking."""
+        drop_apo = rng.random() < self.config.prob_drop_apo
+        if drop_apo:
             tokenized.token.apo_center_coords.fill(np.nan)
             tokenized.token.apo_repr_coords.fill(np.nan)
             tokenized.token.apo_frame_coords.fill(np.nan)
@@ -331,7 +331,10 @@ class TrainingDataset(BaseLMDBDataset):
             tokenized.atom.apo_coords.fill(np.nan)
             tokenized.atom.apo_mask.fill(False)
 
-        if rng.random() < self.config.prob_drop_struct_token:
+        drop_struct_token = drop_apo or (
+            rng.random() < self.config.prob_drop_struct_token
+        )
+        if drop_struct_token:
             tokenized.sequence.bb_struct_token_id.fill(-1)
             tokenized.sequence.fa_struct_token_id.fill(-1)
 
