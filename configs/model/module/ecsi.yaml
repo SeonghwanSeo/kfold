@@ -20,16 +20,11 @@ align_x_0_hat_to_x_t: true
 sampler_mode: sde
 sampler_ode_type: ecsi
 sampler_step_scale: 1.0
-# t <= this value uses fixed SI ODE; null disables the low-time phase.
+# Use SI ODE at or below this time; null disables the switch.
 sampler_switch_time: 0.1
-# Reverse-update routing. [all] preserves the global profile above; [] uses SI
-# ODE for every atom. A molecular list uses SI ODE for unselected atoms and the
-# existing SDE/ECSI-to-SI schedule for selected atoms. Valid classes: protein,
-# ligand, peptide, rna, dna. protein includes peptide chains; [peptide] selects
-# protein chains with fewer than 16 residues. [ligand] selects only ligand-token
-# atoms; it does not expand into a covalently bonded protein chain. Modified
-# protein-chain residues are not ligand tokens. Churn remains global and is
-# never routed by atom class. A target with no selected atoms uses SI ODE.
+# SDE routing: [all], [], or any of protein/peptide/ligand/rna/dna.
+# Unselected atoms use SI ODE; peptide means protein chains under 16 residues.
+# Ligand selects ligand tokens only. Churn remains global.
 sampler_sde_atom_classes: [all]
 churn_factor: 0.1
 churn_max_multiplier: 4.0
