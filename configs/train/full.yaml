@@ -7,6 +7,9 @@ seed: 1 # NOTE: You may have to set different seeds for different stages
 
 # Multi-stage training
 load_opt_state: true
+# Continue the epoch, global step, and LR schedule when resetting optimizer state.
+# This option is only valid when load_opt_state is false.
+load_global_step: true
 # Parameter groups initialized from checkpoint EMA when optimizer state is reset.
 init_from_ema: []
 

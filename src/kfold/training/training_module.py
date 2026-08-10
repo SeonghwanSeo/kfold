@@ -58,6 +58,7 @@ class TrainConfig:
     loss: "LossConfig"
     # Multi-stage training
     load_opt_state: bool = True
+    load_global_step: bool = True
     init_from_ema: tuple[str, ...] = ()
 
 
