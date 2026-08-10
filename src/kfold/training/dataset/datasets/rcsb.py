@@ -144,7 +144,7 @@ class RCSBTrainingDataset(TrainingDataset):
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
     ) -> dict[int, list[dict | None]]:
-        """Get monomer apo lookup, then optionally overlay RCSB multimer apo."""
+        """Get monomer apo lookup, then replace selected entities with multimer apo."""
         num_apo = self.sample_num_apo(rng)
         apo_lookup = self.get_monomer_apo_lookup(ref_struct, rng, num_apo)
         entry_id = ref_struct.id
@@ -155,14 +155,20 @@ class RCSBTrainingDataset(TrainingDataset):
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
         protein_asym_ids = {c.asym_id for c in ref_struct.chains if c.ctype.is_protein}
 
-        num_multimer = min(num_apo, len(multimer_groups))
-        selected_group_indices = rng.choice(
-            len(multimer_groups), size=num_multimer, replace=False
-        )
-        for apo_i, group_i in enumerate(selected_group_indices):
-            group = multimer_groups[int(group_i)]
-            apo_uid = int(group["apo_uid"])
-            group_asym_ids = [int(aid) for aid in group["asym_ids"]]
+        # Multiple records with the same identity are alternative sources for one
+        # multimer. Select one identity first so a chain never mixes monomer and
+        # multimer coordinates across apo slots.
+        candidates_by_identity: dict[tuple[str, int, tuple[int, ...]], list[dict]] = {}
+        for group in multimer_groups:
+            identity = (
+                group["name"],
+                int(group["apo_uid"]),
+                tuple(int(asym_id) for asym_id in group["asym_ids"]),
+            )
+            candidates_by_identity.setdefault(identity, []).append(group)
+
+        valid_candidates: list[tuple[tuple[int, ...], int, list[dict]]] = []
+        for (_, apo_uid, group_asym_ids), candidates in candidates_by_identity.items():
             active_asym_ids = [
                 asym_id for asym_id in group_asym_ids if asym_id in protein_asym_ids
             ]
@@ -187,10 +193,32 @@ class RCSBTrainingDataset(TrainingDataset):
                 )
                 continue
 
+            valid_candidates.append((tuple(active_asym_ids), apo_uid, candidates))
+
+        if not valid_candidates:
+            return apo_lookup
+
+        candidate_i = (
+            int(rng.integers(len(valid_candidates))) if len(valid_candidates) > 1 else 0
+        )
+        active_asym_ids, apo_uid, candidates = valid_candidates[candidate_i]
+        num_multimer = min(num_apo, len(candidates))
+        selected_source_indices = rng.choice(
+            len(candidates), size=num_multimer, replace=False
+        )
+
+        active_entity_ids = {
+            metadata_by_asym_id[asym_id].entity_id for asym_id in active_asym_ids
+        }
+        selected_by_entity: dict[int, list[dict | None]] = {
+            entity_id: [None] * self.max_apo for entity_id in active_entity_ids
+        }
+
+        for apo_i, source_i in enumerate(selected_source_indices):
+            group = candidates[int(source_i)]
             context = f"multimer group {entry_id}:{apo_uid}"
             multimer_info = self._load_apo_multimer_info_from_lmdb(group, context=context)
             multimer_chains: dict[int, dict] = multimer_info["chains"]
-            loaded_by_entity: dict[int, dict] = {}
             for asym_id in active_asym_ids:
                 if asym_id not in multimer_chains:
                     raise KeyError(
@@ -206,20 +234,21 @@ class RCSBTrainingDataset(TrainingDataset):
                 loaded["source_asym_id"] = asym_id
                 loaded["apo_uid"] = apo_uid
                 loaded["is_multimer_apo"] = True
-                loaded_by_entity[entity_id] = loaded
+                selected_by_entity[entity_id][apo_i] = loaded
 
-            for chain in ref_struct.chains:
-                if not chain.ctype.is_protein:
-                    continue
-                loaded = loaded_by_entity.get(chain.entity_id)
-                if loaded is None:
-                    continue
-                apo_lookup.setdefault(chain.asym_id, [None] * self.max_apo)[apo_i] = {
+        for chain in ref_struct.chains:
+            if not chain.ctype.is_protein or chain.entity_id not in selected_by_entity:
+                continue
+            apo_lookup[chain.asym_id] = [
+                None
+                if loaded is None
+                else {
                     **loaded,
                     "chain_key": f"{entry_id}_{chain.asym_id}",
                 }
-                if apo_i == 0:
-                    metadata_by_asym_id[chain.asym_id].apo_uid = apo_uid
+                for loaded in selected_by_entity[chain.entity_id]
+            ]
+            metadata_by_asym_id[chain.asym_id].apo_uid = apo_uid
 
         return apo_lookup
 

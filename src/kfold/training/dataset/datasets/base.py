@@ -370,13 +370,12 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
 
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
-        apo_uid_dict = self.get_apo_uids(ref_struct, apo_lookup)
 
         # Sample prior coordinates for diffusion bridge model.
         prior_coords = self.sample_prior_coords(ref_struct, rng)
 
         # Tokenization
-        tokenized = self.tokenize(ref_struct, apo_dict, apo_uid_dict, prior_coords, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)
 
         # Populate structure tokens for apo structure (in-place)
         # NOTE: For inference, this will be done on-the-fly.
@@ -710,21 +709,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             chain_coords[c.asym_id] = coords
         return chain_coords
 
-    def get_apo_uids(
-        self,
-        ref_struct: RefStructure,
-        apo_lookup: dict[int, list[dict | None]],
-    ) -> dict[int, np.ndarray]:
-        """Return per-chain rigid-group IDs for every apo ensemble slot."""
-        apo_uids = {}
-        for chain in ref_struct.chains:
-            uids = np.full((self.max_apo,), chain.asym_id, dtype=np.int64)
-            for apo_i, apo_info in enumerate(apo_lookup.get(chain.asym_id, [])):
-                if apo_info is not None:
-                    uids[apo_i] = int(apo_info.get("apo_uid", chain.asym_id))
-            apo_uids[chain.asym_id] = uids
-        return apo_uids
-
     def sample_prior_coords(
         self,
         ref_struct: RefStructure,
@@ -789,7 +773,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         self,
         ref_struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
-        apo_uid_dict: dict[int, np.ndarray],
         prior_coords: np.ndarray,
         rng: np.random.Generator,
     ) -> TokenizedStructure:
@@ -798,7 +781,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             ref_struct,
             rng,
             apo_coords=apo_dict,
-            apo_uids=apo_uid_dict,
             num_apo=self.max_apo,
             prior_coords=prior_coords,
         )

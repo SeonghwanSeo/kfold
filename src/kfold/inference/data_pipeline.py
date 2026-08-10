@@ -167,20 +167,10 @@ class InputDataPipeline:
 
         # Tokenize structure
         # Learned structure token IDs are added later on the model device.
-        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
-        apo_uids = {
-            asym_id: np.full(
-                sources.num_apo,
-                metadata_by_asym_id[asym_id].apo_uid,
-                dtype=np.int64,
-            )
-            for asym_id in sources.apo_coords
-        }
         tokenized = self.tokenizer(
             ref_struct,
             tokenizer_rng,
             apo_coords=sources.apo_coords,
-            apo_uids=apo_uids,
             num_apo=sources.num_apo,
             prior_coords=prior_coords,
         )
