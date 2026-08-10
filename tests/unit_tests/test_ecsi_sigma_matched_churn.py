@@ -69,14 +69,14 @@ def test_global_sampler_defaults_are_the_fixed_sde_hybrid_bundle() -> None:
     assert config.sampler_mode == "sde"
     assert config.sampler_ode_type == "ecsi"
     assert config.sampler_switch_time == 0.1
-    assert config.sampler_after_switch_mode == "ode"
-    assert config.sampler_after_switch_ode_type == "si"
     assert config.churn_factor == 0.1
     assert config.gamma_power == 1.0
     assert config.churn_end_time == CHURN_END_TIME
     assert config.churn_max_time is None
     assert config.sampler_sde_atom_classes == ("all",)
     assert not hasattr(config, "churn_space")
+    assert not hasattr(config, "sampler_after_switch_mode")
+    assert not hasattr(config, "sampler_after_switch_ode_type")
     assert not hasattr(config, "sampler_switch_gamma")
     assert not hasattr(config, "svgd_step")
 
@@ -104,7 +104,7 @@ def test_ligand_class_does_not_expand_to_covalently_bonded_protein() -> None:
     )
 
 
-def test_protein_class_selects_only_protein_tokens() -> None:
+def test_protein_class_selects_protein_tokens_including_peptides() -> None:
     sampler = make_sampler(sampler_sde_atom_classes=("protein",))
 
     selected = sampler._get_sde_atom_mask(make_class_routing_input())
@@ -446,6 +446,7 @@ def test_sde_to_ode_rollback_keeps_the_same_churn_move() -> None:
     assert sde_sampler._select_update_method(0.9) == ("sde", "ecsi")
     assert sde_sampler._select_update_method(0.01) == ("ode", "si")
     assert ode_sampler._select_update_method(0.9) == ("ode", "ecsi")
+    assert ode_sampler._select_update_method(0.01) == ("ode", "si")
 
     torch.manual_seed(41)
     sde_out, sde_time = sde_sampler._apply_forward_pinned_churn(x_t, x_T, mask, 0.7)

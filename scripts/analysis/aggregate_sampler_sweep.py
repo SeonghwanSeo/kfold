@@ -37,8 +37,6 @@ SAMPLER_SETTINGS = (
     "sampler_mode",
     "sampler_ode_type",
     "sampler_switch_time",
-    "sampler_after_switch_mode",
-    "sampler_after_switch_ode_type",
     "sampler_sde_atom_classes",
     "churn_factor",
     "churn_max_multiplier",

@@ -198,18 +198,15 @@ class KFoldECSI(BaseStructureModule):
         sampler_step_scale : float
             Multiplier for deterministic ODE update displacement.
         sampler_switch_time : float | None
-            Reverse-time boundary for the fixed low-time ODE/SI phase. Values
-            at or below the boundary use the low-time sampler; ``None``
-            disables the phase.
-        sampler_after_switch_mode : str
-            Low-time update mode. The default is ``ode``.
-        sampler_after_switch_ode_type : str
-            Low-time update family. The default is ``si``.
+            Reverse-time boundary for the fixed low-time SI-ODE phase. Values
+            at or below the boundary use SI ODE; ``None`` disables the phase.
         sampler_sde_atom_classes : tuple[str, ...]
             Explicit classes that receive the sampler profile. ``("all",)``
             preserves the global sampler, while ``()`` makes every atom use SI
             ODE. Molecular classes select their matching token atoms only; they
-            do not expand over covalent bonds.
+            do not expand over covalent bonds. ``protein`` includes peptide
+            chains; ``peptide`` selects protein chains with fewer than 16
+            residues.
         churn_factor : float
             Fractional effective-noise inflation ``chi`` before the fixed
             high-time ramp. This is the only numerical sampler knob.
@@ -254,8 +251,6 @@ class KFoldECSI(BaseStructureModule):
         sampler_ode_type: str = "ecsi"
         sampler_step_scale: float = 1.0
         sampler_switch_time: float | None = 0.1
-        sampler_after_switch_mode: str = "ode"
-        sampler_after_switch_ode_type: str = "si"
         sampler_sde_atom_classes: tuple[str, ...] = ("all",)
         churn_factor: float = 0.1
         churn_max_multiplier: float = 4.0
@@ -309,15 +304,6 @@ class KFoldECSI(BaseStructureModule):
             raise ValueError(f"Unknown ECSI sampler_mode: {cfg.sampler_mode}")
         if cfg.sampler_ode_type not in {"si", "ecsi"}:
             raise ValueError(f"Unknown ECSI sampler_ode_type: {cfg.sampler_ode_type}")
-        if cfg.sampler_after_switch_mode not in {"ode", "sde"}:
-            raise ValueError(
-                f"Unknown ECSI sampler_after_switch_mode: {cfg.sampler_after_switch_mode}"
-            )
-        if cfg.sampler_after_switch_ode_type not in {"si", "ecsi"}:
-            raise ValueError(
-                f"Unknown ECSI sampler_after_switch_ode_type: "
-                f"{cfg.sampler_after_switch_ode_type}"
-            )
         if cfg.sampler_step_scale <= 0:
             raise ValueError("ECSI sampler_step_scale must be positive.")
         if cfg.sampler_switch_time is not None and not (
@@ -359,8 +345,6 @@ class KFoldECSI(BaseStructureModule):
         self.sampler_ode_type: str = cfg.sampler_ode_type
         self.sampler_step_scale: float = cfg.sampler_step_scale
         self.sampler_switch_time: float | None = cfg.sampler_switch_time
-        self.sampler_after_switch_mode: str = cfg.sampler_after_switch_mode
-        self.sampler_after_switch_ode_type: str = cfg.sampler_after_switch_ode_type
         self.sampler_sde_atom_classes = self._normalize_sde_atom_classes(
             cfg.sampler_sde_atom_classes
         )
@@ -1143,11 +1127,12 @@ class KFoldECSI(BaseStructureModule):
         return torch.where(sde_atom_mask[:, None, :, None], x_sde, x_ode)
 
     def _select_update_method(self, t: float) -> tuple[str, str]:
+        """Use the high-time profile or the fixed low-time SI-ODE phase."""
         if (
             self.sampler_switch_time is not None
             and t <= self.sampler_switch_time
         ):
-            return self.sampler_after_switch_mode, self.sampler_after_switch_ode_type
+            return "ode", "si"
         return self.sampler_mode, self.sampler_ode_type
 
     def _update_step(
