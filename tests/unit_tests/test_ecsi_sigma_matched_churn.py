@@ -74,7 +74,7 @@ def test_global_sampler_defaults_are_the_fixed_sde_hybrid_bundle() -> None:
     assert config.gamma_power == 1.0
     assert config.churn_end_time == CHURN_END_TIME
     assert config.churn_max_time is None
-    assert config.sampler_sde_atom_classes is None
+    assert config.sampler_sde_atom_classes == ("all",)
     assert not hasattr(config, "churn_space")
     assert not hasattr(config, "svgd_step")
 
@@ -91,20 +91,37 @@ def test_class_sde_mask_selects_classes_and_covalent_components() -> None:
     )
 
 
-def test_null_and_empty_class_selectors_remain_distinct() -> None:
+def test_protein_class_selects_protein_and_covalent_components() -> None:
+    sampler = make_sampler(sampler_sde_atom_classes=("protein",))
+
+    selected = sampler._get_sde_atom_mask(make_class_routing_input())
+
+    assert torch.equal(
+        selected,
+        torch.tensor([[True, True, True, False, False, False]]),
+    )
+
+
+def test_all_and_empty_class_selectors_are_explicit() -> None:
     f_input = make_class_routing_input()
 
-    assert make_sampler()._get_sde_atom_mask(f_input) is None
+    assert torch.equal(
+        make_sampler()._get_sde_atom_mask(f_input),
+        f_input.atom.pad_mask,
+    )
     selected = make_sampler(sampler_sde_atom_classes=())._get_sde_atom_mask(f_input)
-    assert selected is not None
     assert not selected.any()
 
 
 def test_class_sde_selector_rejects_unknown_or_duplicate_classes() -> None:
+    with pytest.raises(ValueError, match="must be explicit"):
+        make_sampler(sampler_sde_atom_classes=None)
     with pytest.raises(ValueError, match="unsupported classes"):
-        make_sampler(sampler_sde_atom_classes=("protein",))
+        make_sampler(sampler_sde_atom_classes=("carbohydrate",))
     with pytest.raises(ValueError, match="must not contain duplicates"):
         make_sampler(sampler_sde_atom_classes=("ligand", "ligand"))
+    with pytest.raises(ValueError, match="must be used alone"):
+        make_sampler(sampler_sde_atom_classes=("all", "ligand"))
 
 
 def test_class_sde_routing_uses_the_global_hybrid_profile() -> None:
@@ -251,6 +268,7 @@ def test_class_selective_update_keeps_unselected_atoms_on_si_ode() -> None:
         x_T,
         mask,
         selected_atoms,
+        True,
         0.7,
         0.6,
     )
@@ -263,6 +281,82 @@ def test_class_selective_update_keeps_unselected_atoms_on_si_ode() -> None:
         atol=0.0,
     )
     assert not torch.equal(observed[:, :, 1, :], expected_ode[:, :, 1, :])
+
+
+@pytest.mark.parametrize("sampler_mode", ["sde", "ode"])
+def test_all_class_selector_matches_the_global_update(sampler_mode: str) -> None:
+    sampler = make_sampler(sampler_mode=sampler_mode)
+    x_t, x_T, mask = make_state()
+    x_0_hat = torch.full_like(x_t, 0.25)
+    selected_atoms = torch.ones(mask.shape[0], mask.shape[-1], dtype=torch.bool)
+    mode, ode_type = sampler._select_update_method(0.7)
+
+    torch.manual_seed(53)
+    expected = sampler._update_step(
+        x_t,
+        x_0_hat,
+        x_T,
+        mask,
+        0.7,
+        0.6,
+        mode=mode,
+        ode_type=ode_type,
+        step_scale=sampler.sampler_step_scale,
+    )
+    torch.manual_seed(53)
+    observed = sampler._apply_class_selective_update(
+        x_t,
+        x_0_hat,
+        x_T,
+        mask,
+        selected_atoms,
+        True,
+        0.7,
+        0.6,
+    )
+
+    torch.testing.assert_close(observed, expected, rtol=0.0, atol=0.0)
+
+
+def test_empty_class_selector_uses_si_ode_without_consuming_rng() -> None:
+    sampler = make_sampler(sampler_sde_atom_classes=())
+    x_t, x_T, mask = make_state()
+    x_0_hat = torch.full_like(x_t, 0.25)
+    selected_atoms = torch.zeros(mask.shape[0], mask.shape[-1], dtype=torch.bool)
+
+    expected_ode = sampler._update_step(
+        x_t,
+        x_0_hat,
+        x_T,
+        mask,
+        0.7,
+        0.6,
+        mode="ode",
+        ode_type="si",
+        step_scale=sampler.sampler_step_scale,
+    )
+    torch.manual_seed(59)
+    expected_next_noise = torch.randn_like(x_t)
+    torch.manual_seed(59)
+    observed = sampler._apply_class_selective_update(
+        x_t,
+        x_0_hat,
+        x_T,
+        mask,
+        selected_atoms,
+        False,
+        0.7,
+        0.6,
+    )
+    actual_next_noise = torch.randn_like(x_t)
+
+    torch.testing.assert_close(observed, expected_ode, rtol=0.0, atol=0.0)
+    torch.testing.assert_close(
+        actual_next_noise,
+        expected_next_noise,
+        rtol=0.0,
+        atol=0.0,
+    )
 
 
 def test_class_sde_low_time_fallback_does_not_consume_rng() -> None:
@@ -291,6 +385,7 @@ def test_class_sde_low_time_fallback_does_not_consume_rng() -> None:
         x_T,
         mask,
         selected_atoms,
+        True,
         0.05,
         0.01,
     )

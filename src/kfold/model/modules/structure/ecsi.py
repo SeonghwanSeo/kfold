@@ -203,11 +203,10 @@ class KFoldECSI(BaseStructureModule):
             Low-time update mode. The default is ``ode``.
         sampler_after_switch_ode_type : str
             Low-time update family. The default is ``si``.
-        sampler_sde_atom_classes : tuple[str, ...] | None
-            Optional atom classes that receive a high-time SDE/ECSI update.
-            ``None`` preserves the global sampler; an explicit list makes every
-            unselected atom use SI ODE. Covalently connected chains are routed
-            as one component.
+        sampler_sde_atom_classes : tuple[str, ...]
+            Explicit classes that receive the sampler profile. ``("all",)``
+            preserves the global sampler, while ``()`` makes every atom use SI
+            ODE. Covalently connected chains are routed as one component.
         churn_factor : float
             Fractional effective-noise inflation ``chi`` before the fixed
             high-time ramp. This is the only numerical sampler knob.
@@ -254,7 +253,7 @@ class KFoldECSI(BaseStructureModule):
         sampler_switch_gamma: float | None = 3.6
         sampler_after_switch_mode: str = "ode"
         sampler_after_switch_ode_type: str = "si"
-        sampler_sde_atom_classes: tuple[str, ...] | None = None
+        sampler_sde_atom_classes: tuple[str, ...] = ("all",)
         churn_factor: float = 0.1
         churn_max_multiplier: float = 4.0
         churn_end_time: float = 0.5
@@ -372,18 +371,24 @@ class KFoldECSI(BaseStructureModule):
 
     @staticmethod
     def _normalize_sde_atom_classes(
-        atom_classes: tuple[str, ...] | None,
-    ) -> tuple[str, ...] | None:
-        """Validate the opt-in atom classes for class-routed SDE updates."""
+        atom_classes: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Validate the explicit classes for class-routed sampler updates."""
         if atom_classes is None:
-            return None
+            raise ValueError(
+                "ECSI sampler_sde_atom_classes must be explicit. Use ('all',) "
+                "for the global sampler or () for SI ODE."
+            )
         if isinstance(atom_classes, str):
             raise ValueError(
                 "ECSI sampler_sde_atom_classes must be a sequence, not a string."
             )
 
         normalized = tuple(atom_classes)
-        valid_classes = {"ligand", "peptide", "rna", "dna"}
+        if any(not isinstance(atom_class, str) for atom_class in normalized):
+            raise ValueError("ECSI sampler_sde_atom_classes must contain strings.")
+
+        valid_classes = {"all", "protein", "ligand", "peptide", "rna", "dna"}
         unknown = sorted(set(normalized) - valid_classes)
         if unknown:
             raise ValueError(
@@ -393,6 +398,10 @@ class KFoldECSI(BaseStructureModule):
         if len(set(normalized)) != len(normalized):
             raise ValueError(
                 "ECSI sampler_sde_atom_classes must not contain duplicates."
+            )
+        if "all" in normalized and len(normalized) != 1:
+            raise ValueError(
+                "ECSI sampler_sde_atom_classes 'all' must be used alone."
             )
         return normalized
 
@@ -694,16 +703,18 @@ class KFoldECSI(BaseStructureModule):
             expanded = expanded | (connected_chains & f_input.chain.pad_mask)
         return expanded
 
-    def _get_sde_atom_mask(self, f_input: FoldingInput) -> torch.Tensor | None:
+    def _get_sde_atom_mask(self, f_input: FoldingInput) -> torch.Tensor:
         """Return selected atom components for class-routed SDE updates.
 
         Global churn is deliberately outside this selector: every atom reaches
         the same post-churn time before the shared score-model call.
         """
-        if self.sampler_sde_atom_classes is None:
-            return None
+        if self.sampler_sde_atom_classes == ("all",):
+            return f_input.atom.pad_mask
 
         selected_chain = torch.zeros_like(f_input.chain.pad_mask)
+        if "protein" in self.sampler_sde_atom_classes:
+            selected_chain |= f_input.chain.is_protein
         if "ligand" in self.sampler_sde_atom_classes:
             selected_chain |= f_input.chain.is_ligand
         if "rna" in self.sampler_sde_atom_classes:
@@ -784,7 +795,9 @@ class KFoldECSI(BaseStructureModule):
         x_t = x_T.clone()
         mask = f_input.atom.pad_mask[..., None, :]  # (B, 1, Natom)
         sde_atom_mask = self._get_sde_atom_mask(f_input)
-        has_sde_atoms = sde_atom_mask is not None and bool(sde_atom_mask.any())
+        has_sde_atoms = self.sampler_sde_atom_classes == ("all",) or bool(
+            sde_atom_mask.any()
+        )
 
         # Compute time-independent variables
         z = model.get_pair_conditioning(f_input, z)
@@ -825,41 +838,16 @@ class KFoldECSI(BaseStructureModule):
             # Centering the predicted x_0_hat
             x_0_hat = do_centering(x_0_hat, mask=mask)
 
-            if sde_atom_mask is None:
-                sampler_mode, sampler_ode_type = self._select_update_method(t)
-                x_t = self._update_step(
-                    x_noisy,
-                    x_0_hat,
-                    x_T,
-                    mask,
-                    t,
-                    t_next,
-                    mode=sampler_mode,
-                    ode_type=sampler_ode_type,
-                    step_scale=self.sampler_step_scale,
-                )
-            elif has_sde_atoms:
-                x_t = self._apply_class_selective_update(
-                    x_noisy,
-                    x_0_hat,
-                    x_T,
-                    mask,
-                    sde_atom_mask,
-                    t,
-                    t_next,
-                )
-            else:
-                x_t = self._update_step(
-                    x_noisy,
-                    x_0_hat,
-                    x_T,
-                    mask,
-                    t,
-                    t_next,
-                    mode="ode",
-                    ode_type="si",
-                    step_scale=self.sampler_step_scale,
-                )
+            x_t = self._apply_class_selective_update(
+                x_noisy,
+                x_0_hat,
+                x_T,
+                mask,
+                sde_atom_mask,
+                has_sde_atoms,
+                t,
+                t_next,
+            )
             append_traj(x_t)
 
         sample_out: dict[str, torch.Tensor] = {}
@@ -1125,10 +1113,25 @@ class KFoldECSI(BaseStructureModule):
         x_T: torch.Tensor,
         mask: torch.Tensor,
         sde_atom_mask: torch.Tensor,
+        has_sde_atoms: bool,
         t: float,
         t_next: float,
     ) -> torch.Tensor:
-        """Use one score call, then splice component SDE and SI-ODE updates."""
+        """Preserve [all] or overlay selected updates on an SI-ODE base."""
+        selected_mode, selected_ode_type = self._select_update_method(t)
+        if self.sampler_sde_atom_classes == ("all",):
+            return self._update_step(
+                x_t,
+                x_0_hat,
+                x_T,
+                mask,
+                t,
+                t_next,
+                mode=selected_mode,
+                ode_type=selected_ode_type,
+                step_scale=self.sampler_step_scale,
+            )
+
         x_ode = self._update_step(
             x_t,
             x_0_hat,
@@ -1140,7 +1143,9 @@ class KFoldECSI(BaseStructureModule):
             ode_type="si",
             step_scale=self.sampler_step_scale,
         )
-        selected_mode, selected_ode_type = self._select_update_method(t)
+        if not has_sde_atoms:
+            return x_ode
+
         if selected_mode == "ode" and selected_ode_type == "si":
             return x_ode
 
