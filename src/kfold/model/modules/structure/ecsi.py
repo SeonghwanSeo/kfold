@@ -26,9 +26,6 @@ from kfold.utils.registry import STRUCTURE_MODULE
 from .sample_diffusion import BaseStructureModule
 from .score_model import DiffusionModule
 
-RIGID_ALIGN = 0  # conduct centering ; kabsch align
-NO_ALIGN = 1  # no centering; no kabsch align
-
 _T = TypeVar("_T", float, torch.Tensor)
 
 
@@ -125,6 +122,14 @@ class SICoeffs:
         denom = _sqrt(t_pow * (1 - t_pow))  # type: ignore
         return (self.gamma_max / 4) * coeff * (1 - 2 * t_pow) / _clip(denom)  # type: ignore
 
+    def sigma_eff(self, t: _T) -> _T:
+        r"""Return the analytical effective noise scale ``gamma(t) / alpha(t)``.
+
+        This value selects a sigma-matched churn time only. It does not transform
+        the coordinates supplied to the score model.
+        """
+        return self.gamma(t) / _clip(self.alpha(t))  # type: ignore
+
     # Compute \epsilon = \eta (\gamma \dot{\gamma} - \dot{\alpha}/\alpha \gamma^2)
     def eps(self, t: _T) -> _T:
         alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
@@ -183,30 +188,38 @@ class KFoldECSI(BaseStructureModule):
             remain fixed as `alpha_t = 1 - t` and `beta_t = t`.
         eta : float
             Stochasticity control parameter for ECSI sampling.
-
         # Inference sampling parameters
         align_x_0_hat_to_x_t : bool
             Whether to rigidly align the predicted x_0_hat to x_t at each sampling step.
+        sampler_mode : str
+            Update mode: ``sde`` for the default hybrid or ``ode`` for rollback.
+        sampler_ode_type : str
+            High-time ECSI/SI update family. The default is ``ecsi``.
         sampler_step_scale : float
-            Multiplier for deterministic ODE update displacement. A value of 1.5
-            mirrors the step scale convention used by AF3/EDM samplers.
+            Multiplier for deterministic ODE update displacement.
+        sampler_switch_gamma : float | None
+            Gamma threshold for the fixed low-time ODE/SI phase.
+        sampler_after_switch_mode : str
+            Low-time update mode. The default is ``ode``.
+        sampler_after_switch_ode_type : str
+            Low-time update family. The default is ``si``.
         churn_factor : float
-            The factor controlling the magnitude of forward-pinned churn noise.
+            Fractional effective-noise inflation ``chi`` before the fixed
+            high-time ramp. This is the only numerical sampler knob.
         churn_max_multiplier : float
-            Maximum multiplier applied to churn_factor in the high-time ramp.
+            Maximum high-time multiplier applied to ``churn_factor``.
         churn_end_time : float
-            The time value at which to end forward-pinned churn.
-
-        # Inference time scheduling parameters
+            End of the forward-pinned churn window.
+        churn_max_time : float | None
+            Exclusive upper churn bound. ``None`` resolves to ``time_max``.
         churn_step_fraction : float
-            The fraction of the total sampling steps to apply churn.
+            Fraction of sampling steps in the churn phase.
         churn_step_power : float
-            The exponent controlling the time schedule for churn steps.
+            Churn-phase schedule exponent.
         ode_step_power : float
-            The exponent controlling the time schedule for ODE steps.
+            ODE-phase schedule exponent.
         stepwarp_power : float
-            Exponent used to redistribute high-churn schedule knots. A value of
-            1.0 preserves the native schedule without applying the warp.
+            High-churn knot redistribution exponent.
 
         # Training time scheduling
         train_time_schedule : str
@@ -230,15 +243,16 @@ class KFoldECSI(BaseStructureModule):
 
         # Inference sampling
         align_x_0_hat_to_x_t: bool = True
-        sampler_mode: str = "ode"
-        sampler_ode_type: str = "si"
+        sampler_mode: str = "sde"
+        sampler_ode_type: str = "ecsi"
         sampler_step_scale: float = 1.0
-        sampler_switch_gamma: float | None = None
+        sampler_switch_gamma: float | None = 3.6
         sampler_after_switch_mode: str = "ode"
         sampler_after_switch_ode_type: str = "si"
         churn_factor: float = 0.1
         churn_max_multiplier: float = 4.0
         churn_end_time: float = 0.5
+        churn_max_time: float | None = None
         churn_step_fraction: float = 0.4
         churn_step_power: float = 1.0
         ode_step_power: float = 2.0
@@ -300,9 +314,30 @@ class KFoldECSI(BaseStructureModule):
             raise ValueError("ECSI sampler_step_scale must be positive.")
         if cfg.sampler_switch_gamma is not None and cfg.sampler_switch_gamma < 0:
             raise ValueError("ECSI sampler_switch_gamma must be non-negative.")
+        if cfg.gamma_power <= 0:
+            raise ValueError("ECSI gamma_power must be positive.")
+        if not 0.0 <= cfg.churn_end_time <= cfg.time_max:
+            raise ValueError(
+                "ECSI churn_end_time must lie within the trained time support."
+            )
+        churn_max_time = (
+            cfg.time_max if cfg.churn_max_time is None else cfg.churn_max_time
+        )
+        if churn_max_time > cfg.time_max:
+            raise ValueError(
+                f"ECSI churn_max_time ({churn_max_time}) must not exceed time_max "
+                f"({cfg.time_max}); the score model is untrained beyond time_max."
+            )
+        if churn_max_time < cfg.churn_end_time:
+            raise ValueError(
+                f"ECSI churn_max_time ({churn_max_time}) must not be below "
+                f"churn_end_time ({cfg.churn_end_time})."
+            )
         if any(
             value < 0
             for value in (
+                cfg.eta,
+                cfg.churn_factor,
                 cfg.churn_max_multiplier,
                 cfg.stepwarp_power,
             )
@@ -317,6 +352,7 @@ class KFoldECSI(BaseStructureModule):
         self.churn_factor: float = cfg.churn_factor
         self.churn_max_multiplier: float = cfg.churn_max_multiplier
         self.churn_end_time: float = cfg.churn_end_time
+        self.churn_max_time: float = churn_max_time
         self.churn_step_fraction: float = cfg.churn_step_fraction
         self.churn_step_power: float = cfg.churn_step_power
         self.ode_step_power: float = cfg.ode_step_power
@@ -676,20 +712,7 @@ class KFoldECSI(BaseStructureModule):
             t = times[step_idx]
             t_next = times[step_idx + 1]
 
-            # Early-stage forward-pinned churn.
-            span = float(times[0]) - self.churn_end_time
-            weight = (float(t) - self.churn_end_time) / span if span > 0.0 else 0.0
-            weight = min(max(weight, 0.0), 1.0) ** 2
-            effective_churn_factor = self.churn_factor * (
-                1.0 + (self.churn_max_multiplier - 1.0) * weight
-            )
-            x_noisy, t = self._apply_forward_pinned_churn(
-                x_t,
-                x_T,
-                mask,
-                t,
-                churn_factor=effective_churn_factor,
-            )
+            x_noisy, t = self._apply_forward_pinned_churn(x_t, x_T, mask, t)
 
             # Get denoised prediction \hat{x}_0
             x_0_hat = run_step(x_noisy, t)
@@ -881,40 +904,97 @@ class KFoldECSI(BaseStructureModule):
         times.append(0.0)
         return times
 
-    def _apply_forward_pinned_churn(
+    def _sigma_eff_to_time(self, target: float, lo: float, hi: float) -> float:
+        r"""Return a churn time in ``[lo, hi]`` for an effective-noise target.
+
+        ``sigma_eff`` is monotonic over the sampling interval. The upper endpoint
+        is returned when the requested inflation cannot fit inside the configured
+        churn band, preserving the trained-time support instead of extrapolating.
+        """
+        if hi <= lo:
+            return lo
+
+        coeff = self.coeff
+        lo_sigma = float(coeff.sigma_eff(lo))
+        hi_sigma = float(coeff.sigma_eff(hi))
+        if target <= lo_sigma:
+            return lo
+        if target >= hi_sigma:
+            return hi
+
+        low, high = lo, hi
+        for _ in range(60):
+            mid = 0.5 * (low + high)
+            if float(coeff.sigma_eff(mid)) < target:
+                low = mid
+            else:
+                high = mid
+        return high
+
+    def _apply_sigma_matched_churn(
         self,
         x_t: torch.Tensor,
         x_T: torch.Tensor,
         mask: torch.Tensor,
         t: float,
         *,
-        churn_factor: float | None = None,
+        chi: float,
     ) -> tuple[torch.Tensor, float]:
-        if t <= self.churn_end_time:
-            # No churn applied before or at churn_end
+        r"""Apply a bridge conditional with ``sigma_eff`` inflated by ``chi``.
+
+        The model still receives x-space coordinates. ``sigma_eff`` only chooses
+        ``t_hat`` such that ``sigma_eff(t_hat) = (1 + chi) * sigma_eff(t)``, when
+        that target lies inside the configured churn band.
+        """
+        if chi <= 0.0:
             return x_t, t
 
-        effective_churn_factor = (
-            self.churn_factor if churn_factor is None else churn_factor
+        coeff = self.coeff
+        target = (1.0 + chi) * float(coeff.sigma_eff(t))
+        t_hat = self._sigma_eff_to_time(target, t, self.churn_max_time)
+        if t_hat <= t:
+            return x_t, t
+
+        alpha_ratio = float(coeff.alpha(t_hat)) / _clip(float(coeff.alpha(t)))
+        variance = (
+            float(coeff.gamma(t_hat)) ** 2 - (alpha_ratio**2) * float(coeff.gamma(t)) ** 2
         )
-        dt = (1 - t) * effective_churn_factor
+        if variance <= 0.0:
+            return x_t, t
 
-        C = self.coeff
-        alpha_t, beta_t = C.alpha(t), C.beta(t)
-        alpha_dot, beta_dot = C.alpha_deriv(t), C.beta_deriv(t)
-        eps: float = C.eps(t)
-
-        # Forward-pinned churn step
         noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
+        x_hat = (
+            alpha_ratio * x_t
+            + (float(coeff.beta(t_hat)) - alpha_ratio * float(coeff.beta(t))) * x_T
+            + math.sqrt(variance) * noise
+        )
+        return x_hat, t_hat
 
-        f_t = alpha_dot / alpha_t
-        s_t = beta_dot - f_t * beta_t
-        drift = f_t * x_t + s_t * x_T
+    def _churn_factor_at_time(self, t: float) -> float:
+        span = self.time_max - self.churn_end_time
+        weight = (t - self.churn_end_time) / span if span > 0.0 else 0.0
+        weight = min(max(weight, 0.0), 1.0) ** 2
+        return self.churn_factor * (1.0 + (self.churn_max_multiplier - 1.0) * weight)
 
-        x_tm = x_t + drift * dt + _sqrt(2 * eps * dt) * noise
-        tm = t + dt
+    def _apply_forward_pinned_churn(
+        self,
+        x_t: torch.Tensor,
+        x_T: torch.Tensor,
+        mask: torch.Tensor,
+        t: float,
+    ) -> tuple[torch.Tensor, float]:
+        # The schedule starts at ``time_max``. Keep both churn bounds open so
+        # that the initial state is never perturbed or consumes RNG.
+        if not self.churn_end_time < t < self.churn_max_time:
+            return x_t, t
 
-        return x_tm, tm
+        return self._apply_sigma_matched_churn(
+            x_t,
+            x_T,
+            mask,
+            t,
+            chi=self._churn_factor_at_time(t),
+        )
 
     def _select_update_method(self, t: float) -> tuple[str, str]:
         if self.sampler_switch_gamma is None:
@@ -961,9 +1041,7 @@ class KFoldECSI(BaseStructureModule):
         ode_type : str, optional
             Type of update: 'si' or 'ecsi'.
         step_scale : float, optional
-            Multiplier for the deterministic ODE displacement, analogous to the
-            step scale used in AF3/EDM samplers.
-
+            Multiplier for the deterministic ODE displacement.
         """
         C = self.coeff
         alpha_t, alpha_dot = C.alpha(t), C.alpha_deriv(t)
