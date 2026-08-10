@@ -11,6 +11,7 @@ from kfold.training.dataset.utils.apo_io import (
     unpack_prior_multimer_stack_record,
 )
 
+from .base import _open_lmdb
 from .train_dataset import TrainingDataset
 
 StructInfo = dict
@@ -38,18 +39,19 @@ class RCSBTrainingDataset(TrainingDataset):
             "_apo_multimer_source_lmdb_envs", "apo_multimer_lmdb", chain_type, source
         )
 
-    def _get_prior_multimer_source_lmdb_env(self, chain_type: str, source: str):
-        return self._get_source_lmdb_env(
-            "_prior_multimer_source_lmdb_envs", "prior_multimer_lmdb", chain_type, source
-        )
+    def _get_multimer_prior_lmdb_env(self):
+        if not hasattr(self, "_protein_multimer_prior_lmdb_env"):
+            self._protein_multimer_prior_lmdb_env = _open_lmdb(
+                self.data_root / "prior_multimer_lmdb" / "protein.lmdb"
+            )
+        return self._protein_multimer_prior_lmdb_env
 
     def __del__(self):
         if hasattr(self, "_apo_multimer_source_lmdb_envs"):
             for env in self._apo_multimer_source_lmdb_envs.values():
                 env.close()
-        if hasattr(self, "_prior_multimer_source_lmdb_envs"):
-            for env in self._prior_multimer_source_lmdb_envs.values():
-                env.close()
+        if hasattr(self, "_protein_multimer_prior_lmdb_env"):
+            self._protein_multimer_prior_lmdb_env.close()
         super().__del__()
 
     def load_ref_structure(self, metadata: Metadata) -> RefStructure:
@@ -101,22 +103,19 @@ class RCSBTrainingDataset(TrainingDataset):
         loaded["chains"] = unpack_apo_multimer_record(value_bytes)
         return loaded
 
-    def _load_prior_multimer_stack_info_from_lmdb(
+    def _load_multimer_prior_stack_info_from_lmdb(
         self,
         group: dict,
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray] | None:
-        """Load and sample one source-specific multimer prior stack record."""
-        source = group["source"]
+        """Load and sample one protein multimer prior stack record."""
+        assert group["chain_type"] == "protein"
         name = group["name"]
-        chain_type = group["chain_type"]
-        prior_lmdb_path = (
-            self.data_root / "prior_multimer_lmdb" / chain_type / f"{source}.lmdb"
-        )
+        prior_lmdb_path = self.data_root / "prior_multimer_lmdb" / "protein.lmdb"
         if not prior_lmdb_path.exists():
             return None
 
-        env = self._get_prior_multimer_source_lmdb_env(chain_type, source)
+        env = self._get_multimer_prior_lmdb_env()
         with env.begin(write=False) as txn:
             value_bytes = txn.get(name.encode("utf-8"))
         if value_bytes is None:
@@ -132,13 +131,12 @@ class RCSBTrainingDataset(TrainingDataset):
             coords = chain["coords"]
             if coords.ndim != 4:
                 raise ValueError(
-                    f"Prior multimer stack {source}:{name}/{asym_id} has shape "
+                    f"Prior multimer stack {name}/{asym_id} has shape "
                     f"{coords.shape}; expected (N, L, A, 3)."
                 )
             if coords.shape[0] != num_samples:
                 raise ValueError(
-                    f"Prior multimer stack {source}:{name} has inconsistent "
-                    f"sample counts."
+                    f"Prior multimer stack {name} has inconsistent sample counts."
                 )
             out[int(asym_id)] = coords[sample_i].copy()
         return out
@@ -171,26 +169,57 @@ class RCSBTrainingDataset(TrainingDataset):
             if not active_asym_ids:
                 continue
 
+            if len(set(active_asym_ids)) != len(active_asym_ids):
+                self.logger.warning(
+                    f"Skipping multimer apo group {entry_id}:{apo_uid} because it "
+                    f"contains duplicate active asym_ids: {active_asym_ids}."
+                )
+                continue
+
+            active_entity_ids = [
+                metadata_by_asym_id[asym_id].entity_id for asym_id in active_asym_ids
+            ]
+            if len(set(active_entity_ids)) != len(active_entity_ids):
+                self.logger.warning(
+                    f"Skipping multimer apo group {entry_id}:{apo_uid} because its "
+                    f"active chains share an entity: asym_ids={active_asym_ids}, "
+                    f"entity_ids={active_entity_ids}."
+                )
+                continue
+
             context = f"multimer group {entry_id}:{apo_uid}"
             multimer_info = self._load_apo_multimer_info_from_lmdb(group, context=context)
             multimer_chains: dict[int, dict] = multimer_info["chains"]
+            loaded_by_entity: dict[int, dict] = {}
             for asym_id in active_asym_ids:
                 if asym_id not in multimer_chains:
                     raise KeyError(
                         f"Apo multimer {multimer_info['key']} for entry {entry_id} "
                         f"does not contain asym_id {asym_id}."
                     )
+                entity_id = metadata_by_asym_id[asym_id].entity_id
                 loaded = group.copy()
                 loaded.update(multimer_chains[asym_id])
                 loaded["key"] = multimer_info["key"]
                 loaded["lmdb_key"] = multimer_info["lmdb_key"]
                 loaded["multimer_key"] = multimer_info["key"]
-                loaded["asym_id"] = asym_id
+                loaded["source_asym_id"] = asym_id
                 loaded["apo_uid"] = apo_uid
                 loaded["is_multimer_apo"] = True
-                apo_lookup.setdefault(asym_id, [None] * self.max_apo)[apo_i] = loaded
-                if apo_i == 0 and asym_id in metadata_by_asym_id:
-                    metadata_by_asym_id[asym_id].apo_uid = apo_uid
+                loaded_by_entity[entity_id] = loaded
+
+            for chain in ref_struct.chains:
+                if not chain.ctype.is_protein:
+                    continue
+                loaded = loaded_by_entity.get(chain.entity_id)
+                if loaded is None:
+                    continue
+                apo_lookup.setdefault(chain.asym_id, [None] * self.max_apo)[apo_i] = {
+                    **loaded,
+                    "chain_key": f"{entry_id}_{chain.asym_id}",
+                }
+                if apo_i == 0:
+                    metadata_by_asym_id[chain.asym_id].apo_uid = apo_uid
 
         return apo_lookup
 
@@ -211,6 +240,9 @@ class RCSBTrainingDataset(TrainingDataset):
         protein_asym_ids = {c.asym_id for c in ref_struct.chains if c.ctype.is_protein}
 
         for group in multimer_groups:
+            name = group["name"]
+            if name in selected_multimer_by_name:
+                continue
             prior_uid = int(group["apo_uid"])
             group_asym_ids = [int(aid) for aid in group["asym_ids"]]
             active_asym_ids = [
@@ -219,18 +251,17 @@ class RCSBTrainingDataset(TrainingDataset):
             if not active_asym_ids:
                 continue
 
-            if group["name"] not in selected_multimer_by_name:
-                selected_multimer_by_name[group["name"]] = (
-                    self._load_prior_multimer_stack_info_from_lmdb(group, rng)
-                )
-            multimer_prior = selected_multimer_by_name[group["name"]]
+            selected_multimer_by_name[name] = (
+                self._load_multimer_prior_stack_info_from_lmdb(group, rng)
+            )
+            multimer_prior = selected_multimer_by_name[name]
             if multimer_prior is None:
                 continue
 
             for asym_id in active_asym_ids:
                 if asym_id not in multimer_prior:
                     raise KeyError(
-                        f"Prior multimer {group['source']}:{group['name']} for "
+                        f"Prior multimer {name} for "
                         f"entry {entry_id} does not contain asym_id {asym_id}."
                     )
                 prior_coords[asym_id] = multimer_prior[asym_id]
@@ -257,6 +288,8 @@ class RCSBTrainingDataset(TrainingDataset):
         super().populate_structure_tokens(tokenized, monomer_apo_lookup)
 
         multimer_token_cache: dict[tuple[str, str], dict[int, np.ndarray]] = {}
+        missing_token_sources: set[str] = set()
+        missing_token_records: set[tuple[str, str]] = set()
         for c_i in range(tokenized.num_chains):
             if tokenized.chain.chain_type[c_i] != C.ChainType.PROTEIN.value:
                 continue
@@ -271,6 +304,24 @@ class RCSBTrainingDataset(TrainingDataset):
                 key = apo_info["name"]
                 cache_key = (source, key)
                 if cache_key not in multimer_token_cache:
+                    if (
+                        source in missing_token_sources
+                        or cache_key in missing_token_records
+                    ):
+                        continue
+                    token_lmdb_path = (
+                        self.data_root
+                        / "apo_tok_lmdb"
+                        / "protein_multimer"
+                        / f"{source}.lmdb"
+                    )
+                    if not token_lmdb_path.exists():
+                        self.logger.warning(
+                            f"Apo multimer structure-token LMDB for {source} "
+                            "does not exist. Skipping structure tokens for this source."
+                        )
+                        missing_token_sources.add(source)
+                        continue
                     env = self._get_apo_tok_source_lmdb_env("protein_multimer", source)
                     with env.begin(write=False) as txn:
                         value = txn.get(key.encode("utf-8"))
@@ -279,21 +330,23 @@ class RCSBTrainingDataset(TrainingDataset):
                             f"Apo multimer structure tokens {source}:{key} not found "
                             f"in LMDB for chain `{ek}`. Skipping this entry"
                         )
+                        missing_token_records.add(cache_key)
                         continue
                     multimer_token_cache[cache_key] = unpack_apo_multimer_token_record(
                         value
                     )
-                if asym_id not in multimer_token_cache[cache_key]:
+                source_asym_id = int(apo_info["source_asym_id"])
+                if source_asym_id not in multimer_token_cache[cache_key]:
                     self.logger.warning(
                         f"Apo multimer structure tokens {source}:{key} do not contain "
-                        f"asym_id {asym_id}. Skipping chain `{ek}`."
+                        f"asym_id {source_asym_id}. Skipping chain `{ek}`."
                     )
                     continue
                 self._insert_structure_tokens(
                     tokenized,
                     c_i,
                     apo_i,
-                    multimer_token_cache[cache_key][asym_id],
+                    multimer_token_cache[cache_key][source_asym_id],
                     key=f"{source}:{key}",
                 )
 
