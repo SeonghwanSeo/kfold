@@ -442,12 +442,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         mask = np.isfinite(coords).all(axis=-1)
         return do_centering(coords, mask=mask, mask_to_zero=False)
 
-    @staticmethod
-    def _empty_residue_coords(chain: Chain) -> np.ndarray:
-        """Return centered label coordinates in residue-major atom order."""
-        width = 37 if chain.is_protein else 29
-        return np.full((chain.num_residues, width, 3), np.nan, dtype=np.float32)
-
     def _load_apo_info_from_lmdb(self, apo_info: dict) -> bool:
         """Attach `seq` and `coords` from source-specific apo LMDB to a lookup record."""
         source = apo_info["source"]
@@ -627,7 +621,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         assert chain.is_protein
 
         def fallback() -> np.ndarray:
-            return self._empty_residue_coords(chain)
+            return np.full((chain.num_residues, 37, 3), np.nan, dtype=np.float32)
 
         # If the apo structure is not found, mask the apo input for training.
         # Validation requires an explicit apo structure.
@@ -729,50 +723,25 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         apo_lookup: dict[int, list[dict | None]],
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
-        """Return the apo coordinates for the given reference structure.
+        """Return protein apo coordinates for the given reference structure.
         Key: asymmetric chain ID (asym_id)
-        Value: apo coordinates of shape:
-            - Protein: [L, 37, 3]
-            - RNA/DNA: [L, 29, 3]
-            - Ligand: [Natom, 1, 3]
+        Value: protein apo coordinates of shape [Napo, L, 37, 3].
         """
         chain_coords: dict[int, np.ndarray] = {}
         coords_by_entity: dict[int, np.ndarray] = {}
         for c in ref_struct.chains:
-            key = f"{ref_struct.id}_{c.asym_id}"
-            if c.is_protein:
-                if c.entity_id not in coords_by_entity:
-                    coords_by_entity[c.entity_id] = np.stack(
-                        [
-                            self._get_protein_apo_coords(c, apo_info, rng)
-                            for apo_info in apo_lookup.get(
-                                c.asym_id, [None] * self.max_apo
-                            )
-                        ],
-                        axis=0,
-                    )
-                coords = coords_by_entity[c.entity_id].copy()
-            elif c.is_nucleic_acid:
-                # For nucleic acid chains, we do not use apo structures for now.
-                coords = np.stack(
-                    [self._empty_residue_coords(c) for _ in range(self.max_apo)], axis=0
-                )
-            else:
-                # For ligand chains, use etkdg conformer.
-                coords = np.stack(
-                    [self._get_ligand_apo_coords(c, rng, key)]
-                    + [
-                        np.full((c.num_atoms, 1, 3), np.nan, dtype=np.float32)
-                        for _ in range(self.max_apo - 1)
+            if not c.is_protein:
+                continue
+            if c.entity_id not in coords_by_entity:
+                coords_by_entity[c.entity_id] = np.stack(
+                    [
+                        self._get_protein_apo_coords(c, apo_info, rng)
+                        for apo_info in apo_lookup.get(c.asym_id, [None] * self.max_apo)
                     ],
                     axis=0,
                 )
-            if c.is_protein:
-                assert coords.shape == (self.max_apo, c.num_residues, 37, 3)
-            elif c.is_nucleic_acid:
-                assert coords.shape == (self.max_apo, c.num_residues, 29, 3)
-            else:
-                assert coords.shape == (self.max_apo, c.num_atoms, 1, 3)
+            coords = coords_by_entity[c.entity_id].copy()
+            assert coords.shape == (self.max_apo, c.num_residues, 37, 3)
             chain_coords[c.asym_id] = coords
         return chain_coords
 
