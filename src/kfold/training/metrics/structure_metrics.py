@@ -51,6 +51,9 @@ main_metric_names = [
     "special/interface/lddt-protein_peptide",
     "special/interface/lddt-protein_ion",
     "special/interface/lddt-protein_glycan",
+    # Protein-protein interfaces split by shared vs distinct entity identity.
+    "special/interface/lddt_protein_protein_homo",
+    "special/interface/lddt_protein_protein_hetero",
 ]
 monitor_metric_names = [
     "weighted_lddt",
@@ -438,6 +441,7 @@ def extract_validation_metrics(summary: dict[str, Any]) -> dict[str, float]:
     # Collect interface lddt metrics
     iface_metrics = defaultdict(list)
     special_iface_metrics = defaultdict(list)
+    pp_entity_iface_metrics = defaultdict(list)
     for v in summary["interfaces"].values():
         if not v["is_low_homology"]:
             continue
@@ -449,6 +453,10 @@ def extract_validation_metrics(summary: dict[str, Any]) -> dict[str, float]:
         ctypes = norm_key(ctype1, ctype2)
         key = f"lddt-{ctypes[0].name.lower()}_{ctypes[1].name.lower()}"
         iface_metrics[key].append(lddt)
+
+        if ctypes == (C.ChainType.PROTEIN, C.ChainType.PROTEIN):
+            pp_class = "homo" if v["entity_id_1"] == v["entity_id_2"] else "hetero"
+            pp_entity_iface_metrics[f"lddt_protein_protein_{pp_class}"].append(lddt)
 
         # Additional metrics
         subtype1 = C.SubChainType[v["subtype_1"].upper()]
@@ -468,6 +476,8 @@ def extract_validation_metrics(summary: dict[str, Any]) -> dict[str, float]:
     for k, vs in special_chain_metrics.items():
         extracted_metrics[f"special/chain/{k}"] = sum(vs) / len(vs)
     for k, vs in special_iface_metrics.items():
+        extracted_metrics[f"special/interface/{k}"] = sum(vs) / len(vs)
+    for k, vs in pp_entity_iface_metrics.items():
         extracted_metrics[f"special/interface/{k}"] = sum(vs) / len(vs)
     return extracted_metrics
 
