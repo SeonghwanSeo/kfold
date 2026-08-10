@@ -18,8 +18,8 @@ data:
   data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
   train_datasets:
     # RCSB PDB (50%)
-    - _yaml_: "../dataset/rcsb-train-ft.yaml"
-      name: rcsb-train
+    - _yaml_: "../dataset/rcsb-train.yaml"
+      name: rcsb-train-upd
       weight: 0.500
 
     # Disordered PDB datasets (1%)
@@ -33,14 +33,14 @@ data:
       weight: 0.250
     - _yaml_: "../dataset/distill-monomer.yaml"
       name: AF2-MGnify-short
-      weight: 0.001
+      weight: 0.002
 
     - _yaml_: "../dataset/distill-monomer.yaml"
       name: AFDB-long
-      weight: 0.045
+      weight: 0.040
     - _yaml_: "../dataset/distill-monomer.yaml"
       name: AFDB-short
-      weight: 0.004
+      weight: 0.008
 
     # RNA Monomer (2%)
     - _yaml_: "../dataset/distill-rna-monomer.yaml"
@@ -59,17 +59,17 @@ data:
       weight: 0.030
 
     # Protein-DNA (2%)
-    - _yaml_: "../dataset/distill-complex.yaml"
+    - _yaml_: "../dataset/distill-complex-uniform.yaml"
       name: JASPAR
       weight: 0.020
 
     # Protein-RNA (1%)
-    - _yaml_: "../dataset/distill-interface.yaml"
+    - _yaml_: "../dataset/distill-complex-cluster.yaml"
       name: ENCORE
       weight: 0.010
 
     # Protein-ligand, TPD (1%)
-    - _yaml_: "../dataset/distill-interface.yaml"
+    - _yaml_: "../dataset/distill-complex-cluster.yaml"
       name: TPD
       weight: 0.010
 

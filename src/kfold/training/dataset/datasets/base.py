@@ -200,7 +200,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         self.tokenizer: tokenization.Tokenizer = tokenizer
         self.featurizer: featurization.InputFeaturizer = featurizer
         self.prior_sampler: prior_sampling.PriorSampler | None = prior_sampler
-        self.num_priors: int = 4 if train else 5  # default number of prior samples
+        self.num_priors: int = 5  # default number of prior samples
 
         # Data augmentation
         self.apo_perturb: apo_perturbation.ApoPerturbation | None = None

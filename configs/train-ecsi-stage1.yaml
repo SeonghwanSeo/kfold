@@ -9,7 +9,8 @@ model:
   trunk:
     blocks_per_ckpt: 4
   score_model:
-    blocks_per_ckpt: 4
+    blocks_per_ckpt: null
+    ckpt_atom_stack: true
   confidence_head:
     blocks_per_ckpt: null
 
@@ -20,4 +21,4 @@ train:
   loss:
     diffusion_loss:
       smooth_lddt_loss:
-        chunk_size: 4
+        chunk_size: 8

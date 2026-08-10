@@ -16,7 +16,12 @@ filters: []
 
 sampler: ???
 
-cropper: ???
+cropper:
+  _registry_: "data_cropper"
+  _class_: AlphaFold3Cropper
+  w_contiguous: 0.1
+  w_spatial: 0.1
+  w_spatial_interface: 0.8
 
 # Enable perturbation during training
 prob_perturbation: 0.90

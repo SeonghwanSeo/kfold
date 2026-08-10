@@ -34,7 +34,7 @@ data:
   max_chains: ???
   max_tokens: ???
   max_sequence_tokens: ???
-  max_apo: 4
+  max_apo: 3
 
   # DataLoader
   train_batch_size: 1 # NOTE: Overridden by global_hparam
