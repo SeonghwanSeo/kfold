@@ -192,11 +192,9 @@ class ProteinMonomerDistillationDataset(MonomerDistillationDataset):
     def get_prior_coords(
         self,
         ref_struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
         """Use the label monomer structure as the prior source."""
-        del apo_dict
         chain = ref_struct.chains[0]
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
         if chain.asym_id in metadata_by_asym_id:

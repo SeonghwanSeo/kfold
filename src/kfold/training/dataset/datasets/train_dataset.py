@@ -226,7 +226,7 @@ class TrainingDataset(BaseLMDBDataset):
         apo_uid_dict = self.get_apo_uids(ref_struct, apo_lookup)
 
         # Sample prior coordinates for diffusion bridge model.
-        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
+        prior_coords = self.sample_prior_coords(ref_struct, rng)
 
         # Tokenization
         tokenized = self.tokenize(ref_struct, apo_dict, apo_uid_dict, prior_coords, rng)

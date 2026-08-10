@@ -58,7 +58,7 @@ import torch
 
 import kfold.constants as C
 from kfold.data.pipelines import featurization, prior_sampling, tokenization
-from kfold.data.types.ccd import CCD, Component
+from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, RefStructure
@@ -373,7 +373,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         apo_uid_dict = self.get_apo_uids(ref_struct, apo_lookup)
 
         # Sample prior coordinates for diffusion bridge model.
-        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
+        prior_coords = self.sample_prior_coords(ref_struct, rng)
 
         # Tokenization
         tokenized = self.tokenize(ref_struct, apo_dict, apo_uid_dict, prior_coords, rng)
@@ -682,41 +682,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         )
         return coords
 
-    def _get_ligand_apo_coords(
-        self, chain: Chain, rng: np.random.Generator, key: str
-    ) -> np.ndarray:
-        """Fetch the apo coordinates for a ligand chain."""
-        assert chain.is_ligand
-        if chain.smiles is not None:
-            ref_comp = Component.from_smiles("LIG", chain.smiles)
-            coords = ref_comp.get_ref_conformer(rng, train=True)
-        else:
-            coords = np.full_like(chain.atom.coords, np.nan)
-            ccd_sequence = chain.get_ccd_sequence()
-            for res_i in range(chain.num_residues):
-                res_idx = res_i + 1  # 1-based
-                code = ccd_sequence[res_i]
-                if code not in self.ccd:
-                    self.logger.warning(
-                        f"CCD code {code} not found for ligand {key}."
-                        f"Filling with NaN coordinates."
-                    )
-                    continue
-                ref_comp = self.ccd[code]
-                ref_pos = ref_comp.get_ref_conformer(rng, train=True)
-                ref_atom_order = ref_comp.get_atom_index_map()
-                # Map reference conformer to chain's atom order
-                src_atom_indices: list[int] = []
-                dst_atom_indices: list[int] = []
-                for atom_i in chain.residue.iter_residue_atoms(res_idx):
-                    an = chain.atom.name[atom_i]
-                    if an in ref_atom_order:
-                        src_atom_indices.append(ref_atom_order[an])
-                        dst_atom_indices.append(atom_i)
-                coords[dst_atom_indices] = ref_pos[src_atom_indices]
-        coords = np.expand_dims(coords, axis=1)  # [Natom, 1, 3]
-        return coords
-
     def fetch_apo_structures(
         self,
         ref_struct: RefStructure,
@@ -763,7 +728,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     def sample_prior_coords(
         self,
         ref_struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> np.ndarray:
         """Sample prior coordinates for the given structure."""
@@ -772,7 +736,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
 
         prior_coords_list = []
         for _ in range(self.num_priors):
-            prior_apo_dict = self.get_prior_coords(ref_struct, apo_dict, rng)
+            prior_apo_dict = self.get_prior_coords(ref_struct, rng)
             prior_coords = self.prior_sampler(ref_struct, prior_apo_dict, 1, rng)
             assert prior_coords.shape == (1, ref_struct.num_atoms, 3)
             prior_coords_list.append(prior_coords[0])
@@ -781,11 +745,9 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     def get_prior_coords(
         self,
         ref_struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
-        """Sample one per-chain prior source dict."""
-        del apo_dict
+        """Sample one protein prior source per chain."""
         entry_id: str = ref_struct.id
         prior_apo_dict: dict[int, np.ndarray] = {}
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
@@ -794,16 +756,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             if c.asym_id in metadata_by_asym_id:
                 metadata_by_asym_id[c.asym_id].prior_uid = c.asym_id
 
-            if c.is_nucleic_acid:
-                # RNA/DNA apo structures are intentionally disabled.
-                coords = np.full((c.num_residues, 29, 3), np.nan, dtype=np.float32)
-                prior_apo_dict[c.asym_id] = coords
-                continue
-
-            if c.is_ligand:
-                # For ligand chains, use etkdg conformer as prior apo coordinates.
-                key = f"{entry_id}_{c.asym_id}"
-                prior_apo_dict[c.asym_id] = self._get_ligand_apo_coords(c, rng, key)
+            if not c.is_protein:
                 continue
 
             loaded = self._load_prior_stack_info_from_lmdb(
@@ -819,11 +772,10 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                     )
                 continue
 
-            width = 37 if c.is_protein else 29
-            expected_shape = (c.num_residues, width, 3)
+            expected_shape = (c.num_residues, 37, 3)
             assert loaded.shape[1:] == expected_shape, (
                 f"Prior stack for chain {entry_id}:{c.asym_id} has shape "
-                f"{loaded.shape}; expected (N, {c.num_residues}, {width}, 3)."
+                f"{loaded.shape}; expected (N, {c.num_residues}, 37, 3)."
             )
             assert loaded.shape[0] > 0, (
                 f"Prior stack for chain {entry_id}:{c.asym_id} is empty."

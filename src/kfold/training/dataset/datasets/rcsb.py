@@ -197,11 +197,10 @@ class RCSBTrainingDataset(TrainingDataset):
     def get_prior_coords(
         self,
         ref_struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
         """Sample monomer priors with optional RCSB multimer prior overlay."""
-        prior_coords = super().get_prior_coords(ref_struct, apo_dict, rng)
+        prior_coords = super().get_prior_coords(ref_struct, rng)
         entry_id = ref_struct.id
         multimer_groups: list[dict] = self.apo_multimer_lookup_table.get(entry_id, [])
         if not multimer_groups or rng.random() >= self.prob_use_complex_prior:

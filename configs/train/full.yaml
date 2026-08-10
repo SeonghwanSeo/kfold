@@ -52,28 +52,11 @@ data:
   prior_sampler:
     # If null, no prior sampling
     chain_translation_scale: 24.0 # Angstroms
-    # Legacy IID atom noise, used only when ligand_langevin.enabled is false.
-    ligand_augmentation_scale: 0.3
+    # Centered IID Gaussian ligand coordinates; no conformer or dynamics.
+    ligand_gaussian_scale: 8.0 # Angstroms
     bioprior:
       noise_scale: 0.5
       max_steps: 10
-    # Displace the ETKDG/CCD conformer once, then run standard T=1 stochastic
-    # bond-angle Langevin updates. Every step is stochastic; there is no
-    # deterministic correction tail. This gives approximately 2 A aligned
-    # RMSD coverage on sampled real training ligands.
-    ligand_langevin:
-      enabled: true
-      backend: numba
-      initial_noise_scale: 4.0
-      num_steps: 25
-      dt: 0.0075
-      temperature: 1.0
-      bond_strength: 30.0
-      angle_strength: 15.0
-      relaxation_steps: 0
-      # Optional safety filters. Null disables sample rejection.
-      max_bond_deviation: null
-      max_aligned_rmsd: null
     train: true # Only for train/val
 
 # Lightning Trainer Configuration

@@ -30,7 +30,10 @@ def get_mask(coords: np.ndarray) -> np.ndarray:
 
 def get_apo_uid_by_asym_id(struct: RefStructure) -> dict[int, int]:
     """Return apo rigid-group IDs keyed by physical chain asym_id."""
-    return {c.asym_id: int(c.apo_uid) for c in struct.metadata.chains}
+    return {
+        c.asym_id: int(c.apo_uid) if c.ctype.is_protein else c.asym_id
+        for c in struct.metadata.chains
+    }
 
 
 class Tokenizer:
@@ -682,13 +685,21 @@ def _insert_apo_coordinates(
     apo_coords_dict: dict[int, np.ndarray],
     apo_uid_dict: dict[int, np.ndarray],
 ):
+    protein_asym_ids = {c.asym_id for c in struct.chains if c.is_protein}
+    invalid_asym_ids = set(apo_coords_dict) - protein_asym_ids
+    if invalid_asym_ids:
+        raise ValueError(
+            "Apo coordinates are supported only for protein chains; "
+            f"got asym_ids {sorted(invalid_asym_ids)}."
+        )
+
     g_tok_i = 0
     for c in struct.chains:
         st, end = g_tok_i, g_tok_i + c.num_tokens
         m = tok.atom.pad_mask[st:end]  # (chain_tokens, 24)
 
         # Insert apo coordinates if available
-        if c.asym_id in apo_coords_dict:
+        if c.is_protein and c.asym_id in apo_coords_dict:
             coords = apo_coords_dict[c.asym_id]
             assert coords.shape[0] == tok.atom.apo_coords.shape[-2]
             if c.is_polymer:

@@ -13,7 +13,7 @@ from kfold.data.pipelines import (
     structure_preparation,
     tokenization,
 )
-from kfold.data.types.ccd import CCD, Component
+from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
@@ -426,14 +426,6 @@ class InputDataPipeline:
                 )
 
         prior_sources = self._sample_prior_sources(ref_struct, prior_groups, rng)
-        for chain in ref_struct.chains:
-            if not chain.is_ligand:
-                continue
-            conformer = self._get_ligand_conformer_source(chain, rng)
-            apo_coords[chain.asym_id] = np.stack(
-                [conformer]
-                + [np.full_like(conformer, np.nan) for _ in range(num_apo - 1)]
-            )
 
         return ResolvedStructureSources(
             num_apo=num_apo,
@@ -639,58 +631,8 @@ class InputDataPipeline:
             for asym_ids, candidates in rigid_groups:
                 candidate = candidates[int(rng.integers(len(candidates)))]
                 global_source.update({i: candidate[i].copy() for i in asym_ids})
-
-            for chain in ref_struct.chains:
-                if chain.is_protein:
-                    continue
-                if chain.is_nucleic_acid:
-                    global_source[chain.asym_id] = np.full(
-                        (chain.num_residues, 29, 3),
-                        np.nan,
-                        dtype=np.float32,
-                    )
-                else:
-                    global_source[chain.asym_id] = self._get_ligand_conformer_source(
-                        chain, rng
-                    )
             global_sources.append(global_source)
         return global_sources
-
-    def _get_ligand_conformer_source(
-        self,
-        chain: Chain,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Generate one ligand conformer in residue-major source format."""
-        assert chain.is_ligand
-        if chain.smiles is not None:
-            ref_comp = Component.from_smiles("LIG", chain.smiles)
-            coords = ref_comp.get_ref_conformer(rng, train=False)
-        else:
-            coords = np.full_like(chain.atom.coords, np.nan)
-            ccd_sequence = chain.get_ccd_sequence()
-            for res_i, code in enumerate(ccd_sequence):
-                if code not in self.ccd:
-                    self.logger.warning(
-                        f"CCD code {code} not found for ligand chain "
-                        f"{chain.asym_id}. Filling with NaN coordinates."
-                    )
-                    continue
-
-                ref_comp = self.ccd[code]
-                ref_pos = ref_comp.get_ref_conformer(rng, train=False)
-                ref_atom_order = ref_comp.get_atom_index_map()
-                src_atom_indices: list[int] = []
-                dst_atom_indices: list[int] = []
-                res_idx = res_i + 1
-                for atom_i in chain.residue.iter_residue_atoms(res_idx):
-                    atom_name = chain.atom.name[atom_i]
-                    if atom_name in ref_atom_order:
-                        src_atom_indices.append(ref_atom_order[atom_name])
-                        dst_atom_indices.append(atom_i)
-                coords[dst_atom_indices] = ref_pos[src_atom_indices]
-
-        return np.expand_dims(coords, axis=1).astype(np.float32)
 
     # ================================================================================
     # Chain Parsing Functions
