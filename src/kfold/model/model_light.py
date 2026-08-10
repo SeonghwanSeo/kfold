@@ -13,7 +13,7 @@ class KFold_Light(KFold):
     def __init__(self, config: KFoldConfig):
         super().__init__(config)
         del self.prot_struct_encoder
-        del self.prot_struct_to_s_lm
+        # del self.prot_struct_to_s_lm
 
     def _encode_lm_single(self, f_input: FoldingInput) -> torch.Tensor:
         """Merge sequence encoder features into the shared LM single."""

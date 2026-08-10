@@ -14,7 +14,6 @@ from kfold.data.pipelines import (
     tokenization,
 )
 from kfold.data.types.ccd import CCD, Component
-from kfold.data.types.constraint import Constraint
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
@@ -151,7 +150,7 @@ class InputDataPipeline:
         tokenizer_rng = np.random.default_rng(np.random.SeedSequence([input.seed, 2]))
 
         # Read query and prepare reference structure
-        ref_struct, constraints = self.read_query(input)
+        ref_struct = self.read_query(input)
 
         # Read apo/prior structures
         sources = self.resolve_structure_sources(ref_struct, input, source_rng)
@@ -184,13 +183,12 @@ class InputDataPipeline:
             apo_uids=apo_uids,
             num_apo=sources.num_apo,
             prior_coords=prior_coords,
-            constraints=constraints,
         )
 
         f_input = self.featurizer(tokenized)
         return ref_struct, tokenized, f_input, sources.struct_token_records
 
-    def read_query(self, input: query.Query) -> tuple[RefStructure, list[Constraint]]:
+    def read_query(self, input: query.Query) -> RefStructure:
         """Prepare the reference structure from the input file.
 
         Parameters
@@ -202,8 +200,6 @@ class InputDataPipeline:
         -------
         ref_struct : RefStructure
             The reference structure.
-        constraints : list[Constraint]
-            The list of distance constraints specified in the input.
         """
         chain_metas: list[ChainInfo] = []
         chains: list[Chain] = []
@@ -213,12 +209,11 @@ class InputDataPipeline:
 
         # Collect bonded atoms
         chain_bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
-        for constraint in input.constraints:
-            if constraint.type == "bond":
-                chain_id1, res_idx1, atom1 = constraint.atom1
-                chain_id2, res_idx2, atom2 = constraint.atom2
-                chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
-                chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
+        for bond in input.bonds:
+            chain_id1, res_idx1, atom1 = bond.atom1
+            chain_id2, res_idx2, atom2 = bond.atom2
+            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
+            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
 
         for seq in input.sequences:
             entity_id = next(entity_id_iter)
@@ -341,30 +336,24 @@ class InputDataPipeline:
         # Prepare metadata
         metadata = Metadata(id=input.name, source="query", chains=chain_metas)
 
-        # Add covalent bond and constraint
+        # Add covalent bonds
         connections: list[CovalentConnection] = []
-        constraints: list[Constraint] = []
-        for constraint in input.constraints:
-            if constraint.type == "bond":
-                chain_id1, res_idx1, atom1 = constraint.atom1
-                chain_id2, res_idx2, atom2 = constraint.atom2
-                asym_id1 = chain_id_to_asym_id[chain_id1]
-                asym_id2 = chain_id_to_asym_id[chain_id2]
-                connections.append(
-                    CovalentConnection(
-                        (asym_id1, asym_id2), (res_idx1, res_idx2), (atom1, atom2)
-                    )
+        for bond in input.bonds:
+            chain_id1, res_idx1, atom1 = bond.atom1
+            chain_id2, res_idx2, atom2 = bond.atom2
+            asym_id1 = chain_id_to_asym_id[chain_id1]
+            asym_id2 = chain_id_to_asym_id[chain_id2]
+            connections.append(
+                CovalentConnection(
+                    (asym_id1, asym_id2), (res_idx1, res_idx2), (atom1, atom2)
                 )
-            elif constraint.type == "distance":
-                raise NotImplementedError("Distance constraints are not yet supported.")
-            else:
-                raise ValueError(f"Unsupported constraint type: {constraint.type}")
+            )
 
         # Return RefStructure
         ref_struct = structure_preparation.prepare_structure(
             chains, connections, metadata
         )
-        return ref_struct, constraints
+        return ref_struct
 
     def resolve_structure_sources(
         self,

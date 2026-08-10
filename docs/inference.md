@@ -150,23 +150,18 @@ Inference generates one ligand conformer for the first trunk apo slot; any
 remaining apo ensemble slots are masked. Ligand conformers for diffusion priors
 are sampled independently.
 
-### Constraints
+### Covalent bonds
 
-The top-level field is `constraints`:
+Use the optional top-level `bonds` field to specify covalent connections:
 
 ```yaml
-constraints:
-  - bond:
-      atom1: [A, 20, NZ]
-      atom2: [C, 1, C08]
-  - distance:
-      atom1: [A, 10, CA]
-      atom2: [B, 3, "C1'"]
-      range: [4, 8]
+bonds:
+  - [[A, 20, NZ], [C, 1, C08]]
 ```
 
-Atom references use `[chain_id, one_based_residue_index, atom_name]`. Distance
-constraints are experimental; if `range` is omitted it defaults to `[2.0, 8.0]`.
+Each atom reference uses
+`[chain_id, one_based_residue_index, atom_name]`. Contact and distance
+constraints are not supported.
 
 ## Running inference
 
