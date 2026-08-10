@@ -22,8 +22,6 @@ class _PatchPairBatch(TypedDict):
     mask_i: torch.Tensor
     mask_j: torch.Tensor
     target: torch.Tensor
-    weight: torch.Tensor
-    hard_negative: torch.Tensor
 
 
 @configurable
@@ -39,9 +37,6 @@ class PatchPairGeometryHead(nn.Module):
         max_patches_per_chain: int = 8
         max_patch_pairs: int = 256
         pool_max_tokens_per_patch: int = 0
-        interface_cutoff: float = 12.0
-        positive_cutoff: float = 12.0
-        hard_negative_cutoff: float = 22.0
 
     def __init__(self, cfg: Config, channel_z: int | None = None):
         super().__init__()
@@ -56,8 +51,6 @@ class PatchPairGeometryHead(nn.Module):
         self.pool_max_tokens_per_patch: int = int(
             getattr(cfg, "pool_max_tokens_per_patch", 0)
         )
-        self.positive_cutoff: float = float(cfg.positive_cutoff)
-        self.hard_negative_cutoff: float = float(cfg.hard_negative_cutoff)
         if self.pool_max_tokens_per_patch < 0:
             raise ValueError("pool_max_tokens_per_patch must be non-negative.")
 
@@ -100,8 +93,6 @@ class PatchPairGeometryHead(nn.Module):
 
         per_batch_logits: list[torch.Tensor] = []
         per_batch_targets: list[torch.Tensor] = []
-        per_batch_weights: list[torch.Tensor] = []
-        per_batch_hard_negative: list[torch.Tensor] = []
 
         for b in range(z.shape[0]):
             patch_pairs = self._build_patch_pairs(f_input, b)
@@ -109,25 +100,17 @@ class PatchPairGeometryHead(nn.Module):
                 continue
             per_batch_logits.append(self._pool_patch_pairs(z[b], patch_pairs))
             per_batch_targets.append(patch_pairs["target"])
-            per_batch_weights.append(patch_pairs["weight"].to(dtype=z.dtype))
-            per_batch_hard_negative.append(patch_pairs["hard_negative"])
 
         if per_batch_logits:
             logits = torch.cat(per_batch_logits)
             target = torch.cat(per_batch_targets)
-            weight = torch.cat(per_batch_weights)
-            hard_negative = torch.cat(per_batch_hard_negative)
         else:
             logits = z.new_zeros((0, self.num_bins)) + self._zero_active_param_sum(z)
             target = torch.zeros((0,), device=z.device, dtype=torch.long)
-            weight = z.new_zeros((0,))
-            hard_negative = torch.zeros((0,), device=z.device, dtype=torch.bool)
 
         return {
             "logits": logits,
             "target": target,
-            "weight": weight,
-            "hard_negative": hard_negative,
         }
 
     def _build_patch_pairs(
@@ -142,17 +125,9 @@ class PatchPairGeometryHead(nn.Module):
             finite_mask = torch.isfinite(coords).all(dim=-1)
             valid = token_mask & repr_mask & finite_mask
             asym_id = f_input.token.asym_id[batch_idx]
-            entity_id = f_input.token.entity_id[batch_idx]
             chain_ids = asym_id[valid].unique(sorted=True)
             if chain_ids.numel() < 2:
                 return None
-            has_repeated_entity = entity_id[valid].unique().numel() < chain_ids.numel()
-
-            local_atom_index = torch.full_like(asym_id, -1)
-            repr_index = f_input.token.repr_index[batch_idx]
-            local_atom_index[valid] = f_input.atom.atom_index[batch_idx][
-                repr_index[valid]
-            ]
 
             patches: list[_Patch] = []
             for chain_id in chain_ids.unbind():
@@ -168,10 +143,6 @@ class PatchPairGeometryHead(nn.Module):
             patch_pairs = self._select_patch_pairs(
                 patches=patches,
                 coords=coords,
-                asym_id=asym_id,
-                entity_id=entity_id,
-                local_atom_index=local_atom_index,
-                has_repeated_entity=has_repeated_entity,
             )
         return patch_pairs
 
@@ -249,10 +220,6 @@ class PatchPairGeometryHead(nn.Module):
         self,
         patches: list[_Patch],
         coords: torch.Tensor,
-        asym_id: torch.Tensor,
-        entity_id: torch.Tensor,
-        local_atom_index: torch.Tensor,
-        has_repeated_entity: bool,
     ) -> _PatchPairBatch:
         n_patches = len(patches)
         device = coords.device
@@ -269,41 +236,6 @@ class PatchPairGeometryHead(nn.Module):
         )
         pool_mask = torch.arange(pool_idx.shape[1], device=device) < pool_lengths[:, None]
 
-        token_patch = torch.full(
-            (coords.shape[0],),
-            -1,
-            device=device,
-            dtype=torch.long,
-        )
-        for patch_idx, patch in enumerate(patches):
-            token_patch[patch["idx"]] = patch_idx
-
-        assigned = token_patch >= 0
-        assigned_patch = token_patch[assigned]
-        assigned_coords = coords[assigned].float()
-        assigned_asym_id = asym_id[assigned]
-        assigned_entity_id = entity_id[assigned]
-        assigned_local_atom_index = local_atom_index[assigned]
-        token_pair_patch = (
-            assigned_patch[:, None] * n_patches + assigned_patch[None, :]
-        ).reshape(-1)
-        token_diff = assigned_coords[:, None, :] - assigned_coords[None, :, :]
-        token_dist = token_diff.norm(dim=-1).reshape(-1)
-        patch_min_dist = torch.full(
-            (n_patches * n_patches,),
-            float("inf"),
-            device=device,
-            dtype=token_dist.dtype,
-        )
-        patch_min_dist.scatter_reduce_(
-            0,
-            token_pair_patch,
-            token_dist,
-            reduce="amin",
-            include_self=True,
-        )
-        patch_min_dist = patch_min_dist.view(n_patches, n_patches)
-
         patch_i, patch_j = torch.triu_indices(
             n_patches,
             n_patches,
@@ -313,47 +245,16 @@ class PatchPairGeometryHead(nn.Module):
         inter_chain = chain_id[patch_i] != chain_id[patch_j]
         patch_i = patch_i[inter_chain]
         patch_j = patch_j[inter_chain]
-        token_min_dist = patch_min_dist[patch_i, patch_j]
-        positive = token_min_dist < self.positive_cutoff
-
-        if has_repeated_entity:
-            symmetry_contact = self._symmetry_equivalent_patch_contact(
-                assigned_asym_id=assigned_asym_id,
-                assigned_entity_id=assigned_entity_id,
-                assigned_local_atom_index=assigned_local_atom_index,
-                token_pair_patch=token_pair_patch,
-                token_dist=token_dist,
-                n_patches=n_patches,
-            )
-            copy_ambiguous = symmetry_contact[patch_i, patch_j] & ~positive
-            keep = ~copy_ambiguous
-            patch_i = patch_i[keep]
-            patch_j = patch_j[keep]
-            token_min_dist = token_min_dist[keep]
-            positive = positive[keep]
-        hard_negative = token_min_dist > self.hard_negative_cutoff
 
         com_diff = com[patch_i] - com[patch_j]
         com_dist = (com_diff * com_diff).sum(dim=-1).sqrt()
         target = (com_dist[:, None] > self.boundaries).sum(dim=-1).long()
 
-        weight = torch.where(
-            hard_negative,
-            positive.new_tensor(0.5, dtype=coords.dtype),
-            torch.where(
-                positive,
-                positive.new_tensor(1.0, dtype=coords.dtype),
-                positive.new_tensor(0.25, dtype=coords.dtype),
-            ),
-        )
-        dist_term = torch.minimum(com_dist, com_dist.new_tensor(100.0)) / 1000.0
-        priority = torch.where(
-            positive,
-            3.0 - dist_term,
-            torch.where(hard_negative, 2.0 + dist_term, com_dist.new_ones(())),
-        )
-        n_select = min(self.max_patch_pairs, priority.numel())
-        selected = torch.topk(priority, n_select, sorted=False).indices
+        # Uniform supervision: every valid inter-chain patch pair is sampled
+        # with equal probability, independent of contact or hard-negative
+        # distance categories.
+        n_select = min(self.max_patch_pairs, patch_i.numel())
+        selected = torch.randperm(patch_i.numel(), device=device)[:n_select]
         selected_i = patch_i[selected]
         selected_j = patch_j[selected]
 
@@ -363,65 +264,7 @@ class PatchPairGeometryHead(nn.Module):
             "mask_i": pool_mask[selected_i],
             "mask_j": pool_mask[selected_j],
             "target": target[selected],
-            "weight": weight[selected],
-            "hard_negative": hard_negative[selected],
         }
-
-    def _symmetry_equivalent_patch_contact(
-        self,
-        assigned_asym_id: torch.Tensor,
-        assigned_entity_id: torch.Tensor,
-        assigned_local_atom_index: torch.Tensor,
-        token_pair_patch: torch.Tensor,
-        token_dist: torch.Tensor,
-        n_patches: int,
-    ) -> torch.Tensor:
-        # Same entity and chain-local representative atom index identifies a
-        # corresponding token position across interchangeable chain copies.
-        symmetry_position = torch.stack(
-            (assigned_entity_id, assigned_local_atom_index),
-            dim=-1,
-        )
-        symmetry_positions, symmetry_index = torch.unique(
-            symmetry_position,
-            dim=0,
-            return_inverse=True,
-        )
-        n_symmetry_positions = symmetry_positions.shape[0]
-
-        symmetry_pair = (
-            symmetry_index[:, None] * n_symmetry_positions + symmetry_index[None, :]
-        ).reshape(-1)
-        inter_chain = (assigned_asym_id[:, None] != assigned_asym_id[None, :]).reshape(-1)
-        contact = inter_chain & (token_dist < self.positive_cutoff)
-
-        symmetry_contact = torch.zeros(
-            n_symmetry_positions * n_symmetry_positions,
-            device=token_dist.device,
-            dtype=torch.bool,
-        )
-        symmetry_contact.scatter_reduce_(
-            0,
-            symmetry_pair,
-            contact,
-            reduce="amax",
-            include_self=True,
-        )
-        equivalent_contact = symmetry_contact[symmetry_pair] & inter_chain
-
-        patch_contact = torch.zeros(
-            n_patches * n_patches,
-            device=token_dist.device,
-            dtype=torch.bool,
-        )
-        patch_contact.scatter_reduce_(
-            0,
-            token_pair_patch,
-            equivalent_contact,
-            reduce="amax",
-            include_self=True,
-        )
-        return patch_contact.view(n_patches, n_patches)
 
     def _pool_patch_pairs(
         self,
