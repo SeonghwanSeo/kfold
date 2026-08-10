@@ -29,12 +29,6 @@ churn_step_power: 1.0
 ode_step_power: 2.0
 stepwarp_power: 0.5
 
-# SVGD sample spreading
-svgd_step: 1.0
-svgd_cap_frac: 0.05
-svgd_num_eps: 1e-8
-svgd_skip_rms: 1e-6
-
 # Training time schedule
 train_time_schedule: logistic
 train_time_schedule_params: [-2.15, 2.25]
