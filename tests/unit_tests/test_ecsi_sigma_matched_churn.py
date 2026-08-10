@@ -68,7 +68,7 @@ def test_global_sampler_defaults_are_the_fixed_sde_hybrid_bundle() -> None:
 
     assert config.sampler_mode == "sde"
     assert config.sampler_ode_type == "ecsi"
-    assert config.sampler_switch_gamma == 3.6
+    assert config.sampler_switch_time == 0.1
     assert config.sampler_after_switch_mode == "ode"
     assert config.sampler_after_switch_ode_type == "si"
     assert config.churn_factor == 0.1
@@ -77,6 +77,7 @@ def test_global_sampler_defaults_are_the_fixed_sde_hybrid_bundle() -> None:
     assert config.churn_max_time is None
     assert config.sampler_sde_atom_classes == ("all",)
     assert not hasattr(config, "churn_space")
+    assert not hasattr(config, "sampler_switch_gamma")
     assert not hasattr(config, "svgd_step")
 
 
@@ -140,8 +141,26 @@ def test_class_sde_routing_uses_the_global_hybrid_profile() -> None:
     sampler = make_sampler(sampler_sde_atom_classes=("ligand",))
 
     assert sampler._select_update_method(0.9) == ("sde", "ecsi")
-    assert sampler._select_update_method(0.3) == ("sde", "ecsi")
+    assert sampler._select_update_method(0.1001) == ("sde", "ecsi")
+    assert sampler._select_update_method(0.1) == ("ode", "si")
     assert sampler._select_update_method(0.05) == ("ode", "si")
+
+
+def test_sampler_switch_time_is_optional_and_bounded() -> None:
+    no_switch = make_sampler(sampler_switch_time=None)
+
+    assert no_switch._select_update_method(0.05) == ("sde", "ecsi")
+    with pytest.raises(ValueError, match="must lie within the trained time support"):
+        make_sampler(sampler_switch_time=0.0)
+    with pytest.raises(ValueError, match="must lie within the trained time support"):
+        make_sampler(sampler_switch_time=TIME_MAX + 1e-4)
+
+
+def test_sampler_switch_time_is_independent_of_the_gamma_schedule() -> None:
+    sampler = make_sampler(gamma_power=2.0)
+
+    assert sampler._select_update_method(0.1001) == ("sde", "ecsi")
+    assert sampler._select_update_method(0.1) == ("ode", "si")
 
 
 def test_sigma_matched_churn_hits_requested_noise_inflation() -> None:

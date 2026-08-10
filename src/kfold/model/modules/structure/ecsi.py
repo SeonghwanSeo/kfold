@@ -197,8 +197,10 @@ class KFoldECSI(BaseStructureModule):
             High-time ECSI/SI update family. The default is ``ecsi``.
         sampler_step_scale : float
             Multiplier for deterministic ODE update displacement.
-        sampler_switch_gamma : float | None
-            Gamma threshold for the fixed low-time ODE/SI phase.
+        sampler_switch_time : float | None
+            Reverse-time boundary for the fixed low-time ODE/SI phase. Values
+            at or below the boundary use the low-time sampler; ``None``
+            disables the phase.
         sampler_after_switch_mode : str
             Low-time update mode. The default is ``ode``.
         sampler_after_switch_ode_type : str
@@ -251,7 +253,7 @@ class KFoldECSI(BaseStructureModule):
         sampler_mode: str = "sde"
         sampler_ode_type: str = "ecsi"
         sampler_step_scale: float = 1.0
-        sampler_switch_gamma: float | None = 3.6
+        sampler_switch_time: float | None = 0.1
         sampler_after_switch_mode: str = "ode"
         sampler_after_switch_ode_type: str = "si"
         sampler_sde_atom_classes: tuple[str, ...] = ("all",)
@@ -318,8 +320,12 @@ class KFoldECSI(BaseStructureModule):
             )
         if cfg.sampler_step_scale <= 0:
             raise ValueError("ECSI sampler_step_scale must be positive.")
-        if cfg.sampler_switch_gamma is not None and cfg.sampler_switch_gamma < 0:
-            raise ValueError("ECSI sampler_switch_gamma must be non-negative.")
+        if cfg.sampler_switch_time is not None and not (
+            cfg.time_min <= cfg.sampler_switch_time <= cfg.time_max
+        ):
+            raise ValueError(
+                "ECSI sampler_switch_time must lie within the trained time support."
+            )
         if cfg.gamma_power <= 0:
             raise ValueError("ECSI gamma_power must be positive.")
         if not 0.0 <= cfg.churn_end_time <= cfg.time_max:
@@ -352,7 +358,7 @@ class KFoldECSI(BaseStructureModule):
         self.sampler_mode: str = cfg.sampler_mode
         self.sampler_ode_type: str = cfg.sampler_ode_type
         self.sampler_step_scale: float = cfg.sampler_step_scale
-        self.sampler_switch_gamma: float | None = cfg.sampler_switch_gamma
+        self.sampler_switch_time: float | None = cfg.sampler_switch_time
         self.sampler_after_switch_mode: str = cfg.sampler_after_switch_mode
         self.sampler_after_switch_ode_type: str = cfg.sampler_after_switch_ode_type
         self.sampler_sde_atom_classes = self._normalize_sde_atom_classes(
@@ -1137,13 +1143,10 @@ class KFoldECSI(BaseStructureModule):
         return torch.where(sde_atom_mask[:, None, :, None], x_sde, x_ode)
 
     def _select_update_method(self, t: float) -> tuple[str, str]:
-        if self.sampler_switch_gamma is None:
-            return self.sampler_mode, self.sampler_ode_type
-
-        # Reverse sampling starts near t=1 where gamma is also small. The switch is
-        # intended for the late low-gamma phase after the gamma envelope has peaked.
-        gamma_peak_time = 0.5 ** (1.0 / self.coeff.gamma_power)
-        if t <= gamma_peak_time and self.coeff.gamma(t) <= self.sampler_switch_gamma:
+        if (
+            self.sampler_switch_time is not None
+            and t <= self.sampler_switch_time
+        ):
             return self.sampler_after_switch_mode, self.sampler_after_switch_ode_type
         return self.sampler_mode, self.sampler_ode_type
 

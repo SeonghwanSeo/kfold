@@ -20,7 +20,8 @@ align_x_0_hat_to_x_t: true
 sampler_mode: sde
 sampler_ode_type: ecsi
 sampler_step_scale: 1.0
-sampler_switch_gamma: 3.6
+# t <= this value uses the low-time sampler below; null disables the switch.
+sampler_switch_time: 0.1
 sampler_after_switch_mode: ode
 sampler_after_switch_ode_type: si
 # Reverse-update routing. [all] preserves the global profile above; [] uses SI
