@@ -14,7 +14,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.cropper import BaseCropper
 from kfold.training.dataset.sampler import BaseSampler, Sample
-from kfold.training.dataset.utils import apo_perturbation, constraint_sampling, pre_crop
+from kfold.training.dataset.utils import apo_perturbation, pre_crop
 from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.registry import Registry
 
@@ -157,16 +157,6 @@ class TrainingDataset(BaseLMDBDataset):
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights
 
-        # Constraint sampling for training
-        # TODO: configurize the parameters
-        self.max_constraints = 0
-        self.constraint_sampling = constraint_sampling.ConstraintSampling(
-            min_dist=2.0,
-            max_dist=22.0,
-            prob_constraint=0.05,
-            max_constraints=self.max_constraints,
-        )
-
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
         cfg = self.config
@@ -260,7 +250,6 @@ class TrainingDataset(BaseLMDBDataset):
         max_chains = self.max_chains
         max_tokens = self.max_tokens
         max_sequence_tokens = self.max_sequence_tokens
-        num_constraints = self.max_constraints
         max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
         return f_input.pad(
@@ -269,7 +258,6 @@ class TrainingDataset(BaseLMDBDataset):
             max_atoms=max_atoms,
             max_bonds=max_bonds,
             max_sequence_tokens=max_sequence_tokens,
-            max_constraints=num_constraints,
         )
 
     def tokenize(
@@ -280,18 +268,13 @@ class TrainingDataset(BaseLMDBDataset):
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        # Sample the constraints
-        constraints = self.constraint_sampling(ref_struct, rng)
-        # Tokenize the structure
-        tokenized = self.tokenizer(
+        return self.tokenizer(
             ref_struct,
             rng,
             apo_coords=apo_dict,
             num_apo=self.max_apo,
             prior_coords=prior_coords,
-            constraints=constraints,
         )
-        return tokenized
 
     # === Utility methods for training dataset === #
     def extract_substructure(

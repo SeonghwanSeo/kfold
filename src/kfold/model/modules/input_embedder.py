@@ -3,10 +3,7 @@ from dataclasses import dataclass
 import torch
 
 from kfold.data.types.model_input import FoldingInput
-from kfold.model.layers.folding.embeddings import (
-    ConstraintEncoding,
-    RelativePositionEncoding,
-)
+from kfold.model.layers.folding.embeddings import RelativePositionEncoding
 from kfold.model.layers.folding.input_encoder import InputFeatureEmbedder
 from kfold.model.primitives import LinearNoBias
 from kfold.utils.config import configurable
@@ -36,12 +33,6 @@ class InputEmbedder(torch.nn.Module):
             The atom encoder heads.
         ckpt_atom_stack : bool
             Whether to checkpoint the complete atom transformer stack.
-        constraint_min_dist : float
-            The minimum distance for constraint encoding.
-        constraint_max_dist : float
-            The maximum distance for constraint encoding.
-        constraint_bin_size : float
-            The distance bin width for constraint encoding.
         """
 
         channel_s: int = 384
@@ -51,10 +42,6 @@ class InputEmbedder(torch.nn.Module):
         atom_encoder_blocks: int = 3
         atom_encoder_heads: int = 4
         ckpt_atom_stack: bool = False
-        # Constraint-related parameters
-        constraint_min_dist: float = 2.0
-        constraint_max_dist: float = 20.0
-        constraint_bin_size: float = 1.0
 
     def __init__(self, cfg: Config) -> None:
         super().__init__()
@@ -79,16 +66,6 @@ class InputEmbedder(torch.nn.Module):
         self.rel_pos_encoding = RelativePositionEncoding(r_max=32, s_max=2)
         self.linear_rel_pos = LinearNoBias(self.rel_pos_encoding.dimension, cfg.channel_z)
         self.linear_bond = LinearNoBias(1, cfg.channel_z)
-
-        # Constraint-related
-        self.constraint_encoding = ConstraintEncoding(
-            min_dist=cfg.constraint_min_dist,
-            max_dist=cfg.constraint_max_dist,
-            bin_size=cfg.constraint_bin_size,
-        )
-        self.linear_constraint = LinearNoBias(
-            self.constraint_encoding.num_bins, cfg.channel_z
-        )
 
     def forward(self, f_input: FoldingInput) -> tuple[torch.Tensor, torch.Tensor]:
         """Forward pass of embedding module.
@@ -128,11 +105,6 @@ class InputEmbedder(torch.nn.Module):
         # Add bond adjacency matrix
         z_inputs = add(
             z_inputs, self.linear_bond(self.get_bond_adj(f_input, dtype).unsqueeze(-1))
-        )
-
-        # Add constraing embedding
-        z_inputs = add(
-            z_inputs, self.linear_constraint(self.constraint_encoding(f_input, dtype))
         )
 
         return s_inputs, z_inputs
