@@ -534,12 +534,23 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         rng: np.random.Generator,
         num_apo: int,
     ) -> dict[int, list[dict | None]]:
-        """Sample monomer apo sources independently for each protein chain."""
+        """Sample monomer apo sources once for each protein entity."""
         entry_id: str = ref_struct.id
+        if entry_id not in self.lookup_table:
+            if any(c.is_protein for c in ref_struct.chains):
+                self.logger.warning(
+                    f"No apo info found for entry '{entry_id}' in lookup."
+                )
+            return {
+                c.asym_id: [None] * self.max_apo
+                for c in ref_struct.chains
+                if c.is_protein
+            }
+
         entry_lookup: dict[int, list[dict]] = self.lookup_table[entry_id]
 
-        # Match apo structure independently for each asymmetric polymer chain.
         apo_lookup: dict[int, list[dict | None]] = {}
+        selected_by_entity: dict[int, list[dict | None]] = {}
         for c in ref_struct.chains:
             if not c.is_protein:
                 # Skip non-protein chains for apo lookup.
@@ -547,40 +558,55 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
 
             eid: int = c.entity_id
             ek: str = f"{entry_id}:{eid}"  # For logging purpose
-            ctype = c.ctype
 
-            if eid not in entry_lookup:
-                self.logger.warning(
-                    f"No apo info found for {ctype} entity '{ek}' in lookup."
-                )
-                continue
+            if eid not in selected_by_entity:
+                selected_infos: list[dict | None] = [None] * self.max_apo
+                if eid not in entry_lookup:
+                    self.logger.warning(
+                        f"No apo info found for {c.ctype} entity '{ek}' in lookup."
+                    )
+                else:
+                    # Validation deterministically uses the first source. Training
+                    # samples without replacement and keeps empty slots when fewer
+                    # sources exist.
+                    entity_apo_infos: list[dict] = entry_lookup[eid]
+                    num_available = len(entity_apo_infos)
+                    if num_available == 0:
+                        self.logger.warning(
+                            f"No apo info found for {c.ctype} entity '{ek}' in lookup."
+                        )
+                        continue
+                    num_selected = min(num_apo, num_available)
+                    if self.train:
+                        selected = rng.choice(
+                            num_available, size=num_selected, replace=False
+                        )
+                    else:
+                        assert num_apo == 1
+                        selected = np.array([0], dtype=np.int64)
 
-            # Validation deterministically uses the first source. Training samples
-            # without replacement and keeps empty slots when fewer sources exist.
-            entity_apo_infos: list[dict] = entry_lookup[eid]
-            num_available = len(entity_apo_infos)
-            assert num_available > 0, f"No apo info for entity '{ek}' in lookup."
-            num_selected = min(num_apo, num_available)
-            if self.train:
-                selected = rng.choice(num_available, size=num_selected, replace=False)
-            else:
-                assert num_apo == 1
-                selected = np.array([0], dtype=np.int64)
+                    for apo_i, source_i in enumerate(selected):
+                        apo_info = entity_apo_infos[int(source_i)].copy()
+                        apo_info["key"] = f"{apo_info['source']}:{apo_info['name']}"
+                        apo_info["entity_key"] = ek
 
-            selected_infos: list[dict | None] = [None] * self.max_apo
-            for apo_i, source_i in enumerate(selected):
-                apo_info = entity_apo_infos[int(source_i)].copy()
-                apo_info["key"] = f"{apo_info['source']}:{apo_info['name']}"
-                apo_info["chain_key"] = f"{entry_id}_{c.asym_id}"
-                apo_info["entity_key"] = f"{entry_id}:{c.entity_id}"
-                apo_info["apo_uid"] = c.asym_id
+                        if not self._load_apo_info_from_lmdb(apo_info):
+                            continue
+                        _ = self._load_apo_tok_from_lmdb(apo_info)
+                        selected_infos[apo_i] = apo_info
 
-                if not self._load_apo_info_from_lmdb(apo_info):
-                    continue
-                _ = self._load_apo_tok_from_lmdb(apo_info)
-                selected_infos[apo_i] = apo_info
+                selected_by_entity[eid] = selected_infos
 
-            apo_lookup[c.asym_id] = selected_infos
+            apo_lookup[c.asym_id] = [
+                None
+                if apo_info is None
+                else {
+                    **apo_info,
+                    "chain_key": f"{entry_id}_{c.asym_id}",
+                    "apo_uid": c.asym_id,
+                }
+                for apo_info in selected_by_entity[eid]
+            ]
 
         return apo_lookup
 
@@ -711,16 +737,21 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             - Ligand: [Natom, 1, 3]
         """
         chain_coords: dict[int, np.ndarray] = {}
+        coords_by_entity: dict[int, np.ndarray] = {}
         for c in ref_struct.chains:
             key = f"{ref_struct.id}_{c.asym_id}"
             if c.is_protein:
-                coords = np.stack(
-                    [
-                        self._get_protein_apo_coords(c, apo_info, rng)
-                        for apo_info in apo_lookup.get(c.asym_id, [None] * self.max_apo)
-                    ],
-                    axis=0,
-                )
+                if c.entity_id not in coords_by_entity:
+                    coords_by_entity[c.entity_id] = np.stack(
+                        [
+                            self._get_protein_apo_coords(c, apo_info, rng)
+                            for apo_info in apo_lookup.get(
+                                c.asym_id, [None] * self.max_apo
+                            )
+                        ],
+                        axis=0,
+                    )
+                coords = coords_by_entity[c.entity_id].copy()
             elif c.is_nucleic_acid:
                 # For nucleic acid chains, we do not use apo structures for now.
                 coords = np.stack(
