@@ -110,6 +110,7 @@ class InterfaceInfo(JsonSerializable):
     asym_ids: tuple[int, int]
     cluster_id: str | None = None
     is_low_homology: bool = False  # whether to use this interface for evaluation
+    descriptors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Convert to dictionary, excluding default boolean values."""
@@ -117,6 +118,8 @@ class InterfaceInfo(JsonSerializable):
         for k in ["is_low_homology"]:
             if data[k] is False:
                 del data[k]
+        if not data["descriptors"]:
+            del data["descriptors"]
         return data
 
     @classmethod
