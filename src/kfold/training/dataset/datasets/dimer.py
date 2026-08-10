@@ -71,12 +71,14 @@ class HomodimerDistillationDataset(DistillationDataset):
                     num_tokens=0,
                 )
                 chain_infos.append(chain_info)
+            iface_infos = [InterfaceInfo((1, 2))]
 
             metadata = Metadata(
                 id=metadata_dict["id"],
                 source="pred",
                 pred=PredictionRecord(**metadata_dict["pred"]),
                 chains=chain_infos,
+                interfaces=iface_infos,
             )
 
             try:
