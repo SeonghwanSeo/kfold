@@ -153,7 +153,8 @@ loss:
     chain_com: 0.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
-    patch_geometry: 5e-2
+    # Uniform patch geometry supervision is opt-in per model/config.
+    patch_geometry: 0.0
     interface_contact: 0
 
   # Distogram loss
@@ -162,14 +163,14 @@ loss:
     min_dist: 2.0
     max_dist: 22.0
 
-  # Patch-pair COM geometry auxiliary loss.
-  # This is inert unless model.patch_pair_geometry.enabled=true.
+  # Uniform patch-pair COM geometry auxiliary loss. This is off by default;
+  # enable both model.patch_pair_geometry.enabled and this global weight for
+  # an explicit patch-supervision experiment.
   patch_geometry_loss:
     num_bins: 64
     min_dist: 2.0
     max_dist: 22.0
     near_cutoff: 12.0
-    hard_negative_weight: 3.0
 
   # Hard-pair exact-bin CE on active inter-chain interfaces.
   # This is inactive unless loss.weights.interface_contact is positive.
