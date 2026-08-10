@@ -5,28 +5,20 @@ import torch.nn.functional as F
 class PatchPairGeometryLoss(torch.nn.Module):
     def __init__(
         self,
-        min_dist: float = 2.0,
-        max_dist: float = 22.0,
-        num_bins: int = 64,
         near_cutoff: float = 12.0,
     ) -> None:
         super().__init__()
-        self.min_dist: float = min_dist
-        self.max_dist: float = max_dist
-        self.num_bins: int = num_bins
         self.near_cutoff: float = near_cutoff
-
-        bin_size = (max_dist - min_dist) / num_bins
-        first_bin = min_dist + bin_size
-        self.near_bin = int((near_cutoff - first_bin) / bin_size)
-        self.near_bin = max(0, min(self.near_bin, num_bins - 1))
 
     def forward(
         self,
         patch_output: dict[str, torch.Tensor],
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         logits = patch_output["logits"]
+        bin_boundaries = patch_output["bin_boundaries"]
         target = patch_output["target"]
+        near_bin = int((bin_boundaries < self.near_cutoff).sum().item()) - 1
+        near_bin = max(0, min(near_bin, logits.shape[-1] - 1))
 
         log_prob = F.log_softmax(logits, dim=-1)
         ce = -log_prob.gather(dim=-1, index=target[:, None]).squeeze(-1)
@@ -35,11 +27,11 @@ class PatchPairGeometryLoss(torch.nn.Module):
         ce_loss = ce.sum() / pair_count.clamp(min=1.0)
 
         p_near = torch.logsumexp(
-            log_prob[..., : self.near_bin + 1],
+            log_prob[..., : near_bin + 1],
             dim=-1,
         ).exp()
         with torch.no_grad():
-            near_target = target <= self.near_bin
+            near_target = target <= near_bin
             far_target = ~near_target
             near_count = near_target.to(logits.dtype).sum()
             far_count = far_target.to(logits.dtype).sum()

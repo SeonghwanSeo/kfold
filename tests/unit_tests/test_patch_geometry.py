@@ -89,7 +89,7 @@ def test_patch_geometry_head_and_loss_use_uniform_pair_supervision() -> None:
     out = head(_fake_input(), torch.randn(1, 16, 16, 16))
     loss, metrics = PatchPairGeometryLoss()(out)
 
-    assert set(out) == {"logits", "target"}
+    assert set(out) == {"logits", "bin_boundaries", "target"}
     assert out["logits"].shape[0] == 4
     assert torch.isfinite(loss)
     assert metrics["patch_geometry_valid_pairs"] == 4
@@ -141,12 +141,13 @@ def test_patch_geometry_loss_is_unweighted_mean_cross_entropy() -> None:
         requires_grad=True,
     )
     target = torch.tensor([0, 2])
-    loss, metrics = PatchPairGeometryLoss(
-        min_dist=2.0,
-        max_dist=5.0,
-        num_bins=3,
-        near_cutoff=3.0,
-    )({"logits": logits, "target": target})
+    loss, metrics = PatchPairGeometryLoss(near_cutoff=3.0)(
+        {
+            "logits": logits,
+            "bin_boundaries": torch.tensor([3.0, 4.0]),
+            "target": target,
+        }
+    )
 
     expected = torch.nn.functional.cross_entropy(logits, target)
     torch.testing.assert_close(loss, expected)

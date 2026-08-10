@@ -57,8 +57,8 @@ class PatchPairGeometryHead(nn.Module):
         bin_size = (self.max_dist - self.min_dist) / self.num_bins
         first_bin = self.min_dist + bin_size
         last_bin = self.max_dist - bin_size
-        boundaries = torch.linspace(first_bin, last_bin, self.num_bins - 1)
-        self.register_buffer("boundaries", boundaries, persistent=False)
+        bin_boundaries = torch.linspace(first_bin, last_bin, self.num_bins - 1)
+        self.register_buffer("bin_boundaries", bin_boundaries, persistent=False)
 
         self.norm_z = LayerNorm(self.channel_z)
         self.pool_score = Linear(self.channel_z, 1)
@@ -110,6 +110,7 @@ class PatchPairGeometryHead(nn.Module):
 
         return {
             "logits": logits,
+            "bin_boundaries": self.bin_boundaries,
             "target": target,
         }
 
@@ -248,7 +249,7 @@ class PatchPairGeometryHead(nn.Module):
 
         com_diff = com[patch_i] - com[patch_j]
         com_dist = (com_diff * com_diff).sum(dim=-1).sqrt()
-        target = (com_dist[:, None] > self.boundaries).sum(dim=-1).long()
+        target = (com_dist[:, None] > self.bin_boundaries).sum(dim=-1).long()
 
         # Uniform supervision: every valid inter-chain patch pair is sampled
         # with equal probability, independent of contact or hard-negative

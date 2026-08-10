@@ -216,9 +216,7 @@ class LossConfig(_Config):
     """Loss configuration."""
 
     weights: dict[str, float]
-    distogram_loss: Any
     diffusion_loss: Any
-    confidence_loss: Any
     patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
     interface_contact_loss: Any = dataclasses.field(default_factory=dict)
 
@@ -412,9 +410,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self.loss_weights: dict[str, float] = loss_config.weights
 
         # Distogram loss
-        self.distogram_loss = loss_fn.distogram.DistogramLoss(
-            **loss_config.distogram_loss
-        )
+        self.distogram_loss = loss_fn.distogram.DistogramLoss()
         self.patch_geometry_loss = loss_fn.patch_geometry.PatchPairGeometryLoss(
             **loss_config.patch_geometry_loss
         )
@@ -436,22 +432,10 @@ class KFoldTrainingModule(pl.LightningModule):
             **diffusion_loss_config["smooth_lddt_loss"]
         )
 
-        confidence_loss_config = loss_config.confidence_loss
-        # pLDDT loss
-        self.plddt_loss = loss_fn.confidence.PLDDTLoss(
-            **confidence_loss_config["plddt_loss"]
-        )
-
-        # PDE loss
-        self.pde_loss = loss_fn.confidence.PDELoss(**confidence_loss_config["pde_loss"])
-
-        # Experimentally resolved loss
-        self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss(
-            **confidence_loss_config["experimentally_resolved_loss"]
-        )
-
-        # PAE loss
-        self.pae_loss = loss_fn.confidence.PAELoss(**confidence_loss_config["pae_loss"])
+        self.plddt_loss = loss_fn.confidence.PLDDTLoss()
+        self.pde_loss = loss_fn.confidence.PDELoss()
+        self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss()
+        self.pae_loss = loss_fn.confidence.PAELoss()
 
     def setup_metrics(self):
         """Setup metrics for validation"""
@@ -590,14 +574,14 @@ class KFoldTrainingModule(pl.LightningModule):
         # Compute losses
         if self.train_trunk:
             distogram_loss, distogram_metrics = self.compute_distogram_loss(
-                logits=model_output["distogram"]["logits"],
+                distogram_out=model_output["distogram"],
                 f_input=f_input,
             )
             interface_contact_weight = self.loss_weights["interface_contact"]
             if interface_contact_weight > 0:
                 interface_contact_loss, interface_contact_metrics = (
                     self.interface_contact_loss(
-                        logits=model_output["distogram"]["logits"],
+                        distogram_out=model_output["distogram"],
                         f_input=f_input,
                     )
                 )
@@ -640,7 +624,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 struct_info=struct_info,
             )  # [B, Nsample, Latom, 3]
             confidence_loss, confidence_metrics = self.compute_confidence_loss(
-                logits=model_output["confidence"],
+                confidence_out=model_output["confidence"],
                 x_pred=x_pred,
                 x_gt=x_gt,
                 mask=mask_gt,
@@ -844,28 +828,26 @@ class KFoldTrainingModule(pl.LightningModule):
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute validation distogram loss from inference outputs."""
-        logits = distogram_out.get("logits")
-        if logits is None:
-            logits = distogram_out["distogram"]
+        logits = distogram_out["logits"]
         if not f_input.is_batched:
             f_input = f_input.add_batch_dim()
         if logits.ndim == 3:
-            logits = logits.unsqueeze(0)
+            distogram_out = distogram_out | {"logits": logits.unsqueeze(0)}
 
-        loss_per_batch = self.distogram_loss(logits, f_input)
+        loss_per_batch = self.distogram_loss(distogram_out, f_input)
         return loss_per_batch.mean().detach()
 
     def compute_distogram_loss(
         self,
-        logits: torch.Tensor,
+        distogram_out: dict[str, torch.Tensor],
         f_input: FoldingInput,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute distogram loss.
 
         Parameters
         ----------
-        logits : torch.Tensor
-            Tensor of shape (B, Lt, Lt, num_bins) containing distogram logits.
+        distogram_out : dict[str, torch.Tensor]
+            Distogram logits and distance-bin boundaries returned by the model.
         f_input : FoldingInput
             The input features containing the target distogram and masks.
 
@@ -876,29 +858,29 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
-        loss_per_batch = self.distogram_loss(logits, f_input)
+        loss_per_batch = self.distogram_loss(distogram_out, f_input)
         loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
-        if (
-            hasattr(self.distogram_loss, "boundaries")
-            and hasattr(f_input, "token")
-            and self.global_step % 10 == 0
-        ):
-            metrics |= self.compute_distogram_diagnostic_metrics(logits, f_input)
+        if hasattr(f_input, "token") and self.global_step % 10 == 0:
+            metrics |= self.compute_distogram_diagnostic_metrics(
+                distogram_out,
+                f_input,
+            )
         if self._binned_cache_enabled and self.train_diffusion_head:
             self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
         return loss, metrics
 
     def compute_distogram_diagnostic_metrics(
         self,
-        logits: torch.Tensor,
+        distogram_out: dict[str, torch.Tensor],
         f_input: FoldingInput,
         near_cutoff: float = 12.0,
         far_cutoff: float = 22.0,
     ) -> dict[str, torch.Tensor]:
         """Log inter-chain near-ranking and false-positive pressure diagnostics."""
         with torch.no_grad():
-            boundaries = self.distogram_loss.boundaries.to(logits.device)
+            logits = distogram_out["logits"]
+            bin_boundaries = distogram_out["bin_boundaries"]
             gt_coords = f_input.token.repr_coords
             diff = gt_coords[..., None, :, :] - gt_coords[..., :, None, :]
             d_repr = diff.norm(dim=-1)
@@ -923,8 +905,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     "distogram_inter_chain_far_pairs": zero,
                 }
 
-            bin_size = float(boundaries[1].item() - boundaries[0].item())
-            near_bin = int((near_cutoff - float(boundaries[0].item())) / bin_size)
+            near_bin = int((bin_boundaries < near_cutoff).sum().item()) - 1
             near_bin = max(0, min(near_bin, logits.shape[-1] - 1))
             p_near = torch.softmax(logits.float(), dim=-1)[..., : near_bin + 1].sum(
                 dim=-1
@@ -1055,7 +1036,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def compute_confidence_loss(
         self,
-        logits: dict[str, torch.Tensor],
+        confidence_out: dict[str, torch.Tensor],
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
         mask: torch.Tensor,
@@ -1066,8 +1047,8 @@ class KFoldTrainingModule(pl.LightningModule):
 
         Parameters
         ----------
-        logits : dict[str, torch.Tensor]
-            A dictionary containing the logits for different confidence predictions.
+        confidence_out : dict[str, torch.Tensor]
+            Confidence logits and their corresponding bin centers.
         x_pred : torch.Tensor
             The mini-rollout sample coordinates of shape (B, Nsample, Latom, 3).
         x_gt : torch.Tensor
@@ -1093,22 +1074,47 @@ class KFoldTrainingModule(pl.LightningModule):
         loss_mask = loss_mask.float()[:, None]  # [B, 1]
         num_valid_samples = (loss_mask.sum() * num_samples).clamp(1)
 
-        L_pde = self.pde_loss(logits["pde_logits"], x_pred, x_gt, mask, f_input)
+        L_pde = self.pde_loss(
+            confidence_out["pde_logits"],
+            confidence_out["pde_bin_centers"],
+            x_pred,
+            x_gt,
+            mask,
+            f_input,
+        )
         L_pde = L_pde * loss_mask  # [B, Nsample]
         metrics["pde_loss"] = L_pde.detach().sum() / num_valid_samples
 
-        L_plddt = self.plddt_loss(logits["plddt_logits"], x_pred, x_gt, mask, f_input)
+        L_plddt = self.plddt_loss(
+            confidence_out["plddt_logits"],
+            confidence_out["plddt_bin_centers"],
+            x_pred,
+            x_gt,
+            mask,
+            f_input,
+        )
         L_plddt = L_plddt * loss_mask  # [B, Nsample]
         metrics["plddt_loss"] = L_plddt.detach().sum() / num_valid_samples
 
         is_resolved = mask
         pad_mask = f_input.atom.pad_mask
-        L_resolved = self.exp_res_loss(logits["resolved_logits"], is_resolved, pad_mask)
+        L_resolved = self.exp_res_loss(
+            confidence_out["resolved_logits"],
+            is_resolved,
+            pad_mask,
+        )
         L_resolved = L_resolved * loss_mask  # [B, Nsample]
         metrics["resolved_loss"] = L_resolved.detach().sum() / num_valid_samples
 
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
-        L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input)
+        L_pae = self.pae_loss(
+            confidence_out["pae_logits"],
+            confidence_out["pae_bin_centers"],
+            x_pred,
+            x_gt,
+            mask,
+            f_input,
+        )
         L_pae = L_pae * loss_mask  # [B, Nsample]
         metrics["pae_loss"] = L_pae.detach().sum() / num_valid_samples
 

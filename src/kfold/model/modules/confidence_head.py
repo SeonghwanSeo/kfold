@@ -185,13 +185,35 @@ class ConfidenceHead(torch.nn.Module):
 
     def __init__(self, cfg: Config, kernel_config: dict):
         super().__init__()
-        self.config = cfg
         self.num_pae_bins = cfg.num_pae_bins
         self.num_pde_bins = cfg.num_pde_bins
         self.num_plddt_bins = cfg.num_plddt_bins
-        self.num_resolved_bins = 2
         self.kernel_config = kernel_config
         self.is_compiled = False
+
+        def create_bin_centers(d_min: float, d_max: float, num_bins: int) -> torch.Tensor:
+            bin_size = (d_max - d_min) / num_bins
+            return torch.linspace(
+                d_min + bin_size / 2,
+                d_max - bin_size / 2,
+                num_bins,
+            )
+
+        self.register_buffer(
+            "pae_bin_centers",
+            create_bin_centers(cfg.min_pae_dist, cfg.max_pae_dist, cfg.num_pae_bins),
+            persistent=False,
+        )
+        self.register_buffer(
+            "pde_bin_centers",
+            create_bin_centers(cfg.min_pde_dist, cfg.max_pde_dist, cfg.num_pde_bins),
+            persistent=False,
+        )
+        self.register_buffer(
+            "plddt_bin_centers",
+            create_bin_centers(0.0, 1.0, cfg.num_plddt_bins),
+            persistent=False,
+        )
 
         self.linear_s1 = LinearNoBias(cfg.channel_s, cfg.channel_z)
         self.linear_s2 = LinearNoBias(cfg.channel_s, cfg.channel_z)
@@ -246,7 +268,7 @@ class ConfidenceHead(torch.nn.Module):
             return self.stack
         return self.stack
 
-    def forward_inference(
+    def forward(
         self,
         f_input: FoldingInput,
         s_inputs: torch.Tensor,
@@ -265,85 +287,14 @@ class ConfidenceHead(torch.nn.Module):
         s_lm : torch.Tensor
             Tensor of shape (B, L, C_s_lm) containing LM single representation.
         z: torch.Tensor
-            Tensor of shape (B, L, L, C_s) containing pair representation
-        x_pred: torch.Tensor
-            Tensor of shape (B, N, Latom, 3) containing predicted coordinates
-
-        Returns
-        -------
-        pae_logits: torch.Tensor
-            Tensor of shape (B, N, L, L) containing PAE logits.
-        pae_bin_centers: torch.Tensor
-            Tensor of shape (num_pae_bins,) containing PAE bin centers.
-        pde_logits: torch.Tensor
-            Tensor of shape (B, N, L, L) containing PDE logits.
-        pde_bin_centers: torch.Tensor
-            Tensor of shape (num_pde_bins,) containing PDE bin centers.
-        plddt_logits: torch.Tensor
-            Tensor of shape (B, N, Natom, num_plddt_bins) containing pLDDT logits.
-        plddt_bin_centers: torch.Tensor
-            Tensor of shape (num_plddt_bins,) containing pLDDT bin centers.
-        """
-        pae_logits, pde_logits, plddt_logits, _ = self(f_input, s_inputs, s_lm, z, x_pred)
-        cfg = self.config
-        device = pae_logits.device
-
-        def create_bins(d_min: float, d_max: float, n_bin: int):
-            d_bin = (d_max - d_min) / n_bin
-            return torch.linspace(
-                d_min + d_bin / 2, d_max - d_bin / 2, n_bin, device=device
-            )
-
-        return {
-            "pae_logits": pae_logits,
-            "pae_bin_centers": create_bins(
-                cfg.min_pae_dist, cfg.max_pae_dist, cfg.num_pae_bins
-            ),
-            "pde_logits": pde_logits,
-            "pde_bin_centers": create_bins(
-                cfg.min_pde_dist, cfg.max_pde_dist, cfg.num_pde_bins
-            ),
-            "plddt_logits": plddt_logits,
-            "plddt_bin_centers": create_bins(0.0, 1.0, cfg.num_plddt_bins),
-        }
-
-    def forward(
-        self,
-        f_input: FoldingInput,
-        s_inputs: torch.Tensor,
-        s_lm: torch.Tensor,
-        z: torch.Tensor,
-        x_pred: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Forward pass of confidence head module.
-
-        Parameters
-        ----------
-        f_input : FoldingInput
-            The folding input features.
-        s_inputs : torch.Tensor
-            Tensor of shape (B, L, C_s) containing input single representation.
-        s_lm : torch.Tensor
-            Tensor of shape (B, L, C_s_lm) containing LM single representation.
-        z: torch.Tensor
             Tensor of shape (B, L, L, C_s) containing pair representation.
         x_pred: torch.Tensor
             Tensor of shape (B, N, Latom, 3) containing predicted coordinates.
 
         Returns
         -------
-        pae_logits: torch.Tensor
-            Tensor of shape (B, N, L, L, num_pae_bins) containing predicted aligned
-            error logits.
-        pde_logits: torch.Tensor
-            Tensor of shape (B, N, L, L, num_pde_bins) containing predicted distance
-            error logits.
-        plddt_logits: torch.Tensor
-            Tensor of shape (B, N, Natom, num_lddt_bins) containing predicted lddt
-            logits.
-        resolved_logits: torch.Tensor
-            Tensor of shape (B, N, Natom, 2) containing predicted resolved atom
-            logits.
+        confidence_out: dict[str, torch.Tensor]
+            Confidence logits and their corresponding bin centers.
         """
         # Get the device and dtype for computations
         device = s_inputs.device
@@ -413,7 +364,15 @@ class ConfidenceHead(torch.nn.Module):
             plddt_logits = plddt_logits * atom_mask[..., None]
             resolved_logits = resolved_logits * atom_mask[..., None]
 
-        return pae_logits, pde_logits, plddt_logits, resolved_logits
+        return {
+            "pae_logits": pae_logits,
+            "pae_bin_centers": self.pae_bin_centers,
+            "pde_logits": pde_logits,
+            "pde_bin_centers": self.pde_bin_centers,
+            "plddt_logits": plddt_logits,
+            "plddt_bin_centers": self.plddt_bin_centers,
+            "resolved_logits": resolved_logits,
+        }
 
     def forward_single(
         self,

@@ -11,9 +11,6 @@ class InterfaceContactBalancedLoss(torch.nn.Module):
 
     def __init__(
         self,
-        min_dist: float = 2.0,
-        max_dist: float = 22.0,
-        num_bins: int = 64,
         contact_cutoff: float = 8.0,
         positive_weight: float = 0.75,
         negative_weight: float = 0.25,
@@ -22,10 +19,6 @@ class InterfaceContactBalancedLoss(torch.nn.Module):
         eps: float = 1e-6,
     ) -> None:
         super().__init__()
-        if not min_dist < contact_cutoff < max_dist:
-            raise ValueError("Expected min_dist < contact_cutoff < max_dist.")
-        if num_bins <= 1:
-            raise ValueError("num_bins must be greater than one.")
         if positive_weight <= 0 or negative_weight < 0:
             raise ValueError("Loss weights must be non-negative with positive FN weight.")
         if not math.isclose(positive_weight + negative_weight, 1.0):
@@ -35,22 +28,12 @@ class InterfaceContactBalancedLoss(torch.nn.Module):
                 "Gamma must be non-negative; budget and eps must be positive."
             )
 
-        self.num_bins = num_bins
         self.contact_cutoff = contact_cutoff
         self.positive_weight = positive_weight
         self.negative_weight = negative_weight
         self.focal_gamma = focal_gamma
         self.fp_budget_ratio = fp_budget_ratio
         self.eps = eps
-
-        bin_size = (max_dist - min_dist) / num_bins
-        first_bin = min_dist + bin_size
-        last_bin = max_dist - bin_size
-        boundaries = torch.linspace(first_bin, last_bin, num_bins - 1)
-        self.register_buffer("boundaries", boundaries, persistent=False)
-
-        contact_bin = int((contact_cutoff - first_bin) / bin_size)
-        self.contact_bin = max(0, min(contact_bin, num_bins - 1))
 
     @staticmethod
     def _scatter_sum(
@@ -101,26 +84,26 @@ class InterfaceContactBalancedLoss(torch.nn.Module):
 
     def forward(
         self,
-        logits: torch.Tensor,
+        distogram_out: dict[str, torch.Tensor],
         f_input: FoldingInput,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute example-macro hard-pair distogram supervision."""
-        if logits.shape[-1] != self.num_bins:
-            raise ValueError(
-                f"Expected {self.num_bins} distogram bins, got {logits.shape[-1]}."
-            )
+        logits = distogram_out["logits"]
+        bin_boundaries = distogram_out["bin_boundaries"]
+        contact_bin = int((bin_boundaries < self.contact_cutoff).sum().item()) - 1
+        contact_bin = max(0, min(contact_bin, logits.shape[-1] - 1))
 
         logits_float = logits.float()
         batch_size, num_tokens, _, _ = logits_float.shape
         device = logits.device
         log_prob = F.log_softmax(logits_float, dim=-1)
-        p_contact = log_prob[..., : self.contact_bin + 1].logsumexp(dim=-1).exp()
+        p_contact = log_prob[..., : contact_bin + 1].logsumexp(dim=-1).exp()
 
         with torch.no_grad():
             coords = f_input.token.repr_coords.float()
             displacement = coords[..., None, :, :] - coords[..., :, None, :]
             distance = displacement.norm(dim=-1)
-            target = (distance.unsqueeze(-1) > self.boundaries).sum(dim=-1).long()
+            target = (distance.unsqueeze(-1) > bin_boundaries).sum(dim=-1).long()
 
             repr_mask = f_input.token.repr_mask
             pair_mask = repr_mask[..., None, :] & repr_mask[..., :, None]

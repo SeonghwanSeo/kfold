@@ -387,13 +387,9 @@ class KFoldECSI(BaseStructureModule):
                 f"{unknown}. Expected a subset of {sorted(valid_classes)}."
             )
         if len(set(normalized)) != len(normalized):
-            raise ValueError(
-                "ECSI sampler_sde_atom_classes must not contain duplicates."
-            )
+            raise ValueError("ECSI sampler_sde_atom_classes must not contain duplicates.")
         if "all" in normalized and len(normalized) != 1:
-            raise ValueError(
-                "ECSI sampler_sde_atom_classes 'all' must be used alone."
-            )
+            raise ValueError("ECSI sampler_sde_atom_classes 'all' must be used alone.")
         return normalized
 
     # === Bridge Preconditioning Coefficients === #
@@ -689,17 +685,14 @@ class KFoldECSI(BaseStructureModule):
         if "dna" in self.sampler_sde_atom_classes:
             selected_token |= f_input.token.is_dna
         if "peptide" in self.sampler_sde_atom_classes:
-            peptide_chain = f_input.chain.is_protein & (
-                f_input.chain.num_residues < 16
-            )
+            peptide_chain = f_input.chain.is_protein & (f_input.chain.num_residues < 16)
             peptide_chain &= f_input.chain.pad_mask
             token_matches_peptide = (
-                f_input.token.asym_id[:, :, None]
-                == f_input.chain.asym_id[:, None, :]
+                f_input.token.asym_id[:, :, None] == f_input.chain.asym_id[:, None, :]
             )
-            selected_token |= (
-                token_matches_peptide & peptide_chain[:, None, :]
-            ).any(dim=-1)
+            selected_token |= (token_matches_peptide & peptide_chain[:, None, :]).any(
+                dim=-1
+            )
         selected_token &= f_input.token.pad_mask
         selected_atom = torch.gather(
             selected_token,
@@ -1128,10 +1121,7 @@ class KFoldECSI(BaseStructureModule):
 
     def _select_update_method(self, t: float) -> tuple[str, str]:
         """Use the high-time profile or the fixed low-time SI-ODE phase."""
-        if (
-            self.sampler_switch_time is not None
-            and t <= self.sampler_switch_time
-        ):
+        if self.sampler_switch_time is not None and t <= self.sampler_switch_time:
             return "ode", "si"
         return self.sampler_mode, self.sampler_ode_type
 

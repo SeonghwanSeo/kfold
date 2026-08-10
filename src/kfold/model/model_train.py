@@ -284,9 +284,7 @@ class KFoldForTrain(KFold):
 
         if train_trunk:
             # Distogram head
-            dict_out["distogram"] = {
-                "logits": self.distogram_head(z),
-            }
+            dict_out["distogram"] = self.distogram_head(z)
             patch_geometry_out = self.patch_pair_geometry_head(f_input, z)
             if patch_geometry_out:
                 dict_out["patch_geometry"] = patch_geometry_out
@@ -332,15 +330,9 @@ class KFoldForTrain(KFold):
                 _z = _z * mask[:, None, None, None]
 
             # Forward pass through confidence head
-            pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
+            dict_out["confidence"] = self.confidence_head(
                 f_input, _s_inputs, _s_lm, _z, coordinates
             )
-            dict_out["confidence"] = {
-                "pae_logits": pae_logits,
-                "pde_logits": pde_logits,
-                "plddt_logits": plddt_logits,
-                "resolved_logits": resolved_logits,
-            }
 
         return dict_out
 
@@ -409,9 +401,7 @@ class KFoldForTrain(KFold):
             )
 
         coords = dict_out["diffusion"]["coordinates"]
-        dict_out["confidence"] = self.confidence_head.forward_inference(
-            f_input, s_inputs, s_lm, z, coords
-        )
+        dict_out["confidence"] = self.confidence_head(f_input, s_inputs, s_lm, z, coords)
         # Remove batch dimension from outputs for validation
         dict_out = {
             k: {kk: vv.squeeze(0) for kk, vv in v.items()} for k, v in dict_out.items()

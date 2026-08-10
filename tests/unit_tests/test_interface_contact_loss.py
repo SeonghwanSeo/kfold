@@ -1,7 +1,6 @@
 import math
 from types import SimpleNamespace
 
-import pytest
 import torch
 import torch.nn.functional as F
 
@@ -10,6 +9,7 @@ from kfold.training.loss.interface_contact import InterfaceContactBalancedLoss
 
 _NUM_BINS = 64
 _NUM_CONTACT_BINS = 19
+_BIN_BOUNDARIES = torch.linspace(2.3125, 21.6875, _NUM_BINS - 1)
 
 
 def _folding_input(
@@ -40,8 +40,14 @@ def _logits_with_contact_probabilities(
     return logits.requires_grad_()
 
 
+def _distogram_out(logits: torch.Tensor) -> dict[str, torch.Tensor]:
+    return {
+        "logits": logits,
+        "bin_boundaries": _BIN_BOUNDARIES.to(logits.device),
+    }
+
+
 def _target_bin(
-    loss_fn: InterfaceContactBalancedLoss,
     f_input: SimpleNamespace,
     pair: tuple[int, int],
 ) -> torch.Tensor:
@@ -49,7 +55,7 @@ def _target_bin(
     distance = (
         f_input.token.repr_coords[0, token_i] - f_input.token.repr_coords[0, token_j]
     ).norm()
-    return (distance > loss_fn.boundaries).sum().long()
+    return (distance > _BIN_BOUNDARIES).sum().long()
 
 
 def test_exact_bin_formula_and_detached_gradient() -> None:
@@ -71,7 +77,7 @@ def test_exact_bin_formula_and_detached_gradient() -> None:
     }
     logits = _logits_with_contact_probabilities(4, probabilities)
 
-    loss, metrics = loss_fn(logits, f_input)
+    loss, metrics = loss_fn(_distogram_out(logits), f_input)
 
     reference_logits = logits.detach().clone().requires_grad_()
     log_prob = F.log_softmax(reference_logits, dim=-1)
@@ -90,16 +96,10 @@ def test_exact_bin_formula_and_detached_gradient() -> None:
         ]
     )
     positive_ce = torch.stack(
-        [
-            -log_prob[0, *pair, _target_bin(loss_fn, f_input, pair)]
-            for pair in positive_pairs
-        ]
+        [-log_prob[0, *pair, _target_bin(f_input, pair)] for pair in positive_pairs]
     )
     negative_ce = torch.stack(
-        [
-            -log_prob[0, *pair, _target_bin(loss_fn, f_input, pair)]
-            for pair in negative_pairs
-        ]
+        [-log_prob[0, *pair, _target_bin(f_input, pair)] for pair in negative_pairs]
     )
     positive_focal = (1.0 - positive_probability).pow(2).detach()
     negative_focal = negative_probability.pow(2).detach()
@@ -172,8 +172,8 @@ def test_positive_count_denominator_reduces_pressure_when_easy_pair_is_added() -
         {(0, 2): 0.20, (1, 2): 0.999},
     )
 
-    one_pair_loss, _ = loss_fn(one_pair_logits, one_pair_input)
-    two_pair_loss, _ = loss_fn(two_pair_logits, two_pair_input)
+    one_pair_loss, _ = loss_fn(_distogram_out(one_pair_logits), one_pair_input)
+    two_pair_loss, _ = loss_fn(_distogram_out(two_pair_logits), two_pair_input)
     one_pair_loss.backward()
     two_pair_loss.backward()
 
@@ -216,8 +216,11 @@ def test_selected_pair_gradients_are_collinear_with_distogram_ce() -> None:
     )
     distogram_logits = auxiliary_logits.detach().clone().requires_grad_()
 
-    auxiliary_loss, _ = loss_fn(auxiliary_logits, f_input)
-    distogram_loss = distogram_loss_fn(distogram_logits, f_input).mean()
+    auxiliary_loss, _ = loss_fn(_distogram_out(auxiliary_logits), f_input)
+    distogram_loss = distogram_loss_fn(
+        _distogram_out(distogram_logits),
+        f_input,
+    ).mean()
     auxiliary_loss.backward()
     distogram_loss.backward()
 
@@ -260,20 +263,14 @@ def test_gamma_zero_is_selected_exact_bin_ce_mean() -> None:
         },
     )
 
-    loss, _ = loss_fn(logits, f_input)
+    loss, _ = loss_fn(_distogram_out(logits), f_input)
 
     log_prob = F.log_softmax(logits, dim=-1)
     positive_ce = torch.stack(
-        [
-            -log_prob[0, *pair, _target_bin(loss_fn, f_input, pair)]
-            for pair in ((0, 2), (1, 2))
-        ]
+        [-log_prob[0, *pair, _target_bin(f_input, pair)] for pair in ((0, 2), (1, 2))]
     )
     negative_ce = torch.stack(
-        [
-            -log_prob[0, *pair, _target_bin(loss_fn, f_input, pair)]
-            for pair in ((0, 3), (1, 3))
-        ]
+        [-log_prob[0, *pair, _target_bin(f_input, pair)] for pair in ((0, 3), (1, 3))]
     )
     expected = 0.75 * positive_ce.sum() / (
         2.0 + loss_fn.eps
@@ -301,7 +298,7 @@ def test_top_negative_selects_high_probability_midrange_pair() -> None:
         },
     )
 
-    loss, metrics = loss_fn(logits, f_input)
+    loss, metrics = loss_fn(_distogram_out(logits), f_input)
     loss.backward()
 
     assert metrics["interface_contact_negative_pairs"].item() == 2
@@ -328,10 +325,10 @@ def test_missing_negative_keeps_fixed_mixture_weight() -> None:
     )
     logits = _logits_with_contact_probabilities(2, {(0, 1): 0.35})
 
-    loss, metrics = loss_fn(logits, f_input)
+    loss, metrics = loss_fn(_distogram_out(logits), f_input)
 
     log_prob = F.log_softmax(logits, dim=-1)
-    target = _target_bin(loss_fn, f_input, (0, 1))
+    target = _target_bin(f_input, (0, 1))
     ce = -log_prob[0, 0, 1, target]
     expected_fn = (1.0 - torch.tensor(0.35)).pow(2) * ce / (1.0 + loss_fn.eps)
     torch.testing.assert_close(
@@ -351,7 +348,7 @@ def test_zero_positive_interface_is_ignored_but_graph_connected() -> None:
     )
     logits = _logits_with_contact_probabilities(2, {(0, 1): 0.60})
 
-    loss, metrics = loss_fn(logits, f_input)
+    loss, metrics = loss_fn(_distogram_out(logits), f_input)
 
     assert loss.item() == 0.0
     assert metrics["interface_contact_active_interfaces"].item() == 0
@@ -376,8 +373,11 @@ def test_sparse_asym_ids_are_equivalent() -> None:
     )
     sparse_logits = dense_logits.detach().clone().requires_grad_()
 
-    dense_loss, dense_metrics = loss_fn(dense_logits, dense_input)
-    sparse_loss, sparse_metrics = loss_fn(sparse_logits, sparse_input)
+    dense_loss, dense_metrics = loss_fn(_distogram_out(dense_logits), dense_input)
+    sparse_loss, sparse_metrics = loss_fn(
+        _distogram_out(sparse_logits),
+        sparse_input,
+    )
 
     torch.testing.assert_close(dense_loss, sparse_loss)
     assert (
@@ -404,7 +404,7 @@ def test_saturated_false_positive_is_finite() -> None:
     logits[0, 0, 2, :_NUM_CONTACT_BINS] = 50.0
     logits.requires_grad_()
 
-    loss, metrics = loss_fn(logits, f_input)
+    loss, metrics = loss_fn(_distogram_out(logits), f_input)
 
     assert torch.isfinite(loss)
     assert torch.isfinite(metrics["interface_contact_fp_loss"])
@@ -412,15 +412,3 @@ def test_saturated_false_positive_is_finite() -> None:
     loss.backward()
     assert logits.grad is not None
     assert torch.isfinite(logits.grad).all()
-
-
-def test_distogram_bin_mismatch_is_rejected() -> None:
-    loss_fn = InterfaceContactBalancedLoss()
-    f_input = _folding_input(
-        coordinates=[[0.0, 0.0, 0.0], [7.0, 0.0, 0.0]],
-        asym_id=[1, 2],
-    )
-
-    logits = torch.zeros((1, 2, 2, 63))
-    with pytest.raises(ValueError, match="Expected 64 distogram bins"):
-        loss_fn(logits, f_input)

@@ -206,19 +206,13 @@ class KFoldPredictionWriter(BasePredictionWriter):
         if self.save_distogram:
             token_mask = f_input.token.pad_mask
             distogram_out = model_out["distogram"]
-            logits = distogram_out["distogram"][token_mask][:, token_mask]
-            distogram_head = pl_module.model.distogram_head
-            distance_bin_edges = torch.linspace(
-                distogram_head.first_bin,
-                distogram_head.last_bin,
-                distogram_head.num_bins - 1,
-                dtype=torch.float32,
-            )
+            logits = distogram_out["logits"][token_mask][:, token_mask]
+            distance_bin_edges = distogram_out["bin_boundaries"]
             distogram_path = save_dir / f"{name}_seed-{seed}_distogram.npz"
             np.savez_compressed(
                 distogram_path,
                 distogram_logits=logits.float().cpu().numpy(),
-                distance_bin_edges=distance_bin_edges.numpy(),
+                distance_bin_edges=distance_bin_edges.float().cpu().numpy(),
             )
 
         # Save Diffusion Samples

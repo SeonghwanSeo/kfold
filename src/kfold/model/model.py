@@ -394,9 +394,7 @@ class KFold(torch.nn.Module):
 
         st = time.time()
         coords = dict_out["diffusion"]["coordinates"]
-        dict_out["confidence"] = self.confidence_head.forward_inference(
-            f_input, s_inputs, s_lm, z, coords
-        )
+        dict_out["confidence"] = self.confidence_head(f_input, s_inputs, s_lm, z, coords)
         et = time.time()
         time_logs["confidence_head"] = et - st
 

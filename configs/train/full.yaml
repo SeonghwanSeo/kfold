@@ -140,27 +140,15 @@ loss:
     patch_geometry: 0.0
     interface_contact: 0
 
-  # Distogram loss
-  distogram_loss:
-    num_bins: 64
-    min_dist: 2.0
-    max_dist: 22.0
-
   # Uniform patch-pair COM geometry auxiliary loss. This is off by default;
   # enable both model.patch_pair_geometry.enabled and this global weight for
   # an explicit patch-supervision experiment.
   patch_geometry_loss:
-    num_bins: 64
-    min_dist: 2.0
-    max_dist: 22.0
     near_cutoff: 12.0
 
   # Hard-pair exact-bin CE on active inter-chain interfaces.
   # This is inactive unless loss.weights.interface_contact is positive.
   interface_contact_loss:
-    num_bins: 64
-    min_dist: 2.0
-    max_dist: 22.0
     contact_cutoff: 8.0
     positive_weight: 0.75
     negative_weight: 0.25
@@ -188,20 +176,6 @@ loss:
       repr_atom_only: false # If True, use [Nrepr, N] instead of [N, N] for LDDT calculation.
       chunk_size: 1 # Number of samples per chunk for LDDT calculation.
       use_kernel: true # Use triton kernel for LDDT calculation.
-
-  # Confidence loss
-  confidence_loss:
-    plddt_loss:
-      num_bins: 50
-    pae_loss:
-      min_dist: 0.0
-      max_dist: 32.0
-      num_bins: 64
-    pde_loss:
-      min_dist: 0.0
-      max_dist: 32.0
-      num_bins: 64
-    experimentally_resolved_loss: {}
 
 wandb:
   use: false
