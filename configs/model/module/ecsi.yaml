@@ -23,6 +23,12 @@ sampler_step_scale: 1.0
 sampler_switch_gamma: 3.6
 sampler_after_switch_mode: ode
 sampler_after_switch_ode_type: si
+# Optional reverse-update routing. null preserves the global profile above.
+# An explicit list uses SI ODE for unselected atoms and the existing
+# SDE/ECSI-to-SI schedule for selected components. Valid classes: ligand,
+# peptide, rna, dna. Churn remains global and is never routed by atom class.
+# For example: [ligand]. An empty list makes every atom use SI ODE.
+sampler_sde_atom_classes: null
 churn_factor: 0.1
 churn_max_multiplier: 4.0
 churn_end_time: 0.5

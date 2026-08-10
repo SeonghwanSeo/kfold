@@ -39,6 +39,7 @@ SAMPLER_SETTINGS = (
     "sampler_switch_gamma",
     "sampler_after_switch_mode",
     "sampler_after_switch_ode_type",
+    "sampler_sde_atom_classes",
     "churn_factor",
     "churn_max_multiplier",
     "churn_end_time",
@@ -333,7 +334,14 @@ def settings_from_config(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path}: missing model.diffusion_head") from error
     if not isinstance(head, Mapping):
         raise ValueError(f"{path}: model.diffusion_head is not a mapping")
-    return {setting: head.get(setting) for setting in SAMPLER_SETTINGS}
+    settings: dict[str, Any] = {}
+    for setting in SAMPLER_SETTINGS:
+        value = head.get(setting)
+        if isinstance(value, (list, tuple)):
+            settings[setting] = json.dumps(value)
+        else:
+            settings[setting] = value
+    return settings
 
 
 def collect_target_records(sweep_root: Path) -> list[dict[str, Any]]:
