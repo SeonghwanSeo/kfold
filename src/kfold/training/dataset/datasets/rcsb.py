@@ -210,6 +210,27 @@ class RCSBTrainingDataset(TrainingDataset):
         active_entity_ids = {
             metadata_by_asym_id[asym_id].entity_id for asym_id in active_asym_ids
         }
+        # Reuse the selected coordinates across entity copies while preserving
+        # each physical multimer pair's rigid-group ID from the lookup.
+        apo_uid_by_asym_id = {asym_id: apo_uid for asym_id in active_asym_ids}
+        for candidate_asym_ids, candidate_apo_uid, _ in valid_candidates:
+            candidate_entity_ids = {
+                metadata_by_asym_id[asym_id].entity_id for asym_id in candidate_asym_ids
+            }
+            if candidate_entity_ids != active_entity_ids:
+                continue
+            # Keep the selected identity when an alternative record assigns a
+            # different UID to any of the same physical chains.
+            if any(
+                asym_id in apo_uid_by_asym_id
+                and apo_uid_by_asym_id[asym_id] != candidate_apo_uid
+                for asym_id in candidate_asym_ids
+            ):
+                continue
+            apo_uid_by_asym_id.update(
+                dict.fromkeys(candidate_asym_ids, candidate_apo_uid)
+            )
+
         selected_by_entity: dict[int, list[dict | None]] = {
             entity_id: [None] * self.max_apo for entity_id in active_entity_ids
         }
@@ -239,16 +260,21 @@ class RCSBTrainingDataset(TrainingDataset):
         for chain in ref_struct.chains:
             if not chain.ctype.is_protein or chain.entity_id not in selected_by_entity:
                 continue
+            chain_metadata = metadata_by_asym_id[chain.asym_id]
+            chain_apo_uid = apo_uid_by_asym_id.get(
+                chain.asym_id, int(chain_metadata.apo_uid)
+            )
             apo_lookup[chain.asym_id] = [
                 None
                 if loaded is None
                 else {
                     **loaded,
                     "chain_key": f"{entry_id}_{chain.asym_id}",
+                    "apo_uid": chain_apo_uid,
                 }
                 for loaded in selected_by_entity[chain.entity_id]
             ]
-            metadata_by_asym_id[chain.asym_id].apo_uid = apo_uid
+            chain_metadata.apo_uid = chain_apo_uid
 
         return apo_lookup
 
