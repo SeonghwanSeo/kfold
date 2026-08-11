@@ -204,15 +204,19 @@ class KFoldPredictionWriter(BasePredictionWriter):
 
         # The distogram is shared by all diffusion samples for this query.
         if self.save_distogram:
-            token_mask = f_input.token.pad_mask
-            distogram_out = model_out["distogram"]
-            logits = distogram_out["logits"][token_mask][:, token_mask]
-            distance_bin_edges = distogram_out["bin_boundaries"]
             distogram_path = save_dir / f"{name}_seed-{seed}_distogram.npz"
+            mask = f_input.token.pad_mask
+            distogram_out = model_out["distogram"]
+            logits = distogram_out["logits"][mask][:, mask]
+            bin_edges = distogram_out["bin_boundaries"]
+            asym_ids = f_input.token.asym_id[mask]
+            res_ids = f_input.token.residue_index[mask]
             np.savez_compressed(
                 distogram_path,
-                distogram_logits=logits.float().cpu().numpy(),
-                distance_bin_edges=distance_bin_edges.float().cpu().numpy(),
+                logits=logits.half().cpu().numpy(),
+                bin_edges=bin_edges.float().cpu().numpy(),
+                asym_ids=asym_ids.int().cpu().numpy(),
+                res_ids=res_ids.int().cpu().numpy(),
             )
 
         # Save Diffusion Samples
