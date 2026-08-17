@@ -115,6 +115,9 @@ def parse_config(args) -> DictConfig:
     if args.wandb:
         cfg.train.wandb.use = True
 
+    # Use the training seed for weighted data sampling.
+    cfg.train.data.sampling_seed = cfg.train.seed
+
     # Apply global_hparams overrides
     apply_global_hparams_overrides(cfg)
 

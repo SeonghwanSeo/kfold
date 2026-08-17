@@ -38,6 +38,7 @@ class DataModuleConfig(BaseConfig):
     persistent_workers: bool = True
     pin_memory: bool = True
     safe_load: bool = True
+    sampling_seed: int = 0
 
     # === Training hyperparameters === #
     max_chains: int = 20
@@ -217,6 +218,7 @@ class TrainingDataModule(pl.LightningDataModule):
             rank=self.trainer.global_rank if self.trainer else 0,
             world_size=self.trainer.world_size if self.trainer else 1,
             epoch=self.trainer.current_epoch if self.trainer else 0,
+            seed=self.config.sampling_seed,
             replacement=True,
         )
         persistent_workers = (
