@@ -606,8 +606,9 @@ def prepare_ref_structure(
                 )
             else:
                 # Otherwise, clone chain for each subchain
+                # Coordinate insertion mutates these arrays, so every copy must own them.
                 c = parsed_chain.copy_with(
-                    deepcopy=(sym_id > 1),  # deepcopy to avoid shared arrays
+                    deepcopy=True,
                     entity_id=entity_id,
                     asym_id=label_id_to_asym_id[label_id],
                     sym_id=label_id_to_sym_id[label_id],
