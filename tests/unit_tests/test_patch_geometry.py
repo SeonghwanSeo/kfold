@@ -87,9 +87,16 @@ def test_patch_geometry_head_and_loss_use_uniform_pair_supervision() -> None:
         ),
     )
     out = head(_fake_input(), torch.randn(1, 16, 16, 16))
-    loss, metrics = PatchPairGeometryLoss()(out)
+    loss, metrics = PatchPairGeometryLoss(ranking_weight=1.0)(out)
 
-    assert set(out) == {"logits", "bin_boundaries", "target"}
+    assert set(out) == {
+        "logits",
+        "rank_score",
+        "bin_boundaries",
+        "target",
+        "contact_strength",
+        "rank_group",
+    }
     assert out["logits"].shape[0] == 4
     assert torch.isfinite(loss)
     assert metrics["patch_geometry_valid_pairs"] == 4
@@ -155,3 +162,28 @@ def test_patch_geometry_loss_is_unweighted_mean_cross_entropy() -> None:
 
     loss.backward()
     assert logits.grad is not None
+
+
+def test_patch_geometry_ranking_uses_contact_density_within_chain_pairs() -> None:
+    logits = torch.zeros(4, 3, requires_grad=True)
+    rank_score = torch.tensor([2.0, -1.0, 3.0, 0.0], requires_grad=True)
+    out = {
+        "logits": logits,
+        "bin_boundaries": torch.tensor([3.0, 4.0]),
+        "target": torch.tensor([0, 1, 1, 2]),
+        # Only the first two pairs share a chain-pair group. Their desired
+        # order is intentionally the opposite of rank_score.
+        "contact_strength": torch.tensor([0.1, 0.9, 0.2, 0.8]),
+        "rank_group": torch.tensor([0, 0, 1, 1]),
+        "rank_score": rank_score,
+    }
+
+    loss, metrics = PatchPairGeometryLoss(ranking_weight=1.0)(out)
+    ce_loss = torch.nn.functional.cross_entropy(logits, out["target"])
+
+    assert loss > ce_loss
+    assert metrics["patch_geometry_ranking_pairs"] == 2
+    assert metrics["patch_geometry_ranking_groups"] == 2
+
+    loss.backward()
+    assert rank_score.grad is not None
