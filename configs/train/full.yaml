@@ -148,6 +148,7 @@ loss:
   # an explicit patch-supervision experiment.
   patch_geometry_loss:
     near_cutoff: 12.0
+    ranking_weight: 1.0
 
   # Hard-pair exact-bin CE on active inter-chain interfaces.
   # This is inactive unless loss.weights.interface_contact is positive.
