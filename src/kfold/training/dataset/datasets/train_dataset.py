@@ -83,6 +83,7 @@ class TrainingDataset(BaseLMDBDataset):
         max_chains: int,
         max_apo: int,
         max_tokens: int,
+        max_atoms: int,
         max_sequence_tokens: int,
     ) -> None:
         """
@@ -102,6 +103,8 @@ class TrainingDataset(BaseLMDBDataset):
             Maximum number of chains per sample.
         max_tokens : int
             Maximum number of tokens per sample.
+        max_atoms : int
+            Maximum number of atoms per sample.
         max_sequence_tokens : int
             Maximum number of sequence tokens per sample,
             limiting the entire input size of PLM module.
@@ -134,6 +137,7 @@ class TrainingDataset(BaseLMDBDataset):
         self.max_apo: int = max_apo
         # For main cropping (TokenizedStructure)
         self.max_tokens: int = max_tokens
+        self.max_atoms: int = max_atoms
         self.max_sequence_tokens: int = max_sequence_tokens
 
         assert max_sequence_tokens >= max_tokens + (max_chains * 2), (
@@ -260,9 +264,9 @@ class TrainingDataset(BaseLMDBDataset):
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         max_chains = self.max_chains
         max_tokens = self.max_tokens
+        max_atoms = self.max_atoms
         max_sequence_tokens = self.max_sequence_tokens
         num_constraints = self.max_constraints
-        max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
         return f_input.pad(
             max_tokens=max_tokens,
@@ -324,12 +328,13 @@ class TrainingDataset(BaseLMDBDataset):
     ) -> TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
-        if self.max_tokens < tokenized.num_tokens:
+        if self.max_tokens < tokenized.num_tokens or self.max_atoms < tokenized.num_atoms:
             # Crop the tokenized structure
             tokenized = self.cropper.crop(
                 tokenized,
                 metadata,
                 max_tokens=self.max_tokens,
+                max_atoms=self.max_atoms,
                 max_sequence_tokens=self.max_sequence_tokens,
                 bias_asym_id=asym_ids,
                 rng=rng,

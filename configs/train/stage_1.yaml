@@ -8,6 +8,7 @@ global_hparams:
 data:
   max_chains: 20
   max_tokens: 384
+  max_atoms: 4608
   max_sequence_tokens: 768
 
   ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
