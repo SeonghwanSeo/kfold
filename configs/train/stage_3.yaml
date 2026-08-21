@@ -30,61 +30,76 @@ data:
   ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
   data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
   train_datasets:
-    # RCSB PDB (50%)
+    # RCSB PDB (75%)
     - _yaml_: "../dataset/rcsb-train.yaml"
       name: rcsb-train-upd
-      weight: 0.500
+      weight: 0.750
+      cropper:
+        w_contiguous: 0.2
+        w_spatial: 0.4
+        w_spatial_interface: 0.4
 
-    # Disordered PDB datasets (1%)
-    - _yaml_: "../dataset/disordered_pdb.yaml"
-      name: disordered_pdb
-      weight: 0.010
-
-    # Protein Monomer (30%)
+    # Protein Monomer (5%)
     - _yaml_: "../dataset/distill-monomer.yaml"
       name: AF2-MGnify-long
-      weight: 0.250
-    - _yaml_: "../dataset/distill-monomer.yaml"
-      name: AF2-MGnify-short
-      weight: 0.002
+      weight: 0.050
+      cropper:
+        w_contiguous: 0.25
+        w_spatial: 0.75
 
-    - _yaml_: "../dataset/distill-monomer.yaml"
-      name: AFDB-long
-      weight: 0.040
-    - _yaml_: "../dataset/distill-monomer.yaml"
-      name: AFDB-short
-      weight: 0.008
-
-    # RNA Monomer (2%)
+    # RNA Monomer (5%)
     - _yaml_: "../dataset/distill-rna-monomer.yaml"
       name: Rfam
-      weight: 0.020
+      weight: 0.050
+      cropper:
+        w_contiguous: 0.25
+        w_spatial: 0.75
 
-    # Protein-Protein (13%)
+    # Protein-Protein (12%)
     - _yaml_: "../dataset/distill-homodimer.yaml"
       manifest_path: /cache/wykim_lab/kfold_data/v260701_af3/dataset/AFDB-homodimer/manifest_08.msgpack
       name: AFDB-homodimer
       weight: 0.100
+      cropper:
+        w_contiguous: 0.2
+        w_spatial: 0.4
+        w_spatial_interface: 0.4
 
     - _yaml_: "../dataset/distill-heterodimer.yaml"
       manifest_path: /cache/wykim_lab/kfold_data/v260701_af3/dataset/AFDB-heterodimer/manifest_08.msgpack
       name: AFDB-heterodimer
-      weight: 0.030
+      weight: 0.020
+      cropper:
+        w_contiguous: 0.2
+        w_spatial: 0.4
+        w_spatial_interface: 0.4
 
-    # Protein-DNA (2%)
+    # Protein-DNA (1%)
     - _yaml_: "../dataset/distill-complex-uniform.yaml"
       name: JASPAR
-      weight: 0.020
+      weight: 0.010
+      cropper:
+        w_contiguous: 0.2
+        w_spatial: 0.4
+        w_spatial_interface: 0.4
 
     # Protein-RNA (1%)
     - _yaml_: "../dataset/distill-complex-cluster.yaml"
       name: ENCORE
       weight: 0.010
+      cropper:
+        w_contiguous: 0.2
+        w_spatial: 0.4
+        w_spatial_interface: 0.4
 
     # Protein-ligand, TPD (1%)
     - _yaml_: "../dataset/distill-complex-cluster.yaml"
       name: TPD
       weight: 0.010
+      cropper:
+        w_contiguous: 0.2
+        w_spatial: 0.4
+        w_spatial_interface: 0.4
 
   val_datasets:
     - _yaml_: "../dataset/rcsb-val.yaml"
