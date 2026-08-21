@@ -33,6 +33,7 @@ data:
   # Training hyperparameters
   max_chains: ???
   max_tokens: ???
+  max_atoms: ???
   max_sequence_tokens: ???
   max_apo: 3
 

@@ -24,6 +24,7 @@ training:
 data:
   max_chains: 20
   max_tokens: 768
+  max_atoms: 9216
   max_sequence_tokens: 1536
 
   ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
