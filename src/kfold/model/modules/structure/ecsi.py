@@ -32,11 +32,6 @@ from .sample_diffusion import BaseStructureModule
 from .score_model import DiffusionModule
 
 _T = TypeVar("_T", float, torch.Tensor)
-ECSI_SOAR_MODES = frozenset({"disabled", "model_sampler"})
-ECSI_SOAR_ROOT_TIME_POLICIES = frozenset(
-    {"mirror_base_training_time", "mid_high_schedule_stratified"}
-)
-ECSI_SOAR_AUXILIARY_TRANSITIONS = frozenset({"exact_markov"})
 
 
 # === Utility functions with type flexibility and numerical stability handling === #
@@ -167,17 +162,21 @@ class ECSISOARConfig:
     mid_time_probability: float = 1.0
 
     def __post_init__(self) -> None:
-        if self.mode not in ECSI_SOAR_MODES:
+        if self.mode not in ("disabled", "model_sampler"):
             raise ValueError(
                 f"Unknown ECSI SOAR mode {self.mode!r}; "
-                f"expected one of {sorted(ECSI_SOAR_MODES)}."
+                "expected 'disabled' or 'model_sampler'."
             )
-        if self.root_time_policy not in ECSI_SOAR_ROOT_TIME_POLICIES:
+        if self.root_time_policy not in (
+            "mirror_base_training_time",
+            "mid_high_schedule_stratified",
+        ):
             raise ValueError(
                 f"Unknown ECSI SOAR root-time policy {self.root_time_policy!r}; "
-                f"expected one of {sorted(ECSI_SOAR_ROOT_TIME_POLICIES)}."
+                "expected 'mirror_base_training_time' or "
+                "'mid_high_schedule_stratified'."
             )
-        if self.auxiliary_transition not in ECSI_SOAR_AUXILIARY_TRANSITIONS:
+        if self.auxiliary_transition != "exact_markov":
             raise ValueError(
                 f"Unknown ECSI SOAR auxiliary transition "
                 f"{self.auxiliary_transition!r}; expected exact_markov."

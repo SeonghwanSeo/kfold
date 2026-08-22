@@ -9,6 +9,10 @@ def test_soar_x0_preset_inherits_latest_stage3_data_contract() -> None:
     base = load_config(REPO_ROOT / "configs/train-ecsi-stage3.yaml")
     candidate = load_config(REPO_ROOT / "configs/train-ecsi-stage3-soar-x0.yaml")
     assert to_dict(candidate.train.data) == to_dict(base.train.data)
+    assert (
+        candidate.train.global_hparams.global_batch_size
+        == base.train.global_hparams.global_batch_size
+    )
     assert candidate.train.data.max_tokens == 768
     assert candidate.train.data.max_atoms == 9216
     assert candidate.train.data.max_sequence_tokens == 1536
@@ -36,7 +40,6 @@ def test_soar_x0_preset_changes_only_declared_training_surfaces() -> None:
     assert config.model.diffusion_head.train_x_0_perturb_rotation_deg == 8.0
     assert config.model.diffusion_head.train_x_0_perturb_translation_distance == 1.2
     assert config.train.global_hparams.diffusion_batch_size == 32
-    assert config.train.global_hparams.global_batch_size == 160
     assert config.train.load_opt_state is False
     assert config.train.load_global_step is True
     assert list(config.train.init_from_ema) == ["trunk"]
