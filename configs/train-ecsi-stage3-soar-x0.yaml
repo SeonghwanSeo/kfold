@@ -1,0 +1,54 @@
+_yaml_: "train-ecsi-stage3.yaml"
+
+model:
+  # The 80k source checkpoint contains this head. It remains part of the
+  # strict-load structure but is frozen with the trunk and has zero loss.
+  patch_pair_geometry:
+    enabled: true
+  trunk:
+    blocks_per_ckpt: 4
+  diffusion_head:
+    train_x_0_perturb_time_min: 0.4
+    train_x_0_perturb_time_max: 0.8
+    train_x_0_perturb_prob: 0.5
+    train_x_0_perturb_rotation_deg: 8.0
+    train_x_0_perturb_translation_distance: 1.2
+
+train:
+  name: ecsi-stage3-exact-markov-mid-soar-x0
+  seed: 3
+  load_opt_state: false
+  load_global_step: true
+  init_from_ema: [trunk]
+
+  global_hparams:
+    diffusion_batch_size: 16
+    global_batch_size: 160
+
+  training:
+    train_trunk: false
+    train_diffusion_head: true
+    train_confidence_head: true
+    log_time_binned_losses: true
+    time_bin_width: 0.1
+    soar:
+      mode: model_sampler
+      root_time_policy: mid_high_schedule_stratified
+      auxiliary_transition: exact_markov
+      apply_rollout_churn: false
+      rollout_schedule_num_steps: 100
+      rollout_schedule_step_count: 1.0
+      auxiliary_samples_per_root: 4
+      forward_retention_min: 0.5
+      lambda_aux: 1.0
+      mid_time_lower: 0.2
+      high_time_split: 0.8
+      mid_time_probability: 1.0
+
+  optimizer:
+    max_lr: 0.001
+    lr_decay_factor: 1.0
+
+  loss:
+    weights:
+      patch_geometry: 0.0
