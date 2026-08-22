@@ -1,4 +1,5 @@
 from . import (
+    affinity_pairformer,
     apo_module,
     confidence_head,
     distogram_head,

@@ -1,0 +1,107 @@
+train:
+  name: "affinity-ranking-s2-v4"
+  out_dir: "outputs/affinity"
+  seed: 20260819
+  # Experiment behavior belongs in the resolved config. Scheduler identity and
+  # credentials remain scheduler-/secret-owned environment variables.
+  runtime:
+    multiprocessing_sharing_strategy: "file_system"
+    float32_matmul_precision: "high"
+  lineage:
+    snapshot_digest: null
+  data:
+    # Must be a final, FEP-filtered manifest joined with the short-tier cache.
+    manifest_path: ???
+    # The same root supplied to cache_stage2_features.py.
+    cache_root: ???
+    cache_schema: "affinity_full_cross_v1"
+    mode: "boltz2_continuous_affinity"
+    version: "boltz2_continuous_affinity_v4"
+    sampling_mode: "boltz2_activity_cliff"
+    # Read per-complex PL distogram logits from the immutable physical cache.
+    crop_mode: "distogram_predicted_contact"
+    pocket_manifest_path: null
+    pocket_neighborhood_size: 10
+    crop_contract_version: "affinity_distogram_crop_v2"
+    # TerraBind-style expected-distance pocket and structural-uncertainty gate.
+    distogram_pocket_distance_cutoff: 15.0
+    distogram_use_entropy_tiebreak: true
+    distogram_entropy_gate: 0.7
+    distogram_strong_binder_p_activity: 6.0
+    max_crop_tokens: 256
+    max_protein_crop_tokens: 200
+    train_batches_per_epoch: 1000
+    num_workers: 4
+    pin_memory: true
+    train_batch_size: 64
+    val_batch_size: 32
+    # Every training rank uses B=64 and T=256. Validation remains B=32.
+    shape_buckets: [256]
+    # Twelve distinct B=5 assays plus four BindingDB regression-only records.
+    activity_group_size: 5
+    activity_groups_per_batch: 12
+    singleton_regression_slots: 4
+    # Optional legacy sampler settings.
+    labels_per_source: 16
+    rankable_assays_per_batch: 4
+    records_per_rankable_assay: 4
+  model:
+    # Use the fused cuequivariance triangular multiplication path when enabled.
+    use_kernels: false
+    channel_s: 384
+    channel_z: 256
+    num_distogram_features: 3
+    num_heads_attn: 16
+    num_blocks: 6
+    dropout: 0.1
+    # Preserve the fixed B=64/T=256 contract without retaining all six
+    # triangular-block activations through backward.
+    blocks_per_ckpt: 1
+    # Match Boltz-2 / TerraBind / NESSO: only PL, LP, and LL pair cells are active.
+    cross_pair_only: true
+  task:
+    mode: "boltz2_continuous"
+    version: "boltz2_continuous_affinity_v2"
+    learning_rate: 0.0001
+    weight_decay: 0.001
+    huber_delta: 0.5
+    difference_weight: 0.9
+    absolute_weight: 0.1
+    # Optional legacy Huber + logistic/Pearson settings.
+    ranking_weight: 0.5
+    pairwise_temperature: 0.2
+    near_tie_delta: 0.1
+  trainer:
+    accelerator: "gpu"
+    strategy: "auto"
+    devices: 8
+    num_nodes: 1
+    precision: "bf16-mixed"
+    max_epochs: -1
+    max_steps: 10000
+    limit_val_batches: null
+    log_every_n_steps: 10
+    gradient_clip_val: 10.0
+    num_sanity_val_steps: 0
+    use_distributed_sampler: false
+  compile:
+    enabled: false
+    mode: "reduce-overhead"
+    dynamic: false
+  wandb:
+    use: false
+    project: "affinity"
+    entity: null
+    group: null
+    tags: []
+    log_model: false
+  checkpoint:
+    enabled: true
+    monitor: "val/mean_assay_pearson"
+    monitor_mode: "max"
+    save_top_k: 3
+    # Immutable exact-step exports for asynchronous external evaluation.
+    milestones: [400, 1000, 2000, 5000, 10000]
+    # Validation runs at epoch end, so monitored Pearson checkpoints must be
+    # evaluated there rather than before the validation metric exists.
+    every_n_epochs: 1
