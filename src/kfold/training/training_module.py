@@ -171,6 +171,8 @@ def _get_diffusion_time_for_binning(
 def _training_metric_log_name(metric_name: str) -> str:
     if metric_name.startswith("soar_"):
         return f"soar/{metric_name.removeprefix('soar_')}"
+    if metric_name.startswith("x_0_perturb_"):
+        return f"x_0_perturb/{metric_name.removeprefix('x_0_perturb_')}"
     return f"train/{metric_name}"
 
 
@@ -667,6 +669,11 @@ class KFoldTrainingModule(pl.LightningModule):
                 diffusion_metrics["soar_total_objective_mass"] = (
                     base_mass + auxiliary_mass
                 )
+            if "x_0_perturb_applied_mask" in diffusion_out:
+                self._add_x_0_perturb_metrics(
+                    diffusion_metrics=diffusion_metrics,
+                    diffusion_out=diffusion_out,
+                )
 
         else:
             diffusion_loss, diffusion_metrics = 0.0, {}
@@ -723,6 +730,54 @@ class KFoldTrainingModule(pl.LightningModule):
         all_metrics["loss"] = loss.detach()
 
         return loss, all_metrics
+
+    @staticmethod
+    def _add_x_0_perturb_metrics(
+        *,
+        diffusion_metrics: dict[str, torch.Tensor],
+        diffusion_out: dict[str, torch.Tensor],
+    ) -> None:
+        """Add actual bounded x0-perturb exposure and displacement telemetry."""
+        t = diffusion_out["t"][:, : diffusion_out["x_0_perturb_applied_mask"].shape[1]]
+        time_eligible = diffusion_out["x_0_perturb_time_eligible_mask"].bool()
+        eligible = diffusion_out["x_0_perturb_eligible_mask"].bool()
+        requested = diffusion_out["x_0_perturb_requested_mask"].bool()
+        applied = diffusion_out["x_0_perturb_applied_mask"].bool()
+        x_0_rmsd = diffusion_out["x_0_perturb_x_0_rmsd"].detach().float()
+        x_t_rmsd = diffusion_out["x_0_perturb_x_t_rmsd"].detach().float()
+        chain_count = diffusion_out["x_0_perturb_resolved_chain_count"].detach().float()
+
+        def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            weights = mask.to(values.dtype)
+            return (values * weights).sum() / weights.sum().clamp(min=1.0)
+
+        prefix = "x_0_perturb_"
+        diffusion_metrics[f"{prefix}time_eligible_fraction"] = (
+            time_eligible.float().mean()
+        )
+        diffusion_metrics[f"{prefix}eligible_fraction"] = eligible.float().mean()
+        diffusion_metrics[f"{prefix}requested_fraction"] = requested.float().mean()
+        diffusion_metrics[f"{prefix}applied_fraction"] = applied.float().mean()
+        diffusion_metrics[f"{prefix}applied_given_eligible"] = (
+            applied.float().sum() / eligible.float().sum().clamp(min=1.0)
+        )
+        diffusion_metrics[f"{prefix}applied_t_mean"] = masked_mean(t.float(), applied)
+        diffusion_metrics[f"{prefix}x_0_rmsd_mean"] = masked_mean(x_0_rmsd, applied)
+        diffusion_metrics[f"{prefix}x_t_rmsd_mean"] = masked_mean(x_t_rmsd, applied)
+        diffusion_metrics[f"{prefix}x_t_rmsd_max"] = x_t_rmsd.max()
+        diffusion_metrics[f"{prefix}resolved_chain_count_mean"] = chain_count.mean()
+
+        for bin_index in range(10):
+            lower = bin_index / 10.0
+            upper = (bin_index + 1) / 10.0
+            in_bin = (t >= lower) & (t < upper)
+            bin_name = f"t{bin_index:02d}_{bin_index + 1:02d}"
+            diffusion_metrics[f"{prefix}{bin_name}_applied_fraction"] = (
+                applied & in_bin
+            ).float().sum() / in_bin.float().sum().clamp(min=1.0)
+            diffusion_metrics[f"{prefix}{bin_name}_x_t_rmsd_mean"] = masked_mean(
+                x_t_rmsd, applied & in_bin
+            )
 
     def validation_step(
         self,

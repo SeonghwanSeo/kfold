@@ -20,7 +20,11 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives.utils import expand_dim
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
+from kfold.utils.geometry.random_augment import (
+    CenterRandomAugmentation,
+    do_centering,
+    quaternion_to_matrix,
+)
 from kfold.utils.geometry.rigid_align import get_rigid_transform_torch
 from kfold.utils.registry import STRUCTURE_MODULE
 
@@ -354,6 +358,13 @@ class KFoldECSI(BaseStructureModule):
         train_time_schedule: str = "logistic"
         train_time_schedule_params: tuple[float, float] = (-2.15, 2.25)
 
+        # Optional bounded chain-wise x0 perturbation for base bridge samples.
+        train_x_0_perturb_time_min: float = 0.4
+        train_x_0_perturb_time_max: float = 0.8
+        train_x_0_perturb_prob: float = 0.0
+        train_x_0_perturb_rotation_deg: float = 0.0
+        train_x_0_perturb_translation_distance: float = 0.0
+
     def __init__(self, cfg: Config, score_model: DiffusionModule):
         """Initialize the ECSI module.
 
@@ -385,6 +396,31 @@ class KFoldECSI(BaseStructureModule):
         self.train_time_schedule: str = cfg.train_time_schedule
         self.train_time_schedule_params: tuple[float, float] = (
             cfg.train_time_schedule_params
+        )
+        if not (
+            self.time_min
+            <= cfg.train_x_0_perturb_time_min
+            <= cfg.train_x_0_perturb_time_max
+            <= self.time_max
+        ):
+            raise ValueError(
+                "ECSI x0 perturb times must lie in the trained time support "
+                "and satisfy time_min <= time_max."
+            )
+        if not 0.0 <= cfg.train_x_0_perturb_prob <= 1.0:
+            raise ValueError("ECSI train_x_0_perturb_prob must lie in [0, 1].")
+        if cfg.train_x_0_perturb_rotation_deg < 0.0:
+            raise ValueError("ECSI train_x_0_perturb_rotation_deg must be non-negative.")
+        if cfg.train_x_0_perturb_translation_distance < 0.0:
+            raise ValueError(
+                "ECSI train_x_0_perturb_translation_distance must be non-negative."
+            )
+        self.train_x_0_perturb_time_min = cfg.train_x_0_perturb_time_min
+        self.train_x_0_perturb_time_max = cfg.train_x_0_perturb_time_max
+        self.train_x_0_perturb_prob = cfg.train_x_0_perturb_prob
+        self.train_x_0_perturb_rotation_deg = cfg.train_x_0_perturb_rotation_deg
+        self.train_x_0_perturb_translation_distance = (
+            cfg.train_x_0_perturb_translation_distance
         )
 
         # Inference time sampling
@@ -588,6 +624,16 @@ class KFoldECSI(BaseStructureModule):
             "x_gt": x_0,
             "loss_weights": loss_weights,
         }
+        for name in (
+            "time_eligible_mask",
+            "eligible_mask",
+            "requested_mask",
+            "applied_mask",
+            "x_0_rmsd",
+            "x_t_rmsd",
+            "resolved_chain_count",
+        ):
+            output[f"x_0_perturb_{name}"] = train_input[f"x_0_perturb_{name}"]
         if soar.mode == "disabled":
             return output
 
@@ -725,6 +771,179 @@ class KFoldECSI(BaseStructureModule):
         t = self.time_min + (self.time_max - self.time_min) * t
         return t
 
+    def _sample_x_0_perturb_masks(
+        self,
+        *,
+        t: torch.Tensor,
+        resolved_chain_count: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Select bounded mid-time perturbations without touching disabled RNG."""
+        time_eligible = (t >= self.train_x_0_perturb_time_min) & (
+            t < self.train_x_0_perturb_time_max
+        )
+        multichain = resolved_chain_count[:, None] > 1
+        eligible = time_eligible & multichain
+        if self.train_x_0_perturb_prob == 0.0:
+            requested = torch.zeros_like(time_eligible)
+        else:
+            requested = time_eligible & (torch.rand_like(t) < self.train_x_0_perturb_prob)
+        has_strength = (
+            self.train_x_0_perturb_rotation_deg > 0.0
+            or self.train_x_0_perturb_translation_distance > 0.0
+        )
+        applied = requested & multichain & has_strength
+        return {
+            "time_eligible": time_eligible,
+            "eligible": eligible,
+            "requested": requested,
+            "applied": applied,
+        }
+
+    @staticmethod
+    def _fixed_axis_angle_rotations(
+        shape: tuple[int, ...],
+        *,
+        angle_degrees: float,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Sample random axes with one fixed non-negative rotation magnitude."""
+        if angle_degrees == 0.0:
+            identity = torch.eye(3, dtype=dtype, device=device)
+            return identity.expand(*shape, 3, 3)
+        axes = torch.randn(*shape, 3, dtype=dtype, device=device)
+        axes = axes / axes.norm(dim=-1, keepdim=True).clamp_min(torch.finfo(dtype).eps)
+        half_angle = torch.full(
+            (*shape, 1),
+            math.radians(angle_degrees) / 2.0,
+            dtype=dtype,
+            device=device,
+        )
+        quaternion = torch.cat(
+            (torch.cos(half_angle), axes * torch.sin(half_angle)), dim=-1
+        )
+        return quaternion_to_matrix(quaternion)
+
+    @staticmethod
+    def _fixed_direction_translations(
+        shape: tuple[int, ...],
+        *,
+        distance: float,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Sample random directions with one fixed translation magnitude."""
+        if distance == 0.0:
+            return torch.zeros(*shape, 3, dtype=dtype, device=device)
+        directions = torch.randn(*shape, 3, dtype=dtype, device=device)
+        directions = directions / directions.norm(dim=-1, keepdim=True).clamp_min(
+            torch.finfo(dtype).eps
+        )
+        return directions * distance
+
+    def _perturb_x_0(
+        self,
+        *,
+        x_0: torch.Tensor,
+        t: torch.Tensor,
+        f_input: FoldingInput,
+        x_0_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Perturb base-bridge x0 chain poses while retaining clean supervision."""
+        batch_size, num_samples, num_atoms, _ = x_0.shape
+        if self.train_x_0_perturb_prob == 0.0 or (
+            self.train_x_0_perturb_rotation_deg == 0.0
+            and self.train_x_0_perturb_translation_distance == 0.0
+        ):
+            time_eligible = (t >= self.train_x_0_perturb_time_min) & (
+                t < self.train_x_0_perturb_time_max
+            )
+            false_mask = torch.zeros_like(time_eligible)
+            zero = torch.zeros_like(t)
+            return {
+                "x_0_bridge": x_0,
+                "time_eligible_mask": time_eligible,
+                "eligible_mask": false_mask,
+                "requested_mask": false_mask,
+                "applied_mask": false_mask,
+                "x_0_rmsd": zero,
+                "resolved_chain_count": torch.zeros_like(t, dtype=torch.long),
+            }
+        num_chains = f_input.chain.asym_id.shape[1]
+        token_index = f_input.atom.token_index.clamp(
+            min=0, max=f_input.token.asym_id.shape[-1] - 1
+        )
+        atom_asym_id = torch.gather(f_input.token.asym_id, 1, token_index)
+        resolved_mask = x_0_mask[:, 0].bool()
+        atom_in_chain = atom_asym_id[:, :, None] == f_input.chain.asym_id[:, None, :]
+        atom_in_chain &= f_input.chain.pad_mask[:, None, :]
+        atom_chain_index = atom_in_chain.to(torch.int64).argmax(dim=-1)
+        atom_is_valid = resolved_mask & atom_in_chain.any(dim=-1)
+        chain_has_atoms = (atom_in_chain & resolved_mask[:, :, None]).any(dim=1)
+        resolved_chain_count = chain_has_atoms.sum(dim=-1)
+        selection = self._sample_x_0_perturb_masks(
+            t=t, resolved_chain_count=resolved_chain_count
+        )
+        applied = selection["applied"]
+        chain_index_xyz = atom_chain_index[:, None, :, None].expand(
+            batch_size, num_samples, num_atoms, 3
+        )
+        chain_sums = torch.zeros(
+            (batch_size, num_samples, num_chains, 3),
+            dtype=x_0.dtype,
+            device=x_0.device,
+        )
+        chain_sums.scatter_add_(
+            dim=2,
+            index=chain_index_xyz,
+            src=x_0 * atom_is_valid[:, None, :, None],
+        )
+        chain_counts = (atom_in_chain & resolved_mask[:, :, None]).sum(dim=1)
+        chain_centers = chain_sums / chain_counts[:, None, :, None].clamp_min(1)
+        chain_rotations = self._fixed_axis_angle_rotations(
+            (batch_size, num_samples, num_chains),
+            angle_degrees=self.train_x_0_perturb_rotation_deg,
+            dtype=x_0.dtype,
+            device=x_0.device,
+        )
+        chain_translations = self._fixed_direction_translations(
+            (batch_size, num_samples, num_chains),
+            distance=self.train_x_0_perturb_translation_distance,
+            dtype=x_0.dtype,
+            device=x_0.device,
+        )
+        atom_centers = torch.gather(chain_centers, dim=2, index=chain_index_xyz)
+        atom_translations = torch.gather(chain_translations, dim=2, index=chain_index_xyz)
+        rotation_index = atom_chain_index[:, None, :, None, None].expand(
+            batch_size, num_samples, num_atoms, 3, 3
+        )
+        atom_rotations = torch.gather(chain_rotations, dim=2, index=rotation_index)
+        transformed = (
+            torch.einsum("bnad,bnads->bnas", x_0 - atom_centers, atom_rotations)
+            + atom_centers
+            + atom_translations
+        )
+        expanded_mask = x_0_mask.expand(-1, num_samples, -1)
+        transformed = transformed.masked_fill(~expanded_mask[..., None], 0.0)
+        aligned = custom_rigid_align(
+            transformed,
+            x_0,
+            expanded_mask,
+            output_mask=expanded_mask,
+        )
+        apply_mask = applied[..., None, None] & expanded_mask[..., None]
+        x_0_bridge = torch.where(apply_mask, aligned, x_0)
+        x_0_rmsd = self._masked_coordinate_rmsd(x_0_bridge - x_0, expanded_mask)
+        return {
+            "x_0_bridge": x_0_bridge,
+            "time_eligible_mask": selection["time_eligible"],
+            "eligible_mask": selection["eligible"],
+            "requested_mask": selection["requested"],
+            "applied_mask": applied,
+            "x_0_rmsd": x_0_rmsd,
+            "resolved_chain_count": resolved_chain_count[:, None].expand_as(t),
+        }
+
     def sample_train_input(
         self,
         f_input: FoldingInput,
@@ -756,7 +975,7 @@ class KFoldECSI(BaseStructureModule):
         apo_mask = f_input.atom.pad_mask  # [B, Natom]
 
         # Repeat holo coords
-        x_0 = expand_dim(x_holo, num_samples, dim=-3)  # [B, N, Natom, 3]
+        x_0 = expand_dim(x_holo, num_samples, dim=-3).clone()  # [B, N, Natom, 3]
         x_0_mask = holo_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Sample from prior coordinates
@@ -781,9 +1000,21 @@ class KFoldECSI(BaseStructureModule):
             x_T, x_0, x_0_mask, rotation_only=True, output_mask=x_T_mask
         )
 
+        # Perturb only the endpoint used by the base bridge. SOAR reconstructs
+        # its roots from the clean x_0 returned below.
+        perturb = self._perturb_x_0(
+            x_0=x_0,
+            t=t,
+            f_input=f_input,
+            x_0_mask=x_0_mask,
+        )
+
         # ECSI interpolation with atom-wise shared bridge noise.
         noise = torch.randn_like(x_0).masked_fill_(~x_T_mask[..., None], 0.0)
-        x_t = self._interpolate_bridge(x_0, x_T, noise, t)
+        x_t_clean = self._interpolate_bridge(x_0, x_T, noise, t)
+        x_t = self._interpolate_bridge(perturb["x_0_bridge"], x_T, noise, t)
+        expanded_mask = x_T_mask.expand(-1, num_samples, -1)
+        x_t_rmsd = self._masked_coordinate_rmsd(x_t - x_t_clean, expanded_mask)
 
         # Zero the hidden atoms as well as the padding, so that a code path which
         # forgets `train_mask` sees the origin rather than a prior-scale offset.
@@ -798,6 +1029,13 @@ class KFoldECSI(BaseStructureModule):
             "x_T": x_T,
             "atom_mask": train_mask,
             "noise": noise,
+            "x_0_perturb_time_eligible_mask": perturb["time_eligible_mask"],
+            "x_0_perturb_eligible_mask": perturb["eligible_mask"],
+            "x_0_perturb_requested_mask": perturb["requested_mask"],
+            "x_0_perturb_applied_mask": perturb["applied_mask"],
+            "x_0_perturb_x_0_rmsd": perturb["x_0_rmsd"],
+            "x_0_perturb_x_t_rmsd": x_t_rmsd,
+            "x_0_perturb_resolved_chain_count": perturb["resolved_chain_count"],
         }
 
     def _interpolate_bridge(
