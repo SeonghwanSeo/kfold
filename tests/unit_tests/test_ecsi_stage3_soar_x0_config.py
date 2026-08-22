@@ -35,7 +35,7 @@ def test_soar_x0_preset_changes_only_declared_training_surfaces() -> None:
     assert config.model.diffusion_head.train_x_0_perturb_prob == 0.5
     assert config.model.diffusion_head.train_x_0_perturb_rotation_deg == 8.0
     assert config.model.diffusion_head.train_x_0_perturb_translation_distance == 1.2
-    assert config.train.global_hparams.diffusion_batch_size == 16
+    assert config.train.global_hparams.diffusion_batch_size == 32
     assert config.train.global_hparams.global_batch_size == 160
     assert config.train.load_opt_state is False
     assert config.train.load_global_step is True
