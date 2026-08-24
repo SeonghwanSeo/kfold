@@ -8,14 +8,12 @@ model:
   trunk:
     blocks_per_ckpt: 4
   diffusion_head:
-    train_x_0_perturb_time_min: 0.4
-    train_x_0_perturb_time_max: 0.8
-    train_x_0_perturb_prob: 0.5
-    train_x_0_perturb_rotation_deg: 8.0
-    train_x_0_perturb_translation_distance: 1.2
+    train_x_0_perturb_time_min: 0.7
+    train_x_0_perturb_prob: 0.2
+    train_x_0_perturb_translation_std: 4.0
 
 train:
-  name: ecsi-stage3-exact-markov-mid-soar-x0
+  name: ecsi-stage3-exact-markov-mid-soar-high-x0
   seed: 3
   load_opt_state: false
   load_global_step: true

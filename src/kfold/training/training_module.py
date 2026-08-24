@@ -737,7 +737,7 @@ class KFoldTrainingModule(pl.LightningModule):
         diffusion_metrics: dict[str, torch.Tensor],
         diffusion_out: dict[str, torch.Tensor],
     ) -> None:
-        """Add actual bounded x0-perturb exposure and displacement telemetry."""
+        """Add actual high-time x0-perturb exposure and displacement telemetry."""
         t = diffusion_out["t"][:, : diffusion_out["x_0_perturb_applied_mask"].shape[1]]
         time_eligible = diffusion_out["x_0_perturb_time_eligible_mask"].bool()
         eligible = diffusion_out["x_0_perturb_eligible_mask"].bool()

@@ -40,9 +40,7 @@ stepwarp_power: 0.5
 train_time_schedule: logistic
 train_time_schedule_params: [-2.15, 2.25]
 
-# Optional base-bridge x0 perturbation. Disabled by default.
-train_x_0_perturb_time_min: 0.4
-train_x_0_perturb_time_max: 0.8
+# Optional high-time chain-rigid x0 perturbation. Disabled by default.
+train_x_0_perturb_time_min: 0.7
 train_x_0_perturb_prob: 0.0
-train_x_0_perturb_rotation_deg: 0.0
-train_x_0_perturb_translation_distance: 0.0
+train_x_0_perturb_translation_std: 0.0

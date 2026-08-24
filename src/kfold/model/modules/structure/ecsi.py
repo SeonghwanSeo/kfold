@@ -23,7 +23,7 @@ from kfold.model.primitives.utils import expand_dim
 from kfold.utils.geometry.random_augment import (
     CenterRandomAugmentation,
     do_centering,
-    quaternion_to_matrix,
+    random_rotations_torch,
 )
 from kfold.utils.geometry.rigid_align import get_rigid_transform_torch
 from kfold.utils.registry import STRUCTURE_MODULE
@@ -325,6 +325,13 @@ class KFoldECSI(BaseStructureModule):
             A tuple of (mu, std) for the logistic time sampling schedule.
             Time values are sampled from sigmoid(N(mu, std)), then scaled to
             [time_min, time_max].
+        train_x_0_perturb_time_min : float
+            Apply chain-rigid x0 perturbation only strictly above this time.
+        train_x_0_perturb_prob : float
+            Probability of perturbing an eligible high-time training sample.
+        train_x_0_perturb_translation_std : float
+            Per-axis standard deviation of each chain's Gaussian translation,
+            in Angstrom. Applied chains also receive a random SO(3) rotation.
         """
 
         sigma_data: float = 16.0
@@ -357,12 +364,10 @@ class KFoldECSI(BaseStructureModule):
         train_time_schedule: str = "logistic"
         train_time_schedule_params: tuple[float, float] = (-2.15, 2.25)
 
-        # Optional bounded chain-wise x0 perturbation for base bridge samples.
-        train_x_0_perturb_time_min: float = 0.4
-        train_x_0_perturb_time_max: float = 0.8
+        # Optional high-time chain-wise x0 perturbation for base bridge samples.
+        train_x_0_perturb_time_min: float = 0.7
         train_x_0_perturb_prob: float = 0.0
-        train_x_0_perturb_rotation_deg: float = 0.0
-        train_x_0_perturb_translation_distance: float = 0.0
+        train_x_0_perturb_translation_std: float = 0.0
 
     def __init__(self, cfg: Config, score_model: DiffusionModule):
         """Initialize the ECSI module.
@@ -396,31 +401,19 @@ class KFoldECSI(BaseStructureModule):
         self.train_time_schedule_params: tuple[float, float] = (
             cfg.train_time_schedule_params
         )
-        if not (
-            self.time_min
-            <= cfg.train_x_0_perturb_time_min
-            <= cfg.train_x_0_perturb_time_max
-            <= self.time_max
-        ):
+        if not self.time_min <= cfg.train_x_0_perturb_time_min <= self.time_max:
             raise ValueError(
-                "ECSI x0 perturb times must lie in the trained time support "
-                "and satisfy time_min <= time_max."
+                "ECSI train_x_0_perturb_time_min must lie in the trained time support."
             )
         if not 0.0 <= cfg.train_x_0_perturb_prob <= 1.0:
             raise ValueError("ECSI train_x_0_perturb_prob must lie in [0, 1].")
-        if cfg.train_x_0_perturb_rotation_deg < 0.0:
-            raise ValueError("ECSI train_x_0_perturb_rotation_deg must be non-negative.")
-        if cfg.train_x_0_perturb_translation_distance < 0.0:
+        if cfg.train_x_0_perturb_translation_std < 0.0:
             raise ValueError(
-                "ECSI train_x_0_perturb_translation_distance must be non-negative."
+                "ECSI train_x_0_perturb_translation_std must be non-negative."
             )
         self.train_x_0_perturb_time_min = cfg.train_x_0_perturb_time_min
-        self.train_x_0_perturb_time_max = cfg.train_x_0_perturb_time_max
         self.train_x_0_perturb_prob = cfg.train_x_0_perturb_prob
-        self.train_x_0_perturb_rotation_deg = cfg.train_x_0_perturb_rotation_deg
-        self.train_x_0_perturb_translation_distance = (
-            cfg.train_x_0_perturb_translation_distance
-        )
+        self.train_x_0_perturb_translation_std = cfg.train_x_0_perturb_translation_std
 
         # Inference time sampling
         self.align_x_0_hat_to_x_t: bool = cfg.align_x_0_hat_to_x_t
@@ -776,21 +769,15 @@ class KFoldECSI(BaseStructureModule):
         t: torch.Tensor,
         resolved_chain_count: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        """Select bounded mid-time perturbations without touching disabled RNG."""
-        time_eligible = (t >= self.train_x_0_perturb_time_min) & (
-            t < self.train_x_0_perturb_time_max
-        )
+        """Select high-time perturbations without touching disabled RNG."""
+        time_eligible = t > self.train_x_0_perturb_time_min
         multichain = resolved_chain_count[:, None] > 1
         eligible = time_eligible & multichain
         if self.train_x_0_perturb_prob == 0.0:
             requested = torch.zeros_like(time_eligible)
         else:
             requested = time_eligible & (torch.rand_like(t) < self.train_x_0_perturb_prob)
-        has_strength = (
-            self.train_x_0_perturb_rotation_deg > 0.0
-            or self.train_x_0_perturb_translation_distance > 0.0
-        )
-        applied = requested & multichain & has_strength
+        applied = requested & multichain
         return {
             "time_eligible": time_eligible,
             "eligible": eligible,
@@ -798,65 +785,19 @@ class KFoldECSI(BaseStructureModule):
             "applied": applied,
         }
 
-    @staticmethod
-    def _fixed_axis_angle_rotations(
-        shape: tuple[int, ...],
-        *,
-        angle_degrees: float,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """Sample random axes with one fixed non-negative rotation magnitude."""
-        if angle_degrees == 0.0:
-            identity = torch.eye(3, dtype=dtype, device=device)
-            return identity.expand(*shape, 3, 3)
-        axes = torch.randn(*shape, 3, dtype=dtype, device=device)
-        axes = axes / axes.norm(dim=-1, keepdim=True).clamp_min(torch.finfo(dtype).eps)
-        half_angle = torch.full(
-            (*shape, 1),
-            math.radians(angle_degrees) / 2.0,
-            dtype=dtype,
-            device=device,
-        )
-        quaternion = torch.cat(
-            (torch.cos(half_angle), axes * torch.sin(half_angle)), dim=-1
-        )
-        return quaternion_to_matrix(quaternion)
-
-    @staticmethod
-    def _fixed_direction_translations(
-        shape: tuple[int, ...],
-        *,
-        distance: float,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """Sample random directions with one fixed translation magnitude."""
-        if distance == 0.0:
-            return torch.zeros(*shape, 3, dtype=dtype, device=device)
-        directions = torch.randn(*shape, 3, dtype=dtype, device=device)
-        directions = directions / directions.norm(dim=-1, keepdim=True).clamp_min(
-            torch.finfo(dtype).eps
-        )
-        return directions * distance
-
     def _perturb_x_0(
         self,
         *,
         x_0: torch.Tensor,
+        x_T: torch.Tensor,
         t: torch.Tensor,
         f_input: FoldingInput,
         x_0_mask: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        """Perturb base-bridge x0 chain poses while retaining clean supervision."""
+        """Apply the original high-time chain-rigid x0 corruption contract."""
         batch_size, num_samples, num_atoms, _ = x_0.shape
-        if self.train_x_0_perturb_prob == 0.0 or (
-            self.train_x_0_perturb_rotation_deg == 0.0
-            and self.train_x_0_perturb_translation_distance == 0.0
-        ):
-            time_eligible = (t >= self.train_x_0_perturb_time_min) & (
-                t < self.train_x_0_perturb_time_max
-            )
+        if self.train_x_0_perturb_prob == 0.0:
+            time_eligible = t > self.train_x_0_perturb_time_min
             false_mask = torch.zeros_like(time_eligible)
             zero = torch.zeros_like(t)
             return {
@@ -899,18 +840,13 @@ class KFoldECSI(BaseStructureModule):
         )
         chain_counts = (atom_in_chain & resolved_mask[:, :, None]).sum(dim=1)
         chain_centers = chain_sums / chain_counts[:, None, :, None].clamp_min(1)
-        chain_rotations = self._fixed_axis_angle_rotations(
+        chain_rotations = random_rotations_torch(
             (batch_size, num_samples, num_chains),
-            angle_degrees=self.train_x_0_perturb_rotation_deg,
             dtype=x_0.dtype,
             device=x_0.device,
         )
-        chain_translations = self._fixed_direction_translations(
-            (batch_size, num_samples, num_chains),
-            distance=self.train_x_0_perturb_translation_distance,
-            dtype=x_0.dtype,
-            device=x_0.device,
-        )
+        chain_translations = torch.randn_like(chain_centers)
+        chain_translations *= self.train_x_0_perturb_translation_std
         atom_centers = torch.gather(chain_centers, dim=2, index=chain_index_xyz)
         atom_translations = torch.gather(chain_translations, dim=2, index=chain_index_xyz)
         rotation_index = atom_chain_index[:, None, :, None, None].expand(
@@ -922,14 +858,16 @@ class KFoldECSI(BaseStructureModule):
             + atom_centers
             + atom_translations
         )
+        apply_atom_mask = applied[..., None, None] & atom_is_valid[:, None, :, None]
+        x_0_perturbed = torch.where(apply_atom_mask, transformed, x_0)
         expanded_mask = x_0_mask.expand(-1, num_samples, -1)
-        transformed = transformed.masked_fill(~expanded_mask[..., None], 0.0)
         aligned = custom_rigid_align(
-            transformed,
-            x_0,
+            x_0_perturbed,
+            x_T,
             expanded_mask,
-            output_mask=expanded_mask,
+            rotation_only=True,
         )
+        aligned = do_centering(aligned, mask=expanded_mask)
         apply_mask = applied[..., None, None] & expanded_mask[..., None]
         x_0_bridge = torch.where(apply_mask, aligned, x_0)
         x_0_rmsd = self._masked_coordinate_rmsd(x_0_bridge - x_0, expanded_mask)
@@ -1003,6 +941,7 @@ class KFoldECSI(BaseStructureModule):
         # its roots from the clean x_0 returned below.
         perturb = self._perturb_x_0(
             x_0=x_0,
+            x_T=x_T,
             t=t,
             f_input=f_input,
             x_0_mask=x_0_mask,

@@ -3,17 +3,16 @@ from types import MethodType, SimpleNamespace
 import pytest
 import torch
 
+import kfold.model.modules.structure.ecsi as ecsi_module
 from kfold.model.modules.structure.ecsi import KFoldECSI
 from kfold.training.training_module import KFoldTrainingModule
 
 
 def make_module(**overrides: object) -> KFoldECSI:
     values: dict[str, object] = {
-        "train_x_0_perturb_time_min": 0.4,
-        "train_x_0_perturb_time_max": 0.8,
+        "train_x_0_perturb_time_min": 0.7,
         "train_x_0_perturb_prob": 1.0,
-        "train_x_0_perturb_rotation_deg": 8.0,
-        "train_x_0_perturb_translation_distance": 1.2,
+        "train_x_0_perturb_translation_std": 4.0,
     }
     values.update(overrides)
     return KFoldECSI(KFoldECSI.Config(**values), score_model=object())  # type: ignore[arg-type]
@@ -30,7 +29,7 @@ def make_endpoint_input() -> SimpleNamespace:
     )
 
 
-def make_x_0() -> tuple[torch.Tensor, torch.Tensor]:
+def make_endpoints() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     x_0 = torch.tensor(
         [
             [
@@ -53,12 +52,13 @@ def make_x_0() -> tuple[torch.Tensor, torch.Tensor]:
             ]
         ]
     )
-    return x_0, torch.ones((1, 1, 6), dtype=torch.bool)
+    x_T = x_0 + torch.tensor([5.0, -3.0, 2.0])
+    return x_0, x_T, torch.ones((1, 1, 6), dtype=torch.bool)
 
 
 def test_disabled_selection_does_not_consume_rng() -> None:
     module = make_module(train_x_0_perturb_prob=0.0)
-    t = torch.tensor([[0.5, 0.6]])
+    t = torch.tensor([[0.8, 0.9]])
     chain_count = torch.tensor([2])
     torch.manual_seed(3)
     module._sample_x_0_perturb_masks(t=t, resolved_chain_count=chain_count)
@@ -68,42 +68,23 @@ def test_disabled_selection_does_not_consume_rng() -> None:
     torch.testing.assert_close(observed, expected)
 
 
-def test_time_bounds_are_lower_closed_and_upper_open() -> None:
+def test_time_threshold_is_strictly_above_point_seven() -> None:
     module = make_module()
-    t = torch.tensor([[0.3999, 0.4, 0.7999, 0.8]])
+    t = torch.tensor([[0.6999, 0.7, 0.7001, 0.9999]])
     masks = module._sample_x_0_perturb_masks(t=t, resolved_chain_count=torch.tensor([2]))
-    assert masks["applied"].tolist() == [[False, True, True, False]]
+    assert masks["applied"].tolist() == [[False, False, True, True]]
 
 
-def test_rotation_and_translation_have_fixed_magnitudes() -> None:
+def test_chain_internal_distances_and_legacy_centered_frame_are_preserved() -> None:
     module = make_module()
-    torch.manual_seed(5)
-    rotations = module._fixed_axis_angle_rotations(
-        (128,), angle_degrees=8.0, dtype=torch.float64, device=torch.device("cpu")
-    )
-    traces = rotations.diagonal(dim1=-2, dim2=-1).sum(dim=-1)
-    angles = torch.acos(((traces - 1.0) / 2.0).clamp(-1.0, 1.0))
-    torch.testing.assert_close(
-        angles,
-        torch.full_like(angles, torch.deg2rad(torch.tensor(8.0)).item()),
-        rtol=1e-10,
-        atol=2e-9,
-    )
-    translations = module._fixed_direction_translations(
-        (128,), distance=1.2, dtype=torch.float64, device=torch.device("cpu")
-    )
-    torch.testing.assert_close(
-        translations.norm(dim=-1), torch.full((128,), 1.2, dtype=torch.float64)
-    )
-
-
-def test_chain_internal_distances_and_clean_frame_are_preserved() -> None:
-    module = make_module()
-    x_0, mask = make_x_0()
+    x_0, x_T, mask = make_endpoints()
+    clean_x_0 = x_0.clone()
+    clean_x_T = x_T.clone()
     torch.manual_seed(7)
     out = module._perturb_x_0(
         x_0=x_0,
-        t=torch.tensor([[0.5, 0.9]]),
+        x_T=x_T,
+        t=torch.tensor([[0.8, 0.5]]),
         f_input=make_endpoint_input(),
         x_0_mask=mask,
     )
@@ -115,12 +96,49 @@ def test_chain_internal_distances_and_clean_frame_are_preserved() -> None:
         actual = torch.cdist(perturbed[0, 0, chain_atoms], perturbed[0, 0, chain_atoms])
         torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
     torch.testing.assert_close(
-        perturbed[0, 0].mean(dim=0), x_0[0, 0].mean(dim=0), atol=1e-5, rtol=0
+        perturbed[0, 0].mean(dim=0), torch.zeros(3), atol=1e-5, rtol=0
+    )
+    assert torch.equal(x_0, clean_x_0)
+    assert torch.equal(x_T, clean_x_T)
+
+
+def test_legacy_random_so3_and_axiswise_gaussian_translation_are_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = make_module()
+    x_0, x_T, mask = make_endpoints()
+    captured: dict[str, torch.Tensor | tuple[int, ...]] = {}
+
+    def identity_rotations(
+        shape: tuple[int, ...], *, dtype: torch.dtype, device: torch.device
+    ) -> torch.Tensor:
+        captured["rotation_shape"] = shape
+        return torch.eye(3, dtype=dtype, device=device).expand(*shape, 3, 3)
+
+    def unit_gaussian(values: torch.Tensor) -> torch.Tensor:
+        translations = torch.ones_like(values)
+        captured["translations"] = translations
+        return translations
+
+    monkeypatch.setattr(ecsi_module, "random_rotations_torch", identity_rotations)
+    monkeypatch.setattr(torch, "randn_like", unit_gaussian)
+    module._perturb_x_0(
+        x_0=x_0,
+        x_T=x_T,
+        t=torch.tensor([[0.8, 0.9]]),
+        f_input=make_endpoint_input(),
+        x_0_mask=mask,
+    )
+
+    assert captured["rotation_shape"] == (1, 2, 2)
+    torch.testing.assert_close(
+        captured["translations"],  # type: ignore[arg-type]
+        torch.full((1, 2, 2, 3), 4.0),
     )
 
 
-def test_monomer_and_zero_strength_are_exact_noops() -> None:
-    x_0, mask = make_x_0()
+def test_monomer_is_an_exact_noop() -> None:
+    x_0, x_T, mask = make_endpoints()
     monomer_input = make_endpoint_input()
     monomer_input.chain.pad_mask = torch.tensor([[True, False]])
     monomer_input.atom.token_index = torch.tensor([[0, 0, 0, 0, 0, 0]])
@@ -128,25 +146,13 @@ def test_monomer_and_zero_strength_are_exact_noops() -> None:
     module = make_module()
     monomer = module._perturb_x_0(
         x_0=x_0,
-        t=torch.tensor([[0.5, 0.6]]),
+        x_T=x_T,
+        t=torch.tensor([[0.8, 0.9]]),
         f_input=monomer_input,
         x_0_mask=mask,
     )
     assert torch.equal(monomer["x_0_bridge"], x_0)
     assert not monomer["applied_mask"].any()
-
-    zero_module = make_module(
-        train_x_0_perturb_rotation_deg=0.0,
-        train_x_0_perturb_translation_distance=0.0,
-    )
-    zero = zero_module._perturb_x_0(
-        x_0=x_0,
-        t=torch.tensor([[0.5, 0.6]]),
-        f_input=make_endpoint_input(),
-        x_0_mask=mask,
-    )
-    assert torch.equal(zero["x_0_bridge"], x_0)
-    assert not zero["applied_mask"].any()
 
 
 def test_bridge_delta_is_alpha_scaled_endpoint_delta() -> None:
@@ -167,6 +173,7 @@ def test_bridge_delta_is_alpha_scaled_endpoint_delta() -> None:
         self: KFoldECSI,
         *,
         x_0: torch.Tensor,
+        x_T: torch.Tensor,
         t: torch.Tensor,
         f_input: SimpleNamespace,
         x_0_mask: torch.Tensor,
@@ -195,24 +202,24 @@ def test_bridge_delta_is_alpha_scaled_endpoint_delta() -> None:
     assert torch.equal(out["x_0"], seen["x_0"])
 
 
-def test_logistic_schedule_requests_about_eight_percent() -> None:
-    module = make_module(train_x_0_perturb_prob=0.5)
+def test_logistic_schedule_requests_about_two_percent() -> None:
+    module = make_module(train_x_0_perturb_prob=0.2)
     torch.manual_seed(19)
     t = module.sample_noise_level((1, 200000), torch.device("cpu"))
     masks = module._sample_x_0_perturb_masks(t=t, resolved_chain_count=torch.tensor([2]))
-    assert abs(masks["requested"].float().mean().item() - 0.0805) < 0.003
+    assert abs(masks["requested"].float().mean().item() - 0.0183) < 0.002
 
 
 def test_telemetry_reports_actual_and_time_binned_dose() -> None:
     metrics: dict[str, torch.Tensor] = {}
     out = {
-        "t": torch.tensor([[0.45, 0.55, 0.75, 0.85]]),
-        "x_0_perturb_time_eligible_mask": torch.tensor([[True, True, True, False]]),
-        "x_0_perturb_eligible_mask": torch.tensor([[True, True, True, False]]),
-        "x_0_perturb_requested_mask": torch.tensor([[True, False, True, False]]),
-        "x_0_perturb_applied_mask": torch.tensor([[True, False, True, False]]),
-        "x_0_perturb_x_0_rmsd": torch.tensor([[1.0, 0.0, 3.0, 0.0]]),
-        "x_0_perturb_x_t_rmsd": torch.tensor([[0.55, 0.0, 0.75, 0.0]]),
+        "t": torch.tensor([[0.65, 0.75, 0.85, 0.95]]),
+        "x_0_perturb_time_eligible_mask": torch.tensor([[False, True, True, True]]),
+        "x_0_perturb_eligible_mask": torch.tensor([[False, True, True, True]]),
+        "x_0_perturb_requested_mask": torch.tensor([[False, True, False, True]]),
+        "x_0_perturb_applied_mask": torch.tensor([[False, True, False, True]]),
+        "x_0_perturb_x_0_rmsd": torch.tensor([[0.0, 1.0, 0.0, 3.0]]),
+        "x_0_perturb_x_t_rmsd": torch.tensor([[0.0, 0.55, 0.0, 0.75]]),
         "x_0_perturb_resolved_chain_count": torch.tensor([[2, 2, 2, 2]]),
     }
     KFoldTrainingModule._add_x_0_perturb_metrics(
@@ -225,7 +232,7 @@ def test_telemetry_reports_actual_and_time_binned_dose() -> None:
     )
     torch.testing.assert_close(metrics["x_0_perturb_x_t_rmsd_mean"], torch.tensor(0.65))
     torch.testing.assert_close(
-        metrics["x_0_perturb_t04_05_applied_fraction"], torch.tensor(1.0)
+        metrics["x_0_perturb_t07_08_applied_fraction"], torch.tensor(1.0)
     )
 
 
@@ -234,9 +241,8 @@ def test_telemetry_reports_actual_and_time_binned_dose() -> None:
     [
         ({"train_x_0_perturb_prob": -0.1}, "must lie in"),
         ({"train_x_0_perturb_prob": 1.1}, "must lie in"),
-        ({"train_x_0_perturb_rotation_deg": -1.0}, "non-negative"),
-        ({"train_x_0_perturb_translation_distance": -1.0}, "non-negative"),
-        ({"train_x_0_perturb_time_min": 0.9}, "times must lie"),
+        ({"train_x_0_perturb_translation_std": -1.0}, "non-negative"),
+        ({"train_x_0_perturb_time_min": 1.0}, "time support"),
     ],
 )
 def test_invalid_x_0_perturbation_config_is_rejected(

@@ -34,11 +34,9 @@ def test_soar_x0_preset_inherits_latest_stage3_data_contract() -> None:
 def test_soar_x0_preset_changes_only_declared_training_surfaces() -> None:
     config = load_config(REPO_ROOT / "configs/train-ecsi-stage3-soar-x0.yaml")
     assert config.model.patch_pair_geometry.enabled is True
-    assert config.model.diffusion_head.train_x_0_perturb_time_min == 0.4
-    assert config.model.diffusion_head.train_x_0_perturb_time_max == 0.8
-    assert config.model.diffusion_head.train_x_0_perturb_prob == 0.5
-    assert config.model.diffusion_head.train_x_0_perturb_rotation_deg == 8.0
-    assert config.model.diffusion_head.train_x_0_perturb_translation_distance == 1.2
+    assert config.model.diffusion_head.train_x_0_perturb_time_min == 0.7
+    assert config.model.diffusion_head.train_x_0_perturb_prob == 0.2
+    assert config.model.diffusion_head.train_x_0_perturb_translation_std == 4.0
     assert config.train.global_hparams.diffusion_batch_size == 32
     assert config.train.load_opt_state is False
     assert config.train.load_global_step is True
