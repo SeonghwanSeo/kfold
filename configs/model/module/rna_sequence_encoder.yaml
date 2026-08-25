@@ -1,5 +1,4 @@
-path: ???
-chain_type: 'rna'
+cache_dir: null
 vocab_size: 64
 d_model: 960
 n_heads: 15

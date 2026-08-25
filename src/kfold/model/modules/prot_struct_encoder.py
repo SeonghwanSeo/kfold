@@ -79,6 +79,12 @@ class StructureEncoder(torch.nn.Module):
             snapshot_download(
                 repo_id=HF_REPO_ID,
                 cache_dir=self.cfg.cache_dir,
+                allow_patterns=[
+                    "config.yaml",
+                    "3B_encoder.pt",
+                    "backbone_tokenizer.pt",
+                    "fullatom_tokenizer.pt",
+                ],
             )
         )
         encoder_path = snapshot_path / "3B_encoder.pt"
@@ -279,22 +285,6 @@ class StructureEncoder(torch.nn.Module):
         ):
             return self._forward(f_input)
 
-    @torch.compiler.disable
-    def get_seq_mask(self, f_input: FoldingInput) -> torch.Tensor:
-        """Prepare output mask"""
-        if self.chain_type == "protein":
-            return f_input.sequence.pad_mask & f_input.sequence.is_protein
-        else:
-            raise ValueError(f"Unsupported chain type: {self.chain_type}")
-
-    @torch.compiler.disable
-    def get_token_mask(self, f_input: FoldingInput) -> torch.Tensor:
-        """Prepare output mask"""
-        if self.chain_type == "protein":
-            return f_input.token.pad_mask & f_input.token.is_protein
-        else:
-            raise ValueError(f"Unsupported chain type: {self.chain_type}")
-
     def _forward(self, f_input: FoldingInput) -> torch.Tensor:
         """Forward pass of sequence representation module.
 
@@ -318,7 +308,7 @@ class StructureEncoder(torch.nn.Module):
         # HACK: (Seonghwan) Since we use the shared sequence vocab for both sequence
         # and structure encoder, structure encoder does not have vocab ids for
         # dna and rna tokens. We set those to 0 to prevent out-of-vocab errors.
-        seq_mask = self.get_seq_mask(f_input)
+        seq_mask = f_input.sequence.pad_mask & f_input.sequence.is_protein
         seq_token_ids = seq_token_ids.masked_fill(~seq_mask, 0)
 
         seq_id = f_input.sequence.asym_id
@@ -360,6 +350,6 @@ class StructureEncoder(torch.nn.Module):
         x = x[batch_index, seq_token_index]  # [B, Ntoken, D]
 
         # mask out non-protein tokens
-        token_mask = self.get_token_mask(f_input)
+        token_mask = f_input.token.pad_mask & f_input.token.is_protein
         x.masked_fill_(~token_mask[..., None], 0.0)
         return x

@@ -17,6 +17,7 @@ dependencies = [
   "tqdm",
   "scipy",
   "omegaconf",
+  "huggingface-hub",
   "rdkit",
   "einops",
   "gemmi",

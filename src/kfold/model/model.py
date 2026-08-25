@@ -16,8 +16,9 @@ from kfold.model.modules import (
     distogram_head,
     input_embedder,
     patch_geometry,
-    sequence_encoder,
-    structure_encoder,
+    prot_seq_encoder,
+    prot_struct_encoder,
+    rna_seq_encoder,
     tri_stack,
 )
 from kfold.model.modules.structure import sample_diffusion, score_model
@@ -53,9 +54,9 @@ class KFoldConfig:
     # Sub-module configurations
     input_embedder: input_embedder.InputEmbedder.Config
     apo_module: apo_module.ApoModule.Config
-    protein_sequence_encoder: sequence_encoder.SequenceEncoder.Config
-    protein_structure_encoder: structure_encoder.StructureEncoder.Config
-    rna_sequence_encoder: sequence_encoder.SequenceEncoder.Config
+    protein_sequence_encoder: prot_seq_encoder.ProteinSequenceEncoder.Config
+    protein_structure_encoder: prot_struct_encoder.StructureEncoder.Config
+    rna_sequence_encoder: rna_seq_encoder.RNASequenceEncoder.Config
     trunk: TrunkConfig
     parcae: ParcaeConfig
     score_model: score_model.DiffusionModule.Config
@@ -135,13 +136,13 @@ class KFold(torch.nn.Module):
         self.kernel_config = kernel_config
 
         # Initialize pre-trained sequence and structure encoders.
-        self.prot_seq_encoder = sequence_encoder.SequenceEncoder(
+        self.prot_seq_encoder = prot_seq_encoder.ProteinSequenceEncoder(
             config.protein_sequence_encoder
         )
-        self.rna_seq_encoder = sequence_encoder.SequenceEncoder(
+        self.rna_seq_encoder = rna_seq_encoder.RNASequenceEncoder(
             config.rna_sequence_encoder
         )
-        self.prot_struct_encoder = structure_encoder.StructureEncoder(
+        self.prot_struct_encoder = prot_struct_encoder.StructureEncoder(
             config.protein_structure_encoder
         )
 

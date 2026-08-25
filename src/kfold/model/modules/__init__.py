@@ -4,8 +4,9 @@ from . import (
     distogram_head,
     input_embedder,
     patch_geometry,
-    sequence_encoder,
+    prot_seq_encoder,
+    prot_struct_encoder,
+    rna_seq_encoder,
     structure,
-    structure_encoder,
     tri_stack,
 )

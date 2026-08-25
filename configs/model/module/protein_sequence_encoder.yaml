@@ -1,7 +1,4 @@
-path: ???
-chain_type: 'protein'
 vocab_size: 64
 d_model: 2304
 n_heads: 36
 n_layers: 48
-use_moe: false
