@@ -214,5 +214,3 @@ DATASET = Registry("dataset")
 DATA_SAMPLER = Registry("data_sampler")
 DATA_FILTER = Registry("data_filter")
 DATA_CROPPER = Registry("data_cropper")
-
-STRUCTURE_MODULE = Registry("structure_module")

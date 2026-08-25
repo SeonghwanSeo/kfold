@@ -1,9 +1,0 @@
-channel_apo: 64
-channel_z: 256
-num_blocks: 2
-num_tri_heads: 4
-dropout: 0.1
-num_distogram_bins: 39
-min_dist: 3.25
-max_dist: 50.75
-blocks_per_ckpt: null

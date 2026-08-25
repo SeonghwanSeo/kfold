@@ -12,6 +12,7 @@ Models the transition from source (apo) to target (holo) conformations.
 
 import dataclasses
 import math
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import TypeVar
 
@@ -20,18 +21,77 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives.utils import expand_dim
+from kfold.utils.config import configurable
 from kfold.utils.geometry.random_augment import (
     CenterRandomAugmentation,
     do_centering,
     random_rotations_torch,
 )
 from kfold.utils.geometry.rigid_align import get_rigid_transform_torch
-from kfold.utils.registry import STRUCTURE_MODULE
 
-from .sample_diffusion import BaseStructureModule
 from .score_model import DiffusionModule
 
 _T = TypeVar("_T", float, torch.Tensor)
+
+
+class BaseStructureModule(ABC):
+    """High-level framework for structure generation."""
+
+    @dataclasses.dataclass(kw_only=True)
+    class Config: ...
+
+    def __init__(self, cfg: Config, score_model: DiffusionModule):
+        self.cfg = cfg
+        self.score_model = score_model
+
+    @abstractmethod
+    def sample_structure(
+        self,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        z: torch.Tensor,
+        num_steps: int = 100,
+        num_samples: int = 1,
+        chunk_size: int | None = None,
+        return_traj: bool = False,
+    ) -> dict[str, torch.Tensor]:
+        """Sample structures via diffusion sampling."""
+
+    @abstractmethod
+    def get_sampling_schedule(self, num_steps: int) -> list[float]:
+        """Get the sampling schedule."""
+
+    def training_step(
+        self,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        z: torch.Tensor,
+        diffusion_batch_size: int,
+    ) -> dict[str, torch.Tensor]:
+        raise NotImplementedError("training_step must be implemented in subclass")
+
+    def _forward_train(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        z: torch.Tensor,
+        **kwargs,
+    ) -> torch.Tensor:
+        raise NotImplementedError("forward_train must be implemented in subclass")
+
+    @abstractmethod
+    def sample_noise_level(self, shape: tuple, device: torch.device) -> torch.Tensor:
+        """Sample training noise levels."""
+
+    @abstractmethod
+    def sample_train_input(
+        self,
+        f_input: FoldingInput,
+        diffusion_batch_size: int,
+    ) -> dict[str, torch.Tensor]:
+        """Sample structure-module training inputs."""
 
 
 # === Utility functions with type flexibility and numerical stability handling === #
@@ -231,7 +291,7 @@ class ECSISOARConfig:
         return num_roots * self.auxiliary_samples_per_root
 
 
-@STRUCTURE_MODULE.register()
+@configurable
 class KFoldECSI(BaseStructureModule):
     r"""Endpoint-Conditioned Stochastic Interpolant module for structure prediction.
 
@@ -249,11 +309,11 @@ class KFoldECSI(BaseStructureModule):
     Reference:
     - ECSI: Zhang et al., "Exploring the Design Space of Diffusion Bridge Models"
 
-    NOTE: We design our own stochastic sampler for structure prediction.
-    While ECSI uses a stochastic sampler with SDE formulation, we design similar sampler
-    to EDM with churn & ODE formulation.
+    NOTE: K-Fold uses a hybrid churn and ODE sampler specialized for structure
+    prediction.
     """
 
+    @dataclasses.dataclass(kw_only=True)
     class Config(BaseStructureModule.Config):
         """Configuration for the ECSI structure module.
 

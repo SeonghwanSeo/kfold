@@ -30,7 +30,7 @@ K-Fold takes a YAML or JSON input file defining the molecular entities and their
 ```bash
 # Single-GPU Inference
 python scripts/inference.py \
-  --config configs/model/kfold-ecsi.yaml \
+  --config configs/kfold.yaml \
   --checkpoint path/to/model.ckpt \
   --input examples/casp15_h1106.yaml \
   --out_dir ./results/

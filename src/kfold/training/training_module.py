@@ -17,7 +17,7 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.model.model_train import KFoldConfig, KFoldForTrain
-from kfold.model.modules.structure.ecsi import ECSISOARConfig
+from kfold.model.modules.ecsi import ECSISOARConfig
 from kfold.training.utils.binned_loss_logging import (
     EntityBinConfig,
     EntityBinnedLossLogger,
@@ -176,20 +176,14 @@ def _training_metric_log_name(metric_name: str) -> str:
     return f"train/{metric_name}"
 
 
-def _get_structure_module_for_binning(model: Any) -> Any:
-    """Return the structure module that defines time/sigma bounds for binning."""
-    diffusion_head = getattr(model, "diffusion_head", None)
-    if diffusion_head is not None:
-        return diffusion_head
-
-    structure_module = getattr(model, "structure_module", None)
-    if structure_module is not None:
-        return structure_module
-
-    raise AttributeError(
-        "Model must expose either diffusion_head or structure_module for "
-        "time-binned loss logging."
-    )
+def _get_diffusion_head_for_binning(model: Any) -> Any:
+    """Return the ECSI head that defines the time bounds used for binning."""
+    try:
+        return model.diffusion_head
+    except AttributeError as error:
+        raise AttributeError(
+            "Model must expose diffusion_head for time-binned loss logging."
+        ) from error
 
 
 def _binary_average_precision(
@@ -231,7 +225,6 @@ class LossConfig(_Config):
     weights: dict[str, float]
     diffusion_loss: Any
     patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
-    interface_contact_loss: Any = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -428,11 +421,6 @@ class KFoldTrainingModule(pl.LightningModule):
         self.patch_geometry_loss = loss_fn.patch_geometry.PatchPairGeometryLoss(
             **loss_config.patch_geometry_loss
         )
-        self.interface_contact_loss = (
-            loss_fn.interface_contact.InterfaceContactBalancedLoss(
-                **loss_config.interface_contact_loss
-            )
-        )
 
         # Diffusion loss
         diffusion_loss_config = loss_config.diffusion_loss
@@ -561,7 +549,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 if self._timebin_enabled and torch.is_tensor(t_for_bins):
                     self.time_binned_logger.update(
                         t_hat=t_for_bins,
-                        structure_module=_get_structure_module_for_binning(self.model),
+                        diffusion_head=_get_diffusion_head_for_binning(self.model),
                         diffusion_per_sample=diffusion_per_sample,
                         distogram_loss_per_batch=distogram_loss_per_batch,
                         loss_weights=self.loss_weights,
@@ -597,18 +585,8 @@ class KFoldTrainingModule(pl.LightningModule):
                 distogram_out=model_output["distogram"],
                 f_input=f_input,
             )
-            interface_contact_weight = self.loss_weights["interface_contact"]
-            if interface_contact_weight > 0:
-                interface_contact_loss, interface_contact_metrics = (
-                    self.interface_contact_loss(
-                        distogram_out=model_output["distogram"],
-                        f_input=f_input,
-                    )
-                )
-            else:
-                interface_contact_loss, interface_contact_metrics = 0.0, {}
             patch_weight = self.loss_weights["patch_geometry"]
-            if patch_weight > 0 and "patch_geometry" in model_output:
+            if patch_weight > 0:
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
                     model_output["patch_geometry"]
                 )
@@ -616,7 +594,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 patch_geometry_loss, patch_geometry_metrics = 0.0, {}
         else:
             distogram_loss, distogram_metrics = 0.0, {}
-            interface_contact_loss, interface_contact_metrics = 0.0, {}
             patch_geometry_loss, patch_geometry_metrics = 0.0, {}
 
         if self.train_diffusion_head:
@@ -714,14 +691,12 @@ class KFoldTrainingModule(pl.LightningModule):
             + loss_weights["distogram"] * distogram_loss
             + loss_weights["confidence"] * confidence_loss
             + loss_weights["patch_geometry"] * patch_geometry_loss
-            + loss_weights["interface_contact"] * interface_contact_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
         # Log loss and metrics
         all_metrics = (
             distogram_metrics
-            | interface_contact_metrics
             | patch_geometry_metrics
             | diffusion_metrics
             | confidence_metrics
@@ -1084,7 +1059,6 @@ class KFoldTrainingModule(pl.LightningModule):
             A dictionary containing loss metrics.
         """
         metrics: dict[str, torch.Tensor] = {}
-        alpha_chain_com = self.loss_weights["chain_com"]
         alpha_bond = self.loss_weights["bond"]
         alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
         if supervision_weights is None:
@@ -1104,20 +1078,9 @@ class KFoldTrainingModule(pl.LightningModule):
             return (values * weights).sum() / weights.sum().clamp(min=1.0)
 
         # Equations 3-4
-        L_mse, L_chain_com = self.weighted_mse_loss(
-            x_pred, x_true, f_input, compute_chain_com_loss=alpha_chain_com > 0
-        )
+        L_mse = self.weighted_mse_loss(x_pred, x_true, f_input)
         L_mse_weighted = L_mse * per_sample_weights  # [B, Nsample]
         metrics["mse_loss"] = weighted_mean(L_mse_weighted.detach(), supervision_weights)
-
-        if alpha_chain_com > 0:
-            assert L_chain_com is not None
-            L_chain_com_weighted = L_chain_com * per_sample_weights  # [B, Nsample]
-            metrics["chain_com_loss"] = weighted_mean(
-                L_chain_com_weighted.detach(), supervision_weights
-            )
-        else:
-            L_chain_com_weighted = None
 
         # Equation 5
         if alpha_bond > 0:
@@ -1142,10 +1105,6 @@ class KFoldTrainingModule(pl.LightningModule):
         # NOTE: per-sample weights are already applied in L_mse and L_bond
         # L_diff = loss_weights(L_mse + α_com * L_com + α_bond * L_bond) + L_smooth_lddt
         L_diffusion_per_sample = L_mse_weighted
-        if L_chain_com_weighted is not None:
-            L_diffusion_per_sample = (
-                L_diffusion_per_sample + alpha_chain_com * L_chain_com_weighted
-            )
         if L_bond_weighted is not None:
             L_diffusion_per_sample = L_diffusion_per_sample + alpha_bond * L_bond_weighted
         if L_smooth_lddt is not None:
@@ -1171,8 +1130,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 "mse_loss": L_mse_weighted.detach(),
                 "diffusion_loss": L_diffusion_per_sample.detach(),
             }
-            if L_chain_com_weighted is not None:
-                payload["chain_com_loss"] = L_chain_com_weighted.detach()
             if L_bond_weighted is not None:
                 payload["bond_loss"] = L_bond_weighted.detach()
             if L_smooth_lddt is not None:

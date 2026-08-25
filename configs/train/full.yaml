@@ -16,8 +16,7 @@ init_from_ema: []
 # Training parameters for multi-gpu setup.
 global_hparams:
   batch_size: 1
-  diffusion_batch_size: 48
-  global_batch_size: 256
+  global_batch_size: 160
   num_global_steps_per_epoch: 1000
 
 # Compilation settings
@@ -122,7 +121,7 @@ optimizer:
   eps: 1e-8
   lr_scheduler: af3
   base_lr: 0.0
-  max_lr: 0.0018
+  max_lr: 0.0012
   lr_warmup_no_steps: 1000
   lr_start_decay_after_n_steps: 50000
   lr_decay_every_n_steps: 50000
@@ -136,30 +135,14 @@ loss:
     distogram: 3e-2
     diffusion: 4.0
     confidence: 1e-4
+    patch_geometry: 0.0
     # Diffusion loss weights
-    chain_com: 0.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
-    # Uniform patch geometry supervision is opt-in per model/config.
-    patch_geometry: 0.0
-    interface_contact: 0
 
-  # Uniform patch-pair COM geometry auxiliary loss. This is off by default;
-  # enable both model.patch_pair_geometry.enabled and this global weight for
-  # an explicit patch-supervision experiment.
   patch_geometry_loss:
     near_cutoff: 12.0
     ranking_weight: 1.0
-
-  # Hard-pair exact-bin CE on active inter-chain interfaces.
-  # This is inactive unless loss.weights.interface_contact is positive.
-  interface_contact_loss:
-    contact_cutoff: 8.0
-    positive_weight: 0.75
-    negative_weight: 0.25
-    focal_gamma: 2.0
-    fp_budget_ratio: 4.0
-    eps: 1e-6
 
   # Diffusion loss
   diffusion_loss:

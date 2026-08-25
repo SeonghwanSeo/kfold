@@ -31,34 +31,15 @@ def _entitybin_labels(nbins: int) -> list[str]:
     return [f"interval{i}" for i in range(1, nbins + 1)]
 
 
-def _get_time_bounds(structure_module: Any) -> tuple[float, float]:
-    """Return (t_min, t_max) bounds used for u-normalization.
-
-    - ECSI: time_min/max are already in [0, 1].
-    - Legacy/config-wrapped ECSI: sampling.time_min/max are already in [0, 1].
-    - EDM/AF3/Boltz-style: sigma_min/max are relative and typically scaled by sigma_data.
-    """
-    if hasattr(structure_module, "sampling"):
-        t_min = float(structure_module.sampling.time_min)
-        t_max = float(structure_module.sampling.time_max)
-    elif hasattr(structure_module, "time_min") and hasattr(structure_module, "time_max"):
-        t_min = float(structure_module.time_min)
-        t_max = float(structure_module.time_max)
-    elif hasattr(structure_module, "sigma_min") and hasattr(
-        structure_module, "sigma_max"
-    ):
-        t_min = float(structure_module.sigma_min)
-        t_max = float(structure_module.sigma_max)
-    else:
+def _get_time_bounds(diffusion_head: Any) -> tuple[float, float]:
+    """Return the ECSI time bounds used for u-normalization."""
+    try:
+        return float(diffusion_head.time_min), float(diffusion_head.time_max)
+    except AttributeError as error:
         raise AttributeError(
-            "structure_module must expose either sampling.time_min/time_max, "
-            "time_min/time_max, or sigma_min/sigma_max for time-binned logging."
-        )
-    if hasattr(structure_module, "sigma_data") and t_max > 1.0:
-        sigma_data = float(structure_module.sigma_data)
-        t_min *= sigma_data
-        t_max *= sigma_data
-    return t_min, t_max
+            "diffusion_head must expose time_min and time_max for time-binned "
+            "loss logging."
+        ) from error
 
 
 def _per_bin_update(
@@ -142,7 +123,6 @@ class TimeBinnedLossLogger(torch.nn.Module):
             for name in [
                 "loss",
                 "mse_loss",
-                "chain_com_loss",
                 "bond_loss",
                 "smooth_lddt_loss",
                 "diffusion_loss",
@@ -154,7 +134,7 @@ class TimeBinnedLossLogger(torch.nn.Module):
         self,
         *,
         t_hat: torch.Tensor,
-        structure_module: Any,
+        diffusion_head: Any,
         diffusion_per_sample: dict[str, torch.Tensor],
         distogram_loss_per_batch: torch.Tensor,
         loss_weights: dict[str, float],
@@ -164,7 +144,7 @@ class TimeBinnedLossLogger(torch.nn.Module):
         if self.nbins <= 0:
             return
 
-        t_min, t_max = _get_time_bounds(structure_module)
+        t_min, t_max = _get_time_bounds(diffusion_head)
         denom = max(t_max - t_min, 1e-12)
         u = ((t_hat - t_min) / denom).clamp_(0.0, 1.0)
 
@@ -227,7 +207,6 @@ class EntityBinnedLossLogger(torch.nn.Module):
             for name in [
                 "loss",
                 "mse_loss",
-                "chain_com_loss",
                 "bond_loss",
                 "smooth_lddt_loss",
                 "diffusion_loss",

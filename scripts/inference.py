@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument(
         "--config",
         type=pathlib.Path,
-        default=pathlib.Path("configs/model/kfold-ecsi.yaml"),
+        default=pathlib.Path("configs/kfold.yaml"),
         help="Path to the model configuration file.",
     )
     parser.add_argument(

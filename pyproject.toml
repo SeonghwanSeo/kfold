@@ -42,6 +42,3 @@ train = [
 preprocess = [
   'pdbeccdutils', # for ccd data handling
 ]
-
-[tool.pytest.ini_options]
-testpaths = ["tests/unit_tests"]

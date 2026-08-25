@@ -14,17 +14,17 @@ from kfold.model.modules import (
     apo_module,
     confidence_head,
     distogram_head,
+    ecsi,
     input_embedder,
     patch_geometry,
     prot_seq_encoder,
     prot_struct_encoder,
     rna_seq_encoder,
+    score_model,
     tri_stack,
 )
-from kfold.model.modules.structure import sample_diffusion, score_model
 from kfold.model.primitives import LayerNorm, Linear, LinearNoBias
 from kfold.utils.config import resolve_config
-from kfold.utils.registry import Registry
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ class KFoldConfig:
     trunk: TrunkConfig
     parcae: ParcaeConfig
     score_model: score_model.DiffusionModule.Config
-    diffusion_head: sample_diffusion.BaseStructureModule.Config
+    diffusion_head: ecsi.KFoldECSI.Config
     distogram_head: distogram_head.DistogramHead.Config
     confidence_head: confidence_head.ConfidenceHead.Config
     patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config = dataclasses.field(
@@ -205,9 +205,7 @@ class KFold(torch.nn.Module):
         self.score_model = score_model.DiffusionModule(
             config.score_model, kernel_config=kernel_config
         )
-        # NOTE: diffusion_head is not a torch.nn.Module
-        # TODO: After we fix the diffusion algorith, remove Registry.instantiate
-        self.diffusion_head = Registry.instantiate(
+        self.diffusion_head = ecsi.KFoldECSI(
             config.diffusion_head, score_model=self.score_model
         )
         self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
