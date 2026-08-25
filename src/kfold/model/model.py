@@ -366,7 +366,7 @@ class KFold(torch.nn.Module):
                 z,
                 num_steps,
                 num_samples,
-                chunk_size=5,
+                chunk_size=10,
                 return_traj=return_traj,
             )
 
