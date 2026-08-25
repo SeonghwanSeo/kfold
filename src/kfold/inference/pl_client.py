@@ -68,7 +68,7 @@ class KFoldInferenceClient(pl.LightningModule):
             apply_apo_structure_tokens(
                 f_input, struct_token_records, self.model.prot_struct_encoder
             )
-        dict_out, _ = self.model.inference(
+        dict_out = self.model.inference(
             f_input,
             num_recycles=self.num_trunk_recycles,
             num_steps=self.num_diffusion_steps,

@@ -2,7 +2,6 @@ import dataclasses
 import logging
 import math
 import pathlib
-import time
 from collections.abc import Mapping
 from typing import Self
 
@@ -244,7 +243,7 @@ class KFold(torch.nn.Module):
         num_samples: int = 5,
         return_embeddings: bool = False,
         return_traj: bool = False,
-    ) -> tuple[dict[str, dict[str, torch.Tensor]], dict[str, float]]:
+    ) -> dict[str, dict[str, torch.Tensor]]:
         """Run KFold structure prediction from a fully prepared input.
 
         Parameters
@@ -266,9 +265,6 @@ class KFold(torch.nn.Module):
             - distogram: predicted distogram logits.
             - diffusion: sampled structures from diffusion head.
             - confidence: predicted confidence metrics from confidence head.
-
-        time_logs : dict[str, float]
-            Dictionary containing time taken for each module during sampling.
         """
         # If input is not batched, add batch dimension for processing
         # and remove it from output at the end.
@@ -285,7 +281,7 @@ class KFold(torch.nn.Module):
             )
 
         # Sample structures
-        model_out, time_logs = self.sample(
+        model_out = self.sample(
             f_input,
             num_recycles,
             num_steps,
@@ -301,7 +297,7 @@ class KFold(torch.nn.Module):
                 for k, v in model_out.items()
             }
 
-        return model_out, time_logs
+        return model_out
 
     @torch.inference_mode()
     def sample(
@@ -312,7 +308,7 @@ class KFold(torch.nn.Module):
         num_samples: int = 5,
         return_embeddings: bool = False,
         return_traj: bool = False,
-    ) -> tuple[dict[str, dict[str, torch.Tensor]], dict[str, float]]:
+    ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold model for model training.
 
         Parameters
@@ -338,12 +334,8 @@ class KFold(torch.nn.Module):
             - distogram: predicted distogram logits.
             - diffusion: sampled structures from diffusion head.
             - confidence: predicted confidence metrics from confidence head.
-
-        time_logs : dict[str, float]
-            Dictionary containing time taken for each module during sampling.
         """
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
-        time_logs: dict[str, float] = {}
 
         if f_input.batch_size != 1:
             # TODO: Support batched inference.
@@ -352,11 +344,8 @@ class KFold(torch.nn.Module):
             )
 
         # Trunk with recycling
-        st = time.time()
         s_inputs, s_lm, z = self.run_trunk(f_input, num_recycles)
         z = z.float()
-        et = time.time()
-        time_logs["trunk"] = et - st
 
         if return_embeddings:
             dict_out["trunk"] = {
@@ -366,14 +355,10 @@ class KFold(torch.nn.Module):
             }
 
         # Distogram head
-        st = time.time()
         dict_out["distogram"] = self.distogram_head.forward_inference(f_input, z)
-        et = time.time()
-        time_logs["distogram_head"] = et - st
 
         # Diffusion head
         # pred_atom_coords: [B, Nsample, La, 3]
-        st = time.time()
         with torch.autocast(f_input.device.type, enabled=False):
             dict_out["diffusion"] = self.diffusion_head.sample_structure(
                 f_input,
@@ -384,10 +369,7 @@ class KFold(torch.nn.Module):
                 chunk_size=5,
                 return_traj=return_traj,
             )
-        et = time.time()
-        time_logs["diffusion_head"] = et - st
 
-        st = time.time()
         coords = dict_out["diffusion"]["coordinates"]
         dict_out["confidence"] = self.confidence_head(
             f_input,
@@ -397,10 +379,8 @@ class KFold(torch.nn.Module):
             coords,
             use_cuequiv_kernels=self.use_kernel,
         )
-        et = time.time()
-        time_logs["confidence_head"] = et - st
 
-        return dict_out, time_logs
+        return dict_out
 
     def _encode_lm_single(self, f_input: FoldingInput) -> torch.Tensor:
         """Merge the enabled pretrained encoders into the shared LM single."""

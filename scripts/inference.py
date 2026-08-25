@@ -282,7 +282,7 @@ def main():
                 apply_apo_structure_tokens(
                     f_input, struct_token_records, model.prot_struct_encoder
                 )
-            model_out, time_log = model.inference(  # noqa
+            model_out = model.inference(
                 f_input,
                 num_recycles=args.num_recycles,
                 num_steps=args.num_steps,
