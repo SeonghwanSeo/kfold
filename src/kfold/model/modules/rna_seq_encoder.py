@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import torch
 from huggingface_hub import hf_hub_download
 
+from kfold.constants.sequence import PAD_TOKEN_INDEX
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.seq_enc.transformer_stack import TransformerStack
 from kfold.utils.config import configurable
@@ -140,6 +141,7 @@ class RNASequenceEncoder(torch.nn.Module):
         # === Mask out invalid sequence tokens === #
         seq_mask = f_input.sequence.pad_mask & f_input.sequence.is_rna
         seq_id = seq_id.masked_fill(~seq_mask, -1)
+        input_ids = input_ids.masked_fill(~seq_mask, PAD_TOKEN_INDEX)
 
         # === Forward pass === #
         x = self.embed(input_ids)

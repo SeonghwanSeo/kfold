@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
 from atlaslm.pretrained import load_model
 
+from kfold.constants.sequence import PAD_TOKEN_INDEX
 from kfold.data.types.model_input import FoldingInput
 from kfold.utils.config import configurable
 
@@ -100,12 +102,17 @@ class ProteinSequenceEncoder(torch.nn.Module):
         # === Mask out invalid sequence tokens === #
         seq_mask = f_input.sequence.pad_mask & f_input.sequence.is_protein
         seq_id = seq_id.masked_fill(~seq_mask, -1)
+        input_ids = input_ids.masked_fill(~seq_mask, PAD_TOKEN_INDEX)
 
         # === Forward pass === #
         x = self.lm.embed(input_ids)
         x_list = [x]
-        for block in self.lm.transformer.blocks:
-            x, _ = block(x, seq_id, pos_id)
+        scale_factor = math.sqrt(self.n_layers / 36)
+        for b in self.lm.transformer.blocks:
+            r = b.attn(x, seq_id, pos_id)[0]
+            x = x + r / scale_factor
+            r = b.ffn(x)
+            x = x + r / scale_factor
             x_list.append(x)
         x = torch.stack(x_list, dim=-2)  # [B, Nseq, Nlayer+1, D]
 
