@@ -356,7 +356,6 @@ class KFoldForTrain(KFold):
         num_recycles: int = 4,
         num_steps: int = 200,
         num_samples: int = 5,
-        return_traj: bool = False,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold model for model training.
 
@@ -370,9 +369,6 @@ class KFoldForTrain(KFold):
             Number of diffusion steps for training.
         num_samples : int
             Number of diffusion samples for training.
-        return_traj : bool, optional
-            Whether to return sampling trajectories.
-
         Returns
         -------
         model_out : dict[str, dict[str, torch.Tensor]]
@@ -410,7 +406,6 @@ class KFoldForTrain(KFold):
                 num_steps,
                 num_samples,
                 chunk_size=None,
-                return_traj=return_traj,
             )
 
         coords = dict_out["diffusion"]["coordinates"]

@@ -210,7 +210,6 @@ class ECSISOARConfig:
 
     mode: str = "disabled"
     root_time_policy: str = "mirror_base_training_time"
-    auxiliary_transition: str = "exact_markov"
     apply_rollout_churn: bool = False
     rollout_schedule_num_steps: int = 100
     rollout_schedule_step_count: float = 1.0
@@ -235,11 +234,6 @@ class ECSISOARConfig:
                 f"Unknown ECSI SOAR root-time policy {self.root_time_policy!r}; "
                 "expected 'mirror_base_training_time' or "
                 "'mid_high_schedule_stratified'."
-            )
-        if self.auxiliary_transition != "exact_markov":
-            raise ValueError(
-                f"Unknown ECSI SOAR auxiliary transition "
-                f"{self.auxiliary_transition!r}; expected exact_markov."
             )
         if self.rollout_schedule_num_steps <= 0:
             raise ValueError("ECSI SOAR rollout_schedule_num_steps must be positive.")
