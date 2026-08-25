@@ -201,6 +201,8 @@ class KFoldPredictionWriter(BasePredictionWriter):
         seed = query.seed
         save_dir = self.output_dir / name / f"{name}_seed-{seed}"
         save_dir.mkdir(parents=True, exist_ok=True)
+        done_path = save_dir / "done.txt"
+        done_path.unlink(missing_ok=True)
 
         # The distogram is shared by all diffusion samples for this query.
         if self.save_distogram:
@@ -220,6 +222,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
             )
 
         # Save Diffusion Samples
+        has_write_error = False
         for i in range(sample_coords.shape[0]):
             sample_name = f"{name}_seed-{seed}_sample-{i}"
             save_path = save_dir / f"{sample_name}.cif"
@@ -235,6 +238,7 @@ class KFoldPredictionWriter(BasePredictionWriter):
                 )
             except Exception as e:
                 self.logger.error(f"Error saving sample {i} for {name}: {e}")
+                has_write_error = True
                 continue
 
             # Save confidence scores in JSON format
@@ -255,6 +259,13 @@ class KFoldPredictionWriter(BasePredictionWriter):
             # Save trajectory if requested
             if self.save_trajectory:
                 raise NotImplementedError("Trajectory saving is not implemented yet.")
+
+        if has_write_error:
+            self.logger.error(
+                f"Not marking {name} seed {seed} as complete due to write errors."
+            )
+        else:
+            done_path.touch()
 
         # Free up memory
         model_out.clear()

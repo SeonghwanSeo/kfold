@@ -121,7 +121,7 @@ def parse_args():
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Whether to overwrite existing inference results.",
+        help="Recompute name/seed targets that already have a done.txt marker.",
     )
     parser.add_argument(
         "--save-distogram",
@@ -137,13 +137,9 @@ def main():
     torch.set_float32_matmul_precision("high")
 
     args = parse_args()
-    # Check output directory
+    # Prepare output directory
     log_info(f"Output directory: {args.out_dir}")
-    if (not args.overwrite) and args.out_dir.exists():
-        raise FileExistsError(
-            f"Output directory {args.out_dir} already exists. "
-            f"Use --overwrite to overwrite existing results."
-        )
+    args.out_dir.mkdir(parents=True, exist_ok=True)
 
     # === Input preparation ===
     # Load CCD data
@@ -154,6 +150,25 @@ def main():
     if len(input_queries) == 0:
         log_error(f"No valid input queries found in {args.input}. Exiting.")
         return
+
+    # Skip completed name/seed targets unless --overwrite is set.
+    if not args.overwrite:
+        pending_queries = [
+            query
+            for query in input_queries
+            if not (
+                args.out_dir / query.name / f"{query.name}_seed-{query.seed}" / "done.txt"
+            ).exists()
+        ]
+        num_skipped = len(input_queries) - len(pending_queries)
+        if num_skipped > 0:
+            log_info(f"Skipping {num_skipped} completed name/seed targets.")
+        input_queries = pending_queries
+
+    if len(input_queries) == 0:
+        log_info("All name/seed targets are complete. Nothing to do.")
+        return
+
     nsample = len(input_queries)
     nseed = len(args.seed)
     nquery = nsample // nseed

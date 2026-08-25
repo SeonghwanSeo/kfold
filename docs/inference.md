@@ -169,7 +169,7 @@ Single GPU:
 
 ```bash
 python scripts/inference.py \
-  --config configs/model/kfold-ecsi.yaml \
+  --config configs/kfold.yaml \
   --weight checkpoints/model.ckpt \
   --ccd path/to/ccd.pkl \
   --input query.yaml \
@@ -180,7 +180,7 @@ Multiple GPUs:
 
 ```bash
 python scripts/inference_multigpu.py \
-  --config configs/model/kfold-ecsi.yaml \
+  --config configs/kfold.yaml \
   --weight checkpoints/model.ckpt \
   --ccd path/to/ccd.pkl \
   --input queries \
@@ -192,7 +192,7 @@ Common options:
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `--config` | `configs/model/kfold-ecsi.yaml` | KFold model configuration. |
+| `--config` | `configs/kfold.yaml` | KFold model configuration. |
 | `--weight` | Required | Weight file for the selected model version. |
 | `--ccd` | Required | Serialized CCD data file. |
 | `--input` | Required | One YAML/JSON file or a directory. |
@@ -203,7 +203,7 @@ Common options:
 | `--num-recycles` | `10` | Trunk recycle count. |
 | `--num-steps` | `200` | Diffusion step count. |
 | `--num-workers` | `8` | DataLoader worker count. GPU structure tokenization is not run in workers. |
-| `--overwrite` | `False` | Allow an existing output directory. |
+| `--overwrite` | `False` | Recompute targets that already have a `done.txt` marker. |
 | `--save-distogram` | `False` | Save unpadded distogram logits, bin edges, and token-axis indices. |
 
 Single-GPU inference additionally supports `--save-trajectory`,
@@ -221,9 +221,11 @@ predicted mmCIF structures:
 results/
 └── Example_Complex/
     ├── query.yaml
-    ├── Example_Complex_seed-1_sample-0.cif
-    ├── Example_Complex_seed-1_sample-0_confidences.json
-    └── Example_Complex_seed-1_sample-0_confidences.npz  # single GPU with --save-confidence
+    └── Example_Complex_seed-1/
+        ├── Example_Complex_seed-1_sample-0.cif
+        ├── Example_Complex_seed-1_sample-0_confidences.json
+        ├── Example_Complex_seed-1_sample-0_confidences.npz  # single GPU with --save-confidence
+        └── done.txt
 ```
 
 Every successful sample writes an mmCIF file and a confidence-summary JSON file.
@@ -231,7 +233,9 @@ The single-GPU script writes raw pLDDT/PAE/PDE arrays to NPZ only when
 `--save-confidence` is set. The multi-GPU script currently does not write NPZ
 confidence arrays or diffusion trajectories. With `--save-distogram`, an
 `Example_Complex_seed-1_distogram.npz` file is written alongside the other
-outputs for that query and seed. Its `logits` array has shape
+outputs for that query and seed. A `done.txt` marker is written only after all
+requested outputs for that name/seed complete successfully; later runs skip
+those marked targets unless `--overwrite` is set. Its `logits` array has shape
 `[Ntoken, Ntoken, Nbin]`, and its `bin_edges` array contains the `Nbin - 1`
 distance boundaries in angstroms. The `asym_ids` and `res_ids` arrays identify
 each distogram-axis token using its 1-based KFold asymmetric-unit ID and residue
