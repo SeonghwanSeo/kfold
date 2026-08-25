@@ -48,9 +48,8 @@ For detailed instructions on input formats (SMILES, CCD, apo paths) and multi-GP
 
 K-Fold is designed to be highly extensible for structural biology research.
 
-- **Development Guidelines**: See **[Developer Guide](docs/developers/DEVELOPER_GUIDE.md)** for project structure and coding standards.
+- **Data Structures**: Model input and structure representations are documented in **[Data Structure](docs/developers/DATA_STRUCTURE.md)**.
 - **Training**: Detailed instructions for dataset preparation and training loops are available in the **[Training Guide](docs/developers/TRAINING_GUIDE.md)**.
-- **Implementation Notes**: For details on AF3 algorithm reproduction and K-Fold specific modifications, see **[Development Note](docs/developers/DEVELOPMENT_NOTE.md)**.
 
 ---
 
