@@ -133,8 +133,7 @@ def parse_args():
 
 
 def main():
-    # torch.set_float32_matmul_precision("highest")
-    torch.set_float32_matmul_precision("high")
+    torch.set_float32_matmul_precision("highest")
 
     args = parse_args()
     # Prepare output directory
