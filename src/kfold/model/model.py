@@ -63,9 +63,7 @@ class KFoldConfig:
     diffusion_head: ecsi.KFoldECSI.Config
     distogram_head: distogram_head.DistogramHead.Config
     confidence_head: confidence_head.ConfidenceHead.Config
-    patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config = dataclasses.field(
-        default_factory=patch_geometry.PatchPairGeometryHead.Config
-    )
+    patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config
 
     # Kernel configurations
     kernel_cuequivariance: bool = True
@@ -202,16 +200,13 @@ class KFold(torch.nn.Module):
         )
 
         # Initialize prediction heads
-        self.score_model = score_model.DiffusionModule(
-            config.score_model, kernel_config=kernel_config
-        )
+        self.score_model = score_model.DiffusionModule(config.score_model)
         self.diffusion_head = ecsi.KFoldECSI(
             config.diffusion_head, score_model=self.score_model
         )
         self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
         self.patch_pair_geometry_head = patch_geometry.PatchPairGeometryHead(
-            config.patch_pair_geometry,
-            channel_z=self.channel_z,
+            config.patch_pair_geometry, self.channel_z
         )
         self.confidence_head = confidence_head.ConfidenceHead(
             config.confidence_head, kernel_config=kernel_config
@@ -430,7 +425,7 @@ class KFold(torch.nn.Module):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
+        use_cuequiv_kernels = self.kernel_config["cuequivariance"]
         dtype = torch.get_autocast_dtype(f_input.device.type)
 
         # Parcae theory: stable channel-wise state decay (a) and
@@ -480,20 +475,10 @@ class KFold(torch.nn.Module):
         strict: bool = True,
     ) -> Self:
         """Load model from checkpoint."""
-        from omegaconf import OmegaConf
-
-        from kfold.config import load_config
+        from kfold.utils.config import load_config
 
         # Load model config
-        config = load_config(config_path)
-        if "model" in config:
-            # Get model config if wrapped in a higher-level config
-            config = config.model
-
-        if override_args is not None:
-            # Override specific arguments in the config
-            overrides = OmegaConf.from_dotlist(override_args)
-            config = OmegaConf.merge(config, overrides)
+        config = load_config(config_path, override_args=override_args)
 
         # Initialize model
         model = cls(config)

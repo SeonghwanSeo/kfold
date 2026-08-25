@@ -71,10 +71,9 @@ class DiffusionModule(torch.nn.Module):
         blocks_per_ckpt: int | None = None
         ckpt_atom_stack: bool = False
 
-    def __init__(self, cfg, kernel_config):
+    def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self.kernel_config = kernel_config
         self.is_compiled: bool = False
         self.diffusion_stack = DiffusionStack(
             channel_a=cfg.channel_a,
@@ -286,15 +285,6 @@ class DiffusionModule(torch.nn.Module):
         r_update : torch.Tensor
             The scaled updated atom positions, shape [B, N, La, 3].
         """
-        # TODO: Test CuEquiv kernels work correctly on inference step.
         return self._diffusion_stack.step(
-            r_noisy,
-            q,
-            c,
-            p,
-            token_index,
-            atom_mask,
-            s,
-            pair_bias,
-            token_mask,
+            r_noisy, q, c, p, token_index, atom_mask, s, pair_bias, token_mask
         )

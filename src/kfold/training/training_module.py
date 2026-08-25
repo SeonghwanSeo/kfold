@@ -10,13 +10,13 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from torchmetrics import MeanMetric, MetricCollection
 
-from kfold.config import to_dict
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.model.model_train import KFoldConfig, KFoldForTrain
 from kfold.model.modules.ecsi import ECSISOARConfig
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
 from kfold.utils import confidence_metrics
+from kfold.utils.config import to_dict
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
 from . import loss as loss_fn
@@ -120,12 +120,10 @@ class TrainingConfig(_Config):
     train_diffusion_head: bool = True
     train_confidence_head: bool = False
 
-    parcae: ParcaeTrainConfig = dataclasses.field(default_factory=ParcaeTrainConfig)
+    parcae: ParcaeTrainConfig
     # for structure model training
     diffusion_batch_size: int = 48
-    soar: dict[str, Any] = dataclasses.field(
-        default_factory=lambda: dataclasses.asdict(ECSISOARConfig())
-    )
+    soar: dict[str, Any]
     # for confidence module training
     num_mini_rollout_steps: int = 20
     num_mini_rollout_samples: int = 1
@@ -154,7 +152,7 @@ class LossConfig(_Config):
 
     weights: dict[str, float]
     diffusion_loss: Any
-    patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
+    patch_geometry_loss: Any
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -172,7 +170,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self.training_config: TrainingConfig = TrainingConfig.from_dict(
             self.config.training
         )
-        self.soar_config = ECSISOARConfig.from_mapping(self.training_config.soar)
+        self.soar_config = ECSISOARConfig(**self.training_config.soar)
         self.parcae_train_config: ParcaeTrainConfig = ParcaeTrainConfig.from_dict(
             self.training_config.parcae
         )
@@ -237,8 +235,6 @@ class KFoldTrainingModule(pl.LightningModule):
         )
         self._rank_independent_recycles_per_step: np.ndarray | None = None
         self._rank_independent_recycles_rank: int | None = None
-        # Backward-compatible alias for code/tests that read the existing attr.
-        self.recycles_per_step: np.ndarray = self._shared_recycles_per_step
 
     def _get_recurrence_schedule_rank(self) -> int:
         trainer = getattr(self, "_trainer", None)
@@ -248,8 +244,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def _get_active_recycles_per_step(self) -> np.ndarray:
         if self.parcae_train_config.recurrence_sampling_mode == "shared":
-            self.recycles_per_step = self._shared_recycles_per_step
-            return self.recycles_per_step
+            return self._shared_recycles_per_step
 
         rank = self._get_recurrence_schedule_rank()
         if (
@@ -264,8 +259,8 @@ class KFoldTrainingModule(pl.LightningModule):
             )
             self._rank_independent_recycles_rank = rank
 
-        self.recycles_per_step = self._rank_independent_recycles_per_step
-        return self.recycles_per_step
+        assert self._rank_independent_recycles_per_step is not None
+        return self._rank_independent_recycles_per_step
 
     def _get_num_recycles_for_current_step(self) -> int:
         schedule = self._get_active_recycles_per_step()
@@ -405,7 +400,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_mini_rollout_steps=training_config.num_mini_rollout_steps,
                 num_mini_rollout_samples=training_config.num_mini_rollout_samples,
                 diffusion_batch_size=training_config.diffusion_batch_size,
-                soar_config=dataclasses.asdict(self.soar_config),
+                soar_config=self.soar_config,
                 train_trunk=self.train_trunk,
                 train_diffusion_head=self.train_diffusion_head,
                 train_confidence_module=self.train_confidence_head,

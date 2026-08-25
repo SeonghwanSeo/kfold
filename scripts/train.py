@@ -8,10 +8,10 @@ import torch
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 
-from kfold.config import load_config, print_config, save_config, to_dict
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.training.optim.ema import initialize_parameter_groups_from_ema
 from kfold.training.training_module import KFoldTrainingModule
+from kfold.utils.config import load_config, print_config, save_config, to_dict
 
 
 def parse_args() -> argparse.Namespace:

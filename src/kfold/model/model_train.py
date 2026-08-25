@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.model import KFold, KFoldConfig
+from kfold.model.modules.ecsi import ECSISOARConfig
 
 
 class KFoldForTrain(KFold):
@@ -187,9 +188,9 @@ class KFoldForTrain(KFold):
     def forward_train(
         self,
         f_input: FoldingInput,
+        soar_config: ECSISOARConfig,
         num_recycles: int = 3,
         diffusion_batch_size: int = 48,
-        soar_config: dict[str, object] | None = None,
         num_mini_rollout_steps: int = 20,
         num_mini_rollout_samples: int = 1,
         train_trunk: bool = True,
@@ -215,8 +216,8 @@ class KFoldForTrain(KFold):
         # For structure module training:
         diffusion_batch_size : int
             Batch size for diffusion training step.
-        soar_config : dict[str, object] | None
-            Optional sampler-matched Exact-Markov ECSI SOAR configuration.
+        soar_config : ECSISOARConfig
+            Sampler-matched Exact-Markov ECSI SOAR configuration.
 
         # For confidence module training with diffusion mini-rollout:
         num_mini_rollout_steps : int
@@ -302,19 +303,13 @@ class KFoldForTrain(KFold):
                 _z = z * mask[:, None, None, None]
 
             # Forward pass through diffusion head for training.
-            training_kwargs: dict[str, object] = {}
-            if (
-                soar_config is not None
-                and soar_config.get("mode", "disabled") != "disabled"
-            ):
-                training_kwargs["soar_config"] = soar_config
             with torch.autocast(device.type, enabled=False):
                 dict_out["diffusion"] = self.diffusion_head.training_step(
                     f_input,
                     s_inputs,
                     _z,
                     diffusion_batch_size,
-                    **training_kwargs,
+                    soar_config,
                 )
 
         if train_confidence_module:
@@ -430,20 +425,10 @@ class KFoldForTrain(KFold):
         strict: bool = True,
     ) -> Self:
         """Load model from checkpoint."""
-        from omegaconf import OmegaConf
-
-        from kfold.config import load_config
+        from kfold.utils.config import load_config
 
         # Load model config
-        config = load_config(config_path)
-        if "model" in config:
-            # Get model config if wrapped in a higher-level config
-            config = config.model
-
-        if override_args is not None:
-            # Override specific arguments in the config
-            overrides = OmegaConf.from_dotlist(override_args)
-            config = OmegaConf.merge(config, overrides)
+        config = load_config(config_path, override_args=override_args)
 
         # Initialize model
         model = cls(config)

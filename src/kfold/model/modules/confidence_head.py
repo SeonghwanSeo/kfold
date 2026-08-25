@@ -416,7 +416,7 @@ class ConfidenceHead(torch.nn.Module):
 
         # Jointly update pair and LM single representations.
         stack = self.get_stack()
-        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
+        use_cuequiv_kernels = self.kernel_config["cuequivariance"]
 
         z = z + self.linear_distogram(dgram.to(z.dtype))
         pair_mask = mask[..., :, None] & mask[..., None, :]

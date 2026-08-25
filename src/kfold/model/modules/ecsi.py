@@ -13,7 +13,6 @@ Models the transition from source (apo) to target (holo) conformations.
 import dataclasses
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from typing import TypeVar
 
 import numpy as np
@@ -261,23 +260,6 @@ class ECSISOARConfig:
                 )
             if self.lambda_aux == 0.0:
                 raise ValueError("Active ECSI SOAR requires lambda_aux > 0.")
-
-    @classmethod
-    def from_mapping(
-        cls,
-        config: "Mapping[str, object] | ECSISOARConfig | None",
-    ) -> "ECSISOARConfig":
-        if config is None:
-            return cls()
-        if isinstance(config, cls):
-            return config
-        known_fields = {field.name for field in dataclasses.fields(cls)}
-        unknown_fields = set(config) - known_fields
-        if unknown_fields:
-            raise ValueError(
-                f"Unknown ECSI SOAR config fields: {sorted(unknown_fields)}."
-            )
-        return cls(**dict(config))  # type: ignore[arg-type]
 
     def num_auxiliary_samples(self, num_roots: int) -> int:
         if num_roots < 0:
@@ -637,10 +619,9 @@ class KFoldECSI(BaseStructureModule):
         s_inputs: torch.Tensor,
         z: torch.Tensor,
         diffusion_batch_size: int,
-        soar_config: Mapping[str, object] | ECSISOARConfig | None = None,
+        soar_config: ECSISOARConfig,
     ) -> dict[str, torch.Tensor]:
         """Perform base ECSI training plus optional Exact-Markov SOAR."""
-        soar = ECSISOARConfig.from_mapping(soar_config)
         with torch.autocast(f_input.device.type, enabled=False):
             train_input = self.sample_train_input(f_input, diffusion_batch_size)
 
@@ -680,14 +661,14 @@ class KFoldECSI(BaseStructureModule):
             "resolved_chain_count",
         ):
             output[f"x_0_perturb_{name}"] = train_input[f"x_0_perturb_{name}"]
-        if soar.mode == "disabled":
+        if soar_config.mode == "disabled":
             return output
 
         auxiliary = self._build_soar_training_batch(
             f_input=f_input,
             s_inputs=s_inputs,
             z=z,
-            config=soar,
+            config=soar_config,
             x_0=x_0,
             x_T=x_T,
             atom_mask=atom_mask,

@@ -51,9 +51,7 @@ class PatchPairGeometryHead(nn.Module):
         self.patch_size: int = int(cfg.patch_size)
         self.max_patches_per_chain: int = int(cfg.max_patches_per_chain)
         self.max_patch_pairs: int = int(cfg.max_patch_pairs)
-        self.pool_max_tokens_per_patch: int = int(
-            getattr(cfg, "pool_max_tokens_per_patch", 0)
-        )
+        self.pool_max_tokens_per_patch: int = int(cfg.pool_max_tokens_per_patch)
         self.ranking_contact_cutoff: float = float(cfg.ranking_contact_cutoff)
         if self.pool_max_tokens_per_patch < 0:
             raise ValueError("pool_max_tokens_per_patch must be non-negative.")
