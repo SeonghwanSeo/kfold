@@ -36,6 +36,7 @@ train = [
   'wandb', # for experiment tracking
   'lmdb', # for training dataset storage
   'msgpack', # for data serialization
+  'zstandard', # durable affinity arraypack values
   "numba",
 ]
 preprocess = [
