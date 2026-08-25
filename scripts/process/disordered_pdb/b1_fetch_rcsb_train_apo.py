@@ -22,11 +22,9 @@ DEFAULT_SOURCES = (
     "prot_sampler_seed1_step20",
     "prot_sampler_seed2_step50",
     "esmfold",
-    "rna_sampler_seed1_step100",
-    "dna_helix",
 )
 
-POLYMER_CHAIN_TYPES = ("protein", "dna", "rna")
+POLYMER_CHAIN_TYPES = ("protein",)
 
 
 @dataclass(frozen=True)
@@ -191,16 +189,6 @@ def find_source_structure(
     source_name: str,
 ) -> pathlib.Path | None:
     source_root = rcsb_dir / "apo" / chain_type / source
-
-    if chain_type == "dna":
-        return first_existing(
-            [
-                source_root / f"{source_name}.pdb.zst",
-                source_root / f"{source_name}.pdb",
-                source_root / f"{source_name}.cif.zst",
-                source_root / f"{source_name}.cif",
-            ]
-        )
 
     source_dir = source_root / source_name
     if not source_dir.exists():

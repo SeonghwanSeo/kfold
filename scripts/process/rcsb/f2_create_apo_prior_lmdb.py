@@ -14,11 +14,7 @@ import numpy as np
 from tqdm import tqdm
 
 from kfold.data.utils.io.fasta import read_fasta
-from kfold.data.utils.io.structure import (
-    read_dna_structure,
-    read_protein_structure,
-    read_rna_structure,
-)
+from kfold.data.utils.io.structure import read_protein_structure
 from kfold.training.dataset.utils.apo_io import pack_apo_record, pack_prior_stack_record
 
 
@@ -292,110 +288,6 @@ def collect_protein_source(
     return dict(stats)
 
 
-def collect_rna_source(
-    source_dir: pathlib.Path,
-    source: str,
-    entity_sequences_by_key: dict[str, dict[str, str]],
-    apo_lookup: dict[str, dict[str, list[dict]]],
-    apo_tasks: list[ApoTask],
-    prior_samples: dict[str, list[tuple[pathlib.Path, str, pathlib.Path | None]]],
-    ranked_records: list[RankedRecord],
-) -> dict[str, int]:
-    stats = defaultdict(int)
-    for entity_dir in iter_entity_dirs(source_dir):
-        entity_key = entity_dir.name
-        entity = entity_sequences_by_key.get(entity_key)
-        if entity is None or entity["chain_type"] != "rna":
-            stats["skipped_rna_entity_dir"] += 1
-            continue
-        entry_id, entity_id_str = entity_key.rsplit("_", 1)
-        entity_id = int(entity_id_str)
-        files_by_name = {
-            path.name: path for path in entity_dir.iterdir() if path.is_file()
-        }
-        ranked_path = first_existing_name(
-            files_by_name,
-            [
-                f"{entity_key}_ranked_model.pdb.zst",
-                f"{entity_key}_ranked.pdb.zst",
-                f"{entity_key}_ranked_model.cif.zst",
-                f"{entity_key}_ranked.cif.zst",
-            ],
-        )
-        ranked_conf = first_existing_name(
-            files_by_name,
-            [
-                f"{entity_key}_ranked_confidences.json",
-                f"{entity_key}_ranked_confidence.json",
-            ],
-        )
-        if ranked_path is not None:
-            confidence = load_confidence(ranked_conf)
-            record = make_apo_record(source, entity_key, "rna", confidence)
-            add_lookup_record(apo_lookup, entry_id, entity_id, record)
-            apo_tasks.append(ApoTask(str(ranked_path), entity_key, "rna", source))
-            ranked_records.append(
-                RankedRecord(
-                    entity_key=entity_key,
-                    chain_type="rna",
-                    source=source,
-                    length=len(entity["sequence"]),
-                    ptm=confidence["ptm"],
-                    avg_plddt=confidence["avg_plddt"],
-                    path=str(ranked_path),
-                )
-            )
-            stats["apo_rna"] += 1
-        else:
-            stats["missing_rna_ranked"] += 1
-
-        sample_paths = sorted(
-            path
-            for name, path in files_by_name.items()
-            if name.startswith(f"{entity_key}_sample_")
-            and (name.endswith("_model.pdb.zst") or name.endswith("_model.cif.zst"))
-        )
-        for sample_path in sample_paths:
-            name = remove_structure_suffix(sample_path).removesuffix("_model")
-            sample_name = f"{source}/{name}"
-            conf_path = entity_dir / f"{name}_confidences.json"
-            prior_samples[entity_key].append((sample_path, sample_name, conf_path))
-            stats["prior_rna_samples"] += 1
-    return dict(stats)
-
-
-def collect_dna_source(
-    source_dir: pathlib.Path,
-    source: str,
-    entity_sequences: dict[tuple[str, int], dict[str, str]],
-    apo_lookup: dict[str, dict[str, list[dict]]],
-    apo_tasks: list[ApoTask],
-    prior_samples: dict[str, list[tuple[pathlib.Path, str, pathlib.Path | None]]],
-) -> dict[str, int]:
-    stats = defaultdict(int)
-    for (entry_id, entity_id), entity in sorted(entity_sequences.items()):
-        if entity["chain_type"] != "dna":
-            continue
-        entity_key = entity["entity_key"]
-        path = first_existing(
-            [
-                source_dir / f"{entity_key}.pdb.zst",
-                source_dir / f"{entity_key}.cif.zst",
-                get_entity_dir(source_dir, entry_id, entity_id) / "helix.pdb.zst",
-            ]
-        )
-        if path is None:
-            stats["missing_dna_helix"] += 1
-            continue
-        record = make_apo_record(source, entity_key, "dna", model="single_helix")
-        add_lookup_record(apo_lookup, entry_id, entity_id, record)
-        apo_tasks.append(ApoTask(str(path), entity_key, "dna", source))
-        prior_samples[entity_key].append((path, f"{source}/{entity_key}", None))
-        stats["apo_dna"] += 1
-        stats["prior_dna_samples"] += 1
-    return dict(stats)
-
-
 def make_prior_tasks(
     prior_samples_by_type: dict[
         str, dict[str, list[tuple[pathlib.Path, str, pathlib.Path | None]]]
@@ -422,10 +314,6 @@ def make_prior_tasks(
 def read_structure(path: pathlib.Path, chain_type: str) -> tuple[str, np.ndarray]:
     if chain_type == "protein":
         return read_protein_structure(path)
-    if chain_type == "rna":
-        return read_rna_structure(path)
-    if chain_type == "dna":
-        return read_dna_structure(path)
     raise ValueError(f"Unsupported chain type: {chain_type}")
 
 
@@ -667,31 +555,6 @@ def main() -> None:
             apo_tasks,
             prior_samples_by_type["protein"],
             ranked_records,
-        )
-        for key, value in part.items():
-            stats[f"{source_dir.name}:{key}"] += value
-
-    for source_dir in iter_source_dirs(raw_root, "rna"):
-        part = collect_rna_source(
-            source_dir,
-            source_dir.name,
-            entity_sequences_by_key,
-            apo_lookup,
-            apo_tasks,
-            prior_samples_by_type["rna"],
-            ranked_records,
-        )
-        for key, value in part.items():
-            stats[f"{source_dir.name}:{key}"] += value
-
-    for source_dir in iter_source_dirs(raw_root, "dna"):
-        part = collect_dna_source(
-            source_dir,
-            source_dir.name,
-            entity_sequences,
-            apo_lookup,
-            apo_tasks,
-            prior_samples_by_type["dna"],
         )
         for key, value in part.items():
             stats[f"{source_dir.name}:{key}"] += value

@@ -60,12 +60,11 @@ ENCORE/sequences/sequence_mapping.tsv
 
 ## 3. Create apo and prior LMDBs
 
-Run the apo samplers externally with `unique_protein_sequences.fasta` and
-`unique_rna_sequences.fasta`, then materialize their outputs per training
-entity under:
+Run the protein apo sampler externally with `unique_protein_sequences.fasta`,
+then materialize its outputs per training entity under:
 
 ```text
-ENCORE/apo/{chain_type}/{source}/{entry_id}_{entity_id}/...
+ENCORE/apo/protein/{source}/{entry_id}_{entity_id}/...
 ```
 
 Build the apo lookup, apo LMDBs, and prior LMDBs:
@@ -76,14 +75,11 @@ Build the apo lookup, apo LMDBs, and prior LMDBs:
   --num_workers 128
 ```
 
-This creates source-specific apo LMDBs for both protein and RNA, plus
-chain-type prior stacks:
+This creates source-specific protein apo and prior LMDBs:
 
 ```text
 ENCORE/apo_lmdb/protein/{source}.lmdb
-ENCORE/apo_lmdb/rna/{source}.lmdb
 ENCORE/prior_lmdb/protein.lmdb
-ENCORE/prior_lmdb/rna.lmdb
 ```
 
 ## 4. Tokenize apo structures by chunk
@@ -105,9 +101,7 @@ Run this step externally, typically as a Slurm array:
   --data_dir "$DATA"
 ```
 
-The final token LMDBs are written to the path below. RNA does not need a token
-LMDB because the training dataset currently uses structure tokens only for
-protein apo structures.
+The final token LMDBs are written to the path below.
 
 ```text
 ENCORE/apo_tok_lmdb/protein/{source}.lmdb

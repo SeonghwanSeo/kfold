@@ -10,11 +10,7 @@ from dataclasses import dataclass
 import lmdb
 from tqdm import tqdm
 
-from kfold.data.utils.io.structure import (
-    read_dna_structure,
-    read_protein_structure,
-    read_rna_structure,
-)
+from kfold.data.utils.io.structure import read_protein_structure
 from kfold.training.dataset.utils.apo_io import pack_apo_record
 
 
@@ -65,22 +61,13 @@ def remove_structure_suffix(path: pathlib.Path) -> str:
 def collect_tasks(apo_dir: pathlib.Path) -> list[ApoTask]:
     tasks: list[ApoTask] = []
     source_dirs: list[tuple[str, str, pathlib.Path]] = []
-    for chain_type in ("protein", "dna", "rna"):
-        chain_root = apo_dir / chain_type
-        if not chain_root.exists():
-            continue
+    chain_root = apo_dir / "protein"
+    if chain_root.exists():
         source_dirs.extend(
-            (chain_type, source_dir.name, source_dir)
+            ("protein", source_dir.name, source_dir)
             for source_dir in sorted(chain_root.iterdir())
             if source_dir.is_dir()
         )
-
-    # Legacy fallback: disordered_pdb/apo/{source}/... is treated as protein.
-    source_dirs.extend(
-        ("protein", source_dir.name, source_dir)
-        for source_dir in sorted(apo_dir.iterdir())
-        if source_dir.is_dir() and source_dir.name not in {"protein", "dna", "rna"}
-    )
 
     suffixes = ("*.pdb", "*.pdb.zst", "*.pdb.gz", "*.cif", "*.cif.zst", "*.cif.gz")
     for chain_type, source, source_dir in source_dirs:
@@ -100,14 +87,7 @@ def collect_tasks(apo_dir: pathlib.Path) -> list[ApoTask]:
 
 def worker(task: ApoTask) -> tuple[str, str, str, bytes | None, str | None]:
     try:
-        if task.chain_type == "protein":
-            sequence, coords = read_protein_structure(task.path)
-        elif task.chain_type == "dna":
-            sequence, coords = read_dna_structure(task.path)
-        elif task.chain_type == "rna":
-            sequence, coords = read_rna_structure(task.path)
-        else:
-            raise ValueError(f"Unsupported chain type: {task.chain_type}")
+        sequence, coords = read_protein_structure(task.path)
         return (
             task.chain_type,
             task.source,
