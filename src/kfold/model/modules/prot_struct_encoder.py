@@ -1,10 +1,9 @@
 import contextlib
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 import torch
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download
 
 import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
@@ -22,7 +21,10 @@ restypes = [
 ]  # fmt: skip
 restype_order = {restype: i for i, restype in enumerate(restypes)}
 
-HF_REPO_ID = "k-fold-structure/triprorep-3B"
+HF_REPO_ID = "SeonghwanSeo/kfold"
+HF_ENCODER_FILENAME = "weights/prot_struct_encoder_3b.pth"
+HF_BB_TOKENIZER_FILENAME = "weights/prot_struct_bb_tokenizer.pth"
+HF_FA_TOKENIZER_FILENAME = "weights/prot_struct_fa_tokenizer.pth"
 
 
 @configurable
@@ -75,46 +77,21 @@ class StructureEncoder(torch.nn.Module):
         self.register_buffer("seq_to_restype", seq_to_restype, persistent=False)
 
     def _load_from_hugging_face(self) -> None:
-        snapshot_path = Path(
-            snapshot_download(
+        for module, filename in (
+            (self.encoder, HF_ENCODER_FILENAME),
+            (self.bb_tok, HF_BB_TOKENIZER_FILENAME),
+            (self.fa_tok, HF_FA_TOKENIZER_FILENAME),
+        ):
+            path = hf_hub_download(
                 repo_id=HF_REPO_ID,
+                filename=filename,
                 cache_dir=self.cfg.cache_dir,
-                allow_patterns=[
-                    "config.yaml",
-                    "3B_encoder.pt",
-                    "backbone_tokenizer.pt",
-                    "fullatom_tokenizer.pt",
-                ],
             )
-        )
-        encoder_path = snapshot_path / "3B_encoder.pt"
-        bb_tok_path = snapshot_path / "backbone_tokenizer.pt"
-        fa_tok_path = snapshot_path / "fullatom_tokenizer.pt"
-
-        enc_state = torch.load(encoder_path, "cpu", mmap=True, weights_only=True)
-        self.encoder.load_state_dict(enc_state, strict=True, assign=True)
-        del enc_state
-
-        bb_state = torch.load(bb_tok_path, "cpu", mmap=True, weights_only=True)["module"]
-        bb_state = {
-            k.removeprefix("model."): v
-            for k, v in bb_state.items()
-            if k.startswith(("model.encoder", "model.quantizer"))
-        }
-        self.bb_tok.load_state_dict(bb_state, strict=True, assign=True)
-        del bb_state
-
-        fa_state = torch.load(fa_tok_path, "cpu", mmap=True, weights_only=False)[
-            "state_dict"
-        ]
-        fa_state = {
-            k.removeprefix("model."): v
-            for k, v in fa_state.items()
-            if k.startswith(("model.encoder", "model.quantizer"))
-            and not k.startswith("model.quantizer._ema")
-        }
-        self.fa_tok.load_state_dict(fa_state, strict=True, assign=True)
-        del fa_state
+            state_dict = torch.load(
+                path, map_location="cpu", mmap=True, weights_only=True
+            )
+            module.load_state_dict(state_dict, strict=True, assign=True)
+            del state_dict
 
         meta_tensors = [
             name
