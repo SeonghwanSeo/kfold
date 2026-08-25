@@ -171,7 +171,7 @@ class TokenArray(PlainLayout[np.ndarray]):
     asym_id: np.ndarray (int)
         Asymmetric unit IDs of shape [L,], starting from 1.
     apo_uid: np.ndarray (int)
-        Apo rigid-group IDs of shape [L,], starting from 1.
+        Apo rigid-group IDs of shape [L,], shared across all apo sources.
     sym_id: np.ndarray (int)
         Symmetry IDs of shape [L,], starting from 1.
     res_type: np.ndarray (int)
@@ -198,18 +198,17 @@ class TokenArray(PlainLayout[np.ndarray]):
     frame_atom_index: np.ndarray (int)
         Frame atom indices of shape [L, 3], used for frame calculations.
     apo_center_coords: np.ndarray (float32)
-        Apo state Cα coordinates of shape [L, 3].
+        Apo state Cα coordinates of shape [L, Napo, 3].
     apo_repr_coords: np.ndarray (float32)
-        Apo state Cβ coordinates of shape [L, 3] (Cα for glycine).
+        Apo state Cβ coordinates of shape [L, Napo, 3] (Cα for glycine).
     apo_frame_coords: np.ndarray (float32)
-        Apo state frame atom coordinates of shape [L, 3, 3].
+        Apo state frame atom coordinates of shape [L, Napo, 3, 3].
     apo_center_mask: np.ndarray (bool)
-        Boolean mask of shape [L,], indicating whether the apo center atom is valid.
+        Boolean mask of shape [L, Napo], indicating valid apo center atoms.
     apo_repr_mask: np.ndarray (bool)
-        Boolean mask of shape [L,], indicating whether the apo representative atom
-        is valid.
+        Boolean mask of shape [L, Napo], indicating valid apo representative atoms.
     apo_frame_mask: np.ndarray (bool)
-        Boolean mask of shape [L,], indicating whether the apo frame atoms are valid.
+        Boolean mask of shape [L, Napo], indicating valid apo frame atoms.
 
     Cached Properties
     -----------------
@@ -226,7 +225,7 @@ class TokenArray(PlainLayout[np.ndarray]):
     chain_type: np.ndarray  # [L,], int
     entity_id: np.ndarray  # [L,], int
     asym_id: np.ndarray  # [L,], int, same to sequence_id
-    apo_uid: np.ndarray  # [L, Napo], int
+    apo_uid: np.ndarray  # [L,], int
     sym_id: np.ndarray  # [L,], int
     res_type: np.ndarray  # [L,], int
     num_atoms: np.ndarray  # [L,], int
@@ -256,7 +255,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             ("chain_type", np.integer, shape),
             ("entity_id", np.integer, shape),
             ("asym_id", np.integer, shape),
-            ("apo_uid", np.integer, (*shape, -1)),
+            ("apo_uid", np.integer, shape),
             ("sym_id", np.integer, shape),
             ("res_type", np.integer, shape),
             ("is_standard", np.bool_, shape),
@@ -305,7 +304,7 @@ class TokenArray(PlainLayout[np.ndarray]):
             chain_type=full_minus_one((num_tokens,)),
             entity_id=full_minus_one((num_tokens,)),
             asym_id=full_minus_one((num_tokens,)),
-            apo_uid=full_minus_one((num_tokens, num_apo)),
+            apo_uid=full_minus_one((num_tokens,)),
             sym_id=full_minus_one((num_tokens,)),
             res_type=full_minus_one((num_tokens,)),
             num_atoms=full_minus_one((num_tokens,)),

@@ -289,7 +289,7 @@ class ApoModule(torch.nn.Module):
         pseudo_beta_mask = f_input.token.apo_repr_mask.transpose(1, 2)
         backbone_coords = f_input.token.apo_frame_coords.permute(0, 2, 1, 3, 4)
         backbone_frame_mask = f_input.token.apo_frame_mask.transpose(1, 2)
-        apo_uid = f_input.token.apo_uid.transpose(1, 2)
+        apo_uid = f_input.token.apo_uid[:, None, :]
 
         B, T, L, _ = pseudo_beta.shape
         if T == 0:

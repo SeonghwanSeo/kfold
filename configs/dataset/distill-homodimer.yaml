@@ -4,10 +4,3 @@ name: AFDB-homodimer
 type: "homodimer-distillation"
 
 sampler: null
-
-cropper:
-  _registry_: "data_cropper"
-  _class_: AlphaFold3Cropper
-  w_contiguous: 0.2
-  w_spatial: 0.4
-  w_spatial_interface: 0.4

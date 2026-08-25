@@ -106,6 +106,11 @@ def parse_args():
         help="Whether to save raw confidence scores",
     )
     parser.add_argument(
+        "--save-distogram",
+        action="store_true",
+        help="Save distogram logits, bin edges, and token indices in NPZ format.",
+    )
+    parser.add_argument(
         "--num-workers",
         type=int,
         default=8,
@@ -292,6 +297,23 @@ def main():
                 f_input, ref_struct, model_out
             )
         )
+
+        # The distogram is shared by all diffusion samples for this query.
+        if args.save_distogram:
+            distogram_path = save_dir / f"{name}_seed-{seed}_distogram.npz"
+            mask = f_input.token.pad_mask
+            distogram_out = model_out["distogram"]
+            logits = distogram_out["logits"][mask][:, mask]
+            bin_edges = distogram_out["bin_boundaries"]
+            asym_ids = f_input.token.asym_id[mask]
+            res_ids = f_input.token.residue_index[mask]
+            np.savez_compressed(
+                distogram_path,
+                logits=logits.half().cpu().numpy(),
+                bin_edges=bin_edges.float().cpu().numpy(),
+                asym_ids=asym_ids.int().cpu().numpy(),
+                res_ids=res_ids.int().cpu().numpy(),
+            )
 
         # Save Diffusion Samples
         for i in range(sample_coords.shape[0]):

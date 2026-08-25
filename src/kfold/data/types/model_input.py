@@ -144,6 +144,8 @@ class TokenTensor(TensorLayout):
     ----------
     chain_type: torch.Tensor (long)
         Chain types of shape [Ntoken,], indicating the type of each token.
+    apo_uid: torch.Tensor (long)
+        Apo rigid-group IDs of shape [Ntoken,], shared across all apo sources.
     res_type: torch.Tensor (float32)
         Sequence tokens of shape [Ntoken, 32] (aatype, atom, ...)
         One-hot vector
@@ -177,17 +179,17 @@ class TokenTensor(TensorLayout):
     pad_mask: torch.Tensor (bool)
         Mask tensor of shape [Ntoken,], indicating valid tokens.
     apo_center_coords: torch.Tensor (float32)
-        Apo state center coordinates of shape [Ntoken, 3].
+        Apo state center coordinates of shape [Ntoken, Napo, 3].
     apo_repr_coords: torch.Tensor (float32)
-        Apo state representative atom center coordinates of shape [Ntoken, 3].
+        Apo state representative atom center coordinates of shape [Ntoken, Napo, 3].
     apo_frame_coords: torch.Tensor (float32)
-        Apo state frame of shape [Ntoken, 3, 3].
+        Apo state frame of shape [Ntoken, Napo, 3, 3].
     apo_center_mask: torch.Tensor (bool)
-        Mask tensor of shape [Ntoken,], indicating apo Cα is resolved.
+        Mask tensor of shape [Ntoken, Napo], indicating apo Cα is resolved.
     apo_repr_mask: torch.Tensor (bool)
-        Mask tensor of shape [Ntoken,], indicating apo Cβ is resolved.
+        Mask tensor of shape [Ntoken, Napo], indicating apo Cβ is resolved.
     apo_frame_mask: torch.Tensor (bool)
-        Mask tensor of shape [Ntoken,], indicating apo frame is resolved.
+        Mask tensor of shape [Ntoken, Napo], indicating apo frame is resolved.
 
     # For model training
     center_coords: torch.Tensor (float32)
@@ -203,7 +205,7 @@ class TokenTensor(TensorLayout):
     chain_type: torch.Tensor  # [Ntoken,], long
     entity_id: torch.Tensor  # [Ntoken,], long
     asym_id: torch.Tensor  # [Ntoken,], long, same to sequence_id
-    apo_uid: torch.Tensor  # [Ntoken, Napo], long
+    apo_uid: torch.Tensor  # [Ntoken,], long
     sym_id: torch.Tensor  # [Ntoken,], long
     res_type: torch.Tensor  # [Ntoken, 32], float32
     is_standard: torch.Tensor  # [Ntoken,], bool
@@ -247,7 +249,7 @@ class TokenTensor(TensorLayout):
             ("chain_type", torch.long, shape),
             ("entity_id", torch.long, shape),
             ("asym_id", torch.long, shape),
-            ("apo_uid", torch.long, (*shape, -1)),
+            ("apo_uid", torch.long, shape),
             ("sym_id", torch.long, shape),
             ("res_type", torch.float32, (*shape, 32)),
             ("is_standard", torch.bool, shape),

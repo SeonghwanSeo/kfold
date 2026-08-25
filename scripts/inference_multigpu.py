@@ -126,7 +126,7 @@ def parse_args():
     parser.add_argument(
         "--save-distogram",
         action="store_true",
-        help="Save distogram logits and distance-bin edges in NPZ format.",
+        help="Save distogram logits, bin edges, and token indices in NPZ format.",
     )
 
     return parser.parse_args()

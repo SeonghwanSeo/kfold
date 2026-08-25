@@ -7,6 +7,9 @@ seed: 1 # NOTE: You may have to set different seeds for different stages
 
 # Multi-stage training
 load_opt_state: true
+# Continue the epoch, global step, and LR schedule when resetting optimizer state.
+# This option is only valid when load_opt_state is false.
+load_global_step: true
 # Parameter groups initialized from checkpoint EMA when optimizer state is reset.
 init_from_ema: []
 
@@ -30,8 +33,9 @@ data:
   # Training hyperparameters
   max_chains: ???
   max_tokens: ???
+  max_atoms: ???
   max_sequence_tokens: ???
-  max_apo: 4
+  max_apo: 3
 
   # DataLoader
   train_batch_size: 1 # NOTE: Overridden by global_hparam
@@ -52,28 +56,11 @@ data:
   prior_sampler:
     # If null, no prior sampling
     chain_translation_scale: 24.0 # Angstroms
-    # Legacy IID atom noise, used only when ligand_langevin.enabled is false.
-    ligand_augmentation_scale: 0.3
+    # Centered IID Gaussian ligand coordinates; no conformer or dynamics.
+    ligand_gaussian_scale: 8.0 # Angstroms
     bioprior:
       noise_scale: 0.5
       max_steps: 10
-    # Displace the ETKDG/CCD conformer once, then run standard T=1 stochastic
-    # bond-angle Langevin updates. Every step is stochastic; there is no
-    # deterministic correction tail. This gives approximately 2 A aligned
-    # RMSD coverage on sampled real training ligands.
-    ligand_langevin:
-      enabled: true
-      backend: numba
-      initial_noise_scale: 4.0
-      num_steps: 25
-      dt: 0.0075
-      temperature: 1.0
-      bond_strength: 30.0
-      angle_strength: 15.0
-      relaxation_steps: 0
-      # Optional safety filters. Null disables sample rejection.
-      max_bond_deviation: null
-      max_aligned_rmsd: null
     train: true # Only for train/val
 
 # Lightning Trainer Configuration
@@ -157,27 +144,16 @@ loss:
     patch_geometry: 0.0
     interface_contact: 0
 
-  # Distogram loss
-  distogram_loss:
-    num_bins: 64
-    min_dist: 2.0
-    max_dist: 22.0
-
   # Uniform patch-pair COM geometry auxiliary loss. This is off by default;
   # enable both model.patch_pair_geometry.enabled and this global weight for
   # an explicit patch-supervision experiment.
   patch_geometry_loss:
-    num_bins: 64
-    min_dist: 2.0
-    max_dist: 22.0
     near_cutoff: 12.0
+    ranking_weight: 1.0
 
   # Hard-pair exact-bin CE on active inter-chain interfaces.
   # This is inactive unless loss.weights.interface_contact is positive.
   interface_contact_loss:
-    num_bins: 64
-    min_dist: 2.0
-    max_dist: 22.0
     contact_cutoff: 8.0
     positive_weight: 0.75
     negative_weight: 0.25
@@ -205,20 +181,6 @@ loss:
       repr_atom_only: false # If True, use [Nrepr, N] instead of [N, N] for LDDT calculation.
       chunk_size: 1 # Number of samples per chunk for LDDT calculation.
       use_kernel: true # Use triton kernel for LDDT calculation.
-
-  # Confidence loss
-  confidence_loss:
-    plddt_loss:
-      num_bins: 50
-    pae_loss:
-      min_dist: 0.0
-      max_dist: 32.0
-      num_bins: 64
-    pde_loss:
-      min_dist: 0.0
-      max_dist: 32.0
-      num_bins: 64
-    experimentally_resolved_loss: {}
 
 wandb:
   use: false

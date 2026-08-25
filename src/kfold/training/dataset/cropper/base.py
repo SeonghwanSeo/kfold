@@ -19,11 +19,12 @@ class BaseCropper(ABC):
         struct: TokenizedStructure,
         metadata: Metadata,
         max_tokens: int,
+        max_atoms: int,
         max_sequence_tokens: int,
         bias_asym_id: int | tuple[int, int] | None = None,
         rng: np.random.Generator | None = None,
     ) -> TokenizedStructure:
-        """Crop the data to a maximum number of tokens.
+        """Crop the data to the token and atom limits.
 
         Parameters
         ----------
@@ -31,6 +32,8 @@ class BaseCropper(ABC):
             The tokenized structure.
         max_tokens : int
             The maximum number of tokens to crop.
+        max_atoms : int
+            The maximum number of atoms to crop.
         max_sequence_tokens : int
             The maximum sequence length for the model. This is used to ensure that the
             cropped structure does not exceed the model's input size.
@@ -54,18 +57,23 @@ class BaseCropper(ABC):
         if struct.num_tokens == 0:
             raise ValueError("No valid tokens in struct")
 
-        if struct.num_tokens <= max_tokens:
+        if struct.num_tokens <= max_tokens and struct.num_atoms <= max_atoms:
             # No cropping needed
             return struct
 
         # Get the token indices to include in the crop
         selected_token_indices = self.get_token_indices(
-            struct,
-            metadata,
-            max_tokens,
-            bias_asym_id,
-            rng=rng,
+            struct, metadata, max_tokens, bias_asym_id, rng=rng
         )[:max_tokens]
+
+        # Ensure that the number of atoms in the selected tokens does not exceed max_atoms
+        atom_counts = struct.token.num_atoms[selected_token_indices]
+        cumulative_atom_counts = np.cumsum(atom_counts)
+        num_selected_tokens = int(
+            np.searchsorted(cumulative_atom_counts, max_atoms, side="right")
+        )
+        selected_token_indices = selected_token_indices[:num_selected_tokens]
+        selected_token_indices.sort()
 
         # Get the sequence token indices to include in the crop, ensuring that
         # all sequence tokens corresponding to the selected tokens are included.

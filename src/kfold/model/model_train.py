@@ -189,6 +189,7 @@ class KFoldForTrain(KFold):
         f_input: FoldingInput,
         num_recycles: int = 3,
         diffusion_batch_size: int = 48,
+        soar_config: dict[str, object] | None = None,
         num_mini_rollout_steps: int = 20,
         num_mini_rollout_samples: int = 1,
         train_trunk: bool = True,
@@ -214,6 +215,8 @@ class KFoldForTrain(KFold):
         # For structure module training:
         diffusion_batch_size : int
             Batch size for diffusion training step.
+        soar_config : dict[str, object] | None
+            Optional sampler-matched Exact-Markov ECSI SOAR configuration.
 
         # For confidence module training with diffusion mini-rollout:
         num_mini_rollout_steps : int
@@ -284,9 +287,7 @@ class KFoldForTrain(KFold):
 
         if train_trunk:
             # Distogram head
-            dict_out["distogram"] = {
-                "logits": self.distogram_head(z),
-            }
+            dict_out["distogram"] = self.distogram_head(z)
             patch_geometry_out = self.patch_pair_geometry_head(f_input, z)
             if patch_geometry_out:
                 dict_out["patch_geometry"] = patch_geometry_out
@@ -301,9 +302,19 @@ class KFoldForTrain(KFold):
                 _z = z * mask[:, None, None, None]
 
             # Forward pass through diffusion head for training.
+            training_kwargs: dict[str, object] = {}
+            if (
+                soar_config is not None
+                and soar_config.get("mode", "disabled") != "disabled"
+            ):
+                training_kwargs["soar_config"] = soar_config
             with torch.autocast(device.type, enabled=False):
                 dict_out["diffusion"] = self.diffusion_head.training_step(
-                    f_input, s_inputs, _z, diffusion_batch_size
+                    f_input,
+                    s_inputs,
+                    _z,
+                    diffusion_batch_size,
+                    **training_kwargs,
                 )
 
         if train_confidence_module:
@@ -332,15 +343,9 @@ class KFoldForTrain(KFold):
                 _z = _z * mask[:, None, None, None]
 
             # Forward pass through confidence head
-            pae_logits, pde_logits, plddt_logits, resolved_logits = self.confidence_head(
+            dict_out["confidence"] = self.confidence_head(
                 f_input, _s_inputs, _s_lm, _z, coordinates
             )
-            dict_out["confidence"] = {
-                "pae_logits": pae_logits,
-                "pde_logits": pde_logits,
-                "plddt_logits": plddt_logits,
-                "resolved_logits": resolved_logits,
-            }
 
         return dict_out
 
@@ -409,9 +414,7 @@ class KFoldForTrain(KFold):
             )
 
         coords = dict_out["diffusion"]["coordinates"]
-        dict_out["confidence"] = self.confidence_head.forward_inference(
-            f_input, s_inputs, s_lm, z, coords
-        )
+        dict_out["confidence"] = self.confidence_head(f_input, s_inputs, s_lm, z, coords)
         # Remove batch dimension from outputs for validation
         dict_out = {
             k: {kk: vv.squeeze(0) for kk, vv in v.items()} for k, v in dict_out.items()

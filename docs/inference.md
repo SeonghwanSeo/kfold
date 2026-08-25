@@ -204,13 +204,13 @@ Common options:
 | `--num-steps` | `200` | Diffusion step count. |
 | `--num-workers` | `8` | DataLoader worker count. GPU structure tokenization is not run in workers. |
 | `--overwrite` | `False` | Allow an existing output directory. |
+| `--save-distogram` | `False` | Save unpadded distogram logits, bin edges, and token-axis indices. |
 
 Single-GPU inference additionally supports `--save-trajectory`,
 `--save-confidence`, and `--dry-run`. A dry run does not need `--weight`; it
 parses the queries and runs the CPU data pipeline without loading a model or
 writing predictions. Multi-GPU inference accepts `--num-gpus`; if omitted, all
-visible GPUs are used. It also accepts `--save-distogram`, which writes the
-unpadded distogram logits and distance-bin edges to a compressed NPZ file.
+visible GPUs are used.
 
 ## Output
 
@@ -229,8 +229,10 @@ results/
 Every successful sample writes an mmCIF file and a confidence-summary JSON file.
 The single-GPU script writes raw pLDDT/PAE/PDE arrays to NPZ only when
 `--save-confidence` is set. The multi-GPU script currently does not write NPZ
-confidence arrays or diffusion trajectories. With `--save-distogram`, each
-multi-GPU query/seed directory also contains
-`Example_Complex_seed-1_distogram.npz`. Its `distogram_logits` array has shape
-`[Ntoken, Ntoken, Nbin]`, and its `distance_bin_edges` array contains the
-`Nbin - 1` distance boundaries in angstroms.
+confidence arrays or diffusion trajectories. With `--save-distogram`, an
+`Example_Complex_seed-1_distogram.npz` file is written alongside the other
+outputs for that query and seed. Its `logits` array has shape
+`[Ntoken, Ntoken, Nbin]`, and its `bin_edges` array contains the `Nbin - 1`
+distance boundaries in angstroms. The `asym_ids` and `res_ids` arrays identify
+each distogram-axis token using its 1-based KFold asymmetric-unit ID and residue
+index.

@@ -149,26 +149,10 @@ class ExperimentallyResolvedPredictionLoss(torch.nn.Module):
 class PDELoss(torch.nn.Module):
     """Loss for predicting pairwise distances (PDE) between representative atoms."""
 
-    def __init__(
-        self,
-        min_dist: float = 0.0,
-        max_dist: float = 32.0,
-        num_bins: int = 64,
-    ) -> None:
-        super().__init__()
-        self.min_dist: float = min_dist
-        self.max_dist: float = max_dist
-        self.num_bins: int = num_bins
-
-        bin_size: float = (max_dist - min_dist) / num_bins
-        bins = torch.linspace(
-            min_dist + bin_size / 2, max_dist - bin_size / 2, num_bins
-        )  # [num_bins]
-        self.register_buffer("bins", bins, persistent=False)
-
     def forward(
         self,
         logits: torch.Tensor,
+        bin_centers: torch.Tensor,
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
         mask_gt: torch.Tensor,
@@ -180,6 +164,8 @@ class PDELoss(torch.nn.Module):
         ----------
         logits : torch.Tensor
             Tensor of shape (B, N, L, L, num_bins) containing distogram logits.
+        bin_centers : torch.Tensor
+            PDE bin centers returned by the confidence head.
         x_pred : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_gt : torch.Tensor
@@ -199,7 +185,7 @@ class PDELoss(torch.nn.Module):
             e = self.get_distance_error(x_pred, x_gt, mask_gt, f_input)  # [B, N, L, L]
 
         # Compute loss
-        e_bins = get_one_hot_from_bins(e, self.bins)  # [B, N, L, L, num_bins]
+        e_bins = get_one_hot_from_bins(e, bin_centers)  # [B, N, L, L, num_bins]
         loss = -torch.sum(e_bins.float() * logits.log_softmax(-1), dim=-1)  # [B, N, L, L]
 
         # Reduce loss
@@ -261,18 +247,10 @@ class PDELoss(torch.nn.Module):
 class PLDDTLoss(torch.nn.Module):
     """Loss for predicting the Local Distance Difference Test (pLDDT) for each atom."""
 
-    def __init__(self, num_bins: int = 50) -> None:
-        super().__init__()
-        self.num_bins: int = num_bins
-
-        # Standard AlphaFold/OpenFold-3 bins
-        bin_size: float = 1 / num_bins
-        bins = torch.arange(bin_size / 2, 1.0, bin_size)  # [num_bins]
-        self.register_buffer("bins", bins, persistent=False)
-
     def forward(
         self,
         logits: torch.Tensor,
+        bin_centers: torch.Tensor,
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
         mask_gt: torch.Tensor,
@@ -284,6 +262,8 @@ class PLDDTLoss(torch.nn.Module):
         ----------
         logits : torch.Tensor
             Tensor of shape (B, N, Natom, num_bins) containing pLDDT logits.
+        bin_centers : torch.Tensor
+            pLDDT bin centers returned by the confidence head.
         x_pred : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_gt : torch.Tensor
@@ -302,7 +282,10 @@ class PLDDTLoss(torch.nn.Module):
         with torch.no_grad():
             lddt = self.get_lddt_score(x_pred, x_gt, mask_gt, f_input)  # [B, N, Natom]
 
-        lddt_bins = get_one_hot_from_bins(lddt, self.bins)  # [B, N, Natom, num_bins]
+        lddt_bins = get_one_hot_from_bins(
+            lddt,
+            bin_centers,
+        )  # [B, N, Natom, num_bins]
         loss = -(lddt_bins.float() * logits.log_softmax(-1)).sum(-1)  # [B, N, Natom]
 
         n_valid = mask_gt.sum(dim=-1).clamp(min=1)  # [B, 1]
@@ -387,25 +370,14 @@ class PLDDTLoss(torch.nn.Module):
 class PAELoss(torch.nn.Module):
     """Loss on Predicted Aligned Error (PAE)."""
 
-    def __init__(
-        self,
-        min_dist: float = 0.0,
-        max_dist: float = 32.0,
-        num_bins: int = 64,
-        eps: float = 1e-8,
-    ) -> None:
+    def __init__(self, eps: float = 1e-8) -> None:
         super().__init__()
-        self.num_bins: int = num_bins
         self.eps: float = eps
-        bin_size: float = (max_dist - min_dist) / num_bins
-        bins = torch.linspace(
-            min_dist + bin_size / 2, max_dist - bin_size / 2, num_bins
-        )  # [num_bins]
-        self.register_buffer("bins", bins, persistent=False)
 
     def forward(
         self,
         logits: torch.Tensor,
+        bin_centers: torch.Tensor,
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
         mask_gt: torch.Tensor,
@@ -417,6 +389,8 @@ class PAELoss(torch.nn.Module):
         ----------
         logits : torch.Tensor
             Tensor of shape (B, N, L, L, num_bins) containing PAE logits.
+        bin_centers : torch.Tensor
+            PAE bin centers returned by the confidence head.
         x_pred : torch.Tensor
             Tensor of shape (B, N, Natom, 3) containing predicted coordinates.
         x_gt : torch.Tensor
@@ -436,7 +410,7 @@ class PAELoss(torch.nn.Module):
             e = self.get_alignment_error(x_pred, x_gt, mask_gt, f_input)  # [B, N, L, L]
 
         # Compute Cross Entropy Error
-        e_bins = get_one_hot_from_bins(e, self.bins)
+        e_bins = get_one_hot_from_bins(e, bin_centers)
         loss = -(e_bins.float() * logits.log_softmax(-1)).sum(-1)  # [B, N, L, L]
 
         # === Compute validity masks ===

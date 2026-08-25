@@ -14,7 +14,7 @@ from kfold.data.types.structure import RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.training.dataset.cropper import BaseCropper
 from kfold.training.dataset.sampler import BaseSampler, Sample
-from kfold.training.dataset.utils import apo_perturbation, constraint_sampling, pre_crop
+from kfold.training.dataset.utils import apo_perturbation, pre_crop
 from kfold.training.utils.permutation_alignment.symmetry import get_symmetries
 from kfold.utils.registry import Registry
 
@@ -34,9 +34,9 @@ class TrainingDatasetConfig(DatasetConfig):
     weight : float
         Weight of the dataset during training.
     prob_drop_apo : float
-        Probability of dropping apo structure for each chain.
+        Probability of dropping apo structure for the entire complex.
     prob_drop_struct_token : float
-        Probability of dropping structure tokens for each chain.
+        Probability of dropping structure tokens for the entire complex.
     sampler : BaseSampler.Config | None
         Sampler configuration for generating samples.
     cropper : BaseCropper.Config | None
@@ -83,6 +83,7 @@ class TrainingDataset(BaseLMDBDataset):
         max_chains: int,
         max_apo: int,
         max_tokens: int,
+        max_atoms: int,
         max_sequence_tokens: int,
     ) -> None:
         """
@@ -102,6 +103,8 @@ class TrainingDataset(BaseLMDBDataset):
             Maximum number of chains per sample.
         max_tokens : int
             Maximum number of tokens per sample.
+        max_atoms : int
+            Maximum number of atoms per sample.
         max_sequence_tokens : int
             Maximum number of sequence tokens per sample,
             limiting the entire input size of PLM module.
@@ -134,6 +137,7 @@ class TrainingDataset(BaseLMDBDataset):
         self.max_apo: int = max_apo
         # For main cropping (TokenizedStructure)
         self.max_tokens: int = max_tokens
+        self.max_atoms: int = max_atoms
         self.max_sequence_tokens: int = max_sequence_tokens
 
         assert max_sequence_tokens >= max_tokens + (max_chains * 2), (
@@ -156,16 +160,6 @@ class TrainingDataset(BaseLMDBDataset):
         samples, weights = self.sampler.get_samples(self.metadatas)
         self.samples: list[Sample] = samples
         self.weights: np.ndarray = weights
-
-        # Constraint sampling for training
-        # TODO: configurize the parameters
-        self.max_constraints = 0
-        self.constraint_sampling = constraint_sampling.ConstraintSampling(
-            min_dist=2.0,
-            max_dist=22.0,
-            prob_constraint=0.05,
-            max_constraints=self.max_constraints,
-        )
 
     def sanity_check(self) -> None:
         """Perform sanity checks on the dataset."""
@@ -223,13 +217,12 @@ class TrainingDataset(BaseLMDBDataset):
 
         # Fetch apo structure
         apo_dict = self.fetch_apo_structures(ref_struct, apo_lookup, rng)
-        apo_uid_dict = self.get_apo_uids(ref_struct, apo_lookup)
 
         # Sample prior coordinates for diffusion bridge model.
-        prior_coords = self.sample_prior_coords(ref_struct, apo_dict, rng)
+        prior_coords = self.sample_prior_coords(ref_struct, rng)
 
         # Tokenization
-        tokenized = self.tokenize(ref_struct, apo_dict, apo_uid_dict, prior_coords, rng)
+        tokenized = self.tokenize(ref_struct, apo_dict, prior_coords, rng)
 
         # Populate structure tokens for apo structure (in-place)
         self.populate_structure_tokens(tokenized, apo_lookup)
@@ -260,9 +253,8 @@ class TrainingDataset(BaseLMDBDataset):
     def pad_input(self, f_input: FoldingInput) -> FoldingInput:
         max_chains = self.max_chains
         max_tokens = self.max_tokens
+        max_atoms = self.max_atoms
         max_sequence_tokens = self.max_sequence_tokens
-        num_constraints = self.max_constraints
-        max_atoms = max_tokens * 24  # max 24 atoms per token
         max_bonds = max_tokens * 10  # max 10 bonds per token
         return f_input.pad(
             max_tokens=max_tokens,
@@ -270,31 +262,23 @@ class TrainingDataset(BaseLMDBDataset):
             max_atoms=max_atoms,
             max_bonds=max_bonds,
             max_sequence_tokens=max_sequence_tokens,
-            max_constraints=num_constraints,
         )
 
     def tokenize(
         self,
         ref_struct: RefStructure,
         apo_dict: dict[int, np.ndarray],
-        apo_uid_dict: dict[int, np.ndarray],
         prior_coords: np.ndarray,
         rng: np.random.Generator,
     ) -> TokenizedStructure:
         """Tokenize the given structure."""
-        # Sample the constraints
-        constraints = self.constraint_sampling(ref_struct, rng)
-        # Tokenize the structure
-        tokenized = self.tokenizer(
+        return self.tokenizer(
             ref_struct,
             rng,
             apo_coords=apo_dict,
-            apo_uids=apo_uid_dict,
             num_apo=self.max_apo,
             prior_coords=prior_coords,
-            constraints=constraints,
         )
-        return tokenized
 
     # === Utility methods for training dataset === #
     def extract_substructure(
@@ -324,12 +308,13 @@ class TrainingDataset(BaseLMDBDataset):
     ) -> TokenizedStructure:
         assert "asym_ids" in kwargs, "asym_ids must be provided for cropping."
         asym_ids: int | tuple[int, int] | None = kwargs["asym_ids"]
-        if self.max_tokens < tokenized.num_tokens:
+        if self.max_tokens < tokenized.num_tokens or self.max_atoms < tokenized.num_atoms:
             # Crop the tokenized structure
             tokenized = self.cropper.crop(
                 tokenized,
                 metadata,
                 max_tokens=self.max_tokens,
+                max_atoms=self.max_atoms,
                 max_sequence_tokens=self.max_sequence_tokens,
                 bias_asym_id=asym_ids,
                 rng=rng,
@@ -339,9 +324,9 @@ class TrainingDataset(BaseLMDBDataset):
     def drop_apo_structure(
         self, tokenized: TokenizedStructure, rng: np.random.Generator
     ) -> None:
-        """Drop the apo coords / structure tokens"""
-        # Optionally drop apo structure for trunk input during training
-        if rng.random() < self.config.prob_drop_apo:
+        """Drop complex-level apo conditioning with hierarchical masking."""
+        drop_apo = rng.random() < self.config.prob_drop_apo
+        if drop_apo:
             tokenized.token.apo_center_coords.fill(np.nan)
             tokenized.token.apo_repr_coords.fill(np.nan)
             tokenized.token.apo_frame_coords.fill(np.nan)
@@ -351,7 +336,10 @@ class TrainingDataset(BaseLMDBDataset):
             tokenized.atom.apo_coords.fill(np.nan)
             tokenized.atom.apo_mask.fill(False)
 
-        if rng.random() < self.config.prob_drop_struct_token:
+        drop_struct_token = drop_apo or (
+            rng.random() < self.config.prob_drop_struct_token
+        )
+        if drop_struct_token:
             tokenized.sequence.bb_struct_token_id.fill(-1)
             tokenized.sequence.fa_struct_token_id.fill(-1)
 
