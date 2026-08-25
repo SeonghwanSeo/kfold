@@ -25,6 +25,7 @@ from kfold.model.modules import (
 )
 from kfold.model.primitives import LayerNorm, Linear, LinearNoBias
 from kfold.utils.config import resolve_config
+from kfold.utils.runtime import is_cuequivariance_installed
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +65,6 @@ class KFoldConfig:
     distogram_head: distogram_head.DistogramHead.Config
     confidence_head: confidence_head.ConfidenceHead.Config
     patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config
-
-    # Kernel configurations
-    kernel_cuequivariance: bool = True
 
     # For training
     diffusion_conditioning_drop_rate: float = 0.0
@@ -128,10 +126,7 @@ class KFold(torch.nn.Module):
         self.trunk_config = resolve_config(TrunkConfig, config.trunk)
         self.parcae_config = resolve_config(ParcaeConfig, config.parcae)
 
-        kernel_config = {
-            "cuequivariance": config.kernel_cuequivariance,
-        }
-        self.kernel_config = kernel_config
+        self.use_kernel: bool = is_cuequivariance_installed()
 
         # Initialize pre-trained sequence and structure encoders.
         self.prot_seq_encoder = prot_seq_encoder.ProteinSequenceEncoder(
@@ -208,9 +203,15 @@ class KFold(torch.nn.Module):
         self.patch_pair_geometry_head = patch_geometry.PatchPairGeometryHead(
             config.patch_pair_geometry, self.channel_z
         )
-        self.confidence_head = confidence_head.ConfidenceHead(
-            config.confidence_head, kernel_config=kernel_config
-        )
+        self.confidence_head = confidence_head.ConfidenceHead(config.confidence_head)
+
+    def set_forward_flags(
+        self,
+        use_cuequiv_kernels: bool | None = None,
+    ) -> None:
+        """Set flags used by training and inference forward passes."""
+        if use_cuequiv_kernels is not None:
+            self.use_kernel = use_cuequiv_kernels
 
     def _parcae_discretized_dynamics(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute the Parcae ZOH/Euler-discretized pair-state dynamics."""
@@ -388,7 +389,14 @@ class KFold(torch.nn.Module):
 
         st = time.time()
         coords = dict_out["diffusion"]["coordinates"]
-        dict_out["confidence"] = self.confidence_head(f_input, s_inputs, s_lm, z, coords)
+        dict_out["confidence"] = self.confidence_head(
+            f_input,
+            s_inputs,
+            s_lm,
+            z,
+            coords,
+            use_cuequiv_kernels=self.use_kernel,
+        )
         et = time.time()
         time_logs["confidence_head"] = et - st
 
@@ -425,7 +433,7 @@ class KFold(torch.nn.Module):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        use_cuequiv_kernels = self.kernel_config["cuequivariance"]
+        use_cuequiv_kernels = self.use_kernel
         dtype = torch.get_autocast_dtype(f_input.device.type)
 
         # Parcae theory: stable channel-wise state decay (a) and

@@ -132,8 +132,7 @@ class KFoldForTrain(KFold):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        assert self.kernel_config["cuequivariance"]
-        use_cuequiv_kernels = True
+        use_cuequiv_kernels = self.use_kernel
 
         train = self.training and grad_recurrence_steps > 0
 
@@ -339,7 +338,12 @@ class KFoldForTrain(KFold):
 
             # Forward pass through confidence head
             dict_out["confidence"] = self.confidence_head(
-                f_input, _s_inputs, _s_lm, _z, coordinates
+                f_input,
+                _s_inputs,
+                _s_lm,
+                _z,
+                coordinates,
+                use_cuequiv_kernels=self.use_kernel,
             )
 
         return dict_out
@@ -404,7 +408,14 @@ class KFoldForTrain(KFold):
             )
 
         coords = dict_out["diffusion"]["coordinates"]
-        dict_out["confidence"] = self.confidence_head(f_input, s_inputs, s_lm, z, coords)
+        dict_out["confidence"] = self.confidence_head(
+            f_input,
+            s_inputs,
+            s_lm,
+            z,
+            coords,
+            use_cuequiv_kernels=self.use_kernel,
+        )
         # Remove batch dimension from outputs for validation
         dict_out = {
             k: {kk: vv.squeeze(0) for kk, vv in v.items()} for k, v in dict_out.items()

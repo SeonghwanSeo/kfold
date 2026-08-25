@@ -2,7 +2,6 @@
 channel_s: 384
 channel_z: 256
 dropout: 0.25
-kernel_cuequivariance: true
 
 input_embedder:
   channel_s: 384

@@ -183,12 +183,11 @@ class ConfidenceHead(torch.nn.Module):
         # For training
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config, kernel_config: dict):
+    def __init__(self, cfg: Config):
         super().__init__()
         self.num_pae_bins = cfg.num_pae_bins
         self.num_pde_bins = cfg.num_pde_bins
         self.num_plddt_bins = cfg.num_plddt_bins
-        self.kernel_config = kernel_config
         self.is_compiled = False
 
         def create_bin_centers(d_min: float, d_max: float, num_bins: int) -> torch.Tensor:
@@ -275,6 +274,7 @@ class ConfidenceHead(torch.nn.Module):
         s_lm: torch.Tensor,
         z: torch.Tensor,
         x_pred: torch.Tensor,
+        use_cuequiv_kernels: bool = False,
     ) -> dict[str, torch.Tensor]:
         """Forward pass of confidence head module.
 
@@ -290,6 +290,8 @@ class ConfidenceHead(torch.nn.Module):
             Tensor of shape (B, L, L, C_s) containing pair representation.
         x_pred: torch.Tensor
             Tensor of shape (B, N, Latom, 3) containing predicted coordinates.
+        use_cuequiv_kernels : bool
+            Whether to use cuequivariance kernels in the pair stack.
 
         Returns
         -------
@@ -333,7 +335,9 @@ class ConfidenceHead(torch.nn.Module):
         mask = f_input.token.pad_mask
         for i in range(N):
             _pae_logits, _pde_logits, _plddt_logits, _resolved_logits = (
-                self.forward_single(z, s, x_repr[:, i], mask=mask)
+                self.forward_single(
+                    z, s, x_repr[:, i], mask=mask, use_cuequiv_kernels=use_cuequiv_kernels
+                )
             )
             pae_logits[:, i] = _pae_logits
             pde_logits[:, i] = _pde_logits
@@ -380,6 +384,7 @@ class ConfidenceHead(torch.nn.Module):
         s: torch.Tensor,
         x: torch.Tensor,
         mask: torch.Tensor,
+        use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of confidence head module.
 
@@ -394,6 +399,8 @@ class ConfidenceHead(torch.nn.Module):
             representative atoms.
         mask: torch.Tensor
             Tensor of shape (B, L) containing the mask for valid tokens.
+        use_cuequiv_kernels : bool
+            Whether to use cuequivariance kernels in the pair stack.
 
         Returns
         -------
@@ -416,8 +423,6 @@ class ConfidenceHead(torch.nn.Module):
 
         # Jointly update pair and LM single representations.
         stack = self.get_stack()
-        use_cuequiv_kernels = self.kernel_config["cuequivariance"]
-
         z = z + self.linear_distogram(dgram.to(z.dtype))
         pair_mask = mask[..., :, None] & mask[..., None, :]
         z, s = stack(z, s, pair_mask, mask, use_cuequiv_kernels)
