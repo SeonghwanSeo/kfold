@@ -14,6 +14,7 @@ from kfold.model.modules import (
     confidence_head,
     distogram_head,
     ecsi,
+    edm,
     input_embedder,
     patch_geometry,
     prot_seq_encoder,
@@ -50,20 +51,21 @@ class KFoldConfig:
     channel_s: int = 384
     channel_z: int = 256
     dropout: float = 0.25
+    diffusion_type: str
 
     # Sub-module configurations
     input_embedder: input_embedder.InputEmbedder.Config
     apo_module: apo_module.ApoModule.Config
     protein_sequence_encoder: prot_seq_encoder.ProteinSequenceEncoder.Config
-    protein_structure_encoder: prot_struct_encoder.StructureEncoder.Config
-    rna_sequence_encoder: rna_seq_encoder.RNASequenceEncoder.Config
+    protein_structure_encoder: prot_struct_encoder.StructureEncoder.Config | None
+    rna_sequence_encoder: rna_seq_encoder.RNASequenceEncoder.Config | None
     trunk: TrunkConfig
     parcae: ParcaeConfig
     score_model: score_model.DiffusionModule.Config
-    diffusion_head: ecsi.KFoldECSI.Config
+    diffusion_head: ecsi.KFoldECSI.Config | edm.AF3SampleDiffusion.Config
     distogram_head: distogram_head.DistogramHead.Config
     confidence_head: confidence_head.ConfidenceHead.Config
-    patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config
+    patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config | None
 
     # For training
     diffusion_conditioning_drop_rate: float = 0.0
@@ -122,36 +124,58 @@ class KFold(torch.nn.Module):
         self.channel_s: int = config.channel_s
         self.channel_z: int = config.channel_z
         self.dropout: float = config.dropout
+        self.diffusion_type: str = config.diffusion_type
+        if self.diffusion_type not in {"ecsi", "edm"}:
+            raise ValueError(
+                f"Unknown diffusion_type {self.diffusion_type!r}. "
+                "Expected 'ecsi' or 'edm'."
+            )
+
         self.trunk_config = resolve_config(TrunkConfig, config.trunk)
         self.parcae_config = resolve_config(ParcaeConfig, config.parcae)
 
         self.use_kernel: bool = is_cuequivariance_installed()
 
+        # Initialize input featurizer.
+        self.input_embedder = input_embedder.InputEmbedder(config.input_embedder)
+
         # Initialize pre-trained sequence and structure encoders.
         self.prot_seq_encoder = prot_seq_encoder.ProteinSequenceEncoder(
             config.protein_sequence_encoder
         )
-        self.rna_seq_encoder = rna_seq_encoder.RNASequenceEncoder(
-            config.rna_sequence_encoder
-        )
-        self.prot_struct_encoder = prot_struct_encoder.StructureEncoder(
-            config.protein_structure_encoder
-        )
-
-        # Initialize input featurizer.
-        self.input_embedder = input_embedder.InputEmbedder(config.input_embedder)
-
-        # Initialize LM single and pairwise feature projection modules.
         self.prot_seq_to_s_lm = LMEncoder(
-            self.prot_seq_encoder.d_model, self.prot_seq_encoder.n_layers, self.channel_s
+            self.prot_seq_encoder.d_model,
+            self.prot_seq_encoder.n_layers,
+            self.channel_s,
         )
-        self.rna_seq_to_s_lm = LMEncoder(
-            self.rna_seq_encoder.d_model, self.rna_seq_encoder.n_layers, self.channel_s
-        )
-        self.prot_struct_to_s_lm = torch.nn.Sequential(
-            LayerNorm(self.prot_struct_encoder.d_model, create_offset=False),
-            LinearNoBias(self.prot_struct_encoder.d_model, self.channel_s),
-        )
+
+        if config.rna_sequence_encoder is not None:
+            self.rna_seq_encoder = rna_seq_encoder.RNASequenceEncoder(
+                config.rna_sequence_encoder
+            )
+            self.rna_seq_to_s_lm = LMEncoder(
+                self.rna_seq_encoder.d_model,
+                self.rna_seq_encoder.n_layers,
+                self.channel_s,
+            )
+        else:
+            self.rna_seq_encoder = None
+
+        if config.protein_structure_encoder is not None:
+            struct_encoder_config = resolve_config(
+                prot_struct_encoder.StructureEncoder.Config,
+                config.protein_structure_encoder,
+            )
+            self.prot_struct_encoder = prot_struct_encoder.StructureEncoder(
+                struct_encoder_config
+            )
+            self.prot_struct_to_s_lm = torch.nn.Sequential(
+                LayerNorm(struct_encoder_config.d_model, create_offset=False),
+                LinearNoBias(struct_encoder_config.d_model, self.channel_s),
+            )
+        else:
+            self.prot_struct_encoder = None
+
         self.lm_to_pair = LMToPair(self.channel_s, self.channel_z)
 
         # Initialize trunk
@@ -194,14 +218,30 @@ class KFold(torch.nn.Module):
         )
 
         # Initialize prediction heads
-        self.score_model = score_model.DiffusionModule(config.score_model)
-        self.diffusion_head = ecsi.KFoldECSI(
-            config.diffusion_head, score_model=self.score_model
-        )
+
+        # Distogram head
         self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
-        self.patch_pair_geometry_head = patch_geometry.PatchPairGeometryHead(
-            config.patch_pair_geometry, self.channel_z
-        )
+
+        # Patch pair geometry head
+        if config.patch_pair_geometry is not None:
+            self.patch_pair_geometry_head = patch_geometry.PatchPairGeometryHead(
+                config.patch_pair_geometry, self.channel_z
+            )
+        else:
+            self.patch_pair_geometry_head = None
+
+        # Diffusion head
+        self.score_model = score_model.DiffusionModule(config.score_model)
+        if self.diffusion_type == "ecsi":
+            self.diffusion_head = ecsi.KFoldECSI(
+                config.diffusion_head, score_model=self.score_model
+            )
+        else:
+            self.diffusion_head = edm.AF3SampleDiffusion(
+                config.diffusion_head, score_model=self.score_model
+            )
+
+        # Confidence head
         self.confidence_head = confidence_head.ConfidenceHead(config.confidence_head)
 
     def set_forward_flags(
@@ -384,11 +424,15 @@ class KFold(torch.nn.Module):
 
     def _encode_lm_single(self, f_input: FoldingInput) -> torch.Tensor:
         """Merge the enabled pretrained encoders into the shared LM single."""
-        return (
-            self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
-            + self.rna_seq_to_s_lm(self.rna_seq_encoder(f_input))
-            + self.prot_struct_to_s_lm(self.prot_struct_encoder(f_input))
-        )
+        s_lm = self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
+
+        if self.rna_seq_encoder is not None:
+            s_lm = s_lm + self.rna_seq_to_s_lm(self.rna_seq_encoder(f_input))
+
+        if self.prot_struct_encoder is not None:
+            s_lm = s_lm + self.prot_struct_to_s_lm(self.prot_struct_encoder(f_input))
+
+        return s_lm
 
     def run_trunk(
         self,

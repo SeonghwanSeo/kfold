@@ -1,0 +1,105 @@
+# === Model Configuration === #
+channel_s: 384
+channel_z: 128
+dropout: 0.25
+diffusion_type: edm
+
+input_embedder:
+  channel_s: 384
+  channel_z: 128
+  channel_atom: 128
+  channel_atompair: 16
+  atom_encoder_blocks: 3
+  atom_encoder_heads: 4
+  ckpt_atom_stack: false
+
+apo_module:
+  channel_apo: 64
+  channel_z: 128
+  num_blocks: 2
+  num_tri_heads: 4
+  dropout: 0.1
+  num_distogram_bins: 39
+  min_dist: 3.25
+  max_dist: 50.75
+  blocks_per_ckpt: null
+
+protein_sequence_encoder:
+  cache_dir: null
+  vocab_size: 64
+  d_model: 2304
+  n_heads: 36
+  n_layers: 48
+
+protein_structure_encoder: null
+
+rna_sequence_encoder: null
+
+trunk:
+  num_lm_blocks: 2
+  num_main_blocks: 24
+  num_refine_blocks: 2
+  dropout: 0.25
+  blocks_per_ckpt: null
+
+parcae:
+  state_init: trunc_normal
+  decay_init: 0.4472135954999579
+
+score_model:
+  channel_a: 768
+  channel_s: 384
+  channel_z: 128
+  channel_atom: 128
+  channel_atompair: 16
+  channel_coords: 3
+  atom_encoder_blocks: 3
+  atom_encoder_heads: 4
+  token_transformer_blocks: 12
+  token_transformer_heads: 12
+  atom_decoder_blocks: 3
+  atom_decoder_heads: 4
+  blocks_per_ckpt: null
+  ckpt_atom_stack: false
+
+diffusion_head:
+  sigma_min: 0.0004
+  sigma_max: 160.0
+  sigma_data: 16.0
+  rho: 7
+  P_mean: -1.2
+  P_std: 1.5
+  gamma_0: 0.8
+  gamma_min: 1.0
+  noise_scale: 1.003
+  step_scale: 1.5
+
+distogram_head:
+  channel_z: 128
+  num_bins: 64
+  min_dist: 2.0
+  max_dist: 22.0
+
+confidence_head:
+  channel_s: 384
+  channel_z: 128
+  num_heads_attn: 16
+  num_blocks: 4
+  dropout: 0.25
+  num_bins: 39
+  min_dist: 3.25
+  max_dist: 50.75
+  min_pae_dist: 0.0
+  max_pae_dist: 32.0
+  num_pae_bins: 64
+  min_pde_dist: 0.0
+  max_pde_dist: 32.0
+  num_pde_bins: 64
+  num_plddt_bins: 50
+  blocks_per_ckpt: null
+
+patch_pair_geometry: null
+
+# Training preconditioning
+diffusion_conditioning_drop_rate: 0.2
+confidence_conditioning_drop_rate: 0.2

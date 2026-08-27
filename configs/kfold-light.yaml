@@ -1,12 +1,12 @@
 # === Model Configuration === #
 channel_s: 384
-channel_z: 256
+channel_z: 128
 dropout: 0.25
 diffusion_type: ecsi
 
 input_embedder:
   channel_s: 384
-  channel_z: 256
+  channel_z: 128
   channel_atom: 128
   channel_atompair: 16
   atom_encoder_blocks: 3
@@ -15,7 +15,7 @@ input_embedder:
 
 apo_module:
   channel_apo: 64
-  channel_z: 256
+  channel_z: 128
   num_blocks: 2
   num_tri_heads: 4
   dropout: 0.1
@@ -31,23 +31,13 @@ protein_sequence_encoder:
   n_heads: 36
   n_layers: 48
 
-protein_structure_encoder:
-  cache_dir: null
-  d_model: 2560
-  n_heads: 40
-  n_layers: 33
+protein_structure_encoder: null
 
-rna_sequence_encoder:
-  cache_dir: null
-  vocab_size: 64
-  d_model: 960
-  n_heads: 15
-  n_layers: 30
-  use_moe: true
+rna_sequence_encoder: null
 
 trunk:
-  num_lm_blocks: 4
-  num_main_blocks: 48
+  num_lm_blocks: 2
+  num_main_blocks: 24
   num_refine_blocks: 2
   dropout: 0.25
   blocks_per_ckpt: null
@@ -57,9 +47,9 @@ parcae:
   decay_init: 0.4472135954999579
 
 score_model:
-  channel_a: 1024
+  channel_a: 768
   channel_s: 384
-  channel_z: 256
+  channel_z: 128
   channel_atom: 128
   channel_atompair: 16
   channel_coords: 6
@@ -67,8 +57,8 @@ score_model:
   endpoint_branch_dropout: 0.0
   atom_encoder_blocks: 3
   atom_encoder_heads: 4
-  token_transformer_blocks: 16
-  token_transformer_heads: 16
+  token_transformer_blocks: 12
+  token_transformer_heads: 12
   atom_decoder_blocks: 3
   atom_decoder_heads: 4
   blocks_per_ckpt: null
@@ -111,14 +101,14 @@ diffusion_head:
   train_x_0_perturb_translation_std: 4.0
 
 distogram_head:
-  channel_z: 256
+  channel_z: 128
   num_bins: 64
   min_dist: 2.0
   max_dist: 22.0
 
 confidence_head:
   channel_s: 384
-  channel_z: 256
+  channel_z: 128
   num_heads_attn: 16
   num_blocks: 4
   dropout: 0.25
@@ -134,17 +124,7 @@ confidence_head:
   num_plddt_bins: 50
   blocks_per_ckpt: null
 
-patch_pair_geometry:
-  enabled: true
-  channel_z: 256
-  num_bins: 64
-  min_dist: 2.0
-  max_dist: 22.0
-  patch_size: 16
-  max_patches_per_chain: 8
-  max_patch_pairs: 256
-  pool_max_tokens_per_patch: 16
-  ranking_contact_cutoff: 8.0
+patch_pair_geometry: null
 
 # Training preconditioning
 diffusion_conditioning_drop_rate: 0.2
