@@ -21,6 +21,7 @@ dependencies = [
   "rdkit",
   "einops",
   "gemmi",
+  "zstandard",
 ]
 
 [project.optional-dependencies]
