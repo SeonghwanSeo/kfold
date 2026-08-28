@@ -40,9 +40,7 @@ class ProteinSequenceEncoder(torch.nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg: ProteinSequenceEncoder.Config = cfg
-        self.lm = load_model(
-            model_name="atlaslm-3b-base", cache_dir=cfg.cache_dir, dtype=torch.bfloat16
-        )
+        self.lm = load_model(cache_dir=cfg.cache_dir, dtype=torch.bfloat16)
         self.eval()
         for param in self.parameters():
             param.requires_grad = False
