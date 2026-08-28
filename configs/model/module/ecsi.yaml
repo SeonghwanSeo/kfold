@@ -15,26 +15,32 @@ eta: 1.0
 
 # Inference time schedule
 align_x_0_hat_to_x_t: true
-sampler_mode: ode
-sampler_ode_type: si
+# This bundle records the selected policy for provenance. `churn_factor` is the
+# only supported numerical sweep axis; the remaining values are fixed defaults.
+sampler_mode: sde
+sampler_ode_type: ecsi
 sampler_step_scale: 1.0
-sampler_switch_gamma: null
-sampler_after_switch_mode: ode
-sampler_after_switch_ode_type: si
+# Use SI ODE at or below this time; null disables the switch.
+sampler_switch_time: 0.1
+# SDE routing: [all], [], or any of protein/peptide/ligand/rna/dna.
+# Unselected atoms use SI ODE; peptide means protein chains under 16 residues.
+# Ligand selects ligand tokens only. Churn remains global.
+sampler_sde_atom_classes: [all]
 churn_factor: 0.1
 churn_max_multiplier: 4.0
 churn_end_time: 0.5
+# null resolves to time_max; the upper bound is excluded, including the initial step.
+churn_max_time: null
 churn_step_fraction: 0.4
 churn_step_power: 1.0
 ode_step_power: 2.0
 stepwarp_power: 0.5
 
-# SVGD sample spreading
-svgd_step: 1.0
-svgd_cap_frac: 0.05
-svgd_num_eps: 1e-8
-svgd_skip_rms: 1e-6
-
 # Training time schedule
 train_time_schedule: logistic
 train_time_schedule_params: [-2.15, 2.25]
+
+# Optional high-time chain-rigid x0 perturbation. Disabled by default.
+train_x_0_perturb_time_min: 0.7
+train_x_0_perturb_prob: 0.0
+train_x_0_perturb_translation_std: 0.0

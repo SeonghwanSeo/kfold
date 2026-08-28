@@ -204,8 +204,11 @@ def test_entity_binned_loss_logger_broadcasts_scalar_distogram_loss():
 
 def test_compute_distogram_loss_caches_per_batch_loss_for_binned_logging():
     class FakeDistogramLoss:
-        def __call__(self, logits, f_input):
-            return torch.tensor([1.0, 3.0], device=logits.device)
+        def __call__(self, distogram_out, f_input):
+            return torch.tensor(
+                [1.0, 3.0],
+                device=distogram_out["logits"].device,
+            )
 
     module = KFoldTrainingModule.__new__(KFoldTrainingModule)
     module.distogram_loss = FakeDistogramLoss()
@@ -215,7 +218,10 @@ def test_compute_distogram_loss_caches_per_batch_loss_for_binned_logging():
 
     loss, metrics = KFoldTrainingModule.compute_distogram_loss(
         module,
-        logits=torch.empty(2, 1, 1, 1),
+        distogram_out={
+            "logits": torch.empty(2, 1, 1, 1),
+            "bin_boundaries": torch.empty(0),
+        },
         f_input=SimpleNamespace(),
     )
 

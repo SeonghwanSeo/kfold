@@ -35,7 +35,6 @@ from kfold.data.pipelines import structure_preparation
 from kfold.data.types.metadata import ChainInfo, InterfaceInfo, Metadata, PredictionRecord
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
-from kfold.data.types.tokenized import TokenizedStructure
 
 from .distillation import DistillationDataset
 
@@ -44,26 +43,6 @@ StructInfo = dict
 
 class HomodimerDistillationDataset(DistillationDataset):
     """Training dataset for homodimer distillation."""
-
-    def sanity_check(self) -> None:
-        """Perform sanity checks on the dataset."""
-        super().sanity_check()
-        cfg = self.config
-        assert self.config.apo_perturb is not None, (
-            "apo_perturb must be set for homodimer distillation dataset.",
-        )
-        if cfg.prob_perturbation != 1.0:
-            self.logger.warning(
-                "prob_perturbation is not 1.0 for homodimer distillation dataset."
-            )
-        if cfg.prob_drop_apo != 1.0:
-            self.logger.warning(
-                "prob_drop_apo is not 1.0 for homodimer distillation dataset."
-            )
-        if cfg.prob_drop_struct_token != 1.0:
-            self.logger.warning(
-                "prob_drop_struct_token is not 1.0 for homodimer distillation dataset."
-            )
 
     def get_item_safe(
         self, index: int, num_trials: int = 100
@@ -92,12 +71,14 @@ class HomodimerDistillationDataset(DistillationDataset):
                     num_tokens=0,
                 )
                 chain_infos.append(chain_info)
+            iface_infos = [InterfaceInfo((1, 2))]
 
             metadata = Metadata(
                 id=metadata_dict["id"],
                 source="pred",
                 pred=PredictionRecord(**metadata_dict["pred"]),
                 chains=chain_infos,
+                interfaces=iface_infos,
             )
 
             try:
@@ -156,60 +137,6 @@ class HomodimerDistillationDataset(DistillationDataset):
             chains=[chain1, chain2], connections=[], metadata=metadata.copy()
         )
         return ref_struct
-
-    def load_lookup_table(self) -> dict:
-        return {}
-
-    def get_apo_lookup(
-        self, ref_struct: RefStructure, rng: np.random.Generator
-    ) -> dict[int, list[dict | None]]:
-        """Use one randomly selected holo chain as the shared synthetic apo source."""
-        src_chain = ref_struct.chains[rng.integers(0, 2)]
-        apo_info = {
-            "key": f"{ref_struct.id}:{src_chain.asym_id}",
-            "seq": src_chain.get_sequence(map_to_standard=True),
-            "coords": self._center_label_residue_coords(src_chain),
-        }
-        return {
-            chain.asym_id: [apo_info.copy()] + [None] * (self.max_apo - 1)
-            for chain in ref_struct.chains
-        }
-
-    def get_prior_coords(
-        self,
-        ref_struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
-        rng: np.random.Generator,
-    ) -> dict[int, np.ndarray]:
-        """Use one randomly selected label chain as the shared prior source."""
-        del apo_dict
-        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
-        for chain in ref_struct.chains:
-            if chain.asym_id in metadata_by_asym_id:
-                metadata_by_asym_id[chain.asym_id].prior_uid = chain.asym_id
-
-        prior_coords_dict = {}
-        for chain in ref_struct.chains:
-            c = ref_struct.chains[0] if rng.random() < 0.5 else ref_struct.chains[1]
-            coords = self._center_label_residue_coords(c)
-
-            # Apply harsh perturbation to the prior coordinates.
-            assert self.apo_perturb is not None
-            seq = c.get_sequence(map_to_standard=True)
-            coords = self.apo_perturb.run_protein_perturbation(
-                seq, coords, mask=None, rng=rng
-            )
-
-            prior_coords_dict[chain.asym_id] = coords
-
-        return prior_coords_dict
-
-    def populate_structure_tokens(
-        self,
-        tokenized: TokenizedStructure,
-        apo_lookup: dict[int, list[dict | None]],
-    ) -> None:
-        return  # skip populating structure tokens for monomer distillation dataset
 
 
 class HeterodimerDistillationDataset(DistillationDataset):

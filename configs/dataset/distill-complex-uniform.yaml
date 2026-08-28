@@ -1,0 +1,6 @@
+_yaml_: "default-train.yaml"
+
+name: ???
+type: "distillation"
+
+sampler: null

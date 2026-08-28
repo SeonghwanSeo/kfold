@@ -176,7 +176,12 @@ python scripts/process/rcsb/e1_get_val_ids.py \
 python scripts/process/rcsb/e2_construct_val_set.py \
     --data_dir /data/processed/dataset
 
-# Step 4-3: (Optional) Get validation set statistics
+# Step 4-3: Annotate PP interface descriptors (homo/hetero and SAbDab AbAg)
+python scripts/process/rcsb/e5_annotate_sabdab_interfaces.py \
+    --data_dir /data/processed/dataset/rcsb-val \
+    --sabdab_path /data/source/sabdab_summary_all.csv
+
+# Step 4-4: (Optional) Get validation set statistics
 python scripts/process/rcsb/e3_get_val_statistics.py \
     --data_dir /data/processed/dataset
 ```

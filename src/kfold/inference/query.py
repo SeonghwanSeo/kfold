@@ -36,6 +36,9 @@ multimer_sequences:
       description: "Antibody Fab"
       apo: ["fab_apo_1.pdb", "fab_apo_2.pdb", ...]
       prior: ["fab_prior_1.pdb", "fab_prior_2.pdb"] (optional)
+
+bonds:
+  - [["A", 20, "NZ"], ["D", 1, "C08"]]
 ```
 """
 
@@ -377,28 +380,89 @@ class ProteinMultimerSequence(BaseSequenceGroup):
         return ccd_sequence
 
 
-# === Constraint === #
+# === Bond === #
 @dataclasses.dataclass(kw_only=True)
-class Constraint:
-    """Dataclass for bond constraint input format."""
+class Bond:
+    """Covalent bond between two atoms in the query."""
 
     atom1: tuple[str, int, str]  # (chain_id, res_idx, atom_name)
     atom2: tuple[str, int, str]  # (chain_id, res_idx, atom_name)
 
 
-@dataclasses.dataclass(kw_only=True)
-class BondConstraint(Constraint):
-    """Dataclass for bond constraint input format."""
+def _parse_bonds(raw_bonds: Any) -> list[Bond]:
+    """Parse top-level covalent bonds from the compact input format."""
+    if not isinstance(raw_bonds, list):
+        raise ValueError("'bonds' must be a list of atom-reference pairs.")
 
-    type: ClassVar = "bond"
+    def parse_atom(atom: Any, bond_index: int, atom_index: int) -> tuple[str, int, str]:
+        if not isinstance(atom, list) or len(atom) != 3:
+            raise ValueError(
+                f"bonds[{bond_index}][{atom_index}] must be "
+                "[chain_id, residue_index, atom_name]."
+            )
+        chain_id, residue_index, atom_name = atom
+        if not isinstance(chain_id, str) or not chain_id:
+            raise ValueError(
+                f"bonds[{bond_index}][{atom_index}] chain ID must be a non-empty string."
+            )
+        if (
+            not isinstance(residue_index, int)
+            or isinstance(residue_index, bool)
+            or residue_index < 1
+        ):
+            raise ValueError(
+                f"bonds[{bond_index}][{atom_index}] residue index must be a "
+                "positive, 1-based integer."
+            )
+        if not isinstance(atom_name, str) or not atom_name:
+            raise ValueError(
+                f"bonds[{bond_index}][{atom_index}] atom name must be a non-empty string."
+            )
+        return chain_id, residue_index, atom_name
+
+    bonds: list[Bond] = []
+    for bond_index, raw_bond in enumerate(raw_bonds):
+        if not isinstance(raw_bond, list) or len(raw_bond) != 2:
+            raise ValueError(
+                f"bonds[{bond_index}] must contain exactly two atom references."
+            )
+        bonds.append(
+            Bond(
+                atom1=parse_atom(raw_bond[0], bond_index, 0),
+                atom2=parse_atom(raw_bond[1], bond_index, 1),
+            )
+        )
+    return bonds
 
 
-@dataclasses.dataclass(kw_only=True)
-class DistanceConstraint(Constraint):
-    """Dataclass for distance constraint input format."""
+def _validate_bond_references(
+    bonds: list[Bond],
+    sequences: list[ProteinSequence | DNASequence | RNASequence | LigandSequence],
+    multimer_sequences: list[ProteinMultimerSequence],
+) -> None:
+    """Validate bond chain IDs and 1-based residue indices."""
+    chain_lengths = {
+        chain_id: len(sequence) for sequence in sequences for chain_id in sequence.ids
+    }
+    for sequence_group in multimer_sequences:
+        for chain_id1, chain_id2 in sequence_group.ids:
+            chain_lengths[chain_id1] = len(sequence_group.sequence1)
+            chain_lengths[chain_id2] = len(sequence_group.sequence2)
 
-    type: ClassVar = "distance"
-    range: tuple[float, float]  # (lower_bound, upper_bound)
+    for bond_index, bond in enumerate(bonds):
+        for atom_index, atom in enumerate((bond.atom1, bond.atom2)):
+            chain_id, residue_index, _ = atom
+            if chain_id not in chain_lengths:
+                raise ValueError(
+                    f"bonds[{bond_index}][{atom_index}] references unknown "
+                    f"chain ID '{chain_id}'."
+                )
+            if residue_index > chain_lengths[chain_id]:
+                raise ValueError(
+                    f"bonds[{bond_index}][{atom_index}] residue index "
+                    f"{residue_index} exceeds chain '{chain_id}' length "
+                    f"{chain_lengths[chain_id]}."
+                )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -410,10 +474,7 @@ class Query:
     multimer_sequences: list[ProteinMultimerSequence] = dataclasses.field(
         default_factory=list
     )
-    # WARN: Distance constraints are not supported yet (no training data for it)
-    constraints: list[BondConstraint | DistanceConstraint] = dataclasses.field(
-        default_factory=list
-    )
+    bonds: list[Bond] = dataclasses.field(default_factory=list)
     seed: int = 0  # Default seed, overridden to command line argument
     yaml: str  # Original YAML content
 
@@ -606,50 +667,19 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
     # Validate the parsed sequences and multimer sequences
     validate_input_sequences(sequences, multimer_sequences, ccd=ccd)
 
-    # Parse constraints
-    constraints: list[BondConstraint | DistanceConstraint] = []
-    for constraint in input_dict.get("constraints", []):
-        if len(constraint) != 1:
-            raise ValueError(
-                f"Each constraint entry must contain exactly one constraint type:"
-                f" {constraint}. (supported types: 'bond', 'distance')"
-            )
-        if "bond" in constraint:
-            cond = constraint["bond"]
-            chain1, res_idx1, atom_name1 = cond["atom1"]
-            chain2, res_idx2, atom_name2 = cond["atom2"]
-            constraints.append(
-                BondConstraint(
-                    atom1=(chain1, res_idx1, atom_name1),
-                    atom2=(chain2, res_idx2, atom_name2),
-                )
-            )
-        elif "distance" in constraint:
-            cond = constraint["distance"]
-            if "range" not in cond:
-                # Set default range to (2.0, 8.0) if not provided
-                cond["range"] = (2.0, 8.0)
-            chain1, res_idx1, atom_name1 = cond["atom1"]
-            chain2, res_idx2, atom_name2 = cond["atom2"]
-            # Convert atom names to uppercase for consistency (e.g. "ca" -> "CA")
-            atom_name1, atom_name2 = atom_name1.upper(), atom_name2.upper()
-            lower_bound, upper_bound = cond["range"]
-            constraints.append(
-                DistanceConstraint(
-                    atom1=(chain1, res_idx1, atom_name1),
-                    atom2=(chain2, res_idx2, atom_name2),
-                    range=(lower_bound, upper_bound),
-                )
-            )
-        else:
-            constraint_type = next(iter(constraint))
-            raise ValueError(f"Unsupported constraint type: {constraint_type}")
+    if "constraints" in input_dict:
+        raise ValueError(
+            "The top-level 'constraints' field has been removed. "
+            "Specify covalent connections with 'bonds' instead."
+        )
+    bonds = _parse_bonds(input_dict.get("bonds", []))
+    _validate_bond_references(bonds, sequences, multimer_sequences)
 
     return Query(
         name=name,
         sequences=sequences,
         multimer_sequences=multimer_sequences,
-        constraints=constraints,
+        bonds=bonds,
         yaml=yaml.safe_dump(input_dict),
     )
 

@@ -13,8 +13,7 @@ from kfold.data.pipelines import (
     structure_preparation,
     tokenization,
 )
-from kfold.data.types.ccd import CCD, Component
-from kfold.data.types.constraint import Constraint
+from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
@@ -81,7 +80,12 @@ def _best_sequence_mapping(
 
 
 class InputDataPipeline:
-    def __init__(self, ccd: CCD, num_prior_samples: int = 5) -> None:
+    def __init__(
+        self,
+        ccd: CCD,
+        num_prior_samples: int = 5,
+        num_apo: int | None = None,
+    ) -> None:
         """Initialize the input data pipeline.
 
         Parameters
@@ -89,7 +93,9 @@ class InputDataPipeline:
         ccd : CCD
             The chemical component dictionary for residue information.
         num_prior_samples : int, optional
-            Number of heuristic DNA/ligand priors to create. Default is 5.
+            Number of diffusion priors to create. Default is 5.
+        num_apo : int, optional
+            Maximum number of apo structures to use. By default, use all inputs.
         """
 
         self.ccd: CCD = ccd
@@ -98,6 +104,9 @@ class InputDataPipeline:
         if num_prior_samples <= 0:
             raise ValueError("num_prior_samples must be positive.")
         self.num_prior_samples = num_prior_samples
+        if num_apo is not None and num_apo <= 0:
+            raise ValueError("num_apo must be positive or None.")
+        self.num_apo = num_apo
 
         # Initialize tokenizer
         self.tokenizer = tokenization.Tokenizer(self.ccd)
@@ -141,7 +150,7 @@ class InputDataPipeline:
         tokenizer_rng = np.random.default_rng(np.random.SeedSequence([input.seed, 2]))
 
         # Read query and prepare reference structure
-        ref_struct, constraints = self.read_query(input)
+        ref_struct = self.read_query(input)
 
         # Read apo/prior structures
         sources = self.resolve_structure_sources(ref_struct, input, source_rng)
@@ -158,29 +167,18 @@ class InputDataPipeline:
 
         # Tokenize structure
         # Learned structure token IDs are added later on the model device.
-        metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
-        apo_uids = {
-            asym_id: np.full(
-                sources.num_apo,
-                metadata_by_asym_id[asym_id].apo_uid,
-                dtype=np.int64,
-            )
-            for asym_id in sources.apo_coords
-        }
         tokenized = self.tokenizer(
             ref_struct,
             tokenizer_rng,
             apo_coords=sources.apo_coords,
-            apo_uids=apo_uids,
             num_apo=sources.num_apo,
             prior_coords=prior_coords,
-            constraints=constraints,
         )
 
         f_input = self.featurizer(tokenized)
         return ref_struct, tokenized, f_input, sources.struct_token_records
 
-    def read_query(self, input: query.Query) -> tuple[RefStructure, list[Constraint]]:
+    def read_query(self, input: query.Query) -> RefStructure:
         """Prepare the reference structure from the input file.
 
         Parameters
@@ -192,8 +190,6 @@ class InputDataPipeline:
         -------
         ref_struct : RefStructure
             The reference structure.
-        constraints : list[Constraint]
-            The list of distance constraints specified in the input.
         """
         chain_metas: list[ChainInfo] = []
         chains: list[Chain] = []
@@ -203,12 +199,11 @@ class InputDataPipeline:
 
         # Collect bonded atoms
         chain_bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
-        for constraint in input.constraints:
-            if constraint.type == "bond":
-                chain_id1, res_idx1, atom1 = constraint.atom1
-                chain_id2, res_idx2, atom2 = constraint.atom2
-                chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
-                chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
+        for bond in input.bonds:
+            chain_id1, res_idx1, atom1 = bond.atom1
+            chain_id2, res_idx2, atom2 = bond.atom2
+            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
+            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
 
         for seq in input.sequences:
             entity_id = next(entity_id_iter)
@@ -331,30 +326,24 @@ class InputDataPipeline:
         # Prepare metadata
         metadata = Metadata(id=input.name, source="query", chains=chain_metas)
 
-        # Add covalent bond and constraint
+        # Add covalent bonds
         connections: list[CovalentConnection] = []
-        constraints: list[Constraint] = []
-        for constraint in input.constraints:
-            if constraint.type == "bond":
-                chain_id1, res_idx1, atom1 = constraint.atom1
-                chain_id2, res_idx2, atom2 = constraint.atom2
-                asym_id1 = chain_id_to_asym_id[chain_id1]
-                asym_id2 = chain_id_to_asym_id[chain_id2]
-                connections.append(
-                    CovalentConnection(
-                        (asym_id1, asym_id2), (res_idx1, res_idx2), (atom1, atom2)
-                    )
+        for bond in input.bonds:
+            chain_id1, res_idx1, atom1 = bond.atom1
+            chain_id2, res_idx2, atom2 = bond.atom2
+            asym_id1 = chain_id_to_asym_id[chain_id1]
+            asym_id2 = chain_id_to_asym_id[chain_id2]
+            connections.append(
+                CovalentConnection(
+                    (asym_id1, asym_id2), (res_idx1, res_idx2), (atom1, atom2)
                 )
-            elif constraint.type == "distance":
-                raise NotImplementedError("Distance constraints are not yet supported.")
-            else:
-                raise ValueError(f"Unsupported constraint type: {constraint.type}")
+            )
 
         # Return RefStructure
         ref_struct = structure_preparation.prepare_structure(
             chains, connections, metadata
         )
-        return ref_struct, constraints
+        return ref_struct
 
     def resolve_structure_sources(
         self,
@@ -363,6 +352,15 @@ class InputDataPipeline:
         rng: np.random.Generator,
     ) -> ResolvedStructureSources:
         """Load custom sources and normalize them by asym_id."""
+
+        def _select_apo_paths(
+            paths: list[str], num_apo: int | None, _rng: np.random.Generator
+        ) -> list[str]:
+            if num_apo is None or len(paths) <= num_apo:
+                return paths
+            indices = _rng.choice(len(paths), size=num_apo, replace=False)
+            return [paths[int(i)] for i in indices]
+
         metadata_by_name = {chain.name: chain for chain in ref_struct.metadata.chains}
         apo_groups: list[list[dict[int, np.ndarray]]] = []
         prior_groups: list[list[dict[int, np.ndarray]]] = []
@@ -373,12 +371,11 @@ class InputDataPipeline:
                 continue
             assert sequence.apo is not None
             asym_ids = [metadata_by_name[name].asym_id for name in sequence.ids]
+            apo_paths = _select_apo_paths(sequence.apo, self.num_apo, rng)
+            prior_paths = sequence.prior or sequence.apo
+            source_key = f"{input.name}:{','.join(sequence.ids)}"
             apos, priors, records = self._load_monomer_sources(
-                asym_ids,
-                sequence.sequence,
-                sequence.apo,
-                sequence.prior or sequence.apo,
-                f"{input.name}:{','.join(sequence.ids)}",
+                asym_ids, sequence.sequence, apo_paths, prior_paths, source_key
             )
             apo_groups.append(apos)
             prior_groups.append(priors)
@@ -393,19 +390,19 @@ class InputDataPipeline:
                         metadata_by_name[chain_name].asym_id
                     )
 
+            pair_sequence = (sequence_group.sequence1, sequence_group.sequence2)
             physical_ids = [name for id_pair in sequence_group.ids for name in id_pair]
+            apo_paths = _select_apo_paths(sequence_group.apo, self.num_apo, rng)
+            prior_paths = sequence_group.prior or sequence_group.apo
+            source_key = f"{input.name}:{','.join(physical_ids)}"
             apos, priors, records = self._load_multimer_sources(
-                component_asym_ids,
-                (sequence_group.sequence1, sequence_group.sequence2),
-                sequence_group.apo,
-                sequence_group.prior or sequence_group.apo,
-                f"{input.name}:{','.join(physical_ids)}",
+                component_asym_ids, pair_sequence, apo_paths, prior_paths, source_key
             )
             apo_groups.append(apos)
             prior_groups.append(priors)
             struct_token_records.extend(records)
 
-        num_apo = min(max(map(len, apo_groups), default=1), 5)
+        num_apo = max(map(len, apo_groups), default=1)
         apo_coords: dict[int, np.ndarray] = {}
         for sources in apo_groups:
             for asym_id, first_coords in sources[0].items():
@@ -419,14 +416,6 @@ class InputDataPipeline:
                 )
 
         prior_sources = self._sample_prior_sources(ref_struct, prior_groups, rng)
-        for chain in ref_struct.chains:
-            if not chain.is_ligand:
-                continue
-            conformer = self._get_ligand_conformer_source(chain, rng)
-            apo_coords[chain.asym_id] = np.stack(
-                [conformer]
-                + [np.full_like(conformer, np.nan) for _ in range(num_apo - 1)]
-            )
 
         return ResolvedStructureSources(
             num_apo=num_apo,
@@ -632,58 +621,8 @@ class InputDataPipeline:
             for asym_ids, candidates in rigid_groups:
                 candidate = candidates[int(rng.integers(len(candidates)))]
                 global_source.update({i: candidate[i].copy() for i in asym_ids})
-
-            for chain in ref_struct.chains:
-                if chain.is_protein:
-                    continue
-                if chain.is_nucleic_acid:
-                    global_source[chain.asym_id] = np.full(
-                        (chain.num_residues, 29, 3),
-                        np.nan,
-                        dtype=np.float32,
-                    )
-                else:
-                    global_source[chain.asym_id] = self._get_ligand_conformer_source(
-                        chain, rng
-                    )
             global_sources.append(global_source)
         return global_sources
-
-    def _get_ligand_conformer_source(
-        self,
-        chain: Chain,
-        rng: np.random.Generator,
-    ) -> np.ndarray:
-        """Generate one ligand conformer in residue-major source format."""
-        assert chain.is_ligand
-        if chain.smiles is not None:
-            ref_comp = Component.from_smiles("LIG", chain.smiles)
-            coords = ref_comp.get_ref_conformer(rng, train=False)
-        else:
-            coords = np.full_like(chain.atom.coords, np.nan)
-            ccd_sequence = chain.get_ccd_sequence()
-            for res_i, code in enumerate(ccd_sequence):
-                if code not in self.ccd:
-                    self.logger.warning(
-                        f"CCD code {code} not found for ligand chain "
-                        f"{chain.asym_id}. Filling with NaN coordinates."
-                    )
-                    continue
-
-                ref_comp = self.ccd[code]
-                ref_pos = ref_comp.get_ref_conformer(rng, train=False)
-                ref_atom_order = ref_comp.get_atom_index_map()
-                src_atom_indices: list[int] = []
-                dst_atom_indices: list[int] = []
-                res_idx = res_i + 1
-                for atom_i in chain.residue.iter_residue_atoms(res_idx):
-                    atom_name = chain.atom.name[atom_i]
-                    if atom_name in ref_atom_order:
-                        src_atom_indices.append(ref_atom_order[atom_name])
-                        dst_atom_indices.append(atom_i)
-                coords[dst_atom_indices] = ref_pos[src_atom_indices]
-
-        return np.expand_dims(coords, axis=1).astype(np.float32)
 
     # ================================================================================
     # Chain Parsing Functions

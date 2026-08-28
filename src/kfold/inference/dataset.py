@@ -33,6 +33,8 @@ class InferenceDataset(torch.utils.data.Dataset):
         self,
         queries: list[Query],
         ccd: CCD,
+        num_samples: int,
+        num_apo: int | None = None,
     ) -> None:
         """
         Parameters
@@ -41,9 +43,11 @@ class InferenceDataset(torch.utils.data.Dataset):
             List of queries.
         ccd : CCD
             Component for handling common chemical components.
+        num_apo : int, optional
+            Maximum number of apo structures to use per query. By default, use all.
         """
         self.queries: list[Query] = queries
-        self.data_pipeline = InputDataPipeline(ccd)
+        self.data_pipeline = InputDataPipeline(ccd, num_samples, num_apo)
 
     def __len__(self) -> int:
         return len(self.queries)

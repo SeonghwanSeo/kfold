@@ -30,7 +30,10 @@ def get_mask(coords: np.ndarray) -> np.ndarray:
 
 def get_apo_uid_by_asym_id(struct: RefStructure) -> dict[int, int]:
     """Return apo rigid-group IDs keyed by physical chain asym_id."""
-    return {c.asym_id: int(c.apo_uid) for c in struct.metadata.chains}
+    return {
+        c.asym_id: int(c.apo_uid) if c.ctype.is_protein else c.asym_id
+        for c in struct.metadata.chains
+    }
 
 
 class Tokenizer:
@@ -57,7 +60,6 @@ class Tokenizer:
         rng: np.random.Generator | None = None,
         *,
         apo_coords: dict[int, np.ndarray] | None = None,
-        apo_uids: dict[int, np.ndarray] | None = None,
         num_apo: int = 1,
         prior_coords: np.ndarray | None = None,
         constraints: list[Constraint] | None = None,
@@ -86,7 +88,6 @@ class Tokenizer:
             struct,
             rng,
             apo_coords=apo_coords,
-            apo_uids=apo_uids,
             num_apo=num_apo,
             prior_coords=prior_coords,
             constraints=constraints,
@@ -98,7 +99,6 @@ class Tokenizer:
         rng: np.random.Generator | None = None,
         *,
         apo_coords: dict[int, np.ndarray] | None = None,
-        apo_uids: dict[int, np.ndarray] | None = None,
         num_apo: int = 1,
         prior_coords: np.ndarray | None = None,
         constraints: list[Constraint] | None = None,
@@ -129,7 +129,6 @@ class Tokenizer:
             rng,
             train=self.train,
             apo_coords_dict=apo_coords,
-            apo_uid_dict=apo_uids,
             num_apo=num_apo,
             prior_coords=prior_coords,
             constraints=constraints,
@@ -143,7 +142,6 @@ def tokenize_structure(
     *,
     train: bool = False,
     apo_coords_dict: dict[int, np.ndarray] | None = None,
-    apo_uid_dict: dict[int, np.ndarray] | None = None,
     num_apo: int = 1,
     prior_coords: np.ndarray | None = None,
     constraints: list[Constraint] | None = None,
@@ -276,7 +274,7 @@ def tokenize_structure(
     _insert_frame_structures(tok, struct, chain_atom_dict, ccd_components, train)
     if apo_coords_dict:
         # Fill apo coordinates
-        _insert_apo_coordinates(tok, struct, apo_coords_dict, apo_uid_dict or {})
+        _insert_apo_coordinates(tok, struct, apo_coords_dict)
     if prior_coords is not None and prior_coords.shape[0] > 0:
         # Fill prior coordinates
         _insert_prior_coordinates(tok, prior_coords)
@@ -680,15 +678,22 @@ def _insert_apo_coordinates(
     tok: TokenizedStructure,
     struct: RefStructure,
     apo_coords_dict: dict[int, np.ndarray],
-    apo_uid_dict: dict[int, np.ndarray],
 ):
+    protein_asym_ids = {c.asym_id for c in struct.chains if c.is_protein}
+    invalid_asym_ids = set(apo_coords_dict) - protein_asym_ids
+    if invalid_asym_ids:
+        raise ValueError(
+            "Apo coordinates are supported only for protein chains; "
+            f"got asym_ids {sorted(invalid_asym_ids)}."
+        )
+
     g_tok_i = 0
     for c in struct.chains:
         st, end = g_tok_i, g_tok_i + c.num_tokens
         m = tok.atom.pad_mask[st:end]  # (chain_tokens, 24)
 
         # Insert apo coordinates if available
-        if c.asym_id in apo_coords_dict:
+        if c.is_protein and c.asym_id in apo_coords_dict:
             coords = apo_coords_dict[c.asym_id]
             assert coords.shape[0] == tok.atom.apo_coords.shape[-2]
             if c.is_polymer:
@@ -703,11 +708,6 @@ def _insert_apo_coordinates(
                 f"{atom_coords.shape}, expected {expected_shape}."
             )
             tok.atom.apo_coords[st:end][m] = atom_coords
-
-            apo_uids = apo_uid_dict.get(c.asym_id)
-            if apo_uids is not None:
-                assert apo_uids.shape == (coords.shape[0],)
-                tok.token.apo_uid[st:end] = apo_uids
 
         g_tok_i = end
 

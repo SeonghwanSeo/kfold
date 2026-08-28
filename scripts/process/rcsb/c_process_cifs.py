@@ -34,6 +34,7 @@ import pathlib
 from datetime import datetime
 
 import gemmi
+import msgpack
 from tqdm import tqdm
 
 import kfold.constants as C
@@ -54,6 +55,20 @@ TOKEN_COUNT_FILTERED = 7
 SHORT_POLYMER_FILTERED = 8
 EMPTY_STRUCTURE_FILTERED = 9
 INVALID_CHAIN_FILTERED = 10
+
+STATUS_NAMES = {
+    SUCCESS: "success",
+    FAILED: "failed",
+    DATE_FILTERED: "date_filtered",
+    RESOLUTION_FILTERED: "resolution_filtered",
+    METHOD_FILTERED: "method_filtered",
+    INVALID_POLYMER_TYPES: "invalid_polymer_types",
+    CHAIN_COUNT_FILTERED: "chain_count_filtered",
+    TOKEN_COUNT_FILTERED: "token_count_filtered",
+    SHORT_POLYMER_FILTERED: "short_polymer_filtered",
+    EMPTY_STRUCTURE_FILTERED: "empty_structure_filtered",
+    INVALID_CHAIN_FILTERED: "invalid_chain_filtered",
+}
 
 
 @dataclasses.dataclass
@@ -137,6 +152,12 @@ def parse_args():
         type=pathlib.Path,
         required=True,
         help="Path to output directory for processed .npz files.",
+    )
+    parser.add_argument(
+        "--dataset_name",
+        type=str,
+        default=None,
+        help="Output dataset directory name. Defaults to rcsb-{split}.",
     )
 
     # Predefined splits for date and resolution cutoffs
@@ -321,7 +342,7 @@ def worker_fn(
     cif_path: pathlib.Path,
     output_dir: pathlib.Path,
     data_filter: DataFilter,
-):
+) -> tuple[str, int]:
     global _CCD_CACHE
     ccd = _CCD_CACHE
     assert ccd is not None, "CCD data not initialized in worker."
@@ -332,17 +353,19 @@ def worker_fn(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        return parse_cif(cif_path, ccd, out_path, data_filter)
+        status = parse_cif(cif_path, ccd, out_path, data_filter)
     except Exception as e:
         print(f"Failed to process ({pdb_id}): {e}")
-        return FAILED
+        status = FAILED
+    return pdb_id, status
 
 
 def main():
     """Main function to process RCSB mmCIF files"""
     args = parse_args()
     cif_dir: pathlib.Path = args.cif_dir
-    data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
+    dataset_name = args.dataset_name or f"rcsb-{args.split}"
+    data_dir: pathlib.Path = args.data_dir / dataset_name
 
     out_dir: pathlib.Path = data_dir / "npz"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -377,20 +400,33 @@ def main():
         )
     print("Processing completed.")
 
+    status_by_id = dict(sorted(results))
+    status_path = data_dir / "processing_status.msgpack"
+    with open(status_path, "wb") as f:
+        msgpack.pack(
+            {
+                "status_names": {str(k): v for k, v in STATUS_NAMES.items()},
+                "entries": status_by_id,
+            },
+            f,
+        )
+    statuses = list(status_by_id.values())
+    print(f"Saved per-entry processing status to {status_path}")
+
     # Print stats
     print("Processing statistics:")
-    print(f"  Total files processed: {len(results)}")
-    print(f"  Successfully processed: {results.count(SUCCESS)}")
-    print(f"  Failed to process: {results.count(FAILED)}")
-    print(f"  Date filtered: {results.count(DATE_FILTERED)}")
-    print(f"  Resolution filtered: {results.count(RESOLUTION_FILTERED)}")
-    print(f"  Method filtered: {results.count(METHOD_FILTERED)}")
-    print(f"  Invalid polymer types filtered: {results.count(INVALID_POLYMER_TYPES)}")
-    print(f"  Chain count filtered: {results.count(CHAIN_COUNT_FILTERED)}")
-    print(f"  Token count filtered: {results.count(TOKEN_COUNT_FILTERED)}")
-    print(f"  Short polymer filtered: {results.count(SHORT_POLYMER_FILTERED)}")
-    print(f"  Empty structure filtered: {results.count(EMPTY_STRUCTURE_FILTERED)}")
-    print(f"  Invalid chain filtered: {results.count(INVALID_CHAIN_FILTERED)}")
+    print(f"  Total files processed: {len(statuses)}")
+    print(f"  Successfully processed: {statuses.count(SUCCESS)}")
+    print(f"  Failed to process: {statuses.count(FAILED)}")
+    print(f"  Date filtered: {statuses.count(DATE_FILTERED)}")
+    print(f"  Resolution filtered: {statuses.count(RESOLUTION_FILTERED)}")
+    print(f"  Method filtered: {statuses.count(METHOD_FILTERED)}")
+    print(f"  Invalid polymer types filtered: {statuses.count(INVALID_POLYMER_TYPES)}")
+    print(f"  Chain count filtered: {statuses.count(CHAIN_COUNT_FILTERED)}")
+    print(f"  Token count filtered: {statuses.count(TOKEN_COUNT_FILTERED)}")
+    print(f"  Short polymer filtered: {statuses.count(SHORT_POLYMER_FILTERED)}")
+    print(f"  Empty structure filtered: {statuses.count(EMPTY_STRUCTURE_FILTERED)}")
+    print(f"  Invalid chain filtered: {statuses.count(INVALID_CHAIN_FILTERED)}")
 
 
 if __name__ == "__main__":

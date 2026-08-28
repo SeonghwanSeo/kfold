@@ -1,6 +1,6 @@
 _yaml_: "default-train.yaml"
 
-name: synthetic
+name: ???
 type: "distillation"
 
 sampler:
@@ -9,10 +9,3 @@ sampler:
   beta_chain: 0.0
   beta_interface: 1.0
   allow_redundant: false
-
-cropper:
-  _registry_: "data_cropper"
-  _class_: AlphaFold3Cropper
-  w_contiguous: 0.20
-  w_spatial: 0.0
-  w_spatial_interface: 0.80

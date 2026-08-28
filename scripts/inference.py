@@ -89,6 +89,13 @@ def parse_args():
         help="Number of samples to generate per input.",
     )
     parser.add_argument(
+        "--num-apo",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum number of apo structures to use per input (default: all).",
+    )
+    parser.add_argument(
         "--save-trajectory",
         action="store_true",
         help="Whether to save diffusion trajectory.",
@@ -97,6 +104,11 @@ def parse_args():
         "--save-confidence",
         action="store_true",
         help="Whether to save raw confidence scores",
+    )
+    parser.add_argument(
+        "--save-distogram",
+        action="store_true",
+        help="Save distogram logits, bin edges, and token indices in NPZ format.",
     )
     parser.add_argument(
         "--num-workers",
@@ -126,9 +138,7 @@ def dry_run(args):
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
     logger.info(f"Parsing input queries from: {args.input}")
-    input_queries: list[Query] = parse_input_files(
-        args.input, ccd, args.seed, skip_invalid=True
-    )
+    input_queries: list[Query] = parse_input_files(args.input, ccd, args.seed)
     npredict = len(input_queries)
     nseed = len(args.seed)
     nquery = npredict // nseed
@@ -140,7 +150,7 @@ def dry_run(args):
         return
 
     # Create data loader
-    dataset = InferenceDataset(input_queries, ccd)
+    dataset = InferenceDataset(input_queries, ccd, args.num_samples, args.num_apo)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )
@@ -192,9 +202,7 @@ def main():
     # Parse input query(s)
     # If directory is provided, invalid files are skipped.
     logger.info(f"Parsing input queries from: {args.input}")
-    input_queries: list[Query] = parse_input_files(
-        args.input, ccd, args.seed, skip_invalid=True
-    )
+    input_queries: list[Query] = parse_input_files(args.input, ccd, args.seed)
     npredict = len(input_queries)
     nseed = len(args.seed)
     nquery = npredict // nseed
@@ -215,7 +223,7 @@ def main():
         query.save(query_path)
 
     # Create data loader
-    dataset = InferenceDataset(input_queries, ccd)
+    dataset = InferenceDataset(input_queries, ccd, args.num_samples, args.num_apo)
     dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=None, shuffle=False, num_workers=args.num_workers
     )
@@ -289,6 +297,23 @@ def main():
                 f_input, ref_struct, model_out
             )
         )
+
+        # The distogram is shared by all diffusion samples for this query.
+        if args.save_distogram:
+            distogram_path = save_dir / f"{name}_seed-{seed}_distogram.npz"
+            mask = f_input.token.pad_mask
+            distogram_out = model_out["distogram"]
+            logits = distogram_out["logits"][mask][:, mask]
+            bin_edges = distogram_out["bin_boundaries"]
+            asym_ids = f_input.token.asym_id[mask]
+            res_ids = f_input.token.residue_index[mask]
+            np.savez_compressed(
+                distogram_path,
+                logits=logits.half().cpu().numpy(),
+                bin_edges=bin_edges.float().cpu().numpy(),
+                asym_ids=asym_ids.int().cpu().numpy(),
+                res_ids=res_ids.int().cpu().numpy(),
+            )
 
         # Save Diffusion Samples
         for i in range(sample_coords.shape[0]):

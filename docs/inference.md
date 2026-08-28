@@ -92,9 +92,12 @@ but it is not antibody-specific.
 | `apo` | `str` or `list[str]` | Required custom two-chain apo structure ensemble. Each file must contain both components in one shared frame. |
 | `prior` | `list[str]` | Optional custom two-chain prior ensemble. |
 
-For both monomers and multimers, apo list order is preserved. When different
-entries provide different numbers of apo structures, missing slots in shorter
-lists are left unset. A single path is equivalent to a one-element list.
+`--num-apo` controls the maximum number of apo structures used. If it is
+omitted, all provided apo structures are used. If an entry contains more apo
+structures than requested, they are sampled without replacement for each query
+seed. Reusing a seed reproduces the same selection. When different entries
+provide different numbers of apo structures, missing slots in shorter lists are
+left unset. A single path is equivalent to a one-element list.
 
 Each custom multimer file must contain exactly two non-empty protein chains in
 the same order as the two input sequences. Each component is globally aligned
@@ -147,23 +150,18 @@ Inference generates one ligand conformer for the first trunk apo slot; any
 remaining apo ensemble slots are masked. Ligand conformers for diffusion priors
 are sampled independently.
 
-### Constraints
+### Covalent bonds
 
-The top-level field is `constraints`:
+Use the optional top-level `bonds` field to specify covalent connections:
 
 ```yaml
-constraints:
-  - bond:
-      atom1: [A, 20, NZ]
-      atom2: [C, 1, C08]
-  - distance:
-      atom1: [A, 10, CA]
-      atom2: [B, 3, "C1'"]
-      range: [4, 8]
+bonds:
+  - [[A, 20, NZ], [C, 1, C08]]
 ```
 
-Atom references use `[chain_id, one_based_residue_index, atom_name]`. Distance
-constraints are experimental; if `range` is omitted it defaults to `[2.0, 8.0]`.
+Each atom reference uses
+`[chain_id, one_based_residue_index, atom_name]`. Contact and distance
+constraints are not supported.
 
 ## Running inference
 
@@ -200,18 +198,19 @@ Common options:
 | `--input` | Required | One YAML/JSON file or a directory. |
 | `--out-dir` | `inference_results` | Output root. |
 | `--seed` | `1` | One or more query seeds. |
+| `--num-apo` | `None` | Maximum apo structures per protein entry; all are used when omitted. |
 | `--num-samples` | `5` | Diffusion samples per query and seed. |
 | `--num-recycles` | `10` | Trunk recycle count. |
 | `--num-steps` | `200` | Diffusion step count. |
 | `--num-workers` | `8` | DataLoader worker count. GPU structure tokenization is not run in workers. |
 | `--overwrite` | `False` | Allow an existing output directory. |
+| `--save-distogram` | `False` | Save unpadded distogram logits, bin edges, and token-axis indices. |
 
 Single-GPU inference additionally supports `--save-trajectory`,
 `--save-confidence`, and `--dry-run`. A dry run does not need `--weight`; it
 parses the queries and runs the CPU data pipeline without loading a model or
 writing predictions. Multi-GPU inference accepts `--num-gpus`; if omitted, all
-visible GPUs are used. It also accepts `--save-distogram`, which writes the
-unpadded distogram logits and distance-bin edges to a compressed NPZ file.
+visible GPUs are used.
 
 ## Output
 
@@ -230,8 +229,10 @@ results/
 Every successful sample writes an mmCIF file and a confidence-summary JSON file.
 The single-GPU script writes raw pLDDT/PAE/PDE arrays to NPZ only when
 `--save-confidence` is set. The multi-GPU script currently does not write NPZ
-confidence arrays or diffusion trajectories. With `--save-distogram`, each
-multi-GPU query/seed directory also contains
-`Example_Complex_seed-1_distogram.npz`. Its `distogram_logits` array has shape
-`[Ntoken, Ntoken, Nbin]`, and its `distance_bin_edges` array contains the
-`Nbin - 1` distance boundaries in angstroms.
+confidence arrays or diffusion trajectories. With `--save-distogram`, an
+`Example_Complex_seed-1_distogram.npz` file is written alongside the other
+outputs for that query and seed. Its `logits` array has shape
+`[Ntoken, Ntoken, Nbin]`, and its `bin_edges` array contains the `Nbin - 1`
+distance boundaries in angstroms. The `asym_ids` and `res_ids` arrays identify
+each distogram-axis token using its 1-based KFold asymmetric-unit ID and residue
+index.

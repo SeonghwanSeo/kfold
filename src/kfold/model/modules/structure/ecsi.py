@@ -12,6 +12,7 @@ Models the transition from source (apo) to target (holo) conformations.
 
 import dataclasses
 import math
+from collections.abc import Mapping
 from typing import TypeVar
 
 import numpy as np
@@ -19,15 +20,16 @@ import torch
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives.utils import expand_dim
-from kfold.utils.geometry.random_augment import CenterRandomAugmentation, do_centering
+from kfold.utils.geometry.random_augment import (
+    CenterRandomAugmentation,
+    do_centering,
+    random_rotations_torch,
+)
 from kfold.utils.geometry.rigid_align import get_rigid_transform_torch
 from kfold.utils.registry import STRUCTURE_MODULE
 
 from .sample_diffusion import BaseStructureModule
 from .score_model import DiffusionModule
-
-RIGID_ALIGN = 0  # conduct centering ; kabsch align
-NO_ALIGN = 1  # no centering; no kabsch align
 
 _T = TypeVar("_T", float, torch.Tensor)
 
@@ -52,27 +54,44 @@ def custom_rigid_align(
     target: torch.Tensor,
     mask: torch.Tensor | None,
     rotation_only: bool = False,
+    output_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Torch implementation of weighted rigid alignment.
+
+    `mask` selects the atoms that drive the fit; `output_mask` selects the atoms
+    that survive in the result, and defaults to `mask`.
     """
+    output_mask_was_none = output_mask is None
     if mask is None:
         mask = torch.ones(coords.shape[:-1], dtype=torch.bool, device=coords.device)
     if not mask.any():
-        return coords
+        if output_mask_was_none:
+            return coords
+        keep_mask = output_mask.bool().unsqueeze(-1)
+        return coords.masked_fill(~keep_mask, 0.0)
+    if output_mask is None:
+        output_mask = mask
 
     original_dtype = coords.dtype
-    mask_bool = mask.bool().unsqueeze(-1)
-    coords = coords.masked_fill(~mask_bool, 0.0)
-    target = target.masked_fill(~mask_bool, 0.0)
+    fit_mask = mask.bool().unsqueeze(-1)
+    keep_mask = output_mask.bool().unsqueeze(-1)
 
     with torch.autocast(device_type=coords.device.type, enabled=False):
         coords, target = coords.float(), target.float()
-        weights = mask.to(dtype=coords.dtype)
-        RT, T = get_rigid_transform_torch(coords, target, weights)
-        aligned_coords = coords @ RT
+
+        # Fit on the alignment overlap only.
+        fit_coords = coords.masked_fill(~fit_mask, 0.0)
+        fit_target = target.masked_fill(~fit_mask, 0.0)
+        weights = mask.to(dtype=fit_coords.dtype)
+        RT, T = get_rigid_transform_torch(fit_coords, fit_target, weights)
+
+        # Apply it to every atom the caller considers valid.
+        aligned_coords = coords.masked_fill(~keep_mask, 0.0) @ RT
         if not rotation_only:
-            aligned_coords += T.unsqueeze(-2)
+            aligned_coords = (aligned_coords + T.unsqueeze(-2)).masked_fill(
+                ~keep_mask, 0.0
+            )
 
     return aligned_coords.to(original_dtype)
 
@@ -108,6 +127,14 @@ class SICoeffs:
         denom = _sqrt(t_pow * (1 - t_pow))  # type: ignore
         return (self.gamma_max / 4) * coeff * (1 - 2 * t_pow) / _clip(denom)  # type: ignore
 
+    def sigma_eff(self, t: _T) -> _T:
+        r"""Return the analytical effective noise scale ``gamma(t) / alpha(t)``.
+
+        This value selects a sigma-matched churn time only. It does not transform
+        the coordinates supplied to the score model.
+        """
+        return self.gamma(t) / _clip(self.alpha(t))  # type: ignore
+
     # Compute \epsilon = \eta (\gamma \dot{\gamma} - \dot{\alpha}/\alpha \gamma^2)
     def eps(self, t: _T) -> _T:
         alpha, alpha_dot = self.alpha(t), self.alpha_deriv(t)
@@ -115,6 +142,93 @@ class SICoeffs:
         return self.eta * (  # type: ignore
             gamma * gamma_dot - alpha_dot / _clip(alpha) * gamma**2
         )
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class ECSISOARConfig:
+    """Configuration for sampler-matched Exact-Markov ECSI SOAR training."""
+
+    mode: str = "disabled"
+    root_time_policy: str = "mirror_base_training_time"
+    auxiliary_transition: str = "exact_markov"
+    apply_rollout_churn: bool = False
+    rollout_schedule_num_steps: int = 100
+    rollout_schedule_step_count: float = 1.0
+    auxiliary_samples_per_root: int = 4
+    forward_retention_min: float = 0.5
+    lambda_aux: float = 1.0
+    mid_time_lower: float = 0.2
+    high_time_split: float = 0.8
+    mid_time_probability: float = 1.0
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("disabled", "model_sampler"):
+            raise ValueError(
+                f"Unknown ECSI SOAR mode {self.mode!r}; "
+                "expected 'disabled' or 'model_sampler'."
+            )
+        if self.root_time_policy not in (
+            "mirror_base_training_time",
+            "mid_high_schedule_stratified",
+        ):
+            raise ValueError(
+                f"Unknown ECSI SOAR root-time policy {self.root_time_policy!r}; "
+                "expected 'mirror_base_training_time' or "
+                "'mid_high_schedule_stratified'."
+            )
+        if self.auxiliary_transition != "exact_markov":
+            raise ValueError(
+                f"Unknown ECSI SOAR auxiliary transition "
+                f"{self.auxiliary_transition!r}; expected exact_markov."
+            )
+        if self.rollout_schedule_num_steps <= 0:
+            raise ValueError("ECSI SOAR rollout_schedule_num_steps must be positive.")
+        if not 0.0 < self.rollout_schedule_step_count <= self.rollout_schedule_num_steps:
+            raise ValueError(
+                "ECSI SOAR rollout_schedule_step_count must be in "
+                "(0, rollout_schedule_num_steps]."
+            )
+        if self.auxiliary_samples_per_root < 0:
+            raise ValueError("ECSI SOAR auxiliary_samples_per_root must be non-negative.")
+        if not 0.0 <= self.forward_retention_min <= 1.0:
+            raise ValueError("ECSI SOAR forward_retention_min must lie in [0, 1].")
+        if self.lambda_aux < 0.0:
+            raise ValueError("ECSI SOAR lambda_aux must be non-negative.")
+        if not 0.0 <= self.mid_time_lower < self.high_time_split <= 1.0:
+            raise ValueError(
+                "ECSI SOAR times must satisfy 0 <= mid_time_lower < high_time_split <= 1."
+            )
+        if not 0.0 <= self.mid_time_probability <= 1.0:
+            raise ValueError("ECSI SOAR mid_time_probability must lie in [0, 1].")
+        if self.mode != "disabled":
+            if self.auxiliary_samples_per_root == 0:
+                raise ValueError(
+                    "Active ECSI SOAR requires auxiliary_samples_per_root > 0."
+                )
+            if self.lambda_aux == 0.0:
+                raise ValueError("Active ECSI SOAR requires lambda_aux > 0.")
+
+    @classmethod
+    def from_mapping(
+        cls,
+        config: "Mapping[str, object] | ECSISOARConfig | None",
+    ) -> "ECSISOARConfig":
+        if config is None:
+            return cls()
+        if isinstance(config, cls):
+            return config
+        known_fields = {field.name for field in dataclasses.fields(cls)}
+        unknown_fields = set(config) - known_fields
+        if unknown_fields:
+            raise ValueError(
+                f"Unknown ECSI SOAR config fields: {sorted(unknown_fields)}."
+            )
+        return cls(**dict(config))  # type: ignore[arg-type]
+
+    def num_auxiliary_samples(self, num_roots: int) -> int:
+        if num_roots < 0:
+            raise ValueError("ECSI SOAR num_roots must be non-negative.")
+        return num_roots * self.auxiliary_samples_per_root
 
 
 @STRUCTURE_MODULE.register()
@@ -166,38 +280,42 @@ class KFoldECSI(BaseStructureModule):
             remain fixed as `alpha_t = 1 - t` and `beta_t = t`.
         eta : float
             Stochasticity control parameter for ECSI sampling.
-
         # Inference sampling parameters
         align_x_0_hat_to_x_t : bool
             Whether to rigidly align the predicted x_0_hat to x_t at each sampling step.
+        sampler_mode : str
+            Update mode: ``sde`` for the default hybrid or ``ode`` for rollback.
+        sampler_ode_type : str
+            High-time ECSI/SI update family. The default is ``ecsi``.
         sampler_step_scale : float
-            Multiplier for deterministic ODE update displacement. A value of 1.5
-            mirrors the step scale convention used by AF3/EDM samplers.
+            Multiplier for deterministic ODE update displacement.
+        sampler_switch_time : float | None
+            Reverse-time boundary for the fixed low-time SI-ODE phase. Values
+            at or below the boundary use SI ODE; ``None`` disables the phase.
+        sampler_sde_atom_classes : tuple[str, ...]
+            Explicit classes that receive the sampler profile. ``("all",)``
+            preserves the global sampler, while ``()`` makes every atom use SI
+            ODE. Molecular classes select their matching token atoms only; they
+            do not expand over covalent bonds. ``protein`` includes peptide
+            chains; ``peptide`` selects protein chains with fewer than 16
+            residues.
         churn_factor : float
-            The factor controlling the magnitude of forward-pinned churn noise.
+            Fractional effective-noise inflation ``chi`` before the fixed
+            high-time ramp. This is the only numerical sampler knob.
         churn_max_multiplier : float
-            Maximum multiplier applied to churn_factor in the high-time ramp.
+            Maximum high-time multiplier applied to ``churn_factor``.
         churn_end_time : float
-            The time value at which to end forward-pinned churn.
-
-        # Inference time scheduling parameters
+            End of the forward-pinned churn window.
+        churn_max_time : float | None
+            Exclusive upper churn bound. ``None`` resolves to ``time_max``.
         churn_step_fraction : float
-            The fraction of the total sampling steps to apply churn.
+            Fraction of sampling steps in the churn phase.
         churn_step_power : float
-            The exponent controlling the time schedule for churn steps.
+            Churn-phase schedule exponent.
         ode_step_power : float
-            The exponent controlling the time schedule for ODE steps.
+            ODE-phase schedule exponent.
         stepwarp_power : float
-            Exponent used to redistribute high-churn schedule knots. A value of
-            1.0 preserves the native schedule without applying the warp.
-        svgd_step : float
-            Multiplier for the SVGD repulsion displacement.
-        svgd_cap_frac : float
-            Maximum SVGD displacement relative to the ensemble spread.
-        svgd_num_eps : float
-            Numerical floor used by the SVGD bandwidth and normalization.
-        svgd_skip_rms : float
-            Spread threshold below which SVGD is skipped.
+            High-churn knot redistribution exponent.
 
         # Training time scheduling
         train_time_schedule : str
@@ -207,6 +325,13 @@ class KFoldECSI(BaseStructureModule):
             A tuple of (mu, std) for the logistic time sampling schedule.
             Time values are sampled from sigmoid(N(mu, std)), then scaled to
             [time_min, time_max].
+        train_x_0_perturb_time_min : float
+            Apply chain-rigid x0 perturbation only strictly above this time.
+        train_x_0_perturb_prob : float
+            Probability of perturbing an eligible high-time training sample.
+        train_x_0_perturb_translation_std : float
+            Per-axis standard deviation of each chain's Gaussian translation,
+            in Angstrom. Applied chains also receive a random SO(3) rotation.
         """
 
         sigma_data: float = 16.0
@@ -221,29 +346,28 @@ class KFoldECSI(BaseStructureModule):
 
         # Inference sampling
         align_x_0_hat_to_x_t: bool = True
-        sampler_mode: str = "ode"
-        sampler_ode_type: str = "si"
+        sampler_mode: str = "sde"
+        sampler_ode_type: str = "ecsi"
         sampler_step_scale: float = 1.0
-        sampler_switch_gamma: float | None = None
-        sampler_after_switch_mode: str = "ode"
-        sampler_after_switch_ode_type: str = "si"
+        sampler_switch_time: float | None = 0.1
+        sampler_sde_atom_classes: tuple[str, ...] = ("all",)
         churn_factor: float = 0.1
         churn_max_multiplier: float = 4.0
         churn_end_time: float = 0.5
+        churn_max_time: float | None = None
         churn_step_fraction: float = 0.4
         churn_step_power: float = 1.0
         ode_step_power: float = 2.0
         stepwarp_power: float = 0.5
 
-        # SVGD sample spreading
-        svgd_step: float = 1.0
-        svgd_cap_frac: float = 0.05
-        svgd_num_eps: float = 1e-8
-        svgd_skip_rms: float = 1e-6
-
         # Train time scheduling
         train_time_schedule: str = "logistic"
         train_time_schedule_params: tuple[float, float] = (-2.15, 2.25)
+
+        # Optional high-time chain-wise x0 perturbation for base bridge samples.
+        train_x_0_perturb_time_min: float = 0.7
+        train_x_0_perturb_prob: float = 0.0
+        train_x_0_perturb_translation_std: float = 0.0
 
     def __init__(self, cfg: Config, score_model: DiffusionModule):
         """Initialize the ECSI module.
@@ -277,6 +401,19 @@ class KFoldECSI(BaseStructureModule):
         self.train_time_schedule_params: tuple[float, float] = (
             cfg.train_time_schedule_params
         )
+        if not self.time_min <= cfg.train_x_0_perturb_time_min <= self.time_max:
+            raise ValueError(
+                "ECSI train_x_0_perturb_time_min must lie in the trained time support."
+            )
+        if not 0.0 <= cfg.train_x_0_perturb_prob <= 1.0:
+            raise ValueError("ECSI train_x_0_perturb_prob must lie in [0, 1].")
+        if cfg.train_x_0_perturb_translation_std < 0.0:
+            raise ValueError(
+                "ECSI train_x_0_perturb_translation_std must be non-negative."
+            )
+        self.train_x_0_perturb_time_min = cfg.train_x_0_perturb_time_min
+        self.train_x_0_perturb_prob = cfg.train_x_0_perturb_prob
+        self.train_x_0_perturb_translation_std = cfg.train_x_0_perturb_translation_std
 
         # Inference time sampling
         self.align_x_0_hat_to_x_t: bool = cfg.align_x_0_hat_to_x_t
@@ -284,52 +421,93 @@ class KFoldECSI(BaseStructureModule):
             raise ValueError(f"Unknown ECSI sampler_mode: {cfg.sampler_mode}")
         if cfg.sampler_ode_type not in {"si", "ecsi"}:
             raise ValueError(f"Unknown ECSI sampler_ode_type: {cfg.sampler_ode_type}")
-        if cfg.sampler_after_switch_mode not in {"ode", "sde"}:
-            raise ValueError(
-                f"Unknown ECSI sampler_after_switch_mode: {cfg.sampler_after_switch_mode}"
-            )
-        if cfg.sampler_after_switch_ode_type not in {"si", "ecsi"}:
-            raise ValueError(
-                f"Unknown ECSI sampler_after_switch_ode_type: "
-                f"{cfg.sampler_after_switch_ode_type}"
-            )
         if cfg.sampler_step_scale <= 0:
             raise ValueError("ECSI sampler_step_scale must be positive.")
-        if cfg.sampler_switch_gamma is not None and cfg.sampler_switch_gamma < 0:
-            raise ValueError("ECSI sampler_switch_gamma must be non-negative.")
-        if cfg.svgd_num_eps <= 0:
-            raise ValueError("ECSI svgd_num_eps must be positive.")
+        if cfg.sampler_switch_time is not None and not (
+            cfg.time_min <= cfg.sampler_switch_time <= cfg.time_max
+        ):
+            raise ValueError(
+                "ECSI sampler_switch_time must lie within the trained time support."
+            )
+        if cfg.gamma_power <= 0:
+            raise ValueError("ECSI gamma_power must be positive.")
+        if not 0.0 <= cfg.churn_end_time <= cfg.time_max:
+            raise ValueError(
+                "ECSI churn_end_time must lie within the trained time support."
+            )
+        churn_max_time = (
+            cfg.time_max if cfg.churn_max_time is None else cfg.churn_max_time
+        )
+        if churn_max_time > cfg.time_max:
+            raise ValueError(
+                f"ECSI churn_max_time ({churn_max_time}) must not exceed time_max "
+                f"({cfg.time_max}); the score model is untrained beyond time_max."
+            )
+        if churn_max_time < cfg.churn_end_time:
+            raise ValueError(
+                f"ECSI churn_max_time ({churn_max_time}) must not be below "
+                f"churn_end_time ({cfg.churn_end_time})."
+            )
         if any(
             value < 0
             for value in (
+                cfg.eta,
+                cfg.churn_factor,
                 cfg.churn_max_multiplier,
                 cfg.stepwarp_power,
-                cfg.svgd_step,
-                cfg.svgd_cap_frac,
-                cfg.svgd_skip_rms,
             )
         ):
             raise ValueError("ECSI sampler parameters must be non-negative.")
         self.sampler_mode: str = cfg.sampler_mode
         self.sampler_ode_type: str = cfg.sampler_ode_type
         self.sampler_step_scale: float = cfg.sampler_step_scale
-        self.sampler_switch_gamma: float | None = cfg.sampler_switch_gamma
-        self.sampler_after_switch_mode: str = cfg.sampler_after_switch_mode
-        self.sampler_after_switch_ode_type: str = cfg.sampler_after_switch_ode_type
+        self.sampler_switch_time: float | None = cfg.sampler_switch_time
+        self.sampler_sde_atom_classes = self._normalize_sde_atom_classes(
+            cfg.sampler_sde_atom_classes
+        )
         self.churn_factor: float = cfg.churn_factor
         self.churn_max_multiplier: float = cfg.churn_max_multiplier
         self.churn_end_time: float = cfg.churn_end_time
+        self.churn_max_time: float = churn_max_time
         self.churn_step_fraction: float = cfg.churn_step_fraction
         self.churn_step_power: float = cfg.churn_step_power
         self.ode_step_power: float = cfg.ode_step_power
         self.stepwarp_power: float = cfg.stepwarp_power
-        self.svgd_step: float = cfg.svgd_step
-        self.svgd_cap_frac: float = cfg.svgd_cap_frac
-        self.svgd_num_eps: float = cfg.svgd_num_eps
-        self.svgd_skip_rms: float = cfg.svgd_skip_rms
 
         # NOTE: centering should be disabled.
         self.random_augmentation = CenterRandomAugmentation()
+
+    @staticmethod
+    def _normalize_sde_atom_classes(
+        atom_classes: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Validate the explicit classes for class-routed sampler updates."""
+        if atom_classes is None:
+            raise ValueError(
+                "ECSI sampler_sde_atom_classes must be explicit. Use ('all',) "
+                "for the global sampler or () for SI ODE."
+            )
+        if isinstance(atom_classes, str):
+            raise ValueError(
+                "ECSI sampler_sde_atom_classes must be a sequence, not a string."
+            )
+
+        normalized = tuple(atom_classes)
+        if any(not isinstance(atom_class, str) for atom_class in normalized):
+            raise ValueError("ECSI sampler_sde_atom_classes must contain strings.")
+
+        valid_classes = {"all", "protein", "ligand", "peptide", "rna", "dna"}
+        unknown = sorted(set(normalized) - valid_classes)
+        if unknown:
+            raise ValueError(
+                "ECSI sampler_sde_atom_classes contains unsupported classes: "
+                f"{unknown}. Expected a subset of {sorted(valid_classes)}."
+            )
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("ECSI sampler_sde_atom_classes must not contain duplicates.")
+        if "all" in normalized and len(normalized) != 1:
+            raise ValueError("ECSI sampler_sde_atom_classes 'all' must be used alone.")
+        return normalized
 
     # === Bridge Preconditioning Coefficients === #
     def _get_bridge_scalings(self, t: _T) -> tuple[_T, _T, _T]:
@@ -405,11 +583,10 @@ class KFoldECSI(BaseStructureModule):
         s_inputs: torch.Tensor,
         z: torch.Tensor,
         diffusion_batch_size: int,
+        soar_config: Mapping[str, object] | ECSISOARConfig | None = None,
     ) -> dict[str, torch.Tensor]:
-        """Perform a single training step for the structure module.
-        See Section 5 of EDM paper.
-        """
-        # Sample x
+        """Perform base ECSI training plus optional Exact-Markov SOAR."""
+        soar = ECSISOARConfig.from_mapping(soar_config)
         with torch.autocast(f_input.device.type, enabled=False):
             train_input = self.sample_train_input(f_input, diffusion_batch_size)
 
@@ -417,6 +594,7 @@ class KFoldECSI(BaseStructureModule):
         x_0 = train_input["x_0"]  # [B, N, Natom, 3]
         x_t = train_input["x_t"]  # [B, N, Natom, 3]
         x_T = train_input["x_T"]  # [B, N, Natom, 3]
+        atom_mask = train_input["atom_mask"]
 
         x_0_hat = self._forward_train(
             x_t=x_t,  # [B, N, Natom, 3]
@@ -425,11 +603,12 @@ class KFoldECSI(BaseStructureModule):
             s_inputs=s_inputs,  # [B, Lt, c_s]
             z=z,  # [B, Lt, Lt, c_z]
             x_T=x_T,  # [B, N, Natom, 3]
+            atom_mask=atom_mask,  # [B, Natom]
         )  # [B, N, Natom, 3]
 
         loss_weights = self.loss_weights(t)  # [B, N]
 
-        return {
+        output = {
             "t": t,
             "x_t": x_t,
             "x_T": x_T,
@@ -437,6 +616,67 @@ class KFoldECSI(BaseStructureModule):
             "x_gt": x_0,
             "loss_weights": loss_weights,
         }
+        for name in (
+            "time_eligible_mask",
+            "eligible_mask",
+            "requested_mask",
+            "applied_mask",
+            "x_0_rmsd",
+            "x_t_rmsd",
+            "resolved_chain_count",
+        ):
+            output[f"x_0_perturb_{name}"] = train_input[f"x_0_perturb_{name}"]
+        if soar.mode == "disabled":
+            return output
+
+        auxiliary = self._build_soar_training_batch(
+            f_input=f_input,
+            s_inputs=s_inputs,
+            z=z,
+            config=soar,
+            x_0=x_0,
+            x_T=x_T,
+            atom_mask=atom_mask,
+            bridge_noise=train_input["noise"],
+            base_t0=t,
+        )
+        output["t"] = torch.cat((t, auxiliary["t_aux"]), dim=1)
+        output["x_t"] = torch.cat((x_t, auxiliary["x_aux"]), dim=1)
+        output["x_T"] = torch.cat((x_T, auxiliary["x_T"]), dim=1)
+        output["x_0_hat"] = torch.cat((x_0_hat, auxiliary["x_0_hat_aux"]), dim=1)
+        output["x_gt"] = torch.cat((x_0, auxiliary["x_0"]), dim=1)
+        output["loss_weights"] = torch.cat(
+            (loss_weights, self.loss_weights(auxiliary["t_aux"])), dim=1
+        )
+
+        batch_size = t.shape[0]
+        auxiliary_mask = torch.ones(
+            (batch_size, auxiliary["t_aux"].shape[1]),
+            dtype=torch.bool,
+            device=t.device,
+        )
+        output["soar_auxiliary_mask"] = torch.cat(
+            (torch.zeros_like(t, dtype=torch.bool), auxiliary_mask), dim=1
+        )
+        output["soar_supervision_weights"] = torch.cat(
+            (torch.ones_like(t), auxiliary["supervision_weights"]), dim=1
+        )
+        for name in (
+            "base_t0",
+            "t0",
+            "t_call",
+            "t1",
+            "t2",
+            "root_branch_count",
+            "forward_retention",
+            "forward_variance",
+            "endpoint_error_rmsd",
+            "model_to_oracle_sampler_rmsd",
+            "oracle_sampler_to_exact_ecsi_rmsd",
+            "model_sampler_to_exact_ecsi_rmsd",
+        ):
+            output[f"soar_{name}"] = auxiliary[name]
+        return output
 
     def _forward_train(
         self,
@@ -446,6 +686,7 @@ class KFoldECSI(BaseStructureModule):
         s_inputs: torch.Tensor,
         z: torch.Tensor,
         x_T: torch.Tensor | None = None,
+        atom_mask: torch.Tensor | None = None,
         **kwargs,
     ) -> torch.Tensor:
         """Forward pass through the score model with ECSI preconditioning.
@@ -464,6 +705,8 @@ class KFoldECSI(BaseStructureModule):
             Trunk pairwise embeddings. Shape (B, L, L, c_z).
         x_T : torch.Tensor | None
             Source (apo) coordinates x_T. Shape (B, N, L, 3).
+        atom_mask : torch.Tensor | None
+            Atoms the coordinate stack may attend to. Shape (B, L).
 
         Returns
         -------
@@ -488,6 +731,7 @@ class KFoldECSI(BaseStructureModule):
             c_noise=c_noise,  # [B, N]
             s_inputs=s_inputs,  # [B, Lt, c_s]
             z=z,  # [B, Lt, Lt, c_z]
+            atom_mask=atom_mask,  # [B, Natom]
         )
 
         # Output preconditioning: \hat{x}_0 = c_{skip} * x_t + c_{out} * F_\theta
@@ -518,6 +762,124 @@ class KFoldECSI(BaseStructureModule):
         # Scale to [sampling_time_min, sampling_time_max]
         t = self.time_min + (self.time_max - self.time_min) * t
         return t
+
+    def _sample_x_0_perturb_masks(
+        self,
+        *,
+        t: torch.Tensor,
+        resolved_chain_count: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Select high-time perturbations without touching disabled RNG."""
+        time_eligible = t > self.train_x_0_perturb_time_min
+        multichain = resolved_chain_count[:, None] > 1
+        eligible = time_eligible & multichain
+        if self.train_x_0_perturb_prob == 0.0:
+            requested = torch.zeros_like(time_eligible)
+        else:
+            requested = time_eligible & (torch.rand_like(t) < self.train_x_0_perturb_prob)
+        applied = requested & multichain
+        return {
+            "time_eligible": time_eligible,
+            "eligible": eligible,
+            "requested": requested,
+            "applied": applied,
+        }
+
+    def _perturb_x_0(
+        self,
+        *,
+        x_0: torch.Tensor,
+        x_T: torch.Tensor,
+        t: torch.Tensor,
+        f_input: FoldingInput,
+        x_0_mask: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Apply the original high-time chain-rigid x0 corruption contract."""
+        batch_size, num_samples, num_atoms, _ = x_0.shape
+        if self.train_x_0_perturb_prob == 0.0:
+            time_eligible = t > self.train_x_0_perturb_time_min
+            false_mask = torch.zeros_like(time_eligible)
+            zero = torch.zeros_like(t)
+            return {
+                "x_0_bridge": x_0,
+                "time_eligible_mask": time_eligible,
+                "eligible_mask": false_mask,
+                "requested_mask": false_mask,
+                "applied_mask": false_mask,
+                "x_0_rmsd": zero,
+                "resolved_chain_count": torch.zeros_like(t, dtype=torch.long),
+            }
+        num_chains = f_input.chain.asym_id.shape[1]
+        token_index = f_input.atom.token_index.clamp(
+            min=0, max=f_input.token.asym_id.shape[-1] - 1
+        )
+        atom_asym_id = torch.gather(f_input.token.asym_id, 1, token_index)
+        resolved_mask = x_0_mask[:, 0].bool()
+        atom_in_chain = atom_asym_id[:, :, None] == f_input.chain.asym_id[:, None, :]
+        atom_in_chain &= f_input.chain.pad_mask[:, None, :]
+        atom_chain_index = atom_in_chain.to(torch.int64).argmax(dim=-1)
+        atom_is_valid = resolved_mask & atom_in_chain.any(dim=-1)
+        chain_has_atoms = (atom_in_chain & resolved_mask[:, :, None]).any(dim=1)
+        resolved_chain_count = chain_has_atoms.sum(dim=-1)
+        selection = self._sample_x_0_perturb_masks(
+            t=t, resolved_chain_count=resolved_chain_count
+        )
+        applied = selection["applied"]
+        chain_index_xyz = atom_chain_index[:, None, :, None].expand(
+            batch_size, num_samples, num_atoms, 3
+        )
+        chain_sums = torch.zeros(
+            (batch_size, num_samples, num_chains, 3),
+            dtype=x_0.dtype,
+            device=x_0.device,
+        )
+        chain_sums.scatter_add_(
+            dim=2,
+            index=chain_index_xyz,
+            src=x_0 * atom_is_valid[:, None, :, None],
+        )
+        chain_counts = (atom_in_chain & resolved_mask[:, :, None]).sum(dim=1)
+        chain_centers = chain_sums / chain_counts[:, None, :, None].clamp_min(1)
+        chain_rotations = random_rotations_torch(
+            (batch_size, num_samples, num_chains),
+            dtype=x_0.dtype,
+            device=x_0.device,
+        )
+        chain_translations = torch.randn_like(chain_centers)
+        chain_translations *= self.train_x_0_perturb_translation_std
+        atom_centers = torch.gather(chain_centers, dim=2, index=chain_index_xyz)
+        atom_translations = torch.gather(chain_translations, dim=2, index=chain_index_xyz)
+        rotation_index = atom_chain_index[:, None, :, None, None].expand(
+            batch_size, num_samples, num_atoms, 3, 3
+        )
+        atom_rotations = torch.gather(chain_rotations, dim=2, index=rotation_index)
+        transformed = (
+            torch.einsum("bnad,bnads->bnas", x_0 - atom_centers, atom_rotations)
+            + atom_centers
+            + atom_translations
+        )
+        apply_atom_mask = applied[..., None, None] & atom_is_valid[:, None, :, None]
+        x_0_perturbed = torch.where(apply_atom_mask, transformed, x_0)
+        expanded_mask = x_0_mask.expand(-1, num_samples, -1)
+        aligned = custom_rigid_align(
+            x_0_perturbed,
+            x_T,
+            expanded_mask,
+            rotation_only=True,
+        )
+        aligned = do_centering(aligned, mask=expanded_mask)
+        apply_mask = applied[..., None, None] & expanded_mask[..., None]
+        x_0_bridge = torch.where(apply_mask, aligned, x_0)
+        x_0_rmsd = self._masked_coordinate_rmsd(x_0_bridge - x_0, expanded_mask)
+        return {
+            "x_0_bridge": x_0_bridge,
+            "time_eligible_mask": selection["time_eligible"],
+            "eligible_mask": selection["eligible"],
+            "requested_mask": selection["requested"],
+            "applied_mask": applied,
+            "x_0_rmsd": x_0_rmsd,
+            "resolved_chain_count": resolved_chain_count[:, None].expand_as(t),
+        }
 
     def sample_train_input(
         self,
@@ -550,7 +912,7 @@ class KFoldECSI(BaseStructureModule):
         apo_mask = f_input.atom.pad_mask  # [B, Natom]
 
         # Repeat holo coords
-        x_0 = expand_dim(x_holo, num_samples, dim=-3)  # [B, N, Natom, 3]
+        x_0 = expand_dim(x_holo, num_samples, dim=-3).clone()  # [B, N, Natom, 3]
         x_0_mask = holo_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Sample from prior coordinates
@@ -558,26 +920,42 @@ class KFoldECSI(BaseStructureModule):
         num_prior = x_apo.shape[-3]
         idx = [i % num_prior for i in range(num_samples)]
         x_T = x_apo[:, idx, :, :]  # [B, N, Natom, 3]
-        x_T_mask = apo_mask.unsqueeze(-2)  # [B, 1, Natom]
+
+        # Atoms the coordinate stack may see. Unresolved atoms have no holo target,
+        # so x_0 is 0 there and any interpolant through it is meaningless. Hiding
+        # them keeps that meaningless coordinate out of every geometric operation
+        # below and out of the score model's attention. Inference has no
+        # `resolved_mask`, so it keeps using the full `pad_mask`.
+        train_mask = apo_mask & holo_mask  # [B, Natom]
+        x_T_mask = train_mask.unsqueeze(-2)  # [B, 1, Natom]
 
         # Apply centering/coordinate augmentation
         x_0 = self.random_augmentation(x_0, mask=x_0_mask)
 
         # Rotate x_T toward x_0 while preserving the prior translation distribution.
-        x_T = custom_rigid_align(x_T, x_0, x_0_mask, rotation_only=True)
+        x_T = custom_rigid_align(
+            x_T, x_0, x_0_mask, rotation_only=True, output_mask=x_T_mask
+        )
 
-        # === Interpolate to get x_t === #
-        C = self.coeff
-        _t = t[:, :, None, None]
-        alpha_t, beta_t, gamma_t = C.alpha(_t), C.beta(_t), C.gamma(_t)
+        # Perturb only the endpoint used by the base bridge. SOAR reconstructs
+        # its roots from the clean x_0 returned below.
+        perturb = self._perturb_x_0(
+            x_0=x_0,
+            x_T=x_T,
+            t=t,
+            f_input=f_input,
+            x_0_mask=x_0_mask,
+        )
 
-        # Sample noise
-        noise = torch.randn_like(x_0)
+        # ECSI interpolation with atom-wise shared bridge noise.
+        noise = torch.randn_like(x_0).masked_fill_(~x_T_mask[..., None], 0.0)
+        x_t_clean = self._interpolate_bridge(x_0, x_T, noise, t)
+        x_t = self._interpolate_bridge(perturb["x_0_bridge"], x_T, noise, t)
+        expanded_mask = x_T_mask.expand(-1, num_samples, -1)
+        x_t_rmsd = self._masked_coordinate_rmsd(x_t - x_t_clean, expanded_mask)
 
-        # ECSI interpolation with atom-wise noise.
-        x_t = alpha_t * x_0 + beta_t * x_T + gamma_t * noise
-
-        # Mask out unresolved/pad atoms.
+        # Zero the hidden atoms as well as the padding, so that a code path which
+        # forgets `train_mask` sees the origin rather than a prior-scale offset.
         x_0.masked_fill_(~x_0_mask[..., None], 0.0)
         x_T.masked_fill_(~x_T_mask[..., None], 0.0)
         x_t.masked_fill_(~x_T_mask[..., None], 0.0)
@@ -587,11 +965,510 @@ class KFoldECSI(BaseStructureModule):
             "x_0": x_0,
             "x_t": x_t,
             "x_T": x_T,
+            "atom_mask": train_mask,
+            "noise": noise,
+            "x_0_perturb_time_eligible_mask": perturb["time_eligible_mask"],
+            "x_0_perturb_eligible_mask": perturb["eligible_mask"],
+            "x_0_perturb_requested_mask": perturb["requested_mask"],
+            "x_0_perturb_applied_mask": perturb["applied_mask"],
+            "x_0_perturb_x_0_rmsd": perturb["x_0_rmsd"],
+            "x_0_perturb_x_t_rmsd": x_t_rmsd,
+            "x_0_perturb_resolved_chain_count": perturb["resolved_chain_count"],
         }
+
+    def _interpolate_bridge(
+        self,
+        x_0: torch.Tensor,
+        x_T: torch.Tensor,
+        noise: torch.Tensor,
+        t: torch.Tensor,
+    ) -> torch.Tensor:
+        """Evaluate the ECSI bridge with caller-supplied shared noise."""
+        expanded_t = t[..., None, None]
+        return (
+            self.coeff.alpha(expanded_t) * x_0
+            + self.coeff.beta(expanded_t) * x_T
+            + self.coeff.gamma(expanded_t) * noise
+        )
+
+    def _build_soar_training_batch(
+        self,
+        *,
+        f_input: FoldingInput,
+        s_inputs: torch.Tensor,
+        z: torch.Tensor,
+        config: ECSISOARConfig,
+        x_0: torch.Tensor,
+        x_T: torch.Tensor,
+        atom_mask: torch.Tensor,
+        bridge_noise: torch.Tensor,
+        base_t0: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Build detached Exact-Markov auxiliaries from model-generated states."""
+        if x_0.shape != x_T.shape or x_0.shape != bridge_noise.shape:
+            raise ValueError("SOAR endpoint and bridge-noise shapes must match.")
+        if base_t0.shape != x_0.shape[:2]:
+            raise ValueError("SOAR base times must match the base sample dimensions.")
+        if atom_mask.shape != (x_0.shape[0], x_0.shape[-2]):
+            raise ValueError("SOAR atom_mask must have shape [B, Natom].")
+
+        batch_size, num_roots = base_t0.shape
+        if num_roots == 0:
+            raise ValueError("Active ECSI SOAR requires at least one base root.")
+        num_auxiliary = config.num_auxiliary_samples(num_roots)
+        root_mask = atom_mask.unsqueeze(1).expand(-1, num_roots, -1)
+
+        with torch.no_grad(), torch.autocast(f_input.device.type, enabled=False):
+            t0 = self.construct_soar_root_times(base_t0=base_t0, config=config)
+            t1, t2 = self.sample_soar_auxiliary_times(t0=t0, config=config)
+            x_t0 = self._interpolate_bridge(x_0, x_T, bridge_noise, t0)
+            x_t0 = x_t0.masked_fill(~root_mask[..., None], 0.0)
+            x_t1_exact = self._interpolate_bridge(x_0, x_T, bridge_noise, t1)
+            x_t1_exact = x_t1_exact.masked_fill(~root_mask[..., None], 0.0)
+            x_call, t_call = self._prepare_soar_rollout_call(
+                config=config,
+                x_t=x_t0,
+                x_T=x_T,
+                mask=root_mask,
+                t=t0,
+            )
+
+        with torch.no_grad():
+            x_0_hat_t0 = self._forward_train(
+                x_t=x_call,
+                t=t_call,
+                f_input=f_input,
+                s_inputs=s_inputs,
+                z=z,
+                x_T=x_T,
+                atom_mask=atom_mask,
+            ).detach()
+
+        with torch.no_grad(), torch.autocast(f_input.device.type, enabled=False):
+            model_endpoint = self._postprocess_soar_endpoint(
+                endpoint=x_0_hat_t0,
+                x_t=x_call,
+                mask=root_mask,
+            )
+            oracle_endpoint = self._postprocess_soar_endpoint(
+                endpoint=x_0,
+                x_t=x_call,
+                mask=root_mask,
+            )
+            shared_update_noise = torch.randn_like(x_call).masked_fill_(
+                ~root_mask[..., None], 0.0
+            )
+            x_t1_model = self._apply_soar_sampler_update(
+                f_input=f_input,
+                x_t=x_call,
+                x_0_hat=model_endpoint,
+                x_T=x_T,
+                mask=root_mask,
+                t=t_call,
+                t_next=t1,
+                noise=shared_update_noise,
+            )
+            x_t1_oracle = self._apply_soar_sampler_update(
+                f_input=f_input,
+                x_t=x_call,
+                x_0_hat=oracle_endpoint,
+                x_T=x_T,
+                mask=root_mask,
+                t=t_call,
+                t_next=t1,
+                noise=shared_update_noise,
+            )
+            model_transition = self._exact_ecsi_forward_transition(
+                x_t1=x_t1_model,
+                x_T=x_T,
+                mask=root_mask,
+                t1=t1,
+                t2=t2,
+            )
+            x_aux_branched = model_transition["x_t2"]
+            x_aux = x_aux_branched.reshape(
+                batch_size, num_auxiliary, *x_0.shape[-2:]
+            ).detach()
+            x_T_aux = (
+                x_T.unsqueeze(2)
+                .expand(-1, -1, config.auxiliary_samples_per_root, -1, -1)
+                .reshape_as(x_aux)
+            )
+            x_0_aux = (
+                x_0.unsqueeze(2)
+                .expand(-1, -1, config.auxiliary_samples_per_root, -1, -1)
+                .reshape_as(x_aux)
+            )
+            t_aux = t2.reshape(batch_size, num_auxiliary)
+
+        x_0_hat_aux = self._forward_train(
+            x_t=x_aux,
+            t=t_aux,
+            f_input=f_input,
+            s_inputs=s_inputs,
+            z=z,
+            x_T=x_T_aux,
+            atom_mask=atom_mask,
+        )
+
+        endpoint_error_rmsd = self._masked_coordinate_rmsd(
+            model_endpoint - oracle_endpoint, root_mask
+        )
+        model_to_oracle_rmsd = self._masked_coordinate_rmsd(
+            x_t1_model - x_t1_oracle, root_mask
+        )
+        oracle_to_exact_rmsd = self._masked_coordinate_rmsd(
+            x_t1_oracle - x_t1_exact, root_mask
+        )
+        model_to_exact_rmsd = self._masked_coordinate_rmsd(
+            x_t1_model - x_t1_exact, root_mask
+        )
+        supervision_weights = torch.full(
+            (batch_size, num_auxiliary),
+            config.lambda_aux,
+            dtype=t_aux.dtype,
+            device=t_aux.device,
+        )
+        root_branch_count = torch.full(
+            (batch_size, num_roots),
+            config.auxiliary_samples_per_root,
+            dtype=torch.long,
+            device=t_aux.device,
+        )
+        return {
+            "base_t0": base_t0.detach(),
+            "t0": t0.detach(),
+            "t_call": t_call.detach(),
+            "t1": t1.detach(),
+            "t2": t2.detach(),
+            "root_branch_count": root_branch_count,
+            "supervision_weights": supervision_weights,
+            "t_aux": t_aux,
+            "x_0": x_0_aux,
+            "x_T": x_T_aux,
+            "x_aux": x_aux,
+            "x_0_hat_aux": x_0_hat_aux,
+            "forward_retention": model_transition["retention"].detach(),
+            "forward_variance": model_transition["variance"].detach(),
+            "endpoint_error_rmsd": endpoint_error_rmsd.detach(),
+            "model_to_oracle_sampler_rmsd": model_to_oracle_rmsd.detach(),
+            "oracle_sampler_to_exact_ecsi_rmsd": oracle_to_exact_rmsd.detach(),
+            "model_sampler_to_exact_ecsi_rmsd": model_to_exact_rmsd.detach(),
+        }
+
+    def construct_soar_root_times(
+        self, *, base_t0: torch.Tensor, config: ECSISOARConfig
+    ) -> torch.Tensor:
+        """Construct independently controlled SOAR rollout root times."""
+        if base_t0.ndim != 2:
+            raise ValueError("SOAR base time must have shape [B, Nroot].")
+        if config.root_time_policy == "mirror_base_training_time":
+            return (self.time_min + self.time_max - base_t0).clamp(
+                min=self.time_min, max=self.time_max
+            )
+
+        schedule = torch.tensor(
+            self.get_effective_sampling_schedule(config.rollout_schedule_num_steps),
+            dtype=base_t0.dtype,
+            device=base_t0.device,
+        )
+        mid_roots = self._sample_soar_schedule_cell_band(
+            shape=base_t0.shape,
+            schedule=schedule,
+            lower=max(self.time_min, config.mid_time_lower),
+            upper=min(self.time_max, config.high_time_split),
+        )
+        high_roots = self._sample_soar_schedule_cell_band(
+            shape=base_t0.shape,
+            schedule=schedule,
+            lower=max(self.time_min, config.high_time_split),
+            upper=self.time_max,
+        )
+        choose_mid = torch.rand_like(base_t0) < config.mid_time_probability
+        return torch.where(choose_mid, mid_roots, high_roots)
+
+    @staticmethod
+    def _sample_soar_schedule_cell_band(
+        *,
+        shape: torch.Size | tuple[int, ...],
+        schedule: torch.Tensor,
+        lower: float,
+        upper: float,
+    ) -> torch.Tensor:
+        """Sample uniformly over schedule cells intersecting one time band."""
+        cell_high = torch.minimum(schedule[:-1], torch.full_like(schedule[:-1], upper))
+        cell_low = torch.maximum(schedule[1:], torch.full_like(schedule[1:], lower))
+        valid_indices = torch.nonzero(cell_high > cell_low, as_tuple=False).flatten()
+        if valid_indices.numel() == 0:
+            raise ValueError(
+                f"No production-schedule cell intersects SOAR band [{lower}, {upper}]."
+            )
+        sampled_offset = torch.randint(
+            valid_indices.numel(), shape, device=schedule.device
+        )
+        sampled_index = valid_indices[sampled_offset]
+        sampled_low = cell_low[sampled_index]
+        sampled_high = cell_high[sampled_index]
+        return sampled_low + (sampled_high - sampled_low) * torch.rand(
+            shape, dtype=schedule.dtype, device=schedule.device
+        )
+
+    def sample_soar_auxiliary_times(
+        self, *, t0: torch.Tensor, config: ECSISOARConfig
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Move one production-schedule step, then sample later forward times."""
+        schedule_values = self.get_effective_sampling_schedule(
+            config.rollout_schedule_num_steps
+        )
+        work_dtype = torch.float64 if t0.dtype == torch.float64 else torch.float32
+        schedule = torch.tensor(schedule_values, dtype=work_dtype, device=t0.device)
+        t0_work = t0.to(dtype=work_dtype)
+        cell_index = ((schedule[:-1] >= t0_work.unsqueeze(-1)).sum(dim=-1) - 1).clamp(
+            min=0, max=config.rollout_schedule_num_steps - 1
+        )
+        cell_start = schedule[cell_index]
+        cell_end = schedule[cell_index + 1]
+        cell_fraction = ((cell_start - t0_work) / (cell_start - cell_end)).clamp(0, 1)
+        u0 = cell_index.to(dtype=work_dtype) + cell_fraction
+        u1 = (u0 + config.rollout_schedule_step_count).clamp_max(
+            config.rollout_schedule_num_steps
+        )
+        next_index = (
+            torch.floor(u1)
+            .to(dtype=torch.long)
+            .clamp_max(config.rollout_schedule_num_steps - 1)
+        )
+        next_fraction = u1 - next_index.to(dtype=work_dtype)
+        t1 = torch.lerp(
+            schedule[next_index], schedule[next_index + 1], next_fraction
+        ).clamp_min(self.time_min)
+        t1 = t1.to(dtype=t0.dtype)
+
+        uniform = torch.rand(
+            (*t1.shape, config.auxiliary_samples_per_root),
+            dtype=t1.dtype,
+            device=t1.device,
+        )
+        alpha_t1 = self.coeff.alpha(t1)
+        feasible_min = self.coeff.alpha(torch.full_like(t1, self.time_max)) / (
+            alpha_t1.clamp_min(torch.finfo(alpha_t1.dtype).eps)
+        )
+        retention_min = torch.maximum(
+            torch.full_like(t1, config.forward_retention_min), feasible_min
+        ).clamp_max(1.0)
+        retention = (
+            retention_min.unsqueeze(-1) + (1.0 - retention_min.unsqueeze(-1)) * uniform
+        )
+        t2 = 1.0 - retention * alpha_t1.unsqueeze(-1)
+        t2 = torch.maximum(t2, t1.unsqueeze(-1))
+        t2 = torch.minimum(t2, torch.full_like(t2, self.time_max))
+        return t1, t2
+
+    def _prepare_soar_rollout_call(
+        self,
+        *,
+        config: ECSISOARConfig,
+        x_t: torch.Tensor,
+        x_T: torch.Tensor,
+        mask: torch.Tensor,
+        t: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Optionally apply production churn before the detached rollout call."""
+        if not config.apply_rollout_churn:
+            return x_t, t
+        output = torch.empty_like(x_t)
+        call_times = torch.empty_like(t)
+        for batch_index in range(t.shape[0]):
+            for root_index in range(t.shape[1]):
+                state, call_time = self._apply_forward_pinned_churn(
+                    x_t[batch_index : batch_index + 1, root_index : root_index + 1],
+                    x_T[batch_index : batch_index + 1, root_index : root_index + 1],
+                    mask[batch_index : batch_index + 1, root_index : root_index + 1],
+                    float(t[batch_index, root_index]),
+                )
+                output[batch_index, root_index] = state[0, 0]
+                call_times[batch_index, root_index] = call_time
+        return output, call_times
+
+    def _apply_soar_sampler_update(
+        self,
+        *,
+        f_input: FoldingInput,
+        x_t: torch.Tensor,
+        x_0_hat: torch.Tensor,
+        x_T: torch.Tensor,
+        mask: torch.Tensor,
+        t: torch.Tensor,
+        t_next: torch.Tensor,
+        noise: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply the class-routed production update to independently timed roots."""
+        output = torch.empty_like(x_t)
+        sde_atom_mask = self._get_sde_atom_mask(f_input)
+        for batch_index in range(t.shape[0]):
+            selected_atoms = sde_atom_mask[batch_index : batch_index + 1]
+            has_sde_atoms = self.sampler_sde_atom_classes == ("all",) or bool(
+                selected_atoms.any()
+            )
+            for root_index in range(t.shape[1]):
+                state = self._apply_class_selective_update(
+                    x_t[batch_index : batch_index + 1, root_index : root_index + 1],
+                    x_0_hat[batch_index : batch_index + 1, root_index : root_index + 1],
+                    x_T[batch_index : batch_index + 1, root_index : root_index + 1],
+                    mask[batch_index : batch_index + 1, root_index : root_index + 1],
+                    selected_atoms,
+                    has_sde_atoms,
+                    float(t[batch_index, root_index]),
+                    float(t_next[batch_index, root_index]),
+                    noise=noise[
+                        batch_index : batch_index + 1, root_index : root_index + 1
+                    ],
+                )
+                output[batch_index, root_index] = state[0, 0]
+        return output.detach()
+
+    @staticmethod
+    def _masked_coordinate_rmsd(
+        displacement: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        if displacement.shape[:-1] != mask.shape:
+            raise ValueError("Coordinate displacement and atom-mask shapes must match.")
+        weights = mask.to(displacement.dtype)
+        squared = displacement.square().sum(dim=-1)
+        return torch.sqrt(
+            (squared * weights).sum(dim=-1) / weights.sum(dim=-1).clamp(min=1.0)
+        )
+
+    def _exact_ecsi_forward_transition(
+        self,
+        *,
+        x_t1: torch.Tensor,
+        x_T: torch.Tensor,
+        mask: torch.Tensor,
+        t1: torch.Tensor,
+        t2: torch.Tensor,
+        noise: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Sample the exact ECSI bridge transition from t1 to later t2."""
+        alpha_t1 = self.coeff.alpha(t1).unsqueeze(-1)
+        retention = self.coeff.alpha(t2) / alpha_t1.clamp_min(torch.finfo(t1.dtype).eps)
+        gamma_t1 = self.coeff.gamma(t1).unsqueeze(-1)
+        gamma_t2 = self.coeff.gamma(t2)
+        variance = self.coeff.eta * (
+            gamma_t2.square() - retention.square() * gamma_t1.square()
+        )
+        tolerance = (
+            32.0
+            * torch.finfo(variance.dtype).eps
+            * (gamma_t2.square() + retention.square() * gamma_t1.square())
+            .abs()
+            .clamp_min(1.0)
+        )
+        if torch.any(variance < -tolerance):
+            raise RuntimeError("Exact ECSI forward-transition variance is negative.")
+        variance = variance.clamp_min(0.0)
+        branch_shape = (*t2.shape, *x_t1.shape[-2:])
+        x_t1_branches = x_t1.unsqueeze(-3).expand(branch_shape)
+        x_T_branches = x_T.unsqueeze(-3).expand(branch_shape)
+        branch_mask = mask.unsqueeze(-2).expand(*t2.shape, mask.shape[-1])
+        mean = (
+            retention[..., None, None] * x_t1_branches
+            + (self.coeff.beta(t2) - retention * self.coeff.beta(t1).unsqueeze(-1))[
+                ..., None, None
+            ]
+            * x_T_branches
+        )
+        if noise is None:
+            noise = torch.randn_like(mean)
+        elif noise.shape != mean.shape:
+            raise ValueError("ECSI forward-transition noise shape is incompatible.")
+        noise = noise.masked_fill(~branch_mask[..., None], 0.0)
+        x_t2 = mean + torch.sqrt(variance)[..., None, None] * noise
+        x_t2 = x_t2.masked_fill(~branch_mask[..., None], 0.0)
+        return {
+            "x_t2": x_t2,
+            "variance": variance,
+            "retention": retention,
+            "noise": noise,
+        }
+
+    def _postprocess_soar_endpoint(
+        self,
+        *,
+        endpoint: torch.Tensor,
+        x_t: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Apply the endpoint transform used by production ECSI sampling."""
+        if self.align_x_0_hat_to_x_t:
+            endpoint = custom_rigid_align(
+                endpoint, x_t, mask, rotation_only=True, output_mask=mask
+            )
+        return do_centering(endpoint, mask=mask)
+
+    def _get_sde_atom_mask(self, f_input: FoldingInput) -> torch.Tensor:
+        """Return selected atoms for class-routed SDE updates.
+
+        Global churn is deliberately outside this selector: every atom reaches
+        the same post-churn time before the shared score-model call.
+        """
+        if self.sampler_sde_atom_classes == ("all",):
+            return f_input.atom.pad_mask
+
+        selected_token = torch.zeros_like(f_input.token.pad_mask)
+        if "protein" in self.sampler_sde_atom_classes:
+            selected_token |= f_input.token.is_protein
+        if "ligand" in self.sampler_sde_atom_classes:
+            selected_token |= f_input.token.is_ligand
+        if "rna" in self.sampler_sde_atom_classes:
+            selected_token |= f_input.token.is_rna
+        if "dna" in self.sampler_sde_atom_classes:
+            selected_token |= f_input.token.is_dna
+        if "peptide" in self.sampler_sde_atom_classes:
+            peptide_chain = f_input.chain.is_protein & (f_input.chain.num_residues < 16)
+            peptide_chain &= f_input.chain.pad_mask
+            token_matches_peptide = (
+                f_input.token.asym_id[:, :, None] == f_input.chain.asym_id[:, None, :]
+            )
+            selected_token |= (token_matches_peptide & peptide_chain[:, None, :]).any(
+                dim=-1
+            )
+        selected_token &= f_input.token.pad_mask
+        selected_atom = torch.gather(
+            selected_token,
+            1,
+            f_input.atom.token_index,
+        )
+        return selected_atom & f_input.atom.pad_mask
 
     # ============================================================
     # For inference
     # ============================================================
+    def get_effective_sampling_schedule(self, num_steps: int) -> list[float]:
+        """Return the production schedule after high-churn knot warping."""
+        times = list(self.get_sampling_schedule(num_steps))
+        t_hi = float(times[0])
+        t_lo = self.churn_end_time
+        band = [
+            index
+            for index, time_value in enumerate(times)
+            if t_lo < float(time_value) < t_hi
+        ]
+        if band and self.stepwarp_power != 1.0:
+            lo_index, hi_index = band[0], band[-1]
+            count = hi_index - lo_index + 1
+            for offset, index in enumerate(range(lo_index, hi_index + 1)):
+                fraction = (offset + 1) / (count + 1)
+                warped_fraction = 1.0 - (1.0 - fraction) ** self.stepwarp_power
+                times[index] = t_hi - (t_hi - t_lo) * warped_fraction
+        if len(times) != num_steps + 1:
+            raise RuntimeError(
+                f"Expected {num_steps + 1} ECSI time points, got {len(times)}."
+            )
+        if any(left <= right for left, right in zip(times[:-1], times[1:], strict=True)):
+            raise RuntimeError("Effective ECSI sampling schedule must decrease.")
+        return [float(time_value) for time_value in times]
+
     def sample_structure(
         self,
         f_input: FoldingInput,
@@ -618,26 +1495,17 @@ class KFoldECSI(BaseStructureModule):
         """
         model = self.score_model
 
-        # Get time schedule (from t_max toward t_min)
-        times = self.get_sampling_schedule(num_steps)
-
-        # Concentrate knots in the early high-churn band without changing NFE.
-        t_hi = float(times[0])
-        t_lo = self.churn_end_time
-        times = list(times)
-        band = [i for i, time in enumerate(times) if t_lo < float(time) < t_hi]
-        if band and self.stepwarp_power != 1.0:
-            lo_i, hi_i = band[0], band[-1]
-            n = hi_i - lo_i + 1
-            for k, i in enumerate(range(lo_i, hi_i + 1)):
-                fraction = (k + 1) / (n + 1)
-                warped_fraction = 1.0 - (1.0 - fraction) ** self.stepwarp_power
-                times[i] = t_hi - (t_hi - t_lo) * warped_fraction
+        # Get the exact production schedule (from t_max toward t_min).
+        times = self.get_effective_sampling_schedule(num_steps)
 
         # Sample x_T from prior (apo structures)
         x_T = self.sample_prior(f_input, num_samples)  # (B, N, Natom, 3)
         x_t = x_T.clone()
         mask = f_input.atom.pad_mask[..., None, :]  # (B, 1, Natom)
+        sde_atom_mask = self._get_sde_atom_mask(f_input)
+        has_sde_atoms = self.sampler_sde_atom_classes == ("all",) or bool(
+            sde_atom_mask.any()
+        )
 
         # Compute time-independent variables
         z = model.get_pair_conditioning(f_input, z)
@@ -666,20 +1534,7 @@ class KFoldECSI(BaseStructureModule):
             t = times[step_idx]
             t_next = times[step_idx + 1]
 
-            # Early-stage forward-pinned churn.
-            span = float(times[0]) - self.churn_end_time
-            weight = (float(t) - self.churn_end_time) / span if span > 0.0 else 0.0
-            weight = min(max(weight, 0.0), 1.0) ** 2
-            effective_churn_factor = self.churn_factor * (
-                1.0 + (self.churn_max_multiplier - 1.0) * weight
-            )
-            x_noisy, t = self._apply_forward_pinned_churn(
-                x_t,
-                x_T,
-                mask,
-                t,
-                churn_factor=effective_churn_factor,
-            )
+            x_noisy, t = self._apply_forward_pinned_churn(x_t, x_T, mask, t)
 
             # Get denoised prediction \hat{x}_0
             x_0_hat = run_step(x_noisy, t)
@@ -691,22 +1546,15 @@ class KFoldECSI(BaseStructureModule):
             # Centering the predicted x_0_hat
             x_0_hat = do_centering(x_0_hat, mask=mask)
 
-            # Redistribute endpoint estimates without another score evaluation.
-            x_0_hat = self._apply_svgd_spread(x_0_hat, mask)
-
-            sampler_mode, sampler_ode_type = self._select_update_method(t)
-
-            # Update x_t
-            x_t = self._update_step(
+            x_t = self._apply_class_selective_update(
                 x_noisy,
                 x_0_hat,
                 x_T,
                 mask,
+                sde_atom_mask,
+                has_sde_atoms,
                 t,
                 t_next,
-                mode=sampler_mode,
-                ode_type=sampler_ode_type,
-                step_scale=self.sampler_step_scale,
             )
             append_traj(x_t)
 
@@ -826,95 +1674,6 @@ class KFoldECSI(BaseStructureModule):
         x_out = c_skip * x_t + c_out * r_update
         return x_out
 
-    def _apply_svgd_spread(
-        self,
-        x: torch.Tensor,
-        atom_mask: torch.Tensor,
-    ) -> torch.Tensor:
-        """Spread endpoint samples without moving their masked centroid."""
-        num_samples = x.shape[1]
-        if num_samples < 2:
-            return x
-
-        mask = atom_mask.to(dtype=x.dtype)
-        mask_4d = mask.unsqueeze(-1)
-
-        if x.dtype in (torch.float16, torch.bfloat16):
-            deviation = x.float()
-            deviation.sub_(deviation.mean(dim=1, keepdim=True))
-            deviation.mul_(mask_4d)
-        else:
-            deviation = (x - x.mean(dim=1, keepdim=True)) * mask_4d
-        deviation_flat = deviation.flatten(start_dim=2)
-        distance_flat = deviation_flat
-
-        num_real = mask.sum(dim=-1, dtype=distance_flat.dtype).clamp_min(1.0)
-        denominator = (3.0 * num_samples * num_real).clamp_min(1.0)
-        spread_rms = torch.sqrt(
-            (distance_flat * distance_flat).sum(dim=(1, 2)).clamp_min(0.0)
-            / denominator.squeeze(-1)
-        )
-        if float(spread_rms.max()) <= self.svgd_skip_rms:
-            return x
-
-        # Avoid materializing pairwise atom-coordinate differences.
-        distance_sq = torch.bmm(distance_flat, distance_flat.transpose(1, 2))
-        norm_sq = distance_sq.diagonal(dim1=1, dim2=2).clone()
-        distance_sq.mul_(-2.0)
-        distance_sq.add_(norm_sq.unsqueeze(2))
-        distance_sq.add_(norm_sq.unsqueeze(1))
-        distance_sq.clamp_min_(0.0)
-        distance_sq.div_(3.0 * num_real.unsqueeze(-1))
-
-        off_diagonal = ~torch.eye(
-            num_samples,
-            dtype=torch.bool,
-            device=x.device,
-        )
-
-        # NOTE: This is same to median(dim=...), but deterministic.
-        pairwise_distance_sq = distance_sq[:, off_diagonal]
-        pairwise_distance_sq = pairwise_distance_sq.sort(dim=-1).values
-        median_index = (pairwise_distance_sq.shape[-1] - 1) // 2
-        bandwidth = pairwise_distance_sq[:, median_index]
-
-        bandwidth = bandwidth.clamp_min(self.svgd_num_eps)
-        bandwidth = bandwidth.view(-1, 1, 1)
-
-        kernel = distance_sq.div_(bandwidth).neg_().exp_()
-        coefficient = kernel.square_()
-        coefficient.mul_(2.0 / bandwidth)
-        coefficient.masked_fill_(~off_diagonal.unsqueeze(0), 0.0)
-
-        row_sum = coefficient.sum(dim=-1, keepdim=True)
-        displacement_flat = torch.bmm(coefficient, distance_flat).neg_()
-        displacement_flat.addcmul_(distance_flat, row_sum)
-        displacement_flat.div_(num_samples)
-        del coefficient, distance_flat, deviation_flat, deviation
-        del norm_sq, distance_sq, kernel, bandwidth, row_sum
-        displacement = displacement_flat.reshape_as(x)
-        del displacement_flat
-        displacement.mul_(mask_4d)
-        displacement.sub_(displacement.mean(dim=1, keepdim=True))
-        displacement.mul_(mask_4d)
-
-        displacement_rms = torch.sqrt(
-            (displacement * displacement).sum(dim=(1, 2, 3)) / denominator.squeeze(-1)
-            + self.svgd_num_eps
-        )
-        cap = self.svgd_cap_frac * spread_rms
-        scale = (cap / displacement_rms.clamp_min(self.svgd_num_eps)).clamp_max(1.0)
-        displacement.mul_(scale.view(-1, 1, 1, 1))
-        if displacement.dtype != x.dtype:
-            displacement = displacement.to(dtype=x.dtype)
-            displacement.sub_(displacement.mean(dim=1, keepdim=True))
-            displacement.mul_(mask_4d)
-
-        output = torch.add(x, displacement, alpha=self.svgd_step)
-        if not torch.isfinite(output).all():
-            raise RuntimeError("svgd-spread-t24: non-finite repulsion output")
-        return output
-
     def get_sampling_schedule(self, num_steps: int) -> list[float]:
         r"""Get the time schedule for diffusion sampling.
 
@@ -963,50 +1722,170 @@ class KFoldECSI(BaseStructureModule):
         times.append(0.0)
         return times
 
-    def _apply_forward_pinned_churn(
+    def _sigma_eff_to_time(self, target: float, lo: float, hi: float) -> float:
+        r"""Return a churn time in ``[lo, hi]`` for an effective-noise target.
+
+        ``sigma_eff`` is monotonic over the sampling interval. The upper endpoint
+        is returned when the requested inflation cannot fit inside the configured
+        churn band, preserving the trained-time support instead of extrapolating.
+        """
+        if hi <= lo:
+            return lo
+
+        coeff = self.coeff
+        lo_sigma = float(coeff.sigma_eff(lo))
+        hi_sigma = float(coeff.sigma_eff(hi))
+        if target <= lo_sigma:
+            return lo
+        if target >= hi_sigma:
+            return hi
+
+        low, high = lo, hi
+        for _ in range(60):
+            mid = 0.5 * (low + high)
+            if float(coeff.sigma_eff(mid)) < target:
+                low = mid
+            else:
+                high = mid
+        return high
+
+    def _apply_sigma_matched_churn(
         self,
         x_t: torch.Tensor,
         x_T: torch.Tensor,
         mask: torch.Tensor,
         t: float,
         *,
-        churn_factor: float | None = None,
+        chi: float,
+        noise: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, float]:
-        if t <= self.churn_end_time:
-            # No churn applied before or at churn_end
+        r"""Apply a bridge conditional with ``sigma_eff`` inflated by ``chi``.
+
+        The model still receives x-space coordinates. ``sigma_eff`` only chooses
+        ``t_hat`` such that ``sigma_eff(t_hat) = (1 + chi) * sigma_eff(t)``, when
+        that target lies inside the configured churn band.
+        """
+        if chi <= 0.0:
             return x_t, t
 
-        effective_churn_factor = (
-            self.churn_factor if churn_factor is None else churn_factor
+        coeff = self.coeff
+        target = (1.0 + chi) * float(coeff.sigma_eff(t))
+        t_hat = self._sigma_eff_to_time(target, t, self.churn_max_time)
+        if t_hat <= t:
+            return x_t, t
+
+        alpha_ratio = float(coeff.alpha(t_hat)) / _clip(float(coeff.alpha(t)))
+        variance = (
+            float(coeff.gamma(t_hat)) ** 2 - (alpha_ratio**2) * float(coeff.gamma(t)) ** 2
         )
-        dt = (1 - t) * effective_churn_factor
+        if variance <= 0.0:
+            return x_t, t
 
-        C = self.coeff
-        alpha_t, beta_t = C.alpha(t), C.beta(t)
-        alpha_dot, beta_dot = C.alpha_deriv(t), C.beta_deriv(t)
-        eps: float = C.eps(t)
+        if noise is None:
+            noise = torch.randn_like(x_t)
+        elif noise.shape != x_t.shape:
+            raise ValueError("Sigma-matched churn noise must match x_t shape.")
+        noise = noise.masked_fill(~mask[..., None], 0.0)
+        x_hat = (
+            alpha_ratio * x_t
+            + (float(coeff.beta(t_hat)) - alpha_ratio * float(coeff.beta(t))) * x_T
+            + math.sqrt(variance) * noise
+        )
+        return x_hat, t_hat
 
-        # Forward-pinned churn step
-        noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
+    def _churn_factor_at_time(self, t: float) -> float:
+        span = self.churn_max_time - self.churn_end_time
+        weight = (t - self.churn_end_time) / span if span > 0.0 else 0.0
+        weight = min(max(weight, 0.0), 1.0) ** 2
+        return self.churn_factor * (1.0 + (self.churn_max_multiplier - 1.0) * weight)
 
-        f_t = alpha_dot / alpha_t
-        s_t = beta_dot - f_t * beta_t
-        drift = f_t * x_t + s_t * x_T
+    def _apply_forward_pinned_churn(
+        self,
+        x_t: torch.Tensor,
+        x_T: torch.Tensor,
+        mask: torch.Tensor,
+        t: float,
+        noise: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, float]:
+        # The schedule starts at ``time_max``. Keep both churn bounds open so
+        # that the initial state is never perturbed or consumes RNG.
+        if not self.churn_end_time < t < self.churn_max_time:
+            return x_t, t
 
-        x_tm = x_t + drift * dt + _sqrt(2 * eps * dt) * noise
-        tm = t + dt
+        return self._apply_sigma_matched_churn(
+            x_t,
+            x_T,
+            mask,
+            t,
+            chi=self._churn_factor_at_time(t),
+            noise=noise,
+        )
 
-        return x_tm, tm
+    def _apply_class_selective_update(
+        self,
+        x_t: torch.Tensor,
+        x_0_hat: torch.Tensor,
+        x_T: torch.Tensor,
+        mask: torch.Tensor,
+        sde_atom_mask: torch.Tensor,
+        has_sde_atoms: bool,
+        t: float,
+        t_next: float,
+        noise: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Preserve [all] or overlay selected updates on an SI-ODE base."""
+        selected_mode, selected_ode_type = self._select_update_method(t)
+        if self.sampler_sde_atom_classes == ("all",):
+            return self._update_step(
+                x_t,
+                x_0_hat,
+                x_T,
+                mask,
+                t,
+                t_next,
+                mode=selected_mode,
+                ode_type=selected_ode_type,
+                step_scale=self.sampler_step_scale,
+                noise=noise,
+            )
+
+        x_ode = self._update_step(
+            x_t,
+            x_0_hat,
+            x_T,
+            mask,
+            t,
+            t_next,
+            mode="ode",
+            ode_type="si",
+            step_scale=self.sampler_step_scale,
+            noise=noise,
+        )
+        if not has_sde_atoms:
+            return x_ode
+
+        if selected_mode == "ode" and selected_ode_type == "si":
+            return x_ode
+
+        sde_mask = mask & sde_atom_mask[:, None, :]
+        x_sde = self._update_step(
+            x_t,
+            x_0_hat,
+            x_T,
+            sde_mask,
+            t,
+            t_next,
+            mode=selected_mode,
+            ode_type=selected_ode_type,
+            step_scale=self.sampler_step_scale,
+            noise=noise,
+        )
+        return torch.where(sde_atom_mask[:, None, :, None], x_sde, x_ode)
 
     def _select_update_method(self, t: float) -> tuple[str, str]:
-        if self.sampler_switch_gamma is None:
-            return self.sampler_mode, self.sampler_ode_type
-
-        # Reverse sampling starts near t=1 where gamma is also small. The switch is
-        # intended for the late low-gamma phase after the gamma envelope has peaked.
-        gamma_peak_time = 0.5 ** (1.0 / self.coeff.gamma_power)
-        if t <= gamma_peak_time and self.coeff.gamma(t) <= self.sampler_switch_gamma:
-            return self.sampler_after_switch_mode, self.sampler_after_switch_ode_type
+        """Use the high-time profile or the fixed low-time SI-ODE phase."""
+        if self.sampler_switch_time is not None and t <= self.sampler_switch_time:
+            return "ode", "si"
         return self.sampler_mode, self.sampler_ode_type
 
     def _update_step(
@@ -1020,6 +1899,7 @@ class KFoldECSI(BaseStructureModule):
         mode: str = "ode",  # 'ode' or 'sde'
         ode_type: str = "si",  # 'si' or 'ecsi'
         step_scale: float = 1.0,
+        noise: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """SDE step for ECSI sampling.
         See Algorithm 1 of ECSI paper.
@@ -1043,9 +1923,7 @@ class KFoldECSI(BaseStructureModule):
         ode_type : str, optional
             Type of update: 'si' or 'ecsi'.
         step_scale : float, optional
-            Multiplier for the deterministic ODE displacement, analogous to the
-            step scale used in AF3/EDM samplers.
-
+            Multiplier for the deterministic ODE displacement.
         """
         C = self.coeff
         alpha_t, alpha_dot = C.alpha(t), C.alpha_deriv(t)
@@ -1055,7 +1933,11 @@ class KFoldECSI(BaseStructureModule):
             # SDE update
             gamma_t = C.gamma(t)
             eps: float = C.eps(t)
-            noise = torch.randn_like(x_t).masked_fill_(~mask[..., None], 0.0)
+            if noise is None:
+                noise = torch.randn_like(x_t)
+            elif noise.shape != x_t.shape:
+                raise ValueError("Sampler update noise must match x_t shape.")
+            noise = noise.masked_fill(~mask[..., None], 0.0)
 
             if ode_type == "si":
                 # SI SDE drift pinned to the denoised endpoint:

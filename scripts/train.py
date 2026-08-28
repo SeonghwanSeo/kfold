@@ -115,6 +115,9 @@ def parse_config(args) -> DictConfig:
     if args.wandb:
         cfg.train.wandb.use = True
 
+    # Use the training seed for weighted data sampling.
+    cfg.train.data.sampling_seed = cfg.train.seed
+
     # Apply global_hparams overrides
     apply_global_hparams_overrides(cfg)
 
@@ -271,6 +274,7 @@ def fit_with_initialized_optimizer_state(
     model_module: KFoldTrainingModule,
     data_module: TrainingDataModule,
     checkpoint_path: str,
+    load_global_step: bool,
 ) -> None:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
@@ -297,8 +301,9 @@ def fit_with_initialized_optimizer_state(
 
     model_module.load_state_dict(state_dict, strict=True)
     model_module.on_load_checkpoint(checkpoint)
-    model_module.last_lr_step = checkpoint["global_step"]
-    trainer.fit_loop.load_state_dict(checkpoint["loops"]["fit_loop"])
+    if load_global_step:
+        model_module.last_lr_step = checkpoint["global_step"]
+        trainer.fit_loop.load_state_dict(checkpoint["loops"]["fit_loop"])
     del checkpoint  # Free memory
 
     trainer.fit(model_module, datamodule=data_module)
@@ -338,6 +343,7 @@ def train(args) -> None:
             model_module,
             data_module,
             args.resume_from_checkpoint,
+            load_global_step=cfg.train.load_global_step,
         )
 
 

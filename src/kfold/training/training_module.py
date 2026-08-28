@@ -17,6 +17,7 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.model.model_train import KFoldConfig, KFoldForTrain
+from kfold.model.modules.structure.ecsi import ECSISOARConfig
 from kfold.training.utils.binned_loss_logging import (
     EntityBinConfig,
     EntityBinnedLossLogger,
@@ -58,6 +59,7 @@ class TrainConfig:
     loss: "LossConfig"
     # Multi-stage training
     load_opt_state: bool = True
+    load_global_step: bool = True
     init_from_ema: tuple[str, ...] = ()
 
 
@@ -133,6 +135,9 @@ class TrainingConfig(_Config):
     parcae: ParcaeTrainConfig = dataclasses.field(default_factory=ParcaeTrainConfig)
     # for structure model training
     diffusion_batch_size: int = 48
+    soar: dict[str, Any] = dataclasses.field(
+        default_factory=lambda: dataclasses.asdict(ECSISOARConfig())
+    )
     # for confidence module training
     num_mini_rollout_steps: int = 20
     num_mini_rollout_samples: int = 1
@@ -161,6 +166,14 @@ def _get_diffusion_time_for_binning(
     if torch.is_tensor(t):
         return t
     return None
+
+
+def _training_metric_log_name(metric_name: str) -> str:
+    if metric_name.startswith("soar_"):
+        return f"soar/{metric_name.removeprefix('soar_')}"
+    if metric_name.startswith("x_0_perturb_"):
+        return f"x_0_perturb/{metric_name.removeprefix('x_0_perturb_')}"
+    return f"train/{metric_name}"
 
 
 def _get_structure_module_for_binning(model: Any) -> Any:
@@ -216,9 +229,7 @@ class LossConfig(_Config):
     """Loss configuration."""
 
     weights: dict[str, float]
-    distogram_loss: Any
     diffusion_loss: Any
-    confidence_loss: Any
     patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
     interface_contact_loss: Any = dataclasses.field(default_factory=dict)
 
@@ -238,6 +249,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self.training_config: TrainingConfig = TrainingConfig.from_dict(
             self.config.training
         )
+        self.soar_config = ECSISOARConfig.from_mapping(self.training_config.soar)
         self.parcae_train_config: ParcaeTrainConfig = ParcaeTrainConfig.from_dict(
             self.training_config.parcae
         )
@@ -412,9 +424,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self.loss_weights: dict[str, float] = loss_config.weights
 
         # Distogram loss
-        self.distogram_loss = loss_fn.distogram.DistogramLoss(
-            **loss_config.distogram_loss
-        )
+        self.distogram_loss = loss_fn.distogram.DistogramLoss()
         self.patch_geometry_loss = loss_fn.patch_geometry.PatchPairGeometryLoss(
             **loss_config.patch_geometry_loss
         )
@@ -436,22 +446,10 @@ class KFoldTrainingModule(pl.LightningModule):
             **diffusion_loss_config["smooth_lddt_loss"]
         )
 
-        confidence_loss_config = loss_config.confidence_loss
-        # pLDDT loss
-        self.plddt_loss = loss_fn.confidence.PLDDTLoss(
-            **confidence_loss_config["plddt_loss"]
-        )
-
-        # PDE loss
-        self.pde_loss = loss_fn.confidence.PDELoss(**confidence_loss_config["pde_loss"])
-
-        # Experimentally resolved loss
-        self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss(
-            **confidence_loss_config["experimentally_resolved_loss"]
-        )
-
-        # PAE loss
-        self.pae_loss = loss_fn.confidence.PAELoss(**confidence_loss_config["pae_loss"])
+        self.plddt_loss = loss_fn.confidence.PLDDTLoss()
+        self.pde_loss = loss_fn.confidence.PDELoss()
+        self.exp_res_loss = loss_fn.confidence.ExperimentallyResolvedPredictionLoss()
+        self.pae_loss = loss_fn.confidence.PAELoss()
 
     def setup_metrics(self):
         """Setup metrics for validation"""
@@ -521,6 +519,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_mini_rollout_steps=training_config.num_mini_rollout_steps,
                 num_mini_rollout_samples=training_config.num_mini_rollout_samples,
                 diffusion_batch_size=training_config.diffusion_batch_size,
+                soar_config=dataclasses.asdict(self.soar_config),
                 train_trunk=self.train_trunk,
                 train_diffusion_head=self.train_diffusion_head,
                 train_confidence_module=self.train_confidence_head,
@@ -576,7 +575,12 @@ class KFoldTrainingModule(pl.LightningModule):
                     )
 
         for k, v in metrics.items():
-            self.log(f"train/{k}", v, prog_bar=(k == "loss"), sync_dist=False)
+            self.log(
+                _training_metric_log_name(k),
+                v,
+                prog_bar=(k == "loss"),
+                sync_dist=False,
+            )
 
         return loss
 
@@ -590,14 +594,14 @@ class KFoldTrainingModule(pl.LightningModule):
         # Compute losses
         if self.train_trunk:
             distogram_loss, distogram_metrics = self.compute_distogram_loss(
-                logits=model_output["distogram"]["logits"],
+                distogram_out=model_output["distogram"],
                 f_input=f_input,
             )
             interface_contact_weight = self.loss_weights["interface_contact"]
             if interface_contact_weight > 0:
                 interface_contact_loss, interface_contact_metrics = (
                     self.interface_contact_loss(
-                        logits=model_output["distogram"]["logits"],
+                        distogram_out=model_output["distogram"],
                         f_input=f_input,
                     )
                 )
@@ -622,7 +626,54 @@ class KFoldTrainingModule(pl.LightningModule):
                 x_true=diffusion_out["x_gt"],
                 f_input=f_input,
                 per_sample_weights=model_output["diffusion"]["loss_weights"],
+                supervision_weights=diffusion_out.get("soar_supervision_weights"),
+                auxiliary_mask=diffusion_out.get("soar_auxiliary_mask"),
             )
+            if "soar_t0" in diffusion_out:
+
+                def add_tensor_stats(name: str, values: torch.Tensor) -> None:
+                    values = values.detach().float()
+                    diffusion_metrics[f"soar_{name}_mean"] = values.mean()
+                    diffusion_metrics[f"soar_{name}_std"] = values.std(unbiased=False)
+                    diffusion_metrics[f"soar_{name}_median"] = values.median()
+                    diffusion_metrics[f"soar_{name}_min"] = values.min()
+                    diffusion_metrics[f"soar_{name}_max"] = values.max()
+
+                for time_name in ("base_t0", "t0", "t_call", "t1", "t2"):
+                    add_tensor_stats(time_name, diffusion_out[f"soar_{time_name}"])
+                for name in (
+                    "forward_retention",
+                    "forward_variance",
+                    "endpoint_error_rmsd",
+                    "model_to_oracle_sampler_rmsd",
+                    "oracle_sampler_to_exact_ecsi_rmsd",
+                    "model_sampler_to_exact_ecsi_rmsd",
+                ):
+                    add_tensor_stats(name, diffusion_out[f"soar_{name}"])
+                root_branch_count = diffusion_out["soar_root_branch_count"].detach()
+                diffusion_metrics["soar_auxiliary_samples_per_root"] = (
+                    root_branch_count.float().mean()
+                )
+                supervision_weights = diffusion_out["soar_supervision_weights"].detach()
+                auxiliary_mask = diffusion_out["soar_auxiliary_mask"].detach()
+                base_mass = (
+                    supervision_weights.masked_fill(auxiliary_mask, 0.0).sum(dim=1).mean()
+                )
+                auxiliary_mass = (
+                    supervision_weights.masked_fill(~auxiliary_mask, 0.0)
+                    .sum(dim=1)
+                    .mean()
+                )
+                diffusion_metrics["soar_base_objective_mass"] = base_mass
+                diffusion_metrics["soar_aux_objective_mass"] = auxiliary_mass
+                diffusion_metrics["soar_total_objective_mass"] = (
+                    base_mass + auxiliary_mass
+                )
+            if "x_0_perturb_applied_mask" in diffusion_out:
+                self._add_x_0_perturb_metrics(
+                    diffusion_metrics=diffusion_metrics,
+                    diffusion_out=diffusion_out,
+                )
 
         else:
             diffusion_loss, diffusion_metrics = 0.0, {}
@@ -640,7 +691,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 struct_info=struct_info,
             )  # [B, Nsample, Latom, 3]
             confidence_loss, confidence_metrics = self.compute_confidence_loss(
-                logits=model_output["confidence"],
+                confidence_out=model_output["confidence"],
                 x_pred=x_pred,
                 x_gt=x_gt,
                 mask=mask_gt,
@@ -679,6 +730,54 @@ class KFoldTrainingModule(pl.LightningModule):
         all_metrics["loss"] = loss.detach()
 
         return loss, all_metrics
+
+    @staticmethod
+    def _add_x_0_perturb_metrics(
+        *,
+        diffusion_metrics: dict[str, torch.Tensor],
+        diffusion_out: dict[str, torch.Tensor],
+    ) -> None:
+        """Add actual high-time x0-perturb exposure and displacement telemetry."""
+        t = diffusion_out["t"][:, : diffusion_out["x_0_perturb_applied_mask"].shape[1]]
+        time_eligible = diffusion_out["x_0_perturb_time_eligible_mask"].bool()
+        eligible = diffusion_out["x_0_perturb_eligible_mask"].bool()
+        requested = diffusion_out["x_0_perturb_requested_mask"].bool()
+        applied = diffusion_out["x_0_perturb_applied_mask"].bool()
+        x_0_rmsd = diffusion_out["x_0_perturb_x_0_rmsd"].detach().float()
+        x_t_rmsd = diffusion_out["x_0_perturb_x_t_rmsd"].detach().float()
+        chain_count = diffusion_out["x_0_perturb_resolved_chain_count"].detach().float()
+
+        def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+            weights = mask.to(values.dtype)
+            return (values * weights).sum() / weights.sum().clamp(min=1.0)
+
+        prefix = "x_0_perturb_"
+        diffusion_metrics[f"{prefix}time_eligible_fraction"] = (
+            time_eligible.float().mean()
+        )
+        diffusion_metrics[f"{prefix}eligible_fraction"] = eligible.float().mean()
+        diffusion_metrics[f"{prefix}requested_fraction"] = requested.float().mean()
+        diffusion_metrics[f"{prefix}applied_fraction"] = applied.float().mean()
+        diffusion_metrics[f"{prefix}applied_given_eligible"] = (
+            applied.float().sum() / eligible.float().sum().clamp(min=1.0)
+        )
+        diffusion_metrics[f"{prefix}applied_t_mean"] = masked_mean(t.float(), applied)
+        diffusion_metrics[f"{prefix}x_0_rmsd_mean"] = masked_mean(x_0_rmsd, applied)
+        diffusion_metrics[f"{prefix}x_t_rmsd_mean"] = masked_mean(x_t_rmsd, applied)
+        diffusion_metrics[f"{prefix}x_t_rmsd_max"] = x_t_rmsd.max()
+        diffusion_metrics[f"{prefix}resolved_chain_count_mean"] = chain_count.mean()
+
+        for bin_index in range(10):
+            lower = bin_index / 10.0
+            upper = (bin_index + 1) / 10.0
+            in_bin = (t >= lower) & (t < upper)
+            bin_name = f"t{bin_index:02d}_{bin_index + 1:02d}"
+            diffusion_metrics[f"{prefix}{bin_name}_applied_fraction"] = (
+                applied & in_bin
+            ).float().sum() / in_bin.float().sum().clamp(min=1.0)
+            diffusion_metrics[f"{prefix}{bin_name}_x_t_rmsd_mean"] = masked_mean(
+                x_t_rmsd, applied & in_bin
+            )
 
     def validation_step(
         self,
@@ -844,28 +943,26 @@ class KFoldTrainingModule(pl.LightningModule):
         f_input: FoldingInput,
     ) -> torch.Tensor:
         """Compute validation distogram loss from inference outputs."""
-        logits = distogram_out.get("logits")
-        if logits is None:
-            logits = distogram_out["distogram"]
+        logits = distogram_out["logits"]
         if not f_input.is_batched:
             f_input = f_input.add_batch_dim()
         if logits.ndim == 3:
-            logits = logits.unsqueeze(0)
+            distogram_out = distogram_out | {"logits": logits.unsqueeze(0)}
 
-        loss_per_batch = self.distogram_loss(logits, f_input)
+        loss_per_batch = self.distogram_loss(distogram_out, f_input)
         return loss_per_batch.mean().detach()
 
     def compute_distogram_loss(
         self,
-        logits: torch.Tensor,
+        distogram_out: dict[str, torch.Tensor],
         f_input: FoldingInput,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute distogram loss.
 
         Parameters
         ----------
-        logits : torch.Tensor
-            Tensor of shape (B, Lt, Lt, num_bins) containing distogram logits.
+        distogram_out : dict[str, torch.Tensor]
+            Distogram logits and distance-bin boundaries returned by the model.
         f_input : FoldingInput
             The input features containing the target distogram and masks.
 
@@ -876,29 +973,29 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics : dict[str, torch.Tensor]
             A dictionary containing loss metrics.
         """
-        loss_per_batch = self.distogram_loss(logits, f_input)
+        loss_per_batch = self.distogram_loss(distogram_out, f_input)
         loss = loss_per_batch.mean()
         metrics = {"distogram_loss": loss.detach()}
-        if (
-            hasattr(self.distogram_loss, "boundaries")
-            and hasattr(f_input, "token")
-            and self.global_step % 10 == 0
-        ):
-            metrics |= self.compute_distogram_diagnostic_metrics(logits, f_input)
+        if hasattr(f_input, "token") and self.global_step % 10 == 0:
+            metrics |= self.compute_distogram_diagnostic_metrics(
+                distogram_out,
+                f_input,
+            )
         if self._binned_cache_enabled and self.train_diffusion_head:
             self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
         return loss, metrics
 
     def compute_distogram_diagnostic_metrics(
         self,
-        logits: torch.Tensor,
+        distogram_out: dict[str, torch.Tensor],
         f_input: FoldingInput,
         near_cutoff: float = 12.0,
         far_cutoff: float = 22.0,
     ) -> dict[str, torch.Tensor]:
         """Log inter-chain near-ranking and false-positive pressure diagnostics."""
         with torch.no_grad():
-            boundaries = self.distogram_loss.boundaries.to(logits.device)
+            logits = distogram_out["logits"]
+            bin_boundaries = distogram_out["bin_boundaries"]
             gt_coords = f_input.token.repr_coords
             diff = gt_coords[..., None, :, :] - gt_coords[..., :, None, :]
             d_repr = diff.norm(dim=-1)
@@ -923,8 +1020,7 @@ class KFoldTrainingModule(pl.LightningModule):
                     "distogram_inter_chain_far_pairs": zero,
                 }
 
-            bin_size = float(boundaries[1].item() - boundaries[0].item())
-            near_bin = int((near_cutoff - float(boundaries[0].item())) / bin_size)
+            near_bin = int((bin_boundaries < near_cutoff).sum().item()) - 1
             near_bin = max(0, min(near_bin, logits.shape[-1] - 1))
             p_near = torch.softmax(logits.float(), dim=-1)[..., : near_bin + 1].sum(
                 dim=-1
@@ -962,6 +1058,8 @@ class KFoldTrainingModule(pl.LightningModule):
         x_true: torch.Tensor,
         f_input: FoldingInput,
         per_sample_weights: torch.Tensor,
+        supervision_weights: torch.Tensor | None = None,
+        auxiliary_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Compute diffusion structure loss.
         See Section 3.7.1 Diffusion Training.
@@ -989,18 +1087,35 @@ class KFoldTrainingModule(pl.LightningModule):
         alpha_chain_com = self.loss_weights["chain_com"]
         alpha_bond = self.loss_weights["bond"]
         alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
+        if supervision_weights is None:
+            supervision_weights = torch.ones_like(per_sample_weights)
+        if supervision_weights.shape != per_sample_weights.shape:
+            raise ValueError(
+                "supervision_weights and per_sample_weights must have the same shape."
+            )
+        if auxiliary_mask is not None:
+            if auxiliary_mask.shape != per_sample_weights.shape:
+                raise ValueError(
+                    "auxiliary_mask and per_sample_weights must have the same shape."
+                )
+            auxiliary_mask = auxiliary_mask.bool()
+
+        def weighted_mean(values: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+            return (values * weights).sum() / weights.sum().clamp(min=1.0)
 
         # Equations 3-4
         L_mse, L_chain_com = self.weighted_mse_loss(
             x_pred, x_true, f_input, compute_chain_com_loss=alpha_chain_com > 0
         )
         L_mse_weighted = L_mse * per_sample_weights  # [B, Nsample]
-        metrics["mse_loss"] = L_mse_weighted.detach().mean()
+        metrics["mse_loss"] = weighted_mean(L_mse_weighted.detach(), supervision_weights)
 
         if alpha_chain_com > 0:
             assert L_chain_com is not None
             L_chain_com_weighted = L_chain_com * per_sample_weights  # [B, Nsample]
-            metrics["chain_com_loss"] = L_chain_com_weighted.detach().mean()
+            metrics["chain_com_loss"] = weighted_mean(
+                L_chain_com_weighted.detach(), supervision_weights
+            )
         else:
             L_chain_com_weighted = None
 
@@ -1008,14 +1123,18 @@ class KFoldTrainingModule(pl.LightningModule):
         if alpha_bond > 0:
             L_bond = self.bond_loss(x_pred, x_true, f_input)
             L_bond_weighted = L_bond * per_sample_weights  # [B, Nsample]
-            metrics["bond_loss"] = L_bond_weighted.detach().mean()
+            metrics["bond_loss"] = weighted_mean(
+                L_bond_weighted.detach(), supervision_weights
+            )
         else:
             L_bond_weighted = None
 
         # Algorithm 27
         if alpha_smooth_lddt > 0:
             L_smooth_lddt = self.smooth_lddt_loss(x_pred, x_true, f_input)  # [B, Nsample]
-            metrics["smooth_lddt_loss"] = L_smooth_lddt.detach().mean()
+            metrics["smooth_lddt_loss"] = weighted_mean(
+                L_smooth_lddt.detach(), supervision_weights
+            )
         else:
             L_smooth_lddt = None
 
@@ -1034,9 +1153,18 @@ class KFoldTrainingModule(pl.LightningModule):
                 L_diffusion_per_sample + alpha_smooth_lddt * L_smooth_lddt
             )
 
-        # Mean over diffusion samples
-        L_diffusion = L_diffusion_per_sample.mean()
+        # Normalize once over base and auxiliary objective mass.
+        L_diffusion = weighted_mean(L_diffusion_per_sample, supervision_weights)
         metrics["diffusion_loss"] = L_diffusion.detach()
+        if auxiliary_mask is not None:
+            base_weights = (~auxiliary_mask).to(L_diffusion_per_sample.dtype)
+            auxiliary_weights = auxiliary_mask.to(L_diffusion_per_sample.dtype)
+            metrics["soar_base_diffusion_loss"] = weighted_mean(
+                L_diffusion_per_sample.detach(), base_weights
+            )
+            metrics["soar_aux_diffusion_loss"] = weighted_mean(
+                L_diffusion_per_sample.detach(), auxiliary_weights
+            )
 
         if self._binned_cache_enabled and self.train_diffusion_head:
             payload: dict[str, torch.Tensor] = {
@@ -1055,7 +1183,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def compute_confidence_loss(
         self,
-        logits: dict[str, torch.Tensor],
+        confidence_out: dict[str, torch.Tensor],
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
         mask: torch.Tensor,
@@ -1066,8 +1194,8 @@ class KFoldTrainingModule(pl.LightningModule):
 
         Parameters
         ----------
-        logits : dict[str, torch.Tensor]
-            A dictionary containing the logits for different confidence predictions.
+        confidence_out : dict[str, torch.Tensor]
+            Confidence logits and their corresponding bin centers.
         x_pred : torch.Tensor
             The mini-rollout sample coordinates of shape (B, Nsample, Latom, 3).
         x_gt : torch.Tensor
@@ -1093,22 +1221,47 @@ class KFoldTrainingModule(pl.LightningModule):
         loss_mask = loss_mask.float()[:, None]  # [B, 1]
         num_valid_samples = (loss_mask.sum() * num_samples).clamp(1)
 
-        L_pde = self.pde_loss(logits["pde_logits"], x_pred, x_gt, mask, f_input)
+        L_pde = self.pde_loss(
+            confidence_out["pde_logits"],
+            confidence_out["pde_bin_centers"],
+            x_pred,
+            x_gt,
+            mask,
+            f_input,
+        )
         L_pde = L_pde * loss_mask  # [B, Nsample]
         metrics["pde_loss"] = L_pde.detach().sum() / num_valid_samples
 
-        L_plddt = self.plddt_loss(logits["plddt_logits"], x_pred, x_gt, mask, f_input)
+        L_plddt = self.plddt_loss(
+            confidence_out["plddt_logits"],
+            confidence_out["plddt_bin_centers"],
+            x_pred,
+            x_gt,
+            mask,
+            f_input,
+        )
         L_plddt = L_plddt * loss_mask  # [B, Nsample]
         metrics["plddt_loss"] = L_plddt.detach().sum() / num_valid_samples
 
         is_resolved = mask
         pad_mask = f_input.atom.pad_mask
-        L_resolved = self.exp_res_loss(logits["resolved_logits"], is_resolved, pad_mask)
+        L_resolved = self.exp_res_loss(
+            confidence_out["resolved_logits"],
+            is_resolved,
+            pad_mask,
+        )
         L_resolved = L_resolved * loss_mask  # [B, Nsample]
         metrics["resolved_loss"] = L_resolved.detach().sum() / num_valid_samples
 
         # NOTE: PAE loss return 0.0 when alpha_pae is 0.
-        L_pae = self.pae_loss(logits["pae_logits"], x_pred, x_gt, mask, f_input)
+        L_pae = self.pae_loss(
+            confidence_out["pae_logits"],
+            confidence_out["pae_bin_centers"],
+            x_pred,
+            x_gt,
+            mask,
+            f_input,
+        )
         L_pae = L_pae * loss_mask  # [B, Nsample]
         metrics["pae_loss"] = L_pae.detach().sum() / num_valid_samples
 

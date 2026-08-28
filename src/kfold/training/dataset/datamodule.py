@@ -38,11 +38,13 @@ class DataModuleConfig(BaseConfig):
     persistent_workers: bool = True
     pin_memory: bool = True
     safe_load: bool = True
+    sampling_seed: int = 0
 
     # === Training hyperparameters === #
     max_chains: int = 20
     max_apo: int = 5
     max_tokens: int = 384
+    max_atoms: int = 4608
     max_sequence_tokens: int = 768
 
     # === CCD path === #
@@ -72,6 +74,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
         max_chains: int,
         max_apo: int,
         max_tokens: int,
+        max_atoms: int,
         max_sequence_tokens: int,
         safe_load: bool = True,
     ) -> None:
@@ -86,6 +89,7 @@ class MultiTrainingDataset(torch.utils.data.Dataset):
                 max_chains=max_chains,
                 max_apo=max_apo,
                 max_tokens=max_tokens,
+                max_atoms=max_atoms,
                 max_sequence_tokens=max_sequence_tokens,
             )
             for config in configs
@@ -122,7 +126,6 @@ class TrainingDataModule(pl.LightningDataModule):
     def __init__(self, config: DataModuleConfig) -> None:
         super().__init__()
         self.config = config
-
         # Load CCD
         self.ccd: CCD = CCD.load(config.ccd_path)
         self.logger = logging.getLogger("[DataModule]")
@@ -164,6 +167,7 @@ class TrainingDataModule(pl.LightningDataModule):
             max_chains=self.config.max_chains,
             max_apo=self.config.max_apo,
             max_tokens=self.config.max_tokens,
+            max_atoms=self.config.max_atoms,
             max_sequence_tokens=self.config.max_sequence_tokens,
             safe_load=self.config.safe_load,
         )
@@ -217,6 +221,7 @@ class TrainingDataModule(pl.LightningDataModule):
             rank=self.trainer.global_rank if self.trainer else 0,
             world_size=self.trainer.world_size if self.trainer else 1,
             epoch=self.trainer.current_epoch if self.trainer else 0,
+            seed=self.config.sampling_seed,
             replacement=True,
         )
         persistent_workers = (

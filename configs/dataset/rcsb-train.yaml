@@ -13,13 +13,6 @@ sampler:
   beta_interface: 1.0
   allow_redundant: False
 
-cropper:
-  _registry_: "data_cropper"
-  _class_: AlphaFold3Cropper
-  w_contiguous: 0.2
-  w_spatial: 0.4
-  w_spatial_interface: 0.4
-
 apo_perturb:
   prob_rieprody: 0.8
   # Apo structure perturbation settings
