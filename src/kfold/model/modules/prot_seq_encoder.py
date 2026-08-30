@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from atlaslm.pretrained import load_model
@@ -19,6 +20,8 @@ class ProteinSequenceEncoder(torch.nn.Module):
 
         Attributes
         ----------
+        model_path: str | None
+            Path to a local AtlasLM checkpoint. If unset, download from Hugging Face.
         cache_dir: str | None
             Directory used to cache weights downloaded from Hugging Face.
         vocab_size: int
@@ -31,6 +34,7 @@ class ProteinSequenceEncoder(torch.nn.Module):
             Number of transformer layers.
         """
 
+        model_path: str | None = None
         cache_dir: str | None = None
         vocab_size: int = 64
         d_model: int = 2304
@@ -40,7 +44,11 @@ class ProteinSequenceEncoder(torch.nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg: ProteinSequenceEncoder.Config = cfg
-        self.lm = load_model(cache_dir=cfg.cache_dir, dtype=torch.bfloat16)
+        source = Path(cfg.model_path) if cfg.model_path is not None else None
+        if source is None:
+            self.lm = load_model(cache_dir=cfg.cache_dir, dtype=torch.bfloat16)
+        else:
+            self.lm = load_model(source, dtype=torch.bfloat16)
         self.eval()
         for param in self.parameters():
             param.requires_grad = False
