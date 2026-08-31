@@ -25,7 +25,7 @@ apo_module:
   blocks_per_ckpt: null
 
 protein_sequence_encoder:
-  model_path: null
+  model_path: /mnt/parallel_storage/wykim_lab/share/kfold_weights/atlaslm_3b_base.pth
   cache_dir: null
   vocab_size: 64
   d_model: 2304
@@ -33,14 +33,14 @@ protein_sequence_encoder:
   n_layers: 48
 
 protein_structure_encoder:
-  model_path: null
+  model_path: /mnt/parallel_storage/wykim_lab/share/kfold_weights
   cache_dir: null
   d_model: 2560
   n_heads: 40
   n_layers: 33
 
 rna_sequence_encoder:
-  model_path: null
+  model_path: /mnt/parallel_storage/wykim_lab/share/kfold_weights/rna_seq_1b.pth
   cache_dir: null
   vocab_size: 64
   d_model: 960

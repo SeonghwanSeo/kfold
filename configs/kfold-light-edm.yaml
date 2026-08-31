@@ -25,7 +25,7 @@ apo_module:
   blocks_per_ckpt: null
 
 protein_sequence_encoder:
-  model_path: null
+  model_path: /mnt/parallel_storage/wykim_lab/share/kfold_weights/atlaslm_3b_base.pth
   cache_dir: null
   vocab_size: 64
   d_model: 2304
