@@ -23,6 +23,7 @@ from kfold.model.modules import (
 from kfold.model.modules.structure import sample_diffusion, score_model
 from kfold.model.primitives import LayerNorm, Linear, LinearNoBias
 from kfold.utils.config import resolve_config
+from kfold.utils.kernels import KernelPolicy
 from kfold.utils.registry import Registry
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class KFoldConfig:
 
     # Kernel configurations
     kernel_cuequivariance: bool = True
+    kernel_backend: str | None = None
 
     # For training
     diffusion_conditioning_drop_rate: float = 0.0
@@ -129,10 +131,10 @@ class KFold(torch.nn.Module):
         self.trunk_config = resolve_config(TrunkConfig, config.trunk)
         self.parcae_config = resolve_config(ParcaeConfig, config.parcae)
 
-        kernel_config = {
+        self.kernel_config = {
             "cuequivariance": config.kernel_cuequivariance,
         }
-        self.kernel_config = kernel_config
+        self.kernel_policy = KernelPolicy.from_config(config)
 
         # Initialize pre-trained sequence and structure encoders.
         self.prot_seq_encoder = sequence_encoder.SequenceEncoder(
@@ -146,7 +148,9 @@ class KFold(torch.nn.Module):
         )
 
         # Initialize input featurizer.
-        self.input_embedder = input_embedder.InputEmbedder(config.input_embedder)
+        self.input_embedder = input_embedder.InputEmbedder(
+            config.input_embedder, kernel_policy=self.kernel_policy
+        )
 
         # Initialize LM single and pairwise feature projection modules.
         self.prot_seq_to_s_lm = LMEncoder(
@@ -162,7 +166,9 @@ class KFold(torch.nn.Module):
         self.lm_to_pair = LMToPair(self.channel_s, self.channel_z)
 
         # Initialize trunk
-        self.apo_module = apo_module.ApoModule(config.apo_module)
+        self.apo_module = apo_module.ApoModule(
+            config.apo_module, kernel_policy=self.kernel_policy
+        )
         self.layernorm_z = LayerNorm(self.channel_z)
 
         # Parcae theory: learn a continuous negative-diagonal state transition
@@ -185,12 +191,14 @@ class KFold(torch.nn.Module):
             self.channel_z,
             self.trunk_config.num_lm_blocks,
             self.trunk_config.dropout,
+            kernel_policy=self.kernel_policy,
         )
         self.main_stack = tri_stack.TrianglularStack(
             self.channel_z,
             self.trunk_config.num_main_blocks,
             self.trunk_config.dropout,
             blocks_per_ckpt=self.trunk_config.blocks_per_ckpt,
+            kernel_policy=self.kernel_policy,
         )
         # Recyling
         self.linear_refine = LinearNoBias(self.channel_z, self.channel_z, init="identity")
@@ -198,11 +206,12 @@ class KFold(torch.nn.Module):
             self.channel_z,
             self.trunk_config.num_refine_blocks,
             self.trunk_config.dropout,
+            kernel_policy=self.kernel_policy,
         )
 
         # Initialize prediction heads
         self.score_model = score_model.DiffusionModule(
-            config.score_model, kernel_config=kernel_config
+            config.score_model, kernel_policy=self.kernel_policy
         )
         # NOTE: diffusion_head is not a torch.nn.Module
         # TODO: After we fix the diffusion algorith, remove Registry.instantiate
@@ -215,7 +224,7 @@ class KFold(torch.nn.Module):
             channel_z=self.channel_z,
         )
         self.confidence_head = confidence_head.ConfidenceHead(
-            config.confidence_head, kernel_config=kernel_config
+            config.confidence_head, kernel_policy=self.kernel_policy
         )
 
     def _parcae_discretized_dynamics(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -431,7 +440,6 @@ class KFold(torch.nn.Module):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
         dtype = torch.get_autocast_dtype(f_input.device.type)
 
         # Parcae theory: stable channel-wise state decay (a) and
@@ -443,7 +451,7 @@ class KFold(torch.nn.Module):
         s_inputs, z_inputs = self.input_embedder(f_input)
 
         # Embedding of the apo state into the pair representation.
-        z_inputs = z_inputs + self.apo_module(f_input, use_cuequiv_kernels)
+        z_inputs = z_inputs + self.apo_module(f_input)
 
         # Initialize an independent pair-state z_0 instead of recycling from zeros.
         z = self._init_parcae_pair_state(z_inputs)
@@ -458,13 +466,13 @@ class KFold(torch.nn.Module):
         for _ in range(0, num_recycles + 1):
             # Intentional dropout during inference.
             _z_lm = F.dropout(z_lm, p=self.dropout, training=True)
-            u_t = z_inputs + self.lm_stack(_z_lm, pair_mask, use_cuequiv_kernels)
+            u_t = z_inputs + self.lm_stack(_z_lm, pair_mask)
             # Parcae recurrence: z_in = a * z_t + B_bar LN(u_t)
             z = a * z + F.linear(self.layernorm_z(u_t), b)
-            z = self.main_stack(z, pair_mask, use_cuequiv_kernels)
+            z = self.main_stack(z, pair_mask)
 
         # Refinement iteration
-        z = self.refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
+        z = self.refine_stack(self.linear_refine(z), pair_mask)
 
         return s_inputs, s_lm, z
 

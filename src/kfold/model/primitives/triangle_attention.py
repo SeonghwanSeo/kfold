@@ -26,9 +26,103 @@ try:
 except ImportError:
     cueq_triangle_attention = None
 
+from kfold.utils.kernels import KernelBackend
+
 from .linear import LinearNoBias
 from .normalization import LayerNorm
 from .utils import flatten_final_dims, permute_final_dims
+
+
+def _triton_compute_dtype(x: torch.Tensor) -> torch.dtype:
+    if torch.is_autocast_enabled(x.device.type):
+        return torch.get_autocast_dtype(x.device.type)
+    return x.dtype
+
+
+def _triton_cache_key(module: nn.Module, x: torch.Tensor, dtype: torch.dtype) -> tuple:
+    parameters = (
+        module.layer_norm.weight,
+        module.layer_norm.bias,
+        module.mha.linear_q.weight,
+        module.mha.linear_k.weight,
+        module.mha.linear_v.weight,
+        module.linear.weight,
+        module.mha.linear_g.weight,
+        module.mha.linear_o.weight,
+    )
+    return (x.device.type, x.device.index, dtype) + tuple(
+        value
+        for parameter in parameters
+        for value in (
+            parameter.data_ptr(),
+            None if torch.is_inference(parameter) else parameter._version,
+        )
+    )
+
+
+@torch.compiler.disable
+def triton_triangular_attn(
+    module: nn.Module,
+    x: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    if torch.is_grad_enabled():
+        raise RuntimeError("The Triton triangle attention backend is inference-only.")
+    if not x.is_cuda:
+        raise RuntimeError("The Triton triangle attention backend requires CUDA.")
+
+    from kfold.utils.kernels.triton.triangle_attention import forward, precompute
+
+    compute_dtype = _triton_compute_dtype(x)
+    key = _triton_cache_key(module, x, compute_dtype)
+    cached_key = getattr(module, "_triton_attention_cache_key", None)
+    cached = getattr(module, "_triton_attention_cache", None)
+
+    with torch.autocast(x.device.type, enabled=False):
+        if cached is None or cached_key != key:
+
+            def cast(parameter: torch.Tensor) -> torch.Tensor:
+                return parameter.to(device=x.device, dtype=compute_dtype)
+
+            cached = precompute(
+                cast(module.layer_norm.weight),
+                cast(module.layer_norm.bias),
+                cast(module.mha.linear_q.weight).t().contiguous(),
+                cast(module.mha.linear_k.weight).t().contiguous(),
+                cast(module.mha.linear_v.weight).t().contiguous(),
+                cast(module.linear.weight).t().contiguous(),
+                torch.zeros(
+                    module.no_heads,
+                    device=x.device,
+                    dtype=compute_dtype,
+                ),
+                module.no_heads,
+                module.c_hidden,
+            )
+            cached["gate_weight"] = cast(module.mha.linear_g.weight)
+            cached["output_weight"] = cast(module.mha.linear_o.weight)
+            module._triton_attention_cache = cached
+            module._triton_attention_cache_key = key
+
+        length, channel = x.shape[-2:]
+        batch_shape = x.shape[:-3]
+        flat_x = x.to(compute_dtype).reshape(-1, length, length, channel)
+        flat_mask = torch.broadcast_to(mask.bool(), x.shape[:-1]).reshape(
+            -1, length, length
+        )
+        output = forward(
+            flat_x,
+            cached,
+            mask=flat_mask,
+            scale=1.0 / math.sqrt(module.c_hidden),
+            eps=module.layer_norm.eps,
+            W_proj_g=cached["gate_weight"],
+            B_proj_g=None,
+            W_proj_o=cached["output_weight"],
+            B_proj_o=None,
+        )
+        output = output.reshape(batch_shape + (length, length, channel))
+    return output.to(x.dtype)
 
 
 def _attention(
@@ -55,7 +149,7 @@ def _attention(
 
 
 @torch.compiler.disable
-def kernel_triangular_attn(
+def cueq_triangular_attn(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
@@ -68,7 +162,20 @@ def kernel_triangular_attn(
             "cuequivariance_torch is not installed. "
             "Please install cuequivariance_torch to use the kernel implementation."
         )
-    return cueq_triangle_attention(q, k, v, bias.float(), mask=mask, scale=scale)
+    # cuEquivariance 0.10 raises its eager Torch-fallback threshold to 200 for
+    # head dimensions below 32, regardless of CUEQ_TRIATTN_FALLBACK_THRESHOLD.
+    # Requesting auxiliary outputs forces the supported native kernel path; the
+    # benchmark preflight turns any remaining unsupported fallback into an error.
+    output, _, _ = cueq_triangle_attention(
+        q,
+        k,
+        v,
+        bias.float(),
+        mask=mask,
+        scale=scale,
+        return_aux=True,
+    )
+    return output
 
 
 class MultiHeadAttention(nn.Module):
@@ -86,6 +193,7 @@ class MultiHeadAttention(nn.Module):
         no_heads: int,
         gating: bool = True,
         inf: float = 1e9,
+        backend: KernelBackend = KernelBackend.TORCH,
     ):
         """Initialize the attention layer.
 
@@ -114,6 +222,9 @@ class MultiHeadAttention(nn.Module):
         self.no_heads: int = no_heads
         self.gating: bool = gating
         self.inf: float = inf
+        if backend not in (KernelBackend.TORCH, KernelBackend.CUEQUIVARIANCE):
+            raise ValueError(f"Unsupported multi-head attention backend: {backend!r}")
+        self.backend = backend
 
         # DISCREPANCY: c_hidden is not the per-head channel dimension, as
         # stated in the supplement, but the overall channel dimension.
@@ -184,7 +295,6 @@ class MultiHeadAttention(nn.Module):
         kv_x: torch.Tensor,
         tri_bias: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
     ) -> torch.Tensor:
         """Compute attention.
 
@@ -198,9 +308,6 @@ class MultiHeadAttention(nn.Module):
             [*, H, Q, K] triangular bias
         mask : torch.Tensor
             [*, Q, K] mask
-        use_kernels : bool, default=False
-            Whether to use optimized CUDA kernels
-
         Returns
         -------
             [*, Q, C_q] attention update
@@ -210,12 +317,12 @@ class MultiHeadAttention(nn.Module):
         q, k, v = self._prep_qkv(
             q_x,
             kv_x,
-            apply_scale=not use_kernels,
+            apply_scale=self.backend is not KernelBackend.CUEQUIVARIANCE,
         )
 
-        if use_kernels:
+        if self.backend is KernelBackend.CUEQUIVARIANCE:
             scale = 1.0 / math.sqrt(self.c_hidden)
-            o = kernel_triangular_attn(
+            o = cueq_triangular_attn(
                 q,
                 k,
                 v,
@@ -244,6 +351,7 @@ class TriangleAttention(nn.Module):
         no_heads: int,
         starting: bool,
         inf: float = 1e9,
+        backend: KernelBackend = KernelBackend.TORCH,
     ) -> None:
         super().__init__()
         assert c_in % no_heads == 0, (
@@ -255,20 +363,30 @@ class TriangleAttention(nn.Module):
         self.no_heads: int = no_heads
         self.starting: bool = starting
         self.inf: float = inf
+        self.backend = backend
 
         self.layer_norm = LayerNorm(self.c_in)
 
         self.linear = LinearNoBias(c_in, self.no_heads, init="default")
 
+        attention_backend = (
+            KernelBackend.CUEQUIVARIANCE
+            if backend is KernelBackend.CUEQUIVARIANCE
+            else KernelBackend.TORCH
+        )
         self.mha = MultiHeadAttention(
-            self.c_in, self.c_in, self.c_in, self.c_hidden, self.no_heads
+            self.c_in,
+            self.c_in,
+            self.c_in,
+            self.c_hidden,
+            self.no_heads,
+            backend=attention_backend,
         )
 
     def forward(
         self,
         x: torch.Tensor,
         mask: torch.Tensor | None = None,
-        use_kernels: bool = False,
     ) -> torch.Tensor:
         """Compute triangle attention.
 
@@ -278,9 +396,6 @@ class TriangleAttention(nn.Module):
             Input tensor of shape [*, I, J, C_in]
         mask : torch.Tensor, optional
             Attention mask of shape [*, I, J]
-        use_kernels : bool, default=False
-            Whether to use optimized CUDA kernels
-
         Returns
         -------
         torch.Tensor
@@ -296,6 +411,12 @@ class TriangleAttention(nn.Module):
         if not self.starting:
             x = x.transpose(-2, -3)
             mask = mask.transpose(-1, -2)
+
+        if self.backend is KernelBackend.TRITON:
+            x = triton_triangular_attn(self, x, mask)
+            if not self.starting:
+                x = x.transpose(-2, -3)
+            return x
 
         # [*, I, J, C_in]
         x = self.layer_norm(x)
@@ -316,7 +437,6 @@ class TriangleAttention(nn.Module):
             x,
             triangle_bias,
             mask,
-            use_kernels=use_kernels,
         )
 
         if not self.starting:
@@ -329,12 +449,24 @@ class TriangleAttention(nn.Module):
 class TriangleAttentionStartingNode(TriangleAttention):
     """See Section 3.4 Algorithm 14 in the AlphaFold3 paper."""
 
-    def __init__(self, c_in: int, no_heads: int, inf: float = 1e9) -> None:
-        super().__init__(c_in, no_heads, starting=True, inf=inf)
+    def __init__(
+        self,
+        c_in: int,
+        no_heads: int,
+        inf: float = 1e9,
+        backend: KernelBackend = KernelBackend.TORCH,
+    ) -> None:
+        super().__init__(c_in, no_heads, starting=True, inf=inf, backend=backend)
 
 
 class TriangleAttentionEndingNode(TriangleAttention):
     """See Section 3.4 Algorithm 15 in the AlphaFold3 paper."""
 
-    def __init__(self, c_in: int, no_heads: int, inf: float = 1e9) -> None:
-        super().__init__(c_in, no_heads, starting=False, inf=inf)
+    def __init__(
+        self,
+        c_in: int,
+        no_heads: int,
+        inf: float = 1e9,
+        backend: KernelBackend = KernelBackend.TORCH,
+    ) -> None:
+        super().__init__(c_in, no_heads, starting=False, inf=inf, backend=backend)

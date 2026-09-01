@@ -12,6 +12,7 @@ from kfold.model.primitives import LayerNorm, LinearNoBias
 from kfold.model.primitives.utils import add, gather_dim, get_context_dtype
 from kfold.utils.checkpointing import checkpoint_blocks
 from kfold.utils.config import configurable
+from kfold.utils.kernels import TORCH_POLICY, KernelPolicy
 
 
 def to_atom_layout(
@@ -67,6 +68,7 @@ class ConfidencePairSingleStack(torch.nn.Module):
         num_blocks: int,
         dropout: float,
         blocks_per_ckpt: int | None = None,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
     ) -> None:
         super().__init__()
         self.blocks_per_ckpt = blocks_per_ckpt
@@ -77,6 +79,7 @@ class ConfidencePairSingleStack(torch.nn.Module):
                     channel_z=channel_z,
                     num_heads=num_heads,
                     dropout=dropout,
+                    kernel_policy=kernel_policy,
                 )
                 for _ in range(num_blocks)
             ]
@@ -88,14 +91,12 @@ class ConfidencePairSingleStack(torch.nn.Module):
         s: torch.Tensor,
         pair_mask: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         blocks = [
             partial(
                 b,
                 pair_mask=pair_mask,
                 mask=mask,
-                use_kernels=use_kernels,
             )
             for b in self.blocks
         ]
@@ -114,15 +115,22 @@ class ConfidencePairSingleBlock(torch.nn.Module):
         channel_z: int,
         num_heads: int,
         dropout: float,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
     ) -> None:
         super().__init__()
-        self.pair_block = TriangularBlock(channel_z, dropout)
+        self.pair_block = TriangularBlock(
+            channel_z,
+            dropout,
+            kernel_policy=kernel_policy,
+        )
         self.layernorm_z = LayerNorm(channel_z)
         self.linear_pair_bias = LinearNoBias(channel_z, num_heads)
         self.attention = SelfAttentionPairBias(
             channel_a=channel_s,
             num_heads=num_heads,
             channel_s=None,
+            call_site="confidence",
+            backend=kernel_policy.attention_pair_bias,
         )
         self.transition = Transition(channel_s, expansion_factor=4)
 
@@ -132,14 +140,22 @@ class ConfidencePairSingleBlock(torch.nn.Module):
         s: torch.Tensor,
         pair_mask: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         _add = partial(add, inplace=not self.training)
 
-        z = self.pair_block(z, pair_mask, use_kernels)
+        z = self.pair_block(z, pair_mask)
         pair_bias = self.linear_pair_bias(self.layernorm_z(z))
         pair_bias = pair_bias.movedim(-1, -3)  # [B, H, L, L]
-        s = _add(s, self.attention(s, None, pair_bias, mask))
+        attention_update = self.attention(
+            s,
+            None,
+            pair_bias,
+            mask,
+        )
+        s = _add(
+            s,
+            attention_update,
+        )
         s = _add(s, self.transition(s))
         return z, s
 
@@ -183,12 +199,15 @@ class ConfidenceHead(torch.nn.Module):
         # For training
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config, kernel_config: dict):
+    def __init__(
+        self,
+        cfg: Config,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
+    ):
         super().__init__()
         self.num_pae_bins = cfg.num_pae_bins
         self.num_pde_bins = cfg.num_pde_bins
         self.num_plddt_bins = cfg.num_plddt_bins
-        self.kernel_config = kernel_config
         self.is_compiled = False
 
         def create_bin_centers(d_min: float, d_max: float, num_bins: int) -> torch.Tensor:
@@ -234,6 +253,7 @@ class ConfidenceHead(torch.nn.Module):
             num_blocks=cfg.num_blocks,
             dropout=cfg.dropout,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
+            kernel_policy=kernel_policy,
         )
 
         self.pae_head = torch.nn.Sequential(
@@ -416,11 +436,10 @@ class ConfidenceHead(torch.nn.Module):
 
         # Jointly update pair and LM single representations.
         stack = self.get_stack()
-        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
 
         z = z + self.linear_distogram(dgram.to(z.dtype))
         pair_mask = mask[..., :, None] & mask[..., None, :]
-        z, s = stack(z, s, pair_mask, mask, use_cuequiv_kernels)
+        z, s = stack(z, s, pair_mask, mask)
         z, s = z.to(torch.float32), s.to(torch.float32)
 
         # Confidence heads.

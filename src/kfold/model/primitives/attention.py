@@ -3,12 +3,37 @@ import math
 import torch
 import torch.nn.functional as F
 
+from .utils import permute_final_dims
+
 try:
     from cuequivariance_torch import attention_pair_bias as cueq_attention_pair_bias
 except ImportError:
     cueq_attention_pair_bias = None
 
-from .utils import permute_final_dims
+
+@torch.compiler.disable
+def triton_attention_pair_bias(
+    module,
+    x_q: torch.Tensor,
+    x_k: torch.Tensor,
+    pair_bias: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    call_site: str,
+) -> torch.Tensor:
+    """Run the Triton APB implementation for normalized K-Fold inputs."""
+    from kfold.utils.kernels.triton.attention_pair_bias import (
+        triton_attention_pair_bias,
+    )
+
+    return triton_attention_pair_bias(
+        module,
+        x_q,
+        x_k,
+        pair_bias,
+        mask,
+        call_site=call_site,
+    )
 
 
 def _attention(

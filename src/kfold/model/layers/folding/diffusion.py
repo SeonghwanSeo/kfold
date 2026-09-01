@@ -8,6 +8,7 @@ import torch.nn as nn
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives import LayerNorm, LinearNoBias
 from kfold.model.primitives.utils import add
+from kfold.utils.kernels import TORCH_POLICY, KernelPolicy
 
 from .atom_transformer import AtomAttentionDecoder, AtomAttentionEncoder, AtomEmbedder
 from .diffusion_transformer import CachedGlobalTransformerStack
@@ -163,6 +164,7 @@ class DiffusionStack(nn.Module):
         atom_decoder_heads: int = 4,
         blocks_per_ckpt: int | None = None,
         ckpt_atom_stack: bool = False,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
     ) -> None:
         """Initialize the diffusion module.
 
@@ -250,6 +252,7 @@ class DiffusionStack(nn.Module):
             num_heads=atom_encoder_heads,
             use_structure=True,
             ckpt_atom_stack=ckpt_atom_stack,
+            kernel_policy=kernel_policy,
         )
         if separate_endpoint_atom_encoder:
             self.endpoint_atom_attention_encoder = AtomAttentionEncoder(
@@ -261,6 +264,7 @@ class DiffusionStack(nn.Module):
                 num_heads=atom_encoder_heads,
                 use_structure=True,
                 ckpt_atom_stack=ckpt_atom_stack,
+                kernel_policy=kernel_policy,
             )
             self.layernorm_a_t = LayerNorm(channel_a, create_offset=False)
             self.layernorm_a_endpoint = LayerNorm(channel_a, create_offset=False)
@@ -287,6 +291,7 @@ class DiffusionStack(nn.Module):
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             blocks_per_ckpt=blocks_per_ckpt,
+            kernel_policy=kernel_policy,
         )
 
         self.layernorm_a = LayerNorm(channel_a, create_offset=False)
@@ -299,6 +304,7 @@ class DiffusionStack(nn.Module):
             num_blocks=atom_decoder_blocks,
             num_heads=atom_decoder_heads,
             ckpt_atom_stack=ckpt_atom_stack,
+            kernel_policy=kernel_policy,
         )
 
     # === Main forward function for training === #

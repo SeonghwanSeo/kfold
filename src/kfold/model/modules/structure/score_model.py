@@ -5,6 +5,7 @@ import torch
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.folding.diffusion import DiffusionStack
 from kfold.utils.config import configurable
+from kfold.utils.kernels import TORCH_POLICY, KernelPolicy
 
 
 @configurable
@@ -71,10 +72,13 @@ class DiffusionModule(torch.nn.Module):
         blocks_per_ckpt: int | None = None
         ckpt_atom_stack: bool = False
 
-    def __init__(self, cfg, kernel_config):
+    def __init__(
+        self,
+        cfg,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
+    ):
         super().__init__()
         self.cfg = cfg
-        self.kernel_config = kernel_config
         self.is_compiled: bool = False
         self.diffusion_stack = DiffusionStack(
             channel_a=cfg.channel_a,
@@ -93,6 +97,7 @@ class DiffusionModule(torch.nn.Module):
             atom_decoder_heads=cfg.atom_decoder_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
             ckpt_atom_stack=cfg.ckpt_atom_stack,
+            kernel_policy=kernel_policy,
         )
 
     def do_compile(self, **kwargs):
