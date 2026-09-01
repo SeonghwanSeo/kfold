@@ -161,8 +161,11 @@ def main() -> None:
             prediction_difference = abs(
                 float(cached_prediction.item()) - float(online["p_activity"].item())
             )
+            crop_indices_equal = torch.equal(
+                cached_indices.cpu(), online["crop_indices"].cpu()
+            )
             passed = (
-                torch.equal(cached_indices.to(device), online["crop_indices"])
+                crop_indices_equal
                 and max(differences.values()) == 0.0
                 and prediction_difference == 0.0
             )
@@ -171,9 +174,7 @@ def main() -> None:
                     "record_id": str(row["record_id"]),
                     "benchmark": str(row.get("benchmark")),
                     "system_id": str(row["system_id"]),
-                    "crop_indices_equal": torch.equal(
-                        cached_indices.to(device), online["crop_indices"]
-                    ),
+                    "crop_indices_equal": crop_indices_equal,
                     "crop_token_count": len(cached_indices),
                     "tensor_max_abs_difference": differences,
                     "cached_prediction_p_activity": float(cached_prediction.item()),
