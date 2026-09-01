@@ -239,19 +239,19 @@ index.
 
 ## On-the-fly affinity prediction
 
-Multi-GPU inference can reuse the same frozen trunk and full-query distogram
-for a trained affinity head. No feature cache or second trunk pass is needed:
+Single- and multi-GPU inference can reuse the same frozen trunk and full-query
+distogram for a trained affinity head. No feature cache or second trunk pass is
+needed. `--affinity` takes the matching affinity-head checkpoint:
 
 ```bash
-python scripts/inference_multigpu.py \
-  --config configs/affinity-stage2-backbone.yaml \
+python scripts/inference.py \
+  --config path/to/backbone-config.yaml \
   --weight checkpoints/stage2-backbone.pth \
-  --affinity-head-checkpoint checkpoints/affinity-head.ckpt \
+  --affinity checkpoints/affinity-head.ckpt \
   --ccd path/to/ccd.pkl \
   --input queries \
   --out-dir results \
-  --num-recycles 3 \
-  --allow-missing-backbone-keys
+  --num-recycles 3
 ```
 
 The default `affinity_per_query_distogram_window_v1` contract matches the
@@ -261,6 +261,11 @@ ligand token, and adds same-chain 10-token protein windows until the
 256-total/200-protein budget would overflow. The head consumes only the
 cropped PL/LP/LL pair representation; predicted complex coordinates are not
 used.
+
+Affinity inference accepts protein--ligand systems only. It validates the
+unpadded chain types before the trunk pass and rejects protein-only,
+ligand-only, DNA/RNA-containing, and other non-PL queries. The legacy
+`--affinity-head-checkpoint` spelling remains an alias for `--affinity`.
 
 The archived v6/80k backbone predates the current constraint projection and is
 therefore loaded with `--allow-missing-backbone-keys`, matching its benchmark

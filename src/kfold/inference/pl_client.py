@@ -20,6 +20,7 @@ from .affinity import (
     PerQueryAffinityPredictor,
     affinity_prediction_record,
     attach_affinity_prediction,
+    validate_affinity_system,
 )
 from .dataset import InferenceInput
 from .query import Query
@@ -71,6 +72,11 @@ class KFoldInferenceClient(pl.LightningModule):
     def forward(
         self, f_input: FoldingInput, struct_token_records: list[list[dict]]
     ) -> dict[str, dict[str, torch.Tensor]]:
+        if self.affinity_predictor is not None:
+            validate_affinity_system(
+                token_mask=f_input.token.pad_mask,
+                chain_type=f_input.token.chain_type,
+            )
         if hasattr(self.model, "prot_struct_encoder"):
             apply_apo_structure_tokens(
                 f_input, struct_token_records, self.model.prot_struct_encoder

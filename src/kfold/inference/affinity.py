@@ -11,13 +11,151 @@ import torch
 
 import kfold.constants as C
 from kfold.model.modules.affinity_pairformer import AffinityPairformer
-from kfold.training.affinity.crop import (
-    distogram_feature_maps,
-    protein_ligand_distogram_profile,
-    select_pocket_annotation_crop,
-)
 
 AFFINITY_QUERY_WINDOW_CONTRACT_V1 = "affinity_per_query_distogram_window_v1"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProteinLigandDistogramProfile:
+    """Per-protein distance profile computed from one full-query distogram."""
+
+    protein_min_expected_distance: torch.Tensor
+
+
+def validate_affinity_system(
+    *,
+    token_mask: torch.Tensor,
+    chain_type: torch.Tensor,
+) -> None:
+    """Reject anything other than a protein--ligand system before inference."""
+    token_mask = _unbatch_one("token_mask", token_mask, 1).bool()
+    chain_type = _unbatch_one("chain_type", chain_type, 1).long()
+    if token_mask.shape != chain_type.shape:
+        raise ValueError("token_mask and chain_type must have matching shapes.")
+    valid_types = chain_type[token_mask]
+    protein = valid_types == C.ChainType.PROTEIN.value
+    ligand = valid_types == C.ChainType.LIGAND.value
+    unsupported = valid_types[~(protein | ligand)].unique().cpu().tolist()
+    if unsupported:
+        names = []
+        for value in unsupported:
+            try:
+                names.append(str(C.ChainType(value)))
+            except ValueError:
+                names.append(str(value))
+        raise ValueError(
+            "Affinity inference supports protein--ligand systems only; "
+            f"found unsupported chain types: {', '.join(names)}."
+        )
+    if not protein.any() or not ligand.any():
+        raise ValueError(
+            "Affinity inference requires at least one protein token and one ligand token."
+        )
+
+
+def distogram_feature_maps(
+    logits: torch.Tensor,
+    *,
+    min_dist: float = 2.0,
+    max_dist: float = 22.0,
+    contact_cutoff: float = 8.0,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return contact probability, expected distance, and normalized entropy."""
+    if logits.ndim != 4:
+        raise ValueError("Distogram logits must have shape [B, L, L, bins].")
+    num_bins = logits.shape[-1]
+    centers = torch.linspace(
+        min_dist + (max_dist - min_dist) / (2 * num_bins),
+        max_dist - (max_dist - min_dist) / (2 * num_bins),
+        num_bins,
+        dtype=logits.dtype,
+        device=logits.device,
+    )
+    probabilities = logits.softmax(dim=-1)
+    contact = probabilities[..., centers <= contact_cutoff].sum(dim=-1)
+    expected_distance = (probabilities * centers).sum(dim=-1)
+    entropy = -(probabilities * probabilities.clamp_min(1e-8).log()).sum(dim=-1)
+    normalizer = torch.log(
+        torch.tensor(float(num_bins), dtype=logits.dtype, device=logits.device)
+    )
+    return contact, expected_distance, entropy / normalizer
+
+
+def protein_ligand_distogram_profile(
+    *,
+    logits: torch.Tensor,
+    token_mask: torch.Tensor,
+    chain_type: torch.Tensor,
+) -> ProteinLigandDistogramProfile:
+    """Reduce one full-query distogram to minimum expected PL distance."""
+    validate_affinity_system(token_mask=token_mask, chain_type=chain_type)
+    if logits.ndim != 3 or logits.shape[:2] != (len(token_mask), len(token_mask)):
+        raise ValueError("One-query distogram logits must have shape [L, L, bins].")
+    valid = torch.nonzero(token_mask, as_tuple=False).squeeze(-1)
+    protein = valid[chain_type[valid] == C.ChainType.PROTEIN.value]
+    ligand = valid[chain_type[valid] == C.ChainType.LIGAND.value]
+    values = logits[protein][:, ligand].float()
+    num_bins = values.shape[-1]
+    centers = torch.linspace(
+        2.0 + 20.0 / (2 * num_bins),
+        22.0 - 20.0 / (2 * num_bins),
+        num_bins,
+        dtype=values.dtype,
+        device=values.device,
+    )
+    probabilities = values.softmax(dim=-1)
+    expected_distance = (probabilities * centers).sum(dim=-1)
+    return ProteinLigandDistogramProfile(
+        protein_min_expected_distance=expected_distance.amin(dim=-1)
+    )
+
+
+def select_pocket_annotation_crop(
+    *,
+    token_mask: torch.Tensor,
+    chain_type: torch.Tensor,
+    protein_min_distance: torch.Tensor,
+    max_tokens: int,
+    max_protein_tokens: int,
+    neighborhood_size: int,
+) -> torch.Tensor:
+    """Select Boltz-style protein windows ordered by query PL distance."""
+    validate_affinity_system(token_mask=token_mask, chain_type=chain_type)
+    valid = torch.nonzero(token_mask, as_tuple=False).squeeze(-1)
+    ligand = valid[chain_type[valid] == C.ChainType.LIGAND.value]
+    protein = valid[chain_type[valid] == C.ChainType.PROTEIN.value]
+    if len(ligand) >= max_tokens:
+        raise ValueError("Ligand token count exhausts the affinity crop budget.")
+    if protein_min_distance.shape != (len(protein),):
+        raise ValueError("Distance profile must contain one value per protein token.")
+    if len(protein) < neighborhood_size:
+        raise ValueError("Affinity crop requires one complete protein neighborhood.")
+    if len(protein) > 1 and not torch.all(protein[1:] == protein[:-1] + 1):
+        raise ValueError(
+            "Affinity inference requires one contiguous monomer protein token block."
+        )
+
+    selected = {int(index) for index in ligand.tolist()}
+    selected_protein: set[int] = set()
+    for position in torch.argsort(protein_min_distance, stable=True).tolist():
+        left = max(0, int(position) - neighborhood_size // 2)
+        left = min(left, len(protein) - neighborhood_size)
+        window = {
+            int(index) for index in protein[left : left + neighborhood_size].tolist()
+        }
+        new_protein = window - selected_protein
+        if not new_protein:
+            continue
+        if (
+            len(selected) + len(new_protein) > max_tokens
+            or len(selected_protein) + len(new_protein) > max_protein_tokens
+        ):
+            break
+        selected.update(new_protein)
+        selected_protein.update(new_protein)
+    if not selected_protein:
+        raise ValueError("Affinity crop cannot retain any protein neighborhood.")
+    return torch.tensor(sorted(selected), dtype=torch.long, device=token_mask.device)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -188,7 +326,6 @@ def build_per_query_affinity_inputs(
         max_tokens=config.max_tokens,
         max_protein_tokens=config.max_protein_tokens,
         neighborhood_size=config.neighborhood_size,
-        require_contiguous_monomer=True,
     )
     pair = crop_indices[:, None], crop_indices[None, :]
     crop_token_mask = token_mask[crop_indices]
@@ -323,9 +460,13 @@ def attach_affinity_prediction(
     chain_type: torch.Tensor,
 ) -> None:
     """Consume returned trunk embeddings and attach one per-query prediction."""
+    validate_affinity_system(token_mask=token_mask, chain_type=chain_type)
     try:
         trunk = model_output.pop("trunk")
-        distogram_logits = model_output["distogram"]["distogram"]
+        distogram_output = model_output["distogram"]
+        distogram_logits = distogram_output.get("logits")
+        if distogram_logits is None:
+            distogram_logits = distogram_output["distogram"]
     except KeyError as exc:
         raise KeyError(
             "Affinity inference requires returned trunk and distogram outputs."

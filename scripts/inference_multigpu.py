@@ -133,12 +133,16 @@ def parse_args():
         help="Save distogram logits, bin edges, and token indices in NPZ format.",
     )
     parser.add_argument(
+        "--affinity",
         "--affinity-head-checkpoint",
+        dest="affinity_head_checkpoint",
         type=pathlib.Path,
+        metavar="HEAD_CHECKPOINT",
         help=(
-            "Optional trained affinity head. When supplied, predict p_activity "
-            "from the same trunk/distogram pass with the submitted CASP16 "
-            "per-query crop contract."
+            "Predict p_activity with this trained affinity head. "
+            "--affinity-head-checkpoint is retained as a compatibility alias. "
+            "The prediction reuses the same trunk/distogram pass with the "
+            "submitted CASP16 per-query crop contract."
         ),
     )
     parser.add_argument(

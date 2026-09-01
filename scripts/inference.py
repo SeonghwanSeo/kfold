@@ -17,6 +17,7 @@ from kfold.inference.affinity import (
     PerQueryAffinityPredictor,
     affinity_prediction_record,
     attach_affinity_prediction,
+    validate_affinity_system,
 )
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.query import Query, parse_input_files
@@ -133,12 +134,16 @@ def parse_args():
         help="Perform a dry run without model inference",
     )
     parser.add_argument(
+        "--affinity",
         "--affinity-head-checkpoint",
+        dest="affinity_head_checkpoint",
         type=pathlib.Path,
+        metavar="HEAD_CHECKPOINT",
         help=(
-            "Optional trained affinity head. When supplied, predict p_activity "
-            "from the same trunk/distogram pass with the submitted CASP16 "
-            "per-query crop contract."
+            "Predict p_activity with this trained affinity head. "
+            "--affinity-head-checkpoint is retained as a compatibility alias. "
+            "The prediction reuses the same trunk/distogram pass with the "
+            "submitted CASP16 per-query crop contract."
         ),
     )
     parser.add_argument("--affinity-crop-max-tokens", type=int, default=256)
@@ -197,6 +202,11 @@ def dry_run(args):
             continue  # skip invalid batch
         # Unpack input
         query, ref_struct, f_input, struct_token_records = input  # noqa
+        if args.affinity_head_checkpoint is not None:
+            validate_affinity_system(
+                token_mask=f_input.token.pad_mask,
+                chain_type=f_input.token.chain_type,
+            )
         pbar.set_postfix({"query": query.name, "num_tokens": ref_struct.num_tokens})
 
     et = time.time()
@@ -316,6 +326,11 @@ def main():
 
         # Move to device
         f_input = f_input.to("cuda")
+        if affinity_predictor is not None:
+            validate_affinity_system(
+                token_mask=f_input.token.pad_mask,
+                chain_type=f_input.token.chain_type,
+            )
 
         # Run model
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
