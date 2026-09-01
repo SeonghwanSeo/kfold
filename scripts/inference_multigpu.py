@@ -167,6 +167,14 @@ def parse_args():
             "CASP16 scorer. This changes the numerical inference contract."
         ),
     )
+    parser.add_argument(
+        "--allow-missing-backbone-keys",
+        action="store_true",
+        help=(
+            "Load a legacy backbone with strict=False. Use only for a known "
+            "checkpoint/config compatibility gap."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -235,7 +243,11 @@ def main():
     # === Model loading ===
     # Load model and setup inference client
     log_info(f"Loading model from checkpoint: {args.weight}")
-    model: KFold = KFold.from_checkpoint(args.config, args.weight)
+    model: KFold = KFold.from_checkpoint(
+        args.config,
+        args.weight,
+        strict=not args.allow_missing_backbone_keys,
+    )
     log_info("Model loaded successfully.")
 
     # === Run inference ===

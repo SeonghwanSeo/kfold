@@ -152,6 +152,14 @@ def parse_args():
             "CASP16 scorer. This changes the numerical inference contract."
         ),
     )
+    parser.add_argument(
+        "--allow-missing-backbone-keys",
+        action="store_true",
+        help=(
+            "Load a legacy backbone with strict=False. Use only for a known "
+            "checkpoint/config compatibility gap."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -256,7 +264,11 @@ def main():
 
     # Load model
     logger.info(f"Loading model from weight: {args.weight}")
-    model: KFold = KFold.from_checkpoint(args.config, args.weight)
+    model: KFold = KFold.from_checkpoint(
+        args.config,
+        args.weight,
+        strict=not args.allow_missing_backbone_keys,
+    )
     model = model.eval().cuda()
     logger.info("Model loaded successfully.")
     affinity_predictor = None

@@ -250,7 +250,8 @@ python scripts/inference_multigpu.py \
   --ccd path/to/ccd.pkl \
   --input queries \
   --out-dir results \
-  --num-recycles 3
+  --num-recycles 3 \
+  --allow-missing-backbone-keys
 ```
 
 The default `affinity_per_query_distogram_window_v1` contract matches the
@@ -260,6 +261,11 @@ ligand token, and adds same-chain 10-token protein windows until the
 256-total/200-protein budget would overflow. The head consumes only the
 cropped PL/LP/LL pair representation; predicted complex coordinates are not
 used.
+
+The archived v6/80k backbone predates the current constraint projection and is
+therefore loaded with `--allow-missing-backbone-keys`, matching its benchmark
+cache preparation. New checkpoints should omit this flag and retain strict
+loading.
 
 By default, trunk outputs are rounded through BF16 before the crop and head to
 match the submitted benchmark cache boundary. `--affinity-full-precision-inputs`
