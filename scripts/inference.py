@@ -13,10 +13,12 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.inference.affinity import (
+    AUTO_AFFINITY_HEAD_CHECKPOINT,
     PerQueryAffinityConfig,
     PerQueryAffinityPredictor,
     affinity_prediction_record,
     attach_affinity_prediction,
+    resolve_affinity_head_checkpoint,
     validate_affinity_system,
 )
 from kfold.inference.dataset import InferenceDataset
@@ -138,9 +140,12 @@ def parse_args():
         "--affinity-head-checkpoint",
         dest="affinity_head_checkpoint",
         type=pathlib.Path,
+        nargs="?",
+        const=pathlib.Path(AUTO_AFFINITY_HEAD_CHECKPOINT),
         metavar="HEAD_CHECKPOINT",
         help=(
-            "Predict p_activity with this trained affinity head. "
+            "Predict p_activity. With no HEAD_CHECKPOINT, load "
+            "affinity-cliff-raw1k.ckpt from the backbone directory or weights/. "
             "--affinity-head-checkpoint is retained as a compatibility alias. "
             "The prediction reuses the same trunk/distogram pass with the "
             "submitted CASP16 per-query crop contract."
@@ -223,6 +228,10 @@ def main():
         return
     if args.weight is None:
         raise ValueError("--weight is required unless --dry-run is used.")
+    args.affinity_head_checkpoint = resolve_affinity_head_checkpoint(
+        args.affinity_head_checkpoint,
+        backbone_checkpoint=args.weight,
+    )
 
     # Setup environment
     torch.backends.cudnn.benchmark = False

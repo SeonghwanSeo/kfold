@@ -7,9 +7,12 @@ import torch
 
 import kfold.constants as C
 from kfold.inference.affinity import (
+    AUTO_AFFINITY_HEAD_CHECKPOINT,
+    DEFAULT_AFFINITY_HEAD_FILENAME,
     PerQueryAffinityConfig,
     PerQueryAffinityPredictor,
     build_per_query_affinity_inputs,
+    resolve_affinity_head_checkpoint,
     validate_affinity_system,
 )
 from kfold.inference.pl_client import InferenceConfig, KFoldInferenceClient
@@ -124,6 +127,58 @@ def test_affinity_rejects_non_pl_systems(
         validate_affinity_system(
             token_mask=torch.ones(len(chain_types), dtype=torch.bool),
             chain_type=torch.tensor(chain_types),
+        )
+
+
+def test_affinity_checkpoint_auto_resolution_prefers_backbone_sibling(
+    tmp_path,
+) -> None:
+    backbone_dir = tmp_path / "release"
+    backbone_dir.mkdir()
+    backbone = backbone_dir / "kfold-92k.pth"
+    backbone.touch()
+    sibling = backbone_dir / DEFAULT_AFFINITY_HEAD_FILENAME
+    sibling.touch()
+    repository_head = tmp_path / "weights" / DEFAULT_AFFINITY_HEAD_FILENAME
+    repository_head.parent.mkdir()
+    repository_head.touch()
+
+    resolved = resolve_affinity_head_checkpoint(
+        AUTO_AFFINITY_HEAD_CHECKPOINT,
+        backbone_checkpoint=backbone,
+        repository_root=tmp_path,
+    )
+
+    assert resolved == sibling.resolve()
+
+
+def test_affinity_checkpoint_auto_resolution_uses_repository_weights(tmp_path) -> None:
+    backbone = tmp_path / "release" / "kfold-92k.pth"
+    backbone.parent.mkdir()
+    backbone.touch()
+    repository_head = tmp_path / "weights" / DEFAULT_AFFINITY_HEAD_FILENAME
+    repository_head.parent.mkdir()
+    repository_head.touch()
+
+    resolved = resolve_affinity_head_checkpoint(
+        AUTO_AFFINITY_HEAD_CHECKPOINT,
+        backbone_checkpoint=backbone,
+        repository_root=tmp_path,
+    )
+
+    assert resolved == repository_head.resolve()
+
+
+def test_affinity_checkpoint_auto_resolution_reports_missing_paths(tmp_path) -> None:
+    backbone = tmp_path / "release" / "kfold-92k.pth"
+    backbone.parent.mkdir()
+    backbone.touch()
+
+    with pytest.raises(FileNotFoundError, match=DEFAULT_AFFINITY_HEAD_FILENAME):
+        resolve_affinity_head_checkpoint(
+            AUTO_AFFINITY_HEAD_CHECKPOINT,
+            backbone_checkpoint=backbone,
+            repository_root=tmp_path,
         )
 
 

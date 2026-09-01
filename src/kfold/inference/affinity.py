@@ -13,6 +13,8 @@ import kfold.constants as C
 from kfold.model.modules.affinity_pairformer import AffinityPairformer
 
 AFFINITY_QUERY_WINDOW_CONTRACT_V1 = "affinity_per_query_distogram_window_v1"
+AUTO_AFFINITY_HEAD_CHECKPOINT = "__auto_affinity_head_checkpoint__"
+DEFAULT_AFFINITY_HEAD_FILENAME = "affinity-cliff-raw1k.ckpt"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -209,6 +211,47 @@ def sha256_file(path: str | Path) -> str:
         for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def resolve_affinity_head_checkpoint(
+    requested: str | Path | None,
+    *,
+    backbone_checkpoint: str | Path,
+    repository_root: str | Path | None = None,
+) -> Path | None:
+    """Resolve an explicit head or the canonical head selected by ``--affinity``."""
+    if requested is None:
+        return None
+
+    requested_path = Path(requested)
+    if str(requested_path) != AUTO_AFFINITY_HEAD_CHECKPOINT:
+        if not requested_path.is_file():
+            raise FileNotFoundError(
+                f"Affinity head checkpoint does not exist: {requested_path}"
+            )
+        return requested_path.resolve()
+
+    backbone_path = Path(backbone_checkpoint).expanduser().resolve()
+    root = (
+        Path(repository_root).expanduser().resolve()
+        if repository_root is not None
+        else Path(__file__).resolve().parents[3]
+    )
+    candidates = (
+        backbone_path.parent / DEFAULT_AFFINITY_HEAD_FILENAME,
+        root / "weights" / DEFAULT_AFFINITY_HEAD_FILENAME,
+    )
+    for candidate in dict.fromkeys(candidates):
+        if candidate.is_file():
+            return candidate.resolve()
+
+    searched = "\n  - ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(
+        "--affinity was enabled without an explicit checkpoint, but the canonical "
+        f"{DEFAULT_AFFINITY_HEAD_FILENAME} was not found. Searched:\n  - {searched}\n"
+        "Install the head next to the backbone or under weights/, or pass "
+        "--affinity /absolute/path/to/head.ckpt."
+    )
 
 
 def load_affinity_head(

@@ -8,8 +8,10 @@ from lightning.pytorch.utilities import rank_zero_only
 
 from kfold.data.types.ccd import CCD
 from kfold.inference.affinity import (
+    AUTO_AFFINITY_HEAD_CHECKPOINT,
     PerQueryAffinityConfig,
     PerQueryAffinityPredictor,
+    resolve_affinity_head_checkpoint,
 )
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.pl_client import (
@@ -137,9 +139,12 @@ def parse_args():
         "--affinity-head-checkpoint",
         dest="affinity_head_checkpoint",
         type=pathlib.Path,
+        nargs="?",
+        const=pathlib.Path(AUTO_AFFINITY_HEAD_CHECKPOINT),
         metavar="HEAD_CHECKPOINT",
         help=(
-            "Predict p_activity with this trained affinity head. "
+            "Predict p_activity. With no HEAD_CHECKPOINT, load "
+            "affinity-cliff-raw1k.ckpt from the backbone directory or weights/. "
             "--affinity-head-checkpoint is retained as a compatibility alias. "
             "The prediction reuses the same trunk/distogram pass with the "
             "submitted CASP16 per-query crop contract."
@@ -188,6 +193,10 @@ def main():
     torch.set_float32_matmul_precision("high")
 
     args = parse_args()
+    args.affinity_head_checkpoint = resolve_affinity_head_checkpoint(
+        args.affinity_head_checkpoint,
+        backbone_checkpoint=args.weight,
+    )
     # Check output directory
     log_info(f"Output directory: {args.out_dir}")
     if (not args.overwrite) and args.out_dir.exists():

@@ -241,18 +241,23 @@ index.
 
 Single- and multi-GPU inference can reuse the same frozen trunk and full-query
 distogram for a trained affinity head. No feature cache or second trunk pass is
-needed. `--affinity` takes the matching affinity-head checkpoint:
+needed. A bare `--affinity` loads `affinity-cliff-raw1k.ckpt` from the backbone
+checkpoint directory, then from the repository `weights/` directory:
 
 ```bash
 python scripts/inference.py \
   --config path/to/backbone-config.yaml \
   --weight checkpoints/stage2-backbone.pth \
-  --affinity checkpoints/affinity-head.ckpt \
+  --affinity \
   --ccd path/to/ccd.pkl \
   --input queries \
   --out-dir results \
   --num-recycles 3
 ```
+
+An explicit checkpoint remains supported for ablations or nonstandard release
+layouts: `--affinity /absolute/path/to/affinity-head.ckpt`. The legacy
+`--affinity-head-checkpoint` spelling is retained as an alias.
 
 The default `affinity_per_query_distogram_window_v1` contract matches the
 cache-backed CASP16 scorer. For each query, it computes the protein-to-ligand
