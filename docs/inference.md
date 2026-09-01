@@ -241,7 +241,7 @@ index.
 
 Single- and multi-GPU inference can reuse the same frozen trunk and full-query
 distogram for a trained affinity head. No feature cache or second trunk pass is
-needed. A bare `--affinity` loads `affinity-cliff-raw1k.ckpt` from the backbone
+needed. A bare `--affinity` loads `affinity-cliff-raw1k.pth` from the backbone
 checkpoint directory, then from the repository `weights/` directory:
 
 ```bash
@@ -259,6 +259,15 @@ An explicit checkpoint remains supported for ablations or nonstandard release
 layouts: `--affinity /absolute/path/to/affinity-head.ckpt`. The legacy
 `--affinity-head-checkpoint` spelling is retained as an alias.
 
+The release `.pth` is a direct inference state dict, matching the structure
+checkpoint convention. Convert the original Lightning training checkpoint once:
+
+```bash
+python scripts/export_affinity_checkpoint.py \
+  checkpoints/milestone-step=00001000.ckpt \
+  weights/affinity-cliff-raw1k.pth
+```
+
 The default `affinity_per_query_distogram_window_v1` contract matches the
 cache-backed CASP16 scorer. For each query, it computes the protein-to-ligand
 minimum expected-distance profile from the full distogram, retains every
@@ -269,8 +278,27 @@ used.
 
 Affinity inference accepts protein--ligand systems only. It validates the
 unpadded chain types before the trunk pass and rejects protein-only,
-ligand-only, DNA/RNA-containing, and other non-PL queries. The legacy
-`--affinity-head-checkpoint` spelling remains an alias for `--affinity`.
+ligand-only, DNA/RNA-containing, and other non-PL queries. If an input contains
+multiple ligand chains, select the ligand of interest in that input:
+
+```yaml
+affinity_ligand_id: D
+sequences:
+  - protein:
+      id: A
+      # ...
+  - ligand:
+      id: D
+      # ... scored ligand
+  - ligand:
+      id: E
+      ccd: SO4  # spectator, excluded from the affinity crop/head
+```
+
+`--affinity-ligand-id D` can override the input field. The selected ligand alone
+defines the protein expected-distance profile, is retained in the crop, and
+contributes PL/LP/LL pairs to the affinity head. Structure prediction still sees
+the complete system. With exactly one ligand chain, selection is automatic.
 
 The archived v6/80k backbone predates the current constraint projection and is
 therefore loaded with `--allow-missing-backbone-keys`, matching its benchmark

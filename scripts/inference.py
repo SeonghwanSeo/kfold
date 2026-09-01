@@ -19,6 +19,7 @@ from kfold.inference.affinity import (
     affinity_prediction_record,
     attach_affinity_prediction,
     resolve_affinity_head_checkpoint,
+    resolve_affinity_ligand_asym_id,
     validate_affinity_system,
 )
 from kfold.inference.dataset import InferenceDataset
@@ -145,7 +146,7 @@ def parse_args():
         metavar="HEAD_CHECKPOINT",
         help=(
             "Predict p_activity. With no HEAD_CHECKPOINT, load "
-            "affinity-cliff-raw1k.ckpt from the backbone directory or weights/. "
+            "affinity-cliff-raw1k.pth from the backbone directory or weights/. "
             "--affinity-head-checkpoint is retained as a compatibility alias. "
             "The prediction reuses the same trunk/distogram pass with the "
             "submitted CASP16 per-query crop contract."
@@ -154,6 +155,13 @@ def parse_args():
     parser.add_argument("--affinity-crop-max-tokens", type=int, default=256)
     parser.add_argument("--affinity-crop-max-protein-tokens", type=int, default=200)
     parser.add_argument("--affinity-pocket-neighborhood-size", type=int, default=10)
+    parser.add_argument(
+        "--affinity-ligand-id",
+        help=(
+            "Ligand chain ID to score. Overrides affinity_ligand_id in the input; "
+            "required when an input contains multiple ligand chains."
+        ),
+    )
     parser.add_argument(
         "--affinity-full-precision-inputs",
         action="store_true",
@@ -208,9 +216,15 @@ def dry_run(args):
         # Unpack input
         query, ref_struct, f_input, struct_token_records = input  # noqa
         if args.affinity_head_checkpoint is not None:
+            ligand_asym_id = resolve_affinity_ligand_asym_id(
+                ref_struct,
+                args.affinity_ligand_id or query.affinity_ligand_id,
+            )
             validate_affinity_system(
                 token_mask=f_input.token.pad_mask,
                 chain_type=f_input.token.chain_type,
+                asym_id=f_input.token.asym_id,
+                ligand_asym_id=ligand_asym_id,
             )
         pbar.set_postfix({"query": query.name, "num_tokens": ref_struct.num_tokens})
 
@@ -336,9 +350,15 @@ def main():
         # Move to device
         f_input = f_input.to("cuda")
         if affinity_predictor is not None:
+            ligand_asym_id = resolve_affinity_ligand_asym_id(
+                ref_struct,
+                args.affinity_ligand_id or query.affinity_ligand_id,
+            )
             validate_affinity_system(
                 token_mask=f_input.token.pad_mask,
                 chain_type=f_input.token.chain_type,
+                asym_id=f_input.token.asym_id,
+                ligand_asym_id=ligand_asym_id,
             )
 
         # Run model
@@ -361,6 +381,8 @@ def main():
                     predictor=affinity_predictor,
                     token_mask=f_input.token.pad_mask,
                     chain_type=f_input.token.chain_type,
+                    asym_id=f_input.token.asym_id,
+                    ligand_asym_id=ligand_asym_id,
                 )
 
         # NOTE: model_out contains:

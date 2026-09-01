@@ -11,8 +11,10 @@ from kfold.inference.affinity import (
     DEFAULT_AFFINITY_HEAD_FILENAME,
     PerQueryAffinityConfig,
     PerQueryAffinityPredictor,
+    affinity_head_state_dict,
     build_per_query_affinity_inputs,
     resolve_affinity_head_checkpoint,
+    resolve_affinity_ligand_asym_id,
     validate_affinity_system,
 )
 from kfold.inference.pl_client import InferenceConfig, KFoldInferenceClient
@@ -200,6 +202,80 @@ def test_online_query_window_rejects_noncontiguous_protein_tokens() -> None:
         )
 
 
+def test_affinity_crop_uses_only_ligand_of_interest_distogram() -> None:
+    protein_tokens = 20
+    selected_ligand = torch.arange(20, 23)
+    spectator_ligand = torch.arange(23, 26)
+    length = 26
+    token_mask = torch.ones(length, dtype=torch.bool)
+    chain_type = torch.full((length,), C.ChainType.PROTEIN.value, dtype=torch.long)
+    chain_type[protein_tokens:] = C.ChainType.LIGAND.value
+    asym_id = torch.ones(length, dtype=torch.long)
+    asym_id[selected_ligand] = 2
+    asym_id[spectator_ligand] = 3
+    logits = torch.full((length, length, 64), -20.0)
+    logits[..., -1] = 20.0
+    for protein_index in range(4):
+        logits[protein_index, selected_ligand, 0] = 40.0
+        logits[selected_ligand, protein_index, 0] = 40.0
+    for protein_index in range(14, 18):
+        logits[protein_index, spectator_ligand, 0] = 40.0
+        logits[spectator_ligand, protein_index, 0] = 40.0
+    generator = torch.Generator().manual_seed(23)
+
+    inputs = build_per_query_affinity_inputs(
+        s_inputs=torch.randn(length, 384, generator=generator),
+        s_lm=torch.randn(length, 384, generator=generator),
+        z=torch.randn(length, length, 256, generator=generator),
+        distogram_logits=logits,
+        token_mask=token_mask,
+        chain_type=chain_type,
+        asym_id=asym_id,
+        ligand_asym_id=2,
+        config=PerQueryAffinityConfig(
+            max_tokens=7,
+            max_protein_tokens=4,
+            neighborhood_size=4,
+        ),
+    )
+
+    assert set(inputs.crop_indices.tolist()) == {0, 1, 2, 3, 20, 21, 22}
+    assert not set(inputs.crop_indices.tolist()).intersection(spectator_ligand.tolist())
+    assert inputs.ligand_mask.sum().item() == 3
+
+
+def test_resolve_affinity_ligand_requires_selection_for_multiple_ligands() -> None:
+    ref_struct = SimpleNamespace(
+        metadata=SimpleNamespace(
+            chains=[
+                SimpleNamespace(name="A", ctype=C.ChainType.PROTEIN, asym_id=1),
+                SimpleNamespace(name="D", ctype=C.ChainType.LIGAND, asym_id=2),
+                SimpleNamespace(name="E", ctype=C.ChainType.LIGAND, asym_id=3),
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="exactly one ligand chain"):
+        resolve_affinity_ligand_asym_id(ref_struct, None)  # type: ignore[arg-type]
+    assert (
+        resolve_affinity_ligand_asym_id(  # type: ignore[arg-type]
+            ref_struct, "D"
+        )
+        == 2
+    )
+
+
+def test_affinity_state_dict_matches_structure_style() -> None:
+    tensor = torch.arange(3)
+    lightning = {"state_dict": {"model._orig_mod.readout.weight": tensor}}
+    direct = {"readout.weight": tensor}
+
+    for checkpoint in (lightning, direct):
+        extracted = affinity_head_state_dict(checkpoint)
+        assert set(extracted) == {"readout.weight"}
+        assert torch.equal(extracted["readout.weight"], tensor)
+
+
 def test_inference_client_reuses_trunk_for_affinity() -> None:
     generator = torch.Generator().manual_seed(11)
     protein_tokens = 20
@@ -246,7 +322,16 @@ def test_inference_client_reuses_trunk_for_affinity() -> None:
         affinity_predictor=predictor,
     ).eval()
     f_input = SimpleNamespace(
-        token=SimpleNamespace(pad_mask=token_mask, chain_type=chain_type)
+        token=SimpleNamespace(
+            pad_mask=token_mask,
+            chain_type=chain_type,
+            asym_id=torch.cat(
+                (
+                    torch.ones(protein_tokens, dtype=torch.long),
+                    torch.full((ligand_tokens,), 2, dtype=torch.long),
+                )
+            ),
+        )
     )
 
     output = client.forward(f_input, [])  # type: ignore[arg-type]

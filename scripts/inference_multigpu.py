@@ -144,7 +144,7 @@ def parse_args():
         metavar="HEAD_CHECKPOINT",
         help=(
             "Predict p_activity. With no HEAD_CHECKPOINT, load "
-            "affinity-cliff-raw1k.ckpt from the backbone directory or weights/. "
+            "affinity-cliff-raw1k.pth from the backbone directory or weights/. "
             "--affinity-head-checkpoint is retained as a compatibility alias. "
             "The prediction reuses the same trunk/distogram pass with the "
             "submitted CASP16 per-query crop contract."
@@ -167,6 +167,13 @@ def parse_args():
         type=int,
         default=10,
         help="Same-chain protein window size for per-query affinity cropping.",
+    )
+    parser.add_argument(
+        "--affinity-ligand-id",
+        help=(
+            "Ligand chain ID to score. Overrides affinity_ligand_id in the input; "
+            "required when an input contains multiple ligand chains."
+        ),
     )
     parser.add_argument(
         "--affinity-full-precision-inputs",
@@ -290,6 +297,7 @@ def main():
         model,
         inference_config,
         affinity_predictor=affinity_predictor,
+        affinity_ligand_id=args.affinity_ligand_id,
     )
 
     st = time.time()

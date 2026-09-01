@@ -475,6 +475,7 @@ class Query:
         default_factory=list
     )
     bonds: list[Bond] = dataclasses.field(default_factory=list)
+    affinity_ligand_id: str | None = None
     seed: int = 0  # Default seed, overridden to command line argument
     yaml: str  # Original YAML content
 
@@ -674,12 +675,18 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
         )
     bonds = _parse_bonds(input_dict.get("bonds", []))
     _validate_bond_references(bonds, sequences, multimer_sequences)
+    affinity_ligand_id = input_dict.get("affinity_ligand_id")
+    if affinity_ligand_id is not None and (
+        not isinstance(affinity_ligand_id, str) or not affinity_ligand_id
+    ):
+        raise ValueError("'affinity_ligand_id' must be a non-empty chain ID string.")
 
     return Query(
         name=name,
         sequences=sequences,
         multimer_sequences=multimer_sequences,
         bonds=bonds,
+        affinity_ligand_id=affinity_ligand_id,
         yaml=yaml.safe_dump(input_dict),
     )
 

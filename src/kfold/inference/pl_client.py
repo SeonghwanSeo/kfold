@@ -20,6 +20,7 @@ from .affinity import (
     PerQueryAffinityPredictor,
     affinity_prediction_record,
     attach_affinity_prediction,
+    resolve_affinity_ligand_asym_id,
     validate_affinity_system,
 )
 from .dataset import InferenceInput
@@ -55,6 +56,7 @@ class KFoldInferenceClient(pl.LightningModule):
         model: KFold,
         inference_config: InferenceConfig,
         affinity_predictor: PerQueryAffinityPredictor | None = None,
+        affinity_ligand_id: str | None = None,
     ):
         super().__init__()
         self.model: KFold = model
@@ -63,6 +65,7 @@ class KFoldInferenceClient(pl.LightningModule):
         self.num_diffusion_steps: int = inference_config.num_steps
         self.num_samples: int = inference_config.num_samples
         self.affinity_predictor = affinity_predictor
+        self.affinity_ligand_id = affinity_ligand_id
 
         # Logger
         self._logger = logging.getLogger("KFoldInferenceClient")
@@ -70,12 +73,17 @@ class KFoldInferenceClient(pl.LightningModule):
 
     # === Main forward method === #
     def forward(
-        self, f_input: FoldingInput, struct_token_records: list[list[dict]]
+        self,
+        f_input: FoldingInput,
+        struct_token_records: list[list[dict]],
+        ligand_asym_id: int | None = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         if self.affinity_predictor is not None:
             validate_affinity_system(
                 token_mask=f_input.token.pad_mask,
                 chain_type=f_input.token.chain_type,
+                asym_id=f_input.token.asym_id,
+                ligand_asym_id=ligand_asym_id,
             )
         if hasattr(self.model, "prot_struct_encoder"):
             apply_apo_structure_tokens(
@@ -94,6 +102,8 @@ class KFoldInferenceClient(pl.LightningModule):
                 predictor=self.affinity_predictor,
                 token_mask=f_input.token.pad_mask,
                 chain_type=f_input.token.chain_type,
+                asym_id=f_input.token.asym_id,
+                ligand_asym_id=ligand_asym_id,
             )
         return dict_out
 
@@ -127,10 +137,20 @@ class KFoldInferenceClient(pl.LightningModule):
         # HACK: Set random seed for reproducibility
         # FIXME: pass random generator to model sampling function instead
         pl.seed_everything(query.seed, verbose=False)
+        ligand_asym_id = None
+        if self.affinity_predictor is not None:
+            ligand_asym_id = resolve_affinity_ligand_asym_id(
+                ref_struct,
+                self.affinity_ligand_id or query.affinity_ligand_id,
+            )
 
         # === Run model inference === #
         try:
-            model_out = self(f_input, struct_token_records)
+            model_out = self(
+                f_input,
+                struct_token_records,
+                ligand_asym_id=ligand_asym_id,
+            )
         except Exception as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
                 name = query.name
