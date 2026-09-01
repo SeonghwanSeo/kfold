@@ -174,9 +174,7 @@ class TriangleMultiplicationOutgoing(nn.Module):
 
         """
         if self.backend is KernelBackend.TRITON:
-            return triton_triangluar_mult(
-                self, x, mask, direction="outgoing"
-            )
+            return triton_triangluar_mult(self, x, mask, direction="outgoing")
         if self.backend is KernelBackend.CUEQUIVARIANCE:
             return cueq_triangluar_mult(
                 x,
@@ -260,9 +258,7 @@ class TriangleMultiplicationIncoming(nn.Module):
 
         """
         if self.backend is KernelBackend.TRITON:
-            return triton_triangluar_mult(
-                self, x, mask, direction="incoming"
-            )
+            return triton_triangluar_mult(self, x, mask, direction="incoming")
         if self.backend is KernelBackend.CUEQUIVARIANCE:
             return cueq_triangluar_mult(
                 x,

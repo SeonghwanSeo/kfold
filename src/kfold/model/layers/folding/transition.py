@@ -38,7 +38,12 @@ _compiled_transition_forward = torch.compile(
 
 def use_compiled_transition(module: nn.Module, x: Tensor) -> bool:
     """Use the measured max-autotune path only for standalone CUDA inference."""
-    return x.is_cuda and not module.training and not torch.compiler.is_compiling()
+    return (
+        x.is_cuda
+        and not module.training
+        and not torch.is_grad_enabled()
+        and not torch.compiler.is_compiling()
+    )
 
 
 class Transition(nn.Module):
