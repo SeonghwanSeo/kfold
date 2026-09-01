@@ -7,6 +7,10 @@ from lightning import pytorch as pl
 from lightning.pytorch.utilities import rank_zero_only
 
 from kfold.data.types.ccd import CCD
+from kfold.inference.affinity import (
+    PerQueryAffinityConfig,
+    PerQueryAffinityPredictor,
+)
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.pl_client import (
     InferenceConfig,
@@ -128,6 +132,41 @@ def parse_args():
         action="store_true",
         help="Save distogram logits, bin edges, and token indices in NPZ format.",
     )
+    parser.add_argument(
+        "--affinity-head-checkpoint",
+        type=pathlib.Path,
+        help=(
+            "Optional trained affinity head. When supplied, predict p_activity "
+            "from the same trunk/distogram pass with the submitted CASP16 "
+            "per-query crop contract."
+        ),
+    )
+    parser.add_argument(
+        "--affinity-crop-max-tokens",
+        type=int,
+        default=256,
+        help="Maximum ligand-preserving affinity crop size.",
+    )
+    parser.add_argument(
+        "--affinity-crop-max-protein-tokens",
+        type=int,
+        default=200,
+        help="Maximum number of protein tokens in the affinity crop.",
+    )
+    parser.add_argument(
+        "--affinity-pocket-neighborhood-size",
+        type=int,
+        default=10,
+        help="Same-chain protein window size for per-query affinity cropping.",
+    )
+    parser.add_argument(
+        "--affinity-full-precision-inputs",
+        action="store_true",
+        help=(
+            "Do not emulate the BF16 cache boundary used by the submitted "
+            "CASP16 scorer. This changes the numerical inference contract."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -206,7 +245,27 @@ def main():
         num_steps=args.num_steps,
         num_samples=args.num_samples,
     )
-    inference_client = KFoldInferenceClient(model, inference_config)
+    affinity_predictor = None
+    if args.affinity_head_checkpoint is not None:
+        affinity_config = PerQueryAffinityConfig(
+            max_tokens=args.affinity_crop_max_tokens,
+            max_protein_tokens=args.affinity_crop_max_protein_tokens,
+            neighborhood_size=args.affinity_pocket_neighborhood_size,
+            cache_compatible_bfloat16=not args.affinity_full_precision_inputs,
+        )
+        affinity_predictor = PerQueryAffinityPredictor.from_checkpoint(
+            args.affinity_head_checkpoint,
+            config=affinity_config,
+        )
+        log_info(
+            "Affinity head loaded successfully "
+            f"(sha256={affinity_predictor.checkpoint_sha256})."
+        )
+    inference_client = KFoldInferenceClient(
+        model,
+        inference_config,
+        affinity_predictor=affinity_predictor,
+    )
 
     st = time.time()
     trainer.predict(inference_client, dataloader)

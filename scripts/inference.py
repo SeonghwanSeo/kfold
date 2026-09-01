@@ -12,6 +12,12 @@ from kfold.data.types.ccd import CCD
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
+from kfold.inference.affinity import (
+    PerQueryAffinityConfig,
+    PerQueryAffinityPredictor,
+    affinity_prediction_record,
+    attach_affinity_prediction,
+)
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.query import Query, parse_input_files
 from kfold.inference.structure_tokenization import apply_apo_structure_tokens
@@ -126,6 +132,26 @@ def parse_args():
         action="store_true",
         help="Perform a dry run without model inference",
     )
+    parser.add_argument(
+        "--affinity-head-checkpoint",
+        type=pathlib.Path,
+        help=(
+            "Optional trained affinity head. When supplied, predict p_activity "
+            "from the same trunk/distogram pass with the submitted CASP16 "
+            "per-query crop contract."
+        ),
+    )
+    parser.add_argument("--affinity-crop-max-tokens", type=int, default=256)
+    parser.add_argument("--affinity-crop-max-protein-tokens", type=int, default=200)
+    parser.add_argument("--affinity-pocket-neighborhood-size", type=int, default=10)
+    parser.add_argument(
+        "--affinity-full-precision-inputs",
+        action="store_true",
+        help=(
+            "Do not emulate the BF16 cache boundary used by the submitted "
+            "CASP16 scorer. This changes the numerical inference contract."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -233,6 +259,22 @@ def main():
     model: KFold = KFold.from_checkpoint(args.config, args.weight)
     model = model.eval().cuda()
     logger.info("Model loaded successfully.")
+    affinity_predictor = None
+    if args.affinity_head_checkpoint is not None:
+        affinity_predictor = PerQueryAffinityPredictor.from_checkpoint(
+            args.affinity_head_checkpoint,
+            device="cuda",
+            config=PerQueryAffinityConfig(
+                max_tokens=args.affinity_crop_max_tokens,
+                max_protein_tokens=args.affinity_crop_max_protein_tokens,
+                neighborhood_size=args.affinity_pocket_neighborhood_size,
+                cache_compatible_bfloat16=not args.affinity_full_precision_inputs,
+            ),
+        ).eval()
+        logger.info(
+            "Affinity head loaded successfully (sha256=%s).",
+            affinity_predictor.checkpoint_sha256,
+        )
 
     # mmCIF writer
     writer = KFoldWriter()
@@ -274,8 +316,16 @@ def main():
                 num_recycles=args.num_recycles,
                 num_steps=args.num_steps,
                 num_samples=args.num_samples,
+                return_embeddings=affinity_predictor is not None,
                 return_traj=args.save_trajectory,
             )
+            if affinity_predictor is not None:
+                attach_affinity_prediction(
+                    model_out,
+                    predictor=affinity_predictor,
+                    token_mask=f_input.token.pad_mask,
+                    chain_type=f_input.token.chain_type,
+                )
 
         # NOTE: model_out contains:
         #   - s_inputs: input features [Ntoken, C_s]
@@ -297,6 +347,15 @@ def main():
                 f_input, ref_struct, model_out
             )
         )
+        if affinity_predictor is not None:
+            affinity_path = save_dir / f"{name}_seed-{seed}_affinity.json"
+            affinity_path.write_text(
+                json.dumps(
+                    affinity_prediction_record(model_out["affinity"], affinity_predictor),
+                    indent=2,
+                )
+                + "\n"
+            )
 
         # The distogram is shared by all diffusion samples for this query.
         if args.save_distogram:

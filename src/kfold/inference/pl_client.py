@@ -16,6 +16,11 @@ from kfold.data.utils.writer import KFoldWriter
 from kfold.model import KFold
 from kfold.utils import confidence_metrics
 
+from .affinity import (
+    PerQueryAffinityPredictor,
+    affinity_prediction_record,
+    attach_affinity_prediction,
+)
 from .dataset import InferenceInput
 from .query import Query
 from .structure_tokenization import apply_apo_structure_tokens
@@ -48,6 +53,7 @@ class KFoldInferenceClient(pl.LightningModule):
         self,
         model: KFold,
         inference_config: InferenceConfig,
+        affinity_predictor: PerQueryAffinityPredictor | None = None,
     ):
         super().__init__()
         self.model: KFold = model
@@ -55,6 +61,7 @@ class KFoldInferenceClient(pl.LightningModule):
         self.num_trunk_recycles: int = inference_config.num_recycles
         self.num_diffusion_steps: int = inference_config.num_steps
         self.num_samples: int = inference_config.num_samples
+        self.affinity_predictor = affinity_predictor
 
         # Logger
         self._logger = logging.getLogger("KFoldInferenceClient")
@@ -73,7 +80,15 @@ class KFoldInferenceClient(pl.LightningModule):
             num_recycles=self.num_trunk_recycles,
             num_steps=self.num_diffusion_steps,
             num_samples=self.num_samples,
+            return_embeddings=self.affinity_predictor is not None,
         )
+        if self.affinity_predictor is not None:
+            attach_affinity_prediction(
+                dict_out,
+                predictor=self.affinity_predictor,
+                token_mask=f_input.token.pad_mask,
+                chain_type=f_input.token.chain_type,
+            )
         return dict_out
 
     def predict_step(
@@ -218,6 +233,18 @@ class KFoldPredictionWriter(BasePredictionWriter):
                 asym_ids=asym_ids.int().cpu().numpy(),
                 res_ids=res_ids.int().cpu().numpy(),
             )
+
+        if "affinity" in model_out:
+            affinity = model_out["affinity"]
+            predictor = pl_module.affinity_predictor
+            assert predictor is not None
+            affinity_path = save_dir / f"{name}_seed-{seed}_affinity.json"
+            with affinity_path.open("w") as handle:
+                json.dump(
+                    affinity_prediction_record(affinity, predictor),
+                    handle,
+                    indent=2,
+                )
 
         # Save Diffusion Samples
         for i in range(sample_coords.shape[0]):

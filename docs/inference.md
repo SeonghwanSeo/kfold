@@ -236,3 +236,34 @@ outputs for that query and seed. Its `logits` array has shape
 distance boundaries in angstroms. The `asym_ids` and `res_ids` arrays identify
 each distogram-axis token using its 1-based KFold asymmetric-unit ID and residue
 index.
+
+## On-the-fly affinity prediction
+
+Multi-GPU inference can reuse the same frozen trunk and full-query distogram
+for a trained affinity head. No feature cache or second trunk pass is needed:
+
+```bash
+python scripts/inference_multigpu.py \
+  --config configs/affinity-stage2-backbone.yaml \
+  --weight checkpoints/stage2-backbone.pth \
+  --affinity-head-checkpoint checkpoints/affinity-head.ckpt \
+  --ccd path/to/ccd.pkl \
+  --input queries \
+  --out-dir results \
+  --num-recycles 3
+```
+
+The default `affinity_per_query_distogram_window_v1` contract matches the
+cache-backed CASP16 scorer. For each query, it computes the protein-to-ligand
+minimum expected-distance profile from the full distogram, retains every
+ligand token, and adds same-chain 10-token protein windows until the
+256-total/200-protein budget would overflow. The head consumes only the
+cropped PL/LP/LL pair representation; predicted complex coordinates are not
+used.
+
+By default, trunk outputs are rounded through BF16 before the crop and head to
+match the submitted benchmark cache boundary. `--affinity-full-precision-inputs`
+disables that compatibility mode and therefore defines a different numerical
+inference contract. Each query/seed directory receives one
+`*_affinity.json` containing `prediction_p_activity`, crop indices and limits,
+the affinity checkpoint SHA-256, and the crop contract identifier.
