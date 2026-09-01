@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from huggingface_hub import hf_hub_download
@@ -22,6 +23,9 @@ class RNASequenceEncoder(torch.nn.Module):
 
         Attributes
         ----------
+        model_path: str | None
+            Path to a local RNA encoder checkpoint. If unset, download from Hugging
+            Face.
         cache_dir: str | None
             Directory used to cache weights downloaded from Hugging Face.
         vocab_size: int
@@ -36,6 +40,7 @@ class RNASequenceEncoder(torch.nn.Module):
             Whether to use Mixture of Experts (MoE) FFN layers instead of dense FFN.
         """
 
+        model_path: str | None = None
         cache_dir: str | None = None
         vocab_size: int = 64
         d_model: int = 960
@@ -54,9 +59,12 @@ class RNASequenceEncoder(torch.nn.Module):
                 cfg.d_model, cfg.n_heads, cfg.n_layers, use_moe=cfg.use_moe
             )
 
-        path = hf_hub_download(
-            repo_id=HF_REPO_ID, filename=HF_FILENAME, cache_dir=cfg.cache_dir
-        )
+        if cfg.model_path is None:
+            path = hf_hub_download(
+                repo_id=HF_REPO_ID, filename=HF_FILENAME, cache_dir=cfg.cache_dir
+            )
+        else:
+            path = Path(cfg.model_path)
         state_dict = torch.load(path, map_location="cpu", mmap=True, weights_only=True)
         state_dict = {
             k: v for k, v in state_dict.items() if not k.startswith("sequence_head")

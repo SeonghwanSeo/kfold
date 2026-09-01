@@ -64,7 +64,7 @@ class KFoldInferenceClient(pl.LightningModule):
     def forward(
         self, f_input: FoldingInput, struct_token_records: list[list[dict]]
     ) -> dict[str, dict[str, torch.Tensor]]:
-        if hasattr(self.model, "prot_struct_encoder"):
+        if self.model.prot_struct_encoder is not None:
             apply_apo_structure_tokens(
                 f_input, struct_token_records, self.model.prot_struct_encoder
             )

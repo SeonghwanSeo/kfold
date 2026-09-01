@@ -301,7 +301,8 @@ class KFoldTrainingModule(pl.LightningModule):
         out = super().train(mode)
         for module_name in self.frozen_modules:
             module = getattr(self.model, module_name)
-            module.eval()
+            if module is not None:
+                module.eval()
         return out
 
     def setup_losses(self):

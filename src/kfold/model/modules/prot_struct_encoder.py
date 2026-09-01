@@ -1,5 +1,6 @@
 import contextlib
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -39,12 +40,16 @@ class StructureEncoder(torch.nn.Module):
 
         Attributes
         ----------
+        model_path: str | None
+            Directory containing the three local structure encoder checkpoints. If
+            unset, download them from Hugging Face.
         cache_dir: str | None
             Directory used to cache weights downloaded from Hugging Face.
         chain_type: str
             Type of sequence chain to encode. Must be one of "protein", "dna", or "rna".
         """
 
+        model_path: str | None = None
         cache_dir: str | None = None
         chain_type: str = "protein"
         d_model: int = 2560
@@ -60,7 +65,7 @@ class StructureEncoder(torch.nn.Module):
             self.bb_tok = BackboneTokenizer()
             self.fa_tok = FullAtomTokenizer()
             self.encoder = ProteinNetEncoder(cfg.d_model, cfg.n_layers, cfg.n_heads)
-        self._load_from_hugging_face()
+        self._load_weights()
 
         # Freeze parameters.
         self.eval()
@@ -76,17 +81,20 @@ class StructureEncoder(torch.nn.Module):
             seq_to_restype[seq_i] = aa_i
         self.register_buffer("seq_to_restype", seq_to_restype, persistent=False)
 
-    def _load_from_hugging_face(self) -> None:
+    def _load_weights(self) -> None:
         for module, filename in (
             (self.encoder, HF_ENCODER_FILENAME),
             (self.bb_tok, HF_BB_TOKENIZER_FILENAME),
             (self.fa_tok, HF_FA_TOKENIZER_FILENAME),
         ):
-            path = hf_hub_download(
-                repo_id=HF_REPO_ID,
-                filename=filename,
-                cache_dir=self.cfg.cache_dir,
-            )
+            if self.cfg.model_path is None:
+                path = hf_hub_download(
+                    repo_id=HF_REPO_ID,
+                    filename=filename,
+                    cache_dir=self.cfg.cache_dir,
+                )
+            else:
+                path = Path(self.cfg.model_path) / Path(filename).name
             state_dict = torch.load(
                 path, map_location="cpu", mmap=True, weights_only=True
             )

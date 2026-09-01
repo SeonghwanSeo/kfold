@@ -3,6 +3,7 @@ from . import (
     confidence_head,
     distogram_head,
     ecsi,
+    edm,
     input_embedder,
     patch_geometry,
     prot_seq_encoder,

@@ -278,7 +278,7 @@ def main():
 
         # Run model
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            if hasattr(model, "prot_struct_encoder"):
+            if model.prot_struct_encoder is not None:
                 apply_apo_structure_tokens(
                     f_input, struct_token_records, model.prot_struct_encoder
                 )
