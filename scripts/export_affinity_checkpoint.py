@@ -36,7 +36,7 @@ def main() -> None:
         mmap=True,
     )
     state_dict = affinity_head_state_dict(checkpoint)
-    stage = args.output.with_name(f".{args.output.name}.incomplete")
+    stage = args.output.with_name(f".{args.output.stem}.incomplete.pth")
     torch.save(state_dict, stage)
     load_affinity_head(stage, device="cpu")
     os.replace(stage, args.output)

@@ -17,7 +17,7 @@ AFFINITY_QUERY_WINDOW_CONTRACT_V1 = "affinity_per_query_distogram_window_v1"
 AFFINITY_LIGAND_QUERY_WINDOW_CONTRACT_V2 = (
     "affinity_ligand_of_interest_distogram_window_v2"
 )
-AUTO_AFFINITY_HEAD_CHECKPOINT = "__auto_affinity_head_checkpoint__"
+AUTO_AFFINITY_HEAD_WEIGHTS = "__auto_affinity_head_weights__"
 DEFAULT_AFFINITY_HEAD_FILENAME = "affinity-cliff-raw1k.pth"
 
 
@@ -278,21 +278,23 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
-def resolve_affinity_head_checkpoint(
+def resolve_affinity_head_weights(
     requested: str | Path | None,
     *,
     backbone_checkpoint: str | Path,
     repository_root: str | Path | None = None,
 ) -> Path | None:
-    """Resolve an explicit head or the canonical head selected by ``--affinity``."""
+    """Resolve explicit .pth weights or the canonical head selected by affinity."""
     if requested is None:
         return None
 
     requested_path = Path(requested)
-    if str(requested_path) != AUTO_AFFINITY_HEAD_CHECKPOINT:
+    if str(requested_path) != AUTO_AFFINITY_HEAD_WEIGHTS:
+        if requested_path.suffix != ".pth":
+            raise ValueError("Affinity inference weights must use the .pth format.")
         if not requested_path.is_file():
             raise FileNotFoundError(
-                f"Affinity head checkpoint does not exist: {requested_path}"
+                f"Affinity head weights do not exist: {requested_path}"
             )
         return requested_path.resolve()
 
@@ -312,10 +314,10 @@ def resolve_affinity_head_checkpoint(
 
     searched = "\n  - ".join(str(candidate) for candidate in candidates)
     raise FileNotFoundError(
-        "--affinity was enabled without an explicit checkpoint, but the canonical "
+        "--affinity was enabled without explicit weights, but the canonical "
         f"{DEFAULT_AFFINITY_HEAD_FILENAME} was not found. Searched:\n  - {searched}\n"
         "Install the head next to the backbone or under weights/, or pass "
-        "--affinity /absolute/path/to/head.ckpt."
+        "--affinity /absolute/path/to/head.pth."
     )
 
 
@@ -325,8 +327,15 @@ def load_affinity_head(
     device: str | torch.device = "cpu",
     num_blocks: int = 6,
 ) -> AffinityPairformer:
-    """Load the frozen affinity readout used by training and benchmarks."""
+    """Load a structure-style direct inference state dict."""
+    if Path(path).suffix != ".pth":
+        raise ValueError("Affinity inference weights must use the .pth format.")
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if isinstance(checkpoint, Mapping) and "state_dict" in checkpoint:
+        raise ValueError(
+            "Affinity inference requires a direct .pth state dict; convert the "
+            "Lightning checkpoint with scripts/export_affinity_checkpoint.py."
+        )
     state_dict = affinity_head_state_dict(checkpoint)
     model = AffinityPairformer(AffinityPairformer.Config(num_blocks=num_blocks))
     model.load_state_dict(state_dict, strict=True)
@@ -491,18 +500,18 @@ class PerQueryAffinityPredictor(torch.nn.Module):
         self,
         head: AffinityPairformer,
         *,
-        checkpoint_sha256: str,
+        weights_sha256: str,
         config: PerQueryAffinityConfig | None = None,
     ) -> None:
         super().__init__()
-        if len(checkpoint_sha256) != 64:
-            raise ValueError("Affinity checkpoint SHA-256 must contain 64 hex digits.")
+        if len(weights_sha256) != 64:
+            raise ValueError("Affinity weights SHA-256 must contain 64 hex digits.")
         self.head = head
-        self.checkpoint_sha256 = checkpoint_sha256
+        self.weights_sha256 = weights_sha256
         self.config = config or PerQueryAffinityConfig()
 
     @classmethod
-    def from_checkpoint(
+    def from_weights(
         cls,
         path: str | Path,
         *,
@@ -512,7 +521,7 @@ class PerQueryAffinityPredictor(torch.nn.Module):
     ) -> PerQueryAffinityPredictor:
         return cls(
             load_affinity_head(path, device=device, num_blocks=num_blocks),
-            checkpoint_sha256=sha256_file(path),
+            weights_sha256=sha256_file(path),
             config=config,
         )
 
@@ -582,7 +591,7 @@ def affinity_prediction_record(
         "protein_token_count": int(output["protein_token_count"].item()),
         "ligand_token_count": int(output["ligand_token_count"].item()),
         "ligand_asym_id": int(output["ligand_asym_id"].item()),
-        "affinity_checkpoint_sha256": predictor.checkpoint_sha256,
+        "affinity_weights_sha256": predictor.weights_sha256,
         "max_tokens": predictor.config.max_tokens,
         "max_protein_tokens": predictor.config.max_protein_tokens,
         "neighborhood_size": predictor.config.neighborhood_size,

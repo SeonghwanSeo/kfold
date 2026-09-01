@@ -7,13 +7,13 @@ import torch
 
 import kfold.constants as C
 from kfold.inference.affinity import (
-    AUTO_AFFINITY_HEAD_CHECKPOINT,
+    AUTO_AFFINITY_HEAD_WEIGHTS,
     DEFAULT_AFFINITY_HEAD_FILENAME,
     PerQueryAffinityConfig,
     PerQueryAffinityPredictor,
     affinity_head_state_dict,
     build_per_query_affinity_inputs,
-    resolve_affinity_head_checkpoint,
+    resolve_affinity_head_weights,
     resolve_affinity_ligand_asym_id,
     validate_affinity_system,
 )
@@ -132,7 +132,7 @@ def test_affinity_rejects_non_pl_systems(
         )
 
 
-def test_affinity_checkpoint_auto_resolution_prefers_backbone_sibling(
+def test_affinity_weights_auto_resolution_prefers_backbone_sibling(
     tmp_path,
 ) -> None:
     backbone_dir = tmp_path / "release"
@@ -145,8 +145,8 @@ def test_affinity_checkpoint_auto_resolution_prefers_backbone_sibling(
     repository_head.parent.mkdir()
     repository_head.touch()
 
-    resolved = resolve_affinity_head_checkpoint(
-        AUTO_AFFINITY_HEAD_CHECKPOINT,
+    resolved = resolve_affinity_head_weights(
+        AUTO_AFFINITY_HEAD_WEIGHTS,
         backbone_checkpoint=backbone,
         repository_root=tmp_path,
     )
@@ -154,7 +154,7 @@ def test_affinity_checkpoint_auto_resolution_prefers_backbone_sibling(
     assert resolved == sibling.resolve()
 
 
-def test_affinity_checkpoint_auto_resolution_uses_repository_weights(tmp_path) -> None:
+def test_affinity_weights_auto_resolution_uses_repository_weights(tmp_path) -> None:
     backbone = tmp_path / "release" / "kfold-92k.pth"
     backbone.parent.mkdir()
     backbone.touch()
@@ -162,8 +162,8 @@ def test_affinity_checkpoint_auto_resolution_uses_repository_weights(tmp_path) -
     repository_head.parent.mkdir()
     repository_head.touch()
 
-    resolved = resolve_affinity_head_checkpoint(
-        AUTO_AFFINITY_HEAD_CHECKPOINT,
+    resolved = resolve_affinity_head_weights(
+        AUTO_AFFINITY_HEAD_WEIGHTS,
         backbone_checkpoint=backbone,
         repository_root=tmp_path,
     )
@@ -171,15 +171,27 @@ def test_affinity_checkpoint_auto_resolution_uses_repository_weights(tmp_path) -
     assert resolved == repository_head.resolve()
 
 
-def test_affinity_checkpoint_auto_resolution_reports_missing_paths(tmp_path) -> None:
+def test_affinity_weights_auto_resolution_reports_missing_paths(tmp_path) -> None:
     backbone = tmp_path / "release" / "kfold-92k.pth"
     backbone.parent.mkdir()
     backbone.touch()
 
     with pytest.raises(FileNotFoundError, match=DEFAULT_AFFINITY_HEAD_FILENAME):
-        resolve_affinity_head_checkpoint(
-            AUTO_AFFINITY_HEAD_CHECKPOINT,
+        resolve_affinity_head_weights(
+            AUTO_AFFINITY_HEAD_WEIGHTS,
             backbone_checkpoint=backbone,
+            repository_root=tmp_path,
+        )
+
+
+def test_affinity_weights_reject_training_checkpoint_suffix(tmp_path) -> None:
+    checkpoint = tmp_path / "milestone.ckpt"
+    checkpoint.touch()
+
+    with pytest.raises(ValueError, match=".pth format"):
+        resolve_affinity_head_weights(
+            checkpoint,
+            backbone_checkpoint=tmp_path / "kfold-92k.pth",
             repository_root=tmp_path,
         )
 
@@ -309,7 +321,7 @@ def test_inference_client_reuses_trunk_for_affinity() -> None:
     head = AffinityPairformer(AffinityPairformer.Config(num_blocks=1)).eval()
     predictor = PerQueryAffinityPredictor(
         head,
-        checkpoint_sha256="0" * 64,
+        weights_sha256="0" * 64,
         config=PerQueryAffinityConfig(
             max_tokens=16,
             max_protein_tokens=12,

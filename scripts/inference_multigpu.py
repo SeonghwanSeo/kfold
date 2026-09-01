@@ -8,10 +8,10 @@ from lightning.pytorch.utilities import rank_zero_only
 
 from kfold.data.types.ccd import CCD
 from kfold.inference.affinity import (
-    AUTO_AFFINITY_HEAD_CHECKPOINT,
+    AUTO_AFFINITY_HEAD_WEIGHTS,
     PerQueryAffinityConfig,
     PerQueryAffinityPredictor,
-    resolve_affinity_head_checkpoint,
+    resolve_affinity_head_weights,
 )
 from kfold.inference.dataset import InferenceDataset
 from kfold.inference.pl_client import (
@@ -136,16 +136,14 @@ def parse_args():
     )
     parser.add_argument(
         "--affinity",
-        "--affinity-head-checkpoint",
-        dest="affinity_head_checkpoint",
+        dest="affinity_head_weights",
         type=pathlib.Path,
         nargs="?",
-        const=pathlib.Path(AUTO_AFFINITY_HEAD_CHECKPOINT),
-        metavar="HEAD_CHECKPOINT",
+        const=pathlib.Path(AUTO_AFFINITY_HEAD_WEIGHTS),
+        metavar="HEAD_WEIGHTS",
         help=(
-            "Predict p_activity. With no HEAD_CHECKPOINT, load "
+            "Predict p_activity. With no HEAD_WEIGHTS, load "
             "affinity-cliff-raw1k.pth from the backbone directory or weights/. "
-            "--affinity-head-checkpoint is retained as a compatibility alias. "
             "The prediction reuses the same trunk/distogram pass with the "
             "submitted CASP16 per-query crop contract."
         ),
@@ -200,8 +198,8 @@ def main():
     torch.set_float32_matmul_precision("high")
 
     args = parse_args()
-    args.affinity_head_checkpoint = resolve_affinity_head_checkpoint(
-        args.affinity_head_checkpoint,
+    args.affinity_head_weights = resolve_affinity_head_weights(
+        args.affinity_head_weights,
         backbone_checkpoint=args.weight,
     )
     # Check output directory
@@ -278,20 +276,20 @@ def main():
         num_samples=args.num_samples,
     )
     affinity_predictor = None
-    if args.affinity_head_checkpoint is not None:
+    if args.affinity_head_weights is not None:
         affinity_config = PerQueryAffinityConfig(
             max_tokens=args.affinity_crop_max_tokens,
             max_protein_tokens=args.affinity_crop_max_protein_tokens,
             neighborhood_size=args.affinity_pocket_neighborhood_size,
             cache_compatible_bfloat16=not args.affinity_full_precision_inputs,
         )
-        affinity_predictor = PerQueryAffinityPredictor.from_checkpoint(
-            args.affinity_head_checkpoint,
+        affinity_predictor = PerQueryAffinityPredictor.from_weights(
+            args.affinity_head_weights,
             config=affinity_config,
         )
         log_info(
             "Affinity head loaded successfully "
-            f"(sha256={affinity_predictor.checkpoint_sha256})."
+            f"(sha256={affinity_predictor.weights_sha256})."
         )
     inference_client = KFoldInferenceClient(
         model,

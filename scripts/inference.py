@@ -13,12 +13,12 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
 from kfold.data.utils.writer import KFoldWriter
 from kfold.inference.affinity import (
-    AUTO_AFFINITY_HEAD_CHECKPOINT,
+    AUTO_AFFINITY_HEAD_WEIGHTS,
     PerQueryAffinityConfig,
     PerQueryAffinityPredictor,
     affinity_prediction_record,
     attach_affinity_prediction,
-    resolve_affinity_head_checkpoint,
+    resolve_affinity_head_weights,
     resolve_affinity_ligand_asym_id,
     validate_affinity_system,
 )
@@ -138,16 +138,14 @@ def parse_args():
     )
     parser.add_argument(
         "--affinity",
-        "--affinity-head-checkpoint",
-        dest="affinity_head_checkpoint",
+        dest="affinity_head_weights",
         type=pathlib.Path,
         nargs="?",
-        const=pathlib.Path(AUTO_AFFINITY_HEAD_CHECKPOINT),
-        metavar="HEAD_CHECKPOINT",
+        const=pathlib.Path(AUTO_AFFINITY_HEAD_WEIGHTS),
+        metavar="HEAD_WEIGHTS",
         help=(
-            "Predict p_activity. With no HEAD_CHECKPOINT, load "
+            "Predict p_activity. With no HEAD_WEIGHTS, load "
             "affinity-cliff-raw1k.pth from the backbone directory or weights/. "
-            "--affinity-head-checkpoint is retained as a compatibility alias. "
             "The prediction reuses the same trunk/distogram pass with the "
             "submitted CASP16 per-query crop contract."
         ),
@@ -215,7 +213,7 @@ def dry_run(args):
             continue  # skip invalid batch
         # Unpack input
         query, ref_struct, f_input, struct_token_records = input  # noqa
-        if args.affinity_head_checkpoint is not None:
+        if args.affinity_head_weights is not None:
             ligand_asym_id = resolve_affinity_ligand_asym_id(
                 ref_struct,
                 args.affinity_ligand_id or query.affinity_ligand_id,
@@ -242,8 +240,8 @@ def main():
         return
     if args.weight is None:
         raise ValueError("--weight is required unless --dry-run is used.")
-    args.affinity_head_checkpoint = resolve_affinity_head_checkpoint(
-        args.affinity_head_checkpoint,
+    args.affinity_head_weights = resolve_affinity_head_weights(
+        args.affinity_head_weights,
         backbone_checkpoint=args.weight,
     )
 
@@ -305,9 +303,9 @@ def main():
     model = model.eval().cuda()
     logger.info("Model loaded successfully.")
     affinity_predictor = None
-    if args.affinity_head_checkpoint is not None:
-        affinity_predictor = PerQueryAffinityPredictor.from_checkpoint(
-            args.affinity_head_checkpoint,
+    if args.affinity_head_weights is not None:
+        affinity_predictor = PerQueryAffinityPredictor.from_weights(
+            args.affinity_head_weights,
             device="cuda",
             config=PerQueryAffinityConfig(
                 max_tokens=args.affinity_crop_max_tokens,
@@ -318,7 +316,7 @@ def main():
         ).eval()
         logger.info(
             "Affinity head loaded successfully (sha256=%s).",
-            affinity_predictor.checkpoint_sha256,
+            affinity_predictor.weights_sha256,
         )
 
     # mmCIF writer

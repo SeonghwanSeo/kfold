@@ -255,9 +255,8 @@ python scripts/inference.py \
   --num-recycles 3
 ```
 
-An explicit checkpoint remains supported for ablations or nonstandard release
-layouts: `--affinity /absolute/path/to/affinity-head.ckpt`. The legacy
-`--affinity-head-checkpoint` spelling is retained as an alias.
+An explicit inference state dict can be selected for ablations or nonstandard
+release layouts: `--affinity /absolute/path/to/affinity-head.pth`.
 
 The release `.pth` is a direct inference state dict, matching the structure
 checkpoint convention. Convert the original Lightning training checkpoint once:
