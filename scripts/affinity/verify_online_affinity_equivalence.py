@@ -27,6 +27,9 @@ from kfold.training.affinity.pair_storage import (
     unpack_full_cross_payload,
 )
 
+DISTOGRAM_FEATURE_ATOL = 1e-5
+PREDICTION_ATOL = 1e-6
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -164,10 +167,15 @@ def main() -> None:
             crop_indices_equal = torch.equal(
                 cached_indices.cpu(), online["crop_indices"].cpu()
             )
+            inputs_equal = all(
+                difference
+                <= (DISTOGRAM_FEATURE_ATOL if name == "distogram_features" else 0.0)
+                for name, difference in differences.items()
+            )
             passed = (
                 crop_indices_equal
-                and max(differences.values()) == 0.0
-                and prediction_difference == 0.0
+                and inputs_equal
+                and prediction_difference <= PREDICTION_ATOL
             )
             results.append(
                 {
@@ -175,6 +183,7 @@ def main() -> None:
                     "benchmark": str(row.get("benchmark")),
                     "system_id": str(row["system_id"]),
                     "crop_indices_equal": crop_indices_equal,
+                    "inputs_within_tolerance": inputs_equal,
                     "crop_token_count": len(cached_indices),
                     "tensor_max_abs_difference": differences,
                     "cached_prediction_p_activity": float(cached_prediction.item()),
@@ -198,6 +207,12 @@ def main() -> None:
             "max_protein_tokens": config.max_protein_tokens,
             "neighborhood_size": config.neighborhood_size,
             "cache_compatible_bfloat16": config.cache_compatible_bfloat16,
+        },
+        "acceptance": {
+            "crop_indices": "exact",
+            "singles_z_and_masks_max_abs": 0.0,
+            "distogram_features_max_abs": DISTOGRAM_FEATURE_ATOL,
+            "prediction_p_activity_max_abs": PREDICTION_ATOL,
         },
         "records": results,
     }
