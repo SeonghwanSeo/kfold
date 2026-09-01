@@ -1,6 +1,44 @@
+import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from kfold.model.primitives import LayerNorm, LinearNoBias, SwiGLU
+
+# This shared function sees several valid channel/expansion signatures in K-Fold.
+torch._dynamo.config.recompile_limit = max(torch._dynamo.config.recompile_limit, 32)
+
+
+def _transition_forward(
+    x: Tensor,
+    norm_weight: Tensor,
+    norm_bias: Tensor,
+    swiglu_weight: Tensor,
+    output_weight: Tensor,
+    eps: float,
+) -> Tensor:
+    """Transition math shared by eager and compiled inference paths."""
+    normalized = F.layer_norm(
+        x.float(),
+        (x.shape[-1],),
+        norm_weight,
+        norm_bias,
+        eps,
+    ).to(x.dtype)
+    a, b = F.linear(normalized, swiglu_weight).chunk(2, dim=-1)
+    return F.linear(F.silu(a) * b, output_weight)
+
+
+_compiled_transition_forward = torch.compile(
+    _transition_forward,
+    mode="max-autotune-no-cudagraphs",
+    fullgraph=True,
+    dynamic=True,
+)
+
+
+def use_compiled_transition(module: nn.Module, x: Tensor) -> bool:
+    """Use the measured max-autotune path only for standalone CUDA inference."""
+    return x.is_cuda and not module.training and not torch.compiler.is_compiling()
 
 
 class Transition(nn.Module):
@@ -45,6 +83,16 @@ class Transition(nn.Module):
             The output data of shape (..., D)
 
         """
+        if use_compiled_transition(self, x):
+            return _compiled_transition_forward(
+                x,
+                self.layernorm.weight,
+                self.layernorm.bias,
+                self.swiglu.linear.weight,
+                self.linear_out.weight,
+                self.layernorm.eps,
+            )
+
         # Line 1
         x = self.layernorm(x)
 

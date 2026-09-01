@@ -19,13 +19,63 @@ from functools import partial
 import einops
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from kfold.model.primitives import AdaLN, LayerNorm, Linear, LinearNoBias, SwiGLU
 from kfold.model.primitives.utils import add, permute_final_dims
 from kfold.utils.checkpointing import checkpoint_blocks
 
 from .attention_pair_bias import CrossAttentionPairBias, SelfAttentionPairBias
+from .transition import use_compiled_transition
 from .utils import build_atom_to_qk_fn
+
+
+def _conditioned_transition_forward(
+    a: torch.Tensor,
+    s: torch.Tensor,
+    adaln_s_norm_weight: torch.Tensor,
+    adaln_gate_weight: torch.Tensor,
+    adaln_gate_bias: torch.Tensor,
+    adaln_bias_weight: torch.Tensor,
+    swiglu_weight: torch.Tensor,
+    output_gate_weight: torch.Tensor,
+    output_gate_bias: torch.Tensor,
+    output_weight: torch.Tensor,
+    a_eps: float,
+    s_eps: float,
+) -> torch.Tensor:
+    """ConditionedTransitionBlock math for max-autotune inference."""
+    normalized_a = F.layer_norm(
+        a.float(),
+        (a.shape[-1],),
+        None,
+        None,
+        a_eps,
+    ).to(a.dtype)
+    normalized_s = F.layer_norm(
+        s.float(),
+        (s.shape[-1],),
+        adaln_s_norm_weight,
+        None,
+        s_eps,
+    ).to(s.dtype)
+    a = torch.sigmoid(
+        F.linear(normalized_s, adaln_gate_weight, adaln_gate_bias)
+    ) * normalized_a + F.linear(normalized_s, adaln_bias_weight)
+    swiglu_a, swiglu_b = F.linear(a, swiglu_weight).chunk(2, dim=-1)
+    hidden = F.silu(swiglu_a) * swiglu_b
+    return torch.sigmoid(F.linear(s, output_gate_weight, output_gate_bias)) * F.linear(
+        hidden,
+        output_weight,
+    )
+
+
+_compiled_conditioned_transition_forward = torch.compile(
+    _conditioned_transition_forward,
+    mode="max-autotune-no-cudagraphs",
+    fullgraph=True,
+    dynamic=True,
+)
 
 
 class ConditionedTransitionBlock(nn.Module):
@@ -58,6 +108,22 @@ class ConditionedTransitionBlock(nn.Module):
 
     def forward(self, a: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         """See Section 3.7 Algorithm 25 Conditioned Transition Block"""
+        if use_compiled_transition(self, a):
+            return _compiled_conditioned_transition_forward(
+                a,
+                s,
+                self.adaln.layernorm_s.weight,
+                self.adaln.linear_g.weight,
+                self.adaln.linear_g.bias,
+                self.adaln.linear_bias.weight,
+                self.swiglu.linear.weight,
+                self.linear_g.weight,
+                self.linear_g.bias,
+                self.linear_out.weight,
+                self.adaln.layernorm_a.eps,
+                self.adaln.layernorm_s.eps,
+            )
+
         # Line 1
         a = self.adaln(a, s)
         # Line 2
