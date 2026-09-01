@@ -44,6 +44,12 @@ def parse_args():
         help="Path to the model configuration file.",
     )
     parser.add_argument(
+        "--kernel-backend",
+        choices=("torch", "cuequivariance", "triton"),
+        default=None,
+        help="Override the kernel backend for this inference run.",
+    )
+    parser.add_argument(
         "--ccd",
         type=pathlib.Path,
         required=True,
@@ -120,6 +126,11 @@ def parse_args():
         "--overwrite",
         action="store_true",
         help="Whether to overwrite existing inference results.",
+    )
+    parser.add_argument(
+        "--non-strict",
+        action="store_true",
+        help="Allow checkpoint keys to differ from the current model.",
     )
     parser.add_argument(
         "--dry-run",
@@ -230,7 +241,16 @@ def main():
 
     # Load model
     logger.info(f"Loading model from weight: {args.weight}")
-    model: KFold = KFold.from_checkpoint(args.config, args.weight)
+    model: KFold = KFold.from_checkpoint(
+        args.config,
+        args.weight,
+        override_args=(
+            [f"kernel_backend={args.kernel_backend}"]
+            if args.kernel_backend is not None
+            else None
+        ),
+        strict=not args.non_strict,
+    )
     model = model.eval().cuda()
     logger.info("Model loaded successfully.")
 
