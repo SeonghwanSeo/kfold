@@ -81,8 +81,12 @@ class AttentionPairBias(nn.Module):
         v: torch.Tensor,
         pair_bias: torch.Tensor,
         mask: torch.Tensor,
+        *,
+        use_kernels: bool | None = None,
     ) -> torch.Tensor:
-        # Dispatch is fixed when this module is constructed.
+        if use_kernels is None:
+            use_kernels = self.backend is KernelBackend.CUEQUIVARIANCE
+
         return attention_pair_bias(
             s=a,
             q=q,
@@ -96,7 +100,7 @@ class AttentionPairBias(nn.Module):
             b_proj_o=self.linear_out.bias,
             num_heads=self.num_heads,
             inf=self.inf,
-            use_kernels=self.backend is KernelBackend.CUEQUIVARIANCE,
+            use_kernels=use_kernels,
         )
 
 
@@ -305,6 +309,7 @@ class CrossAttentionPairBias(AttentionPairBias):
                 v,
                 pair_bias,
                 mask,
+                use_kernels=False,
             )
             a_q = rearrange(a, "... (w l) d -> ... w l d", w=a_q.shape[-3])
 

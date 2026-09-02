@@ -241,19 +241,19 @@ def attention_pair_bias(
     """
     if use_kernels:
         return _kernel_attention_pair_bias(
-            s,
-            q,
-            k,
-            v,
-            pair_bias,
-            mask,
-            w_proj_g,
-            w_proj_o,
-            b_proj_g,
-            b_proj_o,
-            num_heads,
-            inf,
-            attn_scale,
+            s=s,
+            q=q,
+            k=k,
+            v=v,
+            pair_bias=pair_bias,
+            mask=mask,
+            w_proj_g=w_proj_g,
+            w_proj_o=w_proj_o,
+            b_proj_g=b_proj_g,
+            b_proj_o=b_proj_o,
+            num_heads=num_heads,
+            inf=inf,
+            attn_scale=attn_scale,
         )
     else:
         return _torch_attention_pair_bias(
