@@ -1,6 +1,7 @@
 # === Model Configuration === #
 # kernel settings
 kernel_cuequivariance: true
+kernel_backend: null  # torch, cuequivariance, triton; null keeps legacy behavior
 
 # Module configurations
 channel_s: 384

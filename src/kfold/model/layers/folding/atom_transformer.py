@@ -7,6 +7,7 @@ import torch.nn as nn
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives import LayerNorm, LinearNoBias
 from kfold.utils.checkpointing import checkpoint_fn
+from kfold.utils.kernels import TORCH_POLICY, KernelPolicy
 
 from .diffusion_transformer import LocalTransformerStack
 from .utils import (
@@ -253,6 +254,7 @@ class AtomAttentionEncoder(nn.Module):
         num_heads=4,
         use_structure: bool = False,
         ckpt_atom_stack: bool = False,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
     ):
         """Initialize the atom attention encoder.
 
@@ -286,6 +288,7 @@ class AtomAttentionEncoder(nn.Module):
             channel_z=channel_atompair,
             num_blocks=num_blocks,
             num_heads=num_heads,
+            kernel_policy=kernel_policy,
         )
         self.linear_q_to_a = LinearNoBias(channel_atom, channel_token, init="default")
         self.relu = nn.ReLU()
@@ -376,6 +379,7 @@ class AtomAttentionDecoder(nn.Module):
         num_blocks: int = 3,
         num_heads: int = 4,
         ckpt_atom_stack: bool = False,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
     ):
         """Initialize the atom attention decoder.
 
@@ -404,6 +408,7 @@ class AtomAttentionDecoder(nn.Module):
             channel_z=channel_atompair,
             num_blocks=num_blocks,
             num_heads=num_heads,
+            kernel_policy=kernel_policy,
         )
         self.layernorm_q = LayerNorm(channel_atom, create_offset=False)
         self.linear_q_to_r = LinearNoBias(channel_atom, 3, init="final", precision=32)

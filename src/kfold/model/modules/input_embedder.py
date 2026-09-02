@@ -7,6 +7,7 @@ from kfold.model.layers.folding.embeddings import RelativePositionEncoding
 from kfold.model.layers.folding.input_encoder import InputFeatureEmbedder
 from kfold.model.primitives import LinearNoBias
 from kfold.utils.config import configurable
+from kfold.utils.kernels import TORCH_POLICY, KernelPolicy
 
 
 @configurable
@@ -43,7 +44,11 @@ class InputEmbedder(torch.nn.Module):
         atom_encoder_heads: int = 4
         ckpt_atom_stack: bool = False
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
+    ) -> None:
         super().__init__()
         self.cfg = cfg
         self.channel_s: int = cfg.channel_s
@@ -58,6 +63,7 @@ class InputEmbedder(torch.nn.Module):
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
             ckpt_atom_stack=cfg.ckpt_atom_stack,
+            kernel_policy=kernel_policy,
         )
 
         # Initial linear layers for single and pair representations

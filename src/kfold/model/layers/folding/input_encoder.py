@@ -3,6 +3,7 @@ import torch
 import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.primitives import LinearNoBias
+from kfold.utils.kernels import TORCH_POLICY, KernelPolicy
 
 from .atom_transformer import AtomAttentionEncoder, AtomEmbedder
 
@@ -20,6 +21,7 @@ class InputFeatureEmbedder(torch.nn.Module):
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
         ckpt_atom_stack: bool = False,
+        kernel_policy: KernelPolicy = TORCH_POLICY,
     ) -> None:
         """Initialize the Input feature embedding module.
 
@@ -54,6 +56,7 @@ class InputFeatureEmbedder(torch.nn.Module):
             num_heads=atom_encoder_heads,
             use_structure=False,
             ckpt_atom_stack=ckpt_atom_stack,
+            kernel_policy=kernel_policy,
         )
 
         # residue info
