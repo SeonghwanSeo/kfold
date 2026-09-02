@@ -1,12 +1,12 @@
 model:
   _yaml_: "../kfold.yaml"
   trunk:
-    blocks_per_ckpt: 1
+    blocks_per_ckpt: 8
   score_model:
-    blocks_per_ckpt: 1
+    blocks_per_ckpt: 8
     ckpt_atom_stack: true
   confidence_head:
-    blocks_per_ckpt: 1
+    blocks_per_ckpt: 2
 
 train:
   _yaml_: "full.yaml"
@@ -15,6 +15,11 @@ train:
 
   training:
     diffusion_batch_size: 48
+
+  loss:
+    diffusion_loss:
+      smooth_lddt_loss:
+        chunk_size: 6
 
   data:
     max_chains: 20
@@ -30,7 +35,7 @@ train:
         name: rcsb-train-upd
         weight: 0.500
 
-      # Disordered PDB datasets (1%)
+      # Disordered PDB (1%)
       - _yaml_: "dataset/disordered_pdb.yaml"
         name: disordered_pdb
         weight: 0.010
@@ -41,14 +46,13 @@ train:
         weight: 0.250
       - _yaml_: "dataset/distill-monomer.yaml"
         name: AF2-MGnify-short
-        weight: 0.002
-
+        weight: 0.001
       - _yaml_: "dataset/distill-monomer.yaml"
         name: AFDB-long
-        weight: 0.040
+        weight: 0.045
       - _yaml_: "dataset/distill-monomer.yaml"
         name: AFDB-short
-        weight: 0.008
+        weight: 0.004
 
       # RNA Monomer (5%)
       - _yaml_: "dataset/distill-rna-monomer.yaml"
@@ -59,6 +63,10 @@ train:
       - _yaml_: "dataset/distill-complex-uniform.yaml"
         name: JASPAR
         weight: 0.020
+        cropper:
+          w_contiguous: 0.2
+          w_spatial: 0.0
+          w_spatial_interface: 0.8
 
       # Protein-Protein (10%)
       - _yaml_: "dataset/distill-homodimer.yaml"
@@ -72,7 +80,12 @@ train:
       # Protein-ligand, TPD (2%)
       - _yaml_: "dataset/distill-complex-cluster.yaml"
         name: TPD
+        manifest_path: /cache/wykim_lab/kfold_data/v260701_af3/dataset/TPD/manifest_filtered.msgpack
         weight: 0.020
+        cropper:
+          w_contiguous: 0.2
+          w_spatial: 0.0
+          w_spatial_interface: 0.8
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
