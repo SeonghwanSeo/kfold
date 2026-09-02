@@ -16,7 +16,7 @@ init_from_ema: []
 # Training parameters for multi-gpu setup.
 global_hparams:
   batch_size: 1
-  global_batch_size: 160
+  global_batch_size: 256
   num_global_steps_per_epoch: 1000
 
 # Compilation settings
@@ -34,7 +34,7 @@ data:
   max_tokens: ???
   max_atoms: ???
   max_sequence_tokens: ???
-  max_apo: 3
+  max_apo: 4
 
   # DataLoader
   train_batch_size: 1 # NOTE: Overridden by global_hparam
@@ -124,7 +124,7 @@ optimizer:
   eps: 1e-8
   lr_scheduler: af3
   base_lr: 0.0
-  max_lr: 0.0012
+  max_lr: 0.0018
   lr_warmup_no_steps: 1000
   lr_start_decay_after_n_steps: 50000
   lr_decay_every_n_steps: 50000
@@ -138,14 +138,12 @@ loss:
     distogram: 3e-2
     diffusion: 4.0
     confidence: 1e-4
-    patch_geometry: 0.0
+    patch_geometry: 0.05
     # Diffusion loss weights
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
 
-  patch_geometry_loss:
-    near_cutoff: 12.0
-    ranking_weight: 1.0
+  patch_geometry_loss: {}
 
   # Diffusion loss
   diffusion_loss:
