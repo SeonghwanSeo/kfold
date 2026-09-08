@@ -13,12 +13,6 @@ load_global_step: true
 # Parameter groups initialized from checkpoint EMA when optimizer state is reset.
 init_from_ema: []
 
-# Training parameters for multi-gpu setup.
-global_hparams:
-  batch_size: 1
-  global_batch_size: 256
-  num_global_steps_per_epoch: 1000
-
 # Compilation settings
 compile:
   enabled: false
@@ -37,17 +31,17 @@ data:
   max_apo: 4
 
   # DataLoader
-  train_batch_size: 1 # NOTE: Overridden by global_hparam
+  train_batch_size: 1
   num_workers: 8
   persistent_workers: true
   pin_memory: false
   safe_load: true
 
   # CCD path
-  ccd_path: <CCD_PATH_PLACEHOLDER>
+  ccd_path: /data/ccd-train.pkl
 
   # Datasets
-  data_root: <DATA_ROOT_PLACEHOLDER>
+  data_root: /data/
   train_datasets: []
   val_datasets: []
 
@@ -70,11 +64,11 @@ trainer:
   num_nodes: 1
   precision: bf16-mixed
   max_epochs: -1
-  limit_train_batches: 1 # NOTE: Overridden by global_hparam
+  limit_train_batches: 1000
   limit_val_batches: null
   log_every_n_steps: 10
   enable_checkpointing: true
-  accumulate_grad_batches: 1 # NOTE: Overridden by global_hparam
+  accumulate_grad_batches: 1
   gradient_clip_val: 10.0
 
 # Exponential Moving Average (EMA)
@@ -85,7 +79,7 @@ training:
   train_confidence_head: true
 
   # For structure module training
-  diffusion_batch_size: 48 # NOTE: Overridden by global_hparam
+  diffusion_batch_size: 48
 
   # For confidence module training
   num_mini_rollout_steps: 30 # Number of rollout steps for confidence training

@@ -38,10 +38,11 @@ import msgpack
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.pipelines import cif_factory
 from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import RefStructure
+from kfold.training.preprocess import cif_factory
+from kfold.training.preprocess.structure_cleaning import clean_up_ref_structure
 
 # Error handling
 SUCCESS = 0
@@ -330,6 +331,9 @@ def parse_cif(
     if not (data_filter.min_tokens <= ref_struct.num_tokens <= data_filter.max_tokens):
         return TOKEN_COUNT_FILTERED
 
+    # Persist bond cleaning once, rather than repeating it during training.
+    ref_struct = clean_up_ref_structure(ref_struct)
+
     # Validate final structure
     ref_struct.validate()
 
@@ -384,7 +388,12 @@ def main():
         data_filter=data_filter,
     )
 
-    cif_paths = sorted(cif_dir.rglob("*.cif.gz"))
+    cif_paths = sorted(
+        path
+        for path in cif_dir.rglob("*")
+        if path.is_file()
+        and path.name.endswith((".cif", ".cif.gz", ".mmcif", ".mmcif.gz"))
+    )
     print(f"Found {len(cif_paths)} mmCIF files to process.")
     with multiprocessing.Pool(
         args.num_workers,

@@ -10,7 +10,7 @@ rcsb-train/
     structure.lmdb
     apo_lmdb/{chain_type}/{source}.lmdb
     apo_tok_lmdb/protein/{source}.lmdb
-    prior_lmdb/{chain_type}.lmdb
+    prior_lmdb/{chain_type}/{source}.lmdb
     apo_lookup.json     # mapping from each chain to apo structure(s).
 af2-long/ ...           # simple dataset with AF2 structures.
     manifest.json
@@ -230,8 +230,6 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     def load_lookup_table(self) -> dict:
         lookup_path = self.data_root / "apo_lookup.msgpack"
         if not lookup_path.exists():
-            # NOTE: For protein monomer distillation datasets,
-            # we can directly feed apo structures from labeled monomer structures.
             raise FileNotFoundError(f"Apo lookup file {lookup_path} not found.")
         with open(lookup_path, "rb") as f:
             lookup_table: dict = msgpack.unpack(f, raw=False)
@@ -287,22 +285,28 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     def _get_apo_tok_source_lmdb_env(
         self, chain_type: str, source: str
     ) -> lmdb.Environment:
-        assert chain_type in ("protein", "protein_multimer")
+        assert chain_type in ("protein", "protein-multimer")
         return self._get_source_lmdb_env(
             "_apo_tok_source_lmdb_envs", "apo_tok_lmdb", chain_type, source
         )
 
-    def _get_prior_stack_lmdb_env(self, chain_type: str) -> lmdb.Environment:
-        assert chain_type == "protein"
-        cache = getattr(self, "_prior_stack_lmdb_envs", None)
-        if cache is None:
-            cache = {}
-            self._prior_stack_lmdb_envs = cache
-        if chain_type not in cache:
-            cache[chain_type] = _open_lmdb(
-                self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
+    def _load_prior_records(self, kind: str, key: str, unpack):
+        """Read matching stacks from every source under a prepared input kind."""
+        if not hasattr(self, "_prior_sources"):
+            self._prior_sources = {}
+        if kind not in self._prior_sources:
+            self._prior_sources[kind] = [
+                path.stem
+                for path in sorted((self.data_root / "prior_lmdb" / kind).glob("*.lmdb"))
+            ]
+        for source in self._prior_sources[kind]:
+            env = self._get_source_lmdb_env(
+                "_prior_stack_lmdb_envs", "prior_lmdb", kind, source
             )
-        return cache[chain_type]
+            with env.begin(write=False) as txn:
+                value = txn.get(key.encode("utf-8"))
+            if value is not None:
+                yield unpack(value)
 
     def __del__(self):
         if hasattr(self, "_prior_stack_lmdb_envs"):
@@ -319,13 +323,13 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
 
     # === Core dataset methods === #
     def __getitem__(self, index: int) -> tuple[FoldingInput, StructInfo]:
-        """Get the folding input for the given index, with retry on failure."""
+        """Load an input, retrying failures only during training."""
         return self.get_item_safe(index, num_trials=100)
 
     def get_item_safe(
         self, index: int, num_trials: int = 100
     ) -> tuple[FoldingInput, StructInfo]:
-        """Get the folding input for the given index, with retry on failure."""
+        """Load an input; validation never substitutes another sample."""
         if self.seed is not None:
             rng = np.random.default_rng(self.seed + index % (1 << 15))
         else:
@@ -340,11 +344,12 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
                 raise e
             except Exception as e:
                 sample_id = sample.id
+                if not self.train or not self.safe_load:
+                    self.logger.error(f"Error loading index {sample_id}({index}): {e}.")
+                    raise
                 self.logger.error(
                     f"Error loading index {sample_id}({index}): {e}. Retrying..."
                 )
-                if not self.safe_load:
-                    raise e
                 index = int(rng.integers(0, len(self)))
                 trials.append(sample_id)
         raise RuntimeError(
@@ -495,24 +500,18 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
     ) -> np.ndarray | None:
         """Load an entity-level stacked prior LMDB record."""
         entity_key = f"{entry_id}_{entity_id}"
-        prior_lmdb_path = self.data_root / "prior_lmdb" / f"{chain_type}.lmdb"
-        if not prior_lmdb_path.exists():
-            return None
-
-        env = self._get_prior_stack_lmdb_env(chain_type)
-        with env.begin(write=False) as txn:
-            value_bytes = txn.get(entity_key.encode("utf-8"))
-        if value_bytes is None:
-            return None
-
-        record = apo_io.unpack_prior_stack_record(value_bytes)
-        coords = record["coords"]
-        if coords.ndim != 4:
-            raise ValueError(
-                f"Prior stack {entity_key} has shape {coords.shape}; expected "
-                "(N, L, A, 3)."
-            )
-        return coords
+        stacks = []
+        for record in self._load_prior_records(
+            chain_type, entity_key, apo_io.unpack_prior_stack_record
+        ):
+            coords = record["coords"]
+            if coords.ndim != 4 or coords.shape[0] == 0:
+                raise ValueError(
+                    f"Prior stack {entity_key} has shape {coords.shape}; "
+                    "expected (N>0, L, A, 3)."
+                )
+            stacks.append(coords)
+        return np.concatenate(stacks, axis=0) if stacks else None
 
     def sample_num_apo(self, rng: np.random.Generator) -> int:
         """Sample the requested number of apo structures for one example."""
@@ -651,7 +650,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             and rng.random() < self.config.prob_perturbation
         ):
             coords = self.apo_perturb.run_protein_perturbation(
-                seq, coords, mask=None, rng=rng, rieprody_key=key
+                seq, coords, mask=None, rng=rng
             )
 
         # Map the apo coordinates to the chain's coordinates

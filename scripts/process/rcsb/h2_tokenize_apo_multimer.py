@@ -1,9 +1,10 @@
-"""Tokenize multimer apo structures directly from apo_multimer_lmdb."""
+"""Tokenize multimer apo structures directly from apo_lmdb/protein-multimer."""
 
 from __future__ import annotations
 
 import argparse
 import pathlib
+import shutil
 
 import lmdb
 import numpy as np
@@ -11,42 +12,17 @@ import torch
 from tqdm import tqdm
 
 from kfold.model.layers.struct_enc import BackboneTokenizer, FullAtomTokenizer
-from kfold.model.modules.structure_encoder import restype_order
+from kfold.model.layers.struct_enc.fa_vqvae.utils.residue_constants import (
+    restype_order_with_x as restype_order,
+)
 from kfold.training.dataset.utils.apo_io import (
     pack_apo_multimer_token_record,
     unpack_apo_multimer_record,
 )
+from kfold.training.preprocess.structure_tokenizers import load_tokenizers
 
 PADDING_SIZES = [32, 64, 128, 256, 384, 512, 640, 768, 1024, 1280]
 BATCH_THRESHOLD = 1280
-
-
-def load_tokenizers(
-    ckpt_path: pathlib.Path,
-    device: torch.device | str = "cuda",
-) -> tuple[BackboneTokenizer, FullAtomTokenizer]:
-    state_dict = torch.load(ckpt_path, map_location="cpu")
-    bb_state_dict = {
-        k.removeprefix("bb_tok."): v
-        for k, v in state_dict.items()
-        if k.startswith("bb_tok.")
-    }
-    fa_state_dict = {
-        k.removeprefix("fa_tok."): v
-        for k, v in state_dict.items()
-        if k.startswith("fa_tok.")
-    }
-    if not bb_state_dict or not fa_state_dict:
-        raise KeyError(
-            "Expected a standalone StructureEncoder checkpoint containing "
-            "'bb_tok.' and 'fa_tok.' weights."
-        )
-
-    bb_tok = BackboneTokenizer().to(torch.bfloat16)
-    fa_tok = FullAtomTokenizer().to(torch.bfloat16)
-    bb_tok.load_state_dict(bb_state_dict, strict=True)
-    fa_tok.load_state_dict(fa_state_dict, strict=True)
-    return bb_tok.eval().to(device), fa_tok.eval().to(device)
 
 
 def parse_args() -> argparse.Namespace:
@@ -64,15 +40,19 @@ def parse_args() -> argparse.Namespace:
         help="Data split to process.",
     )
     parser.add_argument(
-        "--ckpt_path",
-        required=True,
+        "--cache_dir",
         type=pathlib.Path,
-        help="Path to structure tokenizer checkpoint.",
+        help="Hugging Face download cache directory.",
     )
     parser.add_argument("--chunk", type=int, default=0)
-    parser.add_argument("--num_chunk", type=int, default=0)
+    parser.add_argument("--num_chunk", type=int, default=1)
     parser.add_argument("--map_size_gb", type=int, default=10)
-    return parser.parse_args()
+    parser.add_argument("--sources", nargs="+")
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args()
+    if not 0 <= args.chunk < args.num_chunk:
+        parser.error("Require 0 <= chunk < num_chunk")
+    return args
 
 
 def next_padding_size(length: int) -> int:
@@ -105,7 +85,7 @@ def tokenize_record(
                 f"{chain_coords.shape} for len={len(seq)}."
             )
         aatypes[i, : len(seq)] = torch.tensor(
-            [restype_order.get(res, 0) for res in seq],
+            [restype_order[res] for res in seq],
             dtype=torch.long,
             device="cuda",
         )
@@ -141,15 +121,20 @@ def tokenize_record(
 def main() -> None:
     args = parse_args()
     data_dir = args.data_dir / f"rcsb-{args.split}"
-    in_root = data_dir / "apo_multimer_lmdb" / "protein"
+    in_root = data_dir / "apo_lmdb" / "protein-multimer"
     if not in_root.exists():
         raise FileNotFoundError(in_root)
 
-    out_dir = data_dir / "apo_tok_chunk" / "protein_multimer"
+    out_dir = data_dir / "apo_tok_chunk" / "protein-multimer"
     out_dir.mkdir(parents=True, exist_ok=True)
-    bb_tok, fa_tok = load_tokenizers(args.ckpt_path, device="cuda")
+    bb_tok, fa_tok = load_tokenizers(cache_dir=args.cache_dir, device="cuda")
 
     lmdb_paths = sorted(in_root.glob("*.lmdb"))
+    if args.sources is not None:
+        missing = set(args.sources) - {path.stem for path in lmdb_paths}
+        if missing:
+            raise FileNotFoundError(f"Requested sources not found: {sorted(missing)}")
+        lmdb_paths = [path for path in lmdb_paths if path.stem in args.sources]
     print(
         f"Found {len(lmdb_paths)} protein multimer apo sources: "
         f"{[path.stem for path in lmdb_paths]}"
@@ -168,13 +153,15 @@ def main() -> None:
         keys.sort()
         if args.num_chunk > 1:
             keys = keys[args.chunk :: args.num_chunk]
-        if len(keys) == 0:
-            print(f"No samples for chunk {args.chunk}/{args.num_chunk} in {source}.")
-            continue
-
         out_subdir = out_dir / source
         out_subdir.mkdir(parents=True, exist_ok=True)
         out_lmdb_path = out_subdir / f"{args.chunk}_{args.num_chunk}.lmdb"
+        if out_lmdb_path.exists():
+            if not args.overwrite:
+                raise FileExistsError(
+                    f"{out_lmdb_path}; use --overwrite to rebuild this shard"
+                )
+            shutil.rmtree(out_lmdb_path)
         env_out = lmdb.open(
             str(out_lmdb_path),
             map_size=args.map_size_gb * 1024 * 1024 * 1024,
@@ -199,6 +186,10 @@ def main() -> None:
                         )
                     except Exception as e:
                         print(f"Error processing {source}:{key}: {e}")
+            if txn_out.stat()["entries"] != len(keys):
+                raise RuntimeError(
+                    f"Incomplete token shard for {source}; see parsing errors above"
+                )
         env_in.close()
         env_out.close()
 

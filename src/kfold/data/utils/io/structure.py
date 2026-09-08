@@ -2,7 +2,6 @@ from pathlib import Path
 
 import gemmi
 import numpy as np
-import zstandard as zstd
 
 import kfold.constants as C
 
@@ -31,6 +30,8 @@ def read_gemmi_structure(path: str | Path) -> gemmi.Structure:
     path = Path(path)
     filetype = get_structure_filetype(path)
     if path.name.lower().endswith(".zst"):
+        import zstandard as zstd
+
         with path.open("rb") as compressed:
             with zstd.ZstdDecompressor().stream_reader(compressed) as reader:
                 text = reader.read().decode("utf-8")

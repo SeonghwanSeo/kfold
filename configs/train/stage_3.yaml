@@ -17,7 +17,7 @@ train:
 
   loss:
     weights:
-      bond: 1.0 # Turn on bond loss (See Section 5.2 for the AF3 paper)
+      bond: 1.0
 
   optimizer:
     max_lr: 0.0010
@@ -48,59 +48,12 @@ train:
     max_atoms: 9216
     max_sequence_tokens: 1536
 
-    ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
-    data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
+    ccd_path: /data/ccd-train.pkl
+    data_root: /data/
     train_datasets:
-      # RCSB PDB (75%)
       - _yaml_: "dataset/rcsb-train.yaml"
-        name: rcsb-train-upd
-        weight: 0.750
-
-      # RNA Monomer (2%)
-      - _yaml_: "dataset/distill-rna-monomer.yaml"
-        name: Rfam
-        weight: 0.020
-        cropper:
-          w_contiguous: 0.25
-          w_spatial: 0.75
-
-      # Protein-Protein (20%)
-      - _yaml_: "dataset/distill-homodimer.yaml"
-        manifest_path: /cache/wykim_lab/kfold_data/v260701_af3/dataset/AFDB-homodimer/manifest_08.msgpack
-        name: AFDB-homodimer
-        weight: 0.150
-
-      - _yaml_: "dataset/distill-heterodimer.yaml"
-        manifest_path: /cache/wykim_lab/kfold_data/v260701_af3/dataset/AFDB-heterodimer/manifest_08.msgpack
-        name: AFDB-heterodimer
-        weight: 0.050
-
-      # Protein-DNA (1%)
-      - _yaml_: "dataset/distill-complex-uniform.yaml"
-        name: JASPAR
-        weight: 0.010
-        cropper:
-          w_contiguous: 0.2
-          w_spatial: 0.0
-          w_spatial_interface: 0.8
-
-      # Protein-RNA (1%)
-      - _yaml_: "dataset/distill-complex-cluster.yaml"
-        name: ENCORE
-        weight: 0.010
-        cropper:
-          w_contiguous: 0.2
-          w_spatial: 0.0
-          w_spatial_interface: 0.8
-
-      # Protein-ligand, TPD (1%)
-      - _yaml_: "dataset/distill-complex-cluster.yaml"
-        name: TPD
-        weight: 0.010
-        cropper:
-          w_contiguous: 0.2
-          w_spatial: 0.0
-          w_spatial_interface: 0.8
+        name: rcsb-train
+        weight: 1.0
 
     val_datasets:
       - _yaml_: "dataset/rcsb-val.yaml"
