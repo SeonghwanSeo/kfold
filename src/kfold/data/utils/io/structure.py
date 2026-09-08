@@ -8,7 +8,6 @@ import kfold.constants as C
 
 # Constants
 atom37_order: dict[str, int] = C.atom.protein_atom37_order
-atom29_order: dict[str, int] = C.atom.nucleic_acid_atom29_order
 protein_one_letter_to_residue_name: dict[str, C.ResidueName] = (
     C.residue.protein_one_letter_to_residue_name
 )
@@ -105,61 +104,6 @@ def read_protein_multimer_structure(path: str | Path) -> dict[str, dict]:
             "chain_type": "protein",
         }
     return chains
-
-
-def read_rna_structure(path: str | Path) -> tuple[str, np.ndarray]:
-    """Load an RNA structure from file as atom29 representation.
-
-    Returns
-    -------
-    sequence : str
-        RNA sequence in one-letter code.
-    coords : np.ndarray
-        Array of shape (N, 29, 3) containing coordinates in
-        `C.atom.nucleic_acid_atom29` order.
-    """
-
-    structure = read_gemmi_structure(path)
-    raw_chain = structure[0].subchains()[0]
-
-    L = len(raw_chain)
-    coords = np.full((L, 29, 3), np.nan, dtype=np.float32)
-    base_list: list[str] = []
-    for res_i, res in enumerate(raw_chain):
-        res_name: C.ResidueName = C.residue.get_residue_name_with_unk(
-            res.name, C.ChainType.RNA
-        )
-        base_list.append(res_name.one_letter)
-
-        for atom in res:
-            aidx = atom29_order.get(atom.name, None)
-            if aidx is not None:
-                coords[res_i, aidx] = atom.pos.tolist()
-    sequence = "".join(base_list)
-    return sequence, coords
-
-
-def read_dna_structure(path: str | Path) -> tuple[str, np.ndarray]:
-    """Load a DNA structure from file as atom29 representation."""
-
-    structure = read_gemmi_structure(path)
-    raw_chain = structure[0].subchains()[0]
-
-    L = len(raw_chain)
-    coords = np.full((L, 29, 3), np.nan, dtype=np.float32)
-    base_list: list[str] = []
-    for res_i, res in enumerate(raw_chain):
-        res_name: C.ResidueName = C.residue.get_residue_name_with_unk(
-            res.name, C.ChainType.DNA
-        )
-        base_list.append(res_name.one_letter)
-
-        for atom in res:
-            aidx = atom29_order.get(atom.name, None)
-            if aidx is not None:
-                coords[res_i, aidx] = atom.pos.tolist()
-    sequence = "".join(base_list)
-    return sequence, coords
 
 
 def write_protein_structure(

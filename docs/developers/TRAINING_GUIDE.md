@@ -50,7 +50,7 @@ cd $KFOLD_DATA_DIR
 cp -r /storage/wykim_lab/icl_shwan/dataset/v260310/ .
 
 # Extract the datasets you need
-cd v260130/dataset
+cd v260310/dataset
 tar --zstd -xvf rcsb-train.tar.zst
 tar --zstd -xvf rcsb-val.tar.zst
 tar --zstd -xvf NaturalAb.tar.zst
@@ -79,25 +79,25 @@ Modify `config file` to match your training environment.
 
 - Debug mode (single GPU, no workers, no safe data-loading):
   ```bash
-  python scripts/train.py --config ./configs/train-af3-tiny.yaml --debug
+  python scripts/train.py --config configs/train/stage_1.yaml --debug
 
   # If you want to skip validation (e.g., validation not implemented yet), use --skip_val
-  python ./scripts/train.py --config ./configs/train-af3-tiny.yaml --debug --skip_val
+  python scripts/train.py --config configs/train/stage_1.yaml --debug --skip_val
   ```
 
 - Full training mode with prepared config file:
   ```bash
   python scripts/train.py \
-    --config ./configs/train-af3.yaml \
+    --config configs/train/stage_1.yaml \
     --wandb
   ```
 
 - Advanced training using `--override` flag:
   ```bash
   python scripts/train.py \
-    --config ./configs/train-af3.yaml \
+    --config configs/train/stage_1.yaml \
     --wandb \
     --override \
       train.trainer.max_epochs=10 \
-      train.global_hparams.max_tokens=512 ...
+      train.data.max_tokens=512 ...
   ```

@@ -15,6 +15,11 @@ class SwiGLU(nn.Module):
         return F.silu(x1) * x2
 
 
+class DenseFFN(nn.Sequential):
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        return super().forward(x)
+
+
 def swiglu_correction_fn(expansion_ratio: float, d_model: int) -> int:
     # set hidden dimesion to nearest multiple of 256 after expansion ratio
     return int(((expansion_ratio * d_model) + 255) // 256 * 256)
@@ -47,7 +52,7 @@ class TransformerBlock(nn.Module):
             self.ffn = MoEFFN(d_model, expansion_ratio)
         else:
             d_ffn = swiglu_correction_fn(expansion_ratio, d_model)
-            self.ffn = nn.Sequential(
+            self.ffn = DenseFFN(
                 LayerNorm(d_model),
                 Linear(d_model, d_ffn * 2, bias=False),
                 SwiGLU(),
@@ -63,6 +68,6 @@ class TransformerBlock(nn.Module):
     ) -> torch.Tensor:
         r1 = self.attn(x, seq_id, pos_id)
         x = x + r1 / self.scaling_factor
-        r2 = self.ffn(x)
+        r2 = self.ffn(x, mask=seq_id >= 0)
         x = x + r2 / self.scaling_factor
         return x

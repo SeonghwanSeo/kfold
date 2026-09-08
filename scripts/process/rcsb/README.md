@@ -203,23 +203,6 @@ esm-extract \
     ...
 ```
 
-### Deterministic DNA apo structure preparation
-
-DNA apo records are generated for DNA entities in `all_sequences.fasta` as
-idealized single-stranded helices. By default the script writes
-zstd-compressed `{pdb_id}_{entity_id}.pdb.zst` files under `apo/dna/dna_helix/`,
-and the apo/prior LMDB creation step parses them into atom29 records.
-
-```bash
-python scripts/process/rcsb/f1_create_dna_apo.py \
-    --data_dir /data/processed/dataset \
-    --split train
-
-python scripts/process/rcsb/f1_create_dna_apo.py \
-    --data_dir /data/processed/dataset \
-    --split val
-```
-
 ### Sampler Apo And Prior LMDBs
 
 Raw sampler outputs are stored under:
@@ -227,8 +210,6 @@ Raw sampler outputs are stored under:
 ```text
 rcsb-{split}/apo/
   protein/{source}/{pdb_id}_{entity_id}/...
-  rna/{source}/{pdb_id}_{entity_id}/...
-  dna/dna_helix/{pdb_id}_{entity_id}.pdb.zst
 ```
 
 Build the source-specific apo LMDBs and chain-type prior stack LMDBs:
@@ -246,8 +227,8 @@ This writes:
 
 ```text
 rcsb-{split}/apo_lookup.msgpack
-rcsb-{split}/apo_lmdb/{chain_type}/{source}.lmdb
-rcsb-{split}/prior_lmdb/{chain_type}.lmdb
+rcsb-{split}/apo_lmdb/protein/{source}.lmdb
+rcsb-{split}/prior_lmdb/protein.lmdb
 ```
 
 ### Antibody/Protein Multimer Apo And Prior LMDBs

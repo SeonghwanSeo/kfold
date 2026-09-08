@@ -17,10 +17,11 @@ dependencies = [
   "tqdm",
   "scipy",
   "omegaconf",
+  "huggingface-hub",
   "rdkit",
   "einops",
   "gemmi",
-  'bioprior @ git+https://github.com/SeonghwanSeo/bio-prior.git@v0.1.2',
+  "zstandard",
 ]
 
 [project.optional-dependencies]
@@ -37,10 +38,8 @@ train = [
   'lmdb', # for training dataset storage
   'msgpack', # for data serialization
   "numba",
+  'bioprior @ git+https://github.com/SeonghwanSeo/bio-prior.git@v0.1.2',
 ]
 preprocess = [
   'pdbeccdutils', # for ccd data handling
 ]
-
-[tool.pytest.ini_options]
-testpaths = ["tests/unit_tests"]

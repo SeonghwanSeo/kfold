@@ -40,7 +40,7 @@ def parse_args():
     parser.add_argument(
         "--config",
         type=pathlib.Path,
-        default=pathlib.Path("configs/model/kfold-ecsi.yaml"),
+        default=pathlib.Path("configs/kfold.yaml"),
         help="Path to the model configuration file.",
     )
     parser.add_argument(
@@ -119,7 +119,7 @@ def parse_args():
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Whether to overwrite existing inference results.",
+        help="Recompute name/seed targets that already have a done.txt marker.",
     )
     parser.add_argument(
         "--dry-run",
@@ -185,14 +185,9 @@ def main():
     torch.backends.cudnn.deterministic = True
     torch.set_float32_matmul_precision("highest")
 
-    # Check output directory
+    # Prepare output directory
     logger.info(f"Output directory: {args.out_dir}")
-    if args.out_dir.exists() and not args.overwrite:
-        logger.error(
-            f"Output directory {args.out_dir} already exists. "
-            f"Use --overwrite to overwrite existing results."
-        )
-        return
+    args.out_dir.mkdir(parents=True, exist_ok=True)
 
     # Load CCD data
     logger.info(f"Loading CCD data from: {args.ccd}")
@@ -211,6 +206,24 @@ def main():
     )
     if len(input_queries) == 0:
         logger.warning("No valid input queries to process. Exiting.")
+        return
+
+    # Skip completed name/seed targets unless --overwrite is set.
+    if not args.overwrite:
+        pending_queries = [
+            query
+            for query in input_queries
+            if not (
+                args.out_dir / query.name / f"{query.name}_seed-{query.seed}" / "done.txt"
+            ).exists()
+        ]
+        num_skipped = len(input_queries) - len(pending_queries)
+        if num_skipped > 0:
+            logger.info(f"Skipping {num_skipped} completed name/seed targets.")
+        input_queries = pending_queries
+
+    if len(input_queries) == 0:
+        logger.info("All name/seed targets are complete. Nothing to do.")
         return
 
     # Create output directories for each query
@@ -265,11 +278,11 @@ def main():
 
         # Run model
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            if hasattr(model, "prot_struct_encoder"):
+            if model.prot_struct_encoder is not None:
                 apply_apo_structure_tokens(
                     f_input, struct_token_records, model.prot_struct_encoder
                 )
-            model_out, time_log = model.inference(  # noqa
+            model_out = model.inference(
                 f_input,
                 num_recycles=args.num_recycles,
                 num_steps=args.num_steps,
@@ -287,8 +300,10 @@ def main():
         # *) Ntoken and Natom may be different to original ones due to padding.
 
         # Save predictions
-        save_dir = args.out_dir / name
-        assert save_dir.exists()
+        save_dir = args.out_dir / name / f"{name}_seed-{seed}"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        done_path = save_dir / "done.txt"
+        done_path.unlink(missing_ok=True)
 
         n_atoms = ref_struct.num_atoms
         sample_coords = model_out["diffusion"]["coordinates"][:, :n_atoms].cpu().numpy()
@@ -316,6 +331,7 @@ def main():
             )
 
         # Save Diffusion Samples
+        has_write_error = False
         for i in range(sample_coords.shape[0]):
             sample_name = f"{name}_seed-{seed}_sample-{i}"
             save_path = save_dir / f"{sample_name}.cif"
@@ -329,6 +345,7 @@ def main():
                 writer.write_new_coords(ref_struct, save_path, coords_i, score_i["plddt"])
             except Exception as e:
                 logger.error(f"Error saving sample {i} for {name}: {e}")
+                has_write_error = True
                 continue
 
             # Save confidence scores in JSON format
@@ -360,6 +377,14 @@ def main():
                     logger.error(
                         f"Failed to save trajectory for sample {i} of {name}: {e}"
                     )
+                    has_write_error = True
+
+        if has_write_error:
+            logger.error(
+                f"Not marking {name} seed {seed} as complete due to write errors."
+            )
+        else:
+            done_path.touch()
 
     et = time.time()
     logger.info(f"Inference completed. ({et - st:.2f} seconds)")

@@ -15,7 +15,6 @@ from scripts.process.rcsb.f2_create_apo_prior_lmdb import (  # noqa: E402
     ApoTask,
     RankedRecord,
     collect_protein_source,
-    collect_rna_source,
     ensure_overwrite,
     iter_source_dirs,
     make_prior_tasks,
@@ -76,19 +75,6 @@ def main() -> None:
             apo_lookup,
             apo_tasks,
             prior_samples_by_type["protein"],
-            ranked_records,
-        )
-        for key, value in part.items():
-            stats[f"{source_dir.name}:{key}"] += value
-
-    for source_dir in iter_source_dirs(raw_root, "rna"):
-        part = collect_rna_source(
-            source_dir,
-            source_dir.name,
-            entity_sequences_by_key,
-            apo_lookup,
-            apo_tasks,
-            prior_samples_by_type["rna"],
             ranked_records,
         )
         for key, value in part.items():

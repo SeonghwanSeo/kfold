@@ -61,7 +61,10 @@ class PriorSampler:
 
         self.chain_translation_scale: float = config.chain_translation_scale
         self.ligand_gaussian_scale: float = config.ligand_gaussian_scale
-        self.bioprior: BioPriorPerturbation = BioPriorPerturbation(config.bioprior)
+        if config.bioprior.max_steps > 0:
+            self.bioprior: BioPriorPerturbation = BioPriorPerturbation(config.bioprior)
+        else:
+            self.bioprior: BioPriorPerturbation = None  # type: ignore
 
         # Langevin dynamics simulator for relaxing missing atoms
         self.langevin_simulator = LangevinDynamicsSimulator.default()
@@ -239,6 +242,8 @@ class PriorSampler:
         assert chain.is_protein
         mask = np.isfinite(coords).all(axis=-1)
         if not mask.any():
+            return coords
+        if self.bioprior is None:
             return coords
         sequence = chain.get_sequence(map_to_standard=True)
         perturbed = self.bioprior.run(sequence, coords, rng=rng)

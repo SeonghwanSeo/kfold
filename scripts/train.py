@@ -8,10 +8,10 @@ import torch
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 
-from kfold.config import load_config, print_config, save_config, to_dict
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.training.optim.ema import initialize_parameter_groups_from_ema
 from kfold.training.training_module import KFoldTrainingModule
+from kfold.utils.config import load_config, print_config, save_config, to_dict
 
 
 def parse_args() -> argparse.Namespace:
@@ -158,7 +158,6 @@ def apply_global_hparams_overrides(cfg: DictConfig) -> None:
     # Compute parameters dependent on global_hparams
     global_hparams = train_cfg.global_hparams
     batch_size: int = global_hparams.batch_size
-    diffusion_batch_size: int = global_hparams.diffusion_batch_size
     global_batch_size: int = global_hparams.global_batch_size
 
     if global_batch_size % (batch_size * world_size) != 0:
@@ -174,7 +173,6 @@ def apply_global_hparams_overrides(cfg: DictConfig) -> None:
     )
 
     train_cfg.data.train_batch_size = batch_size
-    train_cfg.training.diffusion_batch_size = diffusion_batch_size
     train_cfg.trainer.accumulate_grad_batches = accumulate_grad_batches
     train_cfg.trainer.limit_train_batches = limit_train_batches
 

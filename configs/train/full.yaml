@@ -16,7 +16,6 @@ init_from_ema: []
 # Training parameters for multi-gpu setup.
 global_hparams:
   batch_size: 1
-  diffusion_batch_size: 48
   global_batch_size: 256
   num_global_steps_per_epoch: 1000
 
@@ -35,7 +34,7 @@ data:
   max_tokens: ???
   max_atoms: ???
   max_sequence_tokens: ???
-  max_apo: 3
+  max_apo: 4
 
   # DataLoader
   train_batch_size: 1 # NOTE: Overridden by global_hparam
@@ -85,19 +84,12 @@ training:
   train_diffusion_head: true
   train_confidence_head: true
 
-  num_recycles: 3
-
   # For structure module training
   diffusion_batch_size: 48 # NOTE: Overridden by global_hparam
 
   # For confidence module training
-  num_mini_rollout_steps: 20 # Number of rollout steps for confidence training
+  num_mini_rollout_steps: 30 # Number of rollout steps for confidence training
   num_mini_rollout_samples: 1 # Number of diffusion samples for confidence training
-
-  # Train loss binned logging
-  log_time_binned_losses: false
-  time_bin_width: 0.1
-  log_entity_binned_losses: false
 
   parcae:
     min_recycles: 0
@@ -106,14 +98,24 @@ training:
     grad_recurrence_steps: 2
     recurrence_sampling_mode: shared # NOTE: `rank_independent` for sample-level recurrence count sampling
 
+  soar:
+    mode: disabled
+    root_time_policy: mirror_base_training_time
+    apply_rollout_churn: false
+    rollout_schedule_num_steps: 100
+    rollout_schedule_step_count: 1.0
+    auxiliary_samples_per_root: 4
+    forward_retention_min: 0.5
+    lambda_aux: 1.0
+    mid_time_lower: 0.2
+    high_time_split: 0.8
+    mid_time_probability: 1.0
+
 validation:
   # Validation step hyperparameters
   num_recycles: 3
   num_steps: 100
   num_diffusion_samples: 5
-  save_predictions: false
-  return_traj: false
-  traj_format: "pdb"
 
 optimizer:
   opt: "adam"
@@ -136,30 +138,12 @@ loss:
     distogram: 3e-2
     diffusion: 4.0
     confidence: 1e-4
+    patch_geometry: 0.05
     # Diffusion loss weights
-    chain_com: 0.0
     bond: 0.0 # 1 for fine-tuning (See Section 5.2 for the AF3 paper)
     smooth_lddt: 1.0
-    # Uniform patch geometry supervision is opt-in per model/config.
-    patch_geometry: 0.0
-    interface_contact: 0
 
-  # Uniform patch-pair COM geometry auxiliary loss. This is off by default;
-  # enable both model.patch_pair_geometry.enabled and this global weight for
-  # an explicit patch-supervision experiment.
-  patch_geometry_loss:
-    near_cutoff: 12.0
-    ranking_weight: 1.0
-
-  # Hard-pair exact-bin CE on active inter-chain interfaces.
-  # This is inactive unless loss.weights.interface_contact is positive.
-  interface_contact_loss:
-    contact_cutoff: 8.0
-    positive_weight: 0.75
-    negative_weight: 0.25
-    focal_gamma: 2.0
-    fp_budget_ratio: 4.0
-    eps: 1e-6
+  patch_geometry_loss: {}
 
   # Diffusion loss
   diffusion_loss:

@@ -62,7 +62,7 @@ from kfold.data.types.structure import RefStructure, Chain, CovalentConnection
 
 ref_struct: RefStructure = ...
 chains: list[Chain] = ref_struct.chains
-connections: list[CovalentConnection] = ref_struct.covalent_connections
+connections: list[CovalentConnection] = ref_struct.connections
 metadata: Metadata = ref_struct.metadata
 ```
 
@@ -83,7 +83,7 @@ seq_arr: tokenized.SequenceArray = struct.sequence
 asym_id = chain_arr.asym_id  # Shape: (Nchain,)
 coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 # ...
-````
+```
 
 ### Chain-level layout
 

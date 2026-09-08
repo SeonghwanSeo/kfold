@@ -160,8 +160,6 @@ def main():
         "without_apo": 0,
         "with_esmfold": 0,
         "with_prot_sampler": 0,
-        "with_dna_helix": 0,
-        "with_rna_sampler": 0,
     }
     all_lookup: dict[str, dict[str, list[dict[str, str]]]] = {}
     for m in tqdm(metadatas, desc="Processing entries"):
@@ -206,12 +204,6 @@ def main():
                     for apo_info in apo_dicts
                 ):
                     stats["with_prot_sampler"] += 1
-                if any(apo_info["source"] == "dna_helix" for apo_info in apo_dicts):
-                    stats["with_dna_helix"] += 1
-                if any(
-                    apo_info["source"].startswith("rna_sampler") for apo_info in apo_dicts
-                ):
-                    stats["with_rna_sampler"] += 1
             else:
                 stats["without_apo"] += 1
 
