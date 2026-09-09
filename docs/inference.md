@@ -93,22 +93,47 @@ bonds:
 
 ## Pipeline
 
-Run preparation followed by prediction with one command:
+Create independent inputs for each `(target, seed)`, then predict:
 
 ```bash
 kfold pipeline --input query.yaml --out-dir results/ --seed 1 2 3
-kfold pipeline --input query.yaml --out-dir results/ --seed 1 2 3 --apo-seed 42
+kfold pipeline --input query.yaml --out-dir results/ --seed 5 --num-apo 3
 ```
 
-`--seed` controls prediction and defaults to `1`. `--apo-seed` controls
-preparation and defaults to the values of `--seed`. Both accept one or more
-unique, nonnegative integers. Prepared queries and apo/prior structures are
-saved under `<out-dir>/prepared/`; prediction results are saved under
-`<out-dir>/`. Only queries prepared by this invocation are passed to prediction.
+`--seed` accepts unique, nonnegative prediction seeds (default: `1`).
+`--num-apo` defaults to `1`. For proteins without supplied apo inputs, AtlasFold
+runs for each apo index from 1 through `num-apo`, using the integer formed by
+appending the index to the prediction seed: seed 5 with three apo candidates uses 51, 52, 53
+(index 10 would use 510). Each derived seed generates five structures. The best
+structure from each derived seed becomes an apo candidate, and all generated
+structures form the prior ensemble unless a prior was supplied. Thus
+`--num-apo 3` gives 3 apo candidates and 15 prior candidates per protein entry.
+There is no separate apo seed option. `--num-samples` controls prediction only.
 
-All prediction options are available. `--num-samples`, `--num-gpus`,
-`--cache-dir`, and `--overwrite` also apply to preparation. `--dry-run` applies
-only to prediction: preparation still generates any missing apo structures.
+At startup, each pending job gets its own directory and `query.yaml`. Supplied
+apo/prior files are copied into that job's `apo/`; existing apo inputs are used
+without generating replacements. Generated apo ensembles are independent
+between prediction seeds. For target `example` and seed 5, the layout is:
+
+```text
+results/example/example_seed-5/
+  query.yaml
+  apo/
+  example_seed-5_sample-0.cif
+  example_seed-5_sample-0_confidences.json
+  ...
+  done.txt
+```
+
+GPU workers receive `(target, seed)` jobs. Each worker prepares all its assigned
+inputs, releases AtlasFold/AtlasFold-M, and then predicts with the same runner,
+reusing AtlasLM. Completed jobs are skipped unless `--overwrite` is passed.
+Interrupted apo generation reuses completed derived seeds. Use `--overwrite`
+when changing inputs or sampling options in an existing output directory.
+
+All prediction options are available. `--num-gpus`, `--cache-dir`, and
+`--overwrite` also apply to preparation. `--dry-run` still generates missing apo
+structures, then validates prepared inputs without running K-Fold prediction.
 
 ## Preparation
 
@@ -161,7 +186,7 @@ Prediction options:
 | Option | Default | Description |
 | :--- | :--- | :--- |
 | `--seed` | `1` | One or more K-Fold seeds. |
-| `--num-apo` | `3` | Maximum apo structures used per protein entry. |
+| `--num-apo` | `1` | Maximum apo structures used per protein entry. |
 | `--num-samples` | `5` | Diffusion samples per query and seed. |
 | `--num-recycles` | `10` | Trunk recycle count. |
 | `--num-steps` | `100` | Diffusion step count. |

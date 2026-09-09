@@ -28,7 +28,7 @@ class FoldingResult:
         directory.mkdir(parents=True, exist_ok=True)
         done = directory / "done.txt"
         done.unlink(missing_ok=True)
-        self.query.save(directory.parent / f"{name}_seed-{seed}_query.yaml")
+        self.query.save(directory / "query.yaml")
         for i, coords in enumerate(self.coordinates):
             prefix = directory / f"{name}_seed-{seed}_sample-{i}"
             score = self.confidence_scores[i]

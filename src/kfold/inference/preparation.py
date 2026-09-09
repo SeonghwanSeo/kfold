@@ -68,12 +68,81 @@ def copy_document(document: dict, source_dir: str | Path) -> dict:
     return data
 
 
+def prepare_job_inputs(
+    input_path: str | Path,
+    out_dir: str | Path,
+    *,
+    seeds: Sequence[int],
+    overwrite: bool = False,
+    dry_run: bool = False,
+) -> list[tuple[Path, int]]:
+    """Create a query and local copies of supplied structures for each seed."""
+    files = input_files(input_path)
+    documents = [yaml.safe_load(path.read_text()) for path in files]
+    names = [
+        _name(data.get("name", path.stem))
+        for path, data in zip(files, documents, strict=True)
+    ]
+    if len(set(names)) != len(names):
+        raise ValueError("Query names must be unique across input files.")
+    root = Path(out_dir).resolve()
+    targets = {
+        root / name / f"{name}_seed-{seed}" / "query.yaml"
+        for name in names
+        for seed in seeds
+    }
+    if {path.resolve() for path in files} & targets:
+        raise ValueError("Output queries must not overwrite source queries.")
+    jobs = []
+    for source, document, name in zip(files, documents, names, strict=True):
+        for seed in seeds:
+            directory = root / name / f"{name}_seed-{seed}"
+            done = directory / "done.txt"
+            if done.exists() and not overwrite and not dry_run:
+                continue
+            if overwrite:
+                done.unlink(missing_ok=True)
+            (directory / "apo").mkdir(parents=True, exist_ok=True)
+            data = copy_document(document, source.parent)
+            data["name"] = name
+            data["seed"] = seed
+            for section in ("sequences", "multimer_sequences"):
+                for index, wrapper in enumerate(data.get(section, [])):
+                    for entity in wrapper.values():
+                        for field in ("apo", "prior"):
+                            if not entity.get(field):
+                                continue
+                            paths = []
+                            for number, supplied in enumerate(entity[field], 1):
+                                supplied = Path(supplied)
+                                destination = (
+                                    directory
+                                    / "apo"
+                                    / f"{section}-{index}"
+                                    / f"{field}-{number}{supplied.suffix}"
+                                )
+                                destination.parent.mkdir(parents=True, exist_ok=True)
+                                if supplied.resolve() != destination.resolve():
+                                    shutil.copy2(supplied, destination)
+                                paths.append(
+                                    destination.relative_to(directory).as_posix()
+                                )
+                            entity[field] = paths
+            path = directory / "query.yaml"
+            temporary = path.with_suffix(".yaml.tmp")
+            temporary.write_text(yaml.safe_dump(data, sort_keys=False))
+            temporary.replace(path)
+            jobs.append((path, seed))
+    return jobs
+
+
 def prepare_document(
     runner,
     document: dict,
     out_dir: str | Path,
     *,
     source_dir: str | Path = ".",
+    apo_dir: str | Path = "apo",
     seeds: Sequence[int] = (1,),
     num_samples: int = 5,
     overwrite: bool = False,
@@ -81,7 +150,7 @@ def prepare_document(
     """Return a copied query dictionary with paths to saved apo/prior files.
 
     Existing apo/prior inputs are preserved and made absolute. Generated
-    structures are stored relative to the output query directory.
+    structures are stored in ``apo_dir`` relative to the output query directory.
     """
     if not seeds or len(set(seeds)) != len(seeds) or any(seed < 0 for seed in seeds):
         raise ValueError("Seeds must be unique, nonnegative integers.")
@@ -106,9 +175,14 @@ def prepare_document(
             task_name = f"{section}-{index}"
             apo, prior = [], []
             for seed in seeds:
-                directory = root / "apo" / target / task_name / f"seed-{seed}"
+                directory = root / apo_dir / task_name / f"seed-{seed}"
                 done = directory / "done.txt"
-                if overwrite or not done.exists():
+                complete = done.is_file() and all(
+                    (directory / f"rank_{rank}.{suffix}").is_file()
+                    for rank in range(1, num_samples + 1)
+                    for suffix in ("pdb", "json")
+                )
+                if overwrite or not complete:
                     done.unlink(missing_ok=True)
                     if multimer:
                         from atlasfold.model import SamplingConfig
@@ -204,7 +278,14 @@ def prepare_files(runner, input_path, out_dir, **kwargs) -> list[Path]:
         temporary = target.with_suffix(".yaml.tmp")
         temporary.write_text(yaml.safe_dump(data, sort_keys=False))
         temporary.replace(target)
-        prepared = prepare_document(runner, data, root, source_dir=path.parent, **kwargs)
+        prepared = prepare_document(
+            runner,
+            data,
+            root,
+            source_dir=path.parent,
+            apo_dir=Path("apo") / data["name"],
+            **kwargs,
+        )
         temporary.write_text(yaml.safe_dump(prepared, sort_keys=False))
         temporary.replace(target)
     return targets
