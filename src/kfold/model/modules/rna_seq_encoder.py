@@ -11,7 +11,7 @@ from kfold.data.types.model_input import FoldingInput
 from kfold.model.layers.seq_enc.transformer_stack import TransformerStack
 from kfold.utils.config import configurable
 
-HF_REPO_ID = "SeonghwanSeo/kfold"
+HF_REPO_ID = "SeonghwanSeo/kfold-assets"
 HF_FILENAME = "weights/rna_seq_1b.pth"
 
 

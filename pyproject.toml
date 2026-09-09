@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kfold"
-version = "0.2.0"
+version = "1.0.0"
 description = "K-Fold"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,7 +13,6 @@ dependencies = [
   # core dependencies
   "torch",
   "numpy",
-  # additional dependencies
   "tqdm",
   "scipy",
   "omegaconf",
@@ -21,8 +20,14 @@ dependencies = [
   "rdkit",
   "einops",
   "gemmi",
-  "zstandard",
+  "pyyaml",
+  # apo sampler
+  "numba",
+  "atlasfold",
 ]
+
+[project.scripts]
+kfold = "kfold.cli.main:main"
 
 [project.optional-dependencies]
 cuequiv = [
@@ -37,7 +42,7 @@ train = [
   'wandb', # for experiment tracking
   'lmdb', # for training dataset storage
   'msgpack', # for data serialization
-  "numba",
+  "zstandard",
   'bioprior @ git+https://github.com/SeonghwanSeo/bio-prior.git@v0.1.2',
 ]
 preprocess = [

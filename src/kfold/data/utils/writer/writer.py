@@ -139,4 +139,4 @@ class KFoldWriter:
                 block: gemmi.cif.Block = make_mmcif_block(traj_structures)
                 block.write_file(str(filename))
         except Exception as e:
-            print(f"Failed to write trajectory to {filename}: {e}")
+            raise OSError(f"Failed to write trajectory to {filename}") from e
