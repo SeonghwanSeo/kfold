@@ -477,6 +477,7 @@ class Query:
     bonds: list[Bond] = dataclasses.field(default_factory=list)
     seed: int = 0  # Default seed, overridden to command line argument
     yaml: str  # Original YAML content
+    assembly: dict | None = None
 
     @property
     def priority(self) -> tuple[int, int, str]:
@@ -681,6 +682,7 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
         multimer_sequences=multimer_sequences,
         bonds=bonds,
         yaml=yaml.safe_dump(input_dict),
+        assembly=input_dict.get("assembly"),
     )
 
 

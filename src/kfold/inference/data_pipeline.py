@@ -141,9 +141,17 @@ class InputDataPipeline:
         return self.run(input)
 
     def run(
-        self, input: query.Query
+        self,
+        input: query.Query,
+        *,
+        sources: ResolvedStructureSources | None = None,
+        prior_groups=(),
+        stage_index: int = 0,
+        trunk_groups=(),
     ) -> tuple[RefStructure, TokenizedStructure, FoldingInput, list[list[dict]]]:
         """Convert one query into model input and raw apo-token records."""
+        if input.assembly is not None:
+            raise ValueError("assembly requires scripts/inference_sequential.py")
         # Set up RNGs
         source_rng = np.random.default_rng(np.random.SeedSequence([input.seed, 0]))
         prior_rng = np.random.default_rng(np.random.SeedSequence([input.seed, 1]))
@@ -153,7 +161,8 @@ class InputDataPipeline:
         ref_struct = self.read_query(input)
 
         # Read apo/prior structures
-        sources = self.resolve_structure_sources(ref_struct, input, source_rng)
+        if sources is None:
+            sources = self.resolve_structure_sources(ref_struct, input, source_rng)
 
         # Each resolved source contributes exactly one prior. Perturbation,
         # relaxation, and rigid augmentation stay inside PriorSampler.
@@ -165,6 +174,19 @@ class InputDataPipeline:
             axis=0,
         )
 
+        if prior_groups:
+            from .assembly import apply_prior_groups
+
+            apply_prior_groups(
+                ref_struct,
+                prior_coords,
+                prior_groups,
+                self.prior_sampler,
+                np.random.default_rng(
+                    np.random.SeedSequence([input.seed, 3, stage_index])
+                ),
+            )
+
         # Tokenize structure
         # Learned structure token IDs are added later on the model device.
         tokenized = self.tokenizer(
@@ -175,8 +197,21 @@ class InputDataPipeline:
             prior_coords=prior_coords,
         )
 
+        records = sources.struct_token_records
+        if trunk_groups:
+            from .assembly_conditioning import apply_trunk_groups
+
+            records = apply_trunk_groups(
+                ref_struct,
+                tokenized,
+                records,
+                trunk_groups,
+                np.random.default_rng(
+                    np.random.SeedSequence([input.seed, 4, stage_index])
+                ),
+            )
         f_input = self.featurizer(tokenized)
-        return ref_struct, tokenized, f_input, sources.struct_token_records
+        return ref_struct, tokenized, f_input, records
 
     def read_query(self, input: query.Query) -> RefStructure:
         """Prepare the reference structure from the input file.

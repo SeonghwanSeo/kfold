@@ -711,6 +711,14 @@ def _insert_apo_coordinates(
 
         g_tok_i = end
 
+    refresh_apo_geometry(tok)
+
+
+def refresh_apo_geometry(tok: TokenizedStructure):
+    """Recompute derived apo geometry/masks after replacing atom coordinates."""
+    tok.token.apo_center_coords[:] = np.nan
+    tok.token.apo_repr_coords[:] = np.nan
+    tok.token.apo_frame_coords[:] = np.nan
     for tok_i in range(tok.num_tokens):
         center_idx = int(tok.token.center_index[tok_i])
         repr_idx = int(tok.token.repr_index[tok_i])
