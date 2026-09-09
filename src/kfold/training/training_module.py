@@ -349,7 +349,6 @@ class KFoldTrainingModule(pl.LightningModule):
                     dataset_metrics[f"{prefix}/{k}"] = MeanMetric()
             for k in validation_metrics.monitor_metric_names:
                 dataset_metrics[f"monitor/{k}"] = MeanMetric()
-            dataset_metrics["monitor/distogram_loss"] = MeanMetric()
             val_metrics.append(MetricCollection(dataset_metrics, prefix=f"{name}/"))
         self.val_metrics = torch.nn.ModuleList(val_metrics)
 
@@ -449,10 +448,10 @@ class KFoldTrainingModule(pl.LightningModule):
         # NOTE: Compute the losses in float32 for better numerical stability
         # Compute losses
         if self.train_trunk:
-            distogram_loss, distogram_metrics = self.compute_distogram_loss(
+            distogram_loss = self.distogram_loss(
                 distogram_out=model_output["distogram"],
                 f_input=f_input,
-            )
+            ).mean()
             patch_weight = self.loss_weights["patch_geometry"]
             if patch_weight > 0:
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
@@ -461,7 +460,7 @@ class KFoldTrainingModule(pl.LightningModule):
             else:
                 patch_geometry_loss, patch_geometry_metrics = 0.0, {}
         else:
-            distogram_loss, distogram_metrics = 0.0, {}
+            distogram_loss = 0.0
             patch_geometry_loss, patch_geometry_metrics = 0.0, {}
 
         if self.train_diffusion_head:
@@ -564,8 +563,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
         # Log loss and metrics
         all_metrics = (
-            distogram_metrics
-            | patch_geometry_metrics
+            patch_geometry_metrics
             | diffusion_metrics
             | confidence_metrics
             | sample_metrics
@@ -661,10 +659,6 @@ class KFoldTrainingModule(pl.LightningModule):
         # Compute validation metrics
         sample_metrics: list[dict[str, Any]] = []
         with torch.autocast("cuda", torch.float32):
-            distogram_loss = self.compute_validation_distogram_loss(
-                distogram_out, f_input
-            )
-
             # Permute predicted and true coordinates to align
             for i in range(num_samples):
                 pred_coords_i = diffusion_out["coordinates"][i, :n_atoms]
@@ -710,7 +704,6 @@ class KFoldTrainingModule(pl.LightningModule):
             _m = aggr_metrics["monitor"]
             if k in _m:
                 metrics[f"monitor/{k}"].update(_m[k])
-        metrics["monitor/distogram_loss"].update(distogram_loss)
 
     def on_validation_epoch_start(self):
         torch.backends.cudnn.benchmark = False
@@ -736,47 +729,6 @@ class KFoldTrainingModule(pl.LightningModule):
         torch.cuda.empty_cache()
 
     # === Loss functions === #
-    def compute_validation_distogram_loss(
-        self,
-        distogram_out: dict[str, torch.Tensor],
-        f_input: FoldingInput,
-    ) -> torch.Tensor:
-        """Compute validation distogram loss from inference outputs."""
-        logits = distogram_out["logits"]
-        if not f_input.is_batched:
-            f_input = f_input.add_batch_dim()
-        if logits.ndim == 3:
-            distogram_out = distogram_out | {"logits": logits.unsqueeze(0)}
-
-        loss_per_batch = self.distogram_loss(distogram_out, f_input)
-        return loss_per_batch.mean().detach()
-
-    def compute_distogram_loss(
-        self,
-        distogram_out: dict[str, torch.Tensor],
-        f_input: FoldingInput,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Compute distogram loss.
-
-        Parameters
-        ----------
-        distogram_out : dict[str, torch.Tensor]
-            Distogram logits and distance-bin boundaries returned by the model.
-        f_input : FoldingInput
-            The input features containing the target distogram and masks.
-
-        Returns
-        -------
-        disto_loss : torch.Tensor
-            The computed distogram loss (scalar).
-        metrics : dict[str, torch.Tensor]
-            A dictionary containing loss metrics.
-        """
-        loss_per_batch = self.distogram_loss(distogram_out, f_input)
-        loss = loss_per_batch.mean()
-        metrics = {"distogram_loss": loss.detach()}
-        return loss, metrics
-
     def compute_diffusion_loss(
         self,
         x_pred: torch.Tensor,

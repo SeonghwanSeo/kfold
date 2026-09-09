@@ -97,8 +97,6 @@ def main() -> None:
 
     polymer_outputs = {
         C.ChainType.PROTEIN: seq_dir / "unique_protein_sequences.fasta",
-        C.ChainType.RNA: seq_dir / "unique_rna_sequences.fasta",
-        C.ChainType.DNA: seq_dir / "unique_dna_sequences.fasta",
     }
     counts = Counter()
     for chain_type, output_path in polymer_outputs.items():
@@ -114,8 +112,6 @@ def main() -> None:
     print(f"Validation IDs: {len(entry_ids)}")
     print(f"Selected sequence records: {len(selected)}")
     print(f"Proteins: {counts['protein']}")
-    print(f"RNAs: {counts['rna']}")
-    print(f"DNAs: {counts['dna']}")
     print(f"Ligands: {ligand_count}")
     print(f"Wrote sequences to {seq_dir}")
 

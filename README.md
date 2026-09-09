@@ -1,66 +1,56 @@
-# K-Fold
+# KFold
 
-K-Fold is a biomolecular foundation model for high-accuracy structure prediction of biomolecular complexes.
-K-Fold leverages pre-trained sequence encoders and structure encoders to achieve high fidelity **without Multiple Sequence Alignments (MSAs)**.
-By incorporating an **apo-to-holo diffusion bridge**, K-Fold models the transition from unbound to bound states, serving as a unified and extensible research tool for the computational biology community.
-
----
+KFold predicts biomolecular complex structures without multiple sequence alignments
+(MSAs), using pretrained encoders and an apo-to-holo diffusion model.
 
 ## Installation
 
-K-Fold requires Python 3.11+.
+Python 3.11+ and a CUDA GPU are required for prediction.
 
 ```bash
-# Clone the repository
 git clone https://github.com/wykim-lab/kfold.git
 cd kfold
-
-# Install with cuequivariance kernels
 pip install '.[cuequiv]'
+```
 
-# Install in editable mode with training/dev dependencies
+For development and training:
+
+```bash
 pip install -e '.[train,cuequiv,dev]'
 pre-commit install
 ```
 
 ## Inference
 
-K-Fold takes a YAML or JSON input file defining the molecular entities and their sequences/apo structures.
+Describe proteins, DNA, RNA and ligands in YAML or JSON. Generate missing protein
+apo structures with AtlasFold, then run KFold:
 
 ```bash
-# Single-GPU Inference
-python scripts/inference.py \
-  --config configs/kfold.yaml \
-  --checkpoint path/to/model.ckpt \
-  --input examples/casp15_h1106.yaml \
-  --out_dir ./results/
+kfold prepare --input queries/ --out-dir prepared/ --seed 1 2 3 4 5
+kfold predict --input prepared/ --out-dir results/ --seed 1 2 3 4 5
 ```
 
-For detailed instructions on input formats (SMILES, CCD, apo paths) and multi-GPU execution, see the **[Inference Guide](docs/inference.md)**.
+Each preparation seed generates five PDB structures by default. The best structure
+from each seed becomes an apo candidate, and all 25 become prior candidates.
+Prediction uses up to three apo candidates and produces five samples per seed.
+Queries with existing apo inputs can go directly to `predict`.
 
-> Future Work
-> - **Automatic Apo Prediction**: Automatically call ESMFold to generate protein apo structures if not provided in the query.
-> - **Improved Folding Model**: Develop and integrate a superior protein folding model to provide high-quality apo structures automatically.
+Models and CCD are downloaded automatically. Use `--cache-dir` to select the
+Hugging Face cache and `--num-gpus` for multiple GPUs. Completed seeds are skipped;
+use `--overwrite` to regenerate them.
 
----
+You can also run the CLI with `python run_kfold.py` in an environment where
+KFold is installed.
 
-## Training & Development
+See the [Inference Guide](docs/inference.md) for input examples, options and the
+Python `KFoldRunner` API.
 
-K-Fold is designed to be highly extensible for structural biology research.
+## Training and development
 
-- **Data Structures**: Model input and structure representations are documented in **[Data Structure](docs/developers/DATA_STRUCTURE.md)**.
-- **Training**: Detailed instructions for dataset preparation and training loops are available in the **[Training Guide](docs/developers/TRAINING_GUIDE.md)**.
-
----
+- [Training and dataset preparation](docs/developers/TRAINING_GUIDE.md)
+- [Custom distillation datasets](docs/developers/CUSTOM_DATASET.md)
+- [Data structures](docs/developers/DATA_STRUCTURE.md)
 
 ## License
 
-This project is licensed under the terms of the Apache 2.0 license. See `LICENSE` for more details.
-
-## Citation
-
-If you use K-Fold in your research, please cite:
-
-```text
-(TODO: Add citation here)
-```
+KFold is licensed under the Apache License 2.0. See [LICENSE](LICENSE).

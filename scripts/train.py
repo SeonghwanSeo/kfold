@@ -6,7 +6,7 @@ import lightning.pytorch as pl
 import lightning.pytorch.callbacks as pl_callbacks
 import torch
 from lightning.pytorch.utilities import rank_zero_only
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
 
 from kfold.training.dataset.datamodule import TrainingDataModule
 from kfold.training.optim.ema import initialize_parameter_groups_from_ema
@@ -46,17 +46,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size",
         type=int,
-        help="Batch size for training",
+        help="Training batch size per GPU.",
     )
     parser.add_argument(
         "--global_batch_size",
         type=int,
-        help="Global batch size for training across all GPUs.",
+        help="Effective batch size across all GPUs; sets gradient accumulation.",
     )
     parser.add_argument(
-        "--num_steps_per_epoch",
+        "--num_batches_per_epoch",
         type=int,
-        help="Number of training steps per epoch.",
+        help="Number of training batches per GPU per epoch.",
     )
     parser.add_argument(
         "--num_workers",
@@ -77,11 +77,6 @@ def parse_args() -> argparse.Namespace:
         "--debug",
         action="store_true",
         help="Enable debug mode",
-    )
-    parser.add_argument(
-        "--skip_val",
-        action="store_true",
-        help="Skip validation steps",
     )
     parser.add_argument(
         "--override",
@@ -105,11 +100,9 @@ def parse_config(args) -> DictConfig:
     if args.num_nodes is not None:
         cfg.train.trainer.num_nodes = args.num_nodes
     if args.batch_size is not None:
-        cfg.train.global_hparams.batch_size = args.batch_size
-    if args.global_batch_size is not None:
-        cfg.train.global_hparams.global_batch_size = args.global_batch_size
-    if args.num_steps_per_epoch is not None:
-        cfg.train.global_hparams.num_global_steps_per_epoch = args.num_steps_per_epoch
+        cfg.train.data.train_batch_size = args.batch_size
+    if args.num_batches_per_epoch is not None:
+        cfg.train.trainer.limit_train_batches = args.num_batches_per_epoch
     if args.num_workers is not None:
         cfg.train.data.num_workers = args.num_workers
     if args.wandb:
@@ -117,9 +110,6 @@ def parse_config(args) -> DictConfig:
 
     # Use the training seed for weighted data sampling.
     cfg.train.data.sampling_seed = cfg.train.seed
-
-    # Apply global_hparams overrides
-    apply_global_hparams_overrides(cfg)
 
     if args.debug:
         # Enable debug mode settings
@@ -129,58 +119,39 @@ def parse_config(args) -> DictConfig:
         cfg.train.trainer.accumulate_grad_batches = 1
         cfg.train.trainer.log_every_n_steps = 1
         cfg.train.trainer.limit_train_batches = 100
-        cfg.train.trainer.limit_val_batches = 10
+        if cfg.train.trainer.limit_val_batches != 0:
+            cfg.train.trainer.limit_val_batches = 10
         cfg.train.trainer.enable_checkpointing = False
         cfg.train.data.num_workers = 0
         cfg.train.data.safe_load = False
         cfg.train.wandb.use = False
 
-    if args.skip_val:
-        # Skip validation steps, use when validation process is not yet ready
-        print("Skipping validation steps.")
-        cfg.train.trainer.num_sanity_val_steps = 0
-        cfg.train.trainer.limit_val_batches = 0
+    if args.global_batch_size is not None:
+        devices = cfg.train.trainer.devices
+        if devices == "auto" or devices == -1:
+            num_gpus = torch.cuda.device_count()
+        elif isinstance(devices, (list, ListConfig)):
+            num_gpus = len(devices)
+        else:
+            num_gpus = int(devices)
+        batch_size = cfg.train.data.train_batch_size
+        num_nodes = cfg.train.trainer.num_nodes
+        if min(batch_size, num_gpus, num_nodes, args.global_batch_size) <= 0:
+            raise ValueError("Batch sizes and GPU/node counts must be positive.")
+        batch_per_step = batch_size * num_gpus * num_nodes
+        if args.global_batch_size % batch_per_step:
+            raise ValueError(
+                f"Global batch size {args.global_batch_size} must be divisible by "
+                f"batch size × GPUs × nodes ({batch_per_step})."
+            )
+        cfg.train.trainer.accumulate_grad_batches = (
+            args.global_batch_size // batch_per_step
+        )
 
     return cfg
 
 
-def apply_global_hparams_overrides(cfg: DictConfig) -> None:
-    # Estimate number of GPUs
-    train_cfg = cfg.train
-    if train_cfg.trainer.devices == "auto":
-        num_gpus: int = torch.cuda.device_count()
-    else:
-        num_gpus = cfg.train.trainer.devices
-    assert isinstance(num_gpus, int), "num_gpus should be an integer or 'auto'."
-    assert num_gpus > 0, "No GPUs available for training."
-    world_size: int = train_cfg.trainer.num_nodes * num_gpus
-
-    # Compute parameters dependent on global_hparams
-    global_hparams = train_cfg.global_hparams
-    batch_size: int = global_hparams.batch_size
-    global_batch_size: int = global_hparams.global_batch_size
-
-    if global_batch_size % (batch_size * world_size) != 0:
-        raise ValueError(
-            f"Global batch size {global_batch_size} is not "
-            f"divisible by (batch_size {batch_size} * world_size {world_size})"
-        )
-    # compute accumulate_grad_batches
-    accumulate_grad_batches: int = global_batch_size // (batch_size * world_size)
-    # compute limit_train_batches
-    limit_train_batches: int = (
-        global_hparams.num_global_steps_per_epoch * accumulate_grad_batches
-    )
-
-    train_cfg.data.train_batch_size = batch_size
-    train_cfg.trainer.accumulate_grad_batches = accumulate_grad_batches
-    train_cfg.trainer.limit_train_batches = limit_train_batches
-
-    # Remove global_hparams from cfg after overrides
-    del cfg.train.global_hparams
-
-
-def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Trainer:
+def build_trainer(cfg, debug: bool = False) -> pl.Trainer:
     train_cfg = cfg.train
     pl_trainer_cfg = train_cfg.trainer
     save_dir = Path(train_cfg.out_dir) / train_cfg.name
@@ -224,8 +195,8 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
     tqdm_callback = pl_callbacks.TQDMProgressBar(refresh_rate=tqdm_refresh_rate)
     callbacks.append(tqdm_callback)
 
-    if not debug:
-        if skip_val:
+    if not debug and pl_trainer_cfg.enable_checkpointing:
+        if pl_trainer_cfg.limit_val_batches == 0:
             # Save checkpoint only based on training loss
             checkpoint_callback = pl_callbacks.ModelCheckpoint(
                 monitor="train/loss",
@@ -256,6 +227,11 @@ def build_trainer(cfg, debug: bool = False, skip_val: bool = False) -> pl.Traine
         max_epochs=pl_trainer_cfg.max_epochs,
         limit_train_batches=pl_trainer_cfg.limit_train_batches,
         limit_val_batches=pl_trainer_cfg.limit_val_batches,
+        num_sanity_val_steps=(
+            0
+            if pl_trainer_cfg.limit_val_batches == 0
+            else pl_trainer_cfg.get("num_sanity_val_steps", 2)
+        ),
         log_every_n_steps=pl_trainer_cfg.log_every_n_steps,
         enable_checkpointing=pl_trainer_cfg.enable_checkpointing,
         accumulate_grad_batches=pl_trainer_cfg.accumulate_grad_batches,

@@ -41,11 +41,13 @@ class ProteinSequenceEncoder(torch.nn.Module):
         n_heads: int = 36
         n_layers: int = 48
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, *, lm: torch.nn.Module | None = None):
         super().__init__()
         self.cfg: ProteinSequenceEncoder.Config = cfg
         source = Path(cfg.model_path) if cfg.model_path is not None else None
-        if source is None:
+        if lm is not None:
+            self.lm = lm
+        elif source is None:
             self.lm = load_model(cache_dir=cfg.cache_dir, dtype=torch.bfloat16)
         else:
             self.lm = load_model(source, dtype=torch.bfloat16)

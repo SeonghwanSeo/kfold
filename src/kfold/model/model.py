@@ -118,7 +118,7 @@ class LMToPair(torch.nn.Module):
 
 
 class KFold(torch.nn.Module):
-    def __init__(self, config: KFoldConfig):
+    def __init__(self, config: KFoldConfig, *, atlaslm: torch.nn.Module | None = None):
         super().__init__()
         self.config: KFoldConfig = config
         self.channel_s: int = config.channel_s
@@ -141,7 +141,7 @@ class KFold(torch.nn.Module):
 
         # Initialize pre-trained sequence and structure encoders.
         self.prot_seq_encoder = prot_seq_encoder.ProteinSequenceEncoder(
-            config.protein_sequence_encoder
+            config.protein_sequence_encoder, lm=atlaslm
         )
         self.prot_seq_to_s_lm = LMEncoder(
             self.prot_seq_encoder.d_model,
@@ -505,6 +505,7 @@ class KFold(torch.nn.Module):
         override_args: list[str] | None = None,
         use_ema: bool = True,
         strict: bool = True,
+        atlaslm: torch.nn.Module | None = None,
     ) -> Self:
         """Load model from checkpoint."""
         from kfold.utils.config import load_config
@@ -513,7 +514,7 @@ class KFold(torch.nn.Module):
         config = load_config(config_path, override_args=override_args)
 
         # Initialize model
-        model = cls(config)
+        model = cls(config, atlaslm=atlaslm)
 
         # Load checkpoint
         ckpt = torch.load(ckpt_path, map_location="cpu")
