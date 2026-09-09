@@ -1,6 +1,6 @@
-# KFold Inference Guide
+# K-Fold Inference Guide
 
-KFold accepts YAML or JSON queries describing proteins, DNA, RNA and ligands.
+K-Fold accepts YAML or JSON queries describing proteins, DNA, RNA and ligands.
 Prepare apo structures, then predict on a CUDA GPU. Both commands accept a query
 file or directory through `--input` and save results to `--out-dir`.
 
@@ -141,7 +141,7 @@ Prediction options:
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `--seed` | `1` | One or more KFold seeds. |
+| `--seed` | `1` | One or more K-Fold seeds. |
 | `--num-apo` | `3` | Maximum apo structures used per protein entry. |
 | `--num-samples` | `5` | Diffusion samples per query and seed. |
 | `--num-recycles` | `10` | Trunk recycle count. |
