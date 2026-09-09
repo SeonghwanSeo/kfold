@@ -1,6 +1,6 @@
-# KFold
+# K-Fold
 
-KFold predicts biomolecular complex structures without multiple sequence alignments
+K-Fold predicts biomolecular complex structures without multiple sequence alignments
 (MSAs), using pretrained encoders and an apo-to-holo diffusion model.
 
 ## Installation
@@ -23,7 +23,7 @@ pre-commit install
 ## Inference
 
 Describe proteins, DNA, RNA and ligands in YAML or JSON. Prepare protein apo
-structures, then run KFold. Preparation preserves existing apo inputs and uses
+structures, then run K-Fold. Preparation preserves existing apo inputs and uses
 AtlasFold for proteins without supplied apo structures:
 
 ```bash
@@ -41,7 +41,7 @@ Models and CCD are downloaded automatically. Use `--cache-dir` to select the
 Hugging Face cache and `--num-gpus` for multiple GPUs.
 
 You can also run the CLI with `python run_kfold.py` in an environment where
-KFold is installed.
+K-Fold is installed.
 
 See the [Inference Guide](docs/inference.md) for input examples, options and the
 Python `KFoldRunner` API.
@@ -54,4 +54,4 @@ Python `KFoldRunner` API.
 
 ## License
 
-KFold is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+K-Fold is licensed under the Apache License 2.0. See [LICENSE](LICENSE).
