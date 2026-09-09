@@ -1,6 +1,0 @@
-_yaml_: "full.yaml"
-
-training:
-  train_trunk: false
-  train_diffusion_head: false
-  train_confidence_head: true

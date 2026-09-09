@@ -73,13 +73,13 @@ class MoEFFN(torch.nn.Module):
             torch.empty(self.num_routed, d_model, self.h_dim)
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         orig_shape = x.shape
         x_flat = x.reshape(-1, self.d_model)
+        mask_flat = mask.reshape(-1)
 
         h = self.norm(x_flat)  # (T, D)
 
-        # Routing (run on ALL positions — no correctness issue, Mixtral/Qwen2 style)
         router_logits = self.router(h)  # (T, N)
         router_probs = F.softmax(router_logits, dim=-1)  # (T, N), differentiable
 
@@ -89,7 +89,13 @@ class MoEFFN(torch.nn.Module):
         top_probs = top_probs / (top_probs.sum(dim=-1, keepdim=True) + 1e-9)
 
         # Dispatch tokens to their selected routed experts.
-        out = self._dispatch_vectorized(h, top_idx, top_probs, x_flat.dtype)
+        out = self._dispatch_vectorized(
+            h,
+            top_idx,
+            top_probs,
+            mask_flat,
+            x_flat.dtype,
+        )
 
         return out.view(orig_shape)
 
@@ -98,6 +104,7 @@ class MoEFFN(torch.nn.Module):
         h: torch.Tensor,
         top_idx: torch.Tensor,
         top_probs: torch.Tensor,
+        mask: torch.Tensor,
         out_dtype: torch.dtype,
     ) -> torch.Tensor:
         """
@@ -112,19 +119,31 @@ class MoEFFN(torch.nn.Module):
         # ---- Flatten (T, k) routing into (T*k,) per-slot tensors -------
         flat_top_idx = top_idx.reshape(-1)  # (T*k,)
         flat_top_probs = top_probs.reshape(-1)  # (T*k,)
+        flat_slot_valid = mask.unsqueeze(-1).expand(T, K).reshape(-1)  # (T*k,)
         # Original token index for each (token, slot) pair.
         flat_token_src = (
             torch.arange(T, device=device).unsqueeze(-1).expand(T, K).reshape(-1)
         )  # (T*k,)
 
-        # ---- Sort slots by expert id so each expert's slots are contiguous ----
-        order = flat_top_idx.argsort()
+        # ---- Sort valid slots by expert id; place masked slots last -----------
+        # Include the slot index to make keys unique and preserve token order
+        # within each expert without relying on sort stability.
+        flat_slot_idx = torch.arange(T * K, device=device)
+        sort_key = torch.where(
+            flat_slot_valid,
+            flat_top_idx * (T * K) + flat_slot_idx,
+            E * (T * K) + flat_slot_idx,
+        )
+        order = sort_key.argsort()
         sorted_expert = flat_top_idx[order]  # (T*k,)
         sorted_token_src = flat_token_src[order]  # (T*k,)
         sorted_weights = flat_top_probs[order]  # (T*k,)
+        sorted_slot_valid = flat_slot_valid[order]  # (T*k,)
 
-        # ---- Per-expert offsets via bincount + cumsum ----
-        counts = torch.bincount(sorted_expert, minlength=E)  # (E,)
+        # ---- Per-expert offsets from valid slots only ------------------------
+        counts = (
+            F.one_hot(flat_top_idx, num_classes=E) * flat_slot_valid.unsqueeze(-1)
+        ).sum(dim=0)  # (E,)
         offsets = counts.cumsum(0) - counts  # (E,) start of each expert's chunk
 
         # Position of each sorted slot within its expert's bucket.
@@ -132,28 +151,35 @@ class MoEFFN(torch.nn.Module):
             torch.arange(T * K, device=device) - offsets[sorted_expert]
         )  # (T*k,)
 
-        # ---- Compute capacity (rounded up to multiple of 8) ----
-        # Using a Python int derived from a symbolic T: under dynamic=True,
-        # this stays symbolic in the compile graph (no recompile per shape).
-        capacity = math.ceil(T * K / E * self.capacity_factor / 8) * 8
-        capacity = max(capacity, 8)  # never zero
+        # ---- Compute static buffer and data-dependent effective capacity ------
+        # `buffer_capacity` determines tensor/BMM shapes and depends only on the
+        # padded input shape. `effective_capacity` depends on the number of real
+        # tokens, but is used only as a scalar mask threshold.
+        buffer_capacity = math.ceil(T * K / E * self.capacity_factor / 8) * 8
+        buffer_capacity = max(buffer_capacity, 8)
+        valid_token_count = mask.sum()
+        effective_capacity = (
+            torch.ceil(
+                valid_token_count.to(torch.float32) * (K * self.capacity_factor / (E * 8))
+            ).clamp_min(1)
+            * 8
+        )
 
         # ---- Identify overflow + clamp positions to safe range ----
-        overflow_mask = positions_in_bucket >= capacity
-        positions_clamped = positions_in_bucket.clamp(max=capacity - 1)
-        # Effective dispatch weight: zero for overflowed slots → drops them.
-        valid_mask = (~overflow_mask).to(h.dtype)  # (T*k,)
-        eff_weights = sorted_weights * valid_mask
+        dispatch_mask = sorted_slot_valid & (positions_in_bucket < effective_capacity)
+        positions_clamped = positions_in_bucket.clamp(max=buffer_capacity - 1)
+        dispatch_weight = dispatch_mask.to(h.dtype)  # (T*k,)
+        eff_weights = sorted_weights * dispatch_weight
 
         # ---- Build dispatch buffer (E, capacity, D) via index_add_ ----
-        flat_buf_idx = sorted_expert * capacity + positions_clamped  # (T*k,)
+        flat_buf_idx = sorted_expert * buffer_capacity + positions_clamped  # (T*k,)
         src_h = h.index_select(0, sorted_token_src)  # (T*k, D)
         # Zero out overflow contributions BEFORE the index_add to avoid
         # corrupting the legitimate (capacity-1) cell on collision.
-        src_h_masked = src_h * valid_mask.unsqueeze(-1).to(h.dtype)
-        buf_flat = torch.zeros(E * capacity, D, dtype=h.dtype, device=device)
+        src_h_masked = src_h * dispatch_weight.unsqueeze(-1)
+        buf_flat = torch.zeros(E * buffer_capacity, D, dtype=h.dtype, device=device)
         buf_flat.index_add_(0, flat_buf_idx, src_h_masked)
-        buf = buf_flat.view(E, capacity, D)  # (E, capacity, D)
+        buf = buf_flat.view(E, buffer_capacity, D)  # (E, capacity, D)
 
         # ---- Batched expert forward (single big bmm × 2) ----
         # buf: (E, capacity, D)
@@ -168,7 +194,7 @@ class MoEFFN(torch.nn.Module):
         )  # (E, capacity, D)
 
         # ---- Unpermute: gather expert outputs back into per-slot order ----
-        out_buf_flat = out_buf.reshape(E * capacity, D)  # (E*capacity, D)
+        out_buf_flat = out_buf.reshape(E * buffer_capacity, D)  # (E*capacity, D)
         gathered = out_buf_flat.index_select(0, flat_buf_idx)  # (T*k, D)
         # Apply per-slot weight (top_prob * valid_mask) — overflow → zero.
         weighted = gathered.to(out_dtype) * eff_weights.unsqueeze(-1).to(out_dtype)

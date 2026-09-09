@@ -67,7 +67,6 @@ class AtomisticImageEncoder(nn.Module):
         self.n_layers: int = n_layers
         self.distance_temperature: float = kwargs.get("distance_temperature", 10.0)
 
-        # Pair features passed to attention include learned pair reps plus scalar bias channel.
         feat_dims = [4, 1, 3 * 21, 4 * 21 + 4]
         self.feat_layers_atom1 = nn.ModuleList(
             nn.Sequential(

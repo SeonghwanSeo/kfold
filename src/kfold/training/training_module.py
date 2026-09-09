@@ -2,8 +2,6 @@
 
 import dataclasses
 import gc
-import json
-import pathlib
 from typing import Any, Self
 
 import lightning.pytorch as pl
@@ -12,20 +10,13 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 from torchmetrics import MeanMetric, MetricCollection
 
-from kfold.config import to_dict
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import RefStructure
-from kfold.data.utils.writer import KFoldWriter
 from kfold.model.model_train import KFoldConfig, KFoldForTrain
-from kfold.model.modules.structure.ecsi import ECSISOARConfig
-from kfold.training.utils.binned_loss_logging import (
-    EntityBinConfig,
-    EntityBinnedLossLogger,
-    TimeBinConfig,
-    TimeBinnedLossLogger,
-)
+from kfold.model.modules.ecsi import ECSISOARConfig
 from kfold.training.utils.gradient_logging import gradient_norm, parameter_norm
 from kfold.utils import confidence_metrics
+from kfold.utils.config import to_dict
 from kfold.utils.geometry.rigid_align import compute_rmsd
 
 from . import loss as loss_fn
@@ -129,43 +120,13 @@ class TrainingConfig(_Config):
     train_diffusion_head: bool = True
     train_confidence_head: bool = False
 
-    # trunk recycling; Parcae training-time sampling below owns the active
-    # recycle schedule, and this value is kept for config/checkpoint compatibility.
-    num_recycles: int = 3
-    parcae: ParcaeTrainConfig = dataclasses.field(default_factory=ParcaeTrainConfig)
+    parcae: ParcaeTrainConfig
     # for structure model training
     diffusion_batch_size: int = 48
-    soar: dict[str, Any] = dataclasses.field(
-        default_factory=lambda: dataclasses.asdict(ECSISOARConfig())
-    )
+    soar: dict[str, Any]
     # for confidence module training
     num_mini_rollout_steps: int = 20
     num_mini_rollout_samples: int = 1
-
-    # Logging: time-binned train losses (epoch-level)
-    # If enabled, logs
-    # `train_bin/uXX_YY/{loss,mse_loss,bond_loss,smooth_lddt_loss,diffusion_loss}
-    # where u is normalized diffusion time in [0, 1] with bins of width `time_bin_width`.
-    log_time_binned_losses: bool = False
-    time_bin_width: float = 0.1
-
-    # Logging: entity-count binned train losses (epoch-level)
-    # Entity count is computed as unique(token.asym_id) among valid tokens.
-    # Logs `train/{metric}_entity_interval{1..10}` where interval10 means >=10.
-    log_entity_binned_losses: bool = False
-
-
-def _get_diffusion_time_for_binning(
-    diffusion_out: dict[str, Any],
-) -> torch.Tensor | None:
-    """Return the diffusion time tensor used by generic time-bin logging."""
-    t_hat = diffusion_out.get("t_hat")
-    if torch.is_tensor(t_hat):
-        return t_hat
-    t = diffusion_out.get("t")
-    if torch.is_tensor(t):
-        return t
-    return None
 
 
 def _training_metric_log_name(metric_name: str) -> str:
@@ -176,41 +137,6 @@ def _training_metric_log_name(metric_name: str) -> str:
     return f"train/{metric_name}"
 
 
-def _get_structure_module_for_binning(model: Any) -> Any:
-    """Return the structure module that defines time/sigma bounds for binning."""
-    diffusion_head = getattr(model, "diffusion_head", None)
-    if diffusion_head is not None:
-        return diffusion_head
-
-    structure_module = getattr(model, "structure_module", None)
-    if structure_module is not None:
-        return structure_module
-
-    raise AttributeError(
-        "Model must expose either diffusion_head or structure_module for "
-        "time-binned loss logging."
-    )
-
-
-def _binary_average_precision(
-    score: torch.Tensor,
-    target: torch.Tensor,
-    mask: torch.Tensor,
-) -> torch.Tensor | None:
-    score = score[mask]
-    target = target[mask]
-    if score.numel() == 0 or not target.any() or target.all():
-        return None
-
-    order = torch.argsort(score, descending=True)
-    sorted_target = target[order].to(score.dtype)
-    rank = torch.arange(
-        1, sorted_target.numel() + 1, device=score.device, dtype=score.dtype
-    )
-    precision = sorted_target.cumsum(dim=0) / rank
-    return (precision * sorted_target).sum() / sorted_target.sum().clamp(min=1.0)
-
-
 @dataclasses.dataclass(kw_only=True)
 class ValidationConfig(_Config):
     """Validation step configuration."""
@@ -218,10 +144,6 @@ class ValidationConfig(_Config):
     num_recycles: int = 3
     num_steps: int = 20
     num_diffusion_samples: int = 5
-    return_traj: bool = False
-    traj_format: str = "cif"
-    # Validation output logging
-    save_predictions: bool = False
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -230,8 +152,7 @@ class LossConfig(_Config):
 
     weights: dict[str, float]
     diffusion_loss: Any
-    patch_geometry_loss: Any = dataclasses.field(default_factory=dict)
-    interface_contact_loss: Any = dataclasses.field(default_factory=dict)
+    patch_geometry_loss: Any
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -249,7 +170,7 @@ class KFoldTrainingModule(pl.LightningModule):
         self.training_config: TrainingConfig = TrainingConfig.from_dict(
             self.config.training
         )
-        self.soar_config = ECSISOARConfig.from_mapping(self.training_config.soar)
+        self.soar_config = ECSISOARConfig(**self.training_config.soar)
         self.parcae_train_config: ParcaeTrainConfig = ParcaeTrainConfig.from_dict(
             self.training_config.parcae
         )
@@ -301,15 +222,11 @@ class KFoldTrainingModule(pl.LightningModule):
         self.setup_losses()
         self.setup_metrics()
 
-        # Create writer
-        self.writer: KFoldWriter = KFoldWriter()
-
         # Parcae methodology: pre-sample a clamped-Poisson recycle schedule for
-        # training. The trunk still runs num_recycles + 1 loops, and the number
-        # of recurrent trunk steps saved for backprop is controlled by
-        # parcae.grad_recurrence_steps. "shared" preserves the previous
-        # cross-rank lockstep schedule; "rank_independent" lazily builds a
-        # deterministic rank-specific schedule once Lightning rank is known.
+        # training. The number of recurrent trunk steps saved for backprop is
+        # controlled by parcae.grad_recurrence_steps. "shared" preserves the
+        # previous cross-rank lockstep schedule; "rank_independent" lazily builds
+        # a deterministic rank-specific schedule once Lightning rank is known.
         self._shared_recycles_per_step: np.ndarray = (
             _build_clamped_poisson_recycle_schedule(
                 self.parcae_train_config,
@@ -318,36 +235,6 @@ class KFoldTrainingModule(pl.LightningModule):
         )
         self._rank_independent_recycles_per_step: np.ndarray | None = None
         self._rank_independent_recycles_rank: int | None = None
-        # Backward-compatible alias for code/tests that read the existing attr.
-        self.recycles_per_step: np.ndarray = self._shared_recycles_per_step
-
-        # Time-binned logging state (populated only when enabled)
-        self._timebin_enabled: bool = bool(self.training_config.log_time_binned_losses)
-
-        # These are set inside loss computation to avoid recomputation
-        self._timebin_last_distogram_loss_per_batch: torch.Tensor | None = None
-        self._timebin_last_diffusion_per_sample: dict[str, torch.Tensor] | None = None
-
-        # Entity-count binned logging state
-        self._entitybin_enabled: bool = bool(
-            self.training_config.log_entity_binned_losses
-        )
-
-        # Cache controls: used for both time-bin and entity-bin logging
-        self._binned_cache_enabled: bool = (
-            self._timebin_enabled or self._entitybin_enabled
-        )
-
-        # Binned loss loggers (registered as modules for checkpointing)
-        self.time_binned_logger = TimeBinnedLossLogger(
-            TimeBinConfig(
-                enabled=self._timebin_enabled,
-                width=float(self.training_config.time_bin_width),
-            )
-        )
-        self.entity_binned_logger = EntityBinnedLossLogger(
-            EntityBinConfig(enabled=self._entitybin_enabled, nbins=10)
-        )
 
     def _get_recurrence_schedule_rank(self) -> int:
         trainer = getattr(self, "_trainer", None)
@@ -357,8 +244,7 @@ class KFoldTrainingModule(pl.LightningModule):
 
     def _get_active_recycles_per_step(self) -> np.ndarray:
         if self.parcae_train_config.recurrence_sampling_mode == "shared":
-            self.recycles_per_step = self._shared_recycles_per_step
-            return self.recycles_per_step
+            return self._shared_recycles_per_step
 
         rank = self._get_recurrence_schedule_rank()
         if (
@@ -373,8 +259,8 @@ class KFoldTrainingModule(pl.LightningModule):
             )
             self._rank_independent_recycles_rank = rank
 
-        self.recycles_per_step = self._rank_independent_recycles_per_step
-        return self.recycles_per_step
+        assert self._rank_independent_recycles_per_step is not None
+        return self._rank_independent_recycles_per_step
 
     def _get_num_recycles_for_current_step(self) -> int:
         schedule = self._get_active_recycles_per_step()
@@ -415,7 +301,8 @@ class KFoldTrainingModule(pl.LightningModule):
         out = super().train(mode)
         for module_name in self.frozen_modules:
             module = getattr(self.model, module_name)
-            module.eval()
+            if module is not None:
+                module.eval()
         return out
 
     def setup_losses(self):
@@ -427,11 +314,6 @@ class KFoldTrainingModule(pl.LightningModule):
         self.distogram_loss = loss_fn.distogram.DistogramLoss()
         self.patch_geometry_loss = loss_fn.patch_geometry.PatchPairGeometryLoss(
             **loss_config.patch_geometry_loss
-        )
-        self.interface_contact_loss = (
-            loss_fn.interface_contact.InterfaceContactBalancedLoss(
-                **loss_config.interface_contact_loss
-            )
         )
 
         # Diffusion loss
@@ -467,7 +349,6 @@ class KFoldTrainingModule(pl.LightningModule):
                     dataset_metrics[f"{prefix}/{k}"] = MeanMetric()
             for k in validation_metrics.monitor_metric_names:
                 dataset_metrics[f"monitor/{k}"] = MeanMetric()
-            dataset_metrics["monitor/distogram_loss"] = MeanMetric()
             val_metrics.append(MetricCollection(dataset_metrics, prefix=f"{name}/"))
         self.val_metrics = torch.nn.ModuleList(val_metrics)
 
@@ -519,7 +400,7 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_mini_rollout_steps=training_config.num_mini_rollout_steps,
                 num_mini_rollout_samples=training_config.num_mini_rollout_samples,
                 diffusion_batch_size=training_config.diffusion_batch_size,
-                soar_config=dataclasses.asdict(self.soar_config),
+                soar_config=self.soar_config,
                 train_trunk=self.train_trunk,
                 train_diffusion_head=self.train_diffusion_head,
                 train_confidence_module=self.train_confidence_head,
@@ -531,7 +412,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 num_recycles=val_config.num_recycles,
                 num_steps=val_config.num_steps,
                 num_samples=val_config.num_diffusion_samples,
-                return_traj=val_config.return_traj,
             )
             return dict_out
         else:
@@ -548,31 +428,6 @@ class KFoldTrainingModule(pl.LightningModule):
         out: dict[str, torch.Tensor] = self(f_input=f_input, mode="train")
         with torch.autocast("cuda", dtype=torch.float32):
             loss, metrics = self.compute_losses(batch, out)
-
-        if self._binned_cache_enabled and self.train_diffusion_head:
-            diffusion_out = out.get("diffusion", {})
-            t_for_bins = _get_diffusion_time_for_binning(diffusion_out)
-            diffusion_per_sample = self._timebin_last_diffusion_per_sample
-            distogram_loss_per_batch = self._timebin_last_distogram_loss_per_batch
-
-            # These caches are populated inside compute_losses/compute_diffusion_loss.
-            # Skip if anything is missing for this batch.
-            if diffusion_per_sample is not None and distogram_loss_per_batch is not None:
-                if self._timebin_enabled and torch.is_tensor(t_for_bins):
-                    self.time_binned_logger.update(
-                        t_hat=t_for_bins,
-                        structure_module=_get_structure_module_for_binning(self.model),
-                        diffusion_per_sample=diffusion_per_sample,
-                        distogram_loss_per_batch=distogram_loss_per_batch,
-                        loss_weights=self.loss_weights,
-                    )
-                if self._entitybin_enabled:
-                    self.entity_binned_logger.update(
-                        f_input=f_input,
-                        diffusion_per_sample=diffusion_per_sample,
-                        distogram_loss_per_batch=distogram_loss_per_batch,
-                        loss_weights=self.loss_weights,
-                    )
 
         for k, v in metrics.items():
             self.log(
@@ -593,30 +448,19 @@ class KFoldTrainingModule(pl.LightningModule):
         # NOTE: Compute the losses in float32 for better numerical stability
         # Compute losses
         if self.train_trunk:
-            distogram_loss, distogram_metrics = self.compute_distogram_loss(
+            distogram_loss = self.distogram_loss(
                 distogram_out=model_output["distogram"],
                 f_input=f_input,
-            )
-            interface_contact_weight = self.loss_weights["interface_contact"]
-            if interface_contact_weight > 0:
-                interface_contact_loss, interface_contact_metrics = (
-                    self.interface_contact_loss(
-                        distogram_out=model_output["distogram"],
-                        f_input=f_input,
-                    )
-                )
-            else:
-                interface_contact_loss, interface_contact_metrics = 0.0, {}
+            ).mean()
             patch_weight = self.loss_weights["patch_geometry"]
-            if patch_weight > 0 and "patch_geometry" in model_output:
+            if patch_weight > 0:
                 patch_geometry_loss, patch_geometry_metrics = self.patch_geometry_loss(
                     model_output["patch_geometry"]
                 )
             else:
                 patch_geometry_loss, patch_geometry_metrics = 0.0, {}
         else:
-            distogram_loss, distogram_metrics = 0.0, {}
-            interface_contact_loss, interface_contact_metrics = 0.0, {}
+            distogram_loss = 0.0
             patch_geometry_loss, patch_geometry_metrics = 0.0, {}
 
         if self.train_diffusion_head:
@@ -714,15 +558,12 @@ class KFoldTrainingModule(pl.LightningModule):
             + loss_weights["distogram"] * distogram_loss
             + loss_weights["confidence"] * confidence_loss
             + loss_weights["patch_geometry"] * patch_geometry_loss
-            + loss_weights["interface_contact"] * interface_contact_loss
         )  # [B,]
         assert torch.is_tensor(loss), "Loss must be a torch.Tensor."
 
         # Log loss and metrics
         all_metrics = (
-            distogram_metrics
-            | interface_contact_metrics
-            | patch_geometry_metrics
+            patch_geometry_metrics
             | diffusion_metrics
             | confidence_metrics
             | sample_metrics
@@ -816,13 +657,8 @@ class KFoldTrainingModule(pl.LightningModule):
         assert n_atoms == ref_struct.num_atoms
 
         # Compute validation metrics
-        ref_struct_aligned: list[RefStructure] = []
         sample_metrics: list[dict[str, Any]] = []
         with torch.autocast("cuda", torch.float32):
-            distogram_loss = self.compute_validation_distogram_loss(
-                distogram_out, f_input
-            )
-
             # Permute predicted and true coordinates to align
             for i in range(num_samples):
                 pred_coords_i = diffusion_out["coordinates"][i, :n_atoms]
@@ -834,7 +670,6 @@ class KFoldTrainingModule(pl.LightningModule):
                 metric_i = validation_metrics.compute_validation_metric(
                     struct_i, pred_coords_i
                 )
-                ref_struct_aligned.append(struct_i)
                 sample_metrics.append(metric_i)
 
             # Select the best sample based on global PDE score.
@@ -869,49 +704,6 @@ class KFoldTrainingModule(pl.LightningModule):
             _m = aggr_metrics["monitor"]
             if k in _m:
                 metrics[f"monitor/{k}"].update(_m[k])
-        metrics["monitor/distogram_loss"].update(distogram_loss)
-
-        # Save validation predictions if needed
-        if val_config.save_predictions:
-            if self.trainer.log_dir is None:
-                print(
-                    "Warning: trainer.log_dir is None, "
-                    "skipping saving validation predictions."
-                )
-            else:
-                dataset_name = self.val_dataset_names[dataloader_idx]
-                save_dir: pathlib.Path = (
-                    pathlib.Path(self.trainer.log_dir)
-                    / "validation_logs"
-                    / dataset_name
-                    / f"epoch-{self.current_epoch}_step-{self.global_step}"
-                    / ref_struct.id
-                )
-                save_dir.mkdir(parents=True, exist_ok=True)
-
-                # Save ground-truth and apo structures
-                name = ref_struct.id
-                self.writer.write(ref_struct, save_dir / f"{name}-gt.cif")
-
-                # Save predicted structures and metrics
-                for i in range(num_samples):
-                    prefix = str(save_dir / f"{name}-sample{i}")
-                    self.save_structure_and_metrics(
-                        ref_struct=ref_struct_aligned[i],
-                        pred_coords=diffusion_out["coordinates"][i, :n_atoms],
-                        metrics=sample_metrics[i],
-                        prefix=prefix,
-                    )
-
-                # Save trajectory if available
-                if "traj" in diffusion_out:
-                    traj = diffusion_out["traj"][0]  # remove batch dim
-                    self.save_trajectory(
-                        ref_struct,
-                        traj,
-                        save_dir,
-                        format=val_config.traj_format,
-                    )
 
     def on_validation_epoch_start(self):
         torch.backends.cudnn.benchmark = False
@@ -937,121 +729,6 @@ class KFoldTrainingModule(pl.LightningModule):
         torch.cuda.empty_cache()
 
     # === Loss functions === #
-    def compute_validation_distogram_loss(
-        self,
-        distogram_out: dict[str, torch.Tensor],
-        f_input: FoldingInput,
-    ) -> torch.Tensor:
-        """Compute validation distogram loss from inference outputs."""
-        logits = distogram_out["logits"]
-        if not f_input.is_batched:
-            f_input = f_input.add_batch_dim()
-        if logits.ndim == 3:
-            distogram_out = distogram_out | {"logits": logits.unsqueeze(0)}
-
-        loss_per_batch = self.distogram_loss(distogram_out, f_input)
-        return loss_per_batch.mean().detach()
-
-    def compute_distogram_loss(
-        self,
-        distogram_out: dict[str, torch.Tensor],
-        f_input: FoldingInput,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Compute distogram loss.
-
-        Parameters
-        ----------
-        distogram_out : dict[str, torch.Tensor]
-            Distogram logits and distance-bin boundaries returned by the model.
-        f_input : FoldingInput
-            The input features containing the target distogram and masks.
-
-        Returns
-        -------
-        disto_loss : torch.Tensor
-            The computed distogram loss (scalar).
-        metrics : dict[str, torch.Tensor]
-            A dictionary containing loss metrics.
-        """
-        loss_per_batch = self.distogram_loss(distogram_out, f_input)
-        loss = loss_per_batch.mean()
-        metrics = {"distogram_loss": loss.detach()}
-        if hasattr(f_input, "token") and self.global_step % 10 == 0:
-            metrics |= self.compute_distogram_diagnostic_metrics(
-                distogram_out,
-                f_input,
-            )
-        if self._binned_cache_enabled and self.train_diffusion_head:
-            self._timebin_last_distogram_loss_per_batch = loss_per_batch.detach()
-        return loss, metrics
-
-    def compute_distogram_diagnostic_metrics(
-        self,
-        distogram_out: dict[str, torch.Tensor],
-        f_input: FoldingInput,
-        near_cutoff: float = 12.0,
-        far_cutoff: float = 22.0,
-    ) -> dict[str, torch.Tensor]:
-        """Log inter-chain near-ranking and false-positive pressure diagnostics."""
-        with torch.no_grad():
-            logits = distogram_out["logits"]
-            bin_boundaries = distogram_out["bin_boundaries"]
-            gt_coords = f_input.token.repr_coords
-            diff = gt_coords[..., None, :, :] - gt_coords[..., :, None, :]
-            d_repr = diff.norm(dim=-1)
-
-            repr_mask = f_input.token.repr_mask
-            pair_mask = repr_mask[..., None, :] & repr_mask[..., :, None]
-            asym_id = f_input.token.asym_id
-            inter_chain = asym_id[..., None, :] != asym_id[..., :, None]
-            upper_tri = torch.ones(
-                logits.shape[-3],
-                logits.shape[-2],
-                dtype=torch.bool,
-                device=logits.device,
-            ).triu(diagonal=1)
-            valid = pair_mask & inter_chain & upper_tri
-
-            if not valid.any():
-                zero = logits.sum().detach() * 0.0
-                return {
-                    "distogram_inter_chain_valid_pairs": zero,
-                    "distogram_inter_chain_near_pairs": zero,
-                    "distogram_inter_chain_far_pairs": zero,
-                }
-
-            near_bin = int((bin_boundaries < near_cutoff).sum().item()) - 1
-            near_bin = max(0, min(near_bin, logits.shape[-1] - 1))
-            p_near = torch.softmax(logits.float(), dim=-1)[..., : near_bin + 1].sum(
-                dim=-1
-            )
-
-            true_near = (d_repr < near_cutoff) & valid
-            true_far = (d_repr > far_cutoff) & valid
-            ap = _binary_average_precision(p_near, true_near, valid)
-
-            valid_count = valid.float().sum().clamp(min=1.0)
-            metrics = {
-                "distogram_inter_chain_valid_pairs": valid.float().sum().detach(),
-                "distogram_inter_chain_near_pairs": true_near.float().sum().detach(),
-                "distogram_inter_chain_far_pairs": true_far.float().sum().detach(),
-                "distogram_inter_chain_target_near_rate": (
-                    true_near.float().sum() / valid_count
-                ).detach(),
-                "distogram_inter_chain_pred_near_mass": p_near[valid].mean().detach(),
-            }
-            if ap is not None:
-                metrics["distogram_inter_chain_near_ap"] = ap.detach()
-            if true_near.any():
-                metrics["distogram_inter_chain_p_near_true_near"] = (
-                    p_near[true_near].mean().detach()
-                )
-            if true_far.any():
-                metrics["distogram_inter_chain_false_positive_near_mass"] = (
-                    p_near[true_far].mean().detach()
-                )
-            return metrics
-
     def compute_diffusion_loss(
         self,
         x_pred: torch.Tensor,
@@ -1084,7 +761,6 @@ class KFoldTrainingModule(pl.LightningModule):
             A dictionary containing loss metrics.
         """
         metrics: dict[str, torch.Tensor] = {}
-        alpha_chain_com = self.loss_weights["chain_com"]
         alpha_bond = self.loss_weights["bond"]
         alpha_smooth_lddt = self.loss_weights["smooth_lddt"]
         if supervision_weights is None:
@@ -1104,20 +780,9 @@ class KFoldTrainingModule(pl.LightningModule):
             return (values * weights).sum() / weights.sum().clamp(min=1.0)
 
         # Equations 3-4
-        L_mse, L_chain_com = self.weighted_mse_loss(
-            x_pred, x_true, f_input, compute_chain_com_loss=alpha_chain_com > 0
-        )
+        L_mse = self.weighted_mse_loss(x_pred, x_true, f_input)
         L_mse_weighted = L_mse * per_sample_weights  # [B, Nsample]
         metrics["mse_loss"] = weighted_mean(L_mse_weighted.detach(), supervision_weights)
-
-        if alpha_chain_com > 0:
-            assert L_chain_com is not None
-            L_chain_com_weighted = L_chain_com * per_sample_weights  # [B, Nsample]
-            metrics["chain_com_loss"] = weighted_mean(
-                L_chain_com_weighted.detach(), supervision_weights
-            )
-        else:
-            L_chain_com_weighted = None
 
         # Equation 5
         if alpha_bond > 0:
@@ -1142,10 +807,6 @@ class KFoldTrainingModule(pl.LightningModule):
         # NOTE: per-sample weights are already applied in L_mse and L_bond
         # L_diff = loss_weights(L_mse + α_com * L_com + α_bond * L_bond) + L_smooth_lddt
         L_diffusion_per_sample = L_mse_weighted
-        if L_chain_com_weighted is not None:
-            L_diffusion_per_sample = (
-                L_diffusion_per_sample + alpha_chain_com * L_chain_com_weighted
-            )
         if L_bond_weighted is not None:
             L_diffusion_per_sample = L_diffusion_per_sample + alpha_bond * L_bond_weighted
         if L_smooth_lddt is not None:
@@ -1165,19 +826,6 @@ class KFoldTrainingModule(pl.LightningModule):
             metrics["soar_aux_diffusion_loss"] = weighted_mean(
                 L_diffusion_per_sample.detach(), auxiliary_weights
             )
-
-        if self._binned_cache_enabled and self.train_diffusion_head:
-            payload: dict[str, torch.Tensor] = {
-                "mse_loss": L_mse_weighted.detach(),
-                "diffusion_loss": L_diffusion_per_sample.detach(),
-            }
-            if L_chain_com_weighted is not None:
-                payload["chain_com_loss"] = L_chain_com_weighted.detach()
-            if L_bond_weighted is not None:
-                payload["bond_loss"] = L_bond_weighted.detach()
-            if L_smooth_lddt is not None:
-                payload["smooth_lddt_loss"] = L_smooth_lddt.detach()
-            self._timebin_last_diffusion_per_sample = payload
 
         return L_diffusion, metrics
 
@@ -1271,13 +919,6 @@ class KFoldTrainingModule(pl.LightningModule):
         metrics["confidence_loss"] = L_confidence.detach()
 
         return L_confidence, metrics
-
-    def on_train_epoch_end(self) -> None:  # type: ignore[override]
-        out: dict[str, torch.Tensor] = {}
-        out |= self.time_binned_logger.flush()
-        out |= self.entity_binned_logger.flush()
-        if out:
-            self.log_dict(out)
 
     # === Training logs === #
     def on_before_optimizer_step(self, optimizer) -> None:
@@ -1486,55 +1127,3 @@ class KFoldTrainingModule(pl.LightningModule):
             "EMA state dict is not compatible with the model."
         )
         self.ema.load_state_dict(state_dict, device=torch.device("cpu"))
-
-    # === Helper functions === #
-    def save_structure_and_metrics(
-        self,
-        ref_struct: RefStructure,
-        pred_coords: torch.Tensor,
-        metrics: dict[str, Any],
-        prefix: str,
-    ):
-        """Save predicted and ground-truth structures as mmCIF files."""
-        # TODO: save confidence too.
-        num_atoms = ref_struct.num_atoms
-        assert pred_coords.shape == (num_atoms, 3), (
-            "pred_coords must have shape (Natoms, 3)."
-        )
-        # Save metrics
-        with open(f"{prefix}_metrics.json", "w") as f:
-            json.dump(metrics, f, indent=2)
-
-        # Save aligned ground-truth structure
-        aligned_gt_path = f"{prefix}-gt_aligned.cif"
-        self.writer.write(ref_struct, aligned_gt_path)
-
-        # Save predicted structure
-        rmsd = metrics["metrics"]["rmsd"]
-        lddt = metrics["metrics"]["lddt"] * 100  # scale to [0, 100]
-        pred_path = f"{prefix}-rmsd{rmsd:.2f}-lddt{lddt:.2f}.cif"
-        self.writer.write_new_coords(ref_struct, pred_path, pred_coords.cpu().numpy())
-
-    def save_trajectory(
-        self,
-        ref_struct: RefStructure,
-        traj: torch.Tensor,
-        save_dir: pathlib.Path,
-        format: str = "cif",
-    ):
-        """Save predicted and ground-truth structures as mmCIF files."""
-        name: str = ref_struct.id
-
-        assert traj.ndim == 4, "Trajectory must be of shape (Nsample, Nframe, Natom, 3)"
-        num_samples: int = traj.shape[0]
-
-        # Remove padding atoms
-        num_atoms: int = ref_struct.num_atoms
-        traj: np.ndarray = traj[:, :, :num_atoms, :].detach().cpu().numpy()
-
-        # Compute structure metrics
-        for i in range(num_samples):
-            # Save trajectory
-            traj_i = traj[i]
-            save_path = save_dir / f"{name}-sample-{i}-traj.{format}"
-            self.writer.write_trajectory(ref_struct, traj_i, save_path, align=True)

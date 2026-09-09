@@ -20,7 +20,7 @@ This document describes the data structure used in **K-Fold** for protein comple
 #### Preprocessing (mmCIF -> `RefStructure`)
 
 The preprocessing stage is performed once before training to convert raw mmCIF files into an array-based format for efficient loading during training.
-This processing is done using the functions defined in [`kfold.data.pipelines.cif_factory`](../../src/kfold/data/pipelines/cif_factory.py).
+This processing is done using the functions defined in [`kfold.training.preprocess.cif_factory`](../../src/kfold/training/preprocess/cif_factory.py).
 
 In addition, the preprocessing stage also includes apo structure processing from `AFDB, ESMFold` output pdb files and apo tokenization for populating apo structure information into the model input features.
 1.  **PDB Parsing:** Extracts a protein sequence and an atom37 structure (`(L, 37, 3)`) from the PDB/mmCIF file and saves them in `LMDB` format on disk.
@@ -62,7 +62,7 @@ from kfold.data.types.structure import RefStructure, Chain, CovalentConnection
 
 ref_struct: RefStructure = ...
 chains: list[Chain] = ref_struct.chains
-connections: list[CovalentConnection] = ref_struct.covalent_connections
+connections: list[CovalentConnection] = ref_struct.connections
 metadata: Metadata = ref_struct.metadata
 ```
 
@@ -83,7 +83,7 @@ seq_arr: tokenized.SequenceArray = struct.sequence
 asym_id = chain_arr.asym_id  # Shape: (Nchain,)
 coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 # ...
-````
+```
 
 ### Chain-level layout
 

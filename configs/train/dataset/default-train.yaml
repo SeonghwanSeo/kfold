@@ -1,0 +1,28 @@
+# Default dataset configuration for training
+_yaml_: "default.yaml"
+
+name: ???
+type: ???
+prob_drop_apo: 0.1 # Probability of dropping apo structures
+prob_drop_struct_token: 0.1 # Probability of dropping structure tokens
+prob_use_complex_apo: 0.5 # Probability of using complex apo structures
+prob_use_complex_prior: 0.5 # Probability of using complex prior structures
+weight: 1.0 # sample weight for this dataset
+
+# Random seed for data augmentation.
+seed: null
+
+sampler: ???
+
+cropper:
+  _registry_: "data_cropper"
+  _class_: AlphaFold3Cropper
+  w_contiguous: 0.2
+  w_spatial: 0.4
+  w_spatial_interface: 0.4
+
+# Enable perturbation during training
+prob_perturbation: 0.90
+apo_perturb:
+  bioprior:
+    max_steps: 15

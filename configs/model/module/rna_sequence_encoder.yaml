@@ -1,7 +1,0 @@
-path: ???
-chain_type: 'rna'
-vocab_size: 64
-d_model: 960
-n_heads: 15
-n_layers: 30
-use_moe: true

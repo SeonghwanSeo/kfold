@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.model import KFold, KFoldConfig
+from kfold.model.modules.ecsi import ECSISOARConfig
 
 
 class KFoldForTrain(KFold):
@@ -24,11 +25,9 @@ class KFoldForTrain(KFold):
 
     def get_trunk_module_names(self) -> list[str]:
         """Get the names of trunk modules."""
-        return [
+        module_names = [
             "input_embedder",
             "prot_seq_to_s_lm",
-            "rna_seq_to_s_lm",
-            "prot_struct_to_s_lm",
             "lm_to_pair",
             "apo_module",
             "layernorm_z",
@@ -38,6 +37,11 @@ class KFoldForTrain(KFold):
             "refine_stack",
             "patch_pair_geometry_head",
         ]
+        if self.rna_seq_encoder is not None:
+            module_names.append("rna_seq_to_s_lm")
+        if self.prot_struct_encoder is not None:
+            module_names.append("prot_struct_to_s_lm")
+        return module_names
 
     def get_trunk_parameter_names(self) -> list[str]:
         """Get standalone trunk parameter names (Parcae)."""
@@ -76,8 +80,10 @@ class KFoldForTrain(KFold):
         opts = {"mode": mode, "dynamic": dynamic}
         self.is_compiled = True
         self.prot_seq_encoder = torch.compile(self.prot_seq_encoder, **opts)
-        self.rna_seq_encoder = torch.compile(self.rna_seq_encoder, **opts)
-        self.prot_struct_encoder = torch.compile(self.prot_struct_encoder, **opts)
+        if self.rna_seq_encoder is not None:
+            self.rna_seq_encoder = torch.compile(self.rna_seq_encoder, **opts)
+        if self.prot_struct_encoder is not None:
+            self.prot_struct_encoder = torch.compile(self.prot_struct_encoder, **opts)
         self.apo_module = torch.compile(self.apo_module, **opts)
 
         self.lm_stack = torch.compile(self.lm_stack, **opts)
@@ -86,7 +92,7 @@ class KFoldForTrain(KFold):
         self.score_model.do_compile(**opts)
         self.confidence_head.do_compile(**opts)
 
-    def _get_model_module(self, module: torch.nn.Module) -> torch.nn.Module:
+    def _get_model_module(self, module: torch.nn.Module | None) -> torch.nn.Module | None:
         """Return the underlying module when a compiled wrapper is not used."""
         if self.is_compiled and not self.training:
             return getattr(module, "_orig_mod", module)
@@ -98,11 +104,16 @@ class KFoldForTrain(KFold):
         rna_seq_encoder = self._get_model_module(self.rna_seq_encoder)
         prot_struct_encoder = self._get_model_module(self.prot_struct_encoder)
 
-        return (
-            self.prot_seq_to_s_lm(prot_seq_encoder(f_input))
-            + self.rna_seq_to_s_lm(rna_seq_encoder(f_input))
-            + self.prot_struct_to_s_lm(prot_struct_encoder(f_input))
-        )
+        assert prot_seq_encoder is not None
+        s_lm = self.prot_seq_to_s_lm(prot_seq_encoder(f_input))
+
+        if rna_seq_encoder is not None:
+            s_lm = s_lm + self.rna_seq_to_s_lm(rna_seq_encoder(f_input))
+
+        if prot_struct_encoder is not None:
+            s_lm = s_lm + self.prot_struct_to_s_lm(prot_struct_encoder(f_input))
+
+        return s_lm
 
     def run_trunk(
         self,
@@ -131,8 +142,7 @@ class KFoldForTrain(KFold):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        assert self.kernel_config["cuequivariance"]
-        use_cuequiv_kernels = True
+        use_cuequiv_kernels = self.use_kernel
 
         train = self.training and grad_recurrence_steps > 0
 
@@ -187,9 +197,9 @@ class KFoldForTrain(KFold):
     def forward_train(
         self,
         f_input: FoldingInput,
+        soar_config: ECSISOARConfig,
         num_recycles: int = 3,
         diffusion_batch_size: int = 48,
-        soar_config: dict[str, object] | None = None,
         num_mini_rollout_steps: int = 20,
         num_mini_rollout_samples: int = 1,
         train_trunk: bool = True,
@@ -215,8 +225,8 @@ class KFoldForTrain(KFold):
         # For structure module training:
         diffusion_batch_size : int
             Batch size for diffusion training step.
-        soar_config : dict[str, object] | None
-            Optional sampler-matched Exact-Markov ECSI SOAR configuration.
+        soar_config : ECSISOARConfig
+            Sampler-matched Exact-Markov ECSI SOAR configuration.
 
         # For confidence module training with diffusion mini-rollout:
         num_mini_rollout_steps : int
@@ -269,6 +279,8 @@ class KFoldForTrain(KFold):
         """
         # Ensure batched input
         assert f_input.is_batched, "Input must be batched for training.."
+        if self.diffusion_type == "edm" and soar_config.mode != "disabled":
+            raise ValueError("SOAR is only supported when diffusion_type='ecsi'.")
         batch_size: int = f_input.batch_size
         device: torch.device = f_input.device
 
@@ -288,9 +300,10 @@ class KFoldForTrain(KFold):
         if train_trunk:
             # Distogram head
             dict_out["distogram"] = self.distogram_head(z)
-            patch_geometry_out = self.patch_pair_geometry_head(f_input, z)
-            if patch_geometry_out:
-                dict_out["patch_geometry"] = patch_geometry_out
+            if self.patch_pair_geometry_head is not None:
+                patch_geometry_out = self.patch_pair_geometry_head(f_input, z)
+                if patch_geometry_out:
+                    dict_out["patch_geometry"] = patch_geometry_out
 
         if train_diffusion_head:
             # Diffusion head
@@ -302,20 +315,22 @@ class KFoldForTrain(KFold):
                 _z = z * mask[:, None, None, None]
 
             # Forward pass through diffusion head for training.
-            training_kwargs: dict[str, object] = {}
-            if (
-                soar_config is not None
-                and soar_config.get("mode", "disabled") != "disabled"
-            ):
-                training_kwargs["soar_config"] = soar_config
             with torch.autocast(device.type, enabled=False):
-                dict_out["diffusion"] = self.diffusion_head.training_step(
-                    f_input,
-                    s_inputs,
-                    _z,
-                    diffusion_batch_size,
-                    **training_kwargs,
-                )
+                if self.diffusion_type == "ecsi":
+                    dict_out["diffusion"] = self.diffusion_head.training_step(
+                        f_input,
+                        s_inputs,
+                        _z,
+                        diffusion_batch_size,
+                        soar_config,
+                    )
+                else:
+                    dict_out["diffusion"] = self.diffusion_head.training_step(
+                        f_input,
+                        s_inputs,
+                        _z,
+                        diffusion_batch_size,
+                    )
 
         if train_confidence_module:
             # Stop gradients to input features and trunk outputs.
@@ -344,7 +359,12 @@ class KFoldForTrain(KFold):
 
             # Forward pass through confidence head
             dict_out["confidence"] = self.confidence_head(
-                f_input, _s_inputs, _s_lm, _z, coordinates
+                f_input,
+                _s_inputs,
+                _s_lm,
+                _z,
+                coordinates,
+                use_cuequiv_kernels=self.use_kernel,
             )
 
         return dict_out
@@ -356,7 +376,6 @@ class KFoldForTrain(KFold):
         num_recycles: int = 4,
         num_steps: int = 200,
         num_samples: int = 5,
-        return_traj: bool = False,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold model for model training.
 
@@ -370,9 +389,6 @@ class KFoldForTrain(KFold):
             Number of diffusion steps for training.
         num_samples : int
             Number of diffusion samples for training.
-        return_traj : bool, optional
-            Whether to return sampling trajectories.
-
         Returns
         -------
         model_out : dict[str, dict[str, torch.Tensor]]
@@ -410,11 +426,17 @@ class KFoldForTrain(KFold):
                 num_steps,
                 num_samples,
                 chunk_size=None,
-                return_traj=return_traj,
             )
 
         coords = dict_out["diffusion"]["coordinates"]
-        dict_out["confidence"] = self.confidence_head(f_input, s_inputs, s_lm, z, coords)
+        dict_out["confidence"] = self.confidence_head(
+            f_input,
+            s_inputs,
+            s_lm,
+            z,
+            coords,
+            use_cuequiv_kernels=self.use_kernel,
+        )
         # Remove batch dimension from outputs for validation
         dict_out = {
             k: {kk: vv.squeeze(0) for kk, vv in v.items()} for k, v in dict_out.items()
@@ -435,20 +457,10 @@ class KFoldForTrain(KFold):
         strict: bool = True,
     ) -> Self:
         """Load model from checkpoint."""
-        from omegaconf import OmegaConf
-
-        from kfold.config import load_config
+        from kfold.utils.config import load_config
 
         # Load model config
-        config = load_config(config_path)
-        if "model" in config:
-            # Get model config if wrapped in a higher-level config
-            config = config.model
-
-        if override_args is not None:
-            # Override specific arguments in the config
-            overrides = OmegaConf.from_dotlist(override_args)
-            config = OmegaConf.merge(config, overrides)
+        config = load_config(config_path, override_args=override_args)
 
         # Initialize model
         model = cls(config)

@@ -1,94 +1,38 @@
-_yaml_: "full.yaml"
+model:
+  _yaml_: "../kfold.yaml"
+  trunk:
+    blocks_per_ckpt: 1
+  score_model:
+    blocks_per_ckpt: 1
+    ckpt_atom_stack: true
+  confidence_head:
+    blocks_per_ckpt: 1
 
-seed: 4
+train:
+  _yaml_: "full.yaml"
+  name: stage2
+  seed: 2
 
-global_hparams:
-  diffusion_batch_size: 32
+  loss:
+    weights:
+      bond: 1.0
 
-loss:
-  weights:
-    bond: 1.0 # Turn on bond loss (See Section 5.2 for the AF3 paper)
+  training:
+    diffusion_batch_size: 32
 
-data:
-  max_chains: 20
-  max_tokens: 640
-  max_atoms: 7680
-  max_sequence_tokens: 1280
+  data:
+    max_chains: 20
+    max_tokens: 640
+    max_atoms: 7680
+    max_sequence_tokens: 1280
 
-  ccd_path: /cache/wykim_lab/kfold_data/v260701_af3/ccd-train.pkl
-  data_root: /cache/wykim_lab/kfold_data/v260701_af3/dataset/
-  train_datasets:
-    # RCSB PDB (75%)
-    - _yaml_: "../dataset/rcsb-train.yaml"
-      name: rcsb-train-upd
-      weight: 0.750
-      cropper:
-        w_contiguous: 0.2
-        w_spatial: 0.4
-        w_spatial_interface: 0.4
+    ccd_path: /data/ccd-train.pkl
+    data_root: /data/
+    train_datasets:
+      - _yaml_: "dataset/rcsb-train.yaml"
+        name: rcsb-train
+        weight: 1.0
 
-    # Protein Monomer (5%)
-    - _yaml_: "../dataset/distill-monomer.yaml"
-      name: AF2-MGnify-long
-      weight: 0.050
-      cropper:
-        w_contiguous: 0.25
-        w_spatial: 0.75
-
-    # RNA Monomer (5%)
-    - _yaml_: "../dataset/distill-rna-monomer.yaml"
-      name: Rfam
-      weight: 0.050
-      cropper:
-        w_contiguous: 0.25
-        w_spatial: 0.75
-
-    # Protein-Protein (12%)
-    - _yaml_: "../dataset/distill-homodimer.yaml"
-      manifest_path: /cache/wykim_lab/kfold_data/v260701_af3/dataset/AFDB-homodimer/manifest_08.msgpack
-      name: AFDB-homodimer
-      weight: 0.100
-      cropper:
-        w_contiguous: 0.2
-        w_spatial: 0.4
-        w_spatial_interface: 0.4
-
-    - _yaml_: "../dataset/distill-heterodimer.yaml"
-      manifest_path: /cache/wykim_lab/kfold_data/v260701_af3/dataset/AFDB-heterodimer/manifest_08.msgpack
-      name: AFDB-heterodimer
-      weight: 0.020
-      cropper:
-        w_contiguous: 0.2
-        w_spatial: 0.4
-        w_spatial_interface: 0.4
-
-    # Protein-DNA (1%)
-    - _yaml_: "../dataset/distill-complex-uniform.yaml"
-      name: JASPAR
-      weight: 0.010
-      cropper:
-        w_contiguous: 0.2
-        w_spatial: 0.4
-        w_spatial_interface: 0.4
-
-    # Protein-RNA (1%)
-    - _yaml_: "../dataset/distill-complex-cluster.yaml"
-      name: ENCORE
-      weight: 0.010
-      cropper:
-        w_contiguous: 0.2
-        w_spatial: 0.4
-        w_spatial_interface: 0.4
-
-    # Protein-ligand, TPD (1%)
-    - _yaml_: "../dataset/distill-complex-cluster.yaml"
-      name: TPD
-      weight: 0.010
-      cropper:
-        w_contiguous: 0.2
-        w_spatial: 0.4
-        w_spatial_interface: 0.4
-
-  val_datasets:
-    - _yaml_: "../dataset/rcsb-val.yaml"
-      name: rcsb-val
+    val_datasets:
+      - _yaml_: "dataset/rcsb-val.yaml"
+        name: rcsb-val
