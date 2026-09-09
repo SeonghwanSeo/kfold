@@ -91,6 +91,25 @@ bonds:
   - [[A, 20, NZ], [C, 1, C08]]
 ```
 
+## Pipeline
+
+Run preparation followed by prediction with one command:
+
+```bash
+kfold pipeline --input query.yaml --out-dir results/ --seed 1 2 3
+kfold pipeline --input query.yaml --out-dir results/ --seed 1 2 3 --apo-seed 42
+```
+
+`--seed` controls prediction and defaults to `1`. `--apo-seed` controls
+preparation and defaults to the values of `--seed`. Both accept one or more
+unique, nonnegative integers. Prepared queries and apo/prior structures are
+saved under `<out-dir>/prepared/`; prediction results are saved under
+`<out-dir>/`. Only queries prepared by this invocation are passed to prediction.
+
+All prediction options are available. `--num-samples`, `--num-gpus`,
+`--cache-dir`, and `--overwrite` also apply to preparation. `--dry-run` applies
+only to prediction: preparation still generates any missing apo structures.
+
 ## Preparation
 
 Preparation uses AtlasFold for ordinary proteins and AtlasFold-M for protein

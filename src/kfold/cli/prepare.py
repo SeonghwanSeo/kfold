@@ -97,3 +97,4 @@ def run(args):
         _worker(0, args, files)
     else:
         launch(_worker, args, files)
+    return [args.out_dir / f"{name}.yaml" for name in names]

@@ -124,12 +124,17 @@ def _worker(rank, args, jobs):
 
 
 def run(args):
+    from kfold.inference.preparation import input_files
+
+    run_files(args, input_files(args.input))
+
+
+def run_files(args, files):
     import yaml
 
     from kfold.cli.multigpu import launch
-    from kfold.inference.preparation import input_files, needs_apo
+    from kfold.inference.preparation import needs_apo
 
-    files = input_files(args.input)
     documents = [yaml.safe_load(path.read_text()) for path in files]
     names = [
         data.get("name", path.stem) for path, data in zip(files, documents, strict=True)

@@ -31,6 +31,16 @@ kfold prepare --input examples/ --out-dir prepared/ --seed 1 2 3 4 5
 kfold predict --input prepared/ --out-dir results/ --seed 1 2 3 4 5
 ```
 
+Run both stages with one command:
+
+```bash
+kfold pipeline --input examples/ --out-dir results/ --seed 1 2 3 4 5
+```
+
+`pipeline` saves prepared inputs under `results/prepared/`, then predicts using
+`--seed`. Set `--apo-seed` to use separate preparation seeds; when omitted, it
+uses the same values as `--seed`.
+
 For generated ensembles, each preparation seed produces five PDB structures by
 default. The best structure from each seed becomes an apo candidate, and all 25
 become prior candidates.
