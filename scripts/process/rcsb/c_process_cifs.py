@@ -12,12 +12,6 @@ python c_process_rcsb.py
     --num_workers 120                   # Number of parallel workers
 ```
 
-## Train/valid splits:
-- train: up to 2022-12-31, max resolution 9.0A, max chains 300
-- val: 2023-01-01 to 2023-12-31, max resolution 4.5A, max chains 1000, max tokens 2560
-- test: 2024-01-01 to 2026-01-09, max resolution 4.5A, max chains 1000, max tokens 5120,
-    filter NMR.
-
 We follow similar processing and filtering criteria as in the AlphaFold3 paper. However,
 we also introduce additional filtering logic to extract high-quality structures for
 evaluation: `handle_invalid_chains="disallow"` in validation and test splits.
@@ -167,10 +161,6 @@ def parse_args():
         type=str,
         required=True,
         choices=["train", "val", "test"],
-        help="Predefined data split to use:\n"
-        "- train: up to 2022-12-31, max resolution 9.0A, max chains 300\n"
-        "- val: 2023-01-01 to 2023-12-31, max resolution 4.5A, max chains 1000, "
-        "max residues 2560\n",
     )
     parser.add_argument(
         "--num_workers",
