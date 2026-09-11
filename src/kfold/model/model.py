@@ -7,6 +7,7 @@ from typing import Self
 
 import torch
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules import (
@@ -14,7 +15,6 @@ from kfold.model.modules import (
     confidence_head,
     distogram_head,
     ecsi,
-    edm,
     input_embedder,
     patch_geometry,
     prot_seq_encoder,
@@ -28,6 +28,9 @@ from kfold.utils.config import resolve_config
 from kfold.utils.runtime import is_cuequivariance_installed
 
 logger = logging.getLogger(__name__)
+
+
+MODEL_REPO_ID = "SeonghwanSeo/kfold"
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -62,7 +65,7 @@ class KFoldConfig:
     trunk: TrunkConfig
     parcae: ParcaeConfig
     score_model: score_model.DiffusionModule.Config
-    diffusion_head: ecsi.KFoldECSI.Config | edm.AF3SampleDiffusion.Config
+    diffusion_head: ecsi.KFoldECSI.Config
     distogram_head: distogram_head.DistogramHead.Config
     confidence_head: confidence_head.ConfidenceHead.Config
     patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config | None
@@ -162,16 +165,12 @@ class KFold(torch.nn.Module):
             self.rna_seq_encoder = None
 
         if config.protein_structure_encoder is not None:
-            struct_encoder_config = resolve_config(
-                prot_struct_encoder.StructureEncoder.Config,
-                config.protein_structure_encoder,
-            )
             self.prot_struct_encoder = prot_struct_encoder.StructureEncoder(
-                struct_encoder_config
+                config.protein_structure_encoder
             )
             self.prot_struct_to_s_lm = torch.nn.Sequential(
-                LayerNorm(struct_encoder_config.d_model, create_offset=False),
-                LinearNoBias(struct_encoder_config.d_model, self.channel_s),
+                LayerNorm(self.prot_struct_encoder.d_model, create_offset=False),
+                LinearNoBias(self.prot_struct_encoder.d_model, self.channel_s),
             )
         else:
             self.prot_struct_encoder = None
@@ -232,17 +231,17 @@ class KFold(torch.nn.Module):
 
         # Diffusion head
         self.score_model = score_model.DiffusionModule(config.score_model)
-        if self.diffusion_type == "ecsi":
-            self.diffusion_head = ecsi.KFoldECSI(
-                config.diffusion_head, score_model=self.score_model
-            )
-        else:
-            self.diffusion_head = edm.AF3SampleDiffusion(
-                config.diffusion_head, score_model=self.score_model
-            )
+        self.diffusion_head = ecsi.KFoldECSI(
+            config.diffusion_head, score_model=self.score_model
+        )
 
         # Confidence head
         self.confidence_head = confidence_head.ConfidenceHead(config.confidence_head)
+
+    @property
+    def device(self) -> torch.device:
+        """Return the device of the model parameters."""
+        return next(self.parameters()).device
 
     def set_forward_flags(
         self,
@@ -498,49 +497,69 @@ class KFold(torch.nn.Module):
     # Utility Methods
     # ============================================================
     @classmethod
-    def from_checkpoint(
+    def from_pretrained(
         cls,
-        config_path: str | pathlib.Path,
-        ckpt_path: str | pathlib.Path,
-        override_args: list[str] | None = None,
-        use_ema: bool = True,
-        strict: bool = True,
-        atlaslm: torch.nn.Module | None = None,
+        pretrained_model_name_or_path: str | pathlib.Path = MODEL_REPO_ID,
+        device: str | torch.device = "cuda",
+        *,
+        cache_dir: str | pathlib.Path | None = None,
+        use_struct_encoder: bool = True,
+        use_rna_encoder: bool = True,
     ) -> Self:
-        """Load model from checkpoint."""
-        from kfold.utils.config import load_config
+        """Load a K-Fold from a pretrained model.
 
-        # Load model config
-        config = load_config(config_path, override_args=override_args)
+        Parameters
+        ----------
+        pretrained_model_name_or_path : str or pathlib.Path
+            The name of the pretrained model or the path to a local directory containing
+            the model weights and configuration.
+        device : str or torch.device, optional
+            The device to load the model onto. Default is "cuda".
+        cache_dir : str or pathlib.Path, optional
+            The directory to save the model weights and config.
+        use_struct_encoder : bool, optional
+            Whether to use the protein structure encoder. Default is True.
+        use_rna_encoder : bool, optional
+            Whether to use the RNA sequence encoder. Default is True.
+            NOTE: Only disable this if RNA sequences are not present in the input.
+        """
+        from huggingface_hub import snapshot_download
 
-        # Initialize model
-        model = cls(config, atlaslm=atlaslm)
-
-        # Load checkpoint
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-
-        if "state_dict" not in ckpt:
-            # Assume the checkpoint is a state_dict itself
-            state_dict = ckpt
-        elif use_ema:
-            # Load EMA weights
-            if "ema" not in ckpt:
-                raise KeyError(
-                    "EMA weights not found in checkpoint. "
-                    "Please set use_ema=False to load regular weights."
-                )
-            else:
-                state_dict = ckpt["ema"]["shadow_params"]
+        if pathlib.Path(pretrained_model_name_or_path).is_dir():
+            local_path = pathlib.Path(pretrained_model_name_or_path)
+            model_path = local_path / "weights/kfold.pth"
+            config_path = local_path / "config.yaml"
         else:
-            # Load regular weights
-            state_dict = ckpt["state_dict"]
+            repo_id = str(pretrained_model_name_or_path)
+            repo_path = pathlib.Path(
+                snapshot_download(repo_id, repo_type="model", cache_dir=cache_dir)
+            )
+            model_path = repo_path / "weights/kfold.pth"
+            config_path = repo_path / "config.yaml"
 
-        state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
+        config = OmegaConf.load(config_path)
+        if not use_struct_encoder:
+            config.protein_structure_encoder = None
+        if not use_rna_encoder:
+            config.rna_sequence_encoder = None
 
-        model.load_state_dict(state_dict, strict=strict)
-        del ckpt, state_dict
+        if cache_dir is not None:
+            for encoder in (
+                "protein_sequence_encoder",
+                "protein_structure_encoder",
+                "rna_sequence_encoder",
+            ):
+                if config.get(encoder) is not None:
+                    config[encoder].cache_dir = str(cache_dir)
 
-        return model
+        model = cls(config)
+        state_dict = torch.load(
+            model_path, map_location="cpu", weights_only=True, mmap=True
+        )
+        model.load_state_dict(state_dict)
+        del state_dict
+
+        return model.to(device).requires_grad_(False).eval()
 
     def load_state_dict(
         self,
@@ -567,6 +586,16 @@ class KFold(torch.nn.Module):
                         "prot_seq_encoder.",
                         "rna_seq_encoder.",
                         "prot_struct_encoder.",
+                    )
+                )
+            }
+            unexpected_keys = {
+                k
+                for k in unexpected_keys
+                if not k.startswith(
+                    (
+                        "rna_seq_to_s_lm.",
+                        "prot_struct_to_s_lm.",
                     )
                 )
             }

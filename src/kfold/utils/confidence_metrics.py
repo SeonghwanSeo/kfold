@@ -367,7 +367,7 @@ def summarize_confidence_metrics_single(
     AlphaFold3 sample ranking metric for the full complex.
     See Section 5.9.3 of the AF3 SI for details.
 
-    Score: 0.8·ipTM + 0.2·pTM + 0.5·disorder - 100·has_clash
+    Score: 0.8·ipTM + 0.2·pTM - 100·has_clash
     """
     if f_input.is_batched:
         raise NotImplementedError(
@@ -421,7 +421,7 @@ def summarize_confidence_metrics_single(
     summary: dict = {}
 
     # Complex-level metrics
-    # Atomize features for clash/disorder
+    # Atomize features for clash
     is_polymer = f_input.token.is_protein | f_input.token.is_rna | f_input.token.is_dna
     is_polymer = is_polymer[:n_tokens]
     # Convert token-level features to atom-level features.
@@ -441,8 +441,6 @@ def summarize_confidence_metrics_single(
         "ptm": ptm.item(),
         "iptm": iptm.item(),
         "has_clash": float(has_clash.item()),
-        # TODO: compute disorder ratio using RASA
-        "disorder_ratio": 0.0,
     }
     # Compute the ranking score for each sample
     complex_scores["ranking_score"] = compute_full_complex_ranking(complex_scores)
@@ -496,17 +494,15 @@ def compute_full_complex_ranking(
     confidence_scores: dict[str, float],
     w_ptm: float = 0.2,
     w_iptm: float = 0.8,
-    w_disorder: float = 0.0,
     w_clash: float = 100.0,
 ) -> float:
     """
     AlphaFold3 sample ranking metric for the full complex.
     See Section 5.9.3 of the AF3 SI for details.
 
-    Score: 0.8·ipTM + 0.2·pTM + 0.5·disorder - 100·has_clash
+    Score: 0.8·ipTM + 0.2·pTM - 100·has_clash
     """
     iptm = confidence_scores["iptm"]
     ptm = confidence_scores["ptm"]
     has_clash = confidence_scores["has_clash"]
-    disorder = confidence_scores["disorder_ratio"]
-    return w_iptm * iptm + w_ptm * ptm + w_disorder * disorder - w_clash * has_clash
+    return w_iptm * iptm + w_ptm * ptm + -w_clash * has_clash

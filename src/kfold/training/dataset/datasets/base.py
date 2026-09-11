@@ -717,22 +717,21 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
         if self.num_priors <= 0 or self.prior_sampler is None:
             return np.empty((0, ref_struct.num_atoms, 3), dtype=np.float32)
 
-        prior_coords_list = []
-        for _ in range(self.num_priors):
-            prior_apo_dict = self.get_prior_coords(ref_struct, rng)
-            prior_coords = self.prior_sampler(ref_struct, prior_apo_dict, 1, rng)
-            assert prior_coords.shape == (1, ref_struct.num_atoms, 3)
-            prior_coords_list.append(prior_coords[0])
-        return np.stack(prior_coords_list, axis=0)
+        prior_candidates = self.get_prior_candidates(ref_struct, rng)
+        prior_coords = self.prior_sampler(
+            ref_struct, prior_candidates, self.num_priors, rng
+        )
+        assert prior_coords.shape == (self.num_priors, ref_struct.num_atoms, 3)
+        return prior_coords
 
-    def get_prior_coords(
+    def get_prior_candidates(
         self,
         ref_struct: RefStructure,
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
-        """Sample one protein prior source per chain."""
+        """Return protein prior candidate stacks keyed by asym_id."""
         entry_id: str = ref_struct.id
-        prior_apo_dict: dict[int, np.ndarray] = {}
+        prior_candidates: dict[int, np.ndarray] = {}
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
 
         for c in ref_struct.chains:
@@ -748,7 +747,7 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             if loaded is None:
                 if self.train:
                     coords = self._center_label_residue_coords(c)
-                    prior_apo_dict[c.asym_id] = coords
+                    prior_candidates[c.asym_id] = coords[None]
                 else:
                     raise KeyError(
                         f"Prior stack not found for chain {entry_id}:{c.asym_id}."
@@ -763,10 +762,9 @@ class BaseLMDBDataset(torch.utils.data.Dataset):
             assert loaded.shape[0] > 0, (
                 f"Prior stack for chain {entry_id}:{c.asym_id} is empty."
             )
-            sample_i = int(rng.integers(0, loaded.shape[0]))
-            prior_apo_dict[c.asym_id] = loaded[sample_i]
+            prior_candidates[c.asym_id] = loaded
 
-        return prior_apo_dict
+        return prior_candidates
 
     def tokenize(
         self,

@@ -1,10 +1,9 @@
 import itertools
-import logging
-import pathlib
 from collections import defaultdict
-from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
+import torch
 
 import kfold.constants as C
 from kfold.data.pipelines import (
@@ -17,66 +16,16 @@ from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
-from kfold.data.types.tokenized import TokenizedStructure
-from kfold.data.utils.io.structure import (
-    read_protein_multimer_structure,
-    read_protein_structure,
-)
 
 from . import query
 
 
-@dataclass
-class ResolvedStructureSources:
-    """Normalized apo/prior inputs for one inference query."""
+class InferenceInput(NamedTuple):
+    """One query and its unbatched, fully constructed model input."""
 
-    num_apo: int
-    apo_coords: dict[int, np.ndarray]
-    prior_sources: list[dict[int, np.ndarray]]
-    struct_token_records: list[list[dict]]
-
-
-@dataclass
-class _AlignedStructureSource:
-    """One parsed structure aligned to its query sequence."""
-
-    sequence: str
-    coords: np.ndarray
-    target_range: tuple[int, int]
-
-
-def _best_sequence_mapping(
-    target_sequence: str,
-    source_sequence: str,
-) -> tuple[tuple[int, int, int, int], int]:
-    """Return the ungapped overlap with the most matching residues."""
-    target_length = len(target_sequence)
-    source_length = len(source_sequence)
-    best_mapping = (0, 0, 0, 0)
-    best_score = (-1, -1)
-
-    for offset in range(1 - target_length, source_length):
-        target_start = max(0, -offset)
-        source_start = max(0, offset)
-        overlap = min(
-            target_length - target_start,
-            source_length - source_start,
-        )
-        num_matches = sum(
-            target_sequence[target_start + i] == source_sequence[source_start + i]
-            for i in range(overlap)
-        )
-        score = (num_matches, overlap)
-        if score > best_score:
-            best_score = score
-            best_mapping = (
-                target_start,
-                target_start + overlap,
-                source_start,
-                source_start + overlap,
-            )
-
-    return best_mapping, best_score[0]
+    query: query.Query
+    ref_struct: RefStructure
+    f_input: FoldingInput
 
 
 class InputDataPipeline:
@@ -84,7 +33,6 @@ class InputDataPipeline:
         self,
         ccd: CCD,
         num_prior_samples: int = 5,
-        num_apo: int | None = None,
     ) -> None:
         """Initialize the input data pipeline.
 
@@ -94,8 +42,6 @@ class InputDataPipeline:
             The chemical component dictionary for residue information.
         num_prior_samples : int, optional
             Number of diffusion priors to create. Default is 5.
-        num_apo : int, optional
-            Maximum number of apo structures to use. By default, use all inputs.
         """
 
         self.ccd: CCD = ccd
@@ -104,9 +50,6 @@ class InputDataPipeline:
         if num_prior_samples <= 0:
             raise ValueError("num_prior_samples must be positive.")
         self.num_prior_samples = num_prior_samples
-        if num_apo is not None and num_apo <= 0:
-            raise ValueError("num_apo must be positive or None.")
-        self.num_apo = num_apo
 
         # Initialize tokenizer
         self.tokenizer = tokenization.Tokenizer(self.ccd)
@@ -114,69 +57,95 @@ class InputDataPipeline:
         # Initialize featurizer
         self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer()
 
-        self.logger = logging.getLogger("InputDataPipeline")
-        self.logger.setLevel(logging.INFO)
+    def build_input(self, input: query.Query, seed: int) -> InferenceInput:
+        """Build an unbatched FoldingInput from a prepared query."""
 
-    def __call__(
-        self, input: query.Query
-    ) -> tuple[RefStructure, TokenizedStructure, FoldingInput, list[list[dict]]]:
-        """Process an Query into model-ready inputs.
+        # Extract all protein sequences
+        entries: list[query.ProteinSequence | query.ProteinMultimerSequence] = [
+            seq for seq in input.sequences if isinstance(seq, query.ProteinSequence)
+        ] + input.multimer_sequences
 
-        Parameters
-        ----------
-        input : Query
-            The input file containing sequences and metadata.
+        # Validate that the query has been prepared
+        if any(
+            entry._apo_coords is None or entry._prior_coords is None for entry in entries
+        ):
+            raise ValueError("Call runner.prepare_query() before building the input.")
 
-        Returns
-        -------
-        ref_struct : RefStructure
-            The reference structure.
-        tokenized_struct : TokenizedStructure
-            The tokenized structure.
-        f_input : FoldingInput
-            The featurized model input.
-        struct_token_records : list[list[dict]]
-            The raw apo-token records for each chain.
-        """
-        return self.run(input)
+        # Initialize RNGs
+        prior_rng = np.random.default_rng(np.random.SeedSequence([seed, 0]))
+        tokenizer_rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
 
-    def run(
-        self, input: query.Query
-    ) -> tuple[RefStructure, TokenizedStructure, FoldingInput, list[list[dict]]]:
-        """Convert one query into model input and raw apo-token records."""
-        # Set up RNGs
-        source_rng = np.random.default_rng(np.random.SeedSequence([input.seed, 0]))
-        prior_rng = np.random.default_rng(np.random.SeedSequence([input.seed, 1]))
-        tokenizer_rng = np.random.default_rng(np.random.SeedSequence([input.seed, 2]))
-
-        # Read query and prepare reference structure
+        # Prepare reference structure
         ref_struct = self.read_query(input)
 
-        # Read apo/prior structures
-        sources = self.resolve_structure_sources(ref_struct, input, source_rng)
+        # Prepare apo coordinates
+        num_apo = max((len(entry._apo_coords[0]) for entry in entries), default=1)
+        asym_by_name = {chain.name: chain.asym_id for chain in ref_struct.metadata.chains}
+        apo_coords: dict[int, np.ndarray] = {}
+        for entry in entries:
+            multimer = isinstance(entry, query.ProteinMultimerSequence)
+            component_ids = (
+                list(zip(*entry.ids, strict=True)) if multimer else [entry.ids]
+            )
+            for ids, apos in zip(component_ids, entry._apo_coords, strict=True):
+                padded = np.full((num_apo, *apos.shape[1:]), np.nan, dtype=np.float32)
+                padded[: len(apos)] = apos
+                for chain_id in ids:
+                    asym_id = asym_by_name[chain_id]
+                    apo_coords[asym_id] = padded
 
-        # Each resolved source contributes exactly one prior. Perturbation,
-        # relaxation, and rigid augmentation stay inside PriorSampler.
-        prior_coords = np.stack(
-            [
-                self.prior_sampler.sample(ref_struct, source, 1, prior_rng)[0]
-                for source in sources.prior_sources
-            ],
-            axis=0,
+        # Sample prior coordinates
+        prior_candidates: dict[int, np.ndarray] = {}
+        for entry in entries:
+            multimer = isinstance(entry, query.ProteinMultimerSequence)
+            component_ids = (
+                list(zip(*entry.ids, strict=True)) if multimer else [entry.ids]
+            )
+            for ids, priors in zip(component_ids, entry._prior_coords, strict=True):
+                for chain_id in ids:
+                    asym_id = asym_by_name[chain_id]
+                    prior_candidates[asym_id] = priors
+        prior_coords = self.prior_sampler.sample(
+            ref_struct, prior_candidates, self.num_prior_samples, prior_rng
         )
 
         # Tokenize structure
-        # Learned structure token IDs are added later on the model device.
         tokenized = self.tokenizer(
             ref_struct,
             tokenizer_rng,
-            apo_coords=sources.apo_coords,
-            num_apo=sources.num_apo,
+            apo_coords=apo_coords,
+            num_apo=num_apo,
             prior_coords=prior_coords,
         )
 
         f_input = self.featurizer(tokenized)
-        return ref_struct, tokenized, f_input, sources.struct_token_records
+        for entry in entries:
+            if entry._apo_token is None:
+                continue
+            component_ids = (
+                list(zip(*entry.ids, strict=True))
+                if isinstance(entry, query.ProteinMultimerSequence)
+                else [entry.ids]
+            )
+            for ids, tokens in zip(component_ids, entry._apo_token, strict=True):
+                for chain_id in ids:
+                    asym_id = asym_by_name[chain_id]
+                    st = int(torch.where(f_input.sequence.asym_id == asym_id)[0][0]) + 1
+                    end = st + len(tokens[0]["bb_token_id"])
+                    for apo_i, token_ids in enumerate(tokens):
+                        f_input.sequence.bb_struct_token_id[st:end, apo_i] = (
+                            torch.from_numpy(token_ids["bb_token_id"])
+                        )
+                        f_input.sequence.fa_struct_token_id[st:end, apo_i] = (
+                            torch.from_numpy(token_ids["fa_token_id"])
+                        )
+
+        f_input = f_input.pad(
+            max_tokens=((f_input.num_tokens + 31) // 32) * 32,
+            max_atoms=((f_input.num_atoms + 63) // 64) * 64,
+            max_sequence_tokens=((f_input.num_sequence_tokens + 63) // 64) * 64,
+        )
+        return InferenceInput(input, ref_struct, f_input)
 
     def read_query(self, input: query.Query) -> RefStructure:
         """Prepare the reference structure from the input file.
@@ -345,288 +314,6 @@ class InputDataPipeline:
         )
         return ref_struct
 
-    def resolve_structure_sources(
-        self,
-        ref_struct: RefStructure,
-        input: query.Query,
-        rng: np.random.Generator,
-    ) -> ResolvedStructureSources:
-        """Load custom sources and normalize them by asym_id."""
-
-        def _select_apo_paths(
-            paths: list[str], num_apo: int | None, _rng: np.random.Generator
-        ) -> list[str]:
-            if num_apo is None or len(paths) <= num_apo:
-                return paths
-            indices = _rng.choice(len(paths), size=num_apo, replace=False)
-            return [paths[int(i)] for i in indices]
-
-        metadata_by_name = {chain.name: chain for chain in ref_struct.metadata.chains}
-        apo_groups: list[list[dict[int, np.ndarray]]] = []
-        prior_groups: list[list[dict[int, np.ndarray]]] = []
-        struct_token_records: list[list[dict]] = []
-
-        for sequence in input.sequences:
-            if not isinstance(sequence, query.ProteinSequence):
-                continue
-            assert sequence.apo is not None
-            asym_ids = [metadata_by_name[name].asym_id for name in sequence.ids]
-            apo_paths = _select_apo_paths(sequence.apo, self.num_apo, rng)
-            prior_paths = sequence.prior or sequence.apo
-            source_key = f"{input.name}:{','.join(sequence.ids)}"
-            apos, priors, records = self._load_monomer_sources(
-                asym_ids, sequence.sequence, apo_paths, prior_paths, source_key
-            )
-            apo_groups.append(apos)
-            prior_groups.append(priors)
-            struct_token_records.extend(records)
-
-        for sequence_group in input.multimer_sequences:
-            assert sequence_group.apo is not None
-            component_asym_ids: tuple[list[int], list[int]] = ([], [])
-            for id_pair in sequence_group.ids:
-                for component_i, chain_name in enumerate(id_pair):
-                    component_asym_ids[component_i].append(
-                        metadata_by_name[chain_name].asym_id
-                    )
-
-            pair_sequence = (sequence_group.sequence1, sequence_group.sequence2)
-            physical_ids = [name for id_pair in sequence_group.ids for name in id_pair]
-            apo_paths = _select_apo_paths(sequence_group.apo, self.num_apo, rng)
-            prior_paths = sequence_group.prior or sequence_group.apo
-            source_key = f"{input.name}:{','.join(physical_ids)}"
-            apos, priors, records = self._load_multimer_sources(
-                component_asym_ids, pair_sequence, apo_paths, prior_paths, source_key
-            )
-            apo_groups.append(apos)
-            prior_groups.append(priors)
-            struct_token_records.extend(records)
-
-        num_apo = max(map(len, apo_groups), default=1)
-        apo_coords: dict[int, np.ndarray] = {}
-        for sources in apo_groups:
-            for asym_id, first_coords in sources[0].items():
-                apo_coords[asym_id] = np.stack(
-                    [
-                        sources[i][asym_id]
-                        if i < len(sources)
-                        else np.full_like(first_coords, np.nan)
-                        for i in range(num_apo)
-                    ]
-                )
-
-        prior_sources = self._sample_prior_sources(ref_struct, prior_groups, rng)
-
-        return ResolvedStructureSources(
-            num_apo=num_apo,
-            apo_coords=apo_coords,
-            prior_sources=prior_sources,
-            struct_token_records=[records[:num_apo] for records in struct_token_records],
-        )
-
-    def _load_monomer_sources(
-        self,
-        asym_ids: list[int],
-        target_sequence: str,
-        apo_paths: list[str],
-        prior_paths: list[str],
-        label: str,
-    ) -> tuple[
-        list[dict[int, np.ndarray]],
-        list[dict[int, np.ndarray]],
-        list[list[dict]],
-    ]:
-        def read(path: str) -> _AlignedStructureSource:
-            source_sequence, source_coords = read_protein_structure(path)
-            return self._align_structure_source(
-                path,
-                label,
-                target_sequence,
-                source_sequence,
-                source_coords,
-            )
-
-        def collect_coords(source: _AlignedStructureSource) -> dict[int, np.ndarray]:
-            length = len(target_sequence)
-            coords = np.full((length, 37, 3), np.nan, dtype=np.float32)
-            target_start, target_end = source.target_range
-            coords[target_start:target_end] = source.coords
-            return {asym_id: coords.copy() for asym_id in asym_ids}
-
-        apo_sources: list[dict[int, np.ndarray]] = []
-        token_records: list[dict] = []
-        for path in apo_paths:
-            source = read(path)
-            apo_sources.append(collect_coords(source))
-            token_records.append(
-                {
-                    "seq": source.sequence,
-                    "coords": source.coords,
-                    "targets": [(asym_id, *source.target_range) for asym_id in asym_ids],
-                }
-            )
-
-        prior_sources = [collect_coords(read(path)) for path in prior_paths]
-        return apo_sources, prior_sources, [token_records]
-
-    def _load_multimer_sources(
-        self,
-        component_asym_ids: tuple[list[int], list[int]],
-        target_sequences: tuple[str, str],
-        apo_paths: list[str],
-        prior_paths: list[str],
-        label: str,
-    ) -> tuple[
-        list[dict[int, np.ndarray]],
-        list[dict[int, np.ndarray]],
-        list[list[dict]],
-    ]:
-        def read(
-            path: str,
-        ) -> tuple[_AlignedStructureSource, _AlignedStructureSource]:
-            chain_records = list(
-                read_protein_multimer_structure(pathlib.Path(path)).values()
-            )
-            if len(chain_records) != 2:
-                raise ValueError(
-                    f"Protein multimer source for {label} in {path} must contain "
-                    f"exactly two non-empty protein chains, found "
-                    f"{len(chain_records)}."
-                )
-            components = tuple(
-                self._align_structure_source(
-                    path,
-                    f"Protein multimer component {i} for {label}",
-                    target_sequence,
-                    record["seq"],
-                    record["coords"],
-                )
-                for i, (record, target_sequence) in enumerate(
-                    zip(chain_records, target_sequences, strict=True),
-                    start=1,
-                )
-            )
-            return components[0], components[1]
-
-        def collect_coords(
-            components: tuple[_AlignedStructureSource, _AlignedStructureSource],
-        ) -> dict[int, np.ndarray]:
-            source: dict[int, np.ndarray] = {}
-            for target_sequence, asym_ids, component in zip(
-                target_sequences,
-                component_asym_ids,
-                components,
-                strict=True,
-            ):
-                length = len(target_sequence)
-                coords = np.full((length, 37, 3), np.nan, dtype=np.float32)
-                target_start, target_end = component.target_range
-                coords[target_start:target_end] = component.coords
-                source.update({asym_id: coords.copy() for asym_id in asym_ids})
-            return source
-
-        apo_sources: list[dict[int, np.ndarray]] = []
-        token_records: list[list[dict]] = [[] for _ in target_sequences]
-        for path in apo_paths:
-            components = read(path)
-            apo_sources.append(collect_coords(components))
-            for component_i, (asym_ids, component) in enumerate(
-                zip(component_asym_ids, components, strict=True)
-            ):
-                token_records[component_i].append(
-                    {
-                        "seq": component.sequence,
-                        "coords": component.coords,
-                        "targets": [
-                            (asym_id, *component.target_range) for asym_id in asym_ids
-                        ],
-                    }
-                )
-
-        prior_sources = [collect_coords(read(path)) for path in prior_paths]
-        return apo_sources, prior_sources, token_records
-
-    def _align_structure_source(
-        self,
-        path: str,
-        label: str,
-        target_sequence: str,
-        source_sequence: str,
-        source_coords: np.ndarray,
-    ) -> _AlignedStructureSource:
-        source_length = len(source_sequence)
-        assert source_coords.shape == (source_length, 37, 3)
-
-        if target_sequence == source_sequence:
-            return _AlignedStructureSource(
-                sequence=source_sequence,
-                coords=source_coords,
-                target_range=(0, source_length),
-            )
-
-        mapping, num_matches = _best_sequence_mapping(target_sequence, source_sequence)
-        if num_matches == 0:
-            raise ValueError(
-                f"Structure sequence mismatch for {label} in {path}: no matching "
-                f"residues between expected {target_sequence} and got "
-                f"{source_sequence}."
-            )
-
-        target_start, target_end, source_start, source_end = mapping
-        num_mapped = target_end - target_start
-        self.logger.warning(
-            "Aligned structure sequence for %s in %s: query length %d, source "
-            "length %d, %d/%d mapped residues match, %d substitutions, %d "
-            "query residues without coordinates, and %d ignored source residues.",
-            label,
-            path,
-            len(target_sequence),
-            source_length,
-            num_matches,
-            num_mapped,
-            num_mapped - num_matches,
-            len(target_sequence) - num_mapped,
-            source_length - num_mapped,
-        )
-        return _AlignedStructureSource(
-            sequence=source_sequence[source_start:source_end],
-            coords=source_coords[source_start:source_end],
-            target_range=(target_start, target_end),
-        )
-
-    def _sample_prior_sources(
-        self,
-        ref_struct: RefStructure,
-        prior_groups: list[list[dict[int, np.ndarray]]],
-        rng: np.random.Generator,
-    ) -> list[dict[int, np.ndarray]]:
-        """Randomly select one source per rigid chain group for every prior."""
-        metadata_by_asym_id = {
-            chain.asym_id: chain for chain in ref_struct.metadata.chains
-        }
-        rigid_groups: list[tuple[list[int], list[dict[int, np.ndarray]]]] = []
-        for candidates in prior_groups:
-            asym_ids_by_uid: dict[int, list[int]] = defaultdict(list)
-            for asym_id in candidates[0]:
-                uid = metadata_by_asym_id[asym_id].prior_uid
-                assert uid is not None
-                asym_ids_by_uid[uid].append(asym_id)
-            rigid_groups.extend(
-                (asym_ids, candidates) for asym_ids in asym_ids_by_uid.values()
-            )
-
-        global_sources: list[dict[int, np.ndarray]] = []
-        for _ in range(self.num_prior_samples):
-            global_source: dict[int, np.ndarray] = {}
-            for asym_ids, candidates in rigid_groups:
-                candidate = candidates[int(rng.integers(len(candidates)))]
-                global_source.update({i: candidate[i].copy() for i in asym_ids})
-            global_sources.append(global_source)
-        return global_sources
-
-    # ================================================================================
-    # Chain Parsing Functions
-    # ================================================================================
     def parse_sequence(
         self,
         seq: query.BaseSequence,

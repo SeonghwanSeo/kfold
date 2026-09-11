@@ -79,7 +79,7 @@ class PriorSampler:
     def __call__(
         self,
         struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
+        prior_candidates: dict[int, np.ndarray],
         num_samples: int,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
@@ -89,10 +89,11 @@ class PriorSampler:
         ----------
         struct : RefStructure
             Reference structure to sample priors for.
-        apo_dict : dict[int, np.ndarray]
-            Dictionary mapping protein asym_id to one prior coordinate source
-            with shape [L, 37, 3]. Nucleic-acid and ligand coordinates are
-            sampled internally.
+        prior_candidates : dict[int, np.ndarray]
+            Dictionary mapping protein asym_id to candidate prior coordinates
+            with shape [N, L, 37, 3]. Chains in the same prior rigid group
+            must use candidate stacks with the same length and ordering.
+            Nucleic-acid and ligand coordinates are sampled internally.
         num_samples : int
             Number of prior samples to generate.
         rng : np.random.Generator
@@ -103,12 +104,12 @@ class PriorSampler:
         prior_coords : np.ndarray
             Sampled prior coordinates of shape [num_priors, Natom, 3].
         """
-        return self.sample(struct, apo_dict, num_samples, rng)
+        return self.sample(struct, prior_candidates, num_samples, rng)
 
     def sample(
         self,
         struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
+        prior_candidates: dict[int, np.ndarray],
         num_samples: int,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
@@ -118,14 +119,16 @@ class PriorSampler:
         if num_samples <= 0:
             return np.empty((0, struct.num_atoms, 3), dtype=np.float32)
 
-        # Prepare one coordinate source for each chain. Resampling happens in
-        # the dataset; the sampler handles perturbation, augmentation, and OT.
-        chain_coords_list = self.prepare_chain_coords(struct, apo_dict, rng)
         prior_uids = self.get_chain_prior_uids(struct)
         skip_ot_permutation = len(set(prior_uids)) < len(prior_uids)
 
         prior_coords_list: list[np.ndarray] = []
         for _ in range(num_samples):
+            selected_coords = self._select_prior_coords(
+                struct, prior_candidates, prior_uids, rng
+            )
+            chain_coords_list = self.prepare_chain_coords(struct, selected_coords, rng)
+
             # Apply one random augmentation per prior rigid group.
             _chain_coords_list = self.apply_group_random_augmentation(
                 chain_coords_list, prior_uids, rng
@@ -154,15 +157,74 @@ class PriorSampler:
             prior_uids.append(int(prior_uid))
         return prior_uids
 
+    def _select_prior_coords(
+        self,
+        struct: RefStructure,
+        prior_candidates: dict[int, np.ndarray],
+        prior_uids: list[int],
+        rng: np.random.Generator,
+    ) -> dict[int, np.ndarray]:
+        """Select one prior candidate for each prior rigid group."""
+        protein_chains = [chain for chain in struct.chains if chain.is_protein]
+        protein_asym_ids = {chain.asym_id for chain in protein_chains}
+        unknown_keys = set(prior_candidates) - protein_asym_ids
+        missing_keys = protein_asym_ids - set(prior_candidates)
+        if unknown_keys or missing_keys:
+            raise KeyError(
+                f"Protein prior candidates for {struct.id} must match its protein "
+                f"chains; missing={sorted(missing_keys)}, unknown={sorted(unknown_keys)}."
+            )
+
+        uid_by_asym_id = {
+            chain.asym_id: prior_uids[i] for i, chain in enumerate(struct.chains)
+        }
+        chains_by_uid: dict[int, list[Chain]] = defaultdict(list)
+        for chain in protein_chains:
+            chains_by_uid[uid_by_asym_id[chain.asym_id]].append(chain)
+
+        selected: dict[int, np.ndarray] = {}
+        for chains in chains_by_uid.values():
+            first = chains[0]
+            first_candidates = prior_candidates[first.asym_id]
+            expected_shape = (first.num_residues, 37, 3)
+            if (
+                first_candidates.ndim != 4
+                or first_candidates.shape[0] == 0
+                or first_candidates.shape[1:] != expected_shape
+            ):
+                raise ValueError(
+                    f"Prior candidates for {struct.id}:{first.asym_id} have shape "
+                    f"{first_candidates.shape}; expected (N, {expected_shape[0]}, 37, 3) "
+                    "with N > 0."
+                )
+
+            candidate_i = int(rng.integers(first_candidates.shape[0]))
+            for chain in chains:
+                candidates = prior_candidates[chain.asym_id]
+                expected_shape = (chain.num_residues, 37, 3)
+                if (
+                    candidates.ndim != 4
+                    or candidates.shape[0] != first_candidates.shape[0]
+                    or candidates.shape[1:] != expected_shape
+                ):
+                    raise ValueError(
+                        f"Prior candidates for {struct.id}:{chain.asym_id} have shape "
+                        f"{candidates.shape}; expected ({first_candidates.shape[0]}, "
+                        f"{expected_shape[0]}, 37, 3)."
+                    )
+                selected[chain.asym_id] = candidates[candidate_i]
+
+        return selected
+
     def prepare_chain_coords(
         self,
         struct: RefStructure,
-        apo_dict: dict[int, np.ndarray],
+        selected_coords: dict[int, np.ndarray],
         rng: np.random.Generator,
     ) -> list[np.ndarray]:
         """Prepare one atom-order prior source for each chain."""
         source_chain_ids = {chain.asym_id for chain in struct.chains if chain.is_protein}
-        unknown_keys = set(apo_dict) - source_chain_ids
+        unknown_keys = set(selected_coords) - source_chain_ids
         if unknown_keys:
             raise KeyError(
                 "Protein prior coordinates must be keyed by asym_id. "
@@ -174,12 +236,14 @@ class PriorSampler:
             chain_key = f"{struct.id}:{c.asym_id}"
 
             if c.is_protein:
-                if c.asym_id not in apo_dict:
+                if c.asym_id not in selected_coords:
                     raise KeyError(
                         f"Missing protein prior source for chain {c.asym_id} "
                         f"in {struct.id}"
                     )
-                coords = self.perturb_protein_apo_coords(c, apo_dict[c.asym_id], rng)
+                coords = self.perturb_protein_apo_coords(
+                    c, selected_coords[c.asym_id], rng
+                )
                 coords = c.map_residue_coords_to_atom_coords(coords)
                 coords = self.langevin_relaxation(coords, c, rng)
             elif c.is_nucleic_acid:

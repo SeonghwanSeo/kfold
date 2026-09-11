@@ -42,21 +42,19 @@ bonds:
 ```
 """
 
+import copy
 import dataclasses
-import functools
 import json
-import logging
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar
 
+import numpy as np
 import yaml
 from rdkit import Chem
 
 import kfold.constants as C
-from kfold.data.types.ccd import CCD
-
-logger = logging.getLogger("kfold.inference.query")
 
 ALLOWED_TOKEN_DICT = {
     C.ChainType.PROTEIN: set(C.residue.PROTEIN_AMINO_ACIDS),
@@ -81,21 +79,21 @@ def _parse_modifications(
     normalized: dict[int, str] = {}
     for raw_index, ccd_code in raw_modifications.items():
         index = str(raw_index)
-        if not index.isdigit() or int(index) < 1:
+        if not index.isdecimal():
             raise ValueError(
                 f"modification residue indices must be positive, "
                 f"1-based integers, got: {raw_index}"
             )
-        if int(index) > len(sequence):
+        res_idx = int(index)
+        if not 1 <= res_idx <= len(sequence):
             raise ValueError(
-                f"modification residue index {index} exceeds "
+                f"modification residue index {index} is outside "
                 f"sequence length {len(sequence)}."
             )
         if not isinstance(ccd_code, str) or not ccd_code:
             raise ValueError(
                 f"modification CCD codes must be non-empty strings, got: {ccd_code}"
             )
-        res_idx = int(index)
         if res_idx in normalized:
             raise ValueError(
                 "modification residue indices must be unique after normalization, "
@@ -194,8 +192,11 @@ class PolymerSequence(BaseSequence):
         """Return the number of residues in the protein sequence."""
         return len(self.sequence)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         super().__post_init__()
+        if not isinstance(self.sequence, str) or not self.sequence:
+            raise ValueError("Polymer sequence must be a non-empty string.")
+        self.modifications = _parse_modifications(self.sequence, self.modifications)
 
         allowed_tokens = ALLOWED_TOKEN_DICT[self.ctype]
         for restype in self.sequence:
@@ -205,7 +206,7 @@ class PolymerSequence(BaseSequence):
                     f"Allowed tokens: {allowed_tokens}"
                 )
 
-    @functools.cached_property
+    @property
     def ccd_sequence(self) -> list[str]:
         """Return the resolved CCD sequence, using modifications where applicable."""
         # First, map the standard residues/bases to their CCD codes
@@ -229,20 +230,22 @@ class ProteinSequence(PolymerSequence):
     apo: list[str] | None = None
     prior: list[str] | None = None
 
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if self.apo is None:
-            raise NotImplementedError("Apo sampling is not integrated yet.")
-        if self.apo is not None:
-            if len(self.apo) == 0:
-                raise ValueError("Apo must be a non-empty list of file path strings.")
-            for apo_file in self.apo:
-                if not Path(apo_file).is_file():
-                    raise ValueError(f"Apo file does not exist: {apo_file}")
-        if self.prior is not None:
-            for prior_file in self.prior:
-                if not Path(prior_file).is_file():
-                    raise ValueError(f"Prior file does not exist: {prior_file}")
+    # For internal use to store the apo structure info.
+    # This is not saved to the input/output schema.
+    # Each PDB string contains one model, including all multimer chains.
+    _apo_pdb: list[str] | None = dataclasses.field(default=None, init=False, repr=False)
+    _prior_pdb: list[str] | None = dataclasses.field(default=None, init=False, repr=False)
+    # [Napo, L, 37, 3].
+    _apo_coords: list[np.ndarray] | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _prior_coords: list[np.ndarray] | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    # Component chain -> apo -> BB/FA CPU token arrays.
+    _apo_token: list[list[dict[str, np.ndarray]]] | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -268,20 +271,32 @@ class LigandSequence(BaseSequence):
     ctype: ClassVar[C.ChainType] = C.ChainType.LIGAND
     seqtype: ClassVar[str] = "ligand"
 
-    id: list[str]
     smiles: str | None = None
     ccd: str | list[str] | None = None
 
-    def __len__(self) -> int:
-        """Return the number of residues in the Ligand sequence."""
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if (self.smiles is None) == (self.ccd is None):
+            raise ValueError("Ligand must specify exactly one of 'smiles' or 'ccd'.")
         if self.smiles is not None:
-            return 1
+            if not isinstance(self.smiles, str) or not self.smiles.strip():
+                raise ValueError("Ligand 'smiles' must be a non-empty string.")
+            if Chem.MolFromSmiles(self.smiles) is None:
+                raise ValueError("Invalid SMILES string for ligand.")
         else:
-            if self.ccd is None:
-                raise ValueError(
-                    "Ligand sequence must have either 'smiles' or 'ccd' field."
-                )
-            return 1 if isinstance(self.ccd, str) else len(self.ccd)
+            codes = self.ccd_ids
+            if (
+                not isinstance(codes, list)
+                or not codes
+                or any(not isinstance(code, str) or not code.strip() for code in codes)
+            ):
+                raise ValueError("Ligand 'ccd' must contain non-empty CCD code strings.")
+
+    def __len__(self) -> int:
+        """Return the number of ligand residues."""
+        if self.smiles is not None or isinstance(self.ccd, str):
+            return 1
+        return len(self.ccd)
 
     @property
     def ccd_ids(self) -> list[str] | None:
@@ -312,6 +327,21 @@ class ProteinMultimerSequence(BaseSequenceGroup):
     apo: list[str] | None = None
     prior: list[str] | None = None
 
+    # Each PDB string contains one model, including all multimer chains.
+    _apo_pdb: list[str] | None = dataclasses.field(default=None, init=False, repr=False)
+    _prior_pdb: list[str] | None = dataclasses.field(default=None, init=False, repr=False)
+    # Component chain -> [Nmodel, L, 37, 3] aligned CPU coordinates.
+    _apo_coords: list[np.ndarray] | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _prior_coords: list[np.ndarray] | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    # {bb: np.ndarray, fa: np.ndarray} for each apo of each component chain.
+    _apo_token: list[list[dict[str, np.ndarray]]] | None = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+
     def __len__(self) -> int:
         """Return the total number of residues in one dimer copy."""
         return len(self.sequence1) + len(self.sequence2)
@@ -326,12 +356,6 @@ class ProteinMultimerSequence(BaseSequenceGroup):
                     f"Protein multimer chain IDs must not contain ':', got: {id_pair!r}"
                 )
 
-        physical_ids = tuple(chain_id for id_pair in self.ids for chain_id in id_pair)
-        if len(set(physical_ids)) != len(physical_ids):
-            raise ValueError(
-                f"Protein multimer chain IDs must be unique, got: {physical_ids}"
-            )
-
         sequences = (self.sequence1, self.sequence2)
         for index, sequence in enumerate(sequences, start=1):
             if not isinstance(sequence, str) or not sequence:
@@ -344,24 +368,10 @@ class ProteinMultimerSequence(BaseSequenceGroup):
                         f"Invalid residue '{aa}' in protein multimer sequence{index}."
                     )
 
-        if self.apo is None:
-            raise NotImplementedError("Apo sampling is not integrated yet.")
+        self.modifications1 = _parse_modifications(self.sequence1, self.modifications1)
+        self.modifications2 = _parse_modifications(self.sequence2, self.modifications2)
 
-        if self.apo is not None:
-            if len(self.apo) == 0:
-                raise ValueError(
-                    "Protein multimer 'apo' must be a non-empty list of "
-                    "file path strings."
-                )
-            for apo_file in self.apo:
-                if not Path(apo_file).is_file():
-                    raise ValueError(f"Apo file does not exist: {apo_file}")
-        if self.prior is not None:
-            for prior_file in self.prior:
-                if not Path(prior_file).is_file():
-                    raise ValueError(f"Prior file does not exist: {prior_file}")
-
-    @functools.cached_property
+    @property
     def ccd_sequence1(self) -> list[str]:
         """Return the resolved CCD sequence, using modifications where applicable."""
         mapping = MAPPING_DICT[C.ChainType.PROTEIN]
@@ -475,17 +485,14 @@ class Query:
         default_factory=list
     )
     bonds: list[Bond] = dataclasses.field(default_factory=list)
-    seed: int = 0  # Default seed, overridden to command line argument
-    yaml: str  # Original YAML content
 
     @property
-    def priority(self) -> tuple[int, int, str]:
+    def priority(self) -> tuple[int, str]:
         """Compute a priority score for the query (prediction order).
         - Smaller complexes (less residues) have higher priority.
-        - For queries of the same size, smaller seed values have higher priority.
-        - For queries of the same size and seed, sort by name alphabetically.
+        - For queries of the same size, sort by name alphabetically.
         """
-        return (self.estimate_size(), self.seed, self.name)
+        return (self.estimate_size(), self.name)
 
     def estimate_size(self) -> int:
         """Estimate the size of the complex based on the input sequences."""
@@ -496,279 +503,198 @@ class Query:
         )
         return sequence_size + multimer_size
 
-    def copy(self, **kwargs) -> "Query":
-        """Create a copy of the Query with updated fields."""
-        return dataclasses.replace(self, **kwargs)
+    @classmethod
+    def load(cls, path: str | Path) -> "Query":
+        """Load a JSON/YAML query, resolving structures from CWD, then its directory."""
+        path = Path(path)
+        if path.suffix == ".json":
+            with open(path) as f:
+                input_dict = json.load(f)
+        elif path.suffix in {".yaml", ".yml"}:
+            with open(path) as f:
+                input_dict = yaml.safe_load(f)
+        else:
+            raise ValueError(f"Input file must be a JSON or YAML file, got: {path}")
 
-    def save(self, path: str | Path) -> None:
-        """Save the Query as a YAML file to the specified path."""
-        with open(path, "w") as f:
-            f.write(self.yaml)
+        if not isinstance(input_dict, dict):
+            raise ValueError("Query document must be a mapping.")
 
+        # Set default name if not provided
+        input_dict.setdefault("name", path.stem)
+        name = input_dict["name"]
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Query name must be a non-empty string.")
 
-def resolve_structure_path(structure_path: str | Path, input_dir: str | Path) -> str:
-    """Resolve a custom structure path based on the search priority.
-
-    Paths are resolved in the following priority:
-    1. Absolute Path: If an absolute path is provided, it is used directly.
-    2. Relative to CWD: If the path exists relative to the current working directory,
-        it is used.
-    3. Relative to Input File: If neither works, the path is resolved relative to the
-        input file directory.
-
-    Parameters
-    ----------
-    structure_path : str
-        The original apo or prior file path from the input.
-    input_dir : str | Path
-        The directory of the input file, used as the fallback base for relative paths.
-
-    Returns
-    -------
-    resolved_path: str
-        The resolved absolute path to the custom structure file.
-    """
-    structure_path = Path(structure_path)
-    if not structure_path.exists():
-        structure_path = Path(input_dir) / structure_path
-    return str(structure_path.resolve())
-
-
-def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
-    """Parse input YAML file into Query dataclass.
-
-    Parameters
-    ----------
-    json_or_yaml_path : str | Path
-        Path to the input JSON/YAML file.
-    ccd : CCD
-        Chemical component dictionary for validating ligand CCD codes.
-
-    Returns
-    -------
-    query: Query
-        Parsed input data as a Query dataclass.
-    """
-    if Path(json_or_yaml_path).suffix == ".json":
-        with open(json_or_yaml_path) as f:
-            input_dict = json.load(f)
-    elif Path(json_or_yaml_path).suffix in {".yaml", ".yml"}:
-        with open(json_or_yaml_path) as f:
-            input_dict = yaml.safe_load(f)
-    else:
-        raise ValueError(
-            f"Input file must be a JSON or YAML file, got: {json_or_yaml_path}"
-        )
-
-    # Set default name if not provided
-    if input_dict.get("name", None) is None:
-        input_dict["name"] = Path(json_or_yaml_path).stem
-    name = input_dict["name"]
-
-    # Parse sequences
-    input_sequences = input_dict.get("sequences", [])
-    input_multimer_sequences = input_dict.get("multimer_sequences", [])
-    if not input_sequences and not input_multimer_sequences:
-        raise ValueError(
-            "Input file must contain at least one 'sequences' or "
-            "'multimer_sequences' entry."
-        )
-
-    # Validate input sequence dictionaries
-    validate_input_dicts(input_sequences)
-    validate_multimer_input_dicts(input_multimer_sequences)
-
-    # Parse sequences
-    sequences: list[ProteinSequence | DNASequence | RNASequence | LigandSequence] = []
-    for seq_dict in input_sequences:
-        chain_type, chain_info = next(iter(seq_dict.items()))
-
-        sequence_info = dict(chain_info)
-        sequence_info["id"] = _normalize_id_field(sequence_info["id"])
-        if chain_type in {"protein", "dna", "rna"}:
-            sequence_info["modifications"] = _parse_modifications(
-                sequence_info["sequence"], sequence_info.get("modifications", {})
+        # Parse sequences
+        input_sequences = input_dict.get("sequences", [])
+        input_multimer_sequences = input_dict.get("multimer_sequences", [])
+        if not input_sequences and not input_multimer_sequences:
+            raise ValueError(
+                "Input file must contain at least one 'sequences' or "
+                "'multimer_sequences' entry."
             )
 
-        if chain_type == "protein":
-            # Resolve apo path and prior paths
-            input_dir = Path(json_or_yaml_path).parent
-            if sequence_info.get("apo", None) is not None:
-                apo = sequence_info["apo"]
-                apo = [apo] if isinstance(apo, str) else apo
-                sequence_info["apo"] = [
-                    resolve_structure_path(apo_path, input_dir) for apo_path in apo
-                ]
+        # Validate input sequence dictionaries
+        validate_input_dicts(input_sequences)
+        validate_multimer_input_dicts(input_multimer_sequences)
 
-            if sequence_info.get("prior", None) is not None:
-                sequence_info["prior"] = [
-                    resolve_structure_path(prior_path, input_dir)
-                    for prior_path in sequence_info["prior"]
-                ]
-            elif sequence_info.get("apo", None) is not None:
-                # If apo is provided but prior is not, set prior to be the same as apo
-                sequence_info["prior"] = sequence_info["apo"].copy()
+        input_dir = path.parent
+        for entry in [*input_sequences, *input_multimer_sequences]:
+            if "protein" not in entry:
+                continue
+            protein = entry["protein"]
+            for field in ("apo", "prior"):
+                paths = protein.get(field)
+                if paths is None:
+                    continue
+                if isinstance(paths, str):
+                    paths = [paths]
+                if (
+                    not isinstance(paths, list)
+                    or not paths
+                    or any(not isinstance(source, str) or not source for source in paths)
+                ):
+                    raise ValueError(
+                        f"'{field}' must be a non-empty list of structure paths."
+                    )
+                resolved_paths = []
+                for source in paths:
+                    source_path = Path(source)
+                    if not source_path.exists():
+                        source_path = input_dir / source_path
+                    if not source_path.is_file():
+                        raise FileNotFoundError(
+                            f"'{field}' structure file '{source}' was not found as "
+                            f"supplied or relative to query directory '{input_dir}'."
+                        )
+                    resolved_paths.append(str(source_path.resolve()))
+                if len(set(resolved_paths)) != len(resolved_paths):
+                    raise ValueError(f"Duplicate structure path in '{field}'.")
+                protein[field] = resolved_paths
 
-        match chain_type:
-            case "protein":
-                seq = ProteinSequence(**sequence_info)
-            case "dna":
-                seq = DNASequence(**sequence_info)
-            case "rna":
-                seq = RNASequence(**sequence_info)
-            case "ligand":
-                seq = LigandSequence(**sequence_info)
-            case _:
-                raise ValueError(f"Unsupported chain type: {chain_type}")
-        sequences.append(seq)
+        # Parse sequences
+        sequences: list[ProteinSequence | DNASequence | RNASequence | LigandSequence] = []
+        for seq_dict in input_sequences:
+            chain_type, chain_info = next(iter(seq_dict.items()))
 
-    # Parse multimer sequences
-    multimer_sequences: list[ProteinMultimerSequence] = []
-    for multimer_seq_dict in input_multimer_sequences:
-        chain_info = multimer_seq_dict["protein"]
-        multimer_info = dict(chain_info)
+            sequence_info = dict(chain_info)
+            sequence_info["id"] = _normalize_id_field(sequence_info["id"])
+            match chain_type:
+                case "protein":
+                    seq = ProteinSequence(**sequence_info)
+                case "dna":
+                    seq = DNASequence(**sequence_info)
+                case "rna":
+                    seq = RNASequence(**sequence_info)
+                case "ligand":
+                    seq = LigandSequence(**sequence_info)
+                case _:
+                    raise ValueError(f"Unsupported chain type: {chain_type}")
+            sequences.append(seq)
 
-        # Convert the "id" field to a list of id pairs
-        group_ids = _normalize_id_field(chain_info["id"])
-        multimer_info["id"] = [tuple(group_id.split(":")) for group_id in group_ids]
+        # Parse multimer sequences
+        multimer_sequences: list[ProteinMultimerSequence] = []
+        for multimer_seq_dict in input_multimer_sequences:
+            chain_info = multimer_seq_dict["protein"]
+            multimer_info = dict(chain_info)
 
-        # Convert the "sequence" field to two separate sequences
-        seq1, seq2 = multimer_info.pop("sequence").split(":")
-        multimer_info["sequence1"] = seq1
-        multimer_info["sequence2"] = seq2
-        multimer_info["modifications1"] = _parse_modifications(
-            seq1, multimer_info.get("modifications1", {})
+            # Convert the "id" field to a list of id pairs
+            group_ids = _normalize_id_field(chain_info["id"])
+            multimer_info["id"] = [tuple(group_id.split(":")) for group_id in group_ids]
+
+            # Convert the "sequence" field to two separate sequences
+            seq1, seq2 = multimer_info.pop("sequence").split(":")
+            multimer_info["sequence1"] = seq1
+            multimer_info["sequence2"] = seq2
+            mseq = ProteinMultimerSequence(**multimer_info)
+            multimer_sequences.append(mseq)
+
+        # Validate the parsed sequences and multimer sequences
+        validate_input_sequences(sequences, multimer_sequences)
+
+        if "constraints" in input_dict:
+            raise ValueError(
+                "The top-level 'constraints' field has been removed. "
+                "Specify covalent connections with 'bonds' instead."
+            )
+        bonds = _parse_bonds(input_dict.get("bonds", []))
+        _validate_bond_references(bonds, sequences, multimer_sequences)
+
+        return cls(
+            name=name,
+            sequences=sequences,
+            multimer_sequences=multimer_sequences,
+            bonds=bonds,
         )
-        multimer_info["modifications2"] = _parse_modifications(
-            seq2, multimer_info.get("modifications2", {})
+
+    def to_dict(self, *, relative_to: str | Path | None = None) -> dict:
+        """Build the input schema from current fields, without cached source text.
+
+        Structure paths are absolute unless ``relative_to`` specifies the directory
+        containing the serialized query. Returned containers are independent copies.
+        """
+        data = {"name": self.name}
+        for section, sequences in (
+            ("sequences", self.sequences),
+            ("multimer_sequences", self.multimer_sequences),
+        ):
+            if not sequences:
+                continue
+            entries = []
+            for sequence in sequences:
+                entity = {
+                    field.name: copy.deepcopy(getattr(sequence, field.name))
+                    for field in dataclasses.fields(sequence)
+                    if field.name not in {"apo", "prior"}
+                    and not field.name.startswith("_")
+                    and getattr(sequence, field.name) is not None
+                }
+                if isinstance(sequence, ProteinMultimerSequence):
+                    entity["id"] = [":".join(pair) for pair in sequence.id]
+                    entity["sequence"] = (
+                        entity.pop("sequence1") + ":" + entity.pop("sequence2")
+                    )
+                for field in ("modifications", "modifications1", "modifications2"):
+                    if field in entity:
+                        entity[field] = {
+                            str(index): code for index, code in entity[field].items()
+                        }
+                for field in ("apo", "prior"):
+                    refs = getattr(sequence, field, None)
+                    if refs is None:
+                        continue
+                    output = []
+                    for ref in refs:
+                        source_path = str(Path(ref).resolve())
+                        if relative_to is not None:
+                            source_path = os.path.relpath(
+                                source_path, Path(relative_to).resolve()
+                            )
+                        output.append(source_path)
+                    entity[field] = output
+                kind = (
+                    "protein"
+                    if isinstance(sequence, ProteinMultimerSequence)
+                    else sequence.seqtype
+                )
+                entries.append({kind: entity})
+            data[section] = entries
+        if self.bonds:
+            data["bonds"] = [[list(bond.atom1), list(bond.atom2)] for bond in self.bonds]
+        return data
+
+    def save(self, path: str | Path) -> None:
+        """Serialize current query fields with paths relative to the output file."""
+        path = Path(path)
+        if path.suffix not in {".json", ".yaml", ".yml"}:
+            raise ValueError(f"Output file must be a JSON or YAML file, got: {path}")
+        data = self.to_dict(relative_to=path.parent)
+        text = (
+            json.dumps(data, indent=2) + "\n"
+            if path.suffix == ".json"
+            else yaml.safe_dump(data)
         )
-
-        # Resolve apo path and prior paths
-        input_dir = Path(json_or_yaml_path).parent
-        if multimer_info.get("apo", None) is not None:
-            apo = multimer_info["apo"]
-            apo = [apo] if isinstance(apo, str) else apo
-            multimer_info["apo"] = [
-                resolve_structure_path(apo_path, input_dir) for apo_path in apo
-            ]
-
-        if multimer_info.get("prior", None) is not None:
-            multimer_info["prior"] = [
-                resolve_structure_path(prior_path, input_dir)
-                for prior_path in multimer_info["prior"]
-            ]
-        elif multimer_info.get("apo", None) is not None:
-            # If apo is provided but prior is not, set prior to be the same as apo
-            multimer_info["prior"] = multimer_info["apo"].copy()
-
-        mseq = ProteinMultimerSequence(**multimer_info)
-        multimer_sequences.append(mseq)
-
-    # Validate the parsed sequences and multimer sequences
-    validate_input_sequences(sequences, multimer_sequences, ccd=ccd)
-
-    if "constraints" in input_dict:
-        raise ValueError(
-            "The top-level 'constraints' field has been removed. "
-            "Specify covalent connections with 'bonds' instead."
-        )
-    bonds = _parse_bonds(input_dict.get("bonds", []))
-    _validate_bond_references(bonds, sequences, multimer_sequences)
-
-    return Query(
-        name=name,
-        sequences=sequences,
-        multimer_sequences=multimer_sequences,
-        bonds=bonds,
-        yaml=yaml.safe_dump(input_dict),
-    )
-
-
-def parse_input_files(
-    input_path: str | Path,
-    ccd: CCD,
-    seeds: int | list[int],
-    skip_invalid: bool = True,
-) -> list[Query]:
-    """Parse input JSON/YAML file or all files in a directory into a list of Query.
-
-    Parameters
-    ----------
-    input_path : str | Path
-        Path to the input JSON/YAML file or directory containing such files.
-    ccd : CCD
-        Chemical component dictionary for validating ligand CCD codes.
-    seeds : int | list[int]
-        Random seed(s) for the queries.
-    skip_invalid : bool
-        Whether to skip invalid input files instead of raising an error.
-        Only applicable when input_path is a directory.
-
-    Returns
-    -------
-    queries: list[Query]
-        List of parsed input data as Query dataclasses.
-    """
-    input_path = Path(input_path)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input path does not exist: {input_path}")
-
-    if input_path.is_dir():
-        queries = parse_directory(input_path, ccd=ccd, skip_invalid=skip_invalid)
-    else:
-        queries = [parse_single_file(input_path, ccd=ccd)]
-
-    # Check all queries have the different names to avoid overwriting results
-    names = set()
-    for query in queries:
-        if query.name in names:
-            raise ValueError(f"Duplicate query name found: {query.name}")
-        names.add(query.name)
-
-    # Copy queries with updated seeds
-    seeds = [seeds] if isinstance(seeds, int) else seeds
-    all_queries: list[Query] = []
-    for query in queries:
-        for seed in seeds:
-            all_queries.append(query.copy(seed=seed))
-    all_queries.sort(key=lambda q: q.priority)
-    return all_queries
-
-
-def parse_directory(
-    input_dir: str | Path,
-    ccd: CCD,
-    skip_invalid: bool = True,
-) -> list[Query]:
-    """Parse all JSON/YAML files in a directory into a list of Query.
-
-    Parameters
-    ----------
-    input_dir : str | Path
-        Path to the input directory containing JSON/YAML files.
-    ccd : CCD
-        Chemical component dictionary for validating ligand CCD codes.
-    skip_invalid : bool
-        Whether to skip invalid input files instead of raising an error.
-
-    Returns
-    -------
-    queries: list[Query]
-        List of parsed input data as Query dataclasses.
-    """
-    queries: list[Query] = []
-    for file_path in Path(input_dir).iterdir():
-        if file_path.suffix in {".json", ".yaml", ".yml"}:
-            try:
-                query = parse_single_file(file_path, ccd)
-            except Exception as e:
-                if skip_invalid:
-                    logger.error(f"Skipping invalid input file {file_path}: {e}")
-                else:
-                    raise
-            else:
-                queries.append(query)
-    return queries
+        path.write_text(text)
 
 
 def validate_input_dicts(
@@ -790,10 +716,9 @@ def validate_input_dicts(
         raise ValueError("'sequences' must be a list.")
 
     allow_types = {"protein", "dna", "rna", "ligand"}
-    asym_ids: set[str] = set()
     for entry in input_seqs:
         # Check only one chain type per entry
-        if len(entry) != 1:
+        if not isinstance(entry, dict) or len(entry) != 1:
             raise ValueError("Each sequence entry must contain exactly one chain type.")
 
         # Check chain type
@@ -803,6 +728,8 @@ def validate_input_dicts(
 
         # check required fields
         chain_info = entry[chain_type]
+        if not isinstance(chain_info, dict):
+            raise ValueError(f"'{chain_type}' entry must be a mapping.")
 
         if "id" not in chain_info:
             raise ValueError(f"Missing 'id' field for chain type: {chain_type}")
@@ -824,31 +751,7 @@ def validate_input_dicts(
                 f"'{chain_type}' entries do not support 'apo' or 'prior' fields."
             )
 
-        if chain_type == "protein":
-            apo = chain_info.get("apo")
-            valid_apo = isinstance(apo, str) and bool(apo)
-            valid_apo = valid_apo or (
-                isinstance(apo, list)
-                and bool(apo)
-                and all(isinstance(path, str) and path for path in apo)
-            )
-            if apo is not None and not valid_apo:
-                raise ValueError(
-                    "'protein' apo must be a file path string or a non-empty list "
-                    "of file path strings."
-                )
-
-            prior = chain_info.get("prior")
-            if prior is not None and (
-                not isinstance(prior, list)
-                or not prior
-                or not all(isinstance(path, str) and path for path in prior)
-            ):
-                raise ValueError(
-                    f"'{chain_type}' prior must be a list of file path strings."
-                )
-
-        # Check the id(s) are unique
+        # Validate the serialized chain IDs
         ids = entry[chain_type]["id"]
         if isinstance(ids, str):
             ids = [ids]
@@ -860,9 +763,6 @@ def validate_input_dicts(
         for asym_id in ids:
             if not isinstance(asym_id, str) or not asym_id:
                 raise ValueError(f"Chain IDs must be non-empty strings, got: {asym_id!r}")
-            if asym_id in asym_ids:
-                raise ValueError(f"Duplicate asym_id found: {asym_id}")
-            asym_ids.add(asym_id)
 
 
 def validate_multimer_input_dicts(
@@ -872,9 +772,8 @@ def validate_multimer_input_dicts(
     if not isinstance(input_groups, list):
         raise ValueError("'multimer_sequences' must be a list.")
 
-    physical_ids: set[str] = set()
     for entry in input_groups:
-        if len(entry) != 1:
+        if not isinstance(entry, dict) or len(entry) != 1:
             raise ValueError(
                 "Each multimer sequence entry must contain exactly one chain type."
             )
@@ -887,6 +786,8 @@ def validate_multimer_input_dicts(
             )
 
         chain_info = entry[chain_type]
+        if not isinstance(chain_info, dict):
+            raise ValueError(f"'{chain_type}' entry must be a mapping.")
         if "id" not in chain_info:
             raise ValueError("Missing 'id' field for protein multimer sequence.")
         if "sequence" not in chain_info:
@@ -912,10 +813,6 @@ def validate_multimer_input_dicts(
                     "Protein multimer IDs must have exactly two non-empty chain IDs "
                     f"in 'chain1:chain2' format, got: {group_id!r}"
                 )
-            for asym_id in id_pair:
-                if asym_id in physical_ids:
-                    raise ValueError(f"Duplicate asym_id found: {asym_id}")
-                physical_ids.add(asym_id)
 
         sequence = chain_info["sequence"]
         if not isinstance(sequence, str):
@@ -930,35 +827,10 @@ def validate_multimer_input_dicts(
                 "sequences in 'sequence1:sequence2' format."
             )
 
-        apo = chain_info.get("apo")
-        if apo is not None and not (
-            (isinstance(apo, str) and bool(apo))
-            or (
-                isinstance(apo, list)
-                and bool(apo)
-                and all(isinstance(path, str) and path for path in apo)
-            )
-        ):
-            raise ValueError(
-                "Protein multimer 'apo' must be a file path string or a non-empty "
-                "list of file path strings."
-            )
-
-        prior = chain_info.get("prior")
-        if prior is not None and (
-            not isinstance(prior, list)
-            or not prior
-            or not all(isinstance(path, str) and path for path in prior)
-        ):
-            raise ValueError(
-                "Protein multimer 'prior' must be a list of file path strings."
-            )
-
 
 def validate_input_sequences(
     seq_list: list[ProteinSequence | DNASequence | RNASequence | LigandSequence],
     multimer_sequences: list[ProteinMultimerSequence],
-    ccd: CCD,
 ) -> None:
     """Validate the input sequence dataclasses.
 
@@ -968,16 +840,12 @@ def validate_input_sequences(
         List of sequence dataclasses to validate.
     multimer_sequences : list[ProteinMultimerSequence]
         List of protein multimer-sequence dataclasses to validate.
-    ccd : CCD
-        Chemical component dictionary for validating ligand CCD codes.
 
     Raises
     ------
     ValueError
         If any validation check fails.
     """
-    valid_ccd_ids = set(ccd.keys())
-
     asym_ids: set[str] = set()
     for sequence in seq_list:
         # Check the id(s) are unique
@@ -986,32 +854,7 @@ def validate_input_sequences(
                 raise ValueError(f"Duplicate asym_id found: {asym_id}")
             asym_ids.add(asym_id)
 
-        # Additional checks for PolymerSequence
-        if isinstance(sequence, PolymerSequence):
-            for code in sequence.modifications.values():
-                if code not in valid_ccd_ids:
-                    raise ValueError(f"CCD code '{code}' not found in CCD.")
-
-        # Additional checks for LigandSequence
-        if isinstance(sequence, LigandSequence):
-            if sequence.smiles is not None:
-                # Basic check for SMILES string
-                mol = Chem.MolFromSmiles(sequence.smiles)
-                if mol is None:
-                    raise ValueError("Invalid SMILES string for ligand.")
-            else:
-                assert sequence.ccd_ids is not None
-                for code in sequence.ccd_ids:
-                    if code not in valid_ccd_ids:
-                        raise ValueError(f"CCD code '{code}' not found in CCD.")
-
     for sequence_group in multimer_sequences:
-        for code in sequence_group.modifications1.values():
-            if code not in valid_ccd_ids:
-                raise ValueError(f"CCD code '{code}' not found in CCD.")
-        for code in sequence_group.modifications2.values():
-            if code not in valid_ccd_ids:
-                raise ValueError(f"CCD code '{code}' not found in CCD.")
         for id_pair in sequence_group.ids:
             for asym_id in id_pair:
                 if asym_id in asym_ids:
