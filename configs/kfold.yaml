@@ -2,7 +2,6 @@
 channel_s: 384
 channel_z: 256
 dropout: 0.25
-diffusion_type: ecsi
 
 input_embedder:
   channel_s: 384

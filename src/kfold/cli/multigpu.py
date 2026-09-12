@@ -4,20 +4,24 @@ import torch
 
 
 def launch(worker, args, jobs):
-    if args.num_gpus > torch.cuda.device_count():
+    num_visible = torch.cuda.device_count()
+    if any(gpu_id >= num_visible for gpu_id in args.gpu_ids):
         raise ValueError(
-            f"Requested {args.num_gpus} GPUs; visible: {torch.cuda.device_count()}."
+            f"Requested GPU IDs {args.gpu_ids}; visible GPU count: {num_visible}."
         )
-    workers = min(args.num_gpus, len(jobs))
+    workers = min(len(args.gpu_ids), len(jobs))
     if workers == 1:
-        worker(0, args, jobs)
+        worker(args.gpu_ids[0], args, jobs, workers)
         return
     import multiprocessing
     from multiprocessing.connection import wait
 
     context = multiprocessing.get_context("spawn")
     processes = [
-        context.Process(target=worker, args=(rank, args, jobs[rank::workers]))
+        context.Process(
+            target=worker,
+            args=(args.gpu_ids[rank], args, jobs[rank::workers], workers),
+        )
         for rank in range(workers)
     ]
     try:

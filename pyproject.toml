@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kfold"
-version = "1.0.0"
+version = "1.0.0a1"
 description = "K-Fold"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,14 +16,14 @@ dependencies = [
   "tqdm",
   "scipy",
   "omegaconf",
-  "huggingface-hub",
+  "huggingface-hub>=1.31.0",
   "rdkit",
   "einops",
   "gemmi",
   "pyyaml",
   # apo sampler
   "numba",
-  "atlasfold",
+  "atlasfold>=1.0.2",
 ]
 
 [project.scripts]

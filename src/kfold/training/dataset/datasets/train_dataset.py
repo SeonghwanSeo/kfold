@@ -206,12 +206,11 @@ class TrainingDataset(BaseLMDBDataset):
         loaded["chains"] = unpack_apo_multimer_record(value_bytes)
         return loaded
 
-    def _load_multimer_prior_stack_info_from_lmdb(
+    def _load_multimer_prior_candidates_from_lmdb(
         self,
         group: dict,
-        rng: np.random.Generator,
     ) -> dict[int, np.ndarray] | None:
-        """Load and sample one protein multimer prior stack record."""
+        """Load all candidate coordinates for one protein multimer prior."""
         assert group["chain_type"] == "protein"
         name = group["name"]
         records = list(
@@ -221,35 +220,21 @@ class TrainingDataset(BaseLMDBDataset):
         )
         if not records:
             return None
-        # Select uniformly across all ranks and sources, then use that same
-        # rank for every member chain to retain the predicted relative placement.
-        counts = [
-            int(next(iter(record["chains"].values()))["coords"].shape[0])
-            for record in records
-        ]
-        if any(count == 0 for count in counts):
-            raise ValueError(f"Empty multimer prior stack: {name}")
-        sample_i = int(rng.integers(0, sum(counts)))
-        for source_i, num_samples in enumerate(counts):
-            if sample_i < num_samples:
-                record = records[source_i]
-                break
-            sample_i -= num_samples
+        candidates_by_asym_id: dict[int, list[np.ndarray]] = {}
+        for record in records:
+            for asym_id, chain in record["chains"].items():
+                coords = chain["coords"]
+                if coords.ndim != 4 or coords.shape[0] == 0:
+                    raise ValueError(
+                        f"Prior multimer stack {name}/{asym_id} has shape "
+                        f"{coords.shape}; expected (N, L, A, 3) with N > 0."
+                    )
+                candidates_by_asym_id.setdefault(int(asym_id), []).append(coords)
 
-        out: dict[int, np.ndarray] = {}
-        for asym_id, chain in record["chains"].items():
-            coords = chain["coords"]
-            if coords.ndim != 4:
-                raise ValueError(
-                    f"Prior multimer stack {name}/{asym_id} has shape "
-                    f"{coords.shape}; expected (N, L, A, 3)."
-                )
-            if coords.shape[0] != num_samples:
-                raise ValueError(
-                    f"Prior multimer stack {name} has inconsistent sample counts."
-                )
-            out[int(asym_id)] = coords[sample_i].copy()
-        return out
+        return {
+            asym_id: np.concatenate(candidates, axis=0)
+            for asym_id, candidates in candidates_by_asym_id.items()
+        }
 
     def get_apo_lookup(
         self, ref_struct: RefStructure, rng: np.random.Generator
@@ -388,25 +373,25 @@ class TrainingDataset(BaseLMDBDataset):
 
         return apo_lookup
 
-    def get_prior_coords(
+    def get_prior_candidates(
         self,
         ref_struct: RefStructure,
         rng: np.random.Generator,
     ) -> dict[int, np.ndarray]:
-        """Sample monomer priors with optional multimer prior overlay."""
-        prior_coords = super().get_prior_coords(ref_struct, rng)
+        """Return monomer candidates with an optional multimer overlay."""
+        prior_candidates = super().get_prior_candidates(ref_struct, rng)
         entry_id = ref_struct.id
         multimer_groups: list[dict] = self.apo_multimer_lookup_table.get(entry_id, [])
         if not multimer_groups or rng.random() >= self.prob_use_complex_prior:
-            return prior_coords
+            return prior_candidates
 
-        selected_multimer_by_name: dict[str, dict[int, np.ndarray] | None] = {}
+        multimer_candidates_by_name: dict[str, dict[int, np.ndarray] | None] = {}
         metadata_by_asym_id = {c.asym_id: c for c in ref_struct.metadata.chains}
         protein_asym_ids = {c.asym_id for c in ref_struct.chains if c.ctype.is_protein}
 
         for group in multimer_groups:
             name = group["name"]
-            if name in selected_multimer_by_name:
+            if name in multimer_candidates_by_name:
                 continue
             prior_uid = int(group["apo_uid"])
             group_asym_ids = [int(aid) for aid in group["asym_ids"]]
@@ -416,24 +401,24 @@ class TrainingDataset(BaseLMDBDataset):
             if not active_asym_ids:
                 continue
 
-            selected_multimer_by_name[name] = (
-                self._load_multimer_prior_stack_info_from_lmdb(group, rng)
+            multimer_candidates_by_name[name] = (
+                self._load_multimer_prior_candidates_from_lmdb(group)
             )
-            multimer_prior = selected_multimer_by_name[name]
-            if multimer_prior is None:
+            multimer_candidates = multimer_candidates_by_name[name]
+            if multimer_candidates is None:
                 continue
 
             for asym_id in active_asym_ids:
-                if asym_id not in multimer_prior:
+                if asym_id not in multimer_candidates:
                     raise KeyError(
                         f"Prior multimer {name} for "
                         f"entry {entry_id} does not contain asym_id {asym_id}."
                     )
-                prior_coords[asym_id] = multimer_prior[asym_id]
+                prior_candidates[asym_id] = multimer_candidates[asym_id]
                 if asym_id in metadata_by_asym_id:
                     metadata_by_asym_id[asym_id].prior_uid = prior_uid
 
-        return prior_coords
+        return prior_candidates
 
     def populate_structure_tokens(
         self,

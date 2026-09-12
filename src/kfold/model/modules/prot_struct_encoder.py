@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from huggingface_hub import hf_hub_download
+from huggingface_hub import snapshot_download
 
 import kfold.constants as C
 from kfold.data.types.model_input import FoldingInput
@@ -13,6 +13,7 @@ from kfold.model.layers.struct_enc import (
     FullAtomTokenizer,
     ProteinNetEncoder,
 )
+from kfold.model.layers.struct_enc.bb_vqvae.rotary import RotaryEmbedding
 from kfold.utils.config import configurable
 
 # AF2 residue types
@@ -45,13 +46,10 @@ class StructureEncoder(torch.nn.Module):
             unset, download them from Hugging Face.
         cache_dir: str | None
             Directory used to cache weights downloaded from Hugging Face.
-        chain_type: str
-            Type of sequence chain to encode. Must be one of "protein", "dna", or "rna".
         """
 
         model_path: str | None = None
         cache_dir: str | None = None
-        chain_type: str = "protein"
         d_model: int = 2560
         n_layers: int = 33
         n_heads: int = 40
@@ -59,7 +57,6 @@ class StructureEncoder(torch.nn.Module):
     def __init__(self, cfg: Config):
         super().__init__()
         self.cfg: StructureEncoder.Config = cfg
-        self.chain_type = cfg.chain_type
 
         with torch.device("meta"):
             self.bb_tok = BackboneTokenizer()
@@ -82,24 +79,26 @@ class StructureEncoder(torch.nn.Module):
         self.register_buffer("seq_to_restype", seq_to_restype, persistent=False)
 
     def _load_weights(self) -> None:
+        if self.cfg.model_path is None:
+            repo_dir = Path(snapshot_download(HF_REPO_ID, cache_dir=self.cfg.cache_dir))
+        else:
+            repo_dir = Path(self.cfg.model_path)
         for module, filename in (
             (self.encoder, HF_ENCODER_FILENAME),
             (self.bb_tok, HF_BB_TOKENIZER_FILENAME),
             (self.fa_tok, HF_FA_TOKENIZER_FILENAME),
         ):
-            if self.cfg.model_path is None:
-                path = hf_hub_download(
-                    repo_id=HF_REPO_ID,
-                    filename=filename,
-                    cache_dir=self.cfg.cache_dir,
-                )
-            else:
-                path = Path(self.cfg.model_path) / Path(filename).name
+            path = repo_dir / filename
             state_dict = torch.load(
                 path, map_location="cpu", mmap=True, weights_only=True
             )
             module.load_state_dict(state_dict, strict=True, assign=True)
             del state_dict
+
+        # Rotary frequencies are nonpersistent and absent from the checkpoint.
+        for module in self.bb_tok.modules():
+            if isinstance(module, RotaryEmbedding):
+                module.inv_freq = module._compute_inv_freq(device="cpu")
 
         meta_tensors = [
             name

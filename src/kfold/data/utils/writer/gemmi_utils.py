@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 def make_mmcif_block(
     struct: gemmi.Structure,
     ost_compatible: bool = True,
+    *,
+    block: gemmi.cif.Block | None = None,
 ) -> gemmi.cif.Block:
     """Create a Gemmi MMCIF Block from a Gemmi Structure
 
@@ -26,13 +28,17 @@ def make_mmcif_block(
         The input Gemmi Structure.
     ost_compatible : bool, optional
         Whether to add OST-compatible categories (default is True).
+    block : gemmi.cif.Block | None, optional
+        Block containing metadata to retain before the structure categories.
 
     Returns
     ----
     gemmi.cif.Block
         The constructed MMCIF Block.
     """
-    block: gemmi.cif.Block = struct.make_mmcif_block()
+    if block is None:
+        block = gemmi.cif.Block(struct.name)
+    struct.update_mmcif_block(block)
     if ost_compatible:
         # Add custom categories for OST compatibility
         _add_pdbx_nonpoly_scheme(block, struct)
@@ -64,6 +70,7 @@ def create_gemmi_structure(
     metadata = struct.metadata
 
     gemmi_struct = gemmi.Structure()
+    gemmi_struct.name = metadata.id
 
     # === Make chain name unique if PDB compatible === #
     if pdb_compatible:
@@ -200,6 +207,37 @@ def create_gemmi_structure(
 
     gemmi_struct.add_model(model)
     gemmi_struct.setup_entities()
+
+    # Preserve explicit query bonds using the chain names written to the file.
+    chains_by_asym = {chain.asym_id: chain for chain in struct.chains}
+    names_by_asym = {chain.asym_id: chain.name for chain in metadata.chains}
+    for index, connection in enumerate(struct.connections, start=1):
+        partners = []
+        for asym_id, residue_index, atom_name in zip(
+            connection.asym_id,
+            connection.residue_index,
+            connection.atom_names,
+            strict=True,
+        ):
+            chain = chains_by_asym[asym_id]
+            address = gemmi.AtomAddress(
+                names_by_asym[asym_id],
+                gemmi.SeqId(residue_index, " "),
+                str(chain.residue.name[residue_index - 1]),
+                atom_name,
+            )
+            if gemmi_struct[0].find_cra(address).atom is None:
+                raise ValueError(
+                    f"Covalent bond endpoint is absent from output: {address}"
+                )
+            partners.append(address)
+
+        bond = gemmi.Connection()
+        bond.name = f"covale{index}"
+        bond.type = gemmi.ConnectionType.Covale
+        bond.asu = gemmi.Asu.Same
+        bond.partner1, bond.partner2 = partners
+        gemmi_struct.connections.append(bond)
     return gemmi_struct
 
 

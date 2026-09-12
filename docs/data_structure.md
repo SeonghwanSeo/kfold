@@ -20,7 +20,7 @@ This document describes the data structure used in **K-Fold** for protein comple
 #### Preprocessing (mmCIF -> `RefStructure`)
 
 The preprocessing stage is performed once before training to convert raw mmCIF files into an array-based format for efficient loading during training.
-This processing is done using the functions defined in [`kfold.training.preprocess.cif_factory`](../../src/kfold/training/preprocess/cif_factory.py).
+This processing is done using the functions defined in [`kfold.training.preprocess.cif_factory`](../src/kfold/training/preprocess/cif_factory.py).
 
 In addition, the preprocessing stage also includes apo structure processing from `AFDB, ESMFold` output pdb files and apo tokenization for populating apo structure information into the model input features.
 1.  **PDB Parsing:** Extracts a protein sequence and an atom37 structure (`(L, 37, 3)`) from the PDB/mmCIF file and saves them in `LMDB` format on disk.
@@ -31,19 +31,24 @@ In addition, the preprocessing stage also includes apo structure processing from
 
 The on-the-fly data processing is performed during training to convert the reference structure into model input features:
 1.  **Data Loading:** Loads preprocessed `RefStructure` from disk.
-2.  **Chain-Extraction:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface token. (See AlphaFold3 SI Section 2.5.4)
-3.  **Apo Structure Population:** Populates apo structure information into the reference structure. During training, **apo perturbation** is on-the-fly applied in this step.
+2.  **Chain-Extraction:** If the structure contains more chains than `max_chains`, it extracts neighboring chains around a randomly selected interface token.
+    (See AlphaFold3 SI Section 2.5.4)
+3.  **Apo Structure Population:** Populates apo structure information into the reference structure.
+    During training, **apo perturbation** is on-the-fly applied in this step.
 4.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
 5.  **Structure Token Population:** Populates apo structure tokens (backbone, full-atom) into the tokenized structure.
-6.  **Cropping:** If the structure contains more tokens than `max_tokens`, it crops a structure using three cropping strategies. (See AlphaFold3 SI Section 2.7)
+6.  **Cropping:** If the structure contains more tokens than `max_tokens`, it crops a structure using three cropping strategies.
+    (See AlphaFold3 SI Section 2.7)
 7.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
 
 ### Inference
 
-The inference stage starts by parsing a query file (YAML or JSON) that specifies the target sequences and entities (proteins, ligands, nucleic acids). Unlike training which loads ground truth structures from mmCIF, this step extracts sequences from the query and constructs a RefStructure object with zero-initialized (masked) coordinates.
+The inference stage starts by parsing a query file (YAML or JSON) that specifies the target sequences and entities (proteins, ligands, nucleic acids).
+Unlike training which loads ground truth structures from mmCIF, this step extracts sequences from the query and constructs a RefStructure object with zero-initialized (masked) coordinates.
 
 1.  **Structure Preparation:** (`YAML/JSON` → `RefStructure`) Prepares the reference structure from the query sequences.
-2.  **Apo Monomer Prediction (TODO):** For each protein entity in the complex, it runs a monomer prediction using ESMFold or our own monomer model (`KFold-Mono`) to get the apo structure. This step can be skipped if the user provides apo structures in the query.
+2.  **Apo Monomer Prediction (TODO):** For each protein entity in the complex, it runs a monomer prediction using ESMFold or our own monomer model (`KFold-Mono`) to get the apo structure.
+    This step can be skipped if the user provides apo structures in the query.
 3.  **Apo Structure Population:** Populates given apo structure information into the reference structure.
 4.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
 5.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
@@ -54,7 +59,9 @@ The inference stage starts by parsing a query file (YAML or JSON) that specifies
 
 ## Data Structure
 
-K-Fold provides high-level data structures for reference structures via `kfold.data.types.structure.RefStructure`. This contains chains, covalent connections, and metadata. See [here](../../src/kfold/data/types/structure.py) for more details.
+K-Fold provides high-level data structures for reference structures via `kfold.data.types.structure.RefStructure`.
+This contains chains, covalent connections, and metadata.
+See [here](../src/kfold/data/types/structure.py) for more details.
 
 ```python
 from kfold.data.types.metadata import Metadata
@@ -68,7 +75,9 @@ metadata: Metadata = ref_struct.metadata
 
 ## Tokenized Structure
 
-K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`. This contains sub-layouts for chain, residue, token, atom, and bond structures. See [here](../../src/kfold/data/types/tokenized.py) for more details.
+K-Fold provides high-level data structures for tokenized structures via `kfold.data.types.tokenized.TokenizedStructure`.
+This contains sub-layouts for chain, residue, token, atom, and bond structures.
+See [here](../src/kfold/data/types/tokenized.py) for more details.
 
 ```python
 from kfold.data.types import tokenized
@@ -158,7 +167,9 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 
 ## Model Input
 
-K-Fold provides high-level data structures for model input features via `kfold.data.types.model_input.FoldingInput`. This contains sub-layouts for atom, token, and bond features. See [here](../../src/kfold/data/types/model_input.py) for more details.
+K-Fold provides high-level data structures for model input features via `kfold.data.types.model_input.FoldingInput`.
+This contains sub-layouts for atom, token, and bond features.
+See [here](../src/kfold/data/types/model_input.py) for more details.
 
 ```python
 from kfold.data.types import model_input
