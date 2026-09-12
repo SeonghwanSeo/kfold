@@ -79,6 +79,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "Only use this when RNA targets are not present in the queries",
     )
     parser.add_argument(
+        "--cpu-offload",
+        action="store_true",
+        help="Keep the protein structure backbone encoder and RNA LM on CPU "
+        "between feature extraction calls. Trades transfer time for GPU memory.",
+    )
+    parser.add_argument(
         "--cache-dir",
         type=Path,
         help="Hugging Face cache directory for models and CCD.",
@@ -299,6 +305,7 @@ def _worker(gpu_id, args, jobs, num_workers):
             cache_dir=args.cache_dir,
             use_struct_encoder=not args.disable_struct_encoder,
             use_rna_encoder=not args.disable_rna_encoder,
+            cpu_offload=args.cpu_offload,
         )
         runner = KFoldRunner(model, cache_dir=args.cache_dir, lazy_load=True)
     start = perf_counter()

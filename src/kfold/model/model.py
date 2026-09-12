@@ -2,7 +2,8 @@ import dataclasses
 import logging
 import math
 import pathlib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import Self
 
 import torch
@@ -128,6 +129,7 @@ class KFold(torch.nn.Module):
         self.channel_z: int = config.channel_z
         self.dropout: float = config.dropout
         self.diffusion_type: str = config.diffusion_type
+        self.cpu_offload: bool = False
         if self.diffusion_type not in {"ecsi", "edm"}:
             raise ValueError(
                 f"Unknown diffusion_type {self.diffusion_type!r}. "
@@ -430,13 +432,33 @@ class KFold(torch.nn.Module):
         """Merge the enabled pretrained encoders into the shared LM single."""
         s_lm = self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
 
-        if self.rna_seq_encoder is not None:
-            s_lm = s_lm + self.rna_seq_to_s_lm(self.rna_seq_encoder(f_input))
+        if self.rna_seq_encoder is not None and (
+            not self.cpu_offload or f_input.sequence.is_rna.any()
+        ):
+            with self._encoder_on_device(self.rna_seq_encoder, f_input.device):
+                s_lm = s_lm + self.rna_seq_to_s_lm(self.rna_seq_encoder(f_input))
 
         if self.prot_struct_encoder is not None:
-            s_lm = s_lm + self.prot_struct_to_s_lm(self.prot_struct_encoder(f_input))
+            with self._encoder_on_device(
+                self.prot_struct_encoder.encoder, f_input.device
+            ):
+                s_lm = s_lm + self.prot_struct_to_s_lm(self.prot_struct_encoder(f_input))
 
         return s_lm
+
+    @contextmanager
+    def _encoder_on_device(
+        self, encoder: torch.nn.Module, device: torch.device
+    ) -> Iterator[None]:
+        """Move an offloaded encoder to device for feature extraction."""
+        if not self.cpu_offload:
+            yield
+            return
+        try:
+            encoder.to(device)
+            yield
+        finally:
+            encoder.cpu()
 
     def run_trunk(
         self,
@@ -510,6 +532,7 @@ class KFold(torch.nn.Module):
         cache_dir: str | pathlib.Path | None = None,
         use_struct_encoder: bool = True,
         use_rna_encoder: bool = True,
+        cpu_offload: bool = False,
     ) -> Self:
         """Load a K-Fold from a pretrained model.
 
@@ -527,6 +550,11 @@ class KFold(torch.nn.Module):
         use_rna_encoder : bool, optional
             Whether to use the RNA sequence encoder. Default is True.
             NOTE: Only disable this if RNA sequences are not present in the input.
+        cpu_offload : bool, optional
+            Keep the protein structure backbone encoder and RNA sequence encoder
+            on CPU between inference calls. Move each to the input device only
+            for feature extraction. The protein LM and structure tokenizers
+            remain on device. Default is False.
         """
         from huggingface_hub import snapshot_download
 
@@ -564,7 +592,25 @@ class KFold(torch.nn.Module):
         model.load_state_dict(state_dict)
         del state_dict
 
-        return model.to(device).requires_grad_(False).eval()
+        model.requires_grad_(False).eval()
+        model.cpu_offload = cpu_offload
+        if cpu_offload:
+            offloaded_encoders: set[torch.nn.Module | None] = {model.rna_seq_encoder}
+            if model.prot_struct_encoder is not None:
+                offloaded_encoders.add(model.prot_struct_encoder.encoder)
+
+            def move_to_device(module: torch.nn.Module) -> None:
+                # Skip offloaded weights from the start to avoid a GPU loading peak.
+                if module in offloaded_encoders:
+                    return
+                module._apply(lambda tensor: tensor.to(device), recurse=False)
+                for child in module.children():
+                    move_to_device(child)
+
+            move_to_device(model)
+        else:
+            model.to(device)
+        return model
 
     def load_state_dict(
         self,

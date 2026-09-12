@@ -79,6 +79,9 @@ Modifications use `Modification(residue_index=4, ccd="SEP")`; bonds use `Bond(at
 | `cache_dir` | `None` | Download cache for model and encoder weights; uses the Hugging Face default when omitted. |
 | `use_struct_encoder` | `True` | Load the pretrained protein structure encoder. Set to `False` to reduce memory use; apo coordinates are still used. |
 | `use_rna_encoder` | `True` | Load the pretrained RNA sequence encoder. Set to `False` only when queries contain no RNA. |
+| `cpu_offload` | `False` | Keep the protein structure backbone encoder and RNA LM on CPU except during feature extraction. The protein LM and structure tokenizers remain on device. |
+
+Enable CPU offloading with `KFold.from_pretrained(device="cuda", cpu_offload=True)`. This reduces GPU residency from model loading onward and adds CPU memory use and transfer time. Use the returned model directly with `KFoldRunner`; moving the entire model with `.cuda()` or `.to("cuda")` afterward also moves the offloaded encoders back to GPU.
 
 ### Runner initialization
 
