@@ -90,6 +90,7 @@ Run `kfold predict --help` for help at the command line.
 | `--gpu-ids` | `0` | One or more unique, non-negative visible CUDA indices for independent query/seed jobs. |
 | `--disable-struct-encoder` | Off | Disable the pretrained protein structure encoder to reduce memory use. |
 | `--disable-rna-encoder` | Off | Disable the RNA encoder; use only when queries contain no RNA. |
+| `--cpu-offload` | Off | Keep the protein structure backbone encoder and RNA LM on CPU between feature extraction calls. |
 | `--cache-dir` | Hugging Face default | Download cache for model weights and CCD. |
 | `--dry-run` | Off | Validate query files and paths, and report pending jobs. |
 | `--overwrite` | Off | Rerun completed query/seed jobs. |
@@ -97,6 +98,16 @@ Run `kfold predict --help` for help at the command line.
 | `--save-embeddings` | Off | Save single and pair embeddings. |
 | `--save-distogram` | Off | Compute and save distogram arrays. |
 | `--save-trajectory` | Off | Compute and save diffusion trajectories. |
+
+### CPU offloading
+
+Use `--cpu-offload` to reduce GPU memory use while keeping both encoders enabled:
+
+```bash
+kfold predict --input query.yaml --out-dir predictions/ --cpu-offload
+```
+
+The protein structure backbone encoder and RNA LM stay on CPU when loaded. Each moves to the GPU for feature extraction and returns to CPU immediately afterward, including when extraction raises an error. The RNA LM stays on CPU for inputs without RNA. The protein LM (AtlasLM), structure tokenizers, and folding network remain on the GPU. Offloading preserves weight dtypes and trades additional CPU memory and CPU–GPU transfers for reduced GPU residency.
 
 ### Sampling
 

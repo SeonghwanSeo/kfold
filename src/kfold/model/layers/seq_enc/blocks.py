@@ -64,9 +64,9 @@ class TransformerBlock(nn.Module):
         self,
         x: torch.Tensor,
         seq_id: torch.Tensor,
-        pos_id: torch.Tensor,
+        rotary: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        r1 = self.attn(x, seq_id, pos_id)
+        r1 = self.attn(x, seq_id, rotary)
         x = x + r1 / self.scaling_factor
         r2 = self.ffn(x, mask=seq_id >= 0)
         x = x + r2 / self.scaling_factor

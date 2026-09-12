@@ -11,7 +11,9 @@ def create_parser() -> argparse.ArgumentParser:
         prog="kfold", description="K-Fold structure prediction"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    predict = commands.add_parser("predict", help="Predict biomolecular complex structures")
+    predict = commands.add_parser(
+        "predict", help="Predict biomolecular complex structures"
+    )
     add_arguments(predict)
     return parser
 

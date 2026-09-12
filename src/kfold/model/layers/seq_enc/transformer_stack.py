@@ -4,6 +4,7 @@ import torch
 
 from .blocks import TransformerBlock
 from .nn import LayerNorm
+from .rotary import RotaryEmbedding
 
 
 class TransformerStack(torch.nn.Module):
@@ -20,6 +21,7 @@ class TransformerStack(torch.nn.Module):
         self.d_model: int = d_model
         self.n_heads: int = n_heads
         self.n_layers: int = n_layers
+        self.rotary = RotaryEmbedding(d_model // n_heads, max_seqlen=20000)
 
         self.blocks = torch.nn.ModuleList(
             [
@@ -44,8 +46,9 @@ class TransformerStack(torch.nn.Module):
         pos_id: torch.Tensor,
     ) -> tuple[torch.Tensor, list[torch.Tensor]]:  # hidden states, attentions
         hidden_states: list[torch.Tensor] = []
+        rotary = self.rotary(pos_id)
         for block in self.blocks:
-            x = block(x, seq_id, pos_id)
+            x = block(x, seq_id, rotary)
             hidden_states.append(x)
         x = self.norm(x)
         return x, hidden_states

@@ -66,8 +66,7 @@ class StructureEncoder(torch.nn.Module):
 
         # Freeze parameters.
         self.eval()
-        for param in self.parameters():
-            param.requires_grad = False
+        self.requires_grad_(False)
 
         # Backbone token offset
         self.offset = 4  # number of special tokens
@@ -83,8 +82,8 @@ class StructureEncoder(torch.nn.Module):
             repo_dir = Path(snapshot_download(HF_REPO_ID, cache_dir=self.cfg.cache_dir))
         else:
             repo_dir = Path(self.cfg.model_path)
+        self.encoder.load_pretrained_weights(repo_dir / HF_ENCODER_FILENAME)
         for module, filename in (
-            (self.encoder, HF_ENCODER_FILENAME),
             (self.bb_tok, HF_BB_TOKENIZER_FILENAME),
             (self.fa_tok, HF_FA_TOKENIZER_FILENAME),
         ):
@@ -124,23 +123,20 @@ class StructureEncoder(torch.nn.Module):
         sequence: str,
         atom37_coords: np.ndarray | torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        """Tokenize apo structure with the structure encoder's tokenizer.
+        """Tokenize apo structure, masking residues with incomplete backbone coordinates.
 
         Parameters
         ----------
-        seq: str
+        sequence : str
             Amino acid sequence of the protein.
-        atom37_coords: torch.Tensor
-            Full-atom coordinates of shape (L, 37, 3).
+        atom37_coords : np.ndarray | torch.Tensor
+            Full-atom coordinates of shape (L, 37, 3), with NaN for missing atoms.
 
         Returns
         -------
-        token_ids: dict[str, torch.Tensor]
-            - "seq_token_id": Tensor of shape (B, L) containing sequence token IDs.
-            - "bb_struct_token_id": Tensor of shape (B, L) containing backbone
-                structure token IDs.
-            - "fa_struct_token_id": Tensor of shape (B, L) containing full-atom
-                structure token IDs.
+        dict[str, torch.Tensor]
+            seq_token_id, bb_token_id, and fa_token_id arrays of shape (L,).
+            Structure token IDs are -1 where backbone coordinates are incomplete.
         """
         device = self.device
         if isinstance(atom37_coords, np.ndarray):
@@ -158,12 +154,13 @@ class StructureEncoder(torch.nn.Module):
             C.sequence.encode_protein_sequence(sequence), dtype=torch.long, device=device
         )
         aatypes = self.seq_to_restype[seq_tok_id]
+        backbone_mask = torch.isfinite(atom37_coords[:, :3]).all(dim=(-1, -2))
         bb_tok_id = self.bb_tok.tokenize(atom37_coords[..., :3, :])
-        fa_tok_id = self.fa_tok.tokenize(aatypes, atom37_coords)
+        fa_tok_id = self.fa_tok.tokenize(aatypes, atom37_coords, attn_mask=backbone_mask)
         return {
             "seq_token_id": seq_tok_id,
-            "bb_token_id": bb_tok_id,
-            "fa_token_id": fa_tok_id,
+            "bb_token_id": bb_tok_id.masked_fill(~backbone_mask, -1),
+            "fa_token_id": fa_tok_id.masked_fill(~backbone_mask, -1),
         }
 
     def tokenize_batch(
@@ -234,12 +231,13 @@ class StructureEncoder(torch.nn.Module):
         aatypes = self.seq_to_restype[seq_tok_ids]
 
         # Tokenize backbone and full-atom structures
+        backbone_mask = mask & torch.isfinite(coords[..., :3, :]).all(dim=(-1, -2))
         bb_tok_ids = self.bb_tok.tokenize_batch(coords[..., :3, :])
-        fa_tok_ids = self.fa_tok.tokenize_batch(aatypes, coords)
+        fa_tok_ids = self.fa_tok.tokenize_batch(aatypes, coords, attn_mask=backbone_mask)
 
         seq_tok_ids.masked_fill_(~mask, pad_idx)
-        bb_tok_ids.masked_fill_(~mask, -1)  # set to -1 for invalid tokens
-        fa_tok_ids.masked_fill_(~mask, -1)  # set to -1 for invalid tokens
+        bb_tok_ids.masked_fill_(~backbone_mask, -1)
+        fa_tok_ids.masked_fill_(~backbone_mask, -1)
         return {
             "seq_token_id": seq_tok_ids,
             "bb_token_id": bb_tok_ids,
