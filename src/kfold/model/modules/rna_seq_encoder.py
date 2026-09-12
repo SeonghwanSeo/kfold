@@ -74,9 +74,7 @@ class RNASequenceEncoder(torch.nn.Module):
 
         # RoPE caches are intentionally absent from the checkpoint. Recreate them
         # after assigning parameters so no buffer remains on the meta device.
-        for module in self.modules():
-            if hasattr(module, "init_buffers"):
-                module.init_buffers(device="cpu")
+        self.transformer.rotary.init_buffers(device="cpu")
         meta_tensors = [
             name
             for name, tensor in (*self.named_parameters(), *self.named_buffers())
@@ -148,14 +146,19 @@ class RNASequenceEncoder(torch.nn.Module):
 
         # === Mask out invalid sequence tokens === #
         seq_mask = f_input.sequence.pad_mask & f_input.sequence.is_rna
+        if not seq_mask.any():
+            return self.embed.weight.new_zeros(
+                (*f_input.token.pad_mask.shape, self.n_layers + 1, self.d_model)
+            )
         seq_id = seq_id.masked_fill(~seq_mask, -1)
         input_ids = input_ids.masked_fill(~seq_mask, PAD_TOKEN_INDEX)
 
         # === Forward pass === #
         x = self.embed(input_ids)
         x_list = [x]
+        rotary = self.transformer.rotary(pos_id)
         for block in self.transformer.blocks:
-            x = block(x, seq_id, pos_id)
+            x = block(x, seq_id, rotary)
             x_list.append(x)
         x = torch.stack(x_list, dim=-2)  # [B, Nseq, Nlayer+1, D]
 

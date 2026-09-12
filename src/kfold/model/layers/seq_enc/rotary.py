@@ -45,7 +45,7 @@ class RotaryEmbedding(torch.nn.Module):
         self.init_buffers()
 
     def init_buffers(self, device: str | torch.device | None = None) -> None:
-        """Materialize the nonpersistent RoPE buffers on ``device``."""
+        """Materialize the nonpersistent RoPE buffers on device."""
         self.inv_freq: torch.Tensor
         inv_freq = self._compute_inv_freq(device).to(torch.float32)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -71,28 +71,18 @@ class RotaryEmbedding(torch.nn.Module):
             device=self.inv_freq.device,
         )
         freqs = torch.outer(t, self.inv_freq)
-        # NOTE: Even though float32 is generally safer to cache, we cast to bfloat16
-        # since our implementation is designed to work with bfloat16 precision.
-        cos = torch.cos(freqs).to(torch.bfloat16).tile(1, 2)
-        sin = torch.sin(freqs).to(torch.bfloat16).tile(1, 2)
+        cos = torch.cos(freqs).tile(1, 2)
+        sin = torch.sin(freqs).tile(1, 2)
         return cos, sin
 
     def forward(
         self,
-        q: torch.Tensor,
-        k: torch.Tensor,
         pos_id: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        q: (*, seqlen, nheads, headdim)
-        k: (*, seqlen, nheads, headdim)
-        pos_id: (*, seqlen)
-        """
-        cos = self._cos_cached[pos_id].to(q.dtype)  # [*, seqlen, headdim]
-        sin = self._sin_cached[pos_id].to(q.dtype)  # [*, seqlen, headdim]
-        q_ = self.apply_rotary_emb(q, cos, sin)
-        k_ = self.apply_rotary_emb(k, cos, sin)
-        return q_, k_
+        """Select position embeddings once for all transformer layers."""
+        cos = self._cos_cached[pos_id]
+        sin = self._sin_cached[pos_id]
+        return cos, sin
 
     @staticmethod
     def apply_rotary_emb(
