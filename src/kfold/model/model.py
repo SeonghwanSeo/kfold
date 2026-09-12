@@ -281,6 +281,7 @@ class KFold(torch.nn.Module):
         num_steps: int = 100,
         num_samples: int = 5,
         return_embeddings: bool = False,
+        return_distogram: bool = False,
         return_traj: bool = False,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Run KFold structure prediction from a fully prepared input.
@@ -320,12 +321,13 @@ class KFold(torch.nn.Module):
             )
 
         # Sample structures
-        model_out = self.sample(
+        model_out = self.predict(
             f_input,
             num_recycles,
             num_steps,
             num_samples,
             return_embeddings=return_embeddings,
+            return_distogram=return_distogram,
             return_traj=return_traj,
         )
 
@@ -339,13 +341,14 @@ class KFold(torch.nn.Module):
         return model_out
 
     @torch.inference_mode()
-    def sample(
+    def predict(
         self,
         f_input: FoldingInput,
         num_recycles: int = 10,
         num_steps: int = 100,
         num_samples: int = 5,
         return_embeddings: bool = False,
+        return_distogram: bool = False,
         return_traj: bool = False,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold model for model training.
@@ -362,6 +365,8 @@ class KFold(torch.nn.Module):
             Number of diffusion samples for training.
         return_embeddings : bool, optional
             Whether to return intermediate sequence and structure embeddings.
+        return_distogram : bool, optional
+            Whether to return predicted distogram logits.
         return_traj : bool, optional
             Whether to return sampling trajectories.
 
@@ -393,12 +398,8 @@ class KFold(torch.nn.Module):
                 "z": z,
             }
 
-        # Distogram head
-        dict_out["distogram"] = self.distogram_head.forward_inference(f_input, z)
-
-        # Diffusion head
-        # pred_atom_coords: [B, Nsample, La, 3]
         with torch.autocast(f_input.device.type, enabled=False):
+            # Diffusion head
             dict_out["diffusion"] = self.diffusion_head.sample_structure(
                 f_input,
                 s_inputs,
@@ -408,6 +409,10 @@ class KFold(torch.nn.Module):
                 chunk_size=10,
                 return_traj=return_traj,
             )
+
+            # Distogram head
+            if return_distogram:
+                dict_out["distogram"] = self.distogram_head.forward_inference(f_input, z)
 
         coords = dict_out["diffusion"]["coordinates"]
         dict_out["confidence"] = self.confidence_head(

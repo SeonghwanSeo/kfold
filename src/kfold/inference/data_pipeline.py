@@ -1,6 +1,6 @@
 import itertools
 from collections import defaultdict
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import torch
@@ -19,6 +19,9 @@ from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
 
 from . import query
 
+if TYPE_CHECKING:
+    from kfold.inference.runner import ApoStructure
+
 
 class InferenceInput(NamedTuple):
     """One query and its unbatched, fully constructed model input."""
@@ -26,50 +29,44 @@ class InferenceInput(NamedTuple):
     query: query.Query
     ref_struct: RefStructure
     f_input: FoldingInput
+    # Protein entries, then multimer entries; each list contains their candidates.
+    apos: list[list["ApoStructure"]]
+    priors: list[list["ApoStructure"]]
 
 
 class InputDataPipeline:
-    def __init__(
-        self,
-        ccd: CCD,
-        num_prior_samples: int = 5,
-    ) -> None:
+    def __init__(self, ccd: CCD) -> None:
         """Initialize the input data pipeline.
 
         Parameters
         ----------
         ccd : CCD
             The chemical component dictionary for residue information.
-        num_prior_samples : int, optional
-            Number of diffusion priors to create. Default is 5.
         """
-
         self.ccd: CCD = ccd
 
+        # Initialize diffusion prior sampler
         self.prior_sampler = prior_sampling.PriorSampler.inference_mode()
-        if num_prior_samples <= 0:
-            raise ValueError("num_prior_samples must be positive.")
-        self.num_prior_samples = num_prior_samples
-
         # Initialize tokenizer
         self.tokenizer = tokenization.Tokenizer(self.ccd)
-
         # Initialize featurizer
-        self.featurizer: featurization.InputFeaturizer = featurization.InputFeaturizer()
+        self.featurizer = featurization.InputFeaturizer()
 
-    def build_input(self, input: query.Query, seed: int) -> InferenceInput:
-        """Build an unbatched FoldingInput from a prepared query."""
+    def build_input(
+        self,
+        input: query.Query,
+        seed: int,
+        num_samples: int = 5,
+        *,
+        apos: list[list["ApoStructure"]],
+        priors: list[list["ApoStructure"]],
+    ) -> InferenceInput:
+        """Place prepared coordinates/tokens and construct an unbatched FoldingInput."""
 
         # Extract all protein sequences
         entries: list[query.ProteinSequence | query.ProteinMultimerSequence] = [
             seq for seq in input.sequences if isinstance(seq, query.ProteinSequence)
         ] + input.multimer_sequences
-
-        # Validate that the query has been prepared
-        if any(
-            entry._apo_coords is None or entry._prior_coords is None for entry in entries
-        ):
-            raise ValueError("Call runner.prepare_query() before building the input.")
 
         # Initialize RNGs
         prior_rng = np.random.default_rng(np.random.SeedSequence([seed, 0]))
@@ -78,35 +75,44 @@ class InputDataPipeline:
         # Prepare reference structure
         ref_struct = self.read_query(input)
 
-        # Prepare apo coordinates
-        num_apo = max((len(entry._apo_coords[0]) for entry in entries), default=1)
+        # Place each source overlap on its query residues, padding missing positions.
+        num_apo = max((len(candidates) for candidates in apos), default=1)
         asym_by_name = {chain.name: chain.asym_id for chain in ref_struct.metadata.chains}
         apo_coords: dict[int, np.ndarray] = {}
-        for entry in entries:
+        prior_candidates: dict[int, np.ndarray] = {}
+        for entry, entry_apos, entry_priors in zip(entries, apos, priors, strict=True):
             multimer = isinstance(entry, query.ProteinMultimerSequence)
+            sequences = (
+                [entry.sequence1, entry.sequence2] if multimer else [entry.sequence]
+            )
             component_ids = (
                 list(zip(*entry.ids, strict=True)) if multimer else [entry.ids]
             )
-            for ids, apos in zip(component_ids, entry._apo_coords, strict=True):
-                padded = np.full((num_apo, *apos.shape[1:]), np.nan, dtype=np.float32)
-                padded[: len(apos)] = apos
+            for component_i, (ids, sequence) in enumerate(
+                zip(component_ids, sequences, strict=True)
+            ):
+                apo_array = np.full(
+                    (num_apo, len(sequence), 37, 3), np.nan, dtype=np.float32
+                )
+                for model_i, apo in enumerate(entry_apos):
+                    chain = apo.chains[component_i]
+                    apo_array[model_i, chain.target] = chain.coordinates
+
+                prior_array = np.full(
+                    (len(entry_priors), len(sequence), 37, 3), np.nan, dtype=np.float32
+                )
+                for model_i, prior in enumerate(entry_priors):
+                    chain = prior.chains[component_i]
+                    prior_array[model_i, chain.target] = chain.coordinates
+
                 for chain_id in ids:
                     asym_id = asym_by_name[chain_id]
-                    apo_coords[asym_id] = padded
+                    apo_coords[asym_id] = apo_array
+                    prior_candidates[asym_id] = prior_array
 
         # Sample prior coordinates
-        prior_candidates: dict[int, np.ndarray] = {}
-        for entry in entries:
-            multimer = isinstance(entry, query.ProteinMultimerSequence)
-            component_ids = (
-                list(zip(*entry.ids, strict=True)) if multimer else [entry.ids]
-            )
-            for ids, priors in zip(component_ids, entry._prior_coords, strict=True):
-                for chain_id in ids:
-                    asym_id = asym_by_name[chain_id]
-                    prior_candidates[asym_id] = priors
         prior_coords = self.prior_sampler.sample(
-            ref_struct, prior_candidates, self.num_prior_samples, prior_rng
+            ref_struct, prior_candidates, num_samples, prior_rng
         )
 
         # Tokenize structure
@@ -119,33 +125,40 @@ class InputDataPipeline:
         )
 
         f_input = self.featurizer(tokenized)
-        for entry in entries:
-            if entry._apo_token is None:
-                continue
+        # Repeated query chains share the tokens encoded for their source component.
+        for entry, entry_apos in zip(entries, apos, strict=True):
             component_ids = (
                 list(zip(*entry.ids, strict=True))
                 if isinstance(entry, query.ProteinMultimerSequence)
                 else [entry.ids]
             )
-            for ids, tokens in zip(component_ids, entry._apo_token, strict=True):
-                for chain_id in ids:
-                    asym_id = asym_by_name[chain_id]
-                    st = int(torch.where(f_input.sequence.asym_id == asym_id)[0][0]) + 1
-                    end = st + len(tokens[0]["bb_token_id"])
-                    for apo_i, token_ids in enumerate(tokens):
+            for component_i, ids in enumerate(component_ids):
+                for apo_i, apo in enumerate(entry_apos):
+                    chain = apo.chains[component_i]
+                    if chain.bb_tokens is None:
+                        continue
+                    for chain_id in ids:
+                        asym_id = asym_by_name[chain_id]
+                        st = (
+                            int(torch.where(f_input.sequence.asym_id == asym_id)[0][0])
+                            + 1
+                        )
+                        st += chain.target.start
+                        end = st + len(chain.sequence)
                         f_input.sequence.bb_struct_token_id[st:end, apo_i] = (
-                            torch.from_numpy(token_ids["bb_token_id"])
+                            torch.from_numpy(chain.bb_tokens)
                         )
                         f_input.sequence.fa_struct_token_id[st:end, apo_i] = (
-                            torch.from_numpy(token_ids["fa_token_id"])
+                            torch.from_numpy(chain.fa_tokens)
                         )
 
+        # Pad the input
         f_input = f_input.pad(
             max_tokens=((f_input.num_tokens + 31) // 32) * 32,
             max_atoms=((f_input.num_atoms + 63) // 64) * 64,
             max_sequence_tokens=((f_input.num_sequence_tokens + 63) // 64) * 64,
         )
-        return InferenceInput(input, ref_struct, f_input)
+        return InferenceInput(input, ref_struct, f_input, apos, priors)
 
     def read_query(self, input: query.Query) -> RefStructure:
         """Prepare the reference structure from the input file.

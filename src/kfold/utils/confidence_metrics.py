@@ -412,9 +412,9 @@ def summarize_confidence_metrics_single(
     iptm = compute_iptm(pae_logits, pae_bin_centers, asym_id, frame_mask)
 
     confidence_scores: dict[str, np.ndarray] = {
-        "plddt": plddt.cpu().numpy(),
-        "pde": pde.cpu().numpy(),
-        "pae": pae.cpu().numpy(),
+        "plddt": plddt.float().cpu().numpy(),
+        "pde": pde.float().cpu().numpy(),
+        "pae": pae.float().cpu().numpy(),
     }
 
     # === Compute summary metrics ===

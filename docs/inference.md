@@ -1,8 +1,14 @@
 # K-Fold Inference Guide
 
 K-Fold accepts YAML or JSON queries describing proteins, DNA, RNA and ligands.
-Prepare apo structures, then predict on a CUDA GPU. Both commands accept a query
-file or directory through `--input` and save results to `--out-dir`.
+Run `kfold predict` on a CUDA GPU. It generates missing apo structures and predicts
+each requested query/seed through `KFoldRunner.fold()`. Use `--input` for a query
+file or a directory of query files, and `--out-dir` for results.
+
+AtlasFold is the default tool for generating missing protein apo structures
+(AtlasFold-M for protein pairs). You can also use supplied apo structures
+predicted by AlphaFold2 or determined experimentally by setting the `apo` field.
+Supplied apo structures are used without generating replacements.
 
 ## Input format
 
@@ -16,7 +22,7 @@ sequences:
       sequence: MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQANL
 ```
 
-See [examples](../examples/README.md) for antibody–antigen, protein–RNA and
+See [examples](../examples) for antibody–antigen, protein–RNA and
 protein–ligand inputs. YAML and JSON use the same fields. Give each query a unique
 `name`; if omitted, the filename stem is used. Chain IDs must be unique across
 the query.
@@ -30,8 +36,8 @@ Use `protein` entries under `sequences`:
 | `id` | `str` or `list[str]` | Chain ID. A list such as `[A, B]` creates copies. |
 | `sequence` | `str` | Amino-acid sequence. |
 | `modifications` | `dict[int, str]` | Optional 1-based residue index to CCD code mapping. |
-| `apo` | `str` or `list[str]` | Apo structure paths; required by `predict`, optional for `prepare`. |
-| `prior` | `list[str]` | Optional separate prior ensemble; defaults to the supplied apo structures. |
+| `apo` | `str` or `list[str]` | Optional apo structure paths; missing apos are generated. |
+| `prior` | `str` or `list[str]` | Optional separate prior ensemble; defaults to the supplied apo structures. |
 
 To use your own apo structures, add `apo: structures/protein.pdb` or a list of
 paths to the protein entry. Paths may be absolute or relative to the working
@@ -54,8 +60,8 @@ multimer_sequences:
 | `id` | `str` or `list[str]` | Pair IDs such as `H:L`; `[H:L, M:N]` creates two copies. |
 | `sequence` | `str` | Two sequences separated by `:`. |
 | `modifications1`, `modifications2` | `dict[int, str]` | Optional residue modifications for each component. |
-| `apo` | `str` or `list[str]` | Two-chain structure paths; required by `predict`, optional for `prepare`. |
-| `prior` | `list[str]` | Optional separate two-chain prior ensemble; defaults to the supplied apo structures. |
+| `apo` | `str` or `list[str]` | Optional two-chain structure paths; missing apos are generated. |
+| `prior` | `str` or `list[str]` | Optional separate two-chain prior ensemble; defaults to the supplied apo structures. |
 
 Each supplied structure must contain exactly two protein chains in the same
 order as the input sequences. Ordinary proteins and pairs can appear together
@@ -91,136 +97,179 @@ bonds:
   - [[A, 20, NZ], [C, 1, C08]]
 ```
 
-## Pipeline
+## Prediction workflow
 
-Create independent inputs for each `(target, seed)`, then predict:
+From the repository root, run the same query and inference settings as
+[`test.py`](../test.py):
 
 ```bash
-kfold pipeline --input query.yaml --out-dir results/ --seed 1 2 3
-kfold pipeline --input query.yaml --out-dir results/ --seed 5 --num-apo 3
+kfold predict --input examples/8and.yaml --out-dir tmp/tests/ \
+  --seed 42 --num-apos 3 --save-confidence
 ```
 
-`--seed` accepts unique, nonnegative prediction seeds (default: `1`).
-`--num-apo` defaults to `1`. For proteins without supplied apo inputs, AtlasFold
-runs for each apo index from 1 through `num-apo`, using the integer formed by
-appending the index to the prediction seed: seed 5 with three apo candidates uses 51, 52, 53
-(index 10 would use 510). Each derived seed generates five structures. The best
-structure from each derived seed becomes an apo candidate, and all generated
-structures form the prior ensemble unless a prior was supplied. Thus
-`--num-apo 3` gives 3 apo candidates and 15 prior candidates per protein entry.
-There is no separate apo seed option. `--num-samples` controls prediction only.
+This predicts five samples for the two identical protein chains in
+`examples/8and.yaml`, using seed 42 and three apo generation groups. AtlasFold
+uses seeds 421, 422 and 423, yielding three apo candidates and fifteen prior
+candidates for the entry shared by chains A and B. `--save-confidence` matches
+the default `result.save()` behavior in `test.py`.
 
-At startup, each pending job gets its own directory and `query.yaml`. Supplied
-apo/prior files are copied into that job's `apo/`; existing apo inputs are used
-without generating replacements. Generated apo ensembles are independent
-between prediction seeds. For target `example` and seed 5, the layout is:
+The CLI saves to `tmp/tests/8and/8and_seed-42/`; `test.py` saves directly to
+`tmp/tests/8and/`. To use the script wrapper, replace `kfold` with
+`python run_kfold.py` in the command above.
+
+`predict` is the only command. Each GPU process loads KFold and CCD once, then
+calls `fold(query, seed=...)` for each assigned job. AtlasFold heads remain loaded
+for subsequent calls and share AtlasLM with KFold by default. Multi-query inputs
+run sequentially within each GPU process. Ordinary proteins use AtlasFold;
+protein pairs use AtlasFold-M.
+
+For every protein or multimer entry without supplied apos, `--num-apos N` generates
+N groups of five AtlasFold candidates. The generation seeds are
+`kfold_seed * 10 + 1` through `kfold_seed * 10 + N`. The highest-ranked candidate
+from each group becomes apo; all candidates become priors. This budget applies
+only to generation: all supplied apo models are used.
+
+If apo is supplied and prior is omitted, apo also serves as prior. An explicit
+prior requires a supplied apo. The query's source data is preserved across calls,
+so each seed gets independent preparation.
+
+### Structure paths
+
+Apo and prior fields accept a path or list of paths. Every model in each file is
+used in file order, followed by subsequent files in list order. PDB and mmCIF
+ensembles are supported. For example:
+
+```json
+{
+  "apo": ["structures/protein.pdb"],
+  "prior": ["structures/prior.cif"]
+}
+```
+
+Paths are tried as supplied first (relative to the current working directory),
+then relative to the query file. Supplied structure sequences are aligned to the
+query using an ungapped overlap; query positions outside the overlap have no
+supplied coordinates. For ordinary proteins, the first subchain of each model
+is used; protein pairs use both chains in input order.
+
+Preparation keeps coordinates and encoded structure tokens separate from the
+query's source paths. Saved apo and prior files are PDB ensembles with relative
+references in `query.json`.
+
+### Output directories
 
 ```text
-results/example/example_seed-5/
-  query.yaml
+tmp/tests/8and/8and_seed-42/
+  query.json
   apo/
-  example_seed-5_sample-0.cif
-  example_seed-5_sample-0_confidences.json
+    seq-0-apo.pdb
+    seq-0-prior.pdb
+  8and_seed-42_sample-0_model.cif
+  8and_seed-42_sample-0_confidence.json
+  8and_seed-42_sample-0_confidence.npz
   ...
-  done.txt
 ```
 
-GPU workers receive `(target, seed)` jobs. Each worker prepares all its assigned
-inputs, releases AtlasFold/AtlasFold-M, and then predicts with the same runner,
-reusing AtlasLM. Completed jobs are skipped unless `--overwrite` is passed.
-Interrupted apo generation reuses completed derived seeds. Use `--overwrite`
-when changing inputs or sampling options in an existing output directory.
+Sample indices run from 0 to 4 with the default `--num-samples 5`. The raw
+confidence NPZ files contain `plddt`, `pae`, and `pde` and are written only when
+`--save-confidence` is set; structure mmCIF and confidence-summary JSON files
+are always written.
 
-All prediction options are available. `--num-gpus`, `--cache-dir`, and
-`--overwrite` also apply to preparation. `--dry-run` still generates missing apo
-structures, then validates prepared inputs without running K-Fold prediction.
+`seq-{i}` uses the zero-based position in `sequences`; multimer entries use
+`multimer-{i}` with their position in `multimer_sequences`. Both supplied and
+generated structures are saved from prepared PDB text. Move the entire seed
+directory to preserve the relative references in `query.json`.
 
-## Preparation
+Existing nonempty target/seed directories cause an error. `--overwrite` replaces
+those directories after inference succeeds, before saving the new result. It
+removes old outputs, including files from previous sample counts or save options.
+Directories containing source query/structure files cannot be overwritten.
+To extend a run, request only the additional seeds; existing seed directories
+are left alone. There is no automatic resume or preparation cache in this CLI.
 
-Preparation uses AtlasFold for ordinary proteins and AtlasFold-M for protein
-pairs. Existing apo and prior inputs are preserved.
-If every protein already has apo inputs, go directly to [Prediction](#prediction).
-
-```bash
-kfold prepare --input query.yaml --out-dir prepared/ --seed 1 2 3 4 5
-```
-
-For each protein entry being generated, the example produces 25 PDB structures.
-The highest-confidence structure from each seed becomes an apo candidate
-(5 total); all samples become prior candidates (25 total).
-
-The prepared YAML queries and generated PDB structures are saved in `prepared/`.
-
-AtlasFold weights download automatically.
+### Options
 
 | Option | Default | Description |
 | :--- | :--- | :--- |
-| `--seed` | `1` | One or more AtlasFold seeds. |
-| `--num-samples` | `5` | Structures generated per seed. |
-| `--num-gpus` | `1` | Number of GPUs to use. |
-| `--cache-dir` | Hugging Face default | Cache for downloaded models. |
-| `--overwrite` | `False` | Regenerate predicted structures from the original query. |
-
-See `kfold prepare --help` for all options.
-
-## Prediction
-
-```bash
-kfold predict --input prepared/ --out-dir results/ --seed 1 2 3 4 5
-```
-
-With five seeds and five samples per seed, this produces 25 predictions per query.
-
-Model weights/config and CCD download automatically from `SeonghwanSeo/kfold`
-and `SeonghwanSeo/kfold-assets`.
-
-To use multiple GPUs:
-
-```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 kfold predict \
-  --input prepared/ --out-dir results/ --seed 1 2 3 4 --num-gpus 4
-```
-
-Prediction options:
-
-| Option | Default | Description |
-| :--- | :--- | :--- |
-| `--seed` | `1` | One or more K-Fold seeds. |
-| `--num-apo` | `1` | Maximum apo structures used per protein entry. |
-| `--num-samples` | `5` | Diffusion samples per query and seed. |
+| `-i`, `--input` | Required | Query JSON/YAML file or directory of query files. |
+| `-o`, `--out-dir` | Required | Root directory for target/seed outputs. |
+| `--seed` | `1` | One or more unique positive KFold seeds. |
+| `--num-apos` | `1` | AtlasFold generation groups per entry without supplied apos. |
+| `--num-samples` | `5` | Diffusion samples per query/seed. |
 | `--num-recycles` | `10` | Trunk recycle count. |
 | `--num-steps` | `100` | Diffusion step count. |
-| `--num-gpus` | `1` | Number of GPUs to use. |
-| `--cache-dir` | Hugging Face default | Cache for downloaded models and CCD. |
-| `--dry-run` | `False` | Validate prepared inputs on CPU without prediction models. |
-| `--overwrite` | `False` | Recompute completed predictions. |
-| `--save-confidence` | `False` | Save raw confidence arrays. |
-| `--save-distogram` | `False` | Save distogram logits and bin edges. |
-| `--save-trajectory` | `False` | Save the diffusion trajectory. |
+| `--num-gpus` | `1` | Independent GPU processes. |
+| `--cache-dir` | HF default | Download cache for models and CCD. |
+| `--dry-run` | `False` | Check query schema, paths, and output conflicts; list jobs without loading models. |
+| `--overwrite` | `False` | Replace requested target/seed directories. |
+| `--save-confidence` | `False` | Save confidence scores as NPZ. Summary JSON is always saved. |
+| `--save-embeddings` | `False` | Return and save unpadded single/pair embeddings as FP16 NPZ. |
+| `--save-distogram` | `False` | Compute and save distogram arrays as NPZ. |
+| `--save-trajectory` | `False` | Compute and save per-sample trajectories as mmCIF. |
 
-Optional `--weight` and `--config` override the release weights and configuration.
-See `kfold predict --help` for all options. To use the wrapper, replace `kfold`
-with `python run_kfold.py` from the repository root.
+`--dry-run` does not download models or CCD, parse structure contents, or run
+learned encoding. Those checks happen during inference. It does not create or
+modify output directories.
 
-### Output
+The CLI loads the default pretrained KFold release. For multiple GPUs:
 
-Results are saved in `results/`. Each sample produces an mmCIF structure and a
-confidence-summary JSON. Use `complex.ranking_score` in the JSON to compare
-predictions for the same query; higher is better. Optional confidence arrays
-and distograms use NPZ; trajectories use PDB.
+```bash
+CUDA_VISIBLE_DEVICES=0,1 kfold predict --input examples/ --out-dir results/ \
+  --seed 1 2 3 4 --num-gpus 2 --num-apos 3
+```
+
+The directory scan includes immediate `.json`, `.yaml`, and `.yml` files. Query
+names must be unique and usable as directory names. GPU workers receive independent
+query/seed jobs, and a worker failure stops the command with a nonzero exit status.
 
 ## Python API
 
 ```python
-from kfold import KFoldRunner
+from kfold.model import KFold
+from kfold.inference.query import Query
+from kfold.inference.runner import KFoldRunner
 
-runner = KFoldRunner(device="cuda:0")
-paths = runner.prepare("query.yaml", "prepared/", seeds=[1])
-for path in paths:
-    for query in runner.read_queries(path, seeds=[1]):
-        result = runner.fold(query, num_samples=5)
-        result.save("results/")
+model = KFold.from_pretrained("SeonghwanSeo/kfold")
+runner = KFoldRunner(model)
+query = Query.load("examples/8and.yaml")
+result = runner.fold(query, seed=42, num_apos=3)
+result.save("tmp/tests/8and/")
 ```
 
-`prepare` and `read_queries` accept YAML/JSON paths. `fold` takes one parsed
-`Query` and returns a `FoldingResult`.
+`fold()` performs apo generation, learned structure encoding, CPU input processing,
+and KFold inference. It returns a CPU `FoldingResult`. Use `fold_input(item, seed)`
+when you already have an unbatched `InferenceInput`.
+
+`runner.prepare_query(query, seed, num_apos=...)` returns `(apos, priors)` as
+candidate lists for each protein entry, followed by each multimer entry, without
+changing the query. To construct an `InferenceInput`, pass these lists to
+`runner.input_pipeline.build_input(query, seed, num_samples, apos=apos, priors=priors)`.
+Use the same seed and sample count when calling `fold_input()`.
+
+`FoldingResult` holds the source query, prepared `apos` and `priors`, coordinates,
+confidence summaries and scores, and any requested embeddings, distogram or
+trajectory. `result.save(directory)` writes directly into that directory and
+includes raw confidence NPZ files by default. Pass `save_confidence=False` to
+omit them. For optional arrays, enable the corresponding `return_*` flag in
+`fold()` and `save_*` flag in `save()`.
+
+`KFold.from_pretrained(source, device=..., cache_dir=...)` accepts a Hugging Face
+repository or a local model directory containing `config.yaml` and
+`weights/kfold.pth`. It returns a frozen model in evaluation mode. CCD loading is
+available as `kfold.inference.runner.load_ccd(ccd_path=..., cache_dir=...)`.
+
+### Returned array dtypes
+
+`runner.fold(query, seed=42, num_apos=3, return_embeddings=True)` includes
+`result.embeddings["single"]` with shape `(num_tokens, single_channels)` and
+`result.embeddings["pair"]` with shape `(num_tokens, num_tokens, pair_channels)`.
+These are the trunk's `s_inputs` and final `z`, respectively, with padding removed;
+they are shared across diffusion samples. Both are CPU NumPy FP16 arrays.
+
+Save them with `result.save(directory, save_embeddings=True)` or CLI
+`--save-embeddings`. The file `<name>_seed-<seed>_embeddings.npz` contains `single`
+and `pair`. Embeddings are omitted by default.
+
+Distogram logits are also FP16. Coordinates, trajectories, pLDDT, PAE, PDE, and
+distogram bin boundaries are FP32; distogram chain/residue indices are INT32.
+These casts apply to returned arrays, after model and confidence calculations.

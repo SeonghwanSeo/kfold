@@ -50,7 +50,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, ClassVar
 
-import numpy as np
 import yaml
 from rdkit import Chem
 
@@ -99,7 +98,7 @@ def _parse_modifications(
                 "modification residue indices must be unique after normalization, "
                 f"got duplicate index: {res_idx}"
             )
-        normalized[res_idx] = ccd_code
+        normalized[res_idx] = ccd_code.upper()
     return normalized
 
 
@@ -230,23 +229,6 @@ class ProteinSequence(PolymerSequence):
     apo: list[str] | None = None
     prior: list[str] | None = None
 
-    # For internal use to store the apo structure info.
-    # This is not saved to the input/output schema.
-    # Each PDB string contains one model, including all multimer chains.
-    _apo_pdb: list[str] | None = dataclasses.field(default=None, init=False, repr=False)
-    _prior_pdb: list[str] | None = dataclasses.field(default=None, init=False, repr=False)
-    # [Napo, L, 37, 3].
-    _apo_coords: list[np.ndarray] | None = dataclasses.field(
-        default=None, init=False, repr=False
-    )
-    _prior_coords: list[np.ndarray] | None = dataclasses.field(
-        default=None, init=False, repr=False
-    )
-    # Component chain -> apo -> BB/FA CPU token arrays.
-    _apo_token: list[list[dict[str, np.ndarray]]] | None = dataclasses.field(
-        default=None, init=False, repr=False
-    )
-
 
 @dataclasses.dataclass(kw_only=True)
 class DNASequence(PolymerSequence):
@@ -291,6 +273,9 @@ class LigandSequence(BaseSequence):
                 or any(not isinstance(code, str) or not code.strip() for code in codes)
             ):
                 raise ValueError("Ligand 'ccd' must contain non-empty CCD code strings.")
+            # normalize
+            codes = [code.upper() for code in codes]
+            self.ccd = codes
 
     def __len__(self) -> int:
         """Return the number of ligand residues."""
@@ -326,21 +311,6 @@ class ProteinMultimerSequence(BaseSequenceGroup):
     modifications2: dict[int, str] = dataclasses.field(default_factory=dict)
     apo: list[str] | None = None
     prior: list[str] | None = None
-
-    # Each PDB string contains one model, including all multimer chains.
-    _apo_pdb: list[str] | None = dataclasses.field(default=None, init=False, repr=False)
-    _prior_pdb: list[str] | None = dataclasses.field(default=None, init=False, repr=False)
-    # Component chain -> [Nmodel, L, 37, 3] aligned CPU coordinates.
-    _apo_coords: list[np.ndarray] | None = dataclasses.field(
-        default=None, init=False, repr=False
-    )
-    _prior_coords: list[np.ndarray] | None = dataclasses.field(
-        default=None, init=False, repr=False
-    )
-    # {bb: np.ndarray, fa: np.ndarray} for each apo of each component chain.
-    _apo_token: list[list[dict[str, np.ndarray]]] | None = dataclasses.field(
-        default=None, init=False, repr=False
-    )
 
     def __len__(self) -> int:
         """Return the total number of residues in one dimer copy."""

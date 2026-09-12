@@ -3,6 +3,8 @@
 K-Fold predicts biomolecular complex structures without multiple sequence alignments
 (MSAs), using pretrained encoders and an apo-to-holo diffusion model.
 
+The preprint will be available soon.
+
 ## Installation
 
 Python 3.11+ and a CUDA GPU are required for prediction.
@@ -22,38 +24,39 @@ pre-commit install
 
 ## Inference
 
-Describe proteins, DNA, RNA and ligands in YAML or JSON. Prepare protein apo
-structures, then run K-Fold. Preparation preserves existing apo inputs and uses
-AtlasFold for proteins without supplied apo structures:
+Describe proteins, DNA, RNA and ligands in YAML or JSON. From the repository root,
+run the CLI equivalent of `test.py` with seed 42 and three apo generation groups:
 
 ```bash
-kfold prepare --input examples/ --out-dir prepared/ --seed 1 2 3 4 5
-kfold predict --input prepared/ --out-dir results/ --seed 1 2 3 4 5
+kfold predict --input examples/8and.yaml --out-dir tmp/tests/ \
+  --seed 42 --num-apos 3 --save-confidence
 ```
 
-Run both stages with one command:
+This produces five KFold samples in `tmp/tests/8and/8and_seed-42/`.
+`--save-confidence` includes the raw confidence arrays saved by default in
+`test.py`. AtlasFold uses seeds 421, 422 and 423, producing three apo candidates
+and fifteen prior candidates for the protein entry shared by chains A and B.
 
-```bash
-kfold pipeline --input examples/ --out-dir results/ --seed 1 2 3 4 5
-```
+Each target/seed gets an independent directory under
+`<out-dir>/<target>/<target>_seed-<seed>/` containing `query.json`, `apo/`, and
+prediction/confidence files. Missing protein apo structures are generated with
+AtlasFold. Use `--num-apos` (default: 1) for the number of generation groups per
+entry; each group contributes its best candidate as apo and all five candidates
+as priors. Supplied apos serve as priors unless a separate prior is supplied.
 
-`pipeline` creates an independent input for each target and prediction seed in
-`results/<target>/<target>_seed-<seed>/`, containing `query.yaml` and `apo/`.
-`--num-apo` (default: 1) controls how many apo candidates are selected per protein
-entry. For example, `--seed 5 --num-apo 3` generates five structures each with seeds
-51, 52 and 53. The best structure from each seed becomes an apo candidate (3 total),
-and all generated structures become prior candidates (15 total), unless a prior
-was supplied. Prediction uses seed 5 and saves its samples in the same directory.
-`--num-samples` controls only the number of prediction samples in the pipeline.
+AtlasFold is the default apo generation tool. You can also supply apo structures
+predicted by AlphaFold2 or determined experimentally through the query's `apo`
+field. See the [Inference Guide](docs/inference.md#proteins) for the input format.
 
-For generated ensembles, each preparation seed produces five PDB structures by
-default. The best structure from each seed becomes an apo candidate, and all 25
-become prior candidates.
-Prediction uses one apo candidate by default and produces five samples per seed.
-Queries with existing apo inputs can go directly to `predict`.
+Each GPU process calls `fold()` sequentially for its assigned target/seed jobs,
+retaining the loaded models between calls. Use `--num-gpus` for multiple GPUs and
+`--num-samples` for the number of KFold predictions per seed. Pass a directory to
+`--input` to process multiple queries, and use `--seed 1 2 3` for multiple seeds.
 
-Models and CCD are downloaded automatically. Use `--cache-dir` to select the
-Hugging Face cache and `--num-gpus` for multiple GPUs.
+Nonempty run directories require `--overwrite`, which replaces their contents.
+To add predictions, request additional seeds. `--dry-run` checks query files,
+paths, and output conflicts without loading models or writing outputs.
+Models and CCD are downloaded automatically; `--cache-dir` selects their cache.
 
 You can also run the CLI with `python run_kfold.py` in an environment where
 K-Fold is installed.
