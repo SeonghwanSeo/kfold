@@ -1,3 +1,5 @@
+"""Build model inputs from validated queries and prepared apo/prior candidates."""
+
 import itertools
 from collections import defaultdict
 from typing import TYPE_CHECKING, NamedTuple
@@ -5,7 +7,6 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 import torch
 
-import kfold.constants as C
 from kfold.data.pipelines import (
     featurization,
     prior_sampling,
@@ -16,106 +17,89 @@ from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
-
-from . import query
+from kfold.inference.query import LigandSequence, PolymerSequence, ProteinPair, Query
 
 if TYPE_CHECKING:
-    from kfold.inference.runner import ApoStructure
+    from kfold.inference.runner import ApoChain, ApoStructure
 
 
 class InferenceInput(NamedTuple):
-    """One query and its unbatched, fully constructed model input."""
+    """A query, its reference structure, and the prepared model input.
 
-    query: query.Query
+    apos and priors contain one candidate list per entry in query.protein_entries
+    order. Each candidate holds one monomer chain or both protein-pair components.
+    """
+
+    query: Query
     ref_struct: RefStructure
     f_input: FoldingInput
-    # Protein entries, then multimer entries; each list contains their candidates.
     apos: list[list["ApoStructure"]]
     priors: list[list["ApoStructure"]]
 
 
 class InputDataPipeline:
+    """Build reference structures and model features from queries and candidates."""
+
     def __init__(self, ccd: CCD) -> None:
-        """Initialize the input data pipeline.
-
-        Parameters
-        ----------
-        ccd : CCD
-            The chemical component dictionary for residue information.
-        """
-        self.ccd: CCD = ccd
-
-        # Initialize diffusion prior sampler
+        self.ccd = ccd
         self.prior_sampler = prior_sampling.PriorSampler.inference_mode()
-        # Initialize tokenizer
-        self.tokenizer = tokenization.Tokenizer(self.ccd)
-        # Initialize featurizer
+        self.tokenizer = tokenization.Tokenizer(ccd)
         self.featurizer = featurization.InputFeaturizer()
 
     def build_input(
         self,
-        input: query.Query,
+        query: Query,
         seed: int,
         num_samples: int = 5,
         *,
         apos: list[list["ApoStructure"]],
         priors: list[list["ApoStructure"]],
     ) -> InferenceInput:
-        """Place prepared coordinates/tokens and construct an unbatched FoldingInput."""
+        """Build model features from a query and its prepared candidates.
 
-        # Extract all protein sequences
-        entries: list[query.ProteinSequence | query.ProteinMultimerSequence] = [
-            seq for seq in input.sequences if isinstance(seq, query.ProteinSequence)
-        ] + input.multimer_sequences
+        Parameters
+        ----------
+        query : Query
+            Validated query describing chains and bonds.
+        seed : int
+            Seed for prior sampling and tokenization.
+        num_samples : int
+            Number of prior coordinate samples to prepare for prediction.
+        apos : list[list[ApoStructure]]
+            Aligned, tokenized apo candidates in query.protein_entries order.
+        priors : list[list[ApoStructure]]
+            Aligned prior candidates in the same entry order.
 
-        # Initialize RNGs
+        Returns
+        -------
+        InferenceInput
+            Unbatched model input with the query, reference structure, and candidates.
+        """
+        # Validate candidate lists.
+        if any(not candidates for candidates in [*apos, *priors]):
+            raise ValueError(
+                "Each protein entry requires non-empty apo and prior candidate lists."
+            )
+
+        # Use independent random streams for prior sampling and tokenization.
         prior_rng = np.random.default_rng(np.random.SeedSequence([seed, 0]))
         tokenizer_rng = np.random.default_rng(np.random.SeedSequence([seed, 1]))
 
-        # Prepare reference structure
-        ref_struct = self.read_query(input)
-
-        # Place each source overlap on its query residues, padding missing positions.
+        # Build reference chains and bonds from the query.
+        ref_struct = self.build_reference_structure(query)
         num_apo = max((len(candidates) for candidates in apos), default=1)
-        asym_by_name = {chain.name: chain.asym_id for chain in ref_struct.metadata.chains}
-        apo_coords: dict[int, np.ndarray] = {}
-        prior_candidates: dict[int, np.ndarray] = {}
-        for entry, entry_apos, entry_priors in zip(entries, apos, priors, strict=True):
-            multimer = isinstance(entry, query.ProteinMultimerSequence)
-            sequences = (
-                [entry.sequence1, entry.sequence2] if multimer else [entry.sequence]
-            )
-            component_ids = (
-                list(zip(*entry.ids, strict=True)) if multimer else [entry.ids]
-            )
-            for component_i, (ids, sequence) in enumerate(
-                zip(component_ids, sequences, strict=True)
-            ):
-                apo_array = np.full(
-                    (num_apo, len(sequence), 37, 3), np.nan, dtype=np.float32
-                )
-                for model_i, apo in enumerate(entry_apos):
-                    chain = apo.chains[component_i]
-                    apo_array[model_i, chain.target] = chain.coordinates
 
-                prior_array = np.full(
-                    (len(entry_priors), len(sequence), 37, 3), np.nan, dtype=np.float32
-                )
-                for model_i, prior in enumerate(entry_priors):
-                    chain = prior.chains[component_i]
-                    prior_array[model_i, chain.target] = chain.coordinates
+        # Place aligned apo and prior coordinates onto query chain copies.
+        apo_coords, prior_candidates, apo_chains_by_asym = self._prepare_apo_inputs(
+            query, ref_struct, apos, priors, num_apo
+        )
 
-                for chain_id in ids:
-                    asym_id = asym_by_name[chain_id]
-                    apo_coords[asym_id] = apo_array
-                    prior_candidates[asym_id] = prior_array
-
-        # Sample prior coordinates
+        # Sample initial coordinates for each prediction.
         prior_coords = self.prior_sampler.sample(
             ref_struct, prior_candidates, num_samples, prior_rng
         )
 
-        # Tokenize structure
+        # Tokenize the reference structure.
         tokenized = self.tokenizer(
             ref_struct,
             tokenizer_rng,
@@ -123,265 +107,214 @@ class InputDataPipeline:
             num_apo=num_apo,
             prior_coords=prior_coords,
         )
-
+        # Featurize the tokenized structure into model input tensors.
         f_input = self.featurizer(tokenized)
-        # Repeated query chains share the tokens encoded for their source component.
-        for entry, entry_apos in zip(entries, apos, strict=True):
-            component_ids = (
-                list(zip(*entry.ids, strict=True))
-                if isinstance(entry, query.ProteinMultimerSequence)
-                else [entry.ids]
-            )
-            for component_i, ids in enumerate(component_ids):
-                for apo_i, apo in enumerate(entry_apos):
-                    chain = apo.chains[component_i]
-                    if chain.bb_tokens is None:
-                        continue
-                    for chain_id in ids:
-                        asym_id = asym_by_name[chain_id]
-                        st = (
-                            int(torch.where(f_input.sequence.asym_id == asym_id)[0][0])
-                            + 1
-                        )
-                        st += chain.target.start
-                        end = st + len(chain.sequence)
-                        f_input.sequence.bb_struct_token_id[st:end, apo_i] = (
-                            torch.from_numpy(chain.bb_tokens)
-                        )
-                        f_input.sequence.fa_struct_token_id[st:end, apo_i] = (
-                            torch.from_numpy(chain.fa_tokens)
-                        )
 
-        # Pad the input
+        # Insert the precomputed apo structure tokens at aligned residue positions.
+        for asym_id, apo_chains in apo_chains_by_asym.items():
+            # The first sequence position is the chain's beginning-of-sequence token.
+            residue_start = (
+                int(torch.where(f_input.sequence.asym_id == asym_id)[0][0]) + 1
+            )
+            for apo_index, chain in enumerate(apo_chains):
+                if chain.bb_tokens is None:
+                    continue
+                start = residue_start
+                end = start + len(chain.sequence)
+                f_input.sequence.bb_struct_token_id[start:end, apo_index] = (
+                    torch.from_numpy(chain.bb_tokens)
+                )
+                f_input.sequence.fa_struct_token_id[start:end, apo_index] = (
+                    torch.from_numpy(chain.fa_tokens)
+                )
+
+        # Pad feature dimensions to the model's required multiples.
         f_input = f_input.pad(
             max_tokens=((f_input.num_tokens + 31) // 32) * 32,
             max_atoms=((f_input.num_atoms + 63) // 64) * 64,
             max_sequence_tokens=((f_input.num_sequence_tokens + 63) // 64) * 64,
         )
-        return InferenceInput(input, ref_struct, f_input, apos, priors)
+        return InferenceInput(query, ref_struct, f_input, apos, priors)
 
-    def read_query(self, input: query.Query) -> RefStructure:
-        """Prepare the reference structure from the input file.
+    @staticmethod
+    def _prepare_apo_inputs(
+        query: Query,
+        ref_struct: RefStructure,
+        apos: list[list["ApoStructure"]],
+        priors: list[list["ApoStructure"]],
+        num_apo: int,
+    ) -> tuple[
+        dict[int, np.ndarray],
+        dict[int, np.ndarray],
+        dict[int, list["ApoChain"]],
+    ]:
+        """Place aligned candidates on query sequences and map them to chain copies."""
+        asym_by_name = {chain.name: chain.asym_id for chain in ref_struct.metadata.chains}
+        apo_coords: dict[int, np.ndarray] = {}
+        prior_candidates: dict[int, np.ndarray] = {}
+        apo_chains_by_asym: dict[int, list[ApoChain]] = {}
+        for entry, entry_apos, entry_priors in zip(
+            query.protein_entries, apos, priors, strict=True
+        ):
+            if isinstance(entry, ProteinPair):
+                component1_ids = [pair[0] for pair in entry.id]
+                component2_ids = [pair[1] for pair in entry.id]
+                components = [
+                    (component1_ids, entry.sequence1),
+                    (component2_ids, entry.sequence2),
+                ]
+            else:
+                components = [(entry.id, entry.sequence)]
+            for candidate in itertools.chain(entry_apos, entry_priors):
+                if len(candidate.chains) != len(components):
+                    raise ValueError(
+                        f"Entry {entry.id}: expected {len(components)} candidate chains, "
+                        f"got {len(candidate.chains)}."
+                    )
+                for chain, (chain_ids, sequence) in zip(
+                    candidate.chains, components, strict=True
+                ):
+                    if chain.sequence != sequence:
+                        raise ValueError(
+                            f"Candidate sequence does not match query chains {chain_ids}."
+                        )
+                    if chain.coordinates.shape != (len(sequence), 37, 3):
+                        raise ValueError(
+                            f"Candidate coordinates for chains {chain_ids} must have "
+                            f"shape ({len(sequence)}, 37, 3)."
+                        )
+
+            for component_index, (chain_ids, sequence) in enumerate(components):
+                apo_chains = [apo.chains[component_index] for apo in entry_apos]
+                # Apo features share a candidate dimension across all entries.
+                apo_array = np.full(
+                    (num_apo, len(sequence), 37, 3), np.nan, dtype=np.float32
+                )
+                for apo_index, chain in enumerate(apo_chains):
+                    apo_array[apo_index] = chain.coordinates
+
+                # Priors keep every candidate for sampling, without candidate padding.
+                prior_array = np.full(
+                    (len(entry_priors), len(sequence), 37, 3), np.nan, dtype=np.float32
+                )
+                for prior_index, prior in enumerate(entry_priors):
+                    chain = prior.chains[component_index]
+                    prior_array[prior_index] = chain.coordinates
+
+                # Copies share source coordinates and encoded structure tokens.
+                for chain_id in chain_ids:
+                    asym_id = asym_by_name[chain_id]
+                    apo_coords[asym_id] = apo_array
+                    prior_candidates[asym_id] = prior_array
+                    apo_chains_by_asym[asym_id] = apo_chains
+
+        return apo_coords, prior_candidates, apo_chains_by_asym
+
+    def build_reference_structure(self, query: Query) -> RefStructure:
+        """Build chains for each query entry and copy, then add the specified bonds.
 
         Parameters
         ----------
-        input : Query
-            The input query file.
+        query : Query
+            Validated query describing sequences, copies, and bonds.
 
         Returns
         -------
-        ref_struct : RefStructure
-            The reference structure.
+        RefStructure
+            Reference structure in query entry, copy, then component order.
+            Each protein-pair copy shares an apo/prior coordinate frame.
         """
         chain_metas: list[ChainInfo] = []
         chains: list[Chain] = []
-        entity_id_iter = itertools.count(1)
-        asym_id_iter = itertools.count(1)
-        chain_id_to_asym_id: dict[str, int] = {}
+        entity_ids = itertools.count(1)
+        asym_ids = itertools.count(1)
+        asym_by_name: dict[str, int] = {}
+        bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
+        for bond in query.bonds:
+            for chain_id, residue_index, atom in (bond.atom1, bond.atom2):
+                bonded_atoms[chain_id].setdefault(residue_index, set()).add(atom)
 
-        # Collect bonded atoms
-        chain_bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
-        for bond in input.bonds:
-            chain_id1, res_idx1, atom1 = bond.atom1
-            chain_id2, res_idx2, atom2 = bond.atom2
-            chain_bonded_atoms[chain_id1].setdefault(res_idx1, set()).add(atom1)
-            chain_bonded_atoms[chain_id2].setdefault(res_idx2, set()).add(atom2)
-
-        for seq in input.sequences:
-            entity_id = next(entity_id_iter)
-            # Prepare chain ids
-            chain_names: list[str] = seq.ids
-            num_chains = len(chain_names)
-            asym_ids: list[int] = [next(asym_id_iter) for _ in range(num_chains)]
-            sym_ids: list[int] = [i for i in range(1, num_chains + 1)]
-            for name, asym_id in zip(chain_names, asym_ids, strict=True):
-                chain_id_to_asym_id[name] = asym_id
-
-            num_residues = len(seq)
-
-            # Parse sequence
-            entity_chain: Chain = self.parse_sequence(seq, entity_id)
-
-            # Create copies for multiple chains
-            for i in range(num_chains):
-                # Assign chain ids
-                chain_name: str = chain_names[i]
-                asym_id: int = asym_ids[i]
-                sym_id: int = sym_ids[i]
-
-                # Create chain copy
-                if entity_chain.is_ligand and chain_name in chain_bonded_atoms:
-                    # If it's a ligand with covalent bonds, create a new chain
-                    bonded_atoms = chain_bonded_atoms[chain_name]
-                    chain = self.parse_sequence(seq, entity_id, bonded_atoms).copy_with(
-                        asym_id=asym_id, sym_id=sym_id
+        for entry in query.sequences:
+            if isinstance(entry, ProteinPair):
+                entity_chains = [
+                    structure_preparation.prepare_ref_chain(
+                        entry.ctype, codes, ccd=self.ccd, entity_id=next(entity_ids)
                     )
-                else:
-                    # Otherwise, create a copy of the original chain with new ids
-                    chain = entity_chain.copy_with(
-                        asym_id=asym_id, sym_id=sym_id, deepcopy=(i > 0)
-                    )
-                chains.append(chain)
+                    for codes in (entry.ccd_sequence1, entry.ccd_sequence2)
+                ]
+                copies = entry.id
+            else:
+                entity_chains = [self._prepare_chain(entry, next(entity_ids))]
+                copies = [[chain_id] for chain_id in entry.id]
 
-                # Add chain metadata
-                chain_meta = ChainInfo(
-                    type=entity_chain.ctype,
-                    name=chain_name,
-                    entity_id=entity_id,
-                    asym_id=asym_id,
-                    sym_id=sym_id,
-                    num_residues=num_residues,
-                    num_tokens=chain.num_tokens,
-                    num_atoms=chain.num_atoms,
-                    description=seq.description,
-                )
-                if entity_chain.smiles is not None:
-                    chain_meta.smiles = entity_chain.smiles
-                chain_metas.append(chain_meta)
-
-        # A multimer sequence describes two entities and one or more physical
-        # copies of their shared-frame pair.
-        for sequence_group in input.multimer_sequences:
-            entity_id1 = next(entity_id_iter)
-            entity_id2 = next(entity_id_iter)
-            entity_chain1 = structure_preparation.prepare_ref_chain(
-                chain_type=sequence_group.ctype,
-                ccd_sequences=sequence_group.ccd_sequence1,
-                ccd=self.ccd,
-                entity_id=entity_id1,
-            )
-            entity_chain2 = structure_preparation.prepare_ref_chain(
-                sequence_group.ctype,
-                sequence_group.ccd_sequence2,
-                ccd=self.ccd,
-                entity_id=entity_id2,
-            )
-
-            for sym_id, (chain_name1, chain_name2) in enumerate(
-                sequence_group.ids, start=1
-            ):
-                asym_id1 = next(asym_id_iter)
-                asym_id2 = next(asym_id_iter)
-                rigid_group_uid = asym_id1
-                chain_id_to_asym_id[chain_name1] = asym_id1
-                chain_id_to_asym_id[chain_name2] = asym_id2
-
-                chain1 = entity_chain1.copy_with(
-                    asym_id=asym_id1, sym_id=sym_id, deepcopy=(sym_id > 1)
-                )
-                chain2 = entity_chain2.copy_with(
-                    asym_id=asym_id2, sym_id=sym_id, deepcopy=(sym_id > 1)
-                )
-                chains.extend((chain1, chain2))
-
-                chain_metas.extend(
-                    (
+            for sym_id, copy_ids in enumerate(copies, start=1):
+                copy_asym_ids = [next(asym_ids) for _ in copy_ids]
+                # Both chains in a pair move together; each copy is independent.
+                rigid_group_uid = copy_asym_ids[0]
+                for name, asym_id, entity_chain in zip(
+                    copy_ids, copy_asym_ids, entity_chains, strict=True
+                ):
+                    asym_by_name[name] = asym_id
+                    if isinstance(entry, LigandSequence) and name in bonded_atoms:
+                        # Bonded atoms can change which leaving atoms this copy retains.
+                        chain = self._prepare_chain(
+                            entry, entity_chain.entity_id, bonded_atoms[name]
+                        ).copy_with(asym_id=asym_id, sym_id=sym_id)
+                    else:
+                        chain = entity_chain.copy_with(
+                            asym_id=asym_id, sym_id=sym_id, deepcopy=(sym_id > 1)
+                        )
+                    chains.append(chain)
+                    chain_metas.append(
                         ChainInfo(
-                            type=chain1.ctype,
-                            name=chain_name1,
-                            entity_id=entity_id1,
-                            asym_id=asym_id1,
+                            type=chain.ctype,
+                            name=name,
+                            entity_id=chain.entity_id,
+                            asym_id=asym_id,
                             sym_id=sym_id,
-                            num_residues=chain1.num_residues,
-                            num_tokens=chain1.num_tokens,
-                            num_atoms=chain1.num_atoms,
-                            description=sequence_group.description,
+                            num_residues=chain.num_residues,
+                            num_tokens=chain.num_tokens,
+                            num_atoms=chain.num_atoms,
+                            smiles=chain.smiles,
+                            description=entry.description,
                             apo_uid=rigid_group_uid,
                             prior_uid=rigid_group_uid,
-                        ),
-                        ChainInfo(
-                            type=chain2.ctype,
-                            name=chain_name2,
-                            entity_id=entity_id2,
-                            asym_id=asym_id2,
-                            sym_id=sym_id,
-                            num_residues=chain2.num_residues,
-                            num_tokens=chain2.num_tokens,
-                            num_atoms=chain2.num_atoms,
-                            description=sequence_group.description,
-                            apo_uid=rigid_group_uid,
-                            prior_uid=rigid_group_uid,
-                        ),
+                        )
                     )
-                )
 
-        # Prepare metadata
-        metadata = Metadata(id=input.name, source="query", chains=chain_metas)
-
-        # Add covalent bonds
-        connections: list[CovalentConnection] = []
-        for bond in input.bonds:
-            chain_id1, res_idx1, atom1 = bond.atom1
-            chain_id2, res_idx2, atom2 = bond.atom2
-            asym_id1 = chain_id_to_asym_id[chain_id1]
-            asym_id2 = chain_id_to_asym_id[chain_id2]
+        connections = []
+        for bond in query.bonds:
+            chain_id1, residue_index1, atom1 = bond.atom1
+            chain_id2, residue_index2, atom2 = bond.atom2
             connections.append(
                 CovalentConnection(
-                    (asym_id1, asym_id2), (res_idx1, res_idx2), (atom1, atom2)
+                    (asym_by_name[chain_id1], asym_by_name[chain_id2]),
+                    (residue_index1, residue_index2),
+                    (atom1, atom2),
                 )
             )
-
-        # Return RefStructure
-        ref_struct = structure_preparation.prepare_structure(
-            chains, connections, metadata
+        return structure_preparation.prepare_structure(
+            chains,
+            connections,
+            Metadata(id=query.name, source="query", chains=chain_metas),
         )
-        return ref_struct
 
-    def parse_sequence(
+    def _prepare_chain(
         self,
-        seq: query.BaseSequence,
+        entry: PolymerSequence | LigandSequence,
         entity_id: int,
         bonded_atoms: dict[int, set[str]] | None = None,
     ) -> Chain:
-        """Parse a chain from the sequence input.
-
-        Parameters
-        ----------
-        seq : Sequence
-            The sequence input.
-        entity_id : int
-            The entity_id to assign to the chain.
-        bonded_atoms : dict[int, set[str]], optional
-            A dictionary mapping residue index to a set of atom names that are involved
-            in covalent bonds.
-
-        Returns
-        -------
-        chain: Chain
-            The reference chain.
-
-        Notes
-        -----
-        The chain ids (entity_id, asym_id, sym_id) are all set to placeholder (zero)
-        """
-        if isinstance(seq, query.PolymerSequence):
-            return structure_preparation.prepare_ref_chain(
-                seq.ctype,
-                seq.ccd_sequence,
-                ccd=self.ccd,
-                entity_id=entity_id,
-                bonded_atoms=bonded_atoms,
-            )
-        elif isinstance(seq, query.LigandSequence):
-            # Load ccd or smiles
-            ctype = C.ChainType.LIGAND
-            if seq.ccd_ids is not None:
-                ccd_ids = seq.ccd_ids
-                smiles = None
-            else:
-                assert seq.smiles is not None, (
-                    "Either CCD code or SMILES must be provided."
-                )
-                ccd_ids = [f"LIG{entity_id}"]
-                smiles = seq.smiles
-
-            return structure_preparation.prepare_ref_chain(
-                ctype,
-                ccd_ids,
-                ccd=self.ccd,
-                smiles=smiles,
-                entity_id=entity_id,
-                bonded_atoms=bonded_atoms,
-            )
+        if isinstance(entry, PolymerSequence):
+            codes, smiles = entry.ccd_sequence, None
         else:
-            raise ValueError(f"Unsupported sequence type: {type(seq)}")
+            codes = entry.ccd if entry.ccd is not None else [f"LIG{entity_id}"]
+            smiles = entry.smiles
+        return structure_preparation.prepare_ref_chain(
+            entry.ctype,
+            codes,
+            ccd=self.ccd,
+            smiles=smiles,
+            entity_id=entity_id,
+            bonded_atoms=bonded_atoms,
+        )
