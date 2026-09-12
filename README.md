@@ -1,6 +1,6 @@
 # K-Fold
 
-Preprint will be released soon.
+K-Fold is currently in the **preview stage**. Preprint will be released soon.
 
 K-Fold predicts biomolecular complex structures and binding-induced conformational changes.
 Through an apo-to-holo diffusion bridge, K-Fold aims to capture conformational changes in systems such as G protein-coupled receptors (GPCRs).
@@ -12,6 +12,14 @@ This repository provides pretrained models, inference and training code, and dat
 ## Installation
 
 K-Fold requires Python 3.11 or later.
+
+Install from PyPI:
+
+```bash
+pip install 'kfold[cuequiv]'
+```
+
+Or install from source:
 
 ```bash
 git clone https://github.com/SeonghwanSeo/kfold.git
@@ -43,4 +51,5 @@ See the [training guide](docs/training.md) for data preparation, training comman
 ## License
 
 Copyright © 2026 Korea Advanced Institute of Science and Technology (KAIST).
+
 K-Fold is licensed under the [Apache License 2.0](LICENSE).
