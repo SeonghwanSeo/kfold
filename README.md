@@ -1,6 +1,8 @@
 # K-Fold
 
-K-Fold is currently in the **preview stage**. Preprint will be released soon.
+K-Fold is currently in the **preview stage** and under active development.
+The first official release is expected around September 20.
+Preprint will be released soon.
 
 K-Fold predicts biomolecular complex structures and binding-induced conformational changes.
 Through an apo-to-holo diffusion bridge, K-Fold aims to capture conformational changes in systems such as G protein-coupled receptors (GPCRs).
@@ -11,7 +13,7 @@ This repository provides pretrained models, inference and training code, and dat
 ## Model parameters
 
 K-Fold uses pretrained [AtlasLM](https://github.com/SeonghwanSeo/atlasfold) for protein sequence representations and [TriProRep](https://github.com/hsjang0/TriProRep) for protein structure representations.
-The parameters for these models and K-Fold are downloaded automatically on first use.
+The parameters for these models and K-Fold are downloaded automatically on first use from [huggingface](https://huggingface.co/collections/SeonghwanSeo/k-fold).
 
 ## Installation
 
@@ -35,16 +37,23 @@ The `cuequiv` extra installs cuEquivariance kernels for faster inference on NVID
 
 ## Inference
 
-Run predictions from a YAML or JSON query file, or a directory of query files:
+Run predictions from a YAML or JSON query file, or a directory of query files for bulk run:
 
 ```bash
-kfold predict --input examples/8and.yaml --out-dir predictions/ --seed 42
+kfold --input examples/8and.yaml --out-dir predictions/ --seed 42
 ```
 
-K-Fold generates apo protein structures with AtlasFold by default.
-You can also provide experimental structures or predictions from other tools (e.g., AlphaFold2).
+By default, K-Fold prepares apo protein structures with AtlasFold, then runs K-Fold prediction.
+You can also [provide apo structures](docs/inference.md#providing-apo-structures) from experiments or other prediction tools (e.g., AlphaFold2).
 
-See `kfold predict --help`, the [inference guide](docs/inference.md), or the [Python API guide](docs/python_api.md) for details.
+Use `--stage apo` to prepare apo structures only, or `--stage complex` to predict complexes from prepared apos:
+
+```bash
+kfold --stage apo --input examples/ --out-dir predictions/ --seed 42
+kfold --stage complex --input examples/ --out-dir predictions/ --seed 42
+```
+
+See `kfold --help`, the [inference guide](docs/inference.md), or the [Python API guide](docs/python_api.md) for details.
 
 ## Training
 

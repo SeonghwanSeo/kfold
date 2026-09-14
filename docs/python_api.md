@@ -12,36 +12,16 @@ from kfold.inference.query import Query
 from kfold.inference.runner import KFoldRunner
 from kfold.model import KFold
 
-model = KFold.from_pretrained(
-    device="cuda",
-    use_struct_encoder=True,  # Disable to reduce memory use
-    use_rna_encoder=True,  # Disable only if queries contain no RNA.
-)
-runner = KFoldRunner(
-    model,
-    lazy_load=True,  # Defer loading AtlasFold until needed.
-)
+model = KFold.from_pretrained(device="cuda")
+runner = KFoldRunner(model)
 query = Query.load("query.yaml")
 
-result = runner.fold(
-    query,
-    seed=1,  # Seed for generation.
-    num_apos=1,  # Apo structures per protein entry without supplied structures.
-    num_samples=5,  # Predictions per seed.
-    num_recycles=10,  # Number of recycling iterations.
-    num_steps=100,  # Number of diffusion steps.
-    return_embeddings=False,  # Return single and pair embeddings.
-    return_trajectory=False,  # Return diffusion trajectories.
-    return_distogram=False,  # Return distogram logits.
-)
+result = runner.predict(query, seed=1)
 result.save("predictions/test/test_seed-1/")
 ```
 
-`fold()` prepares apo and prior structures and returns a `FoldingResult` with CPU NumPy arrays.
-It leaves the input query unchanged.
-
-`result.save(directory)` writes directly into the supplied directory and saves raw confidence NPZ files by default; pass `save_confidence=False` to omit them.
-Completion markers, ranking CSVs, and top-level best-prediction copies are managed by the CLI.
+`predict()` prepares apo structures and predicts complexes, returning a `FoldingResult` with CPU NumPy arrays.
+The input query is unchanged, and the runner can be reused across queries and seeds.
 
 ## Constructing queries
 
@@ -63,7 +43,7 @@ query = Query(
 ```
 
 Direct constructors require lists for `id` and ligand `ccd`, and lists of ID pairs for `ProteinPair.id`, such as `[["H", "L"]]`.
-Supplied `apo` and `prior` values must be lists of absolute `pathlib.Path` objects pointing to existing files.
+Provided `apo` and `prior` values must be lists of absolute `pathlib.Path` objects pointing to existing files.
 Modifications use `Modification(residue_index=4, ccd="SEP")`; bonds use `Bond(atom1=("A", 20, "NZ"), atom2=("C", 1, "C08"))`.
 
 ## Options
@@ -79,9 +59,9 @@ Modifications use `Modification(residue_index=4, ccd="SEP")`; bonds use `Bond(at
 | `cache_dir` | `None` | Download cache for model and encoder weights; uses the Hugging Face default when omitted. |
 | `use_struct_encoder` | `True` | Load the pretrained protein structure encoder. Set to `False` to reduce memory use; apo coordinates are still used. |
 | `use_rna_encoder` | `True` | Load the pretrained RNA sequence encoder. Set to `False` only when queries contain no RNA. |
-| `cpu_offload` | `False` | Keep the protein structure backbone encoder and RNA LM on CPU except during feature extraction. The protein LM and structure tokenizers remain on device. |
+| `cpu_offload` | `False` | Offload encoders to reduce GPU memory use, at the cost of CPU memory and transfer time. |
 
-Enable CPU offloading with `KFold.from_pretrained(device="cuda", cpu_offload=True)`. This reduces GPU residency from model loading onward and adds CPU memory use and transfer time. Use the returned model directly with `KFoldRunner`; moving the entire model with `.cuda()` or `.to("cuda")` afterward also moves the offloaded encoders back to GPU.
+With `cpu_offload=True`, use the returned model directly with `KFoldRunner`; calling `.cuda()` or `.to("cuda")` afterward moves the offloaded encoders back to GPU.
 
 ### Runner initialization
 
@@ -91,24 +71,24 @@ Enable CPU offloading with `KFold.from_pretrained(device="cuda", cpu_offload=Tru
 | --- | --- | --- |
 | `model` | Required | A loaded `KFold` model on a CUDA device. |
 | `ccd` | `None` | Custom `CCD` object; loads the release CCD when omitted. |
-| `lazy_load` | `False` | Defer loading AtlasFold prediction models onto the GPU until needed. The example above enables this. |
+| `apo_config` | `None` | An `ApoConfig` for automatic apo generation; defaults match the CLI. |
 | `cache_dir` | `None` | Download cache for CCD and AtlasFold assets. |
 | `share_atlaslm` | `True` | Reuse K-Fold's AtlasLM for apo generation. If `False`, the apo samplers share a separately loaded AtlasLM. |
 | `verbose` | `True` | Emit INFO logs for initialization and prediction stages. |
 
 Pass `cache_dir` to both `KFold.from_pretrained()` and `KFoldRunner()` to use the same custom cache throughout.
-Release assets are downloaded during runner initialization even with `lazy_load=True`.
+Apo models are loaded on first use and cached on the GPU for subsequent predictions.
 
 ### Prediction
 
-`runner.fold()` predicts one query with one seed.
+`runner.predict()` predicts one query with one seed.
 Sampling defaults match the CLI.
 
 | Argument | Default | Description |
 | --- | --- | --- |
 | `query` | Required | A `Query` object. |
 | `seed` | Required | Positive integer seed for input preparation and prediction. |
-| `num_apos` | `1` | Generated apo structures per protein entry without supplied structures; 1–5. |
+| `num_apos` | `1` | Apo structures per protein entry during automatic generation; 1–5. Provided structures are used directly. |
 | `num_samples` | `5` | Predictions per seed. |
 | `num_recycles` | `10` | Number of model recycling iterations. |
 | `num_steps` | `100` | Number of diffusion steps. |
@@ -117,28 +97,27 @@ Sampling defaults match the CLI.
 | `return_distogram` | `False` | Include shared distance logits and metadata in `result.distogram`. |
 
 Sampling counts must be positive.
-See [apo structures and priors](inference.md#apo-structures-and-priors) for how supplied and generated structures are used.
+See [apo structures](inference.md#apo-structures) for how provided and generated structures are used.
 
 ### Saving results
 
-`result.save()` always writes prediction structures and confidence-summary JSON files.
-Matching files are overwritten; other files are retained.
+`result.save(out_dir)` writes structures and confidence files directly into the provided directory, overwriting existing results for the same query and seed.
+Raw confidence NPZ files are saved by default; use `save_confidence=False` to omit them.
 
 | Argument | Default | Description |
 | --- | --- | --- |
 | `out_dir` | Required | Destination directory, created if needed. |
-| `save_query` | `True` | Save `query.json` and prepared apo and prior PDB files. |
 | `save_confidence` | `True` | Save per-sample pLDDT, PAE, and PDE arrays as NPZ. |
-| `save_embeddings` | `False` | Save embeddings when returned by `fold()`. |
-| `save_distogram` | `False` | Save distogram arrays when returned by `fold()`. |
-| `save_trajectory` | `False` | Save per-sample trajectories as mmCIF when returned by `fold()`. |
+| `save_embeddings` | `False` | Save embeddings when returned by `predict()`. |
+| `save_distogram` | `False` | Save distogram arrays when returned by `predict()`. |
+| `save_trajectory` | `False` | Save per-sample trajectories as mmCIF when returned by `predict()`. |
 
 ## Accessing optional arrays
 
-Enable optional outputs when folding and again when saving:
+Enable optional outputs when predicting and again when saving:
 
 ```python
-result = runner.fold(
+result = runner.predict(
     query,
     seed=1,
     return_embeddings=True,
@@ -158,3 +137,33 @@ These arrays are shared across prediction samples and have padding removed:
 | `z` | `(num_tokens, num_tokens, pair_channels)` | FP16 |
 
 Use `return_trajectory=True` with `save_trajectory=True` for trajectories.
+
+## Preparing inputs separately
+
+For a query with provided apo structures for every protein entry, load them and build the model input before prediction:
+
+```python
+apos, priors = runner.load_apo_and_prior(query)
+item = runner.build_input(query, seed=1, num_samples=5, apos=apos, priors=priors)
+result = runner.predict_from_input(item, seed=1, num_samples=5)
+```
+
+To generate apo structures independently, use `ApoRunner`.
+Save the [apo configuration example](inference.md#apo-configuration) as `apo.yaml`:
+
+```python
+from kfold.inference.apo_runner import ApoConfig, ApoRunner
+
+config = ApoConfig.load("apo.yaml")
+apo_runner = ApoRunner(device="cuda", config=config)
+prediction = apo_runner.predict(
+    "protein", "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQANL", seeds=[11]
+)
+```
+
+Pass a single sequence for a monomer or a tuple of two sequences for a protein pair.
+The result contains `apos` and `priors`.
+To use this configuration for automatic generation, pass `apo_config=config` to `KFoldRunner`.
+
+Apo models stay loaded for repeated calls.
+Call `apo_runner.unload_models()` when finished to release the folding models while retaining AtlasLM.

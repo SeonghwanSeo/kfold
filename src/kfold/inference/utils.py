@@ -1,11 +1,15 @@
 """Coordinate conversion and sequence alignment for apo/prior structures."""
 
+from collections.abc import Iterable
+from pathlib import Path
+
 import gemmi
 import numpy as np
 from atlasfold.common import residue_constants
 from numpy.typing import NDArray
 
 from kfold.constants.atom import protein_atom37
+from kfold.constants.residue import protein_one_letter_to_residue_name
 
 # One row per AtlasFold residue type, in KFold atom37 order. Absent atoms use -1.
 _ATOM37_TO_ATOM14 = np.array(
@@ -32,6 +36,7 @@ def atom14_to_atom37(
     """
     if coordinates.shape != (len(sequence), 14, 3):
         raise ValueError("Expected atom14 coordinates with shape (len(sequence), 14, 3).")
+    # Gather coordinates in atom37 order and mask atoms absent from atom14.
     residue_types = np.array(
         [residue_constants.restype_orders[aa] for aa in sequence], dtype=np.intp
     )
@@ -62,6 +67,7 @@ def align_sequences(
         indices = np.arange(len(target_sequence), dtype=np.int64)
         return indices, indices
 
+    # Align nonidentical sequences while allowing missing residue stretches.
     scoring = gemmi.AlignmentScoring()
     # Missing loops may span many residues; charge per gap, not per missing residue.
     scoring.gape = 0
@@ -71,6 +77,7 @@ def align_sequences(
     if alignment.match_count == 0:
         raise ValueError("No matching residues between the query and source structure.")
 
+    # Convert paired alignment positions back to ungapped sequence indices.
     aligned_target = np.array(list(alignment.add_gaps(target_sequence, 1)))
     aligned_source = np.array(list(alignment.add_gaps(source_sequence, 2)))
     target_present = aligned_target != "-"
@@ -79,3 +86,43 @@ def align_sequences(
     target_indices = np.cumsum(target_present, dtype=np.int64) - 1
     source_indices = np.cumsum(source_present, dtype=np.int64) - 1
     return target_indices[paired], source_indices[paired]
+
+
+def write_protein_pdbs(
+    models: Iterable[list[tuple[str, NDArray[np.float32]]]], path: Path
+) -> None:
+    """Write protein candidates from atom37 coordinates as a PDB ensemble.
+
+    Parameters
+    ----------
+    models : iterable of list of tuple
+        Models in candidate order, each containing (sequence, coordinates) chains.
+    path : Path
+        Destination PDB file. Its parent directory must exist.
+    """
+    # Build one PDB model per candidate, retaining only atoms with finite coordinates.
+    structure = gemmi.Structure()
+    for model_number, chains in enumerate(models, start=1):
+        model = gemmi.Model(model_number)
+        for chain_index, (sequence, coordinates) in enumerate(chains):
+            chain = gemmi.Chain(chr(ord("A") + chain_index))
+            for position, (aa, atom_coords) in enumerate(
+                zip(sequence, coordinates, strict=True), start=1
+            ):
+                residue = gemmi.Residue()
+                residue.name = protein_one_letter_to_residue_name[aa].name
+                residue.seqid = gemmi.SeqId(position, " ")
+                for name, xyz in zip(protein_atom37, atom_coords, strict=True):
+                    if not np.isfinite(xyz).all():
+                        continue
+                    atom = gemmi.Atom()
+                    atom.name = name
+                    atom.element = gemmi.Element(name[0])
+                    atom.pos = gemmi.Position(*xyz.tolist())
+                    atom.b_iso = 0.0
+                    residue.add_atom(atom)
+                if len(residue):
+                    chain.add_residue(residue)
+            model.add_chain(chain)
+        structure.add_model(model)
+    structure.write_pdb(str(path))
