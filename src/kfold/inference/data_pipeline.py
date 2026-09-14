@@ -2,7 +2,7 @@
 
 import itertools
 from collections import defaultdict
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -17,10 +17,8 @@ from kfold.data.types.ccd import CCD
 from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
+from kfold.inference.apo_runner import ApoChain, ApoMultimer
 from kfold.inference.query import LigandSequence, PolymerSequence, ProteinPair, Query
-
-if TYPE_CHECKING:
-    from kfold.inference.runner import ApoChain, ApoStructure
 
 
 class InferenceInput(NamedTuple):
@@ -31,10 +29,11 @@ class InferenceInput(NamedTuple):
     """
 
     query: Query
+    seed: int  # Seed used for prior sampling and tokenization.
     ref_struct: RefStructure
     f_input: FoldingInput
-    apos: list[list["ApoStructure"]]
-    priors: list[list["ApoStructure"]]
+    apos: list[list[ApoChain] | list[ApoMultimer]]
+    priors: list[list[ApoChain] | list[ApoMultimer]]
 
 
 class InputDataPipeline:
@@ -52,8 +51,8 @@ class InputDataPipeline:
         seed: int,
         num_samples: int = 5,
         *,
-        apos: list[list["ApoStructure"]],
-        priors: list[list["ApoStructure"]],
+        apos: list[list[ApoChain] | list[ApoMultimer]],
+        priors: list[list[ApoChain] | list[ApoMultimer]],
     ) -> InferenceInput:
         """Build model features from a query and its prepared candidates.
 
@@ -65,9 +64,9 @@ class InputDataPipeline:
             Seed for prior sampling and tokenization.
         num_samples : int
             Number of prior coordinate samples to prepare for prediction.
-        apos : list[list[ApoStructure]]
+        apos: list[list[ApoChain] | list[ApoMultimer]]
             Aligned, tokenized apo candidates in query.protein_entries order.
-        priors : list[list[ApoStructure]]
+        priors: list[list[ApoChain] | list[ApoMultimer]]
             Aligned prior candidates in the same entry order.
 
         Returns
@@ -90,7 +89,7 @@ class InputDataPipeline:
         num_apo = max((len(candidates) for candidates in apos), default=1)
 
         # Place aligned apo and prior coordinates onto query chain copies.
-        apo_coords, prior_candidates, apo_chains_by_asym = self._prepare_apo_inputs(
+        apo_coords, prior_candidates, apo_chains_by_asym = self._map_candidates_to_chains(
             query, ref_struct, apos, priors, num_apo
         )
 
@@ -111,6 +110,89 @@ class InputDataPipeline:
         f_input = self.featurizer(tokenized)
 
         # Insert the precomputed apo structure tokens at aligned residue positions.
+        self._insert_apo_structure_tokens(f_input, apo_chains_by_asym)
+
+        # Pad feature dimensions to the model's required multiples.
+        f_input = f_input.pad(
+            max_tokens=((f_input.num_tokens + 31) // 32) * 32,
+            max_atoms=((f_input.num_atoms + 63) // 64) * 64,
+            max_sequence_tokens=((f_input.num_sequence_tokens + 63) // 64) * 64,
+        )
+        return InferenceInput(query, seed, ref_struct, f_input, apos, priors)
+
+    @staticmethod
+    def _map_candidates_to_chains(
+        query: Query,
+        ref_struct: RefStructure,
+        apos: list[list[ApoChain] | list[ApoMultimer]],
+        priors: list[list[ApoChain] | list[ApoMultimer]],
+        num_apo: int,
+    ) -> tuple[dict[int, np.ndarray], dict[int, np.ndarray], dict[int, list[ApoChain]]]:
+        """Place aligned candidates on query sequences and map them to chain copies."""
+        asym_by_name = {chain.name: chain.asym_id for chain in ref_struct.metadata.chains}
+        apo_coords: dict[int, np.ndarray] = {}
+        prior_candidates: dict[int, np.ndarray] = {}
+        apo_chains_by_asym: dict[int, list[ApoChain]] = {}
+        for entry, entry_apos, entry_priors in zip(
+            query.protein_entries, apos, priors, strict=True
+        ):
+            # Separate pair components while preserving candidate order across chains.
+            if isinstance(entry, ProteinPair):
+                components = [
+                    (
+                        [pair[0] for pair in entry.id],
+                        entry.sequence1,
+                        [apo.chain1 for apo in entry_apos],
+                        [prior.chain1 for prior in entry_priors],
+                    ),
+                    (
+                        [pair[1] for pair in entry.id],
+                        entry.sequence2,
+                        [apo.chain2 for apo in entry_apos],
+                        [prior.chain2 for prior in entry_priors],
+                    ),
+                ]
+            else:
+                components = [(entry.id, entry.sequence, entry_apos, entry_priors)]
+            # Validate each component before assembling arrays for its chain copies.
+            for chain_ids, sequence, apo_chains, prior_chains in components:
+                for chain in itertools.chain(apo_chains, prior_chains):
+                    if chain.sequence != sequence:
+                        raise ValueError(
+                            f"Candidate sequence does not match query chains {chain_ids}."
+                        )
+                    if chain.coordinates.shape != (len(sequence), 37, 3):
+                        raise ValueError(
+                            f"Candidate coordinates for chains {chain_ids} must have "
+                            f"shape ({len(sequence)}, 37, 3)."
+                        )
+
+                # Apo features share a candidate dimension across all entries.
+                apo_array = np.full(
+                    (num_apo, len(sequence), 37, 3), np.nan, dtype=np.float32
+                )
+                for apo_index, chain in enumerate(apo_chains):
+                    apo_array[apo_index] = chain.coordinates
+
+                # Priors keep every candidate for sampling, without candidate padding.
+                prior_array = np.stack(
+                    [chain.coordinates for chain in prior_chains]
+                ).astype(np.float32, copy=False)
+
+                # Copies share source coordinates and encoded structure tokens.
+                for chain_id in chain_ids:
+                    asym_id = asym_by_name[chain_id]
+                    apo_coords[asym_id] = apo_array
+                    prior_candidates[asym_id] = prior_array
+                    apo_chains_by_asym[asym_id] = apo_chains
+
+        return apo_coords, prior_candidates, apo_chains_by_asym
+
+    @staticmethod
+    def _insert_apo_structure_tokens(
+        f_input: FoldingInput, apo_chains_by_asym: dict[int, list[ApoChain]]
+    ) -> None:
+        """Insert precomputed BB/FA tokens into model input features in place."""
         for asym_id, apo_chains in apo_chains_by_asym.items():
             # The first sequence position is the chain's beginning-of-sequence token.
             residue_start = (
@@ -127,88 +209,6 @@ class InputDataPipeline:
                 f_input.sequence.fa_struct_token_id[start:end, apo_index] = (
                     torch.from_numpy(chain.fa_tokens)
                 )
-
-        # Pad feature dimensions to the model's required multiples.
-        f_input = f_input.pad(
-            max_tokens=((f_input.num_tokens + 31) // 32) * 32,
-            max_atoms=((f_input.num_atoms + 63) // 64) * 64,
-            max_sequence_tokens=((f_input.num_sequence_tokens + 63) // 64) * 64,
-        )
-        return InferenceInput(query, ref_struct, f_input, apos, priors)
-
-    @staticmethod
-    def _prepare_apo_inputs(
-        query: Query,
-        ref_struct: RefStructure,
-        apos: list[list["ApoStructure"]],
-        priors: list[list["ApoStructure"]],
-        num_apo: int,
-    ) -> tuple[
-        dict[int, np.ndarray],
-        dict[int, np.ndarray],
-        dict[int, list["ApoChain"]],
-    ]:
-        """Place aligned candidates on query sequences and map them to chain copies."""
-        asym_by_name = {chain.name: chain.asym_id for chain in ref_struct.metadata.chains}
-        apo_coords: dict[int, np.ndarray] = {}
-        prior_candidates: dict[int, np.ndarray] = {}
-        apo_chains_by_asym: dict[int, list[ApoChain]] = {}
-        for entry, entry_apos, entry_priors in zip(
-            query.protein_entries, apos, priors, strict=True
-        ):
-            if isinstance(entry, ProteinPair):
-                component1_ids = [pair[0] for pair in entry.id]
-                component2_ids = [pair[1] for pair in entry.id]
-                components = [
-                    (component1_ids, entry.sequence1),
-                    (component2_ids, entry.sequence2),
-                ]
-            else:
-                components = [(entry.id, entry.sequence)]
-            for candidate in itertools.chain(entry_apos, entry_priors):
-                if len(candidate.chains) != len(components):
-                    raise ValueError(
-                        f"Entry {entry.id}: expected {len(components)} candidate chains, "
-                        f"got {len(candidate.chains)}."
-                    )
-                for chain, (chain_ids, sequence) in zip(
-                    candidate.chains, components, strict=True
-                ):
-                    if chain.sequence != sequence:
-                        raise ValueError(
-                            f"Candidate sequence does not match query chains {chain_ids}."
-                        )
-                    if chain.coordinates.shape != (len(sequence), 37, 3):
-                        raise ValueError(
-                            f"Candidate coordinates for chains {chain_ids} must have "
-                            f"shape ({len(sequence)}, 37, 3)."
-                        )
-
-            for component_index, (chain_ids, sequence) in enumerate(components):
-                apo_chains = [apo.chains[component_index] for apo in entry_apos]
-                # Apo features share a candidate dimension across all entries.
-                apo_array = np.full(
-                    (num_apo, len(sequence), 37, 3), np.nan, dtype=np.float32
-                )
-                for apo_index, chain in enumerate(apo_chains):
-                    apo_array[apo_index] = chain.coordinates
-
-                # Priors keep every candidate for sampling, without candidate padding.
-                prior_array = np.full(
-                    (len(entry_priors), len(sequence), 37, 3), np.nan, dtype=np.float32
-                )
-                for prior_index, prior in enumerate(entry_priors):
-                    chain = prior.chains[component_index]
-                    prior_array[prior_index] = chain.coordinates
-
-                # Copies share source coordinates and encoded structure tokens.
-                for chain_id in chain_ids:
-                    asym_id = asym_by_name[chain_id]
-                    apo_coords[asym_id] = apo_array
-                    prior_candidates[asym_id] = prior_array
-                    apo_chains_by_asym[asym_id] = apo_chains
-
-        return apo_coords, prior_candidates, apo_chains_by_asym
 
     def build_reference_structure(self, query: Query) -> RefStructure:
         """Build chains for each query entry and copy, then add the specified bonds.
@@ -229,11 +229,13 @@ class InputDataPipeline:
         entity_ids = itertools.count(1)
         asym_ids = itertools.count(1)
         asym_by_name: dict[str, int] = {}
+        # Collect bonded atoms before preparing copy-specific ligand chemistry.
         bonded_atoms: dict[str, dict[int, set[str]]] = defaultdict(dict)
         for bond in query.bonds:
             for chain_id, residue_index, atom in (bond.atom1, bond.atom2):
                 bonded_atoms[chain_id].setdefault(residue_index, set()).add(atom)
 
+        # Build entity chains once, then expand them into the requested copies.
         for entry in query.sequences:
             if isinstance(entry, ProteinPair):
                 entity_chains = [
@@ -282,6 +284,7 @@ class InputDataPipeline:
                         )
                     )
 
+        # Translate named query bonds into reference-structure chain indices.
         connections = []
         for bond in query.bonds:
             chain_id1, residue_index1, atom1 = bond.atom1
@@ -293,6 +296,7 @@ class InputDataPipeline:
                     (atom1, atom2),
                 )
             )
+        # Assemble chains, connections, and metadata into one reference structure.
         return structure_preparation.prepare_structure(
             chains,
             connections,

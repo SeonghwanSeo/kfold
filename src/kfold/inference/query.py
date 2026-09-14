@@ -4,6 +4,7 @@ import dataclasses
 import json
 import os
 import re
+from collections.abc import Set
 from pathlib import Path
 from typing import ClassVar
 
@@ -101,7 +102,7 @@ def _ccd_sequence(
 def _validate_structures(apo: list[Path] | None, prior: list[Path] | None) -> None:
     """Python objects hold absolute Paths; parsing resolves serialized strings."""
     if prior is not None and apo is None:
-        raise ValueError("'prior' requires supplied 'apo' structures.")
+        raise ValueError("'prior' requires provided 'apo' structures.")
     for field, paths in (("apo", apo), ("prior", prior)):
         if paths is None:
             continue
@@ -244,6 +245,7 @@ Sequence = ProteinSequence | DNASequence | RNASequence | LigandSequence | Protei
 
 
 def _parse_sequence(entry: dict, base_dir: Path) -> Sequence:
+    # Select the sequence type and validate its allowed fields.
     if not isinstance(entry, dict) or len(entry) != 1:
         raise ValueError("Each sequence entry must contain exactly one sequence type.")
     kind, data = next(iter(entry.items()))
@@ -269,6 +271,7 @@ def _parse_sequence(entry: dict, base_dir: Path) -> Sequence:
             _check_fields(data, {"id"}, common | {"smiles", "ccd"})
         case _:
             raise ValueError(f"Unsupported sequence type: {kind!r}.")
+    # Normalize chain IDs and ligand CCD codes into their internal list forms.
     fields = dict(data)
     if kind == "ligand" and isinstance(fields.get("ccd"), str):
         fields["ccd"] = [fields["ccd"]]
@@ -279,6 +282,7 @@ def _parse_sequence(entry: dict, base_dir: Path) -> Sequence:
             fields["id"] = [fields["id"]]
     elif isinstance(fields["id"], str):
         fields["id"] = [fields["id"]]
+    # Parse residue modifications into validated objects.
     for field in ("modifications", "modifications1", "modifications2"):
         if field not in fields:
             continue
@@ -289,6 +293,7 @@ def _parse_sequence(entry: dict, base_dir: Path) -> Sequence:
             _check_fields(modification, {"residue_index", "ccd"}, set())
             modifications.append(Modification(**modification))
         fields[field] = modifications
+    # Resolve provided structure paths relative to the query file.
     for field in ("apo", "prior"):
         if field not in fields:
             continue
@@ -338,6 +343,38 @@ class Query:
     sequences: list[Sequence]
     bonds: list[Bond] = dataclasses.field(default_factory=list)
 
+    def validate_ccd_codes(self, valid_codes: Set[str]) -> None:
+        """Check that explicit ligand and modification codes exist in the CCD.
+
+        Parameters
+        ----------
+        valid_codes : Set[str]
+            Component codes available in the chemical component dictionary.
+
+        Raises
+        ------
+        ValueError
+            An explicit component code is absent from the CCD.
+        """
+        ccd_codes = set()
+        for entry in self.sequences:
+            if isinstance(entry, PolymerSequence):
+                ccd_codes.update(modification.ccd for modification in entry.modifications)
+            elif isinstance(entry, LigandSequence) and entry.ccd is not None:
+                ccd_codes.update(entry.ccd)
+            elif isinstance(entry, ProteinPair):
+                ccd_codes.update(
+                    modification.ccd for modification in entry.modifications1
+                )
+                ccd_codes.update(
+                    modification.ccd for modification in entry.modifications2
+                )
+        if not ccd_codes.issubset(valid_codes):
+            missing = ccd_codes - valid_codes
+            raise ValueError(
+                f"Query {self.name}: {', '.join(sorted(missing))} are missing from CCD."
+            )
+
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9_.-]*", self.name
@@ -348,6 +385,7 @@ class Query:
             )
         if not isinstance(self.sequences, list) or not self.sequences:
             raise ValueError("'sequences' must be a non-empty list.")
+        # Validate sequence entries and collect unique chain IDs and lengths.
         chain_lengths = {}
         for entry in self.sequences:
             if not isinstance(entry, Sequence):
@@ -366,6 +404,7 @@ class Query:
                 if chain_id in chain_lengths:
                     raise ValueError(f"Duplicate chain ID: {chain_id!r}.")
                 chain_lengths[chain_id] = length
+        # Validate bond references against the collected chains and residue ranges.
         if not isinstance(self.bonds, list):
             raise ValueError("'bonds' must be a list of Bond objects.")
         seen_bonds = set()
@@ -415,6 +454,7 @@ class Query:
     def from_dict(cls, data: dict, *, base_dir: str | Path) -> "Query":
         """Parse a query dictionary, resolving structure paths relative to base_dir."""
         _check_fields(data, {"name", "sequences"}, {"bonds"})
+        # Parse sequence entries, retaining their positions in validation errors.
         if not isinstance(data["sequences"], list):
             raise ValueError("'sequences' must be a list.")
         sequences = []
@@ -423,6 +463,7 @@ class Query:
                 sequences.append(_parse_sequence(entry, Path(base_dir)))
             except (ValueError, FileNotFoundError) as error:
                 raise type(error)(f"sequences[{index}]: {error}") from error
+        # Parse atom-reference pairs before validating the complete query.
         raw_bonds = data.get("bonds", [])
         if not isinstance(raw_bonds, list):
             raise ValueError("'bonds' must be a list of atom-reference pairs.")
@@ -442,6 +483,7 @@ class Query:
 
     def to_dict(self, *, relative_to: str | Path | None = None) -> dict:
         """Return a query dictionary with absolute paths unless relative_to is set."""
+        # Serialize sequence entries and express structure paths for the destination.
         entries = []
         for entry in self.sequences:
             fields = {

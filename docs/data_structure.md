@@ -43,17 +43,15 @@ The on-the-fly data processing is performed during training to convert the refer
 
 ### Inference
 
-The inference stage starts by parsing a query file (YAML or JSON) that specifies the target sequences and entities (proteins, ligands, nucleic acids).
-Unlike training which loads ground truth structures from mmCIF, this step extracts sequences from the query and constructs a RefStructure object with zero-initialized (masked) coordinates.
+Inference starts by parsing a YAML or JSON query describing proteins, ligands, nucleic acids, and bonds. For CLI usage, see [stage selection](inference.md#selecting-stages).
 
-1.  **Structure Preparation:** (`YAML/JSON` → `RefStructure`) Prepares the reference structure from the query sequences.
-2.  **Apo Monomer Prediction (TODO):** For each protein entity in the complex, it runs a monomer prediction using ESMFold or our own monomer model (`KFold-Mono`) to get the apo structure.
-    This step can be skipped if the user provides apo structures in the query.
-3.  **Apo Structure Population:** Populates given apo structure information into the reference structure.
-4.  **Tokenization:** `RefStructure` → `TokenizedStructure` (dataclass of NumPy arrays)
-5.  **Featurization:** `TokenizedStructure` → `FoldingInput` (dataclass of PyTorch tensors; model input features)
-6.  **Apo tokenization:** Runs tokenization for apo structure to populate apo tokens in the model input features.
-7.  **Inference:** Runs the model inference to predict the structure.
+1. **Apo Preparation:** Generate apo/prior candidates with AtlasFold for proteins and AtlasFold-Multimer for protein pairs, or use user-provided structures. The CLI saves the structures and prepared query paths.
+2. **Apo Encoding:** Align prepared candidates to the query sequences and encode their backbone and full-atom structure tokens when the protein structure encoder is enabled.
+3. **Reference Structure:** Build `RefStructure` chains, copies, and bonds from the query, then map aligned apo/prior candidates to the chain copies.
+4. **Prior Sampling:** Sample starting coordinates for each complex prediction, preserving the relative placement of chains in each protein pair.
+5. **Tokenization:** Convert the reference structure, apo coordinates, and sampled prior coordinates into `TokenizedStructure` arrays.
+6. **Featurization:** Build `FoldingInput` tensors, insert the precomputed apo structure tokens, and pad the feature dimensions.
+7. **Prediction:** Run K-Fold inference and collect predicted structures and confidence metrics.
 
 ---
 
@@ -90,7 +88,7 @@ bond_arr: tokenized.BondArray = struct.bond
 seq_arr: tokenized.SequenceArray = struct.sequence
 
 asym_id = chain_arr.asym_id  # Shape: (Nchain,)
-coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
+coords = atom_arr.apo_coords  # Shape: (Ntoken, 24, Napo, 3)
 # ...
 ```
 
@@ -133,8 +131,8 @@ coords = atom_arr.coords  # Shape: (Ntoken, 24, 3)
 | `ref_charge`          | `(Ntoken, 24)`    | Atom charge |
 | `ref_pos`             | `(Ntoken, 24, 3)` | Reference conformer of each atom |
 | `ref_mask`            | `(Ntoken, 24)`    | Whether the atom is present in the reference conformer |
-| `apo_coords`          | `(Ntoken, 24, 3)` | Apo structure coordinates |
-| `apo_mask`            | `(Ntoken, 24)`    | Apo structure mask |
+| `apo_coords`          | `(Ntoken, 24, Napo, 3)` | Apo structure coordinates |
+| `apo_mask`            | `(Ntoken, 24, Napo)` | Apo structure mask |
 | `prior_coords`        | `(Ntoken, 24, Np, 3)`| Prior coordinates (for ECSI) |
 | `pad_mask`            | `(Ntoken, 24)`    | Mask for valid atoms or padding |
 | `label_coords`        | `(Ntoken, 24, 3)` | Target coordinates for training |
@@ -235,9 +233,9 @@ You can get chain features from `kfold.data.types.model_input.TokenTensor`:
 | `ref_pos`             | `(Natom, 3)`      | Reference conformer of each atom |
 | `ref_space_uid`       | `(Natom,)`        | Reference atom unique ID |
 | `token_index`         | `(Natom,)`        | Token index to which the atom belongs |
-| `apo_coords`          | `(Natom, 3)`      | Apo structure coordinates |
+| `apo_coords`          | `(Natom, Napo, 3)` | Apo structure coordinates |
 | `prior_coords`        | `(Natom, Np, 3)`  | Prior coordinates (for ECSI) |
-| `apo_mask`            | `(Natom,)`        | Apo structure mask |
+| `apo_mask`            | `(Natom, Napo)`   | Apo structure mask |
 | `pad_mask`            | `(Natom,)`        | Mask for valid atoms or padding |
 | `label_coords`        | `(Natom, 3)`      | Target coordinates for training |
 | `resolved_mask`       | `(Natom,)`        | Whether the atom is resolved |

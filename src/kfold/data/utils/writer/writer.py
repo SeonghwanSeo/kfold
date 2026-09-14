@@ -4,6 +4,7 @@ from textwrap import wrap
 import gemmi
 import numpy as np
 
+from kfold import __version__
 from kfold.data.types.structure import RefStructure
 from kfold.utils.geometry.rigid_align import rigid_align
 
@@ -54,7 +55,7 @@ def _make_prediction_mmcif_block(
             "package",
             gemmi.cif.quote(f"{MODEL_NAME} prediction pipeline"),
             gemmi.cif.quote("model building"),
-            "?",
+            gemmi.cif.quote(__version__),
         ]
     )
     software_loop.add_row(
@@ -64,7 +65,7 @@ def _make_prediction_mmcif_block(
             "package",
             gemmi.cif.quote("Apo structure and prior candidate generation"),
             gemmi.cif.quote("model building"),
-            "?",
+            "1.0.2",
         ]
     )
     return make_mmcif_block(struct, ost_compatible, block=block)
