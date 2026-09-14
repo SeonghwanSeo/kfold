@@ -1,9 +1,10 @@
 # K-Fold inference
 
 K-Fold accepts YAML or JSON files describing proteins, DNA, RNA, and ligands.
-Inference requires a CUDA GPU; see the [installation instructions](../README.md#installation) for setup.
+Inference requires a CUDA GPU.
 No MSA search or sequence database is required.
 
+- [Installation](#installation)
 - [Running predictions](#running-predictions)
 - [Selecting stages](#selecting-stages)
 - [Multi-GPU inference](#multi-gpu-inference)
@@ -13,6 +14,26 @@ No MSA search or sequence database is required.
 - [Outputs and confidence](#outputs-and-confidence)
 - [Python API](python_api.md)
 
+## Installation
+
+K-Fold requires Python 3.11 or later.
+
+Install from PyPI:
+
+```bash
+pip install 'kfold[cuequiv]'
+```
+
+Or install from source:
+
+```bash
+git clone https://github.com/SeonghwanSeo/kfold.git
+cd kfold
+pip install '.[cuequiv]'
+```
+
+The `cuequiv` extra installs cuEquivariance kernels for faster inference on NVIDIA GPUs.
+
 ## Running predictions
 
 Save the [input example](#input-format) as `query.yaml`, then run:
@@ -21,7 +42,7 @@ Save the [input example](#input-format) as `query.yaml`, then run:
 kfold --input query.yaml --out-dir predictions/
 ```
 
-By default, K-Fold generates protein apo structures for all selected queries with AtlasFold, then predicts five complex structures per query with seed 1.
+By default, K-Fold generates protein apo structures for all selected queries with [AtlasFold](https://github.com/SeonghwanSeo/atlasfold), then predicts five complex structures per query with seed 1.
 You can also provide apo structures from experiments or other prediction tools.
 Model weights and the chemical component dictionary (CCD) are downloaded automatically.
 Use `--cache-dir` to select a download cache.
@@ -77,8 +98,7 @@ Use the same input, output directory, and seeds for both commands.
 Use `--gpu-ids` to distribute queries and seeds across the selected GPUs:
 
 ```bash
-kfold --input queries/ --out-dir predictions/ \
-  --seed 1 2 3 --gpu-ids 0 1
+kfold --input queries/ --out-dir predictions/ --seed 1 2 3 --gpu-ids 0 1
 ```
 
 Both stages use the selected GPUs.

@@ -13,7 +13,7 @@ This repository provides pretrained models, inference and training code, and dat
 ## Model parameters
 
 K-Fold uses pretrained [AtlasLM](https://github.com/SeonghwanSeo/atlasfold) for protein sequence representations and [TriProRep](https://github.com/hsjang0/TriProRep) for protein structure representations.
-The parameters for these models and K-Fold are downloaded automatically on first use from [huggingface](https://huggingface.co/collections/SeonghwanSeo/k-fold).
+The parameters for these models and K-Fold are downloaded automatically on first use from [Hugging Face](https://huggingface.co/collections/SeonghwanSeo/k-fold).
 
 ## Installation
 
@@ -37,13 +37,13 @@ The `cuequiv` extra installs cuEquivariance kernels for faster inference on NVID
 
 ## Inference
 
-Run predictions from a YAML or JSON query file, or a directory of query files for bulk run:
+Run predictions from a YAML or JSON query file, or a directory of query files for bulk runs:
 
 ```bash
 kfold --input examples/8and.yaml --out-dir predictions/ --seed 42
 ```
 
-By default, K-Fold prepares apo protein structures with AtlasFold, then runs K-Fold prediction.
+By default, K-Fold prepares apo structures with [AtlasFold](https://github.com/SeonghwanSeo/atlasfold), then runs K-Fold predictions.
 You can also [provide apo structures](docs/inference.md#providing-apo-structures) from experiments or other prediction tools (e.g., AlphaFold2).
 
 Use `--stage apo` to prepare apo structures only, or `--stage complex` to predict complexes from prepared apos:
@@ -63,7 +63,7 @@ See the [training guide](docs/training.md) for data preparation, training comman
 
 K-Fold was developed at KAIST as part of the K-Fold initiative supported by the Ministry of Science and ICT (MSIT), Republic of Korea.
 
-Members of Team KAIST are listed below:
+Members of Team KAIST are listed below (alphabetical order):
 
 - **Project management:** Hyeongwoo Kim<sup>3,†</sup>
 - **K-Fold architecture:** Seokhyun Moon<sup>3,†</sup>, Jun Hyeong Kim<sup>3</sup>, Shinwoo Kim<sup>3</sup>, Minha Park<sup>3</sup>, Jisu Seo<sup>3</sup>, Mingyeong Shin<sup>3</sup>, Wonho Zhung<sup>3</sup>
