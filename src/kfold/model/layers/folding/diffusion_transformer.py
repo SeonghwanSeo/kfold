@@ -212,7 +212,7 @@ class GlobalTransformerBlock(nn.Module):
         # Line 2
         pair_bias = self.linear_z_to_bias(z)  # [*, L, L, H]
         pair_bias = permute_final_dims(pair_bias, (0, 3, 1, 2))  # [*, H, L, L]
-        a = _add(a, self.attention(a, s, pair_bias, mask))
+        a = _add(a, self.attention(a, s, pair_bias, mask, use_kernels=True))
         # Line 3
         a = _add(a, self.transition(a, s))
         return a
@@ -348,7 +348,7 @@ class CachedGlobalTransformerBlock(nn.Module):
         _add = partial(add, inplace=not self.training)
 
         # Line 2
-        a = _add(a, self.attention(a, s, pair_bias, mask))
+        a = _add(a, self.attention(a, s, pair_bias, mask, use_kernels=True))
         # Line 3
         a = _add(a, self.transition(a, s))
         return a
