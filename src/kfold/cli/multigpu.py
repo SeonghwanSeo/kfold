@@ -5,23 +5,24 @@ import multiprocessing
 from multiprocessing.connection import wait
 
 
-def launch(worker, args, jobs, *, stage: str):
+def launch(worker, args, worker_jobs, *, stage: str):
+    """Launch one GPU process for each preassigned group of jobs."""
     import torch
 
-    # Validate GPU selection and distribute jobs across isolated workers.
+    # Validate GPU selection and launch the preassigned jobs in isolated workers.
     num_visible = torch.cuda.device_count()
     if any(gpu_id >= num_visible for gpu_id in args.gpu_ids):
         raise ValueError(
             f"Requested GPU IDs {args.gpu_ids}; visible GPU count: {num_visible}."
         )
-    workers = min(len(args.gpu_ids), len(jobs))
+    workers = len(worker_jobs)
     context = multiprocessing.get_context("spawn")
     processes = [
         context.Process(
             target=_worker_entry,
-            args=(worker, args.gpu_ids[rank], args, jobs[rank::workers], workers),
+            args=(worker, args.gpu_ids[rank], args, jobs, workers),
         )
-        for rank in range(workers)
+        for rank, jobs in enumerate(worker_jobs)
     ]
     # Start workers and stop the stage as soon as one reports a failure.
     try:

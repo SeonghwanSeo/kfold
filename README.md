@@ -40,17 +40,20 @@ The `cuequiv` extra installs cuEquivariance kernels for faster inference on NVID
 Run predictions from a YAML or JSON query file, or a directory of query files for bulk runs:
 
 ```bash
-kfold --input examples/8and.yaml --out-dir predictions/ --seed 42
+kfold --input examples/8and.yaml --out-dir predictions/ --seeds 42
 ```
 
 By default, K-Fold prepares apo structures with [AtlasFold](https://github.com/SeonghwanSeo/atlasfold), then runs K-Fold predictions.
 You can also [provide apo structures](docs/inference.md#providing-apo-structures) from experiments or other prediction tools (e.g., AlphaFold2).
 
+For multi-seed inference, use `--share-apo-seeds 1 2 3` to generate one apo ensemble per target and reuse it across all inference seeds specified by `--seeds`.
+This is particularly useful for relatively rigid apo structures or runs with many inference seeds; see [automatic apo generation](docs/inference.md#automatic-generation).
+
 Use `--stage apo` to prepare apo structures only, or `--stage complex` to predict complexes from prepared apos:
 
 ```bash
-kfold --stage apo --input examples/ --out-dir predictions/ --seed 42
-kfold --stage complex --input examples/ --out-dir predictions/ --seed 42
+kfold --stage apo --input examples/ --out-dir predictions/ --seeds 42
+kfold --stage complex --input examples/ --out-dir predictions/ --seeds 42
 ```
 
 See `kfold --help`, the [inference guide](docs/inference.md), or the [Python API guide](docs/python_api.md) for details.
@@ -67,7 +70,7 @@ Members of Team KAIST are listed below (alphabetical order):
 
 - **Project management:** Hyeongwoo Kim<sup>3,†</sup>
 - **K-Fold architecture:** Seokhyun Moon<sup>3,†</sup>, Jun Hyeong Kim<sup>3</sup>, Shinwoo Kim<sup>3</sup>, Minha Park<sup>3</sup>, Jisu Seo<sup>3</sup>, Mingyeong Shin<sup>3</sup>, Wonho Zhung<sup>3</sup>
-- **Protein structure encoder:** Hyosoon Jang<sup>1,†</sup>, Taewon Kim<sup>1,†</sup>, Hyunjin Seo<sup>1,†</sup>
+- **Protein structure encoder:** Hyosoon Jang<sup>1,†</sup>, Taewon Kim<sup>1,†</sup>, Hyunjin Seo<sup>1</sup>
 - **RNA sequence encoder:** Dongki Kim<sup>1,†</sup>, Jun Hyeong Kim<sup>1,†</sup>, Jinheon Baek<sup>1</sup>, Jaehyeong Jo<sup>1</sup>
 - **Training data preparation:** Yeongnam Bae<sup>2,†</sup>, Woosung Jeon<sup>2,†</sup>, Joongwon Lee<sup>3,†</sup>, Junyup Lee<sup>2,†</sup>, Yunsu Shin<sup>2,†</sup>, Eugene Choi<sup>2</sup>, Jeong Hun Choi<sup>2</sup>, Hyeongyu Han<sup>2</sup>, Calvin Samuel<sup>2</sup>
 - **Kernel optimization:** Youngchan Kim<sup>4</sup>

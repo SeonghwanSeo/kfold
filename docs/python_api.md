@@ -54,12 +54,12 @@ Modifications use `Modification(residue_index=4, ccd="SEP")`; bonds use `Bond(at
 
 | Argument | Default | Description |
 | --- | --- | --- |
-| `pretrained_model_name_or_path` | `"SeonghwanSeo/kfold"` | Hugging Face model repository or local directory containing `config.yaml` and `weights/kfold.pth`. |
-| `device` | `"cuda"` | Device for the model, such as `"cuda:1"`; the inference runner requires CUDA. |
-| `cache_dir` | `None` | Download cache for model and encoder weights; uses the Hugging Face default when omitted. |
-| `use_struct_encoder` | `True` | Load the pretrained protein structure encoder. Set to `False` to reduce memory use; apo coordinates are still used. |
-| `use_rna_encoder` | `True` | Load the pretrained RNA sequence encoder. Set to `False` only when queries contain no RNA. |
-| `cpu_offload` | `False` | Offload encoders to reduce GPU memory use, at the cost of CPU memory and transfer time. |
+| `pretrained_model_name_or_path` | `"SeonghwanSeo/kfold"` | Hugging Face repo or local directory with `config.yaml` and `weights/kfold.pth`. |
+| `device` | `"cuda"` | Model device, e.g. `"cuda:1"`; inference requires CUDA. |
+| `cache_dir` | `None` | Model and encoder weight cache; defaults to the Hugging Face cache. |
+| `use_struct_encoder` | `True` | Load the protein structure encoder; disabling saves memory while retaining apo coordinates. |
+| `use_rna_encoder` | `True` | Load the RNA encoder; disable only for queries without RNA. |
+| `cpu_offload` | `False` | Offload encoders to CPU: less GPU memory, more CPU memory and transfer time. |
 
 With `cpu_offload=True`, use the returned model directly with `KFoldRunner`; calling `.cuda()` or `.to("cuda")` afterward moves the offloaded encoders back to GPU.
 
@@ -69,11 +69,11 @@ With `cpu_offload=True`, use the returned model directly with `KFoldRunner`; cal
 
 | Argument | Default | Description |
 | --- | --- | --- |
-| `model` | Required | A loaded `KFold` model on a CUDA device. |
+| `model` | Required | Loaded `KFold` model on CUDA. |
 | `ccd` | `None` | Custom `CCD` object; loads the release CCD when omitted. |
-| `apo_config` | `None` | An `ApoConfig` for automatic apo generation; defaults match the CLI. |
+| `apo_config` | `None` | `ApoConfig` for apo generation; same defaults as the CLI. |
 | `cache_dir` | `None` | Download cache for CCD and AtlasFold assets. |
-| `share_atlaslm` | `True` | Reuse K-Fold's AtlasLM for apo generation. If `False`, the apo samplers share a separately loaded AtlasLM. |
+| `share_atlaslm` | `True` | Reuse K-Fold's AtlasLM; otherwise load one shared by the apo samplers. |
 | `verbose` | `True` | Emit INFO logs for initialization and prediction stages. |
 
 Pass `cache_dir` to both `KFold.from_pretrained()` and `KFoldRunner()` to use the same custom cache throughout.
@@ -88,11 +88,11 @@ Sampling defaults match the CLI.
 | --- | --- | --- |
 | `query` | Required | A `Query` object. |
 | `seed` | Required | Positive integer seed for input preparation and prediction. |
-| `num_apos` | `1` | Apo structures per protein entry during automatic generation; 1–5. Provided structures are used directly. |
+| `num_apos` | `1` | Generated apos per protein entry (1–5); provided structures are used directly. |
 | `num_samples` | `5` | Predictions per seed. |
 | `num_recycles` | `10` | Number of model recycling iterations. |
 | `num_steps` | `100` | Number of diffusion steps. |
-| `return_embeddings` | `False` | Include single and pair embeddings in `result.embeddings`, shared across samples. |
+| `return_embeddings` | `False` | Include shared single and pair embeddings in `result.embeddings`. |
 | `return_trajectory` | `False` | Include per-sample diffusion trajectories in `result.trajectory`. |
 | `return_distogram` | `False` | Include shared distance logits and metadata in `result.distogram`. |
 

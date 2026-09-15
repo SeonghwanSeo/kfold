@@ -78,7 +78,7 @@ Completed predictions and apo structures are reused; unfinished predictions are 
 
 Use `--overwrite` to replace existing results after changing inputs, sampling settings, or output options.
 
-To add predictions and rank them with existing results, include both old and new seeds: with `--seed 1 2 3`, a completed seed 1 is skipped while seeds 2 and 3 run.
+To add predictions and rank them with existing results, include both old and new seeds: with `--seeds 1 2 3`, a completed seed 1 is skipped while seeds 2 and 3 run.
 
 ## Selecting stages
 
@@ -86,11 +86,12 @@ The default `--stage all` prepares apo structures and predicts complexes.
 Use `--stage apo` to prepare apos only, or `--stage complex` to predict complexes from prepared apos:
 
 ```bash
-kfold --stage apo --input query.yaml --out-dir predictions/ --seed 1
-kfold --stage complex --input query.yaml --out-dir predictions/ --seed 1
+kfold --stage apo --input query.yaml --out-dir predictions/ --seeds 1
+kfold --stage complex --input query.yaml --out-dir predictions/ --seeds 1
 ```
 
 Use the same input, output directory, and seeds for both commands.
+With `--share-apo-seeds`, pass the same shared apo seeds to both stages; the complex stage can use any inference seeds specified by `--seeds`.
 `--stage complex` reads the prepared queries and structures from `--out-dir` for the queries selected by `--input`.
 
 ## Multi-GPU inference
@@ -98,7 +99,7 @@ Use the same input, output directory, and seeds for both commands.
 Use `--gpu-ids` to distribute queries and seeds across the selected GPUs:
 
 ```bash
-kfold --input queries/ --out-dir predictions/ --seed 1 2 3 --gpu-ids 0 1
+kfold --input queries/ --out-dir predictions/ --seeds 1 2 3 --gpu-ids 0 1
 ```
 
 Both stages use the selected GPUs.
@@ -115,19 +116,20 @@ The default `--stage all` prepares apos and predicts complexes.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `-i`, `--input` | Required | Query file or directory selecting the queries to process in either stage. |
-| `-o`, `--out-dir` | Required | Root output directory; also supplies prepared queries with `--stage complex`. |
-| `--stage` | `all` | `all`: prepare apos then predict complexes; `apo`: prepare apos only; `complex`: predict complexes from prepared queries in `--out-dir`. |
-| `--seed` | `1` | One or more unique positive seeds. |
-| `--apo-config` | Built-in defaults | YAML configuration for apo batch size and AtlasFold sampling settings. |
-| `--num-apos` | `1` | Apo structures per protein entry during automatic generation; 1–5. Provided structures are used directly. |
+| `-i`, `--input` | Required | Query JSON/YAML file or directory. |
+| `-o`, `--out-dir` | Required | Output directory; prepared inputs for `--stage complex`. |
+| `--stage` | `all` | Both stages (`all`), apo preparation (`apo`), or prediction from prepared inputs (`complex`). |
+| `--seeds` | `1` | One or more unique positive complex inference seeds. |
+| `--apo-config` | Built-in defaults | YAML settings for apo batching and AtlasFold sampling. |
+| `--num-apos` | `1` | Generated apos per protein entry per inference seed (1–5); excludes `--share-apo-seeds`. |
+| `--share-apo-seeds` | Off | Unique positive seeds for apos shared across inference seeds; excludes `--num-apos`. |
 | `--num-samples` | `5` | Complex predictions per query/seed. |
 | `--num-recycles` | `10` | Model recycling iterations. |
 | `--num-steps` | `100` | Diffusion steps. |
-| `--gpu-ids` | `0` | One or more unique, non-negative visible CUDA indices for independent query/seed jobs. |
-| `--disable-struct-encoder` | Off | Disable the pretrained protein structure encoder to reduce memory use. |
-| `--disable-rna-encoder` | Off | Disable the RNA encoder; use only when queries contain no RNA. |
-| `--cpu-offload` | Off | Offload encoders to reduce GPU memory use, at the cost of CPU memory and transfer time. |
+| `--gpu-ids` | `0` | Unique non-negative visible CUDA device IDs. |
+| `--disable-struct-encoder` | Off | Disable the protein structure encoder to save memory. |
+| `--disable-rna-encoder` | Off | Disable the RNA encoder; only for queries without RNA. |
+| `--cpu-offload` | Off | Offload encoders to CPU: less GPU memory, more CPU memory and transfer time. |
 | `--cache-dir` | Hugging Face default | Download cache for model weights and CCD. |
 | `--dry-run` | Off | Validate query files and paths, and report pending jobs. |
 | `--overwrite` | Off | Rerun completed query/seed jobs. |
@@ -138,10 +140,10 @@ The default `--stage all` prepares apos and predicts complexes.
 
 ### Sampling
 
-Use `--seed` for independent runs and `--num-samples` for the number of predictions per seed:
+Use `--seeds` for independent runs and `--num-samples` for the number of predictions per seed:
 
 ```bash
-kfold --input query.yaml --out-dir predictions/ --seed 1 2 --num-samples 5
+kfold --input query.yaml --out-dir predictions/ --seeds 1 2 --num-samples 5
 ```
 
 ### Apo configuration
@@ -288,10 +290,25 @@ These are generated automatically, or you can provide your own.
 ### Automatic generation
 
 K-Fold generates structures with AtlasFold for individual proteins and AtlasFold-Multimer for protein pairs.
-Use `--num-apos` to choose how many apo structures to generate for each protein or pair (default: 1).
+By default, apo structures are generated separately for each complex inference seed.
+Use `--num-apos` to choose how many apo structures to generate for each protein or pair per inference seed (1–5; default: 1).
 
-With `--num-apos N`, AtlasFold runs with N distinct seeds, generating five predictions per seed by default.
+With `--num-apos N`, AtlasFold runs with N distinct seeds for each complex inference seed, generating five predictions per AtlasFold seed by default.
 The highest-ranked prediction from each seed provides an apo structure used to condition K-Fold, while all predictions across these seeds form the prior ensemble from which starting coordinates are sampled for the diffusion bridge.
+
+Use `--share-apo-seeds` to generate one apo ensemble per target and reuse its apo and prior structures across all complex inference seeds.
+Reusing the same ensemble avoids repeating apo generation for every inference seed.
+This is particularly useful for relatively rigid apo structures or runs with many inference seeds.
+
+```bash
+kfold --input query.yaml --out-dir predictions/ --seeds 1 2 3 4 5 --share-apo-seeds 7 11 42
+```
+
+This generates apos using AtlasFold seeds 7, 11, and 42, then reuses them for complex inference seeds 1 through 5.
+The number of shared seeds determines the apo count for each automatically generated protein entry.
+Provide at least one unique positive integer after `--share-apo-seeds`; it cannot be combined with `--num-apos`.
+Additional inference seeds can reuse the prepared shared ensemble without further apo generation.
+Use `--overwrite` with `--stage apo` or `--stage all` when changing the shared seeds or switching between shared and per-inference-seed apo generation.
 
 ### Providing apo structures
 
@@ -338,9 +355,10 @@ predictions/test/
     └── test_seed-1_sample-4_confidence.json
 ```
 
-Each seed directory contains all predictions and prepared inputs.
+By default, each seed directory contains its predictions and prepared inputs.
+With `--share-apo-seeds`, `query.json`, `apo_setting.json`, and `apo/` are saved directly under `predictions/test/`; predictions remain in their respective seed directories.
 Sample indices start at 0.
-`query.json` references the saved apo and prior PDB files using relative paths; move the whole seed directory to keep these references valid.
+`query.json` references the saved apo and prior PDB files using relative paths; move the whole seed directory, or the whole target directory when sharing apos, to keep these references valid.
 Apo files use `monomer-{i}_apo.pdb` and `monomer-{i}_prior.pdb`, or `multimer-{i}_apo.pdb` and `multimer-{i}_prior.pdb` for protein pairs.
 The number i is the 1-based position in the full `sequences` list, including non-protein entries.
 

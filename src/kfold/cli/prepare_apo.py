@@ -4,10 +4,9 @@ import argparse
 import copy
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from functools import partial
 from importlib.metadata import version
-from itertools import groupby
 from pathlib import Path
 from time import perf_counter
 
@@ -29,28 +28,23 @@ logger = logging.getLogger("kfold.apo")
 
 @dataclass
 class ApoInput:
-    """One protein entry and its output directory for each pending CLI seed."""
-
     query_name: str
-    sequence_index: int  # One-based position in query.sequences.
+    sequence_index: int
     entry: ProteinSequence | ProteinPair
-    save_dirs: dict[int, Path] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
-        """Identifier returned with this input's AtlasFold predictions."""
         return f"{self.query_name}_{self.output_prefix}"
 
     @property
     def output_prefix(self) -> str:
-        """Common prefix for this entry's apo, prior, and completion files."""
         return apo_output_prefix(
             self.sequence_index, multimer=isinstance(self.entry, ProteinPair)
         )
 
     @property
     def sequence(self) -> str | tuple[str, str]:
-        """Sequence or sequence pair passed to AtlasFold."""
+        """Sequence or sequence pair."""
         if isinstance(self.entry, ProteinPair):
             return self.entry.sequence1, self.entry.sequence2
         return self.entry.sequence
@@ -82,17 +76,16 @@ def _save_pdb_ensemble(paths: list[Path], save_path: Path) -> None:
     ensemble.write_pdb(str(save_path))
 
 
-def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
-    # Load apo settings and select query/seed jobs that still need preparation.
-    config = ApoConfig.load(args.apo_config) if args.apo_config else ApoConfig()
-    start = perf_counter()
+def _pending_inputs(
+    args: argparse.Namespace, jobs: list[tuple[Query, int | None, Path]]
+) -> tuple[list[tuple[Query, int | None, Path]], dict[int | None, list[ApoInput]]]:
+    """Select unfinished jobs and group entries needing generation by CLI seed."""
     pending_jobs = [
         (query, seed, save_dir)
         for query, seed, save_dir in jobs
         if args.overwrite or not is_apo_prepared(query, save_dir)
     ]
-    # Assign each entry to one GPU, keeping its pending seeds together.
-    inputs_by_entry: dict[tuple[str, int], ApoInput] = {}
+    inputs: dict[int | None, list[ApoInput]] = {}
     for query, seed, save_dir in pending_jobs:
         for index, entry in enumerate(query.sequences, start=1):
             if not isinstance(entry, (ProteinSequence, ProteinPair)) or entry.apo:
@@ -101,16 +94,26 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
             done = save_dir / "apo" / f"{prefix}.done"
             if done.is_file() and not args.overwrite:
                 continue
-            key = (query.name, index)
-            if key not in inputs_by_entry:
-                inputs_by_entry[key] = ApoInput(
-                    query_name=query.name,
-                    sequence_index=index,
-                    entry=entry,
-                )
-            inputs_by_entry[key].save_dirs[seed] = save_dir
-    apo_inputs = sorted(
-        inputs_by_entry.values(),
+            inputs.setdefault(seed, []).append(
+                ApoInput(query_name=query.name, sequence_index=index, entry=entry)
+            )
+    num_entries = len({item.name for items in inputs.values() for item in items})
+    logger.info(
+        "Apo preparation: %d jobs pending (%d complete); GPUs %s.",
+        len(pending_jobs),
+        len(jobs) - len(pending_jobs),
+        args.gpu_ids[: min(len(args.gpu_ids), num_entries)],
+    )
+    return pending_jobs, inputs
+
+
+def _distribute_inputs(
+    inputs: dict[int | None, list[ApoInput]], num_gpus: int
+) -> list[dict[int | None, list[ApoInput]]]:
+    """Distribute entries by length, keeping all pending seeds for an entry together."""
+    entries = {item.name: item for items in inputs.values() for item in items}
+    ordered_entries = sorted(
+        entries.values(),
         key=lambda item: (
             len(item.entry),
             item.entry.kind,
@@ -118,37 +121,58 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
             item.sequence_index,
         ),
     )
-    logger.info(
-        "Apo preparation: %d jobs pending (%d complete); GPUs %s.",
-        len(pending_jobs),
-        len(jobs) - len(pending_jobs),
-        args.gpu_ids[: min(len(args.gpu_ids), len(apo_inputs))],
-    )
-    if args.dry_run:
-        for query, _, save_dir in jobs:
-            if args.overwrite:
-                continue
-            # Validate reusable entries even when other entries are unfinished.
-            for index, entry in enumerate(query.sequences, start=1):
-                if not isinstance(entry, (ProteinSequence, ProteinPair)):
-                    continue
-                prefix = apo_output_prefix(index, multimer=isinstance(entry, ProteinPair))
-                if not (save_dir / "apo" / f"{prefix}.done").is_file():
-                    continue
-                for role in ("apo", "prior"):
-                    path = save_dir / "apo" / f"{prefix}_{role}.pdb"
-                    if not path.is_file():
-                        raise FileNotFoundError(
-                            f"Prepared {role} structure does not exist: {path}."
-                        )
+    entry_order = {item.name: index for index, item in enumerate(ordered_entries)}
+    num_workers = min(num_gpus, len(entries))
+    worker_inputs: list[dict[int | None, list[ApoInput]]] = [
+        {} for _ in range(num_workers)
+    ]
+    for seed, items in inputs.items():
+        for item in sorted(items, key=lambda item: entry_order[item.name]):
+            rank = entry_order[item.name] % num_workers
+            worker_inputs[rank].setdefault(seed, []).append(item)
+    return worker_inputs
+
+
+def dry_run(args: argparse.Namespace, jobs: list[tuple[Query, int | None, Path]]) -> None:
+    """Check apo configuration and reusable structures, and report pending jobs."""
+    if args.apo_config:
+        ApoConfig.load(args.apo_config)
+    _pending_inputs(args, jobs)
+    if args.overwrite:
         return
+
+    for query, _, save_dir in jobs:
+        # Validate reusable entries even when other entries are unfinished.
+        for index, entry in enumerate(query.sequences, start=1):
+            if not isinstance(entry, (ProteinSequence, ProteinPair)):
+                continue
+            prefix = apo_output_prefix(index, multimer=isinstance(entry, ProteinPair))
+            if not (save_dir / "apo" / f"{prefix}.done").is_file():
+                continue
+            for role in ("apo", "prior"):
+                path = save_dir / "apo" / f"{prefix}_{role}.pdb"
+                if not path.is_file():
+                    raise FileNotFoundError(
+                        f"Prepared {role} structure does not exist: {path}."
+                    )
+
+
+def run(args: argparse.Namespace, jobs: list[tuple[Query, int | None, Path]]) -> None:
+    """Prepare provided structures and generate unfinished apo entries."""
+    config = ApoConfig.load(args.apo_config) if args.apo_config else ApoConfig()
+    start = perf_counter()
+    pending_jobs, inputs = _pending_inputs(args, jobs)
 
     # Save provided structures and record output paths before GPU generation.
     for query, seed, save_dir in pending_jobs:
         apo_dir = save_dir.resolve() / "apo"
         apo_dir.mkdir(parents=True, exist_ok=True)
         # New inputs invalidate any predictions previously marked complete.
-        (save_dir / "done.txt").unlink(missing_ok=True)
+        if seed is None:
+            for path in save_dir.glob(f"{query.name}_seed-*/done.txt"):
+                path.unlink()
+        else:
+            (save_dir / "done.txt").unlink(missing_ok=True)
         if args.overwrite:
             # Invalidate every entry before rewriting any provided structures.
             for kind in ("monomer", "multimer"):
@@ -171,18 +195,22 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
         prepared.save(save_dir / "query.json")
         settings = {
             "version": version("atlasfold"),
-            "seed": seed,
-            "num_apos": args.num_apos,
+            "num_apos": len(args.share_apo_seeds) if seed is None else args.num_apos,
             **asdict(config),
         }
+        if seed is None:
+            settings["seeds"] = args.share_apo_seeds
+        else:
+            settings["seed"] = seed
         (save_dir / "apo_setting.json").write_text(json.dumps(settings, indent=2) + "\n")
 
     # Generate the remaining apo entries in GPU workers.
-    if apo_inputs:
+    if inputs:
+        worker_inputs = _distribute_inputs(inputs, len(args.gpu_ids))
         launch(
             partial(_worker, config=config),
             args,
-            apo_inputs,
+            worker_inputs,
             stage="Apo preparation",
         )
 
@@ -192,36 +220,42 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
 def _worker(
     gpu_id: int,
     args: argparse.Namespace,
-    inputs: list[ApoInput],
+    inputs: dict[int | None, list[ApoInput]],
     *,
     config: ApoConfig,
 ) -> None:
-    work = "model loading"
     try:
         # Initialize the shared language model before loading either folding model.
+        work = "apo runner initialization"
         runner = ApoRunner(
             torch.device("cuda", gpu_id),
             config=config,
             cache_dir=args.cache_dir,
             verbose=False,
         )
+
         # Process monomers and multimers separately to release each model afterward.
-        inputs = sorted(inputs, key=lambda item: item.entry.kind)
-        for kind, model_inputs in groupby(inputs, key=lambda item: item.entry.kind):
-            model_inputs = list(model_inputs)
+        kinds = sorted({item.entry.kind for items in inputs.values() for item in items})
+        for kind in kinds:
             model_name = "AtlasFold-Multimer" if kind == "protein_pair" else "AtlasFold"
-            total = sum(len(item.save_dirs) for item in model_inputs)
+
+            # Count the total number of jobs for this model across all seeds and queries.
+            total = sum(
+                item.entry.kind == kind for items in inputs.values() for item in items
+            )
             completed = 0
-            model_start = perf_counter()
             logger.info("%s prediction started: %d jobs.", model_name, total)
+
+            # Load the apo folding model
+            model_start = perf_counter()
             work = f"{model_name} model loading"
-            # Keep this model for every CLI seed, then release it before the next type.
             runner.load_model(multimer=kind == "protein_pair")
-            # Run CLI seeds separately, batching pending targets for each seed.
-            for seed in args.seed:
+
+            # Shared preparation batches each target once, independently of CLI seeds.
+            for seed, seed_inputs in inputs.items():
                 # Reuse the input metadata when AtlasFold returns results by length.
                 inputs_by_name = {
-                    item.name: item for item in model_inputs if seed in item.save_dirs
+                    item.name: item for item in seed_inputs if item.entry.kind == kind
                 }
                 if not inputs_by_name:
                     continue
@@ -229,20 +263,24 @@ def _worker(
                     (name, item.sequence) for name, item in inputs_by_name.items()
                 ]
                 # Generate all requested apo seeds within each AtlasFold batch.
-                apo_seeds = [seed * 10 + i for i in range(1, args.num_apos + 1)]
+                apo_seeds = (
+                    args.share_apo_seeds
+                    if seed is None
+                    else [seed * 10 + i for i in range(1, args.num_apos + 1)]
+                )
                 work = f"{model_name} prediction (seeds={apo_seeds})"
                 batch_start = perf_counter()
                 for results in runner.predict_iter_batch(apo_inputs, apo_seeds):
                     time_per_job = (perf_counter() - batch_start) / len(results)
-                    # Save both ensembles before marking an entry complete.
+
+                    # Save pdbs
                     for result in results:
                         item = inputs_by_name[result.name]
-                        save_dir = item.save_dirs[seed]
+                        save_dir = args.out_dir / item.query_name
+                        if seed is not None:
+                            save_dir /= f"{item.query_name}_seed-{seed}"
                         save_apo_and_prior(
-                            result.apos,
-                            result.priors,
-                            save_dir,
-                            item.sequence_index,
+                            result.apos, result.priors, save_dir, item.sequence_index
                         )
                         (save_dir / "apo" / f"{item.output_prefix}.done").touch()
                         completed += 1
@@ -258,7 +296,10 @@ def _worker(
                         )
                     del result, results
                     batch_start = perf_counter()
+
+            # Free GPU memory after prediction
             runner.unload_models()
+
             logger.info(
                 "%s prediction completed: %d jobs, total=%.1f s.",
                 model_name,
