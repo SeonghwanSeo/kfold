@@ -3,12 +3,12 @@
 import argparse
 import logging
 
-from kfold.cli.predict import add_arguments, run
+from kfold.cli.predict import add_arguments, dry_run, run
 
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kfold", description="K-Fold structure prediction"
+        prog="kfold", description="K-Fold structure prediction", allow_abbrev=False
     )
     add_arguments(parser)
     return parser
@@ -22,7 +22,10 @@ def main(argv=None) -> None:
         level=logging.INFO, format="%(levelname)s: [%(name)s] %(message)s"
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    run(args)
+    if args.dry_run:
+        dry_run(args)
+    else:
+        run(args)
 
 
 if __name__ == "__main__":
