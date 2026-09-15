@@ -186,3 +186,56 @@ ECSI endpoint consumption, subset validation, complete-candidate selection and
 restart/corruption behavior. The orchestration test uses a fake model backend;
 it verifies stage composition and call counts but is not evidence of learned
 model accuracy or GPU memory viability.
+
+## Main integration (2026-09-15)
+
+The release `query.py` and `data_pipeline.py` follow main. The experimental
+source-selection/RNG behavior lives in `sequential_query.py`,
+`sequential_pipeline.py`, `sequential_dataset.py` and `sequential_tokenization.py`.
+The sequential runner accepts both legacy `multimer_sequences` and the release
+`sequences: [{protein_pair: ...}]` spelling. Ordinary `kfold predict` does not
+accept the experiment's `assembly` block; use `scripts/inference_sequential.py`.
+
+`examples/8jeo_sequential.yaml` is a template using the exact 8JEO sequences.
+Supply `examples/apo/8jeo_A.pdb` and `examples/apo/8jeo_BC.pdb`, or edit the paths
+(the latter has two chains in sequence1/sequence2 order). The experimental
+runner still requires precomputed apo files; unlike the release runner, it
+will not generate missing apos automatically. Multiple apo candidates should
+be separate single-model files.
+
+```yaml
+# Append to the prepared 8jeo input, retaining its A and protein_pair B/C entries:
+assembly:
+  stages:
+    - id: assemble_BC
+      chains: [B, C]
+  selection: confidence_top1
+```
+
+This invokes KFold on B/C, selects confidence top-1 across all requested
+seeds/samples, and invokes KFold on A/B/C with the selected B/C coordinates.
+AtlasFold-Multimer's B/C apo preparation precedes these calls and is separate
+from the KFold intermediate prediction. An existing protein pair cannot be
+split by an assembly stage, so `[A, B]` is invalid while B/C remains paired.
+
+```bash
+cd /home/hwkim/kfold/_worktrees/sequential-complex-prior
+PYTHONPATH=src /home/hwkim/miniforge3/envs/kfold/bin/python scripts/inference_sequential.py \
+  --input examples/8jeo_sequential.yaml \
+  --config /path/to/current-model-config.yaml \
+  --weight /path/to/current-model-weights.pth \
+  --ccd /path/to/ccd.pkl \
+  --out-dir /path/to/8jeo_sequential_output \
+  --conditioning prior_and_trunk
+```
+
+`prior_only` updates ECSI initialization only. `prior_and_trunk` also replaces
+protein apo coordinates and recomputes structure tokens. Existing B/C shared
+apo UID is retained; this differs from creating a new group from previously
+independent chains. Final denoising can change the B/C arrangement.
+
+Main changed the model/configuration API. The backend now strictly loads a
+state dictionary with the current KFold configuration and uses the current
+inference/writer APIs. Historical 0720 checkpoints/configs are not automatically
+converted. Keep a compatible historical runtime for reproducing old numerical
+results; merging main alone does not establish checkpoint compatibility.

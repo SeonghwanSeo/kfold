@@ -23,14 +23,11 @@ class MultiHeadAttention(nn.Module):
         self.k_ln = LayerNorm(d_model, bias=False)
         self.out_proj = Linear(d_model, d_model, bias=False)
 
-        # Assume max sequence length of 20k, which is sufficient for most sequences.
-        self.rotary = RotaryEmbedding(self.d_head, max_seqlen=20000)
-
     def forward(
         self,
         x: torch.Tensor,
         seq_id: torch.Tensor,
-        pos_id: torch.Tensor,
+        rotary: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
         """Forward pass of multi-head attention.
 
@@ -40,8 +37,8 @@ class MultiHeadAttention(nn.Module):
             Input tensor of shape (*, L, D).
         seq_id: torch.Tensor
             Sequence ids of shape (*, L) for attention masking.
-        pos_id: torch.Tensor
-            Position ids of shape (*, L) for rotary positional embeddings.
+        rotary: tuple[torch.Tensor, torch.Tensor]
+            Shared cosine and sine tensors of shape (*, L, Dh).
 
         Returns
         -------
@@ -56,7 +53,10 @@ class MultiHeadAttention(nn.Module):
 
         # [*, L, D] -> [*, L, H, Dh]
         q, k, v = map(lambda t: t.unflatten(-1, (H, Dh)), (q, k, v))
-        q, k = self.rotary(q, k, pos_id)
+        cos, sin = rotary
+        cos, sin = cos.to(q.dtype), sin.to(q.dtype)
+        q = RotaryEmbedding.apply_rotary_emb(q, cos, sin)
+        k = RotaryEmbedding.apply_rotary_emb(k, cos, sin)
 
         # [B, L, H, Dh] -> [B, H, L, Dh]
         q, k, v = map(lambda t: t.transpose(-2, -3), (q, k, v))

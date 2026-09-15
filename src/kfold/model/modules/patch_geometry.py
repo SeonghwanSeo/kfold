@@ -22,8 +22,8 @@ class _PatchPairBatch(TypedDict):
     mask_i: torch.Tensor
     mask_j: torch.Tensor
     target: torch.Tensor
-    contact_strength: torch.Tensor
-    rank_group: torch.Tensor
+    weight: torch.Tensor
+    hard_negative: torch.Tensor
 
 
 @configurable
@@ -39,7 +39,8 @@ class PatchPairGeometryHead(nn.Module):
         max_patches_per_chain: int = 8
         max_patch_pairs: int = 256
         pool_max_tokens_per_patch: int = 0
-        ranking_contact_cutoff: float = 8.0
+        positive_cutoff: float = 12.0
+        hard_negative_cutoff: float = 18.0
 
     def __init__(self, cfg: Config, channel_z: int | None = None):
         super().__init__()
@@ -51,20 +52,21 @@ class PatchPairGeometryHead(nn.Module):
         self.patch_size: int = int(cfg.patch_size)
         self.max_patches_per_chain: int = int(cfg.max_patches_per_chain)
         self.max_patch_pairs: int = int(cfg.max_patch_pairs)
-        self.pool_max_tokens_per_patch: int = int(
-            getattr(cfg, "pool_max_tokens_per_patch", 0)
-        )
-        self.ranking_contact_cutoff: float = float(cfg.ranking_contact_cutoff)
+        self.pool_max_tokens_per_patch: int = int(cfg.pool_max_tokens_per_patch)
+        self.positive_cutoff: float = float(cfg.positive_cutoff)
+        self.hard_negative_cutoff: float = float(cfg.hard_negative_cutoff)
         if self.pool_max_tokens_per_patch < 0:
             raise ValueError("pool_max_tokens_per_patch must be non-negative.")
-        if self.ranking_contact_cutoff <= 0:
-            raise ValueError("ranking_contact_cutoff must be positive.")
+        if self.positive_cutoff <= 0:
+            raise ValueError("positive_cutoff must be positive.")
+        if self.hard_negative_cutoff <= self.positive_cutoff:
+            raise ValueError("hard_negative_cutoff must be greater than positive_cutoff.")
 
         bin_size = (self.max_dist - self.min_dist) / self.num_bins
         first_bin = self.min_dist + bin_size
         last_bin = self.max_dist - bin_size
-        bin_boundaries = torch.linspace(first_bin, last_bin, self.num_bins - 1)
-        self.register_buffer("bin_boundaries", bin_boundaries, persistent=False)
+        boundaries = torch.linspace(first_bin, last_bin, self.num_bins - 1)
+        self.register_buffer("boundaries", boundaries, persistent=False)
 
         self.norm_z = LayerNorm(self.channel_z)
         self.pool_score = Linear(self.channel_z, 1)
@@ -76,7 +78,6 @@ class PatchPairGeometryHead(nn.Module):
             Linear(4 * self.channel_z, self.channel_z),
         )
         self.out = Linear(self.channel_z, self.num_bins, init="final")
-        self.rank_out = Linear(self.channel_z, 1, init="final")
         if not self.enabled:
             for param in self.parameters():
                 param.requires_grad_(False)
@@ -99,46 +100,35 @@ class PatchPairGeometryHead(nn.Module):
             raise ValueError("PatchPairGeometryHead expects batched FoldingInput.")
 
         per_batch_logits: list[torch.Tensor] = []
-        per_batch_rank_scores: list[torch.Tensor] = []
         per_batch_targets: list[torch.Tensor] = []
-        per_batch_contact_strengths: list[torch.Tensor] = []
-        per_batch_rank_groups: list[torch.Tensor] = []
-        rank_group_offset = 0
+        per_batch_weights: list[torch.Tensor] = []
+        per_batch_hard_negatives: list[torch.Tensor] = []
 
         for b in range(z.shape[0]):
             patch_pairs = self._build_patch_pairs(f_input, b)
             if patch_pairs is None:
                 continue
-            logits, rank_score = self._pool_patch_pairs(z[b], patch_pairs)
-            per_batch_logits.append(logits)
-            per_batch_rank_scores.append(rank_score)
+            per_batch_logits.append(self._pool_patch_pairs(z[b], patch_pairs))
             per_batch_targets.append(patch_pairs["target"])
-            per_batch_contact_strengths.append(patch_pairs["contact_strength"])
-            local_rank_group = patch_pairs["rank_group"]
-            per_batch_rank_groups.append(local_rank_group + rank_group_offset)
-            if local_rank_group.numel() > 0:
-                rank_group_offset += int(local_rank_group.max().item()) + 1
+            per_batch_weights.append(patch_pairs["weight"].to(dtype=z.dtype))
+            per_batch_hard_negatives.append(patch_pairs["hard_negative"])
 
         if per_batch_logits:
             logits = torch.cat(per_batch_logits)
-            rank_score = torch.cat(per_batch_rank_scores)
             target = torch.cat(per_batch_targets)
-            contact_strength = torch.cat(per_batch_contact_strengths)
-            rank_group = torch.cat(per_batch_rank_groups)
+            weight = torch.cat(per_batch_weights)
+            hard_negative = torch.cat(per_batch_hard_negatives)
         else:
             logits = z.new_zeros((0, self.num_bins)) + self._zero_active_param_sum(z)
             target = torch.zeros((0,), device=z.device, dtype=torch.long)
-            contact_strength = z.new_zeros((0,))
-            rank_group = torch.zeros((0,), device=z.device, dtype=torch.long)
-            rank_score = z.new_zeros((0,)) + self._zero_active_param_sum(z)
+            weight = z.new_zeros((0,))
+            hard_negative = torch.zeros((0,), device=z.device, dtype=torch.bool)
 
         return {
             "logits": logits,
-            "rank_score": rank_score,
-            "bin_boundaries": self.bin_boundaries,
             "target": target,
-            "contact_strength": contact_strength,
-            "rank_group": rank_group,
+            "weight": weight,
+            "hard_negative": hard_negative,
         }
 
     def _build_patch_pairs(
@@ -264,6 +254,38 @@ class PatchPairGeometryHead(nn.Module):
         )
         pool_mask = torch.arange(pool_idx.shape[1], device=device) < pool_lengths[:, None]
 
+        token_patch = torch.full(
+            (coords.shape[0],),
+            -1,
+            device=device,
+            dtype=torch.long,
+        )
+        for patch_idx, patch in enumerate(patches):
+            token_patch[patch["idx"]] = patch_idx
+
+        assigned = token_patch >= 0
+        assigned_patch = token_patch[assigned]
+        assigned_coords = coords[assigned].float()
+        token_pair_patch = (
+            assigned_patch[:, None] * n_patches + assigned_patch[None, :]
+        ).reshape(-1)
+        token_diff = assigned_coords[:, None, :] - assigned_coords[None, :, :]
+        token_dist = token_diff.norm(dim=-1).reshape(-1)
+        patch_min_dist = torch.full(
+            (n_patches * n_patches,),
+            float("inf"),
+            device=device,
+            dtype=token_dist.dtype,
+        )
+        patch_min_dist.scatter_reduce_(
+            0,
+            token_pair_patch,
+            token_dist,
+            reduce="amin",
+            include_self=True,
+        )
+        patch_min_dist = patch_min_dist.view(n_patches, n_patches)
+
         patch_i, patch_j = torch.triu_indices(
             n_patches,
             n_patches,
@@ -273,38 +295,33 @@ class PatchPairGeometryHead(nn.Module):
         inter_chain = chain_id[patch_i] != chain_id[patch_j]
         patch_i = patch_i[inter_chain]
         patch_j = patch_j[inter_chain]
+        token_min_dist = patch_min_dist[patch_i, patch_j]
+        positive = token_min_dist < self.positive_cutoff
+        hard_negative = token_min_dist > self.hard_negative_cutoff
 
         com_diff = com[patch_i] - com[patch_j]
         com_dist = (com_diff * com_diff).sum(dim=-1).sqrt()
-        target = (com_dist[:, None] > self.bin_boundaries).sum(dim=-1).long()
+        target = (com_dist[:, None] > self.boundaries).sum(dim=-1).long()
 
-        # Uniform supervision: every valid inter-chain patch pair is sampled
-        # with equal probability. Contact density is only a ranking target;
-        # it does not change pair selection or CE weighting.
-        n_select = min(self.max_patch_pairs, patch_i.numel())
-        selected = torch.randperm(patch_i.numel(), device=device)[:n_select]
+        weight = torch.where(
+            hard_negative,
+            positive.new_tensor(0.5, dtype=coords.dtype),
+            torch.where(
+                positive,
+                positive.new_tensor(1.0, dtype=coords.dtype),
+                positive.new_tensor(0.25, dtype=coords.dtype),
+            ),
+        )
+        dist_term = torch.minimum(com_dist, com_dist.new_tensor(100.0)) / 1000.0
+        priority = torch.where(
+            positive,
+            3.0 - dist_term,
+            torch.where(hard_negative, 2.0 + dist_term, com_dist.new_ones(())),
+        )
+        n_select = min(self.max_patch_pairs, priority.numel())
+        selected = torch.topk(priority, n_select, sorted=False).indices
         selected_i = patch_i[selected]
         selected_j = patch_j[selected]
-        contact_strength = torch.stack(
-            [
-                self._contact_strength(coords[p_i["idx"]], coords[p_j["idx"]])
-                for p_i, p_j in zip(
-                    [patches[idx] for idx in selected_i.tolist()],
-                    [patches[idx] for idx in selected_j.tolist()],
-                    strict=True,
-                )
-            ]
-        )
-        selected_chain_i = chain_id[selected_i]
-        selected_chain_j = chain_id[selected_j]
-        chain_pair = torch.stack(
-            (
-                torch.minimum(selected_chain_i, selected_chain_j),
-                torch.maximum(selected_chain_i, selected_chain_j),
-            ),
-            dim=-1,
-        )
-        _, rank_group = torch.unique(chain_pair, dim=0, return_inverse=True)
 
         return {
             "idx_i": pool_idx[selected_i],
@@ -312,26 +329,18 @@ class PatchPairGeometryHead(nn.Module):
             "mask_i": pool_mask[selected_i],
             "mask_j": pool_mask[selected_j],
             "target": target[selected],
-            "contact_strength": contact_strength,
-            "rank_group": rank_group,
+            "weight": weight[selected],
+            "hard_negative": hard_negative[selected],
         }
-
-    def _contact_strength(
-        self,
-        coords_i: torch.Tensor,
-        coords_j: torch.Tensor,
-    ) -> torch.Tensor:
-        distance_squared = (coords_i[:, None] - coords_j[None, :]).square().sum(dim=-1)
-        return (distance_squared < self.ranking_contact_cutoff**2).float().mean()
 
     def _pool_patch_pairs(
         self,
         z: torch.Tensor,
         patch_pairs: _PatchPairBatch,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> torch.Tensor:
         n_pairs = patch_pairs["target"].numel()
         if n_pairs == 0:
-            return z.new_zeros((0, self.num_bins)), z.new_zeros((0,))
+            return z.new_zeros((0, self.num_bins))
 
         z_flat = z.reshape(-1, self.channel_z)
         seq_len = z.shape[0]
@@ -360,4 +369,4 @@ class PatchPairGeometryHead(nn.Module):
         pooled_z = torch.einsum("pn,pnc->pc", alpha, flat_z)
         pooled = self.pool_value(pooled_z)
         pooled = pooled + self.transition(pooled)
-        return self.out(pooled), self.rank_out(pooled).squeeze(-1)
+        return self.out(pooled)

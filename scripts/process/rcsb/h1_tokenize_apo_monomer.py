@@ -2,46 +2,21 @@
 
 import argparse
 import pathlib
+import shutil
 
 import lmdb
 import numpy as np
 import torch
 from tqdm import tqdm
 
-from kfold.model.layers.struct_enc import BackboneTokenizer, FullAtomTokenizer
-from kfold.model.modules.structure_encoder import restype_order
+from kfold.model.layers.struct_enc.fa_vqvae.utils.residue_constants import (
+    restype_order_with_x as restype_order,
+)
 from kfold.training.dataset.utils.apo_io import unpack_apo_record
+from kfold.training.preprocess.structure_tokenizers import load_tokenizers
 
 PADDING_SIZES = [32, 64, 128, 256, 384, 512, 640, 768, 1024, 1280]
 BATCH_THRESHOLD = 1280
-
-
-def load_tokenizers(
-    ckpt_path: pathlib.Path,
-    device: torch.device | str = "cuda",
-) -> tuple[BackboneTokenizer, FullAtomTokenizer]:
-    state_dict = torch.load(ckpt_path, map_location="cpu")
-    bb_state_dict = {
-        k.removeprefix("bb_tok."): v
-        for k, v in state_dict.items()
-        if k.startswith("bb_tok.")
-    }
-    fa_state_dict = {
-        k.removeprefix("fa_tok."): v
-        for k, v in state_dict.items()
-        if k.startswith("fa_tok.")
-    }
-    if not bb_state_dict or not fa_state_dict:
-        raise KeyError(
-            "Expected a standalone StructureEncoder checkpoint containing "
-            "'bb_tok.' and 'fa_tok.' weights."
-        )
-
-    bb_tok = BackboneTokenizer().to(torch.bfloat16)
-    fa_tok = FullAtomTokenizer().to(torch.bfloat16)
-    bb_tok.load_state_dict(bb_state_dict, strict=True)
-    fa_tok.load_state_dict(fa_state_dict, strict=True)
-    return bb_tok.eval().to(device), fa_tok.eval().to(device)
 
 
 def parse_args():
@@ -60,10 +35,9 @@ def parse_args():
         help="Data split to process (train/val/test).",
     )
     parser.add_argument(
-        "--ckpt_path",
-        required=True,
+        "--cache_dir",
         type=pathlib.Path,
-        help="Path to structure tokenizer checkpoint",
+        help="Hugging Face download cache directory.",
     )
     parser.add_argument(
         "--chunk",
@@ -73,15 +47,18 @@ def parse_args():
     parser.add_argument(
         "--num_chunk",
         type=int,
-        default=0,
+        default=1,
     )
     parser.add_argument(
         "--sources",
         nargs="+",
         default=None,
-        help="Optional apo source names to tokenize, e.g. esmfold afdb.",
+        help="Optional apo sources, e.g. atlasfold-seed1 atlasfold-seed2.",
     )
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
+    if not 0 <= args.chunk < args.num_chunk:
+        parser.error("Require 0 <= chunk < num_chunk")
     return args
 
 
@@ -123,7 +100,7 @@ class LmdbDataset(torch.utils.data.Dataset):
                     f"coords_shape={coords.shape}"
                 )
 
-            aatypes = [restype_order.get(res, 0) for res in seq]
+            aatypes = [restype_order[res] for res in seq]
 
             return (
                 raw_id,
@@ -172,7 +149,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize tokenizer
-    bb_tok, fa_tok = load_tokenizers(args.ckpt_path, device="cuda")
+    bb_tok, fa_tok = load_tokenizers(cache_dir=args.cache_dir, device="cuda")
 
     lmdb_paths = sorted(in_root.glob("*.lmdb"))
     if args.sources is not None:
@@ -205,15 +182,12 @@ def main():
         if args.num_chunk > 1:
             keys = keys[chunk_i::num_chunk]
 
-        if len(keys) == 0:
-            print(f"No samples for chunk {chunk_i}/{num_chunk} in {source}. Skipping.")
-            continue
-
         print(
             f"Total samples for {source}: {len(keys)}. "
             f"Processing chunk {chunk_i}/{num_chunk} with {len(keys)} samples."
         )
 
+        expected_count = len(keys)
         dataset = LmdbDataset(in_lmdb_path, keys)
         dataloader = torch.utils.data.DataLoader(
             dataset,
@@ -228,6 +202,12 @@ def main():
         out_subdir = out_dir / source
         out_subdir.mkdir(parents=True, exist_ok=True)
         out_lmdb_path = out_subdir / f"{args.chunk}_{args.num_chunk}.lmdb"
+        if out_lmdb_path.exists():
+            if not args.overwrite:
+                raise FileExistsError(
+                    f"{out_lmdb_path}; use --overwrite to rebuild this shard"
+                )
+            shutil.rmtree(out_lmdb_path)
         env_out = lmdb.open(
             str(out_lmdb_path),
             map_size=10 * 1024 * 1024 * 1024,  # 10 GB
@@ -276,6 +256,10 @@ def main():
 
                         txn.put(keys[i].encode("utf-8"), combined_i.tobytes())
                 pbar.set_postfix({"Last batch max length": max(lengths)})
+            if txn.stat()["entries"] != expected_count:
+                raise RuntimeError(
+                    f"Incomplete token shard for {source}; see parsing errors above"
+                )
         env_out.close()
 
 

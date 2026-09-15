@@ -49,17 +49,22 @@ def fetch_ranking_model_fit(entities: Iterable[str]) -> dict[str, float]:
         data = response.json()
         # Loop through each nonpolymer entity and its instances
         if data["data"]:
-            for entity in data["data"]["nonpolymer_entities"]:
+            for entity in data["data"]["nonpolymer_entities"] or []:
+                if entity is None:
+                    continue
                 rcsb_id = entity["rcsb_id"]
-                instances = entity["nonpolymer_entity_instances"]
-                for instance in instances:
-                    ranks = [
+                ranks = []
+                for instance in entity["nonpolymer_entity_instances"] or []:
+                    if instance is None:
+                        continue
+                    scores = instance["rcsb_nonpolymer_instance_validation_score"] or []
+                    ranks.extend(
                         score["ranking_model_fit"]
-                        for score in instance["rcsb_nonpolymer_instance_validation_score"]
-                    ]
-                    ranks = [r for r in ranks if r is not None]
-                    if len(ranks) > 0:
-                        out[rcsb_id] = max(ranks)
+                        for score in scores
+                        if score is not None and score["ranking_model_fit"] is not None
+                    )
+                if ranks:
+                    out[rcsb_id] = max(ranks)
         else:
             warnings.warn(f"No data found for query: {query}")
     else:

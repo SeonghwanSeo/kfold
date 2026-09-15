@@ -31,6 +31,7 @@ from tqdm import tqdm
 import kfold.constants as C
 from kfold.data.types.metadata import Metadata
 from kfold.data.types.structure import RefStructure
+from kfold.training.preprocess.prepared_sequences import save_sequences
 from kfold.utils.mmseqs2 import run_mmseqs2_cluster
 
 
@@ -240,6 +241,16 @@ def main():
     print(f"Total structures processed: {len(metadata_dict)}")
     print(f"Total extracted sequences: {len(all_sequences)}")
     del results  # free memory
+
+    # Apo inputs must use entity IDs/sequences after structure preprocessing.
+    all_sequences.sort(key=lambda seq: (seq.pdb_id, seq.entity_id))
+    save_sequences(
+        [
+            (f"{seq.pdb_id}|{seq.entity_id}|{seq.ctype_str}", seq.sequence)
+            for seq in all_sequences
+        ],
+        data_dir,
+    )
 
     # Step 3. Cluster sequences using MMseqs2
     print("Starting sequence clustering...")

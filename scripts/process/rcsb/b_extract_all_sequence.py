@@ -4,15 +4,16 @@ import functools
 import multiprocessing
 import os
 import pathlib
+from collections import Counter
 from datetime import datetime
 
 import gemmi
 from tqdm import tqdm
 
 import kfold.constants as C
-from kfold.data.pipelines import cif_factory
 from kfold.data.types.metadata import Metadata
 from kfold.data.utils.io.fasta import write_fasta
+from kfold.training.preprocess import cif_factory
 
 # Error handling
 SUCCESS = 0
@@ -114,9 +115,9 @@ def parse_args():
     parser.add_argument(
         "--split",
         type=str,
-        required=True,
+        default=None,
         choices=["train", "val", "test"],
-        help="If given, cutoffs are set according to the specified split",
+        help="Process only this split. By default, generate both train and val.",
     )
     parser.add_argument(
         "--num_workers",
@@ -173,10 +174,18 @@ def parse_cif(
     else:
         block: gemmi.cif.Block = gemmi.cif.read_file(str(cif_path))[0]
 
-    # Get metadata without chain information
-    # Handle cases like "1abc.cif.gz"
     pdb_id = cif_path.name.split(".")[0].lower()
-    metadata: Metadata = cif_factory.prepare_metadata_from_rcsb(pdb_id, block)
+    metadata = cif_factory.prepare_metadata_from_rcsb(pdb_id, block)
+    return extract_sequences(block, metadata, data_filter)
+
+
+def extract_sequences(
+    block: gemmi.cif.Block,
+    metadata: Metadata,
+    data_filter: DataFilter,
+) -> tuple[int, list[tuple[str, str, C.ChainType, str]]]:
+    """Apply one split's filters to an already-read CIF block."""
+    pdb_id = metadata.id
     assert metadata.exp is not None, "Experimental metadata should not be None."
 
     # Filter by date
@@ -277,63 +286,74 @@ def parse_cif(
     return SUCCESS, polymer_sequences + nonpolymer_sequences
 
 
-def worker_fn(cif_path: pathlib.Path, data_filter: DataFilter):
+def worker_fn(cif_path: pathlib.Path, splits: tuple[str, ...]):
+    """Read each CIF once and return filtered sequences for the requested splits."""
     try:
-        return parse_cif(cif_path, data_filter)
-    except Exception as e:
+        if cif_path.suffix == ".gz":
+            block = gemmi.cif.read(str(cif_path))[0]
+        else:
+            block = gemmi.cif.read_file(str(cif_path))[0]
         pdb_id = cif_path.name.split(".")[0].lower()
-        print(f"Failed to process ({pdb_id}): {e}")
-        return FAILED
+        metadata = cif_factory.prepare_metadata_from_rcsb(pdb_id, block)
+    except Exception as error:
+        print(f"Failed to read {cif_path.name}: {error}")
+        return {split: (FAILED, []) for split in splits}
+
+    results = {}
+    for split in splits:
+        try:
+            results[split] = extract_sequences(block, metadata, SPLITS[split])
+        except Exception as error:
+            print(f"Failed to process {cif_path.name} ({split}): {error}")
+            results[split] = (FAILED, [])
+    return results
 
 
 def main():
-    """Main function to process RCSB mmCIF files"""
+    """Generate train and validation sequence files in one CIF pass."""
     args = parse_args()
-    cif_dir: pathlib.Path = args.cif_dir
-    data_dir: pathlib.Path = args.data_dir / f"rcsb-{args.split}"
-
-    # Apply split defaults if specified
-    print(f"Applying {args.split} split parameters...")
-    data_filter = SPLITS[args.split]
-    print(data_filter)
-
-    # Prepare partial function for multiprocessing
-    parse_cif_partial = functools.partial(
-        worker_fn,
-        data_filter=data_filter,
+    splits = (args.split,) if args.split else ("train", "val")
+    for split in splits:
+        print(f"Applying {split} split parameters: {SPLITS[split]}")
+    cif_paths = sorted(
+        path
+        for path in args.cif_dir.rglob("*")
+        if path.is_file()
+        and path.name.endswith((".cif", ".cif.gz", ".mmcif", ".mmcif.gz"))
     )
-
-    cif_paths = sorted(cif_dir.rglob("*.cif.gz"))
-    print(f"Found {len(cif_paths)} mmCIF files to process.")
+    print(f"Found {len(cif_paths)} mmCIF files to process once for {splits}.")
+    sequences_by_split = {split: [] for split in splits}
+    counts = {split: Counter() for split in splits}
+    worker = functools.partial(worker_fn, splits=splits)
     with multiprocessing.Pool(args.num_workers) as pool:
-        results: list[tuple[int, list[tuple[str, str, C.ChainType, str]]]] = list(
-            tqdm(
-                pool.imap_unordered(parse_cif_partial, cif_paths, chunksize=20),
-                total=len(cif_paths),
-                desc="Processing RCSB mmCIF files",
-            )
-        )
-    print("Processing completed.")
+        for results in tqdm(
+            pool.imap_unordered(worker, cif_paths, chunksize=20),
+            total=len(cif_paths),
+            desc="Extracting RCSB sequences",
+        ):
+            for split, (flag, sequences) in results.items():
+                counts[split][flag] += 1
+                if flag == SUCCESS:
+                    sequences_by_split[split].extend(sequences)
 
-    flags = [result[0] for result in results]
+    statuses = {
+        SUCCESS: "Successful",
+        FAILED: "Failed",
+        DATE_FILTERED: "Date filtered",
+        RESOLUTION_FILTERED: "Resolution filtered",
+        METHOD_FILTERED: "Method filtered",
+        CHAIN_COUNT_FILTERED: "Chain count filtered",
+        RESIDUE_COUNT_FILTERED: "Residue count filtered",
+    }
+    for split in splits:
+        print(f"Processing statistics ({split}):")
+        for flag, label in statuses.items():
+            print(f"  {label}: {counts[split][flag]}")
+        write_sequences(args.data_dir / f"rcsb-{split}", sequences_by_split[split])
 
-    # Print stats
-    print("Processing statistics:")
-    print(f"  Total files processed: {len(flags)}")
-    print(f"  Successfully processed: {flags.count(SUCCESS)}")
-    print(f"  Failed to process: {flags.count(FAILED)}")
-    print(f"  Date filtered: {flags.count(DATE_FILTERED)}")
-    print(f"  Resolution filtered: {flags.count(RESOLUTION_FILTERED)}")
-    print(f"  Method filtered: {flags.count(METHOD_FILTERED)}")
-    print(f"  Chain count filtered: {flags.count(CHAIN_COUNT_FILTERED)}")
-    print(f"  Residue count filtered: {flags.count(RESIDUE_COUNT_FILTERED)}")
 
-    # Collect all sequences
-    all_sequences: list[tuple[str, str, C.ChainType, str]] = []
-    for flag, sequences in results:
-        if flag == SUCCESS:
-            all_sequences.extend(sequences)
-
+def write_sequences(data_dir: pathlib.Path, all_sequences: list):
+    """Write one split's entity records and unique protein FASTA."""
     # Print stats
     print("Sequence statistics:")
     print(f"  Total sequences extracted: {len(all_sequences)}")
@@ -361,22 +381,6 @@ def main():
         for i, seq in enumerate(sorted(uniq_proteins, key=lambda x: (len(x), x)))
     ]
     write_fasta(uniq_proteins, uniq_protein_fasta_path)
-
-    uniq_dna_fasta_path = seq_dir / "unique_dna_sequences.fasta"
-    uniq_dnas = set(seq for _, _, ctype, seq in all_sequences if ctype.is_dna)
-    uniq_dnas: list[tuple[str, str]] = [
-        (f"uniq_dna_{i + 1}", seq)
-        for i, seq in enumerate(sorted(uniq_dnas, key=lambda x: (len(x), x)))
-    ]
-    write_fasta(uniq_dnas, uniq_dna_fasta_path)
-
-    uniq_rna_fasta_path = seq_dir / "unique_rna_sequences.fasta"
-    uniq_rnas = set(seq for _, _, ctype, seq in all_sequences if ctype.is_rna)
-    uniq_rnas: list[tuple[str, str]] = [
-        (f"uniq_rna_{i + 1}", seq)
-        for i, seq in enumerate(sorted(uniq_rnas, key=lambda x: (len(x), x)))
-    ]
-    write_fasta(uniq_rnas, uniq_rna_fasta_path)
 
 
 if __name__ == "__main__":

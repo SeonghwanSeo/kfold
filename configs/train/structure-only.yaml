@@ -1,4 +1,0 @@
-_yaml_: "full.yaml"
-
-training:
-  train_confidence_head: false

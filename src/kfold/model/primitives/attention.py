@@ -228,7 +228,7 @@ def attention_pair_bias(
             b_proj_o,
             num_heads,
             inf,
-            attn_scale,
+            attn_scale=attn_scale,
         )
     else:
         return _torch_attention_pair_bias(

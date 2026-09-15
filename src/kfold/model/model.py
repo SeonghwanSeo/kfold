@@ -2,30 +2,36 @@ import dataclasses
 import logging
 import math
 import pathlib
-import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from typing import Self
 
 import torch
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.modules import (
     apo_module,
     confidence_head,
     distogram_head,
+    ecsi,
     input_embedder,
     patch_geometry,
-    sequence_encoder,
-    structure_encoder,
+    prot_seq_encoder,
+    prot_struct_encoder,
+    rna_seq_encoder,
+    score_model,
     tri_stack,
 )
-from kfold.model.modules.structure import sample_diffusion, score_model
 from kfold.model.primitives import LayerNorm, Linear, LinearNoBias
 from kfold.utils.config import resolve_config
-from kfold.utils.registry import Registry
+from kfold.utils.runtime import is_cuequivariance_installed
 
 logger = logging.getLogger(__name__)
+
+
+MODEL_REPO_ID = "SeonghwanSeo/kfold"
 
 
 @dataclasses.dataclass(kw_only=True)
@@ -49,25 +55,21 @@ class KFoldConfig:
     channel_s: int = 384
     channel_z: int = 256
     dropout: float = 0.25
+    diffusion_type: str
 
     # Sub-module configurations
     input_embedder: input_embedder.InputEmbedder.Config
     apo_module: apo_module.ApoModule.Config
-    protein_sequence_encoder: sequence_encoder.SequenceEncoder.Config
-    protein_structure_encoder: structure_encoder.StructureEncoder.Config
-    rna_sequence_encoder: sequence_encoder.SequenceEncoder.Config
+    protein_sequence_encoder: prot_seq_encoder.ProteinSequenceEncoder.Config
+    protein_structure_encoder: prot_struct_encoder.StructureEncoder.Config | None
+    rna_sequence_encoder: rna_seq_encoder.RNASequenceEncoder.Config | None
     trunk: TrunkConfig
     parcae: ParcaeConfig
     score_model: score_model.DiffusionModule.Config
-    diffusion_head: sample_diffusion.BaseStructureModule.Config
+    diffusion_head: ecsi.KFoldECSI.Config
     distogram_head: distogram_head.DistogramHead.Config
     confidence_head: confidence_head.ConfidenceHead.Config
-    patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config = dataclasses.field(
-        default_factory=patch_geometry.PatchPairGeometryHead.Config
-    )
-
-    # Kernel configurations
-    kernel_cuequivariance: bool = True
+    patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config | None
 
     # For training
     diffusion_conditioning_drop_rate: float = 0.0
@@ -120,45 +122,61 @@ class LMToPair(torch.nn.Module):
 
 
 class KFold(torch.nn.Module):
-    def __init__(self, config: KFoldConfig):
+    def __init__(self, config: KFoldConfig, *, atlaslm: torch.nn.Module | None = None):
         super().__init__()
         self.config: KFoldConfig = config
         self.channel_s: int = config.channel_s
         self.channel_z: int = config.channel_z
         self.dropout: float = config.dropout
+        self.diffusion_type: str = config.diffusion_type
+        self.cpu_offload: bool = False
+        if self.diffusion_type not in {"ecsi", "edm"}:
+            raise ValueError(
+                f"Unknown diffusion_type {self.diffusion_type!r}. "
+                "Expected 'ecsi' or 'edm'."
+            )
+
         self.trunk_config = resolve_config(TrunkConfig, config.trunk)
         self.parcae_config = resolve_config(ParcaeConfig, config.parcae)
 
-        kernel_config = {
-            "cuequivariance": config.kernel_cuequivariance,
-        }
-        self.kernel_config = kernel_config
-
-        # Initialize pre-trained sequence and structure encoders.
-        self.prot_seq_encoder = sequence_encoder.SequenceEncoder(
-            config.protein_sequence_encoder
-        )
-        self.rna_seq_encoder = sequence_encoder.SequenceEncoder(
-            config.rna_sequence_encoder
-        )
-        self.prot_struct_encoder = structure_encoder.StructureEncoder(
-            config.protein_structure_encoder
-        )
+        self.use_kernel: bool = is_cuequivariance_installed()
 
         # Initialize input featurizer.
         self.input_embedder = input_embedder.InputEmbedder(config.input_embedder)
 
-        # Initialize LM single and pairwise feature projection modules.
+        # Initialize pre-trained sequence and structure encoders.
+        self.prot_seq_encoder = prot_seq_encoder.ProteinSequenceEncoder(
+            config.protein_sequence_encoder, lm=atlaslm
+        )
         self.prot_seq_to_s_lm = LMEncoder(
-            self.prot_seq_encoder.d_model, self.prot_seq_encoder.n_layers, self.channel_s
+            self.prot_seq_encoder.d_model,
+            self.prot_seq_encoder.n_layers,
+            self.channel_s,
         )
-        self.rna_seq_to_s_lm = LMEncoder(
-            self.rna_seq_encoder.d_model, self.rna_seq_encoder.n_layers, self.channel_s
-        )
-        self.prot_struct_to_s_lm = torch.nn.Sequential(
-            LayerNorm(self.prot_struct_encoder.d_model, create_offset=False),
-            LinearNoBias(self.prot_struct_encoder.d_model, self.channel_s),
-        )
+
+        if config.rna_sequence_encoder is not None:
+            self.rna_seq_encoder = rna_seq_encoder.RNASequenceEncoder(
+                config.rna_sequence_encoder
+            )
+            self.rna_seq_to_s_lm = LMEncoder(
+                self.rna_seq_encoder.d_model,
+                self.rna_seq_encoder.n_layers,
+                self.channel_s,
+            )
+        else:
+            self.rna_seq_encoder = None
+
+        if config.protein_structure_encoder is not None:
+            self.prot_struct_encoder = prot_struct_encoder.StructureEncoder(
+                config.protein_structure_encoder
+            )
+            self.prot_struct_to_s_lm = torch.nn.Sequential(
+                LayerNorm(self.prot_struct_encoder.d_model, create_offset=False),
+                LinearNoBias(self.prot_struct_encoder.d_model, self.channel_s),
+            )
+        else:
+            self.prot_struct_encoder = None
+
         self.lm_to_pair = LMToPair(self.channel_s, self.channel_z)
 
         # Initialize trunk
@@ -201,22 +219,39 @@ class KFold(torch.nn.Module):
         )
 
         # Initialize prediction heads
-        self.score_model = score_model.DiffusionModule(
-            config.score_model, kernel_config=kernel_config
-        )
-        # NOTE: diffusion_head is not a torch.nn.Module
-        # TODO: After we fix the diffusion algorith, remove Registry.instantiate
-        self.diffusion_head = Registry.instantiate(
+
+        # Distogram head
+        self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
+
+        # Patch pair geometry head
+        if config.patch_pair_geometry is not None:
+            self.patch_pair_geometry_head = patch_geometry.PatchPairGeometryHead(
+                config.patch_pair_geometry, self.channel_z
+            )
+        else:
+            self.patch_pair_geometry_head = None
+
+        # Diffusion head
+        self.score_model = score_model.DiffusionModule(config.score_model)
+        self.diffusion_head = ecsi.KFoldECSI(
             config.diffusion_head, score_model=self.score_model
         )
-        self.distogram_head = distogram_head.DistogramHead(config.distogram_head)
-        self.patch_pair_geometry_head = patch_geometry.PatchPairGeometryHead(
-            config.patch_pair_geometry,
-            channel_z=self.channel_z,
-        )
-        self.confidence_head = confidence_head.ConfidenceHead(
-            config.confidence_head, kernel_config=kernel_config
-        )
+
+        # Confidence head
+        self.confidence_head = confidence_head.ConfidenceHead(config.confidence_head)
+
+    @property
+    def device(self) -> torch.device:
+        """Return the device of the model parameters."""
+        return next(self.parameters()).device
+
+    def set_forward_flags(
+        self,
+        use_cuequiv_kernels: bool | None = None,
+    ) -> None:
+        """Set flags used by training and inference forward passes."""
+        if use_cuequiv_kernels is not None:
+            self.use_kernel = use_cuequiv_kernels
 
     def _parcae_discretized_dynamics(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute the Parcae ZOH/Euler-discretized pair-state dynamics."""
@@ -248,8 +283,9 @@ class KFold(torch.nn.Module):
         num_steps: int = 100,
         num_samples: int = 5,
         return_embeddings: bool = False,
+        return_distogram: bool = False,
         return_traj: bool = False,
-    ) -> tuple[dict[str, dict[str, torch.Tensor]], dict[str, float]]:
+    ) -> dict[str, dict[str, torch.Tensor]]:
         """Run KFold structure prediction from a fully prepared input.
 
         Parameters
@@ -271,9 +307,6 @@ class KFold(torch.nn.Module):
             - distogram: predicted distogram logits.
             - diffusion: sampled structures from diffusion head.
             - confidence: predicted confidence metrics from confidence head.
-
-        time_logs : dict[str, float]
-            Dictionary containing time taken for each module during sampling.
         """
         # If input is not batched, add batch dimension for processing
         # and remove it from output at the end.
@@ -290,12 +323,13 @@ class KFold(torch.nn.Module):
             )
 
         # Sample structures
-        model_out, time_logs = self.sample(
+        model_out = self.predict(
             f_input,
             num_recycles,
             num_steps,
             num_samples,
             return_embeddings=return_embeddings,
+            return_distogram=return_distogram,
             return_traj=return_traj,
         )
 
@@ -306,18 +340,19 @@ class KFold(torch.nn.Module):
                 for k, v in model_out.items()
             }
 
-        return model_out, time_logs
+        return model_out
 
     @torch.inference_mode()
-    def sample(
+    def predict(
         self,
         f_input: FoldingInput,
         num_recycles: int = 10,
         num_steps: int = 100,
         num_samples: int = 5,
         return_embeddings: bool = False,
+        return_distogram: bool = False,
         return_traj: bool = False,
-    ) -> tuple[dict[str, dict[str, torch.Tensor]], dict[str, float]]:
+    ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold model for model training.
 
         Parameters
@@ -332,6 +367,8 @@ class KFold(torch.nn.Module):
             Number of diffusion samples for training.
         return_embeddings : bool, optional
             Whether to return intermediate sequence and structure embeddings.
+        return_distogram : bool, optional
+            Whether to return predicted distogram logits.
         return_traj : bool, optional
             Whether to return sampling trajectories.
 
@@ -343,12 +380,8 @@ class KFold(torch.nn.Module):
             - distogram: predicted distogram logits.
             - diffusion: sampled structures from diffusion head.
             - confidence: predicted confidence metrics from confidence head.
-
-        time_logs : dict[str, float]
-            Dictionary containing time taken for each module during sampling.
         """
         dict_out: dict[str, dict[str, torch.Tensor]] = {}
-        time_logs: dict[str, float] = {}
 
         if f_input.batch_size != 1:
             # TODO: Support batched inference.
@@ -357,11 +390,8 @@ class KFold(torch.nn.Module):
             )
 
         # Trunk with recycling
-        st = time.time()
         s_inputs, s_lm, z = self.run_trunk(f_input, num_recycles)
         z = z.float()
-        et = time.time()
-        time_logs["trunk"] = et - st
 
         if return_embeddings:
             dict_out["trunk"] = {
@@ -370,43 +400,65 @@ class KFold(torch.nn.Module):
                 "z": z,
             }
 
-        # Distogram head
-        st = time.time()
-        dict_out["distogram"] = self.distogram_head.forward_inference(f_input, z)
-        et = time.time()
-        time_logs["distogram_head"] = et - st
-
-        # Diffusion head
-        # pred_atom_coords: [B, Nsample, La, 3]
-        st = time.time()
         with torch.autocast(f_input.device.type, enabled=False):
+            # Diffusion head
             dict_out["diffusion"] = self.diffusion_head.sample_structure(
                 f_input,
                 s_inputs,
                 z,
                 num_steps,
                 num_samples,
-                chunk_size=5,
+                chunk_size=10,
                 return_traj=return_traj,
             )
-        et = time.time()
-        time_logs["diffusion_head"] = et - st
 
-        st = time.time()
+            # Distogram head
+            if return_distogram:
+                dict_out["distogram"] = self.distogram_head.forward_inference(f_input, z)
+
         coords = dict_out["diffusion"]["coordinates"]
-        dict_out["confidence"] = self.confidence_head(f_input, s_inputs, s_lm, z, coords)
-        et = time.time()
-        time_logs["confidence_head"] = et - st
+        dict_out["confidence"] = self.confidence_head(
+            f_input,
+            s_inputs,
+            s_lm,
+            z,
+            coords,
+            use_cuequiv_kernels=self.use_kernel,
+        )
 
-        return dict_out, time_logs
+        return dict_out
 
     def _encode_lm_single(self, f_input: FoldingInput) -> torch.Tensor:
         """Merge the enabled pretrained encoders into the shared LM single."""
-        return (
-            self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
-            + self.rna_seq_to_s_lm(self.rna_seq_encoder(f_input))
-            + self.prot_struct_to_s_lm(self.prot_struct_encoder(f_input))
-        )
+        s_lm = self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
+
+        if self.rna_seq_encoder is not None and (
+            not self.cpu_offload or f_input.sequence.is_rna.any()
+        ):
+            with self._encoder_on_device(self.rna_seq_encoder, f_input.device):
+                s_lm = s_lm + self.rna_seq_to_s_lm(self.rna_seq_encoder(f_input))
+
+        if self.prot_struct_encoder is not None:
+            with self._encoder_on_device(
+                self.prot_struct_encoder.encoder, f_input.device
+            ):
+                s_lm = s_lm + self.prot_struct_to_s_lm(self.prot_struct_encoder(f_input))
+
+        return s_lm
+
+    @contextmanager
+    def _encoder_on_device(
+        self, encoder: torch.nn.Module, device: torch.device
+    ) -> Iterator[None]:
+        """Move an offloaded encoder to device for feature extraction."""
+        if not self.cpu_offload:
+            yield
+            return
+        try:
+            encoder.to(device)
+            yield
+        finally:
+            encoder.cpu()
 
     def run_trunk(
         self,
@@ -431,7 +483,7 @@ class KFold(torch.nn.Module):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        use_cuequiv_kernels = self.kernel_config.get("cuequivariance", False)
+        use_cuequiv_kernels = self.use_kernel
         dtype = torch.get_autocast_dtype(f_input.device.type)
 
         # Parcae theory: stable channel-wise state decay (a) and
@@ -472,57 +524,92 @@ class KFold(torch.nn.Module):
     # Utility Methods
     # ============================================================
     @classmethod
-    def from_checkpoint(
+    def from_pretrained(
         cls,
-        config_path: str | pathlib.Path,
-        ckpt_path: str | pathlib.Path,
-        override_args: list[str] | None = None,
-        use_ema: bool = True,
-        strict: bool = True,
+        pretrained_model_name_or_path: str | pathlib.Path = MODEL_REPO_ID,
+        device: str | torch.device = "cuda",
+        *,
+        cache_dir: str | pathlib.Path | None = None,
+        use_struct_encoder: bool = True,
+        use_rna_encoder: bool = True,
+        cpu_offload: bool = False,
     ) -> Self:
-        """Load model from checkpoint."""
-        from omegaconf import OmegaConf
+        """Load a K-Fold from a pretrained model.
 
-        from kfold.config import load_config
+        Parameters
+        ----------
+        pretrained_model_name_or_path : str or pathlib.Path
+            The name of the pretrained model or the path to a local directory containing
+            the model weights and configuration.
+        device : str or torch.device, optional
+            The device to load the model onto. Default is "cuda".
+        cache_dir : str or pathlib.Path, optional
+            The directory to save the model weights and config.
+        use_struct_encoder : bool, optional
+            Whether to use the protein structure encoder. Default is True.
+        use_rna_encoder : bool, optional
+            Whether to use the RNA sequence encoder. Default is True.
+            NOTE: Only disable this if RNA sequences are not present in the input.
+        cpu_offload : bool, optional
+            Keep the protein structure backbone encoder and RNA sequence encoder
+            on CPU between inference calls. Move each to the input device only
+            for feature extraction. The protein LM and structure tokenizers
+            remain on device. Default is False.
+        """
+        from huggingface_hub import snapshot_download
 
-        # Load model config
-        config = load_config(config_path)
-        if "model" in config:
-            # Get model config if wrapped in a higher-level config
-            config = config.model
-
-        if override_args is not None:
-            # Override specific arguments in the config
-            overrides = OmegaConf.from_dotlist(override_args)
-            config = OmegaConf.merge(config, overrides)
-
-        # Initialize model
-        model = cls(config)
-
-        # Load checkpoint
-        ckpt = torch.load(ckpt_path, map_location="cpu")
-
-        if "state_dict" not in ckpt:
-            # Assume the checkpoint is a state_dict itself
-            state_dict = ckpt
-        elif use_ema:
-            # Load EMA weights
-            if "ema" not in ckpt:
-                raise KeyError(
-                    "EMA weights not found in checkpoint. "
-                    "Please set use_ema=False to load regular weights."
-                )
-            else:
-                state_dict = ckpt["ema"]["shadow_params"]
+        if pathlib.Path(pretrained_model_name_or_path).is_dir():
+            local_path = pathlib.Path(pretrained_model_name_or_path)
+            model_path = local_path / "weights/kfold.pth"
+            config_path = local_path / "config.yaml"
         else:
-            # Load regular weights
-            state_dict = ckpt["state_dict"]
+            repo_id = str(pretrained_model_name_or_path)
+            repo_path = pathlib.Path(
+                snapshot_download(repo_id, repo_type="model", cache_dir=cache_dir)
+            )
+            model_path = repo_path / "weights/kfold.pth"
+            config_path = repo_path / "config.yaml"
 
-        state_dict = {k.removeprefix("model."): v for k, v in state_dict.items()}
+        config = OmegaConf.load(config_path)
+        if not use_struct_encoder:
+            config.protein_structure_encoder = None
+        if not use_rna_encoder:
+            config.rna_sequence_encoder = None
 
-        model.load_state_dict(state_dict, strict=strict)
-        del ckpt, state_dict
+        if cache_dir is not None:
+            for encoder in (
+                "protein_sequence_encoder",
+                "protein_structure_encoder",
+                "rna_sequence_encoder",
+            ):
+                if config.get(encoder) is not None:
+                    config[encoder].cache_dir = str(cache_dir)
 
+        model = cls(config)
+        state_dict = torch.load(
+            model_path, map_location="cpu", weights_only=True, mmap=True
+        )
+        model.load_state_dict(state_dict)
+        del state_dict
+
+        model.requires_grad_(False).eval()
+        model.cpu_offload = cpu_offload
+        if cpu_offload:
+            offloaded_encoders: set[torch.nn.Module | None] = {model.rna_seq_encoder}
+            if model.prot_struct_encoder is not None:
+                offloaded_encoders.add(model.prot_struct_encoder.encoder)
+
+            def move_to_device(module: torch.nn.Module) -> None:
+                # Skip offloaded weights from the start to avoid a GPU loading peak.
+                if module in offloaded_encoders:
+                    return
+                module._apply(lambda tensor: tensor.to(device), recurse=False)
+                for child in module.children():
+                    move_to_device(child)
+
+            move_to_device(model)
+        else:
+            model.to(device)
         return model
 
     def load_state_dict(
@@ -550,6 +637,16 @@ class KFold(torch.nn.Module):
                         "prot_seq_encoder.",
                         "rna_seq_encoder.",
                         "prot_struct_encoder.",
+                    )
+                )
+            }
+            unexpected_keys = {
+                k
+                for k in unexpected_keys
+                if not k.startswith(
+                    (
+                        "rna_seq_to_s_lm.",
+                        "prot_struct_to_s_lm.",
                     )
                 )
             }

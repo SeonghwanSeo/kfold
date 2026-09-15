@@ -5,8 +5,6 @@ import fcntl
 from pathlib import Path
 
 from kfold.data.types.ccd import CCD
-from kfold.inference.data_pipeline import InputDataPipeline
-from kfold.inference.query import parse_input_files
 from kfold.inference.sequential import (
     ModelBackend,
     execution_plan,
@@ -14,6 +12,8 @@ from kfold.inference.sequential import (
     run_query,
     write_json,
 )
+from kfold.inference.sequential_pipeline import InputDataPipeline
+from kfold.inference.sequential_query import parse_input_files
 
 
 def main():

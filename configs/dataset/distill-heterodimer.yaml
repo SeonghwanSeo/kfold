@@ -1,6 +1,0 @@
-_yaml_: "default-train.yaml"
-
-name: AFDB-heterodimer
-type: "heterodimer-distillation"
-
-sampler: null

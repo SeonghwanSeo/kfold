@@ -1,5 +1,4 @@
 import dataclasses
-from functools import cached_property
 from typing import Self
 
 import torch
@@ -115,22 +114,22 @@ class ChainTensor(TensorLayout):
             fields[name] = padded_tensor
         return self.from_dict(fields)
 
-    @cached_property
+    @property
     def is_protein(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is protein."""
         return self.chain_type == C.chain.ChainType.PROTEIN.value
 
-    @cached_property
+    @property
     def is_dna(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is dna."""
         return self.chain_type == C.chain.ChainType.DNA.value
 
-    @cached_property
+    @property
     def is_rna(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is rna."""
         return self.chain_type == C.chain.ChainType.RNA.value
 
-    @cached_property
+    @property
     def is_ligand(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is ligand."""
         return self.chain_type == C.chain.ChainType.LIGAND.value
@@ -279,22 +278,22 @@ class TokenTensor(TensorLayout):
         for name, dtype, shape in attributes:
             check_tensor(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
-    @cached_property
+    @property
     def is_protein(self) -> torch.Tensor:
         """Boolean tensor of shape [Ntoken,], indicating whether the token is protein."""
         return self.chain_type == C.chain.ChainType.PROTEIN.value
 
-    @cached_property
+    @property
     def is_dna(self) -> torch.Tensor:
         """Boolean tensor of shape [Ntoken,], indicating whether the token is dna."""
         return self.chain_type == C.chain.ChainType.DNA.value
 
-    @cached_property
+    @property
     def is_rna(self) -> torch.Tensor:
         """Boolean tensor of shape [Ntoken,], indicating whether the token is rna."""
         return self.chain_type == C.chain.ChainType.RNA.value
 
-    @cached_property
+    @property
     def is_ligand(self) -> torch.Tensor:
         """Boolean tensor of shape [Ntoken,], indicating whether the token is ligand."""
         return self.chain_type == C.chain.ChainType.LIGAND.value
@@ -628,7 +627,7 @@ class SequenceTensor(TensorLayout):
     mlm_mask: torch.Tensor  # [L,], bool
     pad_mask: torch.Tensor  # [L,], bool
 
-    @cached_property
+    @property
     def layout_shape(self) -> tuple[int, ...]:
         return self.seq_token_id.shape  # [L,]
 
@@ -652,22 +651,22 @@ class SequenceTensor(TensorLayout):
         for name, dtype, shape in attributes:
             check_tensor(getattr(self, name), name=name, dtype=dtype, shape=shape)
 
-    @cached_property
+    @property
     def is_protein(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is protein."""
         return self.chain_type == C.chain.ChainType.PROTEIN.value
 
-    @cached_property
+    @property
     def is_dna(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is dna."""
         return self.chain_type == C.chain.ChainType.DNA.value
 
-    @cached_property
+    @property
     def is_rna(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is rna."""
         return self.chain_type == C.chain.ChainType.RNA.value
 
-    @cached_property
+    @property
     def is_ligand(self) -> torch.Tensor:
         """Boolean tensor indicating whether the chain is ligand."""
         return self.chain_type == C.chain.ChainType.LIGAND.value

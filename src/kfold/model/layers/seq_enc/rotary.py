@@ -41,47 +41,48 @@ class RotaryEmbedding(torch.nn.Module):
         super().__init__()
         self.dim: int = dim
         self.base: float = float(base)
+        self.max_seqlen: int = max_seqlen
+        self.init_buffers()
 
-        # Precompute the inverse frequencies and register
+    def init_buffers(self, device: str | torch.device | None = None) -> None:
+        """Materialize the nonpersistent RoPE buffers on device."""
         self.inv_freq: torch.Tensor
-        inv_freq = self._compute_inv_freq().to(torch.float32)
+        inv_freq = self._compute_inv_freq(device).to(torch.float32)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
         # Cache for the cos and sin tables
-        cos, sin = self._get_cos_sin(max_seqlen)
+        cos, sin = self._get_cos_sin(self.max_seqlen)
         self.register_buffer("_cos_cached", cos, persistent=False)
         self.register_buffer("_sin_cached", sin, persistent=False)
 
-    def _compute_inv_freq(self):
+    def _compute_inv_freq(self, device: str | torch.device | None = None):
         return 1 / (
-            self.base ** (torch.arange(0, self.dim, 2, dtype=torch.float32) / self.dim)
+            self.base
+            ** (
+                torch.arange(0, self.dim, 2, dtype=torch.float32, device=device)
+                / self.dim
+            )
         )
 
     def _get_cos_sin(self, seqlen: int) -> tuple[torch.Tensor, torch.Tensor]:
-        t = torch.arange(seqlen, dtype=torch.float32)
+        t = torch.arange(
+            seqlen,
+            dtype=torch.float32,
+            device=self.inv_freq.device,
+        )
         freqs = torch.outer(t, self.inv_freq)
-        # NOTE: Even though float32 is generally safer to cache, we cast to bfloat16
-        # since our implementation is designed to work with bfloat16 precision.
-        cos = torch.cos(freqs).to(torch.bfloat16).tile(1, 2)
-        sin = torch.sin(freqs).to(torch.bfloat16).tile(1, 2)
+        cos = torch.cos(freqs).tile(1, 2)
+        sin = torch.sin(freqs).tile(1, 2)
         return cos, sin
 
     def forward(
         self,
-        q: torch.Tensor,
-        k: torch.Tensor,
         pos_id: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        q: (*, seqlen, nheads, headdim)
-        k: (*, seqlen, nheads, headdim)
-        pos_id: (*, seqlen)
-        """
-        cos = self._cos_cached[pos_id].to(q.dtype)  # [*, seqlen, headdim]
-        sin = self._sin_cached[pos_id].to(q.dtype)  # [*, seqlen, headdim]
-        q_ = self.apply_rotary_emb(q, cos, sin)
-        k_ = self.apply_rotary_emb(k, cos, sin)
-        return q_, k_
+        """Select position embeddings once for all transformer layers."""
+        cos = self._cos_cached[pos_id]
+        sin = self._sin_cached[pos_id]
+        return cos, sin
 
     @staticmethod
     def apply_rotary_emb(

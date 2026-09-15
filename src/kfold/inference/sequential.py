@@ -126,13 +126,17 @@ class ModelBackend:
         from kfold.model import KFold
         from kfold.utils import confidence_metrics
 
-        from .structure_tokenization import apply_apo_structure_tokens
+        from .sequential_tokenization import apply_apo_structure_tokens
 
         if self.model is None:
-            self.model = (
-                KFold.from_checkpoint(self.args.config, self.args.weight).eval().cuda()
-            )
-            from kfold.model.modules.structure.ecsi import KFoldECSI
+            from omegaconf import OmegaConf
+
+            self.model = KFold(OmegaConf.load(self.args.config))
+            state = torch.load(self.args.weight, map_location="cpu", weights_only=True)
+            self.model.load_state_dict(state, strict=True)
+            del state
+            self.model.requires_grad_(False).eval().cuda()
+            from kfold.model.modules.ecsi import KFoldECSI
 
             if not isinstance(self.model.diffusion_head, KFoldECSI):
                 raise ValueError(
@@ -145,7 +149,7 @@ class ModelBackend:
             torch.inference_mode(),
             torch.autocast(device_type="cuda", dtype=torch.bfloat16),
         ):
-            if hasattr(self.model, "prot_struct_encoder"):
+            if self.model.prot_struct_encoder is not None:
                 apply_apo_structure_tokens(
                     features, records, self.model.prot_struct_encoder
                 )
@@ -155,13 +159,21 @@ class ModelBackend:
                     bb=features.sequence.bb_struct_token_id.cpu().numpy(),
                     fa=features.sequence.fa_struct_token_id.cpu().numpy(),
                 )
-            output, timing = self.model.inference(
+            started = time.perf_counter()
+            output = self.model.inference(
                 features,
                 num_recycles=self.args.num_recycles,
                 num_steps=self.args.num_steps,
                 num_samples=self.args.num_samples,
             )
-        coords = output["diffusion"]["coordinates"][:, : struct.num_atoms].cpu().numpy()
+        torch.cuda.synchronize()
+        timing = {"inference_seconds": time.perf_counter() - started}
+        coords = (
+            output["diffusion"]["coordinates"][:, : struct.num_atoms]
+            .float()
+            .cpu()
+            .numpy()
+        )
         summary, scores = confidence_metrics.summarize_confidence_metrics(
             features, struct, output
         )
@@ -171,8 +183,9 @@ class ModelBackend:
             stem = f"{query.name}_seed-{query.seed}_sample-{sample}"
             obj = PriorObject(atom_keys(struct), xyz)
             obj.save(out / f"{stem}_atoms.npz")
-            writer.write_new_coords(
-                struct, out / f"{stem}.cif", xyz, scores[sample]["plddt"]
+            writer.write_mmcif(
+                struct.copy_with_new_coords(xyz, b_factors=scores[sample]["plddt"]),
+                out / f"{stem}.cif",
             )
             write_json(out / f"{stem}_confidences.json", summary[sample])
             np.savez_compressed(out / f"{stem}_confidences.npz", **scores[sample])
@@ -198,7 +211,7 @@ class ModelBackend:
 def run_query(
     query, pipeline, seeds, samples, out, backend, direct=False, conditioning="prior_only"
 ):
-    from .dataset import InferenceDataset
+    from .sequential_dataset import InferenceDataset
 
     if conditioning not in {"prior_only", "prior_and_trunk"}:
         raise ValueError("Unknown sequential conditioning")

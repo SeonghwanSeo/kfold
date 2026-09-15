@@ -5,6 +5,12 @@ import pathlib
 
 import lmdb
 
+from kfold.data.types.structure import RefStructure
+from kfold.training.preprocess.prepared_sequences import (
+    save_sequences,
+    structure_sequences,
+)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Construct validation set.")
@@ -41,15 +47,18 @@ def main():
         map_size=1024 * 1024 * 1024,  # 1 GB
     )
     npz_dir: pathlib.Path = data_dir / "npz"
+    sequences = []
     with env.begin(write=True) as txn:
         for entry_id in entry_ids:
             key = entry_id.encode()
             npz_path = npz_dir / entry_id[1:3] / f"{entry_id}.npz"
             assert npz_path.exists(), f"NPZ file not found: {npz_path}"
+            sequences.extend(structure_sequences(RefStructure.load_npz(npz_path)))
             with open(npz_path, "rb") as f:
                 value_bytes = f.read()
             txn.put(key, value_bytes)
     env.close()
+    save_sequences(sequences, data_dir)
     print(f"Successfully created LMDB at {lmdb_path}")
     print(f"Total entries written: {len(entry_ids)}")
 

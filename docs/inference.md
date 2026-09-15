@@ -1,238 +1,383 @@
-# K-Fold Inference Guide
+# K-Fold inference
 
-K-Fold accepts a YAML or JSON description of a biomolecular complex and predicts
-its three-dimensional structure. Protein inputs currently require a custom apo
-structure, a custom prior ensemble, or both. A two-chain protein source, such
-as an antibody Fab heavy/light pair, is represented by `multimer_sequences`.
+K-Fold accepts YAML or JSON files describing proteins, DNA, RNA, and ligands.
+Inference requires a CUDA GPU.
+No MSA search or sequence database is required.
+
+- [Installation](#installation)
+- [Running predictions](#running-predictions)
+- [Selecting stages](#selecting-stages)
+- [Multi-GPU inference](#multi-gpu-inference)
+- [Command-line options](#command-line-options)
+- [Input format](#input-format)
+- [Apo structures](#apo-structures)
+- [Outputs and confidence](#outputs-and-confidence)
+- [Python API](python_api.md)
+
+## Installation
+
+K-Fold requires Python 3.11 or later.
+
+Install from PyPI:
+
+```bash
+pip install 'kfold[cuequiv]'
+```
+
+Or install from source:
+
+```bash
+git clone https://github.com/SeonghwanSeo/kfold.git
+cd kfold
+pip install '.[cuequiv]'
+```
+
+The `cuequiv` extra installs cuEquivariance kernels for faster inference on NVIDIA GPUs.
+
+## Running predictions
+
+Save the [input example](#input-format) as `query.yaml`, then run:
+
+```bash
+kfold --input query.yaml --out-dir predictions/
+```
+
+By default, K-Fold generates protein apo structures for all selected queries with [AtlasFold](https://github.com/SeonghwanSeo/atlasfold), then predicts five complex structures per query with seed 1.
+You can also provide apo structures from experiments or other prediction tools.
+Model weights and the chemical component dictionary (CCD) are downloaded automatically.
+Use `--cache-dir` to select a download cache.
+
+From the repository root, the script entry point provides the same interface:
+
+```bash
+python run_kfold.py --input query.yaml --out-dir predictions/
+```
+
+### Multiple queries
+
+Pass a directory to process its immediate `.yaml`, `.yml`, and `.json` files.
+Each file contains one query, and query names must be unique:
+
+```bash
+kfold --input queries/ --out-dir predictions/
+```
+
+### Checking and resuming runs
+
+Validate query files and referenced paths before loading models:
+
+```bash
+kfold --input queries/ --out-dir predictions/ --dry-run
+```
+
+A dry run checks query files, structure paths, and CCD codes, and reports pending and completed jobs without loading models or writing prediction outputs.
+The CCD is downloaded if needed; structure contents are checked during inference.
+
+Rerun the same command to continue an interrupted run.
+Completed predictions and apo structures are reused; unfinished predictions are rerun.
+
+Use `--overwrite` to replace existing results after changing inputs, sampling settings, or output options.
+
+To add predictions and rank them with existing results, include both old and new seeds: with `--seed 1 2 3`, a completed seed 1 is skipped while seeds 2 and 3 run.
+
+## Selecting stages
+
+The default `--stage all` prepares apo structures and predicts complexes.
+Use `--stage apo` to prepare apos only, or `--stage complex` to predict complexes from prepared apos:
+
+```bash
+kfold --stage apo --input query.yaml --out-dir predictions/ --seed 1
+kfold --stage complex --input query.yaml --out-dir predictions/ --seed 1
+```
+
+Use the same input, output directory, and seeds for both commands.
+`--stage complex` reads the prepared queries and structures from `--out-dir` for the queries selected by `--input`.
+
+## Multi-GPU inference
+
+Use `--gpu-ids` to distribute queries and seeds across the selected GPUs:
+
+```bash
+kfold --input queries/ --out-dir predictions/ --seed 1 2 3 --gpu-ids 0 1
+```
+
+Both stages use the selected GPUs.
+Each prediction runs entirely on one GPU; additional GPUs process other queries or seeds.
+You can also pass a single query file with multiple seeds.
+Without `--gpu-ids`, inference uses GPU 0.
+Pass a single ID, such as `--gpu-ids 2`, to select one GPU.
+IDs refer to visible CUDA devices; with `CUDA_VISIBLE_DEVICES=2,3`, `--gpu-ids 0 1` selects physical GPUs 2 and 3.
+
+## Command-line options
+
+Run `kfold --help` for all options.
+The default `--stage all` prepares apos and predicts complexes.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `-i`, `--input` | Required | Query file or directory selecting the queries to process in either stage. |
+| `-o`, `--out-dir` | Required | Root output directory; also supplies prepared queries with `--stage complex`. |
+| `--stage` | `all` | `all`: prepare apos then predict complexes; `apo`: prepare apos only; `complex`: predict complexes from prepared queries in `--out-dir`. |
+| `--seed` | `1` | One or more unique positive seeds. |
+| `--apo-config` | Built-in defaults | YAML configuration for apo batch size and AtlasFold sampling settings. |
+| `--num-apos` | `1` | Apo structures per protein entry during automatic generation; 1–5. Provided structures are used directly. |
+| `--num-samples` | `5` | Complex predictions per query/seed. |
+| `--num-recycles` | `10` | Model recycling iterations. |
+| `--num-steps` | `100` | Diffusion steps. |
+| `--gpu-ids` | `0` | One or more unique, non-negative visible CUDA indices for independent query/seed jobs. |
+| `--disable-struct-encoder` | Off | Disable the pretrained protein structure encoder to reduce memory use. |
+| `--disable-rna-encoder` | Off | Disable the RNA encoder; use only when queries contain no RNA. |
+| `--cpu-offload` | Off | Offload encoders to reduce GPU memory use, at the cost of CPU memory and transfer time. |
+| `--cache-dir` | Hugging Face default | Download cache for model weights and CCD. |
+| `--dry-run` | Off | Validate query files and paths, and report pending jobs. |
+| `--overwrite` | Off | Rerun completed query/seed jobs. |
+| `--save-confidence` | Off | Save per-atom and token-pair confidence arrays. |
+| `--save-embeddings` | Off | Save single and pair embeddings. |
+| `--save-distogram` | Off | Compute and save distogram arrays. |
+| `--save-trajectory` | Off | Compute and save diffusion trajectories. |
+
+### Sampling
+
+Use `--seed` for independent runs and `--num-samples` for the number of predictions per seed:
+
+```bash
+kfold --input query.yaml --out-dir predictions/ --seed 1 2 --num-samples 5
+```
+
+### Apo configuration
+
+Use `--apo-config apo.yaml` to customize AtlasFold settings.
+The default configuration is shown below.
+
+```yaml
+max_tokens_per_batch: 1024
+monomer:
+  num_recycles: 4
+  mlm_prob: 0.15
+  num_samples: 5
+  num_steps: null # AtlasFold's dynamic scheduling
+multimer:
+  num_recycles: 4
+  mlm_prob: 0.15
+  num_samples: 5
+  num_steps: 100
+```
+
+`max_tokens_per_batch` controls the trade-off between throughput and memory use ([see AtlasFold](https://github.com/SeonghwanSeo/atlasfold/tree/main#performance-and-gpu-memory)).
 
 ## Input format
 
-The top-level input contains `sequences`, `multimer_sequences`, or both. Every
-physical chain ID must be unique across both sections.
+Every query requires a `name` and a non-empty `sequences` list.
+Each entry contains one component type: `protein`, `protein_pair`, `dna`, `rna`, or `ligand`.
+YAML and JSON use the same schema.
 
 ```yaml
-name: Example_Complex
-sequences:
-  - protein:
-      id: A
-      sequence: MKTAYIAK
-      apo:
-        - structures/protein_a_apo_1.pdb
-        - structures/protein_a_apo_2.pdb
-      prior:
-        - structures/protein_a_prior_1.pdb
-        - structures/protein_a_prior_2.pdb
-  - dna:
-      id: B
-      sequence: ACGTAA
-  - ligand:
-      id: C
-      ccd: MOV
-
-multimer_sequences:
-  - protein:
-      id: H:L
-      sequence: EVQLVESGG:DIQMTQSP
-      apo:
-        - structures/fab_apo_1.pdb
-        - structures/fab_apo_2.pdb
-      prior:
-        - structures/fab_prior_1.pdb
-        - structures/fab_prior_2.pdb
-```
-
-An `id` may be a string or a list. Lists create copies of the same entity:
-
-```yaml
+name: test
 sequences:
   - protein:
       id: [A, B]
-      sequence: MKTAYIAK
-      apo: monomer.pdb
-
-multimer_sequences:
-  - protein:
-      id: [H:L, M:N]
-      sequence: EVQLVESGG:DIQMTQSP
-      apo: fab.pdb
+      sequence: MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQANL
 ```
 
-The second example creates two physical copies of the same two-entity pair:
-`H:L` and `M:N`.
+### Proteins
 
-### Protein monomers
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | Yes | Chain ID or list of IDs for identical copies. |
+| `sequence` | Yes | Amino-acid sequence; `X` represents an unknown residue. |
+| `modifications` | No | List of [residue modifications](#residue-modifications). |
+| `apo` | No | Optional apo structure paths to use instead of automatic generation. |
+| `prior` | No | List of separate prior structure paths; requires `apo`. |
 
-Protein entries under `sequences` use the following fields:
+The copies in one entry use the same set of apo and prior structures.
+To provide different structures for chains with the same sequence, put them in separate entries.
 
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `id` | `str` or `list[str]` | One or more physical chain IDs. |
-| `sequence` | `str` | Amino-acid sequence. |
-| `modifications` | `dict[int, str]` | Optional 1-based residue index to CCD code mapping. |
-| `apo` | `str` or `list[str]` | Required custom monomer apo structure ensemble. |
-| `prior` | `list[str]` | Optional custom monomer prior ensemble. |
+### Protein pairs
 
-Custom structures are globally aligned to the input sequence. Source insertions
-are ignored, and input residues missing from the source receive `NaN`
-coordinates and are excluded from apo structure-token mapping. A warning reports
-the alignment summary whenever the sequences differ.
+Use `protein_pair` for two proteins whose relative positions are preserved in the starting structure, such as the heavy and light chains of a Fab.
+Pair structures are generated automatically with AtlasFold-Multimer, or you can provide your own.
 
-### Protein multimers
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | Yes | `[H, L]` for one pair, or `[[H, L], [M, N]]` for two copies. |
+| `sequence1`, `sequence2` | Yes | Amino-acid sequences in component order. |
+| `modifications1`, `modifications2` | No | Residue modifications for each component. |
+| `apo` | No | Optional two-chain structure paths to use instead of automatic generation. |
+| `prior` | No | List of separate two-chain prior paths; requires `apo`. |
 
-`multimer_sequences` currently supports exactly two protein components per
-entry. It is intended for a shared-frame custom source such as an antibody Fab,
-but it is not antibody-specific.
-
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `id` | `str` or `list[str]` | Pair IDs in `chain1:chain2` format. |
-| `sequence` | `str` | Two sequences in `sequence1:sequence2` format. |
-| `modifications1` | `dict[int, str]` | Optional modifications for component 1. |
-| `modifications2` | `dict[int, str]` | Optional modifications for component 2. |
-| `apo` | `str` or `list[str]` | Required custom two-chain apo structure ensemble. Each file must contain both components in one shared frame. |
-| `prior` | `list[str]` | Optional custom two-chain prior ensemble. |
-
-`--num-apo` controls the maximum number of apo structures used. If it is
-omitted, all provided apo structures are used. If an entry contains more apo
-structures than requested, they are sampled without replacement for each query
-seed. Reusing a seed reproduces the same selection. When different entries
-provide different numbers of apo structures, missing slots in shorter lists are
-left unset. A single path is equivalent to a one-element list.
-
-Each custom multimer file must contain exactly two non-empty protein chains in
-the same order as the two input sequences. Each component is globally aligned
-to its corresponding input sequence using the same insertion/deletion behavior
-as monomer sources. The pair remains in one shared rigid frame during prior
-sampling.
-
-### Apo and prior resolution
-
-Protein monomers and protein multimers follow one source-resolution contract:
-
-| Input | Resolved apo | Resolved priors |
-| :--- | :--- | :--- |
-| `apo` and `prior` | `apo` | `prior` |
-| `apo` only | `apo` | `apo` |
-
-`apo` is required until the external apo sampler is integrated.
-
-For each configured prior sample, one candidate structure is selected randomly
-for each physical chain. Chains in the same rigid group, including the two
-components of a multimer pair, select the same candidate index. `--num-samples`
-controls diffusion samples only; it does not change the number of prior samples.
-
-Structure paths may be absolute, relative to the current working directory, or
-relative to the input YAML/JSON file.
+For `id: [[H, L], [M, N]]`, chains H and M use `sequence1`, and chains L and N use `sequence2`.
+The two copies are placed independently.
+Provided structures must contain exactly two non-empty protein chains in `sequence1`, `sequence2` order.
 
 ### DNA and RNA
 
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `id` | `str` or `list[str]` | One or more physical chain IDs. |
-| `sequence` | `str` | DNA uses A/C/G/T; RNA uses A/C/G/U. |
-| `modifications` | `dict[int, str]` | Optional 1-based residue index to CCD code mapping. |
+DNA and RNA entries require `id` and `sequence`, and accept optional `modifications`.
+DNA uses `A`, `C`, `G`, `T`, and `N`; RNA uses `A`, `C`, `G`, `U`, and `N`.
 
-DNA and RNA entries do not accept `apo` or `prior` fields. Their apo features
-remain unset, and their prior coordinates are initialized by the existing prior
-sampler.
+```yaml
+name: nucleic_acids
+sequences:
+  - dna:
+      id: A
+      sequence: ACGTACGT
+  - rna:
+      id: B
+      sequence: ACGUACGU
+```
 
 ### Ligands
 
-| Field | Type | Description |
-| :--- | :--- | :--- |
-| `id` | `str` or `list[str]` | One or more physical chain IDs. |
-| `smiles` | `str` | A SMILES representation. |
-| `ccd` | `str` or `list[str]` | One CCD code or a multi-residue CCD sequence. |
+Ligands require `id` and exactly one of `ccd` or `smiles`.
+Use a CCD code for a known chemical component, including ions, or a SMILES string for a custom ligand.
+The following entries can be added to a query's `sequences` list:
 
-Specify exactly one of `smiles` and `ccd`.
+```yaml
+- ligand:
+    id: C
+    ccd: ATP
+- ligand:
+    id: [D, E]
+    ccd: MG
+- ligand:
+    id: F
+    smiles: 'CC(=O)Oc1ccccc1C(=O)O'
+```
 
-Inference generates one ligand conformer for the first trunk apo slot; any
-remaining apo ensemble slots are masked. Ligand conformers for diffusion priors
-are sampled independently.
+`ccd` also accepts a non-empty list such as `[ATP]`, or multiple CCD codes for a multi-residue component.
+CCD codes must exist in the loaded dictionary.
+
+### Residue modifications
+
+Add `modifications` to a protein, DNA, or RNA entry.
+Each modification specifies a 1-based `residue_index` within the sequence and the replacement `ccd` code.
+For example, this replaces the fourth residue with phosphoserine:
+
+```yaml
+name: modified_protein
+sequences:
+  - protein:
+      id: A
+      sequence: MKTSA
+      modifications:
+        - residue_index: 4
+          ccd: SEP
+```
+
+Each residue index may appear only once.
+Protein pairs use the same format in `modifications1` and `modifications2` for their respective sequences.
 
 ### Covalent bonds
 
-Use the optional top-level `bonds` field to specify covalent connections:
+The optional top-level `bonds` list connects pairs of atoms.
+Each atom reference is `[chain_id, residue_index, atom_name]`, with 1-based residue indices:
 
 ```yaml
 bonds:
   - [[A, 20, NZ], [C, 1, C08]]
 ```
 
-Each atom reference uses
-`[chain_id, one_based_residue_index, atom_name]`. Contact and distance
-constraints are not supported.
+This connects atom `NZ` of chain A residue 20 to atom `C08` of chain C residue 1.
+The chains, residues, and atom names must exist in the query's prepared structure.
+Self-bonds and duplicate bonds are rejected.
 
-## Running inference
+## Apo structures
 
-Single GPU:
+K-Fold uses apo structures as starting structures for proteins.
+These are generated automatically, or you can provide your own.
 
-```bash
-python scripts/inference.py \
-  --config configs/model/kfold-ecsi.yaml \
-  --weight checkpoints/model.ckpt \
-  --ccd path/to/ccd.pkl \
-  --input query.yaml \
-  --out-dir results
+### Automatic generation
+
+K-Fold generates structures with AtlasFold for individual proteins and AtlasFold-Multimer for protein pairs.
+Use `--num-apos` to choose how many apo structures to generate for each protein or pair (default: 1).
+
+With `--num-apos N`, AtlasFold runs with N distinct seeds, generating five predictions per seed by default.
+The highest-ranked prediction from each seed provides an apo structure used to condition K-Fold, while all predictions across these seeds form the prior ensemble from which starting coordinates are sampled for the diffusion bridge.
+
+### Providing apo structures
+
+Use `apo` to provide experimental structures or predictions from tools such as AlphaFold2:
+
+```yaml
+name: provided_apo
+sequences:
+  - protein:
+      id: A
+      sequence: MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQANL
+      apo:
+        - structures/protein.pdb
 ```
 
-Multiple GPUs:
+List one or more PDB or mmCIF files under `apo`.
+Relative paths are resolved from the query file's directory.
+If a file contains multiple models, all are used.
+Provided structures replace automatic generation for that protein or pair.
 
-```bash
-python scripts/inference_multigpu.py \
-  --config configs/model/kfold-ecsi.yaml \
-  --weight checkpoints/model.ckpt \
-  --ccd path/to/ccd.pkl \
-  --input queries \
-  --out-dir results \
-  --num-gpus 4
-```
+## Outputs and confidence
 
-Common options:
-
-| Option | Default | Description |
-| :--- | :--- | :--- |
-| `--config` | `configs/model/kfold-ecsi.yaml` | KFold model configuration. |
-| `--weight` | Required | Weight file for the selected model version. |
-| `--ccd` | Required | Serialized CCD data file. |
-| `--input` | Required | One YAML/JSON file or a directory. |
-| `--out-dir` | `inference_results` | Output root. |
-| `--seed` | `1` | One or more query seeds. |
-| `--num-apo` | `None` | Maximum apo structures per protein entry; all are used when omitted. |
-| `--num-samples` | `5` | Diffusion samples per query and seed. |
-| `--num-recycles` | `10` | Trunk recycle count. |
-| `--num-steps` | `200` | Diffusion step count. |
-| `--num-workers` | `8` | DataLoader worker count. GPU structure tokenization is not run in workers. |
-| `--overwrite` | `False` | Allow an existing output directory. |
-| `--save-distogram` | `False` | Save unpadded distogram logits, bin edges, and token-axis indices. |
-
-Single-GPU inference additionally supports `--save-trajectory`,
-`--save-confidence`, and `--dry-run`. A dry run does not need `--weight`; it
-parses the queries and runs the CPU data pipeline without loading a model or
-writing predictions. Multi-GPU inference accepts `--num-gpus`; if omitted, all
-visible GPUs are used.
-
-## Output
-
-Each query gets its own directory containing the stored query description and
-predicted mmCIF structures:
+For a query named `test`, the default command writes:
 
 ```text
-results/
-└── Example_Complex/
-    ├── query.yaml
-    ├── Example_Complex_seed-1_sample-0.cif
-    ├── Example_Complex_seed-1_sample-0_confidences.json
-    └── Example_Complex_seed-1_sample-0_confidences.npz  # single GPU with --save-confidence
+predictions/test/
+├── test_model.cif
+├── test_confidence.json
+├── test_summary.csv
+├── kfold_settings.json
+└── test_seed-1/
+    ├── done.txt
+    ├── query.json
+    ├── kfold_settings.json
+    ├── apo_setting.json
+    ├── apo/
+    │   ├── monomer-1.done
+    │   ├── monomer-1_apo.pdb
+    │   └── monomer-1_prior.pdb
+    ├── test_seed-1_sample-0_model.cif
+    ├── test_seed-1_sample-0_confidence.json
+    ├── ...
+    ├── test_seed-1_sample-4_model.cif
+    └── test_seed-1_sample-4_confidence.json
 ```
 
-Every successful sample writes an mmCIF file and a confidence-summary JSON file.
-The single-GPU script writes raw pLDDT/PAE/PDE arrays to NPZ only when
-`--save-confidence` is set. The multi-GPU script currently does not write NPZ
-confidence arrays or diffusion trajectories. With `--save-distogram`, an
-`Example_Complex_seed-1_distogram.npz` file is written alongside the other
-outputs for that query and seed. Its `logits` array has shape
-`[Ntoken, Ntoken, Nbin]`, and its `bin_edges` array contains the `Nbin - 1`
-distance boundaries in angstroms. The `asym_ids` and `res_ids` arrays identify
-each distogram-axis token using its 1-based KFold asymmetric-unit ID and residue
-index.
+Each seed directory contains all predictions and prepared inputs.
+Sample indices start at 0.
+`query.json` references the saved apo and prior PDB files using relative paths; move the whole seed directory to keep these references valid.
+Apo files use `monomer-{i}_apo.pdb` and `monomer-{i}_prior.pdb`, or `multimer-{i}_apo.pdb` and `multimer-{i}_prior.pdb` for protein pairs.
+The number i is the 1-based position in the full `sequences` list, including non-protein entries.
+
+### Ranking and confidence summaries
+
+After all jobs finish, the CLI copies the highest-ranked structure and its confidence JSON to the query directory.
+The summary CSV lists `seed`, `sample`, `ranking_score`, `plddt`, `ptm`, `iptm`, `pde`, and `has_clash`, sorted by descending ranking score.
+
+Confidence JSON files group scores under `complex`, `chains`, and `interfaces`.
+Chain summaries contain mean pLDDT, mean PDE, and pTM; interface summaries contain pairwise ipTM.
+A token represents one standard protein, DNA, or RNA residue, or one atom in a ligand or modified residue.
+
+| Metric | Meaning | Scale |
+| --- | --- | --- |
+| `plddt` | Local confidence, predicted per atom and averaged in summaries. | 0–100; higher is better. |
+| `ptm` | Predicted TM-score for overall structure accuracy. | 0–1; higher is better. |
+| `iptm` | Interface predicted TM-score for relative chain placement. | 0–1; higher is better. |
+| `pae` | Predicted aligned error between tokens, available in raw confidence arrays. | Å; lower is better. |
+| `pde` | Predicted distance error between tokens, averaged in summaries. | Å; lower is better. |
+| `has_clash` | Whether the predicted complex triggers the inter-chain clash check. | 0 or 1. |
+
+The complex ranking score is `0.8 * iptm + 0.2 * ptm - 100 * has_clash`.
+Structure mmCIF files store per-atom pLDDT in the B-factor field.
+
+Ranking covers the requested seeds and sample count, including reused results.
+
+### Optional outputs
+
+Structure mmCIF and confidence-summary JSON files are always saved.
+Enable additional outputs with these flags:
+
+| Flag | File suffix | Contents |
+| --- | --- | --- |
+| `--save-confidence` | `_sample-{i}_confidence.npz` | Per-atom `plddt` and token-pair `pae` and `pde` arrays. |
+| `--save-embeddings` | `_embeddings.npz` | Unpadded `s_inputs`, `s_lm`, and `z` representations, shared across samples. |
+| `--save-distogram` | `_distogram.npz` | Shared `logits`, `bin_edges`, `asym_ids`, and `res_ids`. |
+| `--save-trajectory` | `_sample-{i}_trajectory.cif` | Diffusion trajectory for each sample. |
+
+All filenames begin with `<name>_seed-<seed>`.
+If the best prediction has a saved confidence NPZ, it is also copied to `<name>_confidence.npz` in the query directory.

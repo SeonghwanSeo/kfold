@@ -1,0 +1,10 @@
+# Distillation dataset configuration for training.
+_yaml_: "default-train.yaml"
+
+name: "distillation"
+type: "distillation"
+
+sampler:
+  _registry_: "data_sampler"
+  _class_: UniformSampler
+  level: complex

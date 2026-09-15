@@ -52,8 +52,7 @@ class WeightedMSELoss(torch.nn.Module):
         x_pred: torch.Tensor,
         x_gt: torch.Tensor,
         f_input: FoldingInput,
-        compute_chain_com_loss: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    ) -> torch.Tensor:
         """Compute the weighted MSE loss.
 
         Parameters
@@ -64,15 +63,11 @@ class WeightedMSELoss(torch.nn.Module):
             Ground truth coordinates. Shape (B, N, L, 3).
         f_input : FoldingInput
             The FoldingInput object containing model inputs.
-        compute_chain_com_loss: bool
-            Whether to compute the additional chain COM loss term.
 
         Returns
         -------
         weighted_mse_loss : torch.Tensor
             Computed MSE loss. Shape (B, N).
-        chain_com_loss : torch.Tensor | None
-            Computed chain COM loss if compute_chain_com_loss is True, else None.
         """
         assert x_pred.ndim == 4  # [B, N, L, 3]
         assert x_pred.shape == x_gt.shape
@@ -92,19 +87,7 @@ class WeightedMSELoss(torch.nn.Module):
                 )  # [B, N, L, 3]
 
         # Compute weighted mse loss
-        mse_loss = self.compute_weighted_mse_loss(x_pred, x_gt, w, mask)  # [B, N]
-
-        if compute_chain_com_loss:
-            # Additional chain COM loss term
-            b_i = torch.arange(f_input.batch_size, device=f_input.device)[:, None]
-            t_i = f_input.atom.token_index  # [B, Latom]
-            asym_id = f_input.token.asym_id[b_i, t_i]  # [B, Latom]
-            com_loss = self.compute_chain_com_loss(
-                x_pred, x_gt, w, mask, asym_id, f_input.num_chains
-            )
-            return mse_loss, com_loss
-        else:
-            return mse_loss, None
+        return self.compute_weighted_mse_loss(x_pred, x_gt, w, mask)  # [B, N]
 
     def get_atom_weights(self, f_input: FoldingInput) -> torch.Tensor:
         """Compute atom weights for loss calculation.
@@ -153,74 +136,6 @@ class WeightedMSELoss(torch.nn.Module):
         d_sq = ((x_pred - x_gt) ** 2).sum(-1)  # [B, N, L]
         mse_loss = (1 / 3) * (w * d_sq).sum(-1) / mask_sum  # [B, N]
         return mse_loss
-
-    def compute_chain_com_loss(
-        self,
-        x_pred: torch.Tensor,
-        x_gt: torch.Tensor,
-        weights: torch.Tensor,
-        mask: torch.Tensor,
-        asym_id: torch.Tensor,
-        max_chains: int,
-    ) -> torch.Tensor:
-        """Compute chain-wise COM losses.
-
-        Parameters
-        ----------
-        x_pred : torch.Tensor
-            Predicted coordinates of shape [B, N, L, 3].
-        x_gt : torch.Tensor
-            Aligned ground-truth coordinates of shape [B, N, L, 3].
-        weights : torch.Tensor
-            Modality weights per atom of shape [B, L].
-        mask : torch.Tensor
-            Resolved mask per atom of shape [B, L].
-        asym_id : torch.Tensor
-            Chain id per atom of shape [B, L].
-
-        Returns
-        -------
-        com_loss : torch.Tensor
-            Chain COM loss of shape [B, N], averaged over atoms in each chain and weighted
-            by the modality weights. Empty chain slots are ignored in the loss.
-        """
-        B, N, L, _ = x_pred.shape
-
-        # Renumber asym id to chain id: 1, 2, 5, 6, ... -> 1, 2, 3, ..., 0 0 0(unresolved)
-        chain_id = torch.zeros_like(asym_id)
-        for b_i in range(B):
-            mask_i = mask[b_i]  # [L]
-            asym_id_i = asym_id[b_i]
-            uniq_id = torch.sort(torch.unique(asym_id_i[mask_i]))[0]  # [Nchain]
-            for i, asym in enumerate(uniq_id, start=1):
-                chain_id[b_i, asym_id_i == asym] = i  # [B, Ntoken]
-        chain_id[~mask] = 0  # Unresolved atoms get chain id 0
-
-        def compute_chain_com(x: torch.Tensor) -> torch.Tensor:
-            """Compute chain-wise COM for each sample in the batch.
-            [B, N, L, 3] -> [B, N, Nchain, 3]
-            """
-            num_chains = max_chains + 1  # 0 is reserved for padding atoms
-            idx = chain_id[:, None, :, None].expand(x.shape)
-            com = torch.zeros(
-                (B, N, num_chains, 3), device=x.device, dtype=x.dtype
-            ).scatter_reduce_(-2, idx, x, reduce="mean", include_self=False)
-            return com
-
-        com_pred = compute_chain_com(x_pred)  # [B, N, Nchain, 3]
-        com_gt = compute_chain_com(x_gt)  # [B, N, Nchain, 3]
-
-        # Broadcast each chain's centroid to its atoms.
-        # This aims to weight the COM error by the number of atoms in each chain.
-        gather_index = chain_id[:, None, :, None].expand_as(x_pred)
-        com_pred = torch.gather(com_pred, 2, gather_index)
-        com_gt = torch.gather(com_gt, 2, gather_index)
-
-        m, w = mask[:, None, :], weights[:, None, :]  # [B, 1, L]
-        mask_sum = m.sum(-1).clamp(min=1.0)  # [B, 1]
-        com_sq = ((com_pred - com_gt) ** 2).sum(-1)
-        com_loss = (w * com_sq).sum(-1) / mask_sum  # [B, N]
-        return com_loss
 
 
 class BondLoss(torch.nn.Module):

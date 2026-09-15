@@ -14,8 +14,11 @@ from kfold.inference.assembly import (
     subset_sources,
     validate_plan,
 )
-from kfold.inference.data_pipeline import InputDataPipeline, ResolvedStructureSources
-from kfold.inference.query import Query
+from kfold.inference.sequential_pipeline import (
+    InputDataPipeline,
+    ResolvedStructureSources,
+)
+from kfold.inference.sequential_query import Query
 
 
 @dataclasses.dataclass
@@ -176,8 +179,8 @@ def test_ordinary_pipeline_rejects_assembly():
 def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
     import torch
 
-    from kfold.inference.dataset import InferenceDataset
     from kfold.inference.sequential import run_query
+    from kfold.inference.sequential_dataset import InferenceDataset
 
     monkeypatch.setattr(InferenceDataset, "pad_input", lambda self, f: f)
     calls = []
@@ -265,7 +268,7 @@ def test_real_smiles_pipeline_preserves_prior_and_apo_features():
     import torch
 
     from kfold.data.types.ccd import CCD
-    from kfold.inference.query import LigandSequence
+    from kfold.inference.sequential_query import LigandSequence
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -311,7 +314,7 @@ def test_real_smiles_pipeline_preserves_prior_and_apo_features():
 def test_ecsi_consumes_grouped_endpoint_without_chainwise_regeneration():
     import torch
 
-    from kfold.model.modules.structure.ecsi import KFoldECSI
+    from kfold.model.modules.ecsi import KFoldECSI
 
     # Call the actual endpoint sampler on a small CPU fixture. Its augmentation
     # is stubbed to identity so the source-coordinate assertion is exact.
@@ -329,7 +332,7 @@ def test_real_protein_ligand_protein_preserves_structure_conditioning(tmp_path):
     from rdkit import Chem
 
     from kfold.data.types.ccd import CCD, Component
-    from kfold.inference.query import LigandSequence, ProteinSequence
+    from kfold.inference.sequential_query import LigandSequence, ProteinSequence
 
     mol = Chem.MolFromSmiles("NCC(=O)O")
     for atom, name in zip(mol.GetAtoms(), ["N", "CA", "C", "O", "OXT"], strict=True):
@@ -447,7 +450,7 @@ def test_real_protein_ligand_protein_preserves_structure_conditioning(tmp_path):
         a_records[0]["coords"], b_records[0]["coords"], equal_nan=True
     )
     # Actual token insertion consumes the new records, using a coordinate-dependent spy.
-    from kfold.inference.structure_tokenization import apply_apo_structure_tokens
+    from kfold.inference.sequential_tokenization import apply_apo_structure_tokens
 
     class Encoder:
         def __init__(self):
@@ -482,3 +485,48 @@ def test_real_protein_ligand_protein_preserves_structure_conditioning(tmp_path):
         q, sources=five, prior_groups=[obj], trunk_groups=[obj], stage_index=1
     )
     torch.testing.assert_close(again.atom.ref_pos, reencoded.atom.ref_pos, rtol=0, atol=0)
+
+
+def test_release_protein_pair_example_preserves_assembly_group(tmp_path):
+    import warnings
+    from pathlib import Path
+
+    import yaml
+
+    from kfold.data.types.ccd import CCD
+    from kfold.inference.query import ProteinPair
+    from kfold.inference.query import Query as NativeQuery
+    from kfold.inference.sequential_query import parse_single_file
+
+    root = Path(__file__).resolve().parents[2]
+    data = yaml.safe_load((root / "examples/8jeo_sequential.yaml").read_text())
+    apo = tmp_path / "apo.pdb"
+    apo.write_text("END\n")  # This test validates parsing/planning, not coordinates.
+    for entry in data["sequences"]:
+        next(iter(entry.values()))["apo"] = [str(apo)]
+    path = tmp_path / "8jeo.yaml"
+    path.write_text(yaml.safe_dump(data))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        parsed = parse_single_file(path, CCD({}))
+    assert validate_plan(parsed) == [
+        {"id": "assemble_BC", "chains": ["B", "C"]},
+        {"id": "final", "chains": ["A", "B", "C"]},
+    ]
+    intermediate = subset_query(parsed, ["B", "C"])
+    assert not intermediate.sequences
+    assert intermediate.multimer_sequences[0].ids == [("B", "C")]
+    assert (
+        intermediate.multimer_sequences[0].sequence1
+        == data["sequences"][1]["protein_pair"]["sequence1"]
+    )
+    with pytest.raises(ValueError, match="splits an existing object"):
+        validate_plan(
+            parsed.copy(assembly={"stages": [{"id": "AB", "chains": ["A", "B"]}]})
+        )
+    # The normal release parser remains independent of experimental state.
+    with pytest.raises(ValueError, match="assembly"):
+        NativeQuery.load(path)
+    data.pop("assembly")
+    native = NativeQuery.from_dict(data, base_dir=tmp_path)
+    assert isinstance(native.sequences[1], ProteinPair)

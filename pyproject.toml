@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kfold"
-version = "0.2.0"
+dynamic = ["version"]
 description = "K-Fold"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,22 +13,33 @@ dependencies = [
   # core dependencies
   "torch",
   "numpy",
-  # additional dependencies
   "tqdm",
   "scipy",
   "omegaconf",
+  "huggingface-hub>=1.31.0",
   "rdkit",
   "einops",
   "gemmi",
-  'bioprior @ git+https://github.com/SeonghwanSeo/bio-prior.git@v0.1.2',
+  "pyyaml",
+  # apo sampler
+  "numba",
+  "atlasfold>=1.0.2",
 ]
+
+[project.scripts]
+kfold = "kfold.cli.main:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "kfold.__version__" }
 
 [project.optional-dependencies]
 cuequiv = [
   "torch>=2.7.0",
-  "cuequivariance_torch>=0.6.0",
-  "cuequivariance_ops_cu12>=0.6.0",
-  "cuequivariance_ops_torch_cu12>=0.6.0",
+  # Keep the frontend and CUDA kernels aligned with K-Fold's attention API.
+  "cuequivariance==0.10.0",
+  "cuequivariance_torch==0.10.0",
+  "cuequivariance_ops_cu12==0.10.0",
+  "cuequivariance_ops_torch_cu12==0.10.0",
 ]
 dev = ["pre-commit", "pytest"]
 train = [
@@ -36,11 +47,9 @@ train = [
   'wandb', # for experiment tracking
   'lmdb', # for training dataset storage
   'msgpack', # for data serialization
-  "numba",
+  "zstandard",
+  'bioprior @ git+https://github.com/SeonghwanSeo/bio-prior.git@v0.1.2',
 ]
 preprocess = [
   'pdbeccdutils', # for ccd data handling
 ]
-
-[tool.pytest.ini_options]
-testpaths = ["tests/unit_tests"]

@@ -1,24 +1,4 @@
-"""Lean ESM2-style attention primitives — pure PyTorch, no xformers.
-
-This module is the dependency-light layer stack used by the K-Fold
-encoder package. It supports exactly the subset of features that the
-shipped checkpoints actually need:
-
-  * Rotary positional embeddings (with explicit `position_ids`).
-  * Self-attention via `torch.nn.functional.scaled_dot_product_attention`
-    (which auto-dispatches to flash / efficient / math kernels).
-  * The upstream "relax temperature scaling" knob (default
-    `1/sqrt(head_dim)` factor pre-multiplied into Q, on top of SDPA's
-    own `1/sqrt(head_dim)` — i.e. an effective `1/head_dim` attention
-    temperature).
-  * ESM1LayerNorm + gelu.
-
-Everything else from the upstream training-time `layers.py` (xformers,
-QK-Norm, logit soft-cap, gradient checkpoint, packed-sequence
-BlockDiagonalMask, encoder-decoder / cross-attention, ONNX trace flag)
-is intentionally removed. Pretrained checkpoints have all those flags
-disabled, so this lean version is byte-compatible for weight loading.
-"""
+"""Fused transformer layers for the frozen protein structure encoder."""
 
 import math
 
@@ -29,16 +9,7 @@ from .nn import Linear
 
 
 def gelu(x: torch.Tensor) -> torch.Tensor:
-    """ESM2-style GELU — the *manual* `x * 0.5 * (1 + erf(x / sqrt(2)))`
-    formula, matching the upstream training-time `layers.gelu`.
-
-    Why not `F.gelu(x)`? Under bf16 autocast, PyTorch's fused
-    `F.gelu` CUDA kernel runs the math in fp32 internally and casts
-    back, while the manual 4-op formula stays in bf16 throughout. The
-    training-time code uses the manual form, so for bit-faithful
-    reproduction of the trained encoder we must do the same — `F.gelu`
-    diverges by ~2.5 in worst case after a single FFN block.
-    """
+    """Apply the training-time GELU formula, preserving intermediate rounding."""
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
 
@@ -48,207 +19,85 @@ def _rotate_half(x: torch.Tensor) -> torch.Tensor:
 
 
 class RotaryEmbedding(torch.nn.Module):
-    """Rotary position embeddings (RoFormer, Su et al. 2021).
+    """Cache 20,000 rotary positions shared across inputs and encoder layers."""
 
-    Two entry points:
-      * `forward(q, k)` — applies sequential 0..L-1 positions, cached.
-      * `forward_with_position_ids(q, k, position_ids, bsz, n_heads, head_dim)`
-        — applies a per-token integer `position_ids` map. Used by the
-        ProteinNet encoder so chain identity can reset positions.
-
-    Default `dim` is 64 = head_dim for the 3B preset (embed_dim=2560,
-    num_heads=40).
-    """
-
-    def __init__(self, dim: int = 64):
+    def __init__(self, dim: int):
         super().__init__()
         inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=True)
+        self.register_buffer("inv_freq", inv_freq)
+        self.init_cache()
 
-    def forward(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        pos_id: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Apply RoPE using explicit `[B, L]` position IDs (per-chain reset).
+    def init_cache(self) -> None:
+        """Build nonpersistent FP32 tables from the loaded rotary frequencies."""
+        positions = torch.arange(20_000, dtype=torch.float32, device=self.inv_freq.device)
+        freqs = torch.outer(positions, self.inv_freq.float())
+        self.register_buffer("_cos_cached", freqs.cos().tile(1, 2), persistent=False)
+        self.register_buffer("_sin_cached", freqs.sin().tile(1, 2), persistent=False)
 
-        q, k: `[B*H, L, head_dim]`
-        """
-        device = q.device
-        dtype = q.dtype
-        inv_freq = self.inv_freq.to(device=device, dtype=dtype)
-        num_heads = q.shape[-3]
-
-        freqs = torch.einsum("bl,d->bld", pos_id, inv_freq)  # [B, L, D//2]
-        emb = torch.cat((freqs, freqs), dim=-1)  # [B, L, D]
-
-        cos = emb.cos().unsqueeze(1).expand(-1, num_heads, -1, -1)
-        sin = emb.sin().unsqueeze(1).expand(-1, num_heads, -1, -1)
-        q = (q * cos) + (_rotate_half(q) * sin)
-        k = (k * cos) + (_rotate_half(k) * sin)
-        return q, k
+    def forward(self, pos_id: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Look up factors for position IDs in [0, 20000), returning (B, 1, L, D)."""
+        cos = self._cos_cached[pos_id]
+        sin = self._sin_cached[pos_id]
+        return cos.unsqueeze(1), sin.unsqueeze(1)
 
 
 class MultiheadAttention(torch.nn.Module):
-    """Self-attention with rotary embeddings (always on).
+    """Self-attention with a combined QKV projection and shared rotary factors."""
 
-    Lean port of the training-time `layers.MultiheadAttention`, restricted
-    to the self-attention + RoPE configuration used by every shipped
-    K-Fold checkpoint. Uses `F.scaled_dot_product_attention` so the
-    dispatched kernel (flash / mem-efficient / math) is whatever the
-    installed PyTorch build provides — no xformers dependency.
-
-    Parameter names (`k_proj`, `v_proj`, `q_proj`, `out_proj`,
-    `rot_emb.inv_freq`) match the training-time class so state_dict
-    weights load 1-for-1.
-
-    Shape convention: input/output is `[L, B, embed_dim]` (ESM2).
-    """
-
-    def __init__(
-        self,
-        embed_dim: int = 2560,
-        num_heads: int = 40,
-        dropout: float = 0.1,
-        bias: bool = True,
-    ):
+    def __init__(self, embed_dim: int, num_heads: int):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.dropout = float(dropout)
-        self.head_dim = embed_dim // num_heads
-        if self.head_dim * num_heads != embed_dim:
+        if embed_dim % num_heads:
             raise ValueError("embed_dim must be divisible by num_heads")
-
-        # Linear projections (names match upstream so state_dict loads).
-        self.k_proj = Linear(embed_dim, embed_dim, bias=bias)
-        self.v_proj = Linear(embed_dim, embed_dim, bias=bias)
-        self.q_proj = Linear(embed_dim, embed_dim, bias=bias)
-        self.out_proj = Linear(embed_dim, embed_dim, bias=bias)
-
-        # bias_k / bias_v: not used at inference (kept None so state_dict
-        # loading doesn't complain about extra keys — the training code
-        # also stored them as None).
-        self.bias_k = None
-        self.bias_v = None
-
-        # All shipped K-Fold checkpoints use RoPE; not optional.
-        self.rot_emb = RotaryEmbedding(self.head_dim)
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.qkv_proj = Linear(embed_dim, 3 * embed_dim)
+        self.out_proj = Linear(embed_dim, embed_dim)
 
     def forward(
         self,
         x: torch.Tensor,
-        seq_id: torch.Tensor,
-        pos_id: torch.Tensor,
+        attn_mask: torch.Tensor,
+        rotary: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        """
-        x: [B, L, D]
-        seq_id: [B, L] (bool or int)
-        pos_id: [B, L], default of arange(L) if None
-        """
-        B, L, D = x.shape
-        H = self.num_heads
-        Dh = self.head_dim
-
-        # Project Q, K, V from the same input (self-attention).
-        q = self.q_proj(x)  # [B, L, D]
-        k = self.k_proj(x)
-        v = self.v_proj(x)
-
-        # [B, L, D] -> [B, L, H, D/H] -> [B, H, L, D/H]
-        q, k, v = map(
-            lambda x: x.unflatten(-1, (H, Dh)).transpose(-2, -3).contiguous(), (q, k, v)
+        """Apply masked attention to features of shape (B, L, D)."""
+        q, k, v = self.qkv_proj(x).chunk(3, dim=-1)
+        q, k, v = (
+            t.unflatten(-1, (self.num_heads, self.head_dim)).transpose(1, 2)
+            for t in (q, k, v)
         )
+        cos, sin = rotary
+        cos, sin = cos.to(q.dtype), sin.to(q.dtype)
+        q = q * cos + _rotate_half(q) * sin
+        k = k * cos + _rotate_half(k) * sin
 
-        # Apply RoPE.
-        q, k = self.rot_emb(q, k, pos_id)
-
-        # Apply the "relax temperature scaling" factor on Q. SDPA's own
-        # 1/sqrt(head_dim) scaling is applied on top.
-        q = q * (Dh**-0.5)
-        attn_mask = seq_id[:, None, :] == seq_id[:, :, None]
-        attn_mask = attn_mask.unsqueeze(-3)  # [B, 1, L, L]
-
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
-
-        out = out.transpose(-2, -3).contiguous().flatten(-2)
-        out = self.out_proj(out)
-        return out
-
-
-class ESM1LayerNorm(torch.nn.Module):
-    """Layer norm with ESM1 initialization (affine=True by default).
-
-    Default `hidden_size=2560` matches the 3B encoder's `embed_dim` /
-    `decoder_dim`.
-    """
-
-    def __init__(self, hidden_size=2560, eps: float = 1e-12, affine: bool = True):
-        super().__init__()
-        self.hidden_size = (
-            (hidden_size,) if isinstance(hidden_size, int) else tuple(hidden_size)
+        # Preserve the pretrained encoder's extra 1/sqrt(head_dim) scaling.
+        out = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_mask, scale=1.0 / self.head_dim
         )
-        self.eps = eps
-        self.affine = bool(affine)
-        if self.affine:
-            self.weight = torch.nn.Parameter(torch.ones(hidden_size))
-            self.bias = torch.nn.Parameter(torch.zeros(hidden_size))
-        else:
-            self.weight = None
-            self.bias = None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        dims = tuple(-(i + 1) for i in range(len(self.hidden_size)))
-        means = x.mean(dims, keepdim=True)
-        x_zeromean = x - means
-        variances = x_zeromean.pow(2).mean(dims, keepdim=True)
-        x = x_zeromean / torch.sqrt(variances + self.eps)
-        if self.affine:
-            x = (self.weight * x) + self.bias
-        return x
+        out = out.transpose(1, 2).reshape(x.shape)
+        return self.out_proj(out)
 
 
 class TransformerLayer(torch.nn.Module):
-    """ESM2-style pre-LN transformer block with rotary attention.
+    """Pre-LN transformer with native LayerNorm and training-time GELU."""
 
-    Defaults match the 3B encoder block (`embed_dim=2560`,
-    `ffn_embed_dim=10240`, `attention_heads=40`). `ffn_embed_dim=None`
-    auto-resolves to `4 * embed_dim` for any other embed_dim.
-    """
-
-    def __init__(
-        self,
-        embed_dim: int = 2560,
-        ffn_embed_dim: int = 10240,
-        attention_heads: int = 40,
-    ):
+    def __init__(self, embed_dim: int, ffn_embed_dim: int, attention_heads: int):
         super().__init__()
-        self.embed_dim = embed_dim
-        self.ffn_embed_dim = ffn_embed_dim
-        self.attention_heads = attention_heads
-
         self.self_attn = MultiheadAttention(embed_dim, attention_heads)
-        self.self_attn_layer_norm = ESM1LayerNorm(embed_dim)
+        self.self_attn_layer_norm = torch.nn.LayerNorm(embed_dim, eps=1e-12)
         self.fc1 = Linear(embed_dim, ffn_embed_dim)
         self.fc2 = Linear(ffn_embed_dim, embed_dim)
-        self.final_layer_norm = ESM1LayerNorm(embed_dim)
+        self.final_layer_norm = torch.nn.LayerNorm(embed_dim, eps=1e-12)
 
     def forward(
         self,
         x: torch.Tensor,
-        seq_id: torch.Tensor | None = None,
-        pos_id: torch.Tensor | None = None,
+        attn_mask: torch.Tensor,
+        rotary: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
-        residual = x
-        x = self.self_attn_layer_norm(x)
-        x = self.self_attn(x, seq_id, pos_id)
-        x = residual + x
-
+        """Update features using the input's shared attention mask and rotary factors."""
+        x = x + self.self_attn(self.self_attn_layer_norm(x), attn_mask, rotary)
         residual = x
         x = self.final_layer_norm(x)
-        x = gelu(self.fc1(x))
-        x = self.fc2(x)
-        x = residual + x
-
-        return x
+        x = self.fc2(gelu(self.fc1(x)))
+        return residual + x
