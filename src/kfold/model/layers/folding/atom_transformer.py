@@ -253,6 +253,7 @@ class AtomAttentionEncoder(nn.Module):
         num_heads=4,
         use_structure: bool = False,
         ckpt_atom_stack: bool = False,
+        kernel_backend: str = "torch",
     ):
         """Initialize the atom attention encoder.
 
@@ -286,6 +287,7 @@ class AtomAttentionEncoder(nn.Module):
             channel_z=channel_atompair,
             num_blocks=num_blocks,
             num_heads=num_heads,
+            kernel_backend=kernel_backend,
         )
         self.linear_q_to_a = LinearNoBias(channel_atom, channel_token, init="default")
         self.relu = nn.ReLU()
@@ -376,6 +378,7 @@ class AtomAttentionDecoder(nn.Module):
         num_blocks: int = 3,
         num_heads: int = 4,
         ckpt_atom_stack: bool = False,
+        kernel_backend: str = "torch",
     ):
         """Initialize the atom attention decoder.
 
@@ -404,6 +407,7 @@ class AtomAttentionDecoder(nn.Module):
             channel_z=channel_atompair,
             num_blocks=num_blocks,
             num_heads=num_heads,
+            kernel_backend=kernel_backend,
         )
         self.layernorm_q = LayerNorm(channel_atom, create_offset=False)
         self.linear_q_to_r = LinearNoBias(channel_atom, 3, init="final", precision=32)

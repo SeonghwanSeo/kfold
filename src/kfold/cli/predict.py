@@ -80,6 +80,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     # Devices, model components, and model cache.
     parser.add_argument(
+        "--kernel",
+        dest="kernel_backend",
+        choices=("torch", "cuequiv", "triton"),
+        help="K-Fold kernel backend (default: model config, or cuEquivariance if "
+        "installed, otherwise PyTorch). Triton supports CUDA inference only.",
+    )
+    parser.add_argument(
         "--gpu-ids",
         type=int,
         nargs="+",

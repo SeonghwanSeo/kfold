@@ -71,6 +71,8 @@ class KFoldConfig:
     confidence_head: confidence_head.ConfidenceHead.Config
     patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config | None
 
+    kernel_backend: str | None = None
+
     # For training
     diffusion_conditioning_drop_rate: float = 0.0
     confidence_conditioning_drop_rate: float = 0.0
@@ -139,10 +141,20 @@ class KFold(torch.nn.Module):
         self.trunk_config = resolve_config(TrunkConfig, config.trunk)
         self.parcae_config = resolve_config(ParcaeConfig, config.parcae)
 
-        self.use_kernel: bool = is_cuequivariance_installed()
+        kernel_backend = getattr(config, "kernel_backend", None)
+        if kernel_backend is None:
+            kernel_backend = "cuequiv" if is_cuequivariance_installed() else "torch"
+        if kernel_backend not in ("torch", "cuequiv", "triton"):
+            raise ValueError(
+                f"Unknown kernel_backend {kernel_backend!r}. "
+                "Expected 'torch', 'cuequiv', or 'triton'."
+            )
+        self.kernel_backend = kernel_backend
 
         # Initialize input featurizer.
-        self.input_embedder = input_embedder.InputEmbedder(config.input_embedder)
+        self.input_embedder = input_embedder.InputEmbedder(
+            config.input_embedder, kernel_backend=self.kernel_backend
+        )
 
         # Initialize pre-trained sequence and structure encoders.
         self.prot_seq_encoder = prot_seq_encoder.ProteinSequenceEncoder(
@@ -180,7 +192,9 @@ class KFold(torch.nn.Module):
         self.lm_to_pair = LMToPair(self.channel_s, self.channel_z)
 
         # Initialize trunk
-        self.apo_module = apo_module.ApoModule(config.apo_module)
+        self.apo_module = apo_module.ApoModule(
+            config.apo_module, kernel_backend=self.kernel_backend
+        )
         self.layernorm_z = LayerNorm(self.channel_z)
 
         # Parcae theory: learn a continuous negative-diagonal state transition
@@ -203,12 +217,14 @@ class KFold(torch.nn.Module):
             self.channel_z,
             self.trunk_config.num_lm_blocks,
             self.trunk_config.dropout,
+            kernel_backend=self.kernel_backend,
         )
         self.main_stack = tri_stack.TrianglularStack(
             self.channel_z,
             self.trunk_config.num_main_blocks,
             self.trunk_config.dropout,
             blocks_per_ckpt=self.trunk_config.blocks_per_ckpt,
+            kernel_backend=self.kernel_backend,
         )
         # Recyling
         self.linear_refine = LinearNoBias(self.channel_z, self.channel_z, init="identity")
@@ -216,6 +232,7 @@ class KFold(torch.nn.Module):
             self.channel_z,
             self.trunk_config.num_refine_blocks,
             self.trunk_config.dropout,
+            kernel_backend=self.kernel_backend,
         )
 
         # Initialize prediction heads
@@ -232,26 +249,22 @@ class KFold(torch.nn.Module):
             self.patch_pair_geometry_head = None
 
         # Diffusion head
-        self.score_model = score_model.DiffusionModule(config.score_model)
+        self.score_model = score_model.DiffusionModule(
+            config.score_model, kernel_backend=self.kernel_backend
+        )
         self.diffusion_head = ecsi.KFoldECSI(
             config.diffusion_head, score_model=self.score_model
         )
 
         # Confidence head
-        self.confidence_head = confidence_head.ConfidenceHead(config.confidence_head)
+        self.confidence_head = confidence_head.ConfidenceHead(
+            config.confidence_head, kernel_backend=self.kernel_backend
+        )
 
     @property
     def device(self) -> torch.device:
         """Return the device of the model parameters."""
         return next(self.parameters()).device
-
-    def set_forward_flags(
-        self,
-        use_cuequiv_kernels: bool | None = None,
-    ) -> None:
-        """Set flags used by training and inference forward passes."""
-        if use_cuequiv_kernels is not None:
-            self.use_kernel = use_cuequiv_kernels
 
     def _parcae_discretized_dynamics(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute the Parcae ZOH/Euler-discretized pair-state dynamics."""
@@ -423,7 +436,6 @@ class KFold(torch.nn.Module):
             s_lm,
             z,
             coords,
-            use_cuequiv_kernels=self.use_kernel,
         )
 
         return dict_out
@@ -483,7 +495,6 @@ class KFold(torch.nn.Module):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        use_cuequiv_kernels = self.use_kernel
         dtype = torch.get_autocast_dtype(f_input.device.type)
 
         # Parcae theory: stable channel-wise state decay (a) and
@@ -495,7 +506,7 @@ class KFold(torch.nn.Module):
         s_inputs, z_inputs = self.input_embedder(f_input)
 
         # Embedding of the apo state into the pair representation.
-        z_inputs = z_inputs + self.apo_module(f_input, use_cuequiv_kernels)
+        z_inputs = z_inputs + self.apo_module(f_input)
 
         # Initialize an independent pair-state z_0 instead of recycling from zeros.
         z = self._init_parcae_pair_state(z_inputs)
@@ -510,13 +521,13 @@ class KFold(torch.nn.Module):
         for _ in range(0, num_recycles + 1):
             # Intentional dropout during inference.
             _z_lm = F.dropout(z_lm, p=self.dropout, training=True)
-            u_t = z_inputs + self.lm_stack(_z_lm, pair_mask, use_cuequiv_kernels)
+            u_t = z_inputs + self.lm_stack(_z_lm, pair_mask)
             # Parcae recurrence: z_in = a * z_t + B_bar LN(u_t)
             z = a * z + F.linear(self.layernorm_z(u_t), b)
-            z = self.main_stack(z, pair_mask, use_cuequiv_kernels)
+            z = self.main_stack(z, pair_mask)
 
         # Refinement iteration
-        z = self.refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
+        z = self.refine_stack(self.linear_refine(z), pair_mask)
 
         return s_inputs, s_lm, z
 
@@ -533,6 +544,7 @@ class KFold(torch.nn.Module):
         use_struct_encoder: bool = True,
         use_rna_encoder: bool = True,
         cpu_offload: bool = False,
+        kernel_backend: str | None = None,
     ) -> Self:
         """Load a K-Fold from a pretrained model.
 
@@ -555,6 +567,11 @@ class KFold(torch.nn.Module):
             on CPU between inference calls. Move each to the input device only
             for feature extraction. The protein LM and structure tokenizers
             remain on device. Default is False.
+        kernel_backend : str, optional
+            Override the model's kernel backend: "torch", "cuequiv", or
+            "triton". Triton requires CUDA and supports inference only.
+            When neither this argument nor the model config selects a backend,
+            use cuEquivariance if installed, otherwise PyTorch.
         """
         from huggingface_hub import snapshot_download
 
@@ -571,6 +588,8 @@ class KFold(torch.nn.Module):
             config_path = repo_path / "config.yaml"
 
         config = OmegaConf.load(config_path)
+        if kernel_backend is not None:
+            config.kernel_backend = kernel_backend
         if not use_struct_encoder:
             config.protein_structure_encoder = None
         if not use_rna_encoder:

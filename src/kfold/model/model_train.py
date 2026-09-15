@@ -142,8 +142,6 @@ class KFoldForTrain(KFold):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        use_cuequiv_kernels = self.use_kernel
-
         train = self.training and grad_recurrence_steps > 0
 
         # Get the underlying modules for compiled models
@@ -164,7 +162,7 @@ class KFoldForTrain(KFold):
         z_inputs = z_inputs.float()  # cast to float32 for numerical stability
 
         # Embedding of the apo state into the pair representation.
-        z_inputs = z_inputs + apo_stack(f_input, use_cuequiv_kernels)
+        z_inputs = z_inputs + apo_stack(f_input)
 
         # Initialize an independent pair-state z_0 instead of recycling from zeros.
         z = self._init_parcae_pair_state(z_inputs)
@@ -183,14 +181,14 @@ class KFoldForTrain(KFold):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
                 _z_lm = F.dropout(z_lm, p=self.dropout, training=True)
-                u_t = z_inputs + lm_stack(_z_lm, pair_mask, use_cuequiv_kernels)
+                u_t = z_inputs + lm_stack(_z_lm, pair_mask)
                 # Parcae recurrence: z_in = a * z_t + B_bar LN(u_t), followed
                 # by the pair folding trunk as the nonlinear recurrent update.
                 z = a * z + F.linear(self.layernorm_z(u_t), b)
-                z = main_stack(z, pair_mask, use_cuequiv_kernels)
+                z = main_stack(z, pair_mask)
 
         # Refinement iteration
-        z = refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
+        z = refine_stack(self.linear_refine(z), pair_mask)
 
         return s_inputs, s_lm, z
 
@@ -364,7 +362,6 @@ class KFoldForTrain(KFold):
                 _s_lm,
                 _z,
                 coordinates,
-                use_cuequiv_kernels=self.use_kernel,
             )
 
         return dict_out
@@ -435,7 +432,6 @@ class KFoldForTrain(KFold):
             s_lm,
             z,
             coords,
-            use_cuequiv_kernels=self.use_kernel,
         )
         # Remove batch dimension from outputs for validation
         dict_out = {

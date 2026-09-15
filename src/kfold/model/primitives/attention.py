@@ -3,12 +3,37 @@ import math
 import torch
 import torch.nn.functional as F
 
+from .utils import permute_final_dims
+
 try:
     from cuequivariance_torch import attention_pair_bias as cueq_attention_pair_bias
 except ImportError:
     cueq_attention_pair_bias = None
 
-from .utils import permute_final_dims
+
+@torch.compiler.disable
+def triton_attention_pair_bias(
+    module,
+    x_q: torch.Tensor,
+    x_k: torch.Tensor,
+    pair_bias: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    call_site: str,
+) -> torch.Tensor:
+    """Run the Triton APB implementation for normalized K-Fold inputs."""
+    from kfold.utils.kernels.triton.attention_pair_bias import (
+        triton_attention_pair_bias,
+    )
+
+    return triton_attention_pair_bias(
+        module,
+        x_q,
+        x_k,
+        pair_bias,
+        mask,
+        call_site=call_site,
+    )
 
 
 def _attention(
@@ -179,7 +204,7 @@ def attention_pair_bias(
     num_heads: int = 32,
     inf: float = 1e9,
     attn_scale: float | None = None,
-    use_kernels: bool = False,
+    kernel_backend: str = "torch",
 ) -> torch.Tensor:
     """Compute the attention operation with pair bias using a custom kernel if available.
     Parameters
@@ -211,26 +236,26 @@ def attention_pair_bias(
         The value to use for masking, default 1e6
     attn_scale : Optional[float]
         The scaling factor for the query-key dot product, default None
-    use_kernels : bool
-        Whether to use the custom kernel if available, default False
+    kernel_backend : str
+        Backend for attention with precomputed QKV: PyTorch or cuEquivariance.
     """
-    if use_kernels:
+    if kernel_backend == "cuequiv":
         return _kernel_attention_pair_bias(
-            s,
-            q,
-            k,
-            v,
-            pair_bias,
-            mask,
-            w_proj_g,
-            w_proj_o,
-            b_proj_g,
-            b_proj_o,
-            num_heads,
-            inf,
+            s=s,
+            q=q,
+            k=k,
+            v=v,
+            pair_bias=pair_bias,
+            mask=mask,
+            w_proj_g=w_proj_g,
+            w_proj_o=w_proj_o,
+            b_proj_g=b_proj_g,
+            b_proj_o=b_proj_o,
+            num_heads=num_heads,
+            inf=inf,
             attn_scale=attn_scale,
         )
-    else:
+    if kernel_backend == "torch":
         return _torch_attention_pair_bias(
             s,
             q,
@@ -246,3 +271,7 @@ def attention_pair_bias(
             inf,
             attn_scale,
         )
+    raise ValueError(
+        f"Unsupported attention backend {kernel_backend!r} for precomputed QKV. "
+        "Expected 'torch' or 'cuequiv'."
+    )

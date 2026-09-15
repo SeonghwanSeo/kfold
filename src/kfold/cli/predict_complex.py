@@ -110,6 +110,7 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
             "use_struct_encoder": not args.disable_struct_encoder,
             "use_rna_encoder": not args.disable_rna_encoder,
             "cpu_offload": args.cpu_offload,
+            "kernel_backend": args.kernel_backend,
         }
         (args.out_dir / name / "kfold_settings.json").write_text(
             json.dumps(settings, indent=2) + "\n"
@@ -196,6 +197,7 @@ def _worker(
                 use_struct_encoder=not args.disable_struct_encoder,
                 use_rna_encoder=not args.disable_rna_encoder,
                 cpu_offload=args.cpu_offload,
+                kernel_backend=args.kernel_backend,
             )
             runner = KFoldRunner(model, cache_dir=args.cache_dir, verbose=False)
         logger.info(

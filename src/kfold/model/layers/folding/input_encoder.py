@@ -20,6 +20,7 @@ class InputFeatureEmbedder(torch.nn.Module):
         atom_encoder_blocks: int = 3,
         atom_encoder_heads: int = 4,
         ckpt_atom_stack: bool = False,
+        kernel_backend: str = "torch",
     ) -> None:
         """Initialize the Input feature embedding module.
 
@@ -54,6 +55,7 @@ class InputFeatureEmbedder(torch.nn.Module):
             num_heads=atom_encoder_heads,
             use_structure=False,
             ckpt_atom_stack=ckpt_atom_stack,
+            kernel_backend=kernel_backend,
         )
 
         # residue info

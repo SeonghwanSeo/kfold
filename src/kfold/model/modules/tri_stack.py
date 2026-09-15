@@ -23,6 +23,7 @@ class TrianglularStack(nn.Module):
         num_blocks: int = 48,
         dropout: float = 0.25,
         blocks_per_ckpt: int | None = None,
+        kernel_backend: str = "torch",
     ):
         """Initialize the Pairformer module."""
         super().__init__()
@@ -38,6 +39,7 @@ class TrianglularStack(nn.Module):
                 TriangularBlock(
                     self.channel_z,
                     self.dropout,
+                    kernel_backend=kernel_backend,
                 )
             )
 
@@ -45,7 +47,6 @@ class TrianglularStack(nn.Module):
         self,
         z: torch.Tensor,
         pair_mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Perform the forward pass.
 
@@ -55,9 +56,6 @@ class TrianglularStack(nn.Module):
             The pairwise embeddings
         pair mask : torch.Tensor
             The pair token mask
-        use_cuequiv_kernels : bool, optional
-            Whether to use CuEQuiv kernels, by default False
-
         Returns
         -------
         torch.Tensor
@@ -67,7 +65,6 @@ class TrianglularStack(nn.Module):
             partial(
                 b,
                 pair_mask=pair_mask,
-                use_cuequiv_kernels=use_cuequiv_kernels,
             )
             for b in self.blocks
         ]
@@ -88,6 +85,7 @@ class TriangularBlock(nn.Module):
         self,
         channel_z: int = 256,
         dropout: float = 0.25,
+        kernel_backend: str = "torch",
     ):
         """Initialize the Pairformer module.
 
@@ -102,8 +100,12 @@ class TriangularBlock(nn.Module):
         self.channel_z: int = channel_z
         self.dropout: float = dropout
 
-        self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
-        self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
+        self.tri_mul_out = TriangleMultiplicationOutgoing(
+            channel_z, kernel_backend=kernel_backend
+        )
+        self.tri_mul_in = TriangleMultiplicationIncoming(
+            channel_z, kernel_backend=kernel_backend
+        )
         self.transition_z = Transition(channel_z, expansion_factor=4)
 
         self.dropout_rowwise = DropoutRowwise(dropout)
@@ -113,7 +115,6 @@ class TriangularBlock(nn.Module):
         self,
         z: torch.Tensor,
         pair_mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Perform the forward pass.
         See Section 3.6 Algorithm 20 Pairformer Stack
@@ -122,16 +123,12 @@ class TriangularBlock(nn.Module):
 
         z = _add(
             z,
-            self.dropout_rowwise(
-                self.tri_mul_out(z, pair_mask, use_kernels=use_cuequiv_kernels)
-            ),
+            self.dropout_rowwise(self.tri_mul_out(z, pair_mask)),
         )
 
         z = _add(
             z,
-            self.dropout_rowwise(
-                self.tri_mul_in(z, pair_mask, use_kernels=use_cuequiv_kernels)
-            ),
+            self.dropout_rowwise(self.tri_mul_in(z, pair_mask)),
         )
 
         z = _add(z, self.transition_z(z))

@@ -2,6 +2,7 @@
 channel_s: 384
 channel_z: 256
 dropout: 0.25
+kernel_backend: null  # Use cuEquivariance if installed, otherwise PyTorch.
 
 input_embedder:
   channel_s: 384

@@ -71,7 +71,11 @@ class DiffusionModule(torch.nn.Module):
         blocks_per_ckpt: int | None = None
         ckpt_atom_stack: bool = False
 
-    def __init__(self, cfg):
+    def __init__(
+        self,
+        cfg,
+        kernel_backend: str = "torch",
+    ):
         super().__init__()
         self.cfg = cfg
         self.is_compiled: bool = False
@@ -92,6 +96,7 @@ class DiffusionModule(torch.nn.Module):
             atom_decoder_heads=cfg.atom_decoder_heads,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
             ckpt_atom_stack=cfg.ckpt_atom_stack,
+            kernel_backend=kernel_backend,
         )
 
     def do_compile(self, **kwargs):
