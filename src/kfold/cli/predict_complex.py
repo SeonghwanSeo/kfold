@@ -22,34 +22,62 @@ from kfold.model import KFold
 logger = logging.getLogger("kfold.predict")
 
 
-def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
-    start = perf_counter()
-    # Select unfinished jobs and load their prepared query paths.
-    pending = []
-    for query, seed, directory in jobs:
-        apo_ready = is_apo_prepared(query, directory)
+def _load_prepared_query(query: Query, apo_dir: Path) -> Query:
+    """Load a completed preparation and validate its target and protein entries."""
+    if not is_apo_prepared(query, apo_dir):
+        raise ValueError(
+            f"Apo preparation is incomplete: {apo_dir}. "
+            "Run kfold --stage apo with the same inputs and --share-apo-seeds "
+            "setting first, and the same seeds unless apos are shared."
+        )
+    prepared = Query.load(apo_dir / "query.json")
+    if prepared.name != query.name:
+        raise ValueError(f"Prepared query name does not match {query.name}.")
+    if any(not entry.apo for entry in prepared.protein_entries):
+        raise ValueError(f"Prepared query has missing apo structures: {apo_dir}.")
+    return prepared
+
+
+def dry_run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
+    """Validate saved preparations and count pending inference jobs without writing."""
+    pending = 0
+    for query, _, job_dir in jobs:
+        apo_dir = job_dir.parent if args.share_apo_seeds is not None else job_dir
+        apo_ready = is_apo_prepared(query, apo_dir)
         # Check saved apo/prior paths even for completed dry-run jobs.
-        if args.dry_run and apo_ready and not (args.stage == "all" and args.overwrite):
-            Query.load(directory / "query.json")
-        needs_apo = args.stage == "all" and not apo_ready
-        if (directory / "done.txt").is_file() and not args.overwrite and not needs_apo:
+        if apo_ready and not (args.stage == "all" and args.overwrite):
+            Query.load(apo_dir / "query.json")
+
+        if (job_dir / "done.txt").is_file() and not args.overwrite and apo_ready:
             continue
+
         # A default dry run includes queries whose preparation has not run yet.
-        if not args.dry_run or args.stage == "complex":
-            if not apo_ready:
-                raise ValueError(
-                    f"Apo preparation is incomplete: {directory}. "
-                    "Run kfold --stage apo with the same inputs and seeds first."
-                )
-            prepared = Query.load(directory / "query.json")
-            if prepared.name != query.name:
-                raise ValueError(f"Prepared query name does not match {query.name}.")
-            if any(not entry.apo for entry in prepared.protein_entries):
-                raise ValueError(
-                    f"Prepared query has missing apo structures: {directory}."
-                )
-            query = prepared
-        pending.append((query, seed, directory))
+        if args.stage == "complex":
+            _load_prepared_query(query, apo_dir)
+        pending += 1
+
+    logger.info(
+        "K-Fold inference: %d jobs pending (%d complete); GPUs %s.",
+        pending,
+        len(jobs) - pending,
+        args.gpu_ids[: min(len(args.gpu_ids), pending)],
+    )
+
+
+def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
+    """Predict unfinished complex jobs and summarize their ranked outputs."""
+    start = perf_counter()
+    pending = []
+    for query, seed, job_dir in jobs:
+        apo_dir = job_dir.parent if args.share_apo_seeds is not None else job_dir
+        if (
+            (job_dir / "done.txt").is_file()
+            and not args.overwrite
+            and is_apo_prepared(query, apo_dir)
+        ):
+            continue
+        query = _load_prepared_query(query, apo_dir)
+        pending.append((query, seed, job_dir))
 
     logger.info(
         "K-Fold inference: %d jobs pending (%d complete); GPUs %s.",
@@ -57,25 +85,25 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
         len(jobs) - len(pending),
         args.gpu_ids[: min(len(args.gpu_ids), len(pending))],
     )
-    if args.dry_run:
-        return
-
     # Invalidate previous completion records and run the pending GPU jobs.
     if pending:
-        for _, _, directory in pending:
-            (directory / "done.txt").unlink(missing_ok=True)
-        launch(_worker, args, pending, stage="K-Fold inference")
+        for _, _, job_dir in pending:
+            (job_dir / "done.txt").unlink(missing_ok=True)
+        num_workers = min(len(args.gpu_ids), len(pending))
+        worker_jobs = [pending[rank::num_workers] for rank in range(num_workers)]
+        launch(_worker, args, worker_jobs, stage="K-Fold inference")
 
     # Rank all requested seeds and save one representative result per query.
     logger.info("Summarizing predictions.")
     for name in sorted({query.name for query, _, _ in jobs}):
         logger.info("Ranking samples and saving best prediction for %s.", name)
         summary_start = perf_counter()
-        _summarize_predictions(args.out_dir / name, name, args.seed, args.num_samples)
+        _summarize_predictions(args.out_dir / name, name, args.seeds, args.num_samples)
         # Record the K-Fold settings requested in this CLI invocation.
         settings = {
             "version": __version__,
-            "seeds": args.seed,
+            "seeds": args.seeds,
+            "shared_apo": args.share_apo_seeds is not None,
             "num_samples": args.num_samples,
             "num_recycles": args.num_recycles,
             "num_steps": args.num_steps,
@@ -102,12 +130,12 @@ def _summarize_predictions(
     # Collect confidence summaries from completed prediction jobs.
     records = []
     for seed in seeds:
-        directory = out_dir / f"{name}_seed-{seed}"
-        if not (directory / "done.txt").is_file():
-            raise ValueError(f"Prediction job is incomplete: {directory}.")
-        prefix = f"{directory.name}_sample-"
+        job_dir = out_dir / f"{name}_seed-{seed}"
+        if not (job_dir / "done.txt").is_file():
+            raise ValueError(f"Prediction job is incomplete: {job_dir}.")
+        prefix = f"{job_dir.name}_sample-"
         for sample in range(num_samples):
-            path = directory / f"{prefix}{sample}_confidence.json"
+            path = job_dir / f"{prefix}{sample}_confidence.json"
             if not path.is_file():
                 continue
             with path.open() as f:
@@ -122,12 +150,12 @@ def _summarize_predictions(
     # Rank samples and copy the best structure and available confidence outputs.
     records.sort(key=lambda row: (-row["ranking_score"], row["seed"], row["sample"]))
     best = records[0]
-    directory = out_dir / f"{name}_seed-{best['seed']}"
+    rank_dir = out_dir / f"{name}_seed-{best['seed']}"
     prefix = f"{name}_seed-{best['seed']}_sample-{best['sample']}"
     for suffix in ("model.cif", "confidence.json"):
-        shutil.copyfile(directory / f"{prefix}_{suffix}", out_dir / f"{name}_{suffix}")
+        shutil.copyfile(rank_dir / f"{prefix}_{suffix}", out_dir / f"{name}_{suffix}")
 
-    confidence = directory / f"{prefix}_confidence.npz"
+    confidence = rank_dir / f"{prefix}_confidence.npz"
     best_confidence = out_dir / f"{name}_confidence.npz"
     if confidence.is_file():
         shutil.copyfile(confidence, best_confidence)
@@ -173,7 +201,7 @@ def _worker(
         logger.info(
             "Model and runner initialized in %.1f s.", perf_counter() - init_start
         )
-        for job_index, (query, seed, directory) in enumerate(jobs, start=1):
+        for job_index, (query, seed, job_dir) in enumerate(jobs, start=1):
             progress = f"[{job_index}/{len(jobs)}]"
             target = f"{query.name} (seed={seed})"
             job_start = perf_counter()
@@ -234,14 +262,15 @@ def _worker(
             work = f"output saving for {target}"
             logger.info("Saving started.")
             stage_start = perf_counter()
+            result.settings["shared_apo"] = args.share_apo_seeds is not None
             result.save(
-                directory,
+                job_dir,
                 save_confidence=args.save_confidence,
                 save_embeddings=args.save_embeddings,
                 save_distogram=args.save_distogram,
                 save_trajectory=args.save_trajectory,
             )
-            (directory / "done.txt").touch()
+            (job_dir / "done.txt").touch()
             logger.info(
                 "Saving completed in %.1f s.",
                 perf_counter() - stage_start,

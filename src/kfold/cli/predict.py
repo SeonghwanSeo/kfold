@@ -3,6 +3,10 @@
 import argparse
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kfold.inference.query import Query
 
 logger = logging.getLogger("kfold")
 
@@ -13,15 +17,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--stage",
         choices=("all", "apo", "complex"),
         default="all",
-        help="Run both stages (all), prepare apos (apo), or predict complexes "
-        "from prepared queries in --out-dir (complex).",
+        help="Run all stages, prepare apos, or predict complexes from --out-dir.",
     )
     parser.add_argument(
         "-i",
         "--input",
         type=Path,
         required=True,
-        help="Query JSON/YAML file or directory selecting the queries to predict.",
+        help="Query JSON/YAML file or directory.",
     )
     parser.add_argument(
         "-o",
@@ -31,11 +34,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Output directory.",
     )
     parser.add_argument(
-        "--seed",
+        "--seeds",
         type=int,
         nargs="+",
         default=[1],
-        help="Generation seeds (default: [1]).",
+        help="Complex inference seeds (default: [1]).",
     )
     # Apo generation settings.
     parser.add_argument(
@@ -43,14 +46,18 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="YAML settings for apo batching and AtlasFold prediction.",
     )
-    parser.add_argument(
+    apo_generation = parser.add_mutually_exclusive_group()
+    apo_generation.add_argument(
         "--num-apos",
         type=int,
-        default=1,
-        help=(
-            "Apo structures per seed per protein entry during automatic generation "
-            "(1–5; default: 1). Provided structures are used directly."
-        ),
+        help="Generated apos per protein entry per inference seed (1–5; default: 1).",
+    )
+    apo_generation.add_argument(
+        "--share-apo-seeds",
+        type=int,
+        nargs="+",
+        help="Generate shared apos with these seeds "
+        "(unique, positive; excludes --num-apos).",
     )
     # Complex prediction settings.
     parser.add_argument(
@@ -77,25 +84,22 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         nargs="+",
         default=[0],
-        help="Visible CUDA indices for independent query/seed jobs (default: [0]).",
+        help="Visible CUDA device IDs (default: [0]).",
     )
     parser.add_argument(
         "--disable-struct-encoder",
         action="store_true",
-        help="Disable pretrained structure encoder for apo structures. "
-        "Use this to reduce memory usage (~6 GB)",
+        help="Disable the apo structure encoder to save ~6 GB of GPU memory.",
     )
     parser.add_argument(
         "--disable-rna-encoder",
         action="store_true",
-        help="Disable pretrained RNA encoder for RNA targets. "
-        "Only use this when RNA targets are not present in the queries",
+        help="Disable the RNA encoder; only for queries without RNA.",
     )
     parser.add_argument(
         "--cpu-offload",
         action="store_true",
-        help="Keep the protein structure backbone encoder and RNA LM on CPU "
-        "between feature extraction calls. Trades transfer time for GPU memory.",
+        help="Offload structure and RNA encoders to CPU to save GPU memory (slower).",
     )
     parser.add_argument(
         "--cache-dir",
@@ -135,10 +139,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def run(args: argparse.Namespace) -> None:
-    """Validate arguments, load queries, and run the selected prediction stages."""
-    from kfold.cli.predict_complex import run as predict_complex
-    from kfold.cli.prepare_apo import run as prepare_apo
+def _load_queries(args: argparse.Namespace) -> list["Query"]:
+    """Validate runtime arguments and load queries in prediction order."""
     from kfold.inference.query import Query
 
     # Validate all runtime arguments, regardless of the selected stages.
@@ -147,11 +149,19 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("--gpu-ids must be a non-empty list of non-negative indices.")
     if len(set(args.gpu_ids)) != len(args.gpu_ids):
         raise ValueError("--gpu-ids values must be unique.")
-    if any(seed < 1 for seed in args.seed) or len(set(args.seed)) != len(args.seed):
-        raise ValueError("--seed values must be unique and positive.")
+    for name in ("seeds", "share_apo_seeds"):
+        seeds = getattr(args, name)
+        if seeds is not None and (
+            not seeds or any(seed < 1 for seed in seeds) or len(set(seeds)) != len(seeds)
+        ):
+            raise ValueError(
+                f"--{name.replace('_', '-')} requires one or more unique positive seeds."
+            )
 
     # Apo and complex sampling counts.
-    if not 1 <= args.num_apos <= 5:
+    if args.num_apos is None and args.share_apo_seeds is None:
+        args.num_apos = 1
+    if args.num_apos is not None and not 1 <= args.num_apos <= 5:
         raise ValueError("--num-apos must be between 1 and 5.")
     for name in ("num_samples", "num_recycles", "num_steps"):
         if getattr(args, name) < 1:
@@ -177,41 +187,105 @@ def run(args: argparse.Namespace) -> None:
             raise ValueError(f"Duplicate query name: {query.name!r}.")
         names.add(query.name)
 
-    # Validate CCD membership without loading prediction models.
-    if args.dry_run:
-        from huggingface_hub import hf_hub_download
-
-        from kfold.data.types.ccd import CCD
-        from kfold.inference.runner import ASSETS_REPO_ID
-
-        logger.info("Checking query CCD codes.")
-        ccd_path = hf_hub_download(
-            ASSETS_REPO_ID, "assets/ccd.pkl", cache_dir=args.cache_dir
-        )
-        ccd = CCD.load(ccd_path)
-        for query in queries:
-            query.validate_ccd_codes(ccd.keys())
-
-    # Schedule smaller queries first, with one output directory per query/seed.
     queries.sort(key=lambda query: query.priority)
+    return queries
+
+
+def _find_obsolete_queries(
+    args: argparse.Namespace, queries: list["Query"]
+) -> dict[Path, list[Path]]:
+    """Validate preparation mode changes and locate superseded query files."""
+    # Switching preparation layouts requires rebuilding the selected apo inputs.
+    obsolete_queries: dict[Path, list[Path]] = {}
+    for query in queries:
+        target_dir = args.out_dir / query.name
+        if args.share_apo_seeds is not None:
+            paths = list(target_dir.glob(f"{query.name}_seed-*/query.json"))
+        else:
+            path = target_dir / "query.json"
+            paths = [path] if path.is_file() else []
+        if not paths:
+            continue
+        if not args.overwrite or args.stage == "complex":
+            raise ValueError(
+                f"Changing apo sharing mode for {query.name} requires preparing "
+                "apos again with --overwrite and --stage apo or --stage all. "
+                "Use the same --share-apo-seeds setting for both stages."
+            )
+        obsolete_queries[target_dir] = paths
+
+    return obsolete_queries
+
+
+def _build_jobs(
+    args: argparse.Namespace, queries: list["Query"]
+) -> tuple[list[tuple["Query", int | None, Path]], list[tuple["Query", int, Path]]]:
+    """Build preparation and inference jobs using their respective output layouts."""
     jobs = [
         (query, seed, args.out_dir / query.name / f"{query.name}_seed-{seed}")
         for query in queries
-        for seed in args.seed
+        for seed in args.seeds
     ]
+    apo_jobs = (
+        [(query, None, args.out_dir / query.name) for query in queries]
+        if args.share_apo_seeds is not None
+        else jobs
+    )
+    return apo_jobs, jobs
+
+
+def dry_run(args: argparse.Namespace) -> None:
+    """Validate selected queries and report pending work without writing outputs."""
+    from huggingface_hub import hf_hub_download
+
+    from kfold.cli.predict_complex import dry_run as predict_complex
+    from kfold.cli.prepare_apo import dry_run as prepare_apo
+    from kfold.data.types.ccd import CCD
+    from kfold.inference.runner import ASSETS_REPO_ID
+
+    queries = _load_queries(args)
+    _find_obsolete_queries(args, queries)
+
+    logger.info("Checking query CCD codes.")
+    ccd_path = hf_hub_download(ASSETS_REPO_ID, "assets/ccd.pkl", cache_dir=args.cache_dir)
+    ccd = CCD.load(ccd_path)
+    for query in queries:
+        query.validate_ccd_codes(ccd.keys())
+
+    apo_jobs, jobs = _build_jobs(args, queries)
+    logger.info("Input: %s; output: %s.", args.input, args.out_dir)
+    if args.stage in ("all", "apo"):
+        prepare_apo(args, apo_jobs)
+    if args.stage in ("all", "complex"):
+        predict_complex(args, jobs)
+    logger.info("Dry run complete; no models loaded or outputs written.")
+
+
+def run(args: argparse.Namespace) -> None:
+    """Validate arguments, load queries, and run the selected prediction stages."""
+    from kfold.cli.predict_complex import run as predict_complex
+    from kfold.cli.prepare_apo import run as prepare_apo
+
+    queries = _load_queries(args)
+    obsolete_queries = _find_obsolete_queries(args, queries)
+    apo_jobs, jobs = _build_jobs(args, queries)
 
     logger.info("Input: %s; output: %s.", args.input, args.out_dir)
 
     # Prepare provided and generated apo structures.
     if args.stage in ("all", "apo"):
-        prepare_apo(args, jobs)
+        # Retire the previous layout before writing the replacement queries.
+        for target_dir, paths in obsolete_queries.items():
+            for done in target_dir.glob(f"{target_dir.name}_seed-*/done.txt"):
+                done.unlink()
+            for path in paths:
+                path.unlink()
+                (path.parent / "apo_setting.json").unlink(missing_ok=True)
+        prepare_apo(args, apo_jobs)
 
     # Predict complexes from prepared apo structures.
     if args.stage in ("all", "complex"):
         predict_complex(args, jobs)
 
     # Report completion after all selected stages finish.
-    if args.dry_run:
-        logger.info("Dry run complete; no models loaded or outputs written.")
-    else:
-        logger.info("Outputs: %s", args.out_dir.resolve())
+    logger.info("Outputs: %s", args.out_dir.resolve())
