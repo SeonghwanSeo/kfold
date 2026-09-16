@@ -261,6 +261,60 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
     assert (retry / "pl/seed-1/complete.json").read_bytes() == completed_before
     assert len(list((retry / "pl").glob(".seed-2-*/failure.json"))) == 1
 
+    # A provided GT/experimental intermediate bypasses binary prediction entirely.
+    supplied = tmp_path / "provided.npz"
+    PriorObject(atom_keys(structure(["A", "L"])), np.ones((4, 3))).save(supplied)
+    calls.clear()
+    oracle_out = tmp_path / "provided_run"
+    result = run_query(
+        query(),
+        Pipeline(),
+        [1, 2],
+        2,
+        oracle_out,
+        Backend(),
+        provided_intermediates={"pl": supplied},
+    )
+    assert calls == [(1, 6, 1), (2, 6, 1)]
+    assert result["stage"] == "final"
+    assert not (oracle_out / "pl/selection.json").exists()
+    assert (oracle_out / "pl/provided_structure.json").is_file()
+    assert not list((oracle_out / "pl").glob("seed-*"))
+    assert (
+        run_query(
+            query(),
+            Pipeline(),
+            [1, 2],
+            2,
+            oracle_out,
+            Backend(),
+            provided_intermediates={"pl": supplied},
+        )
+        == result
+    )
+    assert len(calls) == 2
+    PriorObject(atom_keys(structure(["A", "L"])), np.ones((4, 3)) * 2).save(supplied)
+    with pytest.raises(ValueError, match="changed during resume"):
+        run_query(
+            query(),
+            Pipeline(),
+            [1, 2],
+            2,
+            oracle_out,
+            Backend(),
+            provided_intermediates={"pl": supplied},
+        )
+    with pytest.raises(ValueError, match="non-final stage"):
+        run_query(
+            query(),
+            Pipeline(),
+            [1],
+            2,
+            tmp_path / "bad_provided",
+            Backend(),
+            provided_intermediates={"final": supplied},
+        )
+
 
 def test_real_smiles_pipeline_preserves_prior_and_apo_features():
     import warnings
@@ -486,8 +540,66 @@ def test_real_protein_ligand_protein_preserves_structure_conditioning(tmp_path):
     )
     torch.testing.assert_close(again.atom.ref_pos, reencoded.atom.ref_pos, rtol=0, atol=0)
 
+    # Partial GT retains all sequence/atom identities. Missing protein atoms are
+    # masked in the trunk and initialized ONLY in the diffusion endpoint.
+    mask = np.ones(len(obj.keys), dtype=bool)
+    mask[[i for i, k in enumerate(obj.keys) if k[0] == "A" and k[2] == "N"]] = False
+    partial_gt = PriorObject(obj.keys, coords, mask)
+    partial_gt.save(tmp_path / "partial_gt.npz")
+    partial_gt = PriorObject.load(tmp_path / "partial_gt.npz")
+    _, _, masked, masked_records = pipeline.run(
+        q,
+        sources=five,
+        prior_groups=[partial_gt],
+        trunk_groups=[partial_gt],
+        stage_index=1,
+    )
+    assert masked.atom.pad_mask.sum() == reencoded.atom.pad_mask.sum()
+    ni = full_keys.index(("A", 1, "N"))
+    assert not masked.atom.apo_mask[ni].any()
+    assert torch.isfinite(masked.atom.prior_coords).all()
+    torch.testing.assert_close(masked.atom.apo_coords[ib], prior_only.atom.apo_coords[ib])
+    apply_apo_structure_tokens(masked, masked_records, Encoder())
+    assert (masked.sequence.bb_struct_token_id[1] == -1).all()
+    assert (masked.sequence.fa_struct_token_id[1] == -1).all()
+    assert (masked.sequence.bb_struct_token_id[4] == 7).all()
+    observed_i = [full_keys.index(k) for i, k in enumerate(obj.keys) if mask[i]]
+    expected_gt = torch.from_numpy(coords[mask])
+    for endpoint in masked.atom.prior_coords.permute(1, 0, 2):
+        torch.testing.assert_close(
+            torch.cdist(endpoint[observed_i], endpoint[observed_i]),
+            torch.cdist(expected_gt, expected_gt),
+            atol=1e-5,
+            rtol=1e-5,
+        )
+
+
+def test_structure_source_expands_all_pdb_models(tmp_path):
+    atom_lines = (
+        "ATOM      1  N   GLY A   1       {x:6.3f}   0.000   0.000  1.00 90.00           N\n"  # noqa: E501
+        "ATOM      2  CA  GLY A   1       {ca:6.3f}   0.000   0.000  1.00 90.00           C\n"  # noqa: E501
+        "ATOM      3  C   GLY A   1       {c:6.3f}   1.400   0.000  1.00 90.00           C\n"  # noqa: E501
+    )
+    ensemble = tmp_path / "ensemble.pdb"
+    ensemble.write_text(
+        "MODEL        1\n"
+        + atom_lines.format(x=0, ca=1.45, c=1.9)
+        + "ENDMDL\nMODEL        2\n"
+        + atom_lines.format(x=10, ca=11.45, c=11.9)
+        + "ENDMDL\nEND\n"
+    )
+    pipeline = InputDataPipeline(None, num_prior_samples=2)
+    apos, priors, records = pipeline._load_monomer_sources(
+        [1], "G", [str(ensemble)], [str(ensemble)], "ensemble"
+    )
+    assert len(apos) == len(priors) == len(records[0]) == 2
+    assert apos[0][1][0, 0, 0] == pytest.approx(0)
+    assert apos[1][1][0, 0, 0] == pytest.approx(10)
+
 
 def test_release_protein_pair_example_preserves_assembly_group(tmp_path):
+    import argparse
+    import copy
     import warnings
     from pathlib import Path
 
@@ -500,6 +612,7 @@ def test_release_protein_pair_example_preserves_assembly_group(tmp_path):
 
     root = Path(__file__).resolve().parents[2]
     data = yaml.safe_load((root / "examples/8jeo_sequential.yaml").read_text())
+    automatic = copy.deepcopy(data)
     apo = tmp_path / "apo.pdb"
     apo.write_text("END\n")  # This test validates parsing/planning, not coordinates.
     for entry in data["sequences"]:
@@ -524,9 +637,25 @@ def test_release_protein_pair_example_preserves_assembly_group(tmp_path):
         validate_plan(
             parsed.copy(assembly={"stages": [{"id": "AB", "chains": ["A", "B"]}]})
         )
-    # The normal release parser remains independent of experimental state.
-    with pytest.raises(ValueError, match="assembly"):
-        NativeQuery.load(path)
-    data.pop("assembly")
-    native = NativeQuery.from_dict(data, base_dir=tmp_path)
+    # The release parser preserves the plan through standard apo preparation.
+    native = NativeQuery.load(path)
     assert isinstance(native.sequences[1], ProteinPair)
+    assert native.assembly == data["assembly"]
+    saved = tmp_path / "prepared.json"
+    native.save(saved)
+    assert NativeQuery.load(saved).assembly == data["assembly"]
+    native_intermediate = subset_query(native, ["B", "C"])
+    assert isinstance(native_intermediate.sequences[0], ProteinPair)
+    assert native_intermediate.sequences[0].id == [["B", "C"]]
+
+    # The standard CLI accepts the same assembly plan without explicit apo paths.
+    from kfold.cli.predict import _load_queries, add_arguments
+
+    automatic_path = tmp_path / "automatic.yaml"
+    automatic_path.write_text(yaml.safe_dump(automatic))
+    parser = argparse.ArgumentParser()
+    add_arguments(parser)
+    args = parser.parse_args(["-i", str(automatic_path), "-o", str(tmp_path / "out")])
+    loaded = _load_queries(args)
+    assert loaded[0].assembly == automatic["assembly"]
+    assert all(entry.apo is None for entry in loaded[0].protein_entries)

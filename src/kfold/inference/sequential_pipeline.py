@@ -1,8 +1,8 @@
 import itertools
 import logging
-import pathlib
 from collections import defaultdict
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -18,10 +18,7 @@ from kfold.data.types.metadata import ChainInfo, Metadata
 from kfold.data.types.model_input import FoldingInput
 from kfold.data.types.structure import Chain, CovalentConnection, RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
-from kfold.data.utils.io.structure import (
-    read_protein_multimer_structure,
-    read_protein_structure,
-)
+from kfold.data.utils.io.structure import _read_protein_chain, read_gemmi_structure
 
 from . import sequential_query as query
 
@@ -473,15 +470,26 @@ class InputDataPipeline:
         list[dict[int, np.ndarray]],
         list[list[dict]],
     ]:
-        def read(path: str) -> _AlignedStructureSource:
-            source_sequence, source_coords = read_protein_structure(path)
-            return self._align_structure_source(
-                path,
-                label,
-                target_sequence,
-                source_sequence,
-                source_coords,
-            )
+        def read(path: str) -> list[_AlignedStructureSource]:
+            models = read_gemmi_structure(Path(path))
+            candidates = []
+            for model in models:
+                subchains = model.subchains()
+                if not subchains:
+                    continue
+                source_sequence, source_coords = _read_protein_chain(subchains[0])
+                candidates.append(
+                    self._align_structure_source(
+                        path,
+                        label,
+                        target_sequence,
+                        source_sequence,
+                        source_coords,
+                    )
+                )
+            if not candidates:
+                raise ValueError(f"Empty protein structure source for {label}: {path}")
+            return candidates
 
         def collect_coords(source: _AlignedStructureSource) -> dict[int, np.ndarray]:
             length = len(target_sequence)
@@ -493,17 +501,21 @@ class InputDataPipeline:
         apo_sources: list[dict[int, np.ndarray]] = []
         token_records: list[dict] = []
         for path in apo_paths:
-            source = read(path)
-            apo_sources.append(collect_coords(source))
-            token_records.append(
-                {
-                    "seq": source.sequence,
-                    "coords": source.coords,
-                    "targets": [(asym_id, *source.target_range) for asym_id in asym_ids],
-                }
-            )
+            for source in read(path):
+                apo_sources.append(collect_coords(source))
+                token_records.append(
+                    {
+                        "seq": source.sequence,
+                        "coords": source.coords,
+                        "targets": [
+                            (asym_id, *source.target_range) for asym_id in asym_ids
+                        ],
+                    }
+                )
 
-        prior_sources = [collect_coords(read(path)) for path in prior_paths]
+        prior_sources = [
+            collect_coords(source) for path in prior_paths for source in read(path)
+        ]
         return apo_sources, prior_sources, [token_records]
 
     def _load_multimer_sources(
@@ -520,30 +532,33 @@ class InputDataPipeline:
     ]:
         def read(
             path: str,
-        ) -> tuple[_AlignedStructureSource, _AlignedStructureSource]:
-            chain_records = list(
-                read_protein_multimer_structure(pathlib.Path(path)).values()
-            )
-            if len(chain_records) != 2:
+        ) -> list[tuple[_AlignedStructureSource, _AlignedStructureSource]]:
+            candidates = []
+            for model in read_gemmi_structure(Path(path)):
+                chains = [chain for chain in model if len(chain)]
+                if len(chains) != 2:
+                    raise ValueError(
+                        f"Protein multimer source for {label} in {path} must "
+                        f"contain exactly two non-empty protein chains per model, "
+                        f"found {len(chains)}."
+                    )
+                components = tuple(
+                    self._align_structure_source(
+                        path,
+                        f"Protein multimer component {component_i} for {label}",
+                        target_sequence,
+                        *_read_protein_chain(chain),
+                    )
+                    for component_i, (chain, target_sequence) in enumerate(
+                        zip(chains, target_sequences, strict=True), start=1
+                    )
+                )
+                candidates.append((components[0], components[1]))
+            if not candidates:
                 raise ValueError(
-                    f"Protein multimer source for {label} in {path} must contain "
-                    f"exactly two non-empty protein chains, found "
-                    f"{len(chain_records)}."
+                    f"Empty protein multimer structure source for {label}: {path}"
                 )
-            components = tuple(
-                self._align_structure_source(
-                    path,
-                    f"Protein multimer component {i} for {label}",
-                    target_sequence,
-                    record["seq"],
-                    record["coords"],
-                )
-                for i, (record, target_sequence) in enumerate(
-                    zip(chain_records, target_sequences, strict=True),
-                    start=1,
-                )
-            )
-            return components[0], components[1]
+            return candidates
 
         def collect_coords(
             components: tuple[_AlignedStructureSource, _AlignedStructureSource],
@@ -565,22 +580,26 @@ class InputDataPipeline:
         apo_sources: list[dict[int, np.ndarray]] = []
         token_records: list[list[dict]] = [[] for _ in target_sequences]
         for path in apo_paths:
-            components = read(path)
-            apo_sources.append(collect_coords(components))
-            for component_i, (asym_ids, component) in enumerate(
-                zip(component_asym_ids, components, strict=True)
-            ):
-                token_records[component_i].append(
-                    {
-                        "seq": component.sequence,
-                        "coords": component.coords,
-                        "targets": [
-                            (asym_id, *component.target_range) for asym_id in asym_ids
-                        ],
-                    }
-                )
+            for components in read(path):
+                apo_sources.append(collect_coords(components))
+                for component_i, (asym_ids, component) in enumerate(
+                    zip(component_asym_ids, components, strict=True)
+                ):
+                    token_records[component_i].append(
+                        {
+                            "seq": component.sequence,
+                            "coords": component.coords,
+                            "targets": [
+                                (asym_id, *component.target_range) for asym_id in asym_ids
+                            ],
+                        }
+                    )
 
-        prior_sources = [collect_coords(read(path)) for path in prior_paths]
+        prior_sources = [
+            collect_coords(components)
+            for path in prior_paths
+            for components in read(path)
+        ]
         return apo_sources, prior_sources, token_records
 
     def _align_structure_source(

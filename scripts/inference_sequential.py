@@ -8,6 +8,7 @@ from kfold.data.types.ccd import CCD
 from kfold.inference.sequential import (
     ModelBackend,
     execution_plan,
+    provided_stage_paths,
     run_manifest,
     run_query,
     write_json,
@@ -25,6 +26,14 @@ def main():
     parser.add_argument("--num-recycles", type=int, default=10)
     parser.add_argument("--num-steps", type=int, default=100)
     parser.add_argument("--num-apo", type=int)
+    parser.add_argument(
+        "--provided-intermediates",
+        type=Path,
+        help=(
+            "Directory QUERY/STAGE.npz of atom-mapped structures with optional "
+            "observed_mask; skip intermediate predictions"
+        ),
+    )
     parser.add_argument(
         "--conditioning",
         choices=["prior_only", "prior_and_trunk"],
@@ -45,6 +54,8 @@ def main():
     args = parser.parse_args()
     if args.direct and args.conditioning != "prior_only":
         parser.error("--direct requires --conditioning prior_only")
+    if args.direct and args.provided_intermediates:
+        parser.error("--direct cannot use --provided-intermediates")
     if (
         not args.seed
         or len(set(args.seed)) != len(args.seed)
@@ -62,6 +73,8 @@ def main():
         if Path(q.name).name != q.name or q.name in {".", ".."}:
             parser.error("Query names must be safe directory names")
         execution_plan(q, args.direct)
+        if args.provided_intermediates:
+            provided_stage_paths(q, args.provided_intermediates)
     pipeline = InputDataPipeline(ccd, args.num_samples, args.num_apo)
     manifest = run_manifest(args, queries)
     if args.dry_run:
@@ -72,6 +85,29 @@ def main():
                 struct, _, _, _ = pipeline.run(subset_query(query, stage["chains"]))
                 print(
                     query.name, stage["id"], stage["chains"], "atoms=", struct.num_atoms
+                )
+            if args.provided_intermediates:
+                from kfold.inference.assembly import PriorObject, atom_keys
+
+                stages = execution_plan(query)
+                groups = []
+                supplied = provided_stage_paths(query, args.provided_intermediates)
+                for stage in stages[:-1]:
+                    obj = PriorObject.load(supplied[stage["id"]])
+                    sub = pipeline.read_query(subset_query(query, stage["chains"]))
+                    if set(obj.keys) != set(atom_keys(sub)):
+                        raise ValueError(
+                            "Provided intermediate atom identities do not match query"
+                        )
+                    groups.append(obj)
+                plain = query.copy(assembly=None)
+                extra = (
+                    {"trunk_groups": groups}
+                    if args.conditioning == "prior_and_trunk"
+                    else {}
+                )
+                pipeline.run(
+                    plain, prior_groups=groups, stage_index=len(stages) - 1, **extra
                 )
         print("Validated. No model inference or Slurm submission performed.")
         return
@@ -108,6 +144,11 @@ def main():
                 backend,
                 direct=args.direct,
                 conditioning=args.conditioning,
+                provided_intermediates=provided_stage_paths(
+                    query, args.provided_intermediates
+                )
+                if args.provided_intermediates
+                else None,
             )
 
 

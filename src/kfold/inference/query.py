@@ -342,6 +342,7 @@ class Query:
     name: str
     sequences: list[Sequence]
     bonds: list[Bond] = dataclasses.field(default_factory=list)
+    assembly: dict | None = None
 
     def validate_ccd_codes(self, valid_codes: Set[str]) -> None:
         """Check that explicit ligand and modification codes exist in the CCD.
@@ -423,6 +424,10 @@ class Query:
             if key in seen_bonds:
                 raise ValueError(f"Duplicate bond: {bond}.")
             seen_bonds.add(key)
+        if self.assembly is not None:
+            from kfold.inference.assembly import validate_plan
+
+            validate_plan(self)
 
     @property
     def protein_entries(self) -> list[ProteinSequence | ProteinPair]:
@@ -453,7 +458,7 @@ class Query:
     @classmethod
     def from_dict(cls, data: dict, *, base_dir: str | Path) -> "Query":
         """Parse a query dictionary, resolving structure paths relative to base_dir."""
-        _check_fields(data, {"name", "sequences"}, {"bonds"})
+        _check_fields(data, {"name", "sequences"}, {"bonds", "assembly"})
         # Parse sequence entries, retaining their positions in validation errors.
         if not isinstance(data["sequences"], list):
             raise ValueError("'sequences' must be a list.")
@@ -479,7 +484,12 @@ class Query:
                     "[chain_id, residue_index, atom_name] lists."
                 )
             bonds.append(Bond(atom1=tuple(atoms[0]), atom2=tuple(atoms[1])))
-        return cls(name=data["name"], sequences=sequences, bonds=bonds)
+        return cls(
+            name=data["name"],
+            sequences=sequences,
+            bonds=bonds,
+            assembly=data.get("assembly"),
+        )
 
     def to_dict(self, *, relative_to: str | Path | None = None) -> dict:
         """Return a query dictionary with absolute paths unless relative_to is set."""
@@ -503,6 +513,8 @@ class Query:
         data = {"name": self.name, "sequences": entries}
         if self.bonds:
             data["bonds"] = [[list(bond.atom1), list(bond.atom2)] for bond in self.bonds]
+        if self.assembly is not None:
+            data["assembly"] = self.assembly
         return data
 
     def save(self, path: str | Path) -> None:

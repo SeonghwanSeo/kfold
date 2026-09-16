@@ -78,6 +78,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         default=100,
         help="Number of diffusion steps (default: 100).",
     )
+    parser.add_argument(
+        "--conditioning",
+        choices=("prior_only", "prior_and_trunk"),
+        default="prior_only",
+        help=(
+            "For assembly queries, reuse predicted intermediates in the ECSI prior "
+            "only, or also re-encode them in the trunk apo module."
+        ),
+    )
+    parser.add_argument(
+        "--provided-intermediates",
+        type=Path,
+        help=(
+            "For assembly queries, read QUERY/STAGE.npz structures instead of "
+            "predicting non-final stages."
+        ),
+    )
     # Devices, model components, and model cache.
     parser.add_argument(
         "--gpu-ids",
@@ -188,6 +205,18 @@ def _load_queries(args: argparse.Namespace) -> list["Query"]:
         names.add(query.name)
 
     queries.sort(key=lambda query: query.priority)
+    sequential = [query for query in queries if query.assembly is not None]
+    if args.provided_intermediates is not None and not sequential:
+        raise ValueError("--provided-intermediates requires an assembly query.")
+    if (
+        args.stage in ("all", "complex")
+        and sequential
+        and any((args.save_embeddings, args.save_distogram, args.save_trajectory))
+    ):
+        raise ValueError(
+            "Assembly queries do not yet support --save-embeddings, "
+            "--save-distogram, or --save-trajectory."
+        )
     return queries
 
 
@@ -239,6 +268,7 @@ def dry_run(args: argparse.Namespace) -> None:
     from huggingface_hub import hf_hub_download
 
     from kfold.cli.predict_complex import dry_run as predict_complex
+    from kfold.cli.predict_sequential import dry_run as predict_sequential
     from kfold.cli.prepare_apo import dry_run as prepare_apo
     from kfold.data.types.ccd import CCD
     from kfold.inference.runner import ASSETS_REPO_ID
@@ -257,13 +287,19 @@ def dry_run(args: argparse.Namespace) -> None:
     if args.stage in ("all", "apo"):
         prepare_apo(args, apo_jobs)
     if args.stage in ("all", "complex"):
-        predict_complex(args, jobs)
+        direct_jobs = [job for job in jobs if job[0].assembly is None]
+        sequential_queries = [query for query in queries if query.assembly is not None]
+        if direct_jobs:
+            predict_complex(args, direct_jobs)
+        if sequential_queries:
+            predict_sequential(args, sequential_queries)
     logger.info("Dry run complete; no models loaded or outputs written.")
 
 
 def run(args: argparse.Namespace) -> None:
     """Validate arguments, load queries, and run the selected prediction stages."""
     from kfold.cli.predict_complex import run as predict_complex
+    from kfold.cli.predict_sequential import run as predict_sequential
     from kfold.cli.prepare_apo import run as prepare_apo
 
     queries = _load_queries(args)
@@ -285,7 +321,12 @@ def run(args: argparse.Namespace) -> None:
 
     # Predict complexes from prepared apo structures.
     if args.stage in ("all", "complex"):
-        predict_complex(args, jobs)
+        direct_jobs = [job for job in jobs if job[0].assembly is None]
+        sequential_queries = [query for query in queries if query.assembly is not None]
+        if direct_jobs:
+            predict_complex(args, direct_jobs)
+        if sequential_queries:
+            predict_sequential(args, sequential_queries)
 
     # Report completion after all selected stages finish.
     logger.info("Outputs: %s", args.out_dir.resolve())

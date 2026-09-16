@@ -56,6 +56,7 @@ def apply_trunk_groups(struct, tokenized, records, groups, rng):
                 "seq": chain.get_sequence(map_to_standard=True),
                 "coords": coords,
                 "targets": [(chain.asym_id, 0, chain.num_residues)],
+                "mask_missing_structure": True,
             }
             updated.append([record.copy() for _ in range(num_apo)])
     slots = np.argwhere(tokenized.atom.pad_mask)
@@ -74,6 +75,8 @@ def apply_trunk_groups(struct, tokenized, records, groups, rng):
             for ri in range(1, chain.num_residues + 1):
                 residue_keys = [k for k in chain_keys if k[1] == ri]
                 xyz = np.stack([replacement[k] for k in residue_keys])
+                if not np.isfinite(xyz).all():
+                    raise ValueError("Missing ligand coordinates are unsupported")
                 xyz = center_random_augmentation(
                     xyz, np.ones(len(xyz), dtype=bool), rng=rng
                 )

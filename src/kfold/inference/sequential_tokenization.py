@@ -44,6 +44,12 @@ def apply_apo_structure_tokens(
             tokens = structure_encoder.tokenize(record["seq"], record["coords"])
             source_bb = tokens["bb_token_id"]
             source_fa = tokens["fa_token_id"]
+            if record.get("mask_missing_structure", False):
+                coords = torch.as_tensor(record["coords"], device=source_bb.device)
+                backbone_valid = coords[:, :3].isfinite().all(dim=(-1, -2))
+                # Keep sequence/topology; only suppress absent structural evidence.
+                source_bb = source_bb.masked_fill(~backbone_valid, -1)
+                source_fa = source_fa.masked_fill(~backbone_valid, -1)
             for asym_id, offset_start, offset_end in record["targets"]:
                 chain_start = int(torch.where(asym_ids == asym_id)[0][0])
                 target_start = chain_start + 1 + offset_start

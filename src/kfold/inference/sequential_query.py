@@ -595,7 +595,17 @@ def parse_single_file(json_or_yaml_path: str | Path, ccd: CCD) -> Query:
                 fields["description"] = native.description
             multimers.append({"protein": fields})
         else:
-            entries.append(entry)
+            normalized = copy.deepcopy(entry)
+            if isinstance(normalized, dict) and len(normalized) == 1:
+                kind, fields = next(iter(normalized.items()))
+                if kind in {"protein", "dna", "rna"} and isinstance(
+                    fields.get("modifications"), list
+                ):
+                    fields["modifications"] = {
+                        item["residue_index"]: item["ccd"]
+                        for item in fields["modifications"]
+                    }
+            entries.append(normalized)
     input_dict["sequences"] = entries
     input_dict["multimer_sequences"] = multimers
 

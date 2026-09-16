@@ -23,8 +23,10 @@ assembly:
   selection: confidence_top1
 ```
 
-The original `sequences`, chemistry, modifications, bonds and protein `apo`
-paths remain required and unchanged. A complete final-system stage is appended
+The original `sequences`, chemistry, modifications and bonds remain unchanged.
+Protein `apo` paths are optional. The standard apo stage automatically runs
+AtlasFold for `protein` entries and AtlasFold-Multimer for `protein_pair`
+entries when paths are absent. A complete final-system stage is appended
 automatically. Reverse the binding order by replacing `[A, C]` with `[B, C]`.
 
 Multiple declared stages execute in order. Already constructed objects may be
@@ -66,30 +68,24 @@ extra or nonfinite atoms are errors.
 
 ## Execution
 
-Use `scripts/inference_sequential.py`. The ordinary data pipeline rejects an
-assembly-bearing query and points to this runner instead of ignoring it.
-Existing queries without `assembly` retain their original code path.
+Use the ordinary `kfold` CLI. It preserves `assembly` while preparing apos,
+then routes assembly-bearing queries to the sequential runner. Queries without
+`assembly` retain the ordinary direct-prediction path.
 
 ```bash
-export PYTHONPATH="$SEQUENTIAL_SOURCE/src"
-"$KFOLD_PYTHON" "$SEQUENTIAL_SOURCE/scripts/inference_sequential.py" \
-  --input "$INPUT" --weight "$WEIGHT" --config "$CONFIG" --ccd "$CCD" \
-  --out-dir "$OUTPUT" --dry-run
+kfold --input "$INPUT" --out-dir "$OUTPUT" \
+  --seeds 1 2 3 4 5 --num-apos 5 --dry-run
+kfold --input "$INPUT" --out-dir "$OUTPUT" \
+  --seeds 1 2 3 4 5 --num-apos 5 \
+  --conditioning prior_and_trunk
 ```
 
-Dry-run validates the plan and builds every stage's ordinary features. It hashes
-the supplied checkpoint/config/CCD/apo files but does not load a neural model;
-it is **not** a checkpoint-load or GPU forward smoke test. For a real GPU run,
-export the same variables and submit `scripts/inference_sequential.sbatch`.
-No Slurm job is submitted automatically. Supply a config compatible with the
-chosen checkpoint and the pinned main code; strict loading is retained.
-
-Defaults: seeds 1–5, 5 samples per seed, 10 recycles, 100 diffusion steps,
-all supplied apo sources. `--num-apo N` caps the apo ensemble. The Slurm example
-reserves one GPU, eight CPUs and limits library threads to one. CLI arguments
-can be appended to the sbatch invocation, for example `--seed 1 --num-samples 1`
-for a small forward test. Full GPU execution requires an ECSI checkpoint and
-the normal pretrained-encoder resources required by its model config.
+Dry-run validates the native query, assembly plan, CCD codes and any completed
+apo preparation without loading K-Fold. Defaults match ordinary inference: seed
+1, 5 samples, 10 recycles and 100 diffusion steps. `--num-apos N` generates N
+apo candidates per inference seed; `--share-apo-seeds` prepares one ensemble
+shared by all complex seeds. All requested seeds for one assembly query stay on
+one GPU because a stage chooses one global confidence top-1 before continuing.
 
 ## Ranking and restart
 
@@ -99,35 +95,40 @@ all seeds/samples, breaking ties by ascending seed then sample. No ground truth
 is available to selection. The next stage receives that same selected object
 for all of its seeds; each seed creates independently augmented priors.
 
-`--resume` requires the identical source code, configuration, weight, CCD,
-apo/prior file hashes, inputs and sampling settings recorded in `manifest.json`.
-A lock prevents concurrent writers. Completed seed artifacts are checksum
-verified and reused. Failed attempts remain in hidden attempt directories for
-diagnosis; only that incomplete seed is recomputed. Corrupted completed results
-are rejected. Published stage selections must match on restart.
+Rerunning the same command resumes completed stage/seed artifacts after checksum
+verification. Sequential settings are recorded in `settings.json`; changed
+settings require `--overwrite`. Failed attempts remain in hidden attempt
+directories for diagnosis, and only incomplete seeds are recomputed. Published
+stage selections must match on restart.
 
 ```text
 OUTPUT/
-  manifest.json
   QUERY/
-    source_choices_seed-N.npz
-    bind_p1_ligand/
-      seed-N/
-        input.json, prior.npz, ecsi_init.npz, timing.json
-        QUERY_seed-N_sample-M.cif
-        QUERY_seed-N_sample-M_confidences.json
-        QUERY_seed-N_sample-M_confidences.npz
-        QUERY_seed-N_sample-M_atoms.npz
-        complete.json
-      selection.json
-    final/
-      seed-N/...
-      selection.json
-    candidates.csv
-    completed.json
+    QUERY_model.cif
+    QUERY_confidence.json
+    QUERY_summary.csv
+    kfold_settings.json
+    QUERY_seed-N/query.json, apo/...
+    sequential/
+      settings.json
+      source_choices_seed-N.npz
+      bind_p1_ligand/
+        seed-N/
+          input.json, prior.npz, ecsi_init.npz, timing.json
+          QUERY_seed-N_sample-M.cif
+          QUERY_seed-N_sample-M_confidences.json
+          QUERY_seed-N_sample-M_confidences.npz
+          QUERY_seed-N_sample-M_atoms.npz
+          complete.json
+        selection.json
+      final/
+        seed-N/...
+        selection.json
+      candidates.csv
+      completed.json
 ```
 
-Use only `QUERY/final` as the prediction root for downstream accuracy
+Use `QUERY/QUERY_model.cif` or `QUERY/sequential/final` for downstream accuracy
 evaluation; the intermediate systems deliberately have fewer molecules.
 Existing CIF and confidence formats are retained. Evaluators with fixed
 directory-depth globs may need their input-root adapter adjusted. No OST
@@ -187,21 +188,22 @@ restart/corruption behavior. The orchestration test uses a fake model backend;
 it verifies stage composition and call counts but is not evidence of learned
 model accuracy or GPU memory viability.
 
-## Main integration (2026-09-15)
+## Main integration (2026-09-17)
 
 The release `query.py` and `data_pipeline.py` follow main. The experimental
 source-selection/RNG behavior lives in `sequential_query.py`,
 `sequential_pipeline.py`, `sequential_dataset.py` and `sequential_tokenization.py`.
 The sequential runner accepts both legacy `multimer_sequences` and the release
-`sequences: [{protein_pair: ...}]` spelling. Ordinary `kfold predict` does not
-accept the experiment's `assembly` block; use `scripts/inference_sequential.py`.
+`sequences: [{protein_pair: ...}]` spelling. The release query parser now
+preserves and validates `assembly`, and `prepare_apo.py` serializes it into each
+prepared `query.json`. The standard CLI invokes the sequential runner after apo
+preparation.
 
 `examples/8jeo_sequential.yaml` is a template using the exact 8JEO sequences.
-Supply `examples/apo/8jeo_A.pdb` and `examples/apo/8jeo_BC.pdb`, or edit the paths
-(the latter has two chains in sequence1/sequence2 order). The experimental
-runner still requires precomputed apo files; unlike the release runner, it
-will not generate missing apos automatically. Multiple apo candidates should
-be separate single-model files.
+As written, it generates A with AtlasFold and B/C jointly with
+AtlasFold-Multimer. Provided apo fields are still accepted. Prepared
+multi-model PDB ensembles are expanded so every model remains an apo/prior
+candidate.
 
 ```yaml
 # Append to the prepared 8jeo input, retaining its A and protein_pair B/C entries:
@@ -220,12 +222,10 @@ split by an assembly stage, so `[A, B]` is invalid while B/C remains paired.
 
 ```bash
 cd /home/hwkim/kfold/_worktrees/sequential-complex-prior
-PYTHONPATH=src /home/hwkim/miniforge3/envs/kfold/bin/python scripts/inference_sequential.py \
-  --input examples/8jeo_sequential.yaml \
-  --config /path/to/current-model-config.yaml \
-  --weight /path/to/current-model-weights.pth \
-  --ccd /path/to/ccd.pkl \
+pip install -e .
+kfold --input examples/8jeo_sequential.yaml \
   --out-dir /path/to/8jeo_sequential_output \
+  --seeds 1 2 3 4 5 --num-apos 5 \
   --conditioning prior_and_trunk
 ```
 

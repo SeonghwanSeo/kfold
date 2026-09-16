@@ -75,6 +75,11 @@ def config_files(config):
 
 def run_manifest(args, queries):
     paths = {args.weight.resolve(), args.ccd.resolve()} | config_files(args.config)
+    provided_root = getattr(args, "provided_intermediates", None)
+    if provided_root is not None:
+        for q in queries:
+            for path in provided_stage_paths(q, provided_root).values():
+                paths.add(path.resolve())
     for q in queries:
         for sequence in q.sequences + q.multimer_sequences:
             for attr in ("apo", "prior"):
@@ -109,15 +114,31 @@ def run_manifest(args, queries):
         "torch": torch.__version__,
         "conditioning": getattr(args, "conditioning", "prior_only"),
         "direct_control": getattr(args, "direct", False),
+        **(
+            {"provided_intermediates": str(provided_root.resolve())}
+            if provided_root is not None
+            else {}
+        ),
     }
+
+
+def provided_stage_paths(query, root):
+    """Explicit complete intermediates bypass their prediction, never selection."""
+    stages = execution_plan(query)[:-1]
+    paths = {s["id"]: Path(root) / query.name / (s["id"] + ".npz") for s in stages}
+    for path in paths.values():
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing provided intermediate: {path}")
+    return paths
 
 
 class ModelBackend:
     """One model load; a fresh full model call for every stage and seed."""
 
-    def __init__(self, args):
+    def __init__(self, args, model=None):
         self.args = args
-        self.model = None
+        self.model = model
+        self._validated = False
 
     def predict(self, query, struct, features, records, out):
         import torch
@@ -136,18 +157,21 @@ class ModelBackend:
             self.model.load_state_dict(state, strict=True)
             del state
             self.model.requires_grad_(False).eval().cuda()
+        if not self._validated:
             from kfold.model.modules.ecsi import KFoldECSI
 
             if not isinstance(self.model.diffusion_head, KFoldECSI):
                 raise ValueError(
                     "Sequential prior experiment requires an ECSI diffusion head"
                 )
+            self._validated = True
+        device = self.model.device
         torch.manual_seed(query.seed)
         torch.cuda.manual_seed_all(query.seed)
-        features = features.to("cuda")
+        features = features.to(device)
         with (
             torch.inference_mode(),
-            torch.autocast(device_type="cuda", dtype=torch.bfloat16),
+            torch.autocast(device_type=device.type, dtype=torch.bfloat16),
         ):
             if self.model.prot_struct_encoder is not None:
                 apply_apo_structure_tokens(
@@ -166,7 +190,8 @@ class ModelBackend:
                 num_steps=self.args.num_steps,
                 num_samples=self.args.num_samples,
             )
-        torch.cuda.synchronize()
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
         timing = {"inference_seconds": time.perf_counter() - started}
         coords = (
             output["diffusion"]["coordinates"][:, : struct.num_atoms]
@@ -183,17 +208,21 @@ class ModelBackend:
             stem = f"{query.name}_seed-{query.seed}_sample-{sample}"
             obj = PriorObject(atom_keys(struct), xyz)
             obj.save(out / f"{stem}_atoms.npz")
+            cif_path = out / f"{stem}.cif"
             writer.write_mmcif(
                 struct.copy_with_new_coords(xyz, b_factors=scores[sample]["plddt"]),
-                out / f"{stem}.cif",
+                cif_path,
             )
+            if not cif_path.is_file():
+                raise RuntimeError(f"Failed to write prediction: {cif_path}")
             write_json(out / f"{stem}_confidences.json", summary[sample])
-            np.savez_compressed(out / f"{stem}_confidences.npz", **scores[sample])
+            if getattr(self.args, "save_confidence", True):
+                np.savez_compressed(out / f"{stem}_confidences.npz", **scores[sample])
             candidates.append(
                 dict(
                     seed=query.seed,
                     sample=sample,
-                    ranking_score=float(summary[sample]["complex"]["ranking_score"]),
+                    **summary[sample]["complex"],
                     stem=stem,
                 )
             )
@@ -209,7 +238,16 @@ class ModelBackend:
 
 
 def run_query(
-    query, pipeline, seeds, samples, out, backend, direct=False, conditioning="prior_only"
+    query,
+    pipeline,
+    seeds,
+    samples,
+    out,
+    backend,
+    direct=False,
+    conditioning="prior_only",
+    provided_intermediates=None,
+    source_queries=None,
 ):
     from .sequential_dataset import InferenceDataset
 
@@ -218,14 +256,31 @@ def run_query(
     if direct and conditioning != "prior_only":
         raise ValueError("Direct control has no predicted intermediate to re-encode")
     stages = execution_plan(query, direct)
+    provided_intermediates = provided_intermediates or {}
+    if direct and provided_intermediates:
+        raise ValueError("Direct control cannot use provided intermediates")
+    if set(provided_intermediates) - {s["id"] for s in stages[:-1]}:
+        raise ValueError("Provided intermediates must reference a non-final stage")
     plain = query.copy(assembly=None)
     full = pipeline.read_query(plain)
+    if source_queries is None:
+        source_queries = {seed: plain.copy(seed=seed) for seed in seeds}
+    if set(source_queries) != set(seeds):
+        raise ValueError("Prepared source queries must match all inference seeds")
+    source_full = {}
+    for seed, source_query in source_queries.items():
+        source_query = source_query.copy(seed=seed, assembly=None)
+        source_struct = pipeline.read_query(source_query)
+        if atom_keys(source_struct) != atom_keys(full):
+            raise ValueError(f"Prepared query atom mapping changed for seed {seed}")
+        source_queries[seed] = source_query
+        source_full[seed] = source_struct
     # Resolve against the full original query, so earlier stages cannot change
     # apo selection or per-chain prior choices of later stages.
     sources = {
         s: pipeline.resolve_structure_sources(
-            full,
-            plain.copy(seed=s),
+            source_full[s],
+            source_queries[s],
             np.random.default_rng(np.random.SeedSequence([s, 0])),
         )
         for s in seeds
@@ -260,6 +315,30 @@ def run_query(
         chosen = set(stage["chains"])
         sub = subset_query(plain, chosen)
         sub_struct = pipeline.read_query(sub)
+        if stage["id"] in provided_intermediates:
+            path = Path(provided_intermediates[stage["id"]]).resolve()
+            obj = PriorObject.load(path)
+            if set(obj.keys) != set(atom_keys(sub_struct)):
+                raise ValueError(
+                    "Provided intermediate atom mapping is incomplete or mismatched"
+                )
+            receipt = {
+                "kind": "provided_structure",
+                "path": str(path),
+                "sha256": digest(path),
+                "chains": sorted(obj.chains),
+                "inference_skipped": True,
+                "observed_atoms": int(obj.observed_mask.sum()),
+                "missing_atoms": int((~obj.observed_mask).sum()),
+                "missing_protein_policy": "masked_trunk_native_langevin_prior_only",
+            }
+            receipt_path = stage_out / "provided_structure.json"
+            if receipt_path.exists() and json.loads(receipt_path.read_text()) != receipt:
+                raise ValueError("Provided intermediate changed during resume")
+            write_json(receipt_path, receipt)
+            obj.save(stage_out / "provided_atoms.npz")
+            groups = [g for g in groups if not g.chains <= chosen] + [obj]
+            continue
         active = [g for g in groups if g.chains <= chosen]
         all_candidates = []
         for seed in seeds:
@@ -280,7 +359,7 @@ def run_query(
                 start = time.monotonic()
                 try:
                     seeded = sub.copy(seed=seed)
-                    source = subset_sources(full, sub_struct, sources[seed])
+                    source = subset_sources(source_full[seed], sub_struct, sources[seed])
                     extra = (
                         {"trunk_groups": active}
                         if conditioning == "prior_and_trunk"
