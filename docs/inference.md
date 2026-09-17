@@ -21,7 +21,7 @@ K-Fold requires Python 3.11 or later.
 Install from PyPI:
 
 ```bash
-pip install 'kfold[cuequiv]'
+pip install kfold
 ```
 
 Or install from source:
@@ -29,10 +29,10 @@ Or install from source:
 ```bash
 git clone https://github.com/SeonghwanSeo/kfold.git
 cd kfold
-pip install '.[cuequiv]'
+pip install -e .
 ```
 
-The `cuequiv` extra installs cuEquivariance kernels for faster inference on NVIDIA GPUs.
+K-Fold uses custom Triton kernels by default when Triton is installed and CUDA is available.
 
 ## Running predictions
 
@@ -46,6 +46,16 @@ By default, K-Fold generates protein apo structures for all selected queries wit
 You can also provide apo structures from experiments or other prediction tools.
 Model weights and the chemical component dictionary (CCD) are downloaded automatically.
 Use `--cache-dir` to select a download cache.
+
+The default backend selection prefers Triton, then cuEquivariance, then PyTorch, depending on availability.
+Use `--kernel {triton,cuequiv,torch}` to select the backend explicitly for K-Fold complex prediction:
+
+```bash
+kfold --input query.yaml --out-dir predictions/ --kernel triton
+```
+
+This option does not change the backend used by AtlasFold for apo preparation.
+The `cuequiv` backend requires cuEquivariance to be installed separately.
 
 From the repository root, the script entry point provides the same interface:
 
@@ -126,6 +136,7 @@ The default `--stage all` prepares apos and predicts complexes.
 | `--num-samples` | `5` | Complex predictions per query/seed. |
 | `--num-recycles` | `10` | Model recycling iterations. |
 | `--num-steps` | `100` | Diffusion steps. |
+| `--kernel` | Automatic | K-Fold kernel backend: `triton`, `cuequiv`, or `torch`; selects the first available in that order when omitted. |
 | `--gpu-ids` | `0` | Unique non-negative visible CUDA device IDs. |
 | `--disable-struct-encoder` | Off | Disable the protein structure encoder to save memory. |
 | `--disable-rna-encoder` | Off | Disable the RNA encoder; only for queries without RNA. |

@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import copy
 import dataclasses
 from functools import cached_property
@@ -656,78 +670,6 @@ class SequenceArray(PlainLayout[np.ndarray]):
                 )
 
 
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class ConstraintArray(PlainLayout[np.ndarray]):
-    """Constraint information.
-
-    Shape: [Nconstraint, ...]
-
-    Attributes
-    ----------
-    asym_id: np.ndarray
-        Chain asym id pairs in the constraint of shape [Nconstraint, 2].
-    token_index: np.ndarray
-        Token index pairs in the constraint of shape [Nconstraint, 2].
-    atom_index: np.ndarray  # [Nconstraint, 2]
-        For polymer, the atom index is the center atom index of the token,
-        i.e., Protein: 1(CA), RNA: 11(C1'), DNA: 10(C1'), Ligand: 0.
-    lower_bound: np.ndarray
-        Minimum distance constraints of shape [Nconstraint,],
-        -1 indicates no minimum distance constraint.
-    upper_bound: np.ndarray
-        Maximum distance constraints of shape [Nconstraint,],
-        -1 indicates no maximum distance constraint.
-    """
-
-    asym_id: np.ndarray  # [Nconstraint, 2], int
-    token_index: np.ndarray  # [Nconstraint, 2], int
-    atom_index: np.ndarray  # [Nconstraint, 2], int
-    lower_bound: np.ndarray  # [Nconstraint,], float
-    upper_bound: np.ndarray  # [Nconstraint,], float
-
-    @cached_property
-    def layout_shape(self) -> tuple[int, ...]:
-        return self.lower_bound.shape
-
-    def __post_init__(self):
-        shape = self.layout_shape
-        attributes = [
-            ("asym_id", np.integer, (*shape, 2)),
-            ("token_index", np.integer, (*shape, 2)),
-            ("atom_index", np.integer, (*shape, 2)),
-            ("lower_bound", np.floating, shape),
-            ("upper_bound", np.floating, shape),
-        ]
-        for name, dtype, shape in attributes:
-            check_array(getattr(self, name), name=name, dtype=dtype, shape=shape)
-
-    @classmethod
-    def get_empty(cls, num_constraints: int) -> Self:
-        """Get an empty ConstraintArray with the specified number of constraints."""
-        return cls(
-            asym_id=full_minus_one((num_constraints, 2)),
-            token_index=full_minus_one((num_constraints, 2)),
-            atom_index=full_minus_one((num_constraints, 2)),
-            lower_bound=full_nan((num_constraints,)),
-            upper_bound=full_nan((num_constraints,)),
-        )
-
-    def validate(self) -> None:
-        """Perform sanity checks on the ConstraintArray."""
-        for field in dataclasses.fields(self):
-            array = getattr(self, field.name)
-            if field.name in ["lower_bound", "upper_bound"]:
-                if not np.all(np.isfinite(array)):
-                    raise ValueError(
-                        f"ConstraintArray field '{field.name}' contains invalid values."
-                    )
-            else:
-                if np.any(array < 0):
-                    raise ValueError(
-                        f"ConstraintArray field '{field.name}' contains negative values."
-                    )
-
-
 @dataclasses.dataclass(kw_only=True)
 class TokenizedStructure:
     """Tokenized representation of a molecular structure.
@@ -744,8 +686,6 @@ class TokenizedStructure:
         Bond information.
     sequence: SequenceArray
         Sequence information for sequence embedding.
-    constraint: ConstraintArray
-        Constraint information.
     """
 
     id: str
@@ -753,7 +693,6 @@ class TokenizedStructure:
     token: TokenArray
     atom: AtomArray
     bond: BondArray
-    constraint: ConstraintArray
     sequence: SequenceArray
 
     @property
@@ -776,11 +715,6 @@ class TokenizedStructure:
         """Number of bonds in the structure."""
         return len(self.bond)
 
-    @property
-    def num_constraints(self) -> int:
-        """Number of constraints in the structure."""
-        return len(self.constraint)
-
     def __repr__(self) -> str:
         """String representation of the TokenizedStructure"""
         num_chains = self.num_chains
@@ -802,7 +736,6 @@ class TokenizedStructure:
         num_tokens: int,
         num_bonds: int,
         num_sequence_tokens: int,
-        num_constraints: int = 0,
         num_apo: int = 1,
         num_priors: int = 0,
     ) -> Self:
@@ -814,7 +747,6 @@ class TokenizedStructure:
             atom=AtomArray.get_empty(num_tokens, num_apo=num_apo, num_priors=num_priors),
             bond=BondArray.get_empty(num_bonds),
             sequence=SequenceArray.get_empty(num_sequence_tokens, num_apo=num_apo),
-            constraint=ConstraintArray.get_empty(num_constraints),
         )
 
     def validate(self) -> None:
@@ -824,7 +756,6 @@ class TokenizedStructure:
         self.atom.validate()
         self.bond.validate()
         self.sequence.validate()
-        self.constraint.validate()
 
     # === Utility functions === #
     def to(self, *args, **kwargs) -> Self:
@@ -843,7 +774,6 @@ class TokenizedStructure:
                 atom=self.atom,
                 bond=self.bond,
                 sequence=self.sequence,
-                constraint=self.constraint,
             )
 
     def copy_with(self, **kwargs) -> Self:
@@ -891,10 +821,6 @@ class TokenizedStructure:
         token_bonds = self.bond.token_index
         bond_mask = np.isin(token_bonds, token_indices).all(axis=1)
         cropped_bond = self.bond[bond_mask]  # type: ignore
-
-        token_constraints = self.constraint.token_index
-        constraint_mask = np.isin(token_constraints, token_indices).all(axis=1)
-        cropped_constraint = self.constraint[constraint_mask]  # type: ignore
 
         # Remove excluding chains
         token_asym_ids = np.unique(cropped_token.asym_id)
@@ -946,5 +872,4 @@ class TokenizedStructure:
             atom=cropped_atom,
             bond=cropped_bond,
             sequence=cropped_sequence,
-            constraint=cropped_constraint,
         )

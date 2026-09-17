@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Section 3.7 Diffusion Module in the AF3 paper."""
 
 from functools import partial
@@ -163,6 +177,7 @@ class DiffusionStack(nn.Module):
         atom_decoder_heads: int = 4,
         blocks_per_ckpt: int | None = None,
         ckpt_atom_stack: bool = False,
+        kernel_backend: str = "torch",
     ) -> None:
         """Initialize the diffusion module.
 
@@ -206,6 +221,7 @@ class DiffusionStack(nn.Module):
 
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
         self.channel_atom: int = channel_atom
@@ -250,6 +266,7 @@ class DiffusionStack(nn.Module):
             num_heads=atom_encoder_heads,
             use_structure=True,
             ckpt_atom_stack=ckpt_atom_stack,
+            kernel_backend=self.kernel_backend,
         )
         if separate_endpoint_atom_encoder:
             self.endpoint_atom_attention_encoder = AtomAttentionEncoder(
@@ -261,6 +278,7 @@ class DiffusionStack(nn.Module):
                 num_heads=atom_encoder_heads,
                 use_structure=True,
                 ckpt_atom_stack=ckpt_atom_stack,
+                kernel_backend=self.kernel_backend,
             )
             self.layernorm_a_t = LayerNorm(channel_a, create_offset=False)
             self.layernorm_a_endpoint = LayerNorm(channel_a, create_offset=False)
@@ -287,6 +305,7 @@ class DiffusionStack(nn.Module):
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             blocks_per_ckpt=blocks_per_ckpt,
+            kernel_backend=self.kernel_backend,
         )
 
         self.layernorm_a = LayerNorm(channel_a, create_offset=False)
@@ -299,6 +318,7 @@ class DiffusionStack(nn.Module):
             num_blocks=atom_decoder_blocks,
             num_heads=atom_decoder_heads,
             ckpt_atom_stack=ckpt_atom_stack,
+            kernel_backend=self.kernel_backend,
         )
 
     # === Main forward function for training === #

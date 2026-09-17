@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import pathlib
 from collections.abc import Mapping
 from typing import Self
@@ -8,11 +22,15 @@ import torch.nn.functional as F
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.model import KFold, KFoldConfig
 from kfold.model.modules.ecsi import ECSISOARConfig
+from kfold.utils.runtime import is_cuequivariance_installed
 
 
 class KFoldForTrain(KFold):
-    def __init__(self, config: KFoldConfig):
-        super().__init__(config)
+    def __init__(self, config: KFoldConfig, *, kernel_backend: str | None = None):
+        # Triton kernels support inference only.
+        if kernel_backend is None:
+            kernel_backend = "cuequiv" if is_cuequivariance_installed() else "torch"
+        super().__init__(config, kernel_backend=kernel_backend)
         self.is_compiled = False
 
     def get_pretrained_module_names(self) -> list[str]:
@@ -142,8 +160,6 @@ class KFoldForTrain(KFold):
         z: torch.Tensor
             The updated tensor of shape (B, L, L, c_z).
         """
-        use_cuequiv_kernels = self.use_kernel
-
         train = self.training and grad_recurrence_steps > 0
 
         # Get the underlying modules for compiled models
@@ -164,7 +180,7 @@ class KFoldForTrain(KFold):
         z_inputs = z_inputs.float()  # cast to float32 for numerical stability
 
         # Embedding of the apo state into the pair representation.
-        z_inputs = z_inputs + apo_stack(f_input, use_cuequiv_kernels)
+        z_inputs = z_inputs + apo_stack(f_input)
 
         # Initialize an independent pair-state z_0 instead of recycling from zeros.
         z = self._init_parcae_pair_state(z_inputs)
@@ -183,14 +199,14 @@ class KFoldForTrain(KFold):
                 if enable_grad and torch.is_autocast_enabled():
                     torch.clear_autocast_cache()
                 _z_lm = F.dropout(z_lm, p=self.dropout, training=True)
-                u_t = z_inputs + lm_stack(_z_lm, pair_mask, use_cuequiv_kernels)
+                u_t = z_inputs + lm_stack(_z_lm, pair_mask)
                 # Parcae recurrence: z_in = a * z_t + B_bar LN(u_t), followed
                 # by the pair folding trunk as the nonlinear recurrent update.
                 z = a * z + F.linear(self.layernorm_z(u_t), b)
-                z = main_stack(z, pair_mask, use_cuequiv_kernels)
+                z = main_stack(z, pair_mask)
 
         # Refinement iteration
-        z = refine_stack(self.linear_refine(z), pair_mask, use_cuequiv_kernels)
+        z = refine_stack(self.linear_refine(z), pair_mask)
 
         return s_inputs, s_lm, z
 
@@ -364,7 +380,6 @@ class KFoldForTrain(KFold):
                 _s_lm,
                 _z,
                 coordinates,
-                use_cuequiv_kernels=self.use_kernel,
             )
 
         return dict_out
@@ -435,7 +450,6 @@ class KFoldForTrain(KFold):
             s_lm,
             z,
             coords,
-            use_cuequiv_kernels=self.use_kernel,
         )
         # Remove batch dimension from outputs for validation
         dict_out = {

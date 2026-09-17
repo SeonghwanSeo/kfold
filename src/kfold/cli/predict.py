@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Run predictions for each query and seed."""
 
 import argparse
@@ -80,6 +94,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     # Devices, model components, and model cache.
     parser.add_argument(
+        "--kernel",
+        dest="kernel_backend",
+        choices=("torch", "cuequiv", "triton"),
+        help="Kernel backend for K-Fold and AtlasFold apo preparation.",
+    )
+    parser.add_argument(
         "--gpu-ids",
         type=int,
         nargs="+",
@@ -99,7 +119,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cpu-offload",
         action="store_true",
-        help="Offload structure and RNA encoders to CPU to save GPU memory (slower).",
+        help="Offload pretrained encoders to CPU to save GPU memory (slower).",
     )
     parser.add_argument(
         "--cache-dir",
@@ -236,7 +256,7 @@ def _build_jobs(
 
 def dry_run(args: argparse.Namespace) -> None:
     """Validate selected queries and report pending work without writing outputs."""
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import snapshot_download
 
     from kfold.cli.predict_complex import dry_run as predict_complex
     from kfold.cli.prepare_apo import dry_run as prepare_apo
@@ -247,7 +267,10 @@ def dry_run(args: argparse.Namespace) -> None:
     _find_obsolete_queries(args, queries)
 
     logger.info("Checking query CCD codes.")
-    ccd_path = hf_hub_download(ASSETS_REPO_ID, "assets/ccd.pkl", cache_dir=args.cache_dir)
+    ccd_path = (
+        Path(snapshot_download(ASSETS_REPO_ID, cache_dir=args.cache_dir))
+        / "assets/ccd.pkl"
+    )
     ccd = CCD.load(ccd_path)
     for query in queries:
         query.validate_ccd_codes(ccd.keys())
@@ -265,6 +288,12 @@ def run(args: argparse.Namespace) -> None:
     """Validate arguments, load queries, and run the selected prediction stages."""
     from kfold.cli.predict_complex import run as predict_complex
     from kfold.cli.prepare_apo import run as prepare_apo
+    from kfold.utils.runtime import select_kernel_backend
+
+    # Select the kernel backend if not explicitly specified.
+    if args.kernel_backend is None:
+        args.kernel_backend = select_kernel_backend(args.kernel_backend)
+    logger.info("Kernel backend: %s.", args.kernel_backend)
 
     queries = _load_queries(args)
     obsolete_queries = _find_obsolete_queries(args, queries)

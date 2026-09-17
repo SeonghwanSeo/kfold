@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Load, predict, and save apo structures independently of K-Fold."""
 
 import gc
@@ -220,6 +234,7 @@ class ApoRunner:
         self,
         device: torch.device | str = "cuda",
         *,
+        kernel_backend: str | None = None,
         config: ApoConfig | None = None,
         cache_dir: str | Path | None = None,
         lm: AtlasLM | None = None,
@@ -231,6 +246,9 @@ class ApoRunner:
         ----------
         device : torch.device | str
             Model device.
+        kernel_backend : str | None
+            AtlasFold kernel backend: torch, cuequiv, or triton.
+            When omitted, use AtlasFold automatic selection.
         config : ApoConfig | None
             Apo generation settings.
         cache_dir : str | Path | None
@@ -241,6 +259,7 @@ class ApoRunner:
             Emit model-loading logs.
         """
         self.device = torch.device(device)
+        self.kernel_backend = kernel_backend
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.config: ApoConfig = config if config is not None else ApoConfig()
         self.verbose: bool = verbose
@@ -293,6 +312,8 @@ class ApoRunner:
         MonomerRunner | MultimerRunner
             Runner for the loaded model.
         """
+        # K-Fold may have offloaded the shared AtlasLM since the last prediction.
+        self.lm.to(self.device)
         model_name = "atlasfold-m" if multimer else "atlasfold"
         if model_name not in self._runners:
             self._log("Loading %s.", "AtlasFold-Multimer" if multimer else "AtlasFold")
@@ -300,6 +321,9 @@ class ApoRunner:
                 model = load_atlasfold(
                     model_name,
                     self.device,
+                    kernel=self.kernel_backend
+                    if self.kernel_backend is not None
+                    else "auto",
                     cache_dir=self.cache_dir,
                     lm=self.lm,
                 )

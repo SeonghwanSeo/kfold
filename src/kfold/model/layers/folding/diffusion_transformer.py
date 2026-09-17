@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Diffusion Transformer implementation based on Section 3.7 Algorithm 23 Diffusion
 Transformer of the AlphaFold 3 paper.
 
@@ -83,6 +97,7 @@ class GlobalTransformerStack(torch.nn.Module):
         num_heads: int,
         num_blocks: int,
         blocks_per_ckpt: int | None = None,
+        kernel_backend: str = "torch",
     ):
         """Initialize the diffusion transformer.
 
@@ -102,10 +117,17 @@ class GlobalTransformerStack(torch.nn.Module):
             The number of blocks per checkpoint
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.layernorm_z = LayerNorm(channel_z, create_offset=False)
         self.blocks = nn.ModuleList(
             [
-                GlobalTransformerBlock(channel_a, channel_s, channel_z, num_heads)
+                GlobalTransformerBlock(
+                    channel_a,
+                    channel_s,
+                    channel_z,
+                    num_heads,
+                    kernel_backend=self.kernel_backend,
+                )
                 for _ in range(num_blocks)
             ]
         )
@@ -163,6 +185,7 @@ class GlobalTransformerBlock(nn.Module):
         channel_s: int,
         channel_z: int,
         num_heads: int,
+        kernel_backend: str = "torch",
     ):
         """Initialize the diffusion transformer block.
 
@@ -178,8 +201,15 @@ class GlobalTransformerBlock(nn.Module):
             The number of heads.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.linear_z_to_bias = LinearNoBias(channel_z, num_heads, init="default")
-        self.attention = SelfAttentionPairBias(channel_a, num_heads, channel_s)
+        self.attention = SelfAttentionPairBias(
+            channel_a,
+            num_heads,
+            channel_s,
+            call_site="diffusion_global",
+            kernel_backend="sdpa",
+        )
         self.transition = ConditionedTransitionBlock(channel_a, channel_s)
 
     def forward(
@@ -212,7 +242,15 @@ class GlobalTransformerBlock(nn.Module):
         # Line 2
         pair_bias = self.linear_z_to_bias(z)  # [*, L, L, H]
         pair_bias = permute_final_dims(pair_bias, (0, 3, 1, 2))  # [*, H, L, L]
-        a = _add(a, self.attention(a, s, pair_bias, mask, use_kernels=True))
+        a = _add(
+            a,
+            self.attention(
+                a,
+                s,
+                pair_bias,
+                mask,
+            ),
+        )
         # Line 3
         a = _add(a, self.transition(a, s))
         return a
@@ -229,6 +267,7 @@ class CachedGlobalTransformerStack(nn.Module):
         num_heads: int,
         num_blocks: int,
         blocks_per_ckpt: int | None = None,
+        kernel_backend: str = "torch",
     ):
         """Initialize the diffusion transformer.
 
@@ -246,9 +285,15 @@ class CachedGlobalTransformerStack(nn.Module):
             The number of blocks per checkpoint
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.blocks = nn.ModuleList(
             [
-                CachedGlobalTransformerBlock(channel_a, channel_s, num_heads)
+                CachedGlobalTransformerBlock(
+                    channel_a,
+                    channel_s,
+                    num_heads,
+                    kernel_backend=self.kernel_backend,
+                )
                 for _ in range(num_blocks)
             ]
         )
@@ -302,6 +347,7 @@ class CachedGlobalTransformerBlock(nn.Module):
         channel_a: int,
         channel_s: int,
         num_heads: int,
+        kernel_backend: str = "torch",
     ):
         """Initialize the diffusion transformer block.
 
@@ -317,7 +363,14 @@ class CachedGlobalTransformerBlock(nn.Module):
             The number of heads.
         """
         super().__init__()
-        self.attention = SelfAttentionPairBias(channel_a, num_heads, channel_s)
+        self.kernel_backend = kernel_backend
+        self.attention = SelfAttentionPairBias(
+            channel_a,
+            num_heads,
+            channel_s,
+            call_site="diffusion_global",
+            kernel_backend="sdpa",
+        )
         self.transition = ConditionedTransitionBlock(channel_a, channel_s)
 
     def forward(
@@ -348,7 +401,13 @@ class CachedGlobalTransformerBlock(nn.Module):
         _add = partial(add, inplace=not self.training)
 
         # Line 2
-        a = _add(a, self.attention(a, s, pair_bias, mask, use_kernels=True))
+        a_update = self.attention(
+            a,
+            s,
+            pair_bias,
+            mask,
+        )
+        a = _add(a, a_update)
         # Line 3
         a = _add(a, self.transition(a, s))
         return a
@@ -370,6 +429,7 @@ class LocalTransformerStack(nn.Module):
         channel_z: int,
         num_heads: int,
         num_blocks: int,
+        kernel_backend: str = "torch",
     ):
         """Initialize the diffusion transformer.
 
@@ -387,10 +447,17 @@ class LocalTransformerStack(nn.Module):
             The number of blocks.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.layernorm_z = LayerNorm(channel_z, create_offset=False)
         self.blocks = nn.ModuleList(
             [
-                LocalTransformerBlock(channel_a, channel_s, channel_z, num_heads)
+                LocalTransformerBlock(
+                    channel_a,
+                    channel_s,
+                    channel_z,
+                    num_heads,
+                    kernel_backend=self.kernel_backend,
+                )
                 for _ in range(num_blocks)
             ]
         )
@@ -430,7 +497,14 @@ class LocalTransformerStack(nn.Module):
 
         for block in self.blocks:
             a_q, a_k = to_qk(a, -2)  # [*, W, Lq/Lk, c_a]
-            a_q = block(a_q, a_k, s_q, s_k, z, mask_k)  # [*, W, Lq, c_a]
+            a_q = block(
+                a_q,
+                a_k,
+                s_q,
+                s_k,
+                z,
+                mask_k,
+            )  # [*, W, Lq, c_a]
             a = a_q.flatten(-3, -2)  # [*, L, c_a]
         return a
 
@@ -447,6 +521,7 @@ class LocalTransformerBlock(nn.Module):
         channel_s: int,
         channel_z: int,
         num_heads: int,
+        kernel_backend: str = "torch",
     ):
         """Initialize the diffusion transformer block.
 
@@ -462,8 +537,14 @@ class LocalTransformerBlock(nn.Module):
             The number of heads.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.linear_z_to_bias = LinearNoBias(channel_z, num_heads, init="default")
-        self.attention = CrossAttentionPairBias(channel_a, num_heads, channel_s)
+        self.attention = CrossAttentionPairBias(
+            channel_a,
+            num_heads,
+            channel_s,
+            kernel_backend="sdpa",
+        )
         self.transition = ConditionedTransitionBlock(channel_a, channel_s)
 
     def forward(
@@ -500,11 +581,17 @@ class LocalTransformerBlock(nn.Module):
         _add = partial(add, inplace=not self.training)
 
         # Line 2
-        # Create pair bias for local attention
         pair_bias = self.linear_z_to_bias(z)  # [*, Lq, Lk, H]
-        pair_bias = permute_final_dims(pair_bias, (0, 3, 1, 2))  # [*, W, H, Lq, Lk]
-        # Apply attention with pair bias
-        a_q = _add(a_q, self.attention(a_q, a_k, s_q, s_k, pair_bias, mask))
+        pair_bias = permute_final_dims(pair_bias, (0, 3, 1, 2))
+        attention_update = self.attention(
+            a_q,
+            a_k,
+            s_q,
+            s_k,
+            pair_bias,
+            mask,
+        )
+        a_q = _add(a_q, attention_update)
         # Line 3
         a_q = _add(a_q, self.transition(a_q, s_q))
         return a_q

@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Apo structure embedding module for multimer trunk inputs."""
 
 from dataclasses import dataclass
@@ -33,9 +47,11 @@ class PairformerStack(torch.nn.Module):
         num_blocks: int = 48,
         dropout: float = 0.1,
         blocks_per_ckpt: int | None = None,
+        kernel_backend: str = "torch",
     ):
         """Initialize the Pairformer module."""
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_z: int = channel_z
         self.num_blocks: int = num_blocks
         self.dropout: float = dropout
@@ -45,14 +61,18 @@ class PairformerStack(torch.nn.Module):
         self.blocks = torch.nn.ModuleList()
         for _ in range(num_blocks):
             self.blocks.append(
-                PairformerBlock(self.channel_z, num_tri_heads, self.dropout)
+                PairformerBlock(
+                    self.channel_z,
+                    num_tri_heads,
+                    self.dropout,
+                    kernel_backend=self.kernel_backend,
+                )
             )
 
     def forward(
         self,
         z: torch.Tensor,
         pair_mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Perform the forward pass.
 
@@ -62,9 +82,6 @@ class PairformerStack(torch.nn.Module):
             The pairwise embeddings
         pair mask : torch.Tensor
             The pair token mask
-        use_cuequiv_kernels : bool, optional
-            Whether to use CuEQuiv kernels, by default False
-
         Returns
         -------
         torch.Tensor
@@ -74,7 +91,6 @@ class PairformerStack(torch.nn.Module):
             partial(
                 b,
                 pair_mask=pair_mask,
-                use_cuequiv_kernels=use_cuequiv_kernels,
             )
             for b in self.blocks
         ]
@@ -96,6 +112,7 @@ class PairformerBlock(torch.nn.Module):
         channel_z: int = 64,
         num_tri_heads: int = 4,
         dropout: float = 0.1,
+        kernel_backend: str = "torch",
     ):
         """Initialize the Pairformer module.
 
@@ -107,11 +124,20 @@ class PairformerBlock(torch.nn.Module):
             The dropout rate, by default 0.1
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_z: int = channel_z
-        self.tri_mul_out = TriangleMultiplicationOutgoing(channel_z)
-        self.tri_mul_in = TriangleMultiplicationIncoming(channel_z)
-        self.tri_att_start = TriangleAttentionStartingNode(channel_z, num_tri_heads)
-        self.tri_att_end = TriangleAttentionEndingNode(channel_z, num_tri_heads)
+        self.tri_mul_out = TriangleMultiplicationOutgoing(
+            channel_z, kernel_backend=self.kernel_backend
+        )
+        self.tri_mul_in = TriangleMultiplicationIncoming(
+            channel_z, kernel_backend=self.kernel_backend
+        )
+        self.tri_att_start = TriangleAttentionStartingNode(
+            channel_z, num_tri_heads, kernel_backend=self.kernel_backend
+        )
+        self.tri_att_end = TriangleAttentionEndingNode(
+            channel_z, num_tri_heads, kernel_backend=self.kernel_backend
+        )
         self.transition_z = Transition(channel_z, expansion_factor=2)
         self.dropout_rowwise_z = DropoutRowwise(dropout)
         self.dropout_columnwise_z = DropoutColumnwise(dropout)
@@ -120,7 +146,6 @@ class PairformerBlock(torch.nn.Module):
         self,
         z: torch.Tensor,
         pair_mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Perform the forward pass.
         See Section 3.6 Algorithm 20 Pairformer Stack
@@ -129,27 +154,19 @@ class PairformerBlock(torch.nn.Module):
 
         z = _add(
             z,
-            self.dropout_rowwise_z(
-                self.tri_mul_out(z, pair_mask, use_kernels=use_cuequiv_kernels)
-            ),
+            self.dropout_rowwise_z(self.tri_mul_out(z, pair_mask)),
         )
         z = _add(
             z,
-            self.dropout_rowwise_z(
-                self.tri_mul_in(z, pair_mask, use_kernels=use_cuequiv_kernels)
-            ),
+            self.dropout_rowwise_z(self.tri_mul_in(z, pair_mask)),
         )
         z = _add(
             z,
-            self.dropout_rowwise_z(
-                self.tri_att_start(z, pair_mask, use_kernels=use_cuequiv_kernels)
-            ),
+            self.dropout_rowwise_z(self.tri_att_start(z, pair_mask)),
         )
         z = _add(
             z,
-            self.dropout_columnwise_z(
-                self.tri_att_end(z, pair_mask, use_kernels=use_cuequiv_kernels)
-            ),
+            self.dropout_columnwise_z(self.tri_att_end(z, pair_mask)),
         )
         z = _add(z, self.transition_z(z))
         return z * pair_mask[..., None]
@@ -252,8 +269,13 @@ class ApoModule(torch.nn.Module):
         max_dist: float = 50.75
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        kernel_backend: str = "torch",
+    ) -> None:
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_z = cfg.channel_z
         self.channel_apo = cfg.channel_apo
 
@@ -275,6 +297,7 @@ class ApoModule(torch.nn.Module):
             num_blocks=cfg.num_blocks,
             dropout=cfg.dropout,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
+            kernel_backend=self.kernel_backend,
         )
         self.layernorm_out = LayerNorm(self.channel_apo)
         self.linear_out = LinearNoBias(self.channel_apo, self.channel_z, init="relu")
@@ -282,7 +305,6 @@ class ApoModule(torch.nn.Module):
     def forward(
         self,
         f_input: FoldingInput,
-        use_cuequiv_kernels: bool = False,
     ) -> torch.Tensor:
         """Return an apo pair update of shape ``[B, L, L, C_z]``."""
         pseudo_beta = f_input.token.apo_repr_coords.transpose(1, 2)
@@ -359,7 +381,6 @@ class ApoModule(torch.nn.Module):
         v = self.stack(
             v.flatten(0, 1),
             pair_mask.flatten(0, 1),
-            use_cuequiv_kernels=use_cuequiv_kernels,
         ).unflatten(0, (B, T))
         v = self.layernorm_out(v)
 

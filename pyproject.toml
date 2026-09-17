@@ -23,7 +23,7 @@ dependencies = [
   "pyyaml",
   # apo sampler
   "numba",
-  "atlasfold>=1.0.2",
+  "atlasfold>=1.0.3",
 ]
 
 [project.scripts]
@@ -33,23 +33,21 @@ kfold = "kfold.cli.main:main"
 version = { attr = "kfold.__version__" }
 
 [project.optional-dependencies]
-cuequiv = [
-  "torch>=2.7.0",
-  # Keep the frontend and CUDA kernels aligned with K-Fold's attention API.
-  "cuequivariance==0.10.0",
-  "cuequivariance_torch==0.10.0",
-  "cuequivariance_ops_cu12==0.10.0",
-  "cuequivariance_ops_torch_cu12==0.10.0",
-]
 dev = ["pre-commit", "pytest"]
 train = [
+  "torch>=2.7.0",
   'lightning', # for training loop
   'wandb', # for experiment tracking
   'lmdb', # for training dataset storage
   'msgpack', # for data serialization
   "zstandard",
   'bioprior @ git+https://github.com/SeonghwanSeo/bio-prior.git@v0.1.2',
+  # for ccd data handling
+  'pdbeccdutils',
 ]
-preprocess = [
-  'pdbeccdutils', # for ccd data handling
+cuequiv = [
+  "cuequivariance==0.10.0",
+  "cuequivariance_torch==0.10.0",
+  "cuequivariance_ops_cu12==0.10.0",
+  "cuequivariance_ops_torch_cu12==0.10.0",
 ]

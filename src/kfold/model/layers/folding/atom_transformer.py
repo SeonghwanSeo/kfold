@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import math
 from collections.abc import Callable
 
@@ -253,6 +267,7 @@ class AtomAttentionEncoder(nn.Module):
         num_heads=4,
         use_structure: bool = False,
         ckpt_atom_stack: bool = False,
+        kernel_backend: str = "torch",
     ):
         """Initialize the atom attention encoder.
 
@@ -274,6 +289,7 @@ class AtomAttentionEncoder(nn.Module):
             Whether to checkpoint the complete atom transformer stack.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.use_structure: bool = use_structure
         self.ckpt_atom_stack: bool = ckpt_atom_stack
         if use_structure:
@@ -286,6 +302,7 @@ class AtomAttentionEncoder(nn.Module):
             channel_z=channel_atompair,
             num_blocks=num_blocks,
             num_heads=num_heads,
+            kernel_backend=self.kernel_backend,
         )
         self.linear_q_to_a = LinearNoBias(channel_atom, channel_token, init="default")
         self.relu = nn.ReLU()
@@ -376,6 +393,7 @@ class AtomAttentionDecoder(nn.Module):
         num_blocks: int = 3,
         num_heads: int = 4,
         ckpt_atom_stack: bool = False,
+        kernel_backend: str = "torch",
     ):
         """Initialize the atom attention decoder.
 
@@ -395,6 +413,7 @@ class AtomAttentionDecoder(nn.Module):
             Whether to checkpoint the complete atom transformer stack.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.ckpt_atom_stack: bool = ckpt_atom_stack
 
         self.linear_a_to_q = LinearNoBias(channel_a, channel_atom, init="default")
@@ -404,6 +423,7 @@ class AtomAttentionDecoder(nn.Module):
             channel_z=channel_atompair,
             num_blocks=num_blocks,
             num_heads=num_heads,
+            kernel_backend=self.kernel_backend,
         )
         self.layernorm_q = LayerNorm(channel_atom, create_offset=False)
         self.linear_q_to_r = LinearNoBias(channel_atom, 3, init="final", precision=32)

@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Prepare apo inputs across all queries before complex prediction."""
 
 import argparse
@@ -229,6 +243,7 @@ def _worker(
         work = "apo runner initialization"
         runner = ApoRunner(
             torch.device("cuda", gpu_id),
+            kernel_backend=args.kernel_backend,
             config=config,
             cache_dir=args.cache_dir,
             verbose=False,
@@ -306,8 +321,9 @@ def _worker(
                 completed,
                 perf_counter() - model_start,
             )
-    except torch.cuda.OutOfMemoryError:
-        raise SystemExit(
+    except torch.cuda.OutOfMemoryError as e:
+        logger.error(
             f"Apo GPU {gpu_id}: out of memory during {work}. "
             "Lower max_tokens_per_batch in the apo YAML configuration."
-        ) from None
+        )
+        raise e

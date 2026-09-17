@@ -1,4 +1,4 @@
-# Copyright 2026 KAIST
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
 # Copyright 2025 AlQuraishi Laboratory
 #
 # Licensed under the Apache License, Version 2.0 (the "License");

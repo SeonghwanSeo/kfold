@@ -1,3 +1,17 @@
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from dataclasses import dataclass
 from functools import partial
 
@@ -67,8 +81,10 @@ class ConfidencePairSingleStack(torch.nn.Module):
         num_blocks: int,
         dropout: float,
         blocks_per_ckpt: int | None = None,
+        kernel_backend: str = "torch",
     ) -> None:
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.blocks_per_ckpt = blocks_per_ckpt
         self.blocks = torch.nn.ModuleList(
             [
@@ -77,6 +93,7 @@ class ConfidencePairSingleStack(torch.nn.Module):
                     channel_z=channel_z,
                     num_heads=num_heads,
                     dropout=dropout,
+                    kernel_backend=self.kernel_backend,
                 )
                 for _ in range(num_blocks)
             ]
@@ -88,14 +105,12 @@ class ConfidencePairSingleStack(torch.nn.Module):
         s: torch.Tensor,
         pair_mask: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         blocks = [
             partial(
                 b,
                 pair_mask=pair_mask,
                 mask=mask,
-                use_kernels=use_kernels,
             )
             for b in self.blocks
         ]
@@ -114,15 +129,23 @@ class ConfidencePairSingleBlock(torch.nn.Module):
         channel_z: int,
         num_heads: int,
         dropout: float,
+        kernel_backend: str = "torch",
     ) -> None:
         super().__init__()
-        self.pair_block = TriangularBlock(channel_z, dropout)
+        self.kernel_backend = kernel_backend
+        self.pair_block = TriangularBlock(
+            channel_z,
+            dropout,
+            kernel_backend=self.kernel_backend,
+        )
         self.layernorm_z = LayerNorm(channel_z)
         self.linear_pair_bias = LinearNoBias(channel_z, num_heads)
         self.attention = SelfAttentionPairBias(
             channel_a=channel_s,
             num_heads=num_heads,
             channel_s=None,
+            call_site="confidence",
+            kernel_backend="sdpa",
         )
         self.transition = Transition(channel_s, expansion_factor=4)
 
@@ -132,14 +155,22 @@ class ConfidencePairSingleBlock(torch.nn.Module):
         s: torch.Tensor,
         pair_mask: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         _add = partial(add, inplace=not self.training)
 
-        z = self.pair_block(z, pair_mask, use_kernels)
+        z = self.pair_block(z, pair_mask)
         pair_bias = self.linear_pair_bias(self.layernorm_z(z))
         pair_bias = pair_bias.movedim(-1, -3)  # [B, H, L, L]
-        s = _add(s, self.attention(s, None, pair_bias, mask))
+        attention_update = self.attention(
+            s,
+            None,
+            pair_bias,
+            mask,
+        )
+        s = _add(
+            s,
+            attention_update,
+        )
         s = _add(s, self.transition(s))
         return z, s
 
@@ -183,8 +214,13 @@ class ConfidenceHead(torch.nn.Module):
         # For training
         blocks_per_ckpt: int | None = None
 
-    def __init__(self, cfg: Config):
+    def __init__(
+        self,
+        cfg: Config,
+        kernel_backend: str = "torch",
+    ):
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.num_pae_bins = cfg.num_pae_bins
         self.num_pde_bins = cfg.num_pde_bins
         self.num_plddt_bins = cfg.num_plddt_bins
@@ -233,6 +269,7 @@ class ConfidenceHead(torch.nn.Module):
             num_blocks=cfg.num_blocks,
             dropout=cfg.dropout,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
+            kernel_backend=self.kernel_backend,
         )
 
         self.pae_head = torch.nn.Sequential(
@@ -274,7 +311,6 @@ class ConfidenceHead(torch.nn.Module):
         s_lm: torch.Tensor,
         z: torch.Tensor,
         x_pred: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
     ) -> dict[str, torch.Tensor]:
         """Forward pass of confidence head module.
 
@@ -290,8 +326,6 @@ class ConfidenceHead(torch.nn.Module):
             Tensor of shape (B, L, L, C_s) containing pair representation.
         x_pred: torch.Tensor
             Tensor of shape (B, N, Latom, 3) containing predicted coordinates.
-        use_cuequiv_kernels : bool
-            Whether to use cuequivariance kernels in the pair stack.
 
         Returns
         -------
@@ -335,9 +369,7 @@ class ConfidenceHead(torch.nn.Module):
         mask = f_input.token.pad_mask
         for i in range(N):
             _pae_logits, _pde_logits, _plddt_logits, _resolved_logits = (
-                self.forward_single(
-                    z, s, x_repr[:, i], mask=mask, use_cuequiv_kernels=use_cuequiv_kernels
-                )
+                self.forward_single(z, s, x_repr[:, i], mask=mask)
             )
             pae_logits[:, i] = _pae_logits
             pde_logits[:, i] = _pde_logits
@@ -384,7 +416,6 @@ class ConfidenceHead(torch.nn.Module):
         s: torch.Tensor,
         x: torch.Tensor,
         mask: torch.Tensor,
-        use_cuequiv_kernels: bool = False,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Forward pass of confidence head module.
 
@@ -399,8 +430,6 @@ class ConfidenceHead(torch.nn.Module):
             representative atoms.
         mask: torch.Tensor
             Tensor of shape (B, L) containing the mask for valid tokens.
-        use_cuequiv_kernels : bool
-            Whether to use cuequivariance kernels in the pair stack.
 
         Returns
         -------
@@ -423,9 +452,10 @@ class ConfidenceHead(torch.nn.Module):
 
         # Jointly update pair and LM single representations.
         stack = self.get_stack()
+
         z = z + self.linear_distogram(dgram.to(z.dtype))
         pair_mask = mask[..., :, None] & mask[..., None, :]
-        z, s = stack(z, s, pair_mask, mask, use_cuequiv_kernels)
+        z, s = stack(z, s, pair_mask, mask)
         z, s = z.to(torch.float32), s.to(torch.float32)
 
         # Confidence heads.
