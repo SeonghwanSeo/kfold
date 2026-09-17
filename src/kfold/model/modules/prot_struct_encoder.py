@@ -122,6 +122,7 @@ class StructureEncoder(torch.nn.Module):
         self,
         sequence: str,
         atom37_coords: np.ndarray | torch.Tensor,
+        residue_index: np.ndarray | torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Tokenize apo structure, masking residues with incomplete backbone coordinates.
 
@@ -131,6 +132,9 @@ class StructureEncoder(torch.nn.Module):
             Amino acid sequence of the protein.
         atom37_coords : np.ndarray | torch.Tensor
             Full-atom coordinates of shape (L, 37, 3), with NaN for missing atoms.
+        residue_index : np.ndarray | torch.Tensor | None
+            Optional residue indices. A discontinuity marks a protein-chain boundary
+            when multiple chains are tokenized in one shared coordinate frame.
 
         Returns
         -------
@@ -149,14 +153,28 @@ class StructureEncoder(torch.nn.Module):
                 f"Expected atom37_coords to have shape ({length}, 37, 3), "
                 f"but got {atom37_coords.shape}"
             )
+        if residue_index is not None:
+            residue_index = torch.as_tensor(
+                residue_index, dtype=torch.long, device=device
+            )
+            if residue_index.shape != (length,):
+                raise ValueError(
+                    f"Expected residue_index to have shape ({length},), "
+                    f"but got {tuple(residue_index.shape)}"
+                )
 
         seq_tok_id = torch.tensor(
             C.sequence.encode_protein_sequence(sequence), dtype=torch.long, device=device
         )
         aatypes = self.seq_to_restype[seq_tok_id]
         backbone_mask = torch.isfinite(atom37_coords[:, :3]).all(dim=(-1, -2))
-        bb_tok_id = self.bb_tok.tokenize(atom37_coords[..., :3, :])
-        fa_tok_id = self.fa_tok.tokenize(aatypes, atom37_coords, attn_mask=backbone_mask)
+        bb_tok_id = self.bb_tok.tokenize(atom37_coords[..., :3, :], res_idx=residue_index)
+        fa_tok_id = self.fa_tok.tokenize(
+            aatypes,
+            atom37_coords,
+            res_idx=residue_index,
+            attn_mask=backbone_mask,
+        )
         return {
             "seq_token_id": seq_tok_id,
             "bb_token_id": bb_tok_id.masked_fill(~backbone_mask, -1),
@@ -244,7 +262,12 @@ class StructureEncoder(torch.nn.Module):
             "fa_token_id": fa_tok_ids,
         }
 
-    def forward(self, f_input: FoldingInput) -> torch.Tensor:
+    def forward(
+        self,
+        f_input: FoldingInput,
+        structure_seq_id: torch.Tensor | None = None,
+        structure_pos_id: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Forward pass of sequence representation module.
 
         Parameters
@@ -265,9 +288,18 @@ class StructureEncoder(torch.nn.Module):
             if device_type == "cuda"
             else contextlib.nullcontext(),
         ):
-            return self._forward(f_input)
+            return self._forward(
+                f_input,
+                structure_seq_id=structure_seq_id,
+                structure_pos_id=structure_pos_id,
+            )
 
-    def _forward(self, f_input: FoldingInput) -> torch.Tensor:
+    def _forward(
+        self,
+        f_input: FoldingInput,
+        structure_seq_id: torch.Tensor | None = None,
+        structure_pos_id: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Forward pass of sequence representation module.
 
         Parameters
@@ -293,8 +325,27 @@ class StructureEncoder(torch.nn.Module):
         seq_mask = f_input.sequence.pad_mask & f_input.sequence.is_protein
         seq_token_ids = seq_token_ids.masked_fill(~seq_mask, 0)
 
-        seq_id = f_input.sequence.asym_id
-        pos_id = f_input.sequence.pos_id
+        seq_id = (
+            f_input.sequence.asym_id if structure_seq_id is None else structure_seq_id
+        )
+        if seq_id.shape != f_input.sequence.asym_id.shape:
+            raise ValueError(
+                "structure_seq_id must match sequence.asym_id shape: "
+                f"{tuple(seq_id.shape)} != {tuple(f_input.sequence.asym_id.shape)}"
+            )
+        pos_id = f_input.sequence.pos_id if structure_pos_id is None else structure_pos_id
+        if pos_id.shape != f_input.sequence.pos_id.shape:
+            raise ValueError(
+                "structure_pos_id must match sequence.pos_id shape: "
+                f"{tuple(pos_id.shape)} != {tuple(f_input.sequence.pos_id.shape)}"
+            )
+        if structure_pos_id is not None:
+            if pos_id.dtype not in (torch.int32, torch.int64):
+                raise ValueError("structure_pos_id must have an integer dtype")
+            valid_pos_id = pos_id[f_input.sequence.pad_mask]
+            if bool(((valid_pos_id < 0) | (valid_pos_id >= 20_000)).any()):
+                raise ValueError("structure_pos_id values must be in [0, 20000)")
+            pos_id = pos_id.masked_fill(~f_input.sequence.pad_mask, 0)
 
         def expand_over_apo(x: torch.Tensor) -> torch.Tensor:
             return (

@@ -80,11 +80,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--conditioning",
-        choices=("prior_only", "prior_and_trunk"),
+        choices=(
+            "prior_only",
+            "prior_and_trunk",
+            "prior_and_trunk_multichain",
+        ),
         default="prior_only",
         help=(
             "For assembly queries, reuse predicted intermediates in the ECSI prior "
-            "only, or also re-encode them in the trunk apo module."
+            "only; also re-encode them in the trunk; or jointly encode each "
+            "predicted multi-protein object in the protein structure encoder."
         ),
     )
     parser.add_argument(
@@ -206,6 +211,16 @@ def _load_queries(args: argparse.Namespace) -> list["Query"]:
 
     queries.sort(key=lambda query: query.priority)
     sequential = [query for query in queries if query.assembly is not None]
+    if (
+        args.stage in ("all", "complex")
+        and sequential
+        and args.conditioning == "prior_and_trunk_multichain"
+        and args.disable_struct_encoder
+    ):
+        raise ValueError(
+            "--conditioning prior_and_trunk_multichain requires the protein "
+            "structure encoder; remove --disable-struct-encoder."
+        )
     if args.provided_intermediates is not None and not sequential:
         raise ValueError("--provided-intermediates requires an assembly query.")
     if (

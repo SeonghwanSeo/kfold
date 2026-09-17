@@ -98,7 +98,12 @@ class KFoldForTrain(KFold):
             return getattr(module, "_orig_mod", module)
         return module
 
-    def _encode_lm_single(self, f_input: FoldingInput) -> torch.Tensor:
+    def _encode_lm_single(
+        self,
+        f_input: FoldingInput,
+        structure_seq_id: torch.Tensor | None = None,
+        structure_pos_id: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Merge the enabled pretrained encoders into the shared LM single."""
         prot_seq_encoder = self._get_model_module(self.prot_seq_encoder)
         rna_seq_encoder = self._get_model_module(self.rna_seq_encoder)
@@ -111,7 +116,13 @@ class KFoldForTrain(KFold):
             s_lm = s_lm + self.rna_seq_to_s_lm(rna_seq_encoder(f_input))
 
         if prot_struct_encoder is not None:
-            s_lm = s_lm + self.prot_struct_to_s_lm(prot_struct_encoder(f_input))
+            s_lm = s_lm + self.prot_struct_to_s_lm(
+                prot_struct_encoder(
+                    f_input,
+                    structure_seq_id=structure_seq_id,
+                    structure_pos_id=structure_pos_id,
+                )
+            )
 
         return s_lm
 
@@ -120,6 +131,8 @@ class KFoldForTrain(KFold):
         f_input: FoldingInput,
         num_recycles: int,
         grad_recurrence_steps: int = 0,
+        structure_seq_id: torch.Tensor | None = None,
+        structure_pos_id: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -132,6 +145,11 @@ class KFoldForTrain(KFold):
         grad_recurrence_steps : int, optional
             Number of final recurrent trunk steps to track with autograd during
             training, by default 0.
+        structure_seq_id : torch.Tensor | None, optional
+            Structure-encoder-only sequence groups used for multi-chain
+            representation. Physical chain IDs remain unchanged.
+        structure_pos_id : torch.Tensor | None, optional
+            Gap-separated positions for the same structure-encoder groups.
 
         Returns
         -------
@@ -172,7 +190,11 @@ class KFoldForTrain(KFold):
         pair_mask = token_mask[..., None] & token_mask[..., None, :]
 
         # Extract LM representation
-        s_lm = self._encode_lm_single(f_input)
+        s_lm = self._encode_lm_single(
+            f_input,
+            structure_seq_id=structure_seq_id,
+            structure_pos_id=structure_pos_id,
+        )
         z_lm = self.lm_to_pair(s_lm)
 
         # Main trunk iteration with Parcae recurrence

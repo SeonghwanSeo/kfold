@@ -285,6 +285,8 @@ class KFold(torch.nn.Module):
         return_embeddings: bool = False,
         return_distogram: bool = False,
         return_traj: bool = False,
+        structure_seq_id: torch.Tensor | None = None,
+        structure_pos_id: torch.Tensor | None = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Run KFold structure prediction from a fully prepared input.
 
@@ -314,7 +316,30 @@ class KFold(torch.nn.Module):
             return_batched_output = True
         else:
             f_input = f_input.add_batch_dim()
+            if structure_seq_id is not None:
+                structure_seq_id = structure_seq_id.unsqueeze(0)
+            if structure_pos_id is not None:
+                structure_pos_id = structure_pos_id.unsqueeze(0)
             return_batched_output = False
+
+        if (
+            structure_seq_id is not None
+            and structure_seq_id.shape != f_input.sequence.asym_id.shape
+        ):
+            raise ValueError(
+                "structure_seq_id must match sequence.asym_id shape: "
+                f"{tuple(structure_seq_id.shape)} != "
+                f"{tuple(f_input.sequence.asym_id.shape)}"
+            )
+        if (
+            structure_pos_id is not None
+            and structure_pos_id.shape != f_input.sequence.pos_id.shape
+        ):
+            raise ValueError(
+                "structure_pos_id must match sequence.pos_id shape: "
+                f"{tuple(structure_pos_id.shape)} != "
+                f"{tuple(f_input.sequence.pos_id.shape)}"
+            )
 
         if f_input.batch_size != 1:
             # TODO: Support batched inference.
@@ -331,6 +356,8 @@ class KFold(torch.nn.Module):
             return_embeddings=return_embeddings,
             return_distogram=return_distogram,
             return_traj=return_traj,
+            structure_seq_id=structure_seq_id,
+            structure_pos_id=structure_pos_id,
         )
 
         # remove batch dimension
@@ -352,6 +379,8 @@ class KFold(torch.nn.Module):
         return_embeddings: bool = False,
         return_distogram: bool = False,
         return_traj: bool = False,
+        structure_seq_id: torch.Tensor | None = None,
+        structure_pos_id: torch.Tensor | None = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold model for model training.
 
@@ -390,7 +419,12 @@ class KFold(torch.nn.Module):
             )
 
         # Trunk with recycling
-        s_inputs, s_lm, z = self.run_trunk(f_input, num_recycles)
+        s_inputs, s_lm, z = self.run_trunk(
+            f_input,
+            num_recycles,
+            structure_seq_id=structure_seq_id,
+            structure_pos_id=structure_pos_id,
+        )
         z = z.float()
 
         if return_embeddings:
@@ -428,7 +462,12 @@ class KFold(torch.nn.Module):
 
         return dict_out
 
-    def _encode_lm_single(self, f_input: FoldingInput) -> torch.Tensor:
+    def _encode_lm_single(
+        self,
+        f_input: FoldingInput,
+        structure_seq_id: torch.Tensor | None = None,
+        structure_pos_id: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """Merge the enabled pretrained encoders into the shared LM single."""
         s_lm = self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
 
@@ -442,7 +481,13 @@ class KFold(torch.nn.Module):
             with self._encoder_on_device(
                 self.prot_struct_encoder.encoder, f_input.device
             ):
-                s_lm = s_lm + self.prot_struct_to_s_lm(self.prot_struct_encoder(f_input))
+                s_lm = s_lm + self.prot_struct_to_s_lm(
+                    self.prot_struct_encoder(
+                        f_input,
+                        structure_seq_id=structure_seq_id,
+                        structure_pos_id=structure_pos_id,
+                    )
+                )
 
         return s_lm
 
@@ -464,6 +509,8 @@ class KFold(torch.nn.Module):
         self,
         f_input: FoldingInput,
         num_recycles: int,
+        structure_seq_id: torch.Tensor | None = None,
+        structure_pos_id: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -503,7 +550,11 @@ class KFold(torch.nn.Module):
         pair_mask = token_mask[..., None] & token_mask[..., None, :]
 
         # Extract LM representation
-        s_lm = self._encode_lm_single(f_input)
+        s_lm = self._encode_lm_single(
+            f_input,
+            structure_seq_id=structure_seq_id,
+            structure_pos_id=structure_pos_id,
+        )
         z_lm = self.lm_to_pair(s_lm)
 
         # Main trunk iteration with Parcae recurrence

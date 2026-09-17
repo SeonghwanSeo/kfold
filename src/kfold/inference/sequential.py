@@ -20,6 +20,12 @@ from .assembly import (
     validate_plan,
 )
 
+TRUNK_CONDITIONING_MODES = {
+    "prior_and_trunk",
+    "prior_and_trunk_multichain",
+}
+CONDITIONING_MODES = {"prior_only", *TRUNK_CONDITIONING_MODES}
+
 
 def execution_plan(query, direct=False):
     """Use the identical backend for a final-only, no-assembly control."""
@@ -164,6 +170,14 @@ class ModelBackend:
                 raise ValueError(
                     "Sequential prior experiment requires an ECSI diffusion head"
                 )
+            if (
+                getattr(self.args, "conditioning", "prior_only")
+                == "prior_and_trunk_multichain"
+                and self.model.prot_struct_encoder is None
+            ):
+                raise ValueError(
+                    "prior_and_trunk_multichain requires the protein structure encoder"
+                )
             self._validated = True
         device = self.model.device
         torch.manual_seed(query.seed)
@@ -173,15 +187,33 @@ class ModelBackend:
             torch.inference_mode(),
             torch.autocast(device_type=device.type, dtype=torch.bfloat16),
         ):
+            structure_seq_id = None
+            structure_pos_id = None
             if self.model.prot_struct_encoder is not None:
-                apply_apo_structure_tokens(
+                structure_seq_id, structure_pos_id = apply_apo_structure_tokens(
                     features, records, self.model.prot_struct_encoder
                 )
-            if getattr(self.args, "conditioning", "prior_only") == "prior_and_trunk":
+            if getattr(self.args, "conditioning", "prior_only") in (
+                TRUNK_CONDITIONING_MODES
+            ):
+                effective_structure_seq_id = (
+                    features.sequence.asym_id
+                    if structure_seq_id is None
+                    else structure_seq_id
+                )
+                effective_structure_pos_id = (
+                    features.sequence.pos_id
+                    if structure_pos_id is None
+                    else structure_pos_id
+                )
                 np.savez_compressed(
                     out / "structure_token_ids.npz",
                     bb=features.sequence.bb_struct_token_id.cpu().numpy(),
                     fa=features.sequence.fa_struct_token_id.cpu().numpy(),
+                    asym_id=features.sequence.asym_id.cpu().numpy(),
+                    pos_id=features.sequence.pos_id.cpu().numpy(),
+                    structure_seq_id=effective_structure_seq_id.cpu().numpy(),
+                    structure_pos_id=effective_structure_pos_id.cpu().numpy(),
                 )
             started = time.perf_counter()
             output = self.model.inference(
@@ -189,6 +221,8 @@ class ModelBackend:
                 num_recycles=self.args.num_recycles,
                 num_steps=self.args.num_steps,
                 num_samples=self.args.num_samples,
+                structure_seq_id=structure_seq_id,
+                structure_pos_id=structure_pos_id,
             )
         if device.type == "cuda":
             torch.cuda.synchronize(device)
@@ -251,7 +285,7 @@ def run_query(
 ):
     from .sequential_dataset import InferenceDataset
 
-    if conditioning not in {"prior_only", "prior_and_trunk"}:
+    if conditioning not in CONDITIONING_MODES:
         raise ValueError("Unknown sequential conditioning")
     if direct and conditioning != "prior_only":
         raise ValueError("Direct control has no predicted intermediate to re-encode")
@@ -360,11 +394,13 @@ def run_query(
                 try:
                     seeded = sub.copy(seed=seed)
                     source = subset_sources(source_full[seed], sub_struct, sources[seed])
-                    extra = (
-                        {"trunk_groups": active}
-                        if conditioning == "prior_and_trunk"
-                        else {}
-                    )
+                    extra = {}
+                    if conditioning in TRUNK_CONDITIONING_MODES:
+                        extra = {
+                            "trunk_groups": active,
+                            "multichain_structure": conditioning
+                            == "prior_and_trunk_multichain",
+                        }
                     struct, _, features, records = pipeline.run(
                         seeded,
                         sources=source,
@@ -372,7 +408,7 @@ def run_query(
                         stage_index=stage_index,
                         **extra,
                     )
-                    if conditioning == "prior_and_trunk":
+                    if conditioning in TRUNK_CONDITIONING_MODES:
                         np.savez_compressed(
                             attempt / "trunk_conditioning.npz",
                             apo_coords=features.atom.apo_coords.numpy(),
@@ -383,6 +419,20 @@ def run_query(
                             apo_repr_coords=features.token.apo_repr_coords.numpy(),
                             apo_frame_coords=features.token.apo_frame_coords.numpy(),
                         )
+                    structure_repr_objects = []
+                    if conditioning == "prior_and_trunk_multichain":
+                        protein_names = {
+                            metadata.name
+                            for metadata, chain in zip(
+                                struct.metadata.chains, struct.chains, strict=True
+                            )
+                            if chain.is_protein
+                        }
+                        structure_repr_objects = [
+                            sorted(group.chains & protein_names)
+                            for group in active
+                            if len(group.chains & protein_names) >= 2
+                        ]
                     np.savez_compressed(
                         attempt / "prior.npz",
                         coordinates=features.atom.prior_coords.numpy(),
@@ -399,6 +449,7 @@ def run_query(
                             "trunk_objects": [sorted(g.chains) for g in active]
                             if extra
                             else [],
+                            "structure_repr_objects": structure_repr_objects,
                             "atom_keys": atom_keys(struct),
                             "num_tokens": features.num_tokens,
                         },

@@ -36,9 +36,16 @@ def main():
     )
     parser.add_argument(
         "--conditioning",
-        choices=["prior_only", "prior_and_trunk"],
+        choices=[
+            "prior_only",
+            "prior_and_trunk",
+            "prior_and_trunk_multichain",
+        ],
         default="prior_only",
-        help="Re-encode intermediate objects for the next trunk as well as ECSI",
+        help=(
+            "Re-encode intermediate objects for the next trunk as well as ECSI; "
+            "the multichain mode jointly encodes predicted protein complexes"
+        ),
     )
     parser.add_argument(
         "--direct",
@@ -101,11 +108,16 @@ def main():
                         )
                     groups.append(obj)
                 plain = query.copy(assembly=None)
-                extra = (
-                    {"trunk_groups": groups}
-                    if args.conditioning == "prior_and_trunk"
-                    else {}
-                )
+                extra = {}
+                if args.conditioning in {
+                    "prior_and_trunk",
+                    "prior_and_trunk_multichain",
+                }:
+                    extra = {
+                        "trunk_groups": groups,
+                        "multichain_structure": args.conditioning
+                        == "prior_and_trunk_multichain",
+                    }
                 pipeline.run(
                     plain, prior_groups=groups, stage_index=len(stages) - 1, **extra
                 )

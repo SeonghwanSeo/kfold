@@ -87,7 +87,7 @@ class BackboneTokenizer(torch.nn.Module):
         assert coords.ndim == 3, "Expected coords to have shape (L, Natom, 3)"
         return self.tokenize_batch(
             coords.unsqueeze(0),
-            res_idx.unsqueeze(0) if res_idx is not None else None,
+            res_idx,
         ).squeeze(0)
 
     @torch.inference_mode()
@@ -119,8 +119,18 @@ class BackboneTokenizer(torch.nn.Module):
 
         bb_coords = coords[..., :3, :]  # Use only N, CA, C atoms
         if res_idx is None:
-            res_idx = torch.arange(1, L + 1, device=coords.device, dtype=torch.long)
-        res_idx = res_idx.unsqueeze(0).expand(B, -1)  # (B, L)
+            res_idx = torch.arange(
+                1, L + 1, device=coords.device, dtype=torch.long
+            ).expand(B, -1)
+        elif res_idx.ndim == 1 and res_idx.shape == (L,):
+            res_idx = res_idx.to(device).expand(B, -1)
+        elif res_idx.shape == (B, L):
+            res_idx = res_idx.to(device)
+        else:
+            raise ValueError(
+                f"Expected res_idx to have shape ({L},) or ({B}, {L}), "
+                f"got {tuple(res_idx.shape)}"
+            )
 
         with (
             torch.autocast(device_type=device.type, dtype=torch.bfloat16)

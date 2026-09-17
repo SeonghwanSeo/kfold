@@ -120,7 +120,7 @@ class FullAtomTokenizer(torch.nn.Module):
         return self.tokenize_batch(
             aatypes.unsqueeze(0),
             coords.unsqueeze(0),
-            res_idx.unsqueeze(0) if res_idx is not None else None,
+            res_idx,
             attn_mask.unsqueeze(0) if attn_mask is not None else None,
         ).squeeze(0)
 
@@ -154,8 +154,18 @@ class FullAtomTokenizer(torch.nn.Module):
         device_type = aatypes.device.type
 
         if res_idx is None:
-            res_idx = torch.arange(1, L + 1, device=coords.device, dtype=torch.long)
-        res_idx = res_idx.unsqueeze(0).expand(B, -1)  # (B, L)
+            res_idx = torch.arange(
+                1, L + 1, device=coords.device, dtype=torch.long
+            ).expand(B, -1)
+        elif res_idx.ndim == 1 and res_idx.shape == (L,):
+            res_idx = res_idx.to(coords.device).expand(B, -1)
+        elif res_idx.shape == (B, L):
+            res_idx = res_idx.to(coords.device)
+        else:
+            raise ValueError(
+                f"Expected res_idx to have shape ({L},) or ({B}, {L}), "
+                f"got {tuple(res_idx.shape)}"
+            )
 
         with (
             torch.autocast(device_type, dtype=torch.bfloat16)

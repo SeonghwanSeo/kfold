@@ -19,6 +19,8 @@ from kfold.inference.query import Query
 
 logger = logging.getLogger("kfold.sequential")
 
+_MULTICHAIN_CONDITIONING_SCHEMA = 1
+
 
 def _target_definition(query: Query) -> dict:
     """Serialize query identity while excluding rewritten preparation paths."""
@@ -58,7 +60,7 @@ def _load_prepared_path(args: argparse.Namespace, query: Query, seed: int) -> Pa
 def _settings(args: argparse.Namespace) -> dict:
     """Settings that must remain identical when resuming a sequential query."""
     provided = getattr(args, "provided_intermediates", None)
-    return {
+    settings = {
         "version": __version__,
         "seeds": args.seeds,
         "shared_apo": args.share_apo_seeds is not None,
@@ -73,6 +75,9 @@ def _settings(args: argparse.Namespace) -> dict:
             str(provided.resolve()) if provided is not None else None
         ),
     }
+    if args.conditioning == "prior_and_trunk_multichain":
+        settings["conditioning_schema"] = _MULTICHAIN_CONDITIONING_SCHEMA
+    return settings
 
 
 def _sequential_dir(args: argparse.Namespace, query: Query) -> Path:

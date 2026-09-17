@@ -40,7 +40,8 @@ two proteins have identical sequences or share a sequence entry.
 ## Precisely what is carried forward
 
 By default (`--conditioning prior_only`), only the ECSI prior is updated.
-The optional native-path re-encoding mode is described below.
+The optional chainwise and multi-chain native-path re-encoding modes are
+described below.
 A selected P1–L prediction receives one shared
 rotation/translation per prior sample, preserving all internal distances.
 Protein and ligand atom identities remain separate: topology, atom order,
@@ -77,7 +78,7 @@ kfold --input "$INPUT" --out-dir "$OUTPUT" \
   --seeds 1 2 3 4 5 --num-apos 5 --dry-run
 kfold --input "$INPUT" --out-dir "$OUTPUT" \
   --seeds 1 2 3 4 5 --num-apos 5 \
-  --conditioning prior_and_trunk
+  --conditioning prior_and_trunk_multichain
 ```
 
 Dry-run validates the native query, assembly plan, CCD codes and any completed
@@ -115,6 +116,7 @@ OUTPUT/
       bind_p1_ligand/
         seed-N/
           input.json, prior.npz, ecsi_init.npz, timing.json
+          trunk_conditioning.npz, structure_token_ids.npz
           QUERY_seed-N_sample-M.cif
           QUERY_seed-N_sample-M_confidences.json
           QUERY_seed-N_sample-M_confidences.npz
@@ -154,8 +156,32 @@ the existing per-molecule structural inputs before the next full trunk call:
 - No weights/architecture changes. The full trunk and structural encoders rerun;
   old trunk states are not reused. Nucleic-acid re-encoding is not supported.
 
+`--conditioning prior_and_trunk_multichain` retains all behavior above and
+changes only the protein structure-representation path for a selected object
+containing two or more proteins:
+
+- Its protein chains are converted to atom37 in one shared coordinate frame and
+  passed to the backbone/full-atom structure tokenizers in one call. A residue
+  index gap marks each chain boundary; the backbone tokenizer's spatial KNN can
+  therefore observe cross-chain neighbors without creating a peptide bond.
+- Those protein chains receive one structure-encoder-only sequence group ID, so
+  the pretrained structure encoder can attend across their chain boundary.
+  Its rotary position IDs use the same gap-separated residue indices as the
+  joint tokenizers, avoiding position collisions between chains.
+  Physical `asym_id` values remain unchanged, and the protein sequence encoder
+  remains chainwise.
+- Ligands never enter the protein structure encoder. Unassembled proteins and
+  separate selected objects keep distinct structure-encoder groups.
+- Apo geometry, `apo_uid`, ligand reference conformers and the ECSI prior are
+  identical to `prior_and_trunk`; this mode does not create a new shared apo
+  object. It is an experimental inference path and does not imply that the
+  frozen structure encoder was trained on this grouping policy.
+
 The runner records `trunk_conditioning.npz` (apo geometry, reference positions,
 and IDs) and `structure_token_ids.npz` alongside each seed's existing artifacts.
+The latter includes physical/effective sequence and position IDs (`asym_id`,
+`pos_id`, `structure_seq_id`, and `structure_pos_id`), making joint attention
+grouping and chain-boundary positions auditable.
 Conditioning mode is part of the resume manifest; modes cannot share outputs.
 The 21-system 0720-68K prepared experiment is documented at
 `/home/icl_hwkim/kfold/cofolding_jobs/20260909_mgbench_sequential_trunk_0720_68k/README.md`.
@@ -183,7 +209,8 @@ OPENBLAS_NUM_THREADS=1 PYTHONPATH=src "$KFOLD_PYTHON" -m pytest \
 
 The tests exercise real SMILES and protein–ligand–protein feature pipelines,
 atom remapping, rigid-object distance preservation, unchanged apo conditioning,
-ECSI endpoint consumption, subset validation, complete-candidate selection and
+joint multi-protein tokenization and attention grouping, ECSI endpoint
+consumption, subset validation, complete-candidate selection and
 restart/corruption behavior. The orchestration test uses a fake model backend;
 it verifies stage composition and call counts but is not evidence of learned
 model accuracy or GPU memory viability.
@@ -226,13 +253,15 @@ pip install -e .
 kfold --input examples/8jeo_sequential.yaml \
   --out-dir /path/to/8jeo_sequential_output \
   --seeds 1 2 3 4 5 --num-apos 5 \
-  --conditioning prior_and_trunk
+  --conditioning prior_and_trunk_multichain
 ```
 
 `prior_only` updates ECSI initialization only. `prior_and_trunk` also replaces
-protein apo coordinates and recomputes structure tokens. Existing B/C shared
-apo UID is retained; this differs from creating a new group from previously
-independent chains. Final denoising can change the B/C arrangement.
+protein apo coordinates and recomputes structure tokens chainwise.
+`prior_and_trunk_multichain` jointly tokenizes and encodes the selected B/C
+protein complex while retaining their physical chain IDs. Existing B/C shared
+apo UID is retained; a newly assembled pair does not receive a new shared apo
+UID. Final denoising can change the B/C arrangement.
 
 Main changed the model/configuration API. The backend now strictly loads a
 state dictionary with the current KFold configuration and uses the current

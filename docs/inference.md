@@ -126,7 +126,7 @@ The default `--stage all` prepares apos and predicts complexes.
 | `--num-samples` | `5` | Complex predictions per query/seed. |
 | `--num-recycles` | `10` | Model recycling iterations. |
 | `--num-steps` | `100` | Diffusion steps. |
-| `--conditioning` | `prior_only` | Assembly intermediate reuse: ECSI only, or ECSI plus trunk apo re-encoding with `prior_and_trunk`. |
+| `--conditioning` | `prior_only` | Assembly intermediate reuse: ECSI only; chainwise trunk re-encoding with `prior_and_trunk`; or joint protein-complex structure representation with `prior_and_trunk_multichain`. |
 | `--provided-intermediates` | Off | Read atom-mapped `QUERY/STAGE.npz` structures instead of predicting non-final assembly stages. |
 | `--gpu-ids` | `0` | Unique non-negative visible CUDA device IDs. |
 | `--disable-struct-encoder` | Off | Disable the protein structure encoder to save memory. |
@@ -205,7 +205,10 @@ AtlasFold or AtlasFold-Multimer before sequential K-Fold inference.
 `--conditioning prior_only` carries the selected structure into the ECSI
 initialization. `--conditioning prior_and_trunk` also replaces compatible apo
 coordinates and regenerates protein structure tokens before rerunning the full
-trunk. All seeds for one assembly query run on one GPU so selection is global
+trunk. `--conditioning prior_and_trunk_multichain` additionally tokenizes all
+protein chains in each selected object in their shared coordinate frame and
+allows cross-chain attention only in the protein structure encoder. All seeds
+for one assembly query run on one GPU so selection is global
 for each stage. See [Sequential complex priors](sequential_assembly.md) for the
 artifact layout and exact conditioning behavior.
 

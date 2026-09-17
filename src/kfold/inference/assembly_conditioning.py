@@ -10,8 +10,18 @@ import numpy as np
 
 from .assembly import atom_keys
 
+_CHAIN_RESIDUE_INDEX_GAP = 512
 
-def apply_trunk_groups(struct, tokenized, records, groups, rng):
+
+def apply_trunk_groups(
+    struct,
+    tokenized,
+    records,
+    groups,
+    rng,
+    *,
+    multichain_structure=False,
+):
     from kfold.data.pipelines.tokenization import refresh_apo_geometry
     from kfold.utils.geometry.random_augment import center_random_augmentation
 
@@ -39,26 +49,80 @@ def apply_trunk_groups(struct, tokenized, records, groups, rng):
     for record_group in records:
         kept = []
         for record in record_group:
-            targets = [t for t in record["targets"] if t[0] not in affected]
+            keep_indices = [
+                i
+                for i, target in enumerate(record["targets"])
+                if target[0] not in affected
+            ]
+            targets = [record["targets"][i] for i in keep_indices]
             if targets:
-                kept.append({**record, "targets": targets})
+                retained = {**record, "targets": targets}
+                if "segments" in retained:
+                    retained["segments"] = [retained["segments"][i] for i in keep_indices]
+                kept.append(retained)
         if kept:
             updated.append(kept)
     num_apo = tokenized.atom.apo_coords.shape[-2]
-    for name in sorted(used):
+
+    def protein_component(name):
         chain = chains[metadata[name]]
-        if chain.is_protein:
-            chain_keys = [k for k in keys if k[0] == name]
-            coords = chain.map_atom_coords_to_residue_coords(
-                np.stack([replacement[k] for k in chain_keys])
-            )
+        chain_keys = [k for k in keys if k[0] == name]
+        coords = chain.map_atom_coords_to_residue_coords(
+            np.stack([replacement[k] for k in chain_keys])
+        )
+        return chain, coords
+
+    if multichain_structure:
+        structure_order = [chain.name for chain in struct.metadata.chains]
+        for group in groups:
+            protein_names = [
+                name
+                for name in structure_order
+                if name in group.chains and chains[metadata[name]].is_protein
+            ]
+            if not protein_names:
+                continue
+            components = [protein_component(name) for name in protein_names]
+            sequences = [
+                chain.get_sequence(map_to_standard=True) for chain, _ in components
+            ]
+            coordinates = [coords for _, coords in components]
+            source_start = 0
+            residue_offset = 0
+            segments = []
+            residue_indices = []
+            for (chain, _coords), sequence in zip(components, sequences, strict=True):
+                source_end = source_start + len(sequence)
+                segments.append(
+                    (chain.asym_id, 0, chain.num_residues, source_start, source_end)
+                )
+                residue_indices.append(
+                    np.arange(1, len(sequence) + 1, dtype=np.int64) + residue_offset
+                )
+                source_start = source_end
+                residue_offset += len(sequence) + _CHAIN_RESIDUE_INDEX_GAP
             record = {
-                "seq": chain.get_sequence(map_to_standard=True),
-                "coords": coords,
-                "targets": [(chain.asym_id, 0, chain.num_residues)],
+                "seq": "".join(sequences),
+                "coords": np.concatenate(coordinates, axis=0),
+                "targets": [segment[:3] for segment in segments],
+                "segments": segments,
+                "residue_index": np.concatenate(residue_indices),
+                "structure_group": [chain.asym_id for chain, _ in components],
                 "mask_missing_structure": True,
             }
             updated.append([record.copy() for _ in range(num_apo)])
+    else:
+        for name in sorted(used):
+            chain = chains[metadata[name]]
+            if chain.is_protein:
+                _, coords = protein_component(name)
+                record = {
+                    "seq": chain.get_sequence(map_to_standard=True),
+                    "coords": coords,
+                    "targets": [(chain.asym_id, 0, chain.num_residues)],
+                    "mask_missing_structure": True,
+                }
+                updated.append([record.copy() for _ in range(num_apo)])
     slots = np.argwhere(tokenized.atom.pad_mask)
     if len(slots) != len(keys):
         raise ValueError("Token/atom identity count differs")

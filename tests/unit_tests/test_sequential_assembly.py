@@ -574,6 +574,155 @@ def test_real_protein_ligand_protein_preserves_structure_conditioning(tmp_path):
         )
 
 
+def test_multichain_structure_repr_jointly_tokenizes_and_groups_attention(tmp_path):
+    import warnings
+
+    import torch
+    from rdkit import Chem
+
+    from kfold.data.types.ccd import CCD, Component
+    from kfold.inference.sequential_query import LigandSequence, ProteinSequence
+    from kfold.inference.sequential_tokenization import apply_apo_structure_tokens
+
+    mol = Chem.MolFromSmiles("NCC(=O)O")
+    for atom, name in zip(mol.GetAtoms(), ["N", "CA", "C", "O", "OXT"], strict=True):
+        atom.SetProp("name", name)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ccd = CCD({"GLY": Component.from_mol("GLY", mol).to_bytes()})
+    pdb = tmp_path / "apo.pdb"
+    pdb.write_text(
+        "ATOM      1  N   GLY A   1       0.000   0.000   0.000  1.00 90.00           N\n"
+        "ATOM      2  CA  GLY A   1       1.450   0.000   0.000  1.00 90.00           C\n"
+        "ATOM      3  C   GLY A   1       1.900   1.400   0.000  1.00 90.00           C\n"
+        "ATOM      4  O   GLY A   1       1.200   2.300   0.000  1.00 90.00           O\n"
+        "END\n"
+    )
+    q = Query(
+        name="joint",
+        seed=7,
+        yaml="",
+        sequences=[
+            ProteinSequence(id=["A", "B"], sequence="G", apo=[str(pdb)]),
+            LigandSequence(id=["L"], smiles="CCO"),
+        ],
+    )
+    pipeline = InputDataPipeline(ccd, num_prior_samples=2)
+    full = pipeline.read_query(q)
+    sources = pipeline.resolve_structure_sources(full, q, np.random.default_rng(0))
+    sources = dataclasses.replace(
+        sources,
+        num_apo=3,
+        apo_coords={k: np.repeat(v, 3, axis=0) for k, v in sources.apo_coords.items()},
+        struct_token_records=[records * 3 for records in sources.struct_token_records],
+    )
+    keys = atom_keys(full)
+    ab_keys = [key for key in keys if key[0] in {"A", "B"}]
+    ab_coords = np.random.default_rng(8).normal(size=(len(ab_keys), 3)).astype(np.float32)
+    obj = PriorObject(ab_keys, ab_coords)
+
+    _, _, chainwise, chainwise_records = pipeline.run(
+        q, sources=sources, trunk_groups=[obj], stage_index=1
+    )
+    _, _, joint, joint_records = pipeline.run(
+        q,
+        sources=sources,
+        trunk_groups=[obj],
+        multichain_structure=True,
+        stage_index=1,
+    )
+    # Only the structure-representation path changes between these modes.
+    torch.testing.assert_close(joint.atom.apo_coords, chainwise.atom.apo_coords)
+    torch.testing.assert_close(joint.atom.apo_mask, chainwise.atom.apo_mask)
+    torch.testing.assert_close(joint.token.apo_uid, chainwise.token.apo_uid)
+    torch.testing.assert_close(joint.atom.ref_pos, chainwise.atom.ref_pos)
+    torch.testing.assert_close(
+        joint.atom.prior_coords, chainwise.atom.prior_coords, equal_nan=True
+    )
+    assert len(chainwise_records) == 2
+    assert len(joint_records) == 1
+    assert len(joint_records[0]) == 3
+    record = joint_records[0][0]
+    assert record["seq"] == "GG"
+    assert record["segments"] == [(1, 0, 1, 0, 1), (2, 0, 1, 1, 2)]
+    assert record["structure_group"] == [1, 2]
+    assert np.diff(record["residue_index"])[0] > 1
+    expected = np.stack([ab_coords[ab_keys.index(key)] for key in keys if key[0] == "A"])
+    expected_b = np.stack(
+        [ab_coords[ab_keys.index(key)] for key in keys if key[0] == "B"]
+    )
+    mapped_a = full.chains[0].map_atom_coords_to_residue_coords(expected)
+    mapped_b = full.chains[1].map_atom_coords_to_residue_coords(expected_b)
+    np.testing.assert_array_equal(
+        record["coords"], np.concatenate([mapped_a, mapped_b], axis=0)
+    )
+
+    class Encoder:
+        def __init__(self):
+            self.calls = []
+
+        def tokenize(self, seq, xyz, residue_index=None):
+            self.calls.append((seq, xyz.copy(), residue_index.copy()))
+            values = torch.arange(len(seq), dtype=torch.long) + 20
+            return {"bb_token_id": values, "fa_token_id": values + 100}
+
+    encoder = Encoder()
+    structure_seq_id, structure_pos_id = apply_apo_structure_tokens(
+        joint, joint_records, encoder
+    )
+    assert len(encoder.calls) == 3
+    assert all(call[0] == "GG" for call in encoder.calls)
+    assert structure_seq_id is not None
+    assert structure_pos_id is not None
+    # Physical identities stay unchanged; only the structure encoder override joins A/B.
+    assert set(joint.sequence.asym_id.tolist()) == {1, 2, 3}
+    assert (structure_seq_id[joint.sequence.asym_id == 1] == 1).all()
+    assert (structure_seq_id[joint.sequence.asym_id == 2] == 1).all()
+    assert (structure_seq_id[joint.sequence.asym_id == 3] == 3).all()
+    # Physical positions restart per chain, while structure-only positions retain
+    # the same chain gap used by the joint structure tokenizers.
+    assert joint.sequence.pos_id[1] == joint.sequence.pos_id[4] == 1
+    assert structure_pos_id[1] == 1
+    assert structure_pos_id[4] > structure_pos_id[1] + 1
+    assert torch.equal(
+        structure_pos_id[joint.sequence.asym_id == 3],
+        joint.sequence.pos_id[joint.sequence.asym_id == 3],
+    )
+    assert (joint.sequence.bb_struct_token_id[1] == 20).all()
+    assert (joint.sequence.bb_struct_token_id[4] == 21).all()
+
+
+def test_training_model_accepts_structure_encoder_overrides():
+    import inspect
+
+    from kfold.model.model_train import KFoldForTrain
+
+    for method in (KFoldForTrain._encode_lm_single, KFoldForTrain.run_trunk):
+        parameters = inspect.signature(method).parameters
+        assert "structure_seq_id" in parameters
+        assert "structure_pos_id" in parameters
+
+
+def test_multichain_resume_settings_have_a_schema_version():
+    from kfold.cli.predict_sequential import _settings
+
+    args = NS(
+        seeds=[1],
+        share_apo_seeds=None,
+        num_samples=5,
+        num_recycles=10,
+        num_steps=100,
+        disable_struct_encoder=False,
+        disable_rna_encoder=False,
+        cpu_offload=False,
+        conditioning="prior_and_trunk_multichain",
+        provided_intermediates=None,
+    )
+    assert _settings(args)["conditioning_schema"] == 1
+    args.conditioning = "prior_and_trunk"
+    assert "conditioning_schema" not in _settings(args)
+
+
 def test_structure_source_expands_all_pdb_models(tmp_path):
     atom_lines = (
         "ATOM      1  N   GLY A   1       {x:6.3f}   0.000   0.000  1.00 90.00           N\n"  # noqa: E501
@@ -659,3 +808,17 @@ def test_release_protein_pair_example_preserves_assembly_group(tmp_path):
     loaded = _load_queries(args)
     assert loaded[0].assembly == automatic["assembly"]
     assert all(entry.apo is None for entry in loaded[0].protein_entries)
+    multichain_args = parser.parse_args(
+        [
+            "-i",
+            str(automatic_path),
+            "-o",
+            str(tmp_path / "joint-out"),
+            "--conditioning",
+            "prior_and_trunk_multichain",
+        ]
+    )
+    assert _load_queries(multichain_args)[0].assembly == automatic["assembly"]
+    multichain_args.disable_struct_encoder = True
+    with pytest.raises(ValueError, match="requires the protein structure encoder"):
+        _load_queries(multichain_args)

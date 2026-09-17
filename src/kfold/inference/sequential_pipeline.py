@@ -145,6 +145,7 @@ class InputDataPipeline:
         prior_groups=(),
         stage_index: int = 0,
         trunk_groups=(),
+        multichain_structure: bool = False,
     ) -> tuple[RefStructure, TokenizedStructure, FoldingInput, list[list[dict]]]:
         """Convert one query into model input and raw apo-token records."""
         if input.assembly is not None:
@@ -208,6 +209,7 @@ class InputDataPipeline:
                 np.random.default_rng(
                     np.random.SeedSequence([input.seed, 4, stage_index])
                 ),
+                multichain_structure=multichain_structure,
             )
         f_input = self.featurizer(tokenized)
         return ref_struct, tokenized, f_input, records
