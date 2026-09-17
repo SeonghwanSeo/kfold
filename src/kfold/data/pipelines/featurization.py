@@ -8,7 +8,6 @@ from kfold.data.types.model_input import (
     AtomTensor,
     BondTensor,
     ChainTensor,
-    ConstraintTensor,
     FoldingInput,
     SequenceTensor,
     TokenTensor,
@@ -59,7 +58,6 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     token_data = struct.token
     atom_data = struct.atom
     bond_data = struct.bond
-    constraint_data = struct.constraint
 
     # === Chain-level features ===
     num_chains = chain_data.length
@@ -98,11 +96,6 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
     num_bonds = bond_data.length
     bond_dict: dict[str, np.ndarray] = bond_data.to_dict()
     bond_dict["pad_mask"] = np.ones((num_bonds,), dtype=np.bool_)
-
-    # === Constraint-level features ===
-    num_constraints = constraint_data.length
-    constraint_dict: dict[str, np.ndarray] = constraint_data.to_dict()
-    constraint_dict["pad_mask"] = np.ones((num_constraints,), dtype=np.bool_)
 
     # ============================================
     # ======= Compute additional features ========
@@ -204,24 +197,11 @@ def to_folding_input(struct: TokenizedStructure) -> FoldingInput:
         **{k: torch.from_numpy(v) for k, v in seq_dict.items()}
     )
 
-    # === Constraint-level features ===
-    # TODO: Remap token indices to cropped tokens
-    # e.g., [0, 3, 4, 5, 8] -> [0, 1, 2, 3, 4]
-    constraint_token_index = token_map[constraint_dict["token_index"]]
-    assert (constraint_token_index != -1).all(), (
-        "Constraint token indices contain invalid values after mapping."
-    )
-    constraint_dict["token_index"] = constraint_token_index
-    constraint_layout = ConstraintTensor(
-        **{k: torch.from_numpy(v) for k, v in constraint_dict.items()}
-    )
-
     folding_input = FoldingInput(
         chain=chain_layout,
         token=token_layout,
         atom=atom_layout,
         bond=bond_layout,
         sequence=sequence_layout,
-        constraint=constraint_layout,
     )
     return folding_input

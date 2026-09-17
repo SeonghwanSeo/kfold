@@ -7,7 +7,6 @@ from rdkit import Chem
 
 import kfold.constants as C
 from kfold.data.types.ccd import CCD, Component
-from kfold.data.types.constraint import Constraint
 from kfold.data.types.structure import Chain, RefStructure
 from kfold.data.types.tokenized import TokenizedStructure
 from kfold.utils.geometry.random_augment import center_random_augmentation, do_centering
@@ -62,7 +61,6 @@ class Tokenizer:
         apo_coords: dict[int, np.ndarray] | None = None,
         num_apo: int = 1,
         prior_coords: np.ndarray | None = None,
-        constraints: list[Constraint] | None = None,
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -76,8 +74,6 @@ class Tokenizer:
             A dictionary mapping chain asym_id to apo coordinates.
         prior_coords : np.ndarray | None, optional
             Prior coordinates, by shape (num_priors, num_atoms, 3).
-        constraints : list[Constraint] | None, optional
-            List of additional constraints to include.
 
         Returns
         -------
@@ -90,7 +86,6 @@ class Tokenizer:
             apo_coords=apo_coords,
             num_apo=num_apo,
             prior_coords=prior_coords,
-            constraints=constraints,
         )
 
     def tokenize(
@@ -101,7 +96,6 @@ class Tokenizer:
         apo_coords: dict[int, np.ndarray] | None = None,
         num_apo: int = 1,
         prior_coords: np.ndarray | None = None,
-        constraints: list[Constraint] | None = None,
     ) -> TokenizedStructure:
         """Tokenize structure.
 
@@ -115,8 +109,6 @@ class Tokenizer:
             A dictionary mapping chain asym_id to apo coordinates.
         prior_coords : np.ndarray | None, optional
             Prior coordinates, by shape (num_priors, num_atoms, 3).
-        constraints : list[Constraint] | None, optional
-            List of additional constraints to include.
 
         Returns
         -------
@@ -131,7 +123,6 @@ class Tokenizer:
             apo_coords_dict=apo_coords,
             num_apo=num_apo,
             prior_coords=prior_coords,
-            constraints=constraints,
         )
 
 
@@ -144,7 +135,6 @@ def tokenize_structure(
     apo_coords_dict: dict[int, np.ndarray] | None = None,
     num_apo: int = 1,
     prior_coords: np.ndarray | None = None,
-    constraints: list[Constraint] | None = None,
 ) -> TokenizedStructure:
     """Tokenize structure.
 
@@ -162,8 +152,6 @@ def tokenize_structure(
         A dictionary mapping chain asym_id to apo coordinates.
     prior_coords : np.ndarray | None, optional
         Prior coordinates, by shape (num_priors, num_atoms, 3), by default
-    constraints : list[Constraint] | None, optional
-        List of additional constraints to include, by default None.
 
     Returns
     -------
@@ -245,14 +233,12 @@ def tokenize_structure(
     # ==================================================
     num_token_seq_tokens = sum(c.num_residues + 2 for c in struct.chains)
     num_priors = prior_coords.shape[0] if prior_coords is not None else 0
-    num_constraints = len(constraints) if constraints is not None else 0
     tok = TokenizedStructure.get_empty(
         id=struct.id,
         num_chains=len(struct.chains),
         num_tokens=struct.num_tokens,
         num_bonds=struct.num_bonds + struct.num_connections,
         num_sequence_tokens=num_token_seq_tokens,
-        num_constraints=num_constraints,
         num_apo=num_apo,
         num_priors=num_priors,
     )
@@ -278,11 +264,6 @@ def tokenize_structure(
     if prior_coords is not None and prior_coords.shape[0] > 0:
         # Fill prior coordinates
         _insert_prior_coordinates(tok, prior_coords)
-    if constraints:
-        # Fill constraint structures
-        _insert_constraint_structures(
-            tok, struct, constraints, chain_atom_st, g_atom_to_token_map
-        )
 
     # Sanity check
     tok.validate()
@@ -746,41 +727,3 @@ def _insert_prior_coordinates(tok: TokenizedStructure, prior_coords: np.ndarray)
 
     prior_coords = prior_coords.transpose(1, 0, 2)  # [num_atoms, num_priors, 3]
     tok.atom.prior_coords[m] = prior_coords
-
-
-def _insert_constraint_structures(
-    tok: TokenizedStructure,
-    struct: RefStructure,
-    constraints: list[Constraint],
-    chain_atom_st: dict[int, int],
-    g_atom_to_token_map: dict[int, tuple[int, int]],
-):
-    asym_id_to_chain: dict[int, Chain] = {c.asym_id: c for c in struct.chains}
-
-    for cond_i, _cond in enumerate(constraints):
-        asym_id1, asym_id2 = _cond.asym_id
-        ridx1, ridx2 = _cond.residue_index
-        atom1, atom2 = _cond.atom_name
-
-        # Find chain
-        chain1 = asym_id_to_chain[asym_id1]
-        chain2 = asym_id_to_chain[asym_id2]
-
-        # Find atom index
-        aidx1 = chain1.find_atom_index(ridx1, atom1)
-        aidx2 = chain2.find_atom_index(ridx2, atom2)
-
-        # Map chain-local atom indices to global atom indices
-        g_aidx1 = chain_atom_st[asym_id1] + int(aidx1)
-        g_aidx2 = chain_atom_st[asym_id2] + int(aidx2)
-
-        # Map atom indices to token and atom indices
-        g_tok_i1, local_atom1 = g_atom_to_token_map[g_aidx1]
-        g_tok_i2, local_atom2 = g_atom_to_token_map[g_aidx2]
-
-        # Insert bond info
-        tok.constraint.asym_id[cond_i] = (asym_id1, asym_id2)
-        tok.constraint.token_index[cond_i] = (g_tok_i1, g_tok_i2)
-        tok.constraint.atom_index[cond_i] = (local_atom1, local_atom2)
-        tok.constraint.lower_bound[cond_i] = _cond.lower_bound
-        tok.constraint.upper_bound[cond_i] = _cond.upper_bound

@@ -114,8 +114,8 @@ class InputDataPipeline:
 
         # Pad feature dimensions to the model's required multiples.
         f_input = f_input.pad(
-            max_tokens=((f_input.num_tokens + 31) // 32) * 32,
-            max_atoms=((f_input.num_atoms + 63) // 64) * 64,
+            max_tokens=((f_input.num_tokens + 63) // 64) * 64,
+            max_atoms=((f_input.num_atoms + 127) // 128) * 128,
             max_sequence_tokens=((f_input.num_sequence_tokens + 63) // 64) * 64,
         )
         return InferenceInput(query, seed, ref_struct, f_input, apos, priors)
