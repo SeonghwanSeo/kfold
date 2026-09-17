@@ -1,4 +1,5 @@
-# started from code from https://github.com/jwohlwend/boltz, MIT License,
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
+# Copyright 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # Copyright 2021 AlQuraishi Laboratory
 # Copyright 2021 DeepMind Technologies Limited
 #

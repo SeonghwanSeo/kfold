@@ -1,8 +1,6 @@
-"""Utility functions for initializing weights and biases.
-Modified from OpenFold-3 initialize.py
-"""
-
+# Copyright 2026 Korea Advanced Institute of Science and Technology (KAIST)
 # Copyright 2021 AlQuraishi Laboratory
+# Copyright 2021 DeepMind Technologies Limited
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
