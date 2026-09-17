@@ -43,8 +43,13 @@ class InputEmbedder(torch.nn.Module):
         atom_encoder_heads: int = 4
         ckpt_atom_stack: bool = False
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        kernel_backend: str = "torch",
+    ) -> None:
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.cfg = cfg
         self.channel_s: int = cfg.channel_s
         self.channel_z: int = cfg.channel_z
@@ -58,6 +63,7 @@ class InputEmbedder(torch.nn.Module):
             atom_encoder_blocks=cfg.atom_encoder_blocks,
             atom_encoder_heads=cfg.atom_encoder_heads,
             ckpt_atom_stack=cfg.ckpt_atom_stack,
+            kernel_backend=self.kernel_backend,
         )
 
         # Initial linear layers for single and pair representations

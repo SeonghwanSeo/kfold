@@ -163,6 +163,7 @@ class DiffusionStack(nn.Module):
         atom_decoder_heads: int = 4,
         blocks_per_ckpt: int | None = None,
         ckpt_atom_stack: bool = False,
+        kernel_backend: str = "torch",
     ) -> None:
         """Initialize the diffusion module.
 
@@ -206,6 +207,7 @@ class DiffusionStack(nn.Module):
 
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_s: int = channel_s
         self.channel_z: int = channel_z
         self.channel_atom: int = channel_atom
@@ -250,6 +252,7 @@ class DiffusionStack(nn.Module):
             num_heads=atom_encoder_heads,
             use_structure=True,
             ckpt_atom_stack=ckpt_atom_stack,
+            kernel_backend=self.kernel_backend,
         )
         if separate_endpoint_atom_encoder:
             self.endpoint_atom_attention_encoder = AtomAttentionEncoder(
@@ -261,6 +264,7 @@ class DiffusionStack(nn.Module):
                 num_heads=atom_encoder_heads,
                 use_structure=True,
                 ckpt_atom_stack=ckpt_atom_stack,
+                kernel_backend=self.kernel_backend,
             )
             self.layernorm_a_t = LayerNorm(channel_a, create_offset=False)
             self.layernorm_a_endpoint = LayerNorm(channel_a, create_offset=False)
@@ -287,6 +291,7 @@ class DiffusionStack(nn.Module):
             num_blocks=token_transformer_blocks,
             num_heads=token_transformer_heads,
             blocks_per_ckpt=blocks_per_ckpt,
+            kernel_backend=self.kernel_backend,
         )
 
         self.layernorm_a = LayerNorm(channel_a, create_offset=False)
@@ -299,6 +304,7 @@ class DiffusionStack(nn.Module):
             num_blocks=atom_decoder_blocks,
             num_heads=atom_decoder_heads,
             ckpt_atom_stack=ckpt_atom_stack,
+            kernel_backend=self.kernel_backend,
         )
 
     # === Main forward function for training === #

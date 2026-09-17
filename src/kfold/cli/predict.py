@@ -80,6 +80,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     # Devices, model components, and model cache.
     parser.add_argument(
+        "--kernel",
+        dest="kernel_backend",
+        choices=("torch", "cuequiv", "triton"),
+        help="K-Fold kernel backend.",
+    )
+    parser.add_argument(
         "--gpu-ids",
         type=int,
         nargs="+",
@@ -236,7 +242,7 @@ def _build_jobs(
 
 def dry_run(args: argparse.Namespace) -> None:
     """Validate selected queries and report pending work without writing outputs."""
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import snapshot_download
 
     from kfold.cli.predict_complex import dry_run as predict_complex
     from kfold.cli.prepare_apo import dry_run as prepare_apo
@@ -247,7 +253,10 @@ def dry_run(args: argparse.Namespace) -> None:
     _find_obsolete_queries(args, queries)
 
     logger.info("Checking query CCD codes.")
-    ccd_path = hf_hub_download(ASSETS_REPO_ID, "assets/ccd.pkl", cache_dir=args.cache_dir)
+    ccd_path = (
+        Path(snapshot_download(ASSETS_REPO_ID, cache_dir=args.cache_dir))
+        / "assets/ccd.pkl"
+    )
     ccd = CCD.load(ccd_path)
     for query in queries:
         query.validate_ccd_codes(ccd.keys())

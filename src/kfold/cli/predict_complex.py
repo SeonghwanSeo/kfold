@@ -18,6 +18,7 @@ from kfold.cli.prepare_apo import is_apo_prepared
 from kfold.inference.query import Query
 from kfold.inference.runner import KFoldRunner
 from kfold.model import KFold
+from kfold.utils.runtime import is_cuequivariance_installed, is_triton_available
 
 logger = logging.getLogger("kfold.predict")
 
@@ -66,6 +67,14 @@ def dry_run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> No
 
 def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
     """Predict unfinished complex jobs and summarize their ranked outputs."""
+    if args.kernel_backend is None:
+        if is_triton_available():
+            args.kernel_backend = "triton"
+        elif is_cuequivariance_installed():
+            args.kernel_backend = "cuequiv"
+        else:
+            args.kernel_backend = "torch"
+    logger.info("K-Fold kernel backend: %s.", args.kernel_backend)
     start = perf_counter()
     pending = []
     for query, seed, job_dir in jobs:
@@ -110,6 +119,7 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
             "use_struct_encoder": not args.disable_struct_encoder,
             "use_rna_encoder": not args.disable_rna_encoder,
             "cpu_offload": args.cpu_offload,
+            "kernel_backend": args.kernel_backend,
         }
         (args.out_dir / name / "kfold_settings.json").write_text(
             json.dumps(settings, indent=2) + "\n"
@@ -196,6 +206,7 @@ def _worker(
                 use_struct_encoder=not args.disable_struct_encoder,
                 use_rna_encoder=not args.disable_rna_encoder,
                 cpu_offload=args.cpu_offload,
+                kernel_backend=args.kernel_backend,
             )
             runner = KFoldRunner(model, cache_dir=args.cache_dir, verbose=False)
         logger.info(

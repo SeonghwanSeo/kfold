@@ -8,7 +8,6 @@ We implement two variants of this layer:
 
 import torch
 import torch.nn as nn
-from einops import rearrange
 
 from kfold.model.primitives import AdaLN, LayerNorm, Linear, LinearNoBias
 from kfold.model.primitives.attention import attention_pair_bias
@@ -22,6 +21,7 @@ class AttentionPairBias(nn.Module):
         *,
         zero_init_out: bool = False,
         inf: float = 1e9,
+        kernel_backend: str = "torch",
     ) -> None:
         """Initialize the attention pair bias layer.
 
@@ -40,6 +40,7 @@ class AttentionPairBias(nn.Module):
         self.num_heads: int = num_heads
         self.head_dim: int = channel_a // num_heads
         self.inf: float = inf
+        self.kernel_backend = kernel_backend
 
         self.linear_q = Linear(channel_a, channel_a, init="default")
         self.linear_k = LinearNoBias(channel_a, channel_a, init="default")
@@ -51,46 +52,6 @@ class AttentionPairBias(nn.Module):
         else:
             self.linear_out = LinearNoBias(channel_a, channel_a, init="default")
 
-    def _prev_qkv(
-        self, a_q: torch.Tensor, a_k: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute the query, key, and value tensors from the input tensors."""
-        # [*, L, c] -> [*, L, c]
-        q = self.linear_q(a_q)
-        k = self.linear_k(a_k)
-        v = self.linear_v(a_k)
-        # [*, L, c] -> [*, H, L, c_h]
-        H = self.num_heads
-        q, k, v = map(lambda t: rearrange(t, "... l (h d) -> ... h l d", h=H), (q, k, v))
-        return q, k, v
-
-    def _attention(
-        self,
-        a: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        pair_bias: torch.Tensor,
-        mask: torch.Tensor,
-        use_kernels: bool,
-    ) -> torch.Tensor:
-        # Attention Pair Bias with cuequivariance kernels
-        return attention_pair_bias(
-            s=a,
-            q=q,
-            k=k,
-            v=v,
-            pair_bias=pair_bias,
-            mask=mask,
-            w_proj_g=self.linear_g.weight,
-            b_proj_g=self.linear_g.bias,
-            w_proj_o=self.linear_out.weight,
-            b_proj_o=self.linear_out.bias,
-            num_heads=self.num_heads,
-            inf=self.inf,
-            use_kernels=use_kernels,
-        )
-
 
 class SelfAttentionPairBias(AttentionPairBias):
     def __init__(
@@ -98,7 +59,9 @@ class SelfAttentionPairBias(AttentionPairBias):
         channel_a: int,
         num_heads: int,
         channel_s: int | None,
+        call_site: str,
         inf: float = 1e9,
+        kernel_backend: str = "torch",
     ) -> None:
         """Initialize the attention pair bias layer.
 
@@ -114,12 +77,16 @@ class SelfAttentionPairBias(AttentionPairBias):
             The inf value, by default 1e9
         """
         self.use_single_conditioning: bool = channel_s is not None
+        if call_site not in {"diffusion_global", "confidence"}:
+            raise ValueError(f"Unsupported self APB call site: {call_site!r}")
+        self.call_site = call_site
 
         super().__init__(
             channel_a,
             num_heads,
             zero_init_out=(not self.use_single_conditioning),
             inf=inf,
+            kernel_backend=kernel_backend,
         )
 
         if self.use_single_conditioning:
@@ -136,7 +103,6 @@ class SelfAttentionPairBias(AttentionPairBias):
         s: torch.Tensor | None,
         pair_bias: torch.Tensor,
         mask: torch.Tensor,
-        use_kernels: bool = False,
     ) -> torch.Tensor:
         """Forward pass.
 
@@ -150,9 +116,6 @@ class SelfAttentionPairBias(AttentionPairBias):
             The pair representation tensor (..., H, L, L)
         mask : torch.Tensor
             The attention mask tensor (..., L)
-        use_kernels : bool, optional
-            Whether to use custom kernel for attention, by default False
-
         Returns
         -------
         a : torch.Tensor
@@ -165,8 +128,15 @@ class SelfAttentionPairBias(AttentionPairBias):
             assert s is None
             a = self.layernorm_a(a)
 
-        q, k, v = self._prev_qkv(a, a)
-        a = self._attention(a, q, k, v, pair_bias, mask, use_kernels)
+        a = attention_pair_bias(
+            self,
+            a,
+            a,
+            pair_bias,
+            mask,
+            kernel_backend=self.kernel_backend,
+            call_site=self.call_site,
+        )
 
         if self.use_single_conditioning:
             assert s is not None
@@ -181,6 +151,7 @@ class CrossAttentionPairBias(AttentionPairBias):
         num_heads: int,
         channel_s: int | None,
         inf: float = 1e9,
+        kernel_backend: str = "torch",
     ) -> None:
         """Initialize the attention pair bias layer.
 
@@ -199,11 +170,13 @@ class CrossAttentionPairBias(AttentionPairBias):
         """
         self.use_single_conditioning: bool = channel_s is not None
 
+        # cuEq does not support local windows, which use the Torch backend.
         super().__init__(
             channel_a,
             num_heads,
             zero_init_out=(not self.use_single_conditioning),
             inf=inf,
+            kernel_backend="torch" if kernel_backend == "cuequiv" else kernel_backend,
         )
 
         if self.use_single_conditioning:
@@ -257,16 +230,15 @@ class CrossAttentionPairBias(AttentionPairBias):
             a_q = self.layernorm_a_q(a_q)
             a_k = self.layernorm_a_k(a_k)
 
-        # Prepare attention pair bias input
-        a = rearrange(a_q, "... w l d -> ... (w l) d")  # flatten for compatibility
-
-        # [*, W, Lq/k, c] -> [*, W, H, Lq/k, c_h]
-        q, k, v = self._prev_qkv(a_q, a_k)
-
-        a = self._attention(a, q, k, v, pair_bias, mask, use_kernels=False)
-
-        # Reshape back to original shape
-        a_q = rearrange(a, "... (w l) d -> ... w l d", w=a_q.shape[-3])
+        a_q = attention_pair_bias(
+            self,
+            a_q,
+            a_k,
+            pair_bias,
+            mask,
+            kernel_backend=self.kernel_backend,
+            call_site="diffusion_local",
+        )
 
         if self.use_single_conditioning:
             assert s_q is not None
