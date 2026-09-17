@@ -22,7 +22,7 @@ K-Fold requires Python 3.11 or later.
 Install from PyPI:
 
 ```bash
-pip install 'kfold[cuequiv]'
+pip install kfold
 ```
 
 Or install from source:
@@ -30,10 +30,10 @@ Or install from source:
 ```bash
 git clone https://github.com/SeonghwanSeo/kfold.git
 cd kfold
-pip install '.[cuequiv]'
+pip install -e .
 ```
 
-The `cuequiv` extra installs cuEquivariance kernels for faster inference on NVIDIA GPUs.
+K-Fold uses custom Triton kernels by default when Triton is installed and CUDA is available.
 
 ## Inference
 
@@ -45,6 +45,9 @@ kfold --input examples/8and.yaml --out-dir predictions/ --seeds 42
 
 By default, K-Fold prepares apo structures with [AtlasFold](https://github.com/SeonghwanSeo/atlasfold), then runs K-Fold predictions.
 You can also [provide apo structures](docs/inference.md#providing-apo-structures) from experiments or other prediction tools (e.g., AlphaFold2).
+
+Use `--kernel {triton,cuequiv,torch}` to select the backend for K-Fold complex prediction.
+Automatic selection prefers Triton, then cuEquivariance, then PyTorch, depending on availability.
 
 For multi-seed inference, use `--share-apo-seeds 1 2 3` to generate one apo ensemble per target and reuse it across all inference seeds specified by `--seeds`.
 This is particularly useful for relatively rigid apo structures or runs with many inference seeds; see [automatic apo generation](docs/inference.md#automatic-generation).
