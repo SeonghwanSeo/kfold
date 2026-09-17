@@ -111,7 +111,7 @@ def _pending_inputs(
             inputs.setdefault(seed, []).append(
                 ApoInput(query_name=query.name, sequence_index=index, entry=entry)
             )
-    num_entries = len({item.name for items in inputs.values() for item in items})
+    num_entries = len({item.sequence for items in inputs.values() for item in items})
     logger.info(
         "Apo preparation: %d jobs pending (%d complete); GPUs %s.",
         len(pending_jobs),
@@ -124,8 +124,8 @@ def _pending_inputs(
 def _distribute_inputs(
     inputs: dict[int | None, list[ApoInput]], num_gpus: int
 ) -> list[dict[int | None, list[ApoInput]]]:
-    """Distribute entries by length, keeping all pending seeds for an entry together."""
-    entries = {item.name: item for items in inputs.values() for item in items}
+    """Distribute entries by length, keeping identical sequences on the same worker."""
+    entries = {item.sequence: item for items in inputs.values() for item in items}
     ordered_entries = sorted(
         entries.values(),
         key=lambda item: (
@@ -135,14 +135,14 @@ def _distribute_inputs(
             item.sequence_index,
         ),
     )
-    entry_order = {item.name: index for index, item in enumerate(ordered_entries)}
+    entry_order = {item.sequence: index for index, item in enumerate(ordered_entries)}
     num_workers = min(num_gpus, len(entries))
     worker_inputs: list[dict[int | None, list[ApoInput]]] = [
         {} for _ in range(num_workers)
     ]
     for seed, items in inputs.items():
-        for item in sorted(items, key=lambda item: entry_order[item.name]):
-            rank = entry_order[item.name] % num_workers
+        for item in sorted(items, key=lambda item: entry_order[item.sequence]):
+            rank = entry_order[item.sequence] % num_workers
             worker_inputs[rank].setdefault(seed, []).append(item)
     return worker_inputs
 
@@ -254,12 +254,21 @@ def _worker(
         for kind in kinds:
             model_name = "AtlasFold-Multimer" if kind == "protein_pair" else "AtlasFold"
 
-            # Count the total number of jobs for this model across all seeds and queries.
+            # Count output entries and unique prediction targets separately per seed.
             total = sum(
                 item.entry.kind == kind for items in inputs.values() for item in items
             )
+            unique_total = sum(
+                len({item.sequence for item in items if item.entry.kind == kind})
+                for items in inputs.values()
+            )
             completed = 0
-            logger.info("%s prediction started: %d jobs.", model_name, total)
+            logger.info(
+                "%s prediction started: %d targets (%d unique).",
+                model_name,
+                total,
+                unique_total,
+            )
 
             # Load the apo folding model
             model_start = perf_counter()
@@ -268,14 +277,18 @@ def _worker(
 
             # Shared preparation batches each target once, independently of CLI seeds.
             for seed, seed_inputs in inputs.items():
-                # Reuse the input metadata when AtlasFold returns results by length.
+                # Predict each sequence once per seed and retain every output target.
+                inputs_by_sequence: dict[str | tuple[str, str], list[ApoInput]] = {}
+                for item in seed_inputs:
+                    if item.entry.kind == kind:
+                        inputs_by_sequence.setdefault(item.sequence, []).append(item)
                 inputs_by_name = {
-                    item.name: item for item in seed_inputs if item.entry.kind == kind
+                    items[0].name: items for items in inputs_by_sequence.values()
                 }
                 if not inputs_by_name:
                     continue
                 apo_inputs = [
-                    (name, item.sequence) for name, item in inputs_by_name.items()
+                    (name, items[0].sequence) for name, items in inputs_by_name.items()
                 ]
                 # Generate all requested apo seeds within each AtlasFold batch.
                 apo_seeds = (
@@ -290,24 +303,25 @@ def _worker(
 
                     # Save pdbs
                     for result in results:
-                        item = inputs_by_name[result.name]
-                        save_dir = args.out_dir / item.query_name
-                        if seed is not None:
-                            save_dir /= f"{item.query_name}_seed-{seed}"
-                        save_apo_and_prior(
-                            result.apos, result.priors, save_dir, item.sequence_index
-                        )
-                        (save_dir / "apo" / f"{item.output_prefix}.done").touch()
+                        for item in inputs_by_name[result.name]:
+                            save_dir = args.out_dir / item.query_name
+                            if seed is not None:
+                                save_dir /= f"{item.query_name}_seed-{seed}"
+                            save_apo_and_prior(
+                                result.apos, result.priors, save_dir, item.sequence_index
+                            )
+                            (save_dir / "apo" / f"{item.output_prefix}.done").touch()
                         completed += 1
                         logger.info(
-                            "%s completed: %s (seeds=%s), length=%d, %.2f s [%d/%d].",
+                            "%s completed: %s (seeds=%s), length=%d, %.2f s "
+                            "[%d/%d].",
                             model_name,
-                            item.name,
+                            result.name,
                             apo_seeds,
-                            len(item.entry),
+                            len(inputs_by_name[result.name][0].entry),
                             time_per_job,
                             completed,
-                            total,
+                            unique_total,
                         )
                     del result, results
                     batch_start = perf_counter()
@@ -316,8 +330,9 @@ def _worker(
             runner.unload_models()
 
             logger.info(
-                "%s prediction completed: %d jobs, total=%.1f s.",
+                "%s prediction completed: %d targets (%d unique), total=%.1f s.",
                 model_name,
+                total,
                 completed,
                 perf_counter() - model_start,
             )
