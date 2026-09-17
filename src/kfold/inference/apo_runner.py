@@ -312,6 +312,8 @@ class ApoRunner:
         MonomerRunner | MultimerRunner
             Runner for the loaded model.
         """
+        # K-Fold may have offloaded the shared AtlasLM since the last prediction.
+        self.lm.to(self.device)
         model_name = "atlasfold-m" if multimer else "atlasfold"
         if model_name not in self._runners:
             self._log("Loading %s.", "AtlasFold-Multimer" if multimer else "AtlasFold")

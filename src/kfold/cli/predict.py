@@ -119,7 +119,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cpu-offload",
         action="store_true",
-        help="Offload structure and RNA encoders to CPU to save GPU memory (slower).",
+        help="Offload pretrained encoders to CPU to save GPU memory (slower).",
     )
     parser.add_argument(
         "--cache-dir",

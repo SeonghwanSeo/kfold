@@ -452,11 +452,10 @@ class KFold(torch.nn.Module):
 
     def _encode_lm_single(self, f_input: FoldingInput) -> torch.Tensor:
         """Merge the enabled pretrained encoders into the shared LM single."""
-        s_lm = self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
+        with self._encoder_on_device(self.prot_seq_encoder, f_input.device):
+            s_lm = self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
 
-        if self.rna_seq_encoder is not None and (
-            not self.cpu_offload or f_input.sequence.is_rna.any()
-        ):
+        if self.rna_seq_encoder is not None and f_input.sequence.is_rna.any():
             with self._encoder_on_device(self.rna_seq_encoder, f_input.device):
                 s_lm = s_lm + self.rna_seq_to_s_lm(self.rna_seq_encoder(f_input))
 
@@ -575,8 +574,7 @@ class KFold(torch.nn.Module):
         cpu_offload : bool, optional
             Keep the protein structure backbone encoder and RNA sequence encoder
             on CPU between inference calls. Move each to the input device only
-            for feature extraction. The protein LM and structure tokenizers
-            remain on device. Default is False.
+            for feature extraction. Default is False.
         kernel_backend : str, optional
             Select the triangle attention/multiplication backend: "torch", "cuequiv", or
             "triton". Triton requires CUDA and supports inference only.
@@ -622,9 +620,13 @@ class KFold(torch.nn.Module):
         model.requires_grad_(False).eval()
         model.cpu_offload = cpu_offload
         if cpu_offload:
-            offloaded_encoders: set[torch.nn.Module | None] = {model.rna_seq_encoder}
+            offloaded_encoders: list[torch.nn.Module] = []
+            if model.prot_seq_encoder is not None:
+                offloaded_encoders.append(model.prot_seq_encoder)
+            if model.rna_seq_encoder is not None:
+                offloaded_encoders.append(model.rna_seq_encoder)
             if model.prot_struct_encoder is not None:
-                offloaded_encoders.add(model.prot_struct_encoder.encoder)
+                offloaded_encoders.append(model.prot_struct_encoder.encoder)
 
             def move_to_device(module: torch.nn.Module) -> None:
                 # Skip offloaded weights from the start to avoid a GPU loading peak.
