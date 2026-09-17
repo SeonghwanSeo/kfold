@@ -70,6 +70,7 @@ class ConfidencePairSingleStack(torch.nn.Module):
         kernel_backend: str = "torch",
     ) -> None:
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.blocks_per_ckpt = blocks_per_ckpt
         self.blocks = torch.nn.ModuleList(
             [
@@ -78,7 +79,7 @@ class ConfidencePairSingleStack(torch.nn.Module):
                     channel_z=channel_z,
                     num_heads=num_heads,
                     dropout=dropout,
-                    kernel_backend=kernel_backend,
+                    kernel_backend=self.kernel_backend,
                 )
                 for _ in range(num_blocks)
             ]
@@ -117,10 +118,11 @@ class ConfidencePairSingleBlock(torch.nn.Module):
         kernel_backend: str = "torch",
     ) -> None:
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.pair_block = TriangularBlock(
             channel_z,
             dropout,
-            kernel_backend=kernel_backend,
+            kernel_backend=self.kernel_backend,
         )
         self.layernorm_z = LayerNorm(channel_z)
         self.linear_pair_bias = LinearNoBias(channel_z, num_heads)
@@ -129,7 +131,7 @@ class ConfidencePairSingleBlock(torch.nn.Module):
             num_heads=num_heads,
             channel_s=None,
             call_site="confidence",
-            kernel_backend=kernel_backend,
+            kernel_backend="sdpa",
         )
         self.transition = Transition(channel_s, expansion_factor=4)
 
@@ -204,6 +206,7 @@ class ConfidenceHead(torch.nn.Module):
         kernel_backend: str = "torch",
     ):
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.num_pae_bins = cfg.num_pae_bins
         self.num_pde_bins = cfg.num_pde_bins
         self.num_plddt_bins = cfg.num_plddt_bins
@@ -252,7 +255,7 @@ class ConfidenceHead(torch.nn.Module):
             num_blocks=cfg.num_blocks,
             dropout=cfg.dropout,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
-            kernel_backend=kernel_backend,
+            kernel_backend=self.kernel_backend,
         )
 
         self.pae_head = torch.nn.Sequential(

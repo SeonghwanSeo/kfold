@@ -219,8 +219,28 @@ def _launch(
     def grid(meta):
         return (triton.cdiv(M, meta["BLOCK_M"]),)
 
+    # Length-independent BF16 configs measured for the Apo and main-trunk channels.
+    kernel = fused_layer_norm_sigmoid_gated_transpose
+    config = {}
+    if X1.dtype == torch.bfloat16 and D in (64, 256):
+        kernel = kernel.fn
+        if D == 64:
+            config = dict(
+                BLOCK_M=128,
+                BLOCK_K=32 if two_inputs else 64,
+                num_warps=4,
+                num_stages=2,
+            )
+        else:
+            config = dict(
+                BLOCK_M=32 if two_inputs else 64,
+                BLOCK_K=32,
+                num_warps=4,
+                num_stages=1 if two_inputs else 2,
+            )
+
     use_int64 = max(M * D, M * D_OUT) > (1 << 31)
-    fused_layer_norm_sigmoid_gated_transpose[grid](
+    kernel[grid](
         X1,
         X1_s0,
         X1_s1,
@@ -252,6 +272,7 @@ def _launch(
         TWO_INPUTS=two_inputs,
         X1_DMAJOR=x1_dmajor,
         TRANS=trans,
+        **config,
     )
 
 

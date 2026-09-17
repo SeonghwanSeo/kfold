@@ -71,8 +71,6 @@ class KFoldConfig:
     confidence_head: confidence_head.ConfidenceHead.Config
     patch_pair_geometry: patch_geometry.PatchPairGeometryHead.Config | None
 
-    kernel_backend: str | None = None
-
     # For training
     diffusion_conditioning_drop_rate: float = 0.0
     confidence_conditioning_drop_rate: float = 0.0
@@ -124,7 +122,13 @@ class LMToPair(torch.nn.Module):
 
 
 class KFold(torch.nn.Module):
-    def __init__(self, config: KFoldConfig, *, atlaslm: torch.nn.Module | None = None):
+    def __init__(
+        self,
+        config: KFoldConfig,
+        *,
+        kernel_backend: str | None = None,
+        atlaslm: torch.nn.Module | None = None,
+    ):
         super().__init__()
         self.config: KFoldConfig = config
         self.channel_s: int = config.channel_s
@@ -141,7 +145,6 @@ class KFold(torch.nn.Module):
         self.trunk_config = resolve_config(TrunkConfig, config.trunk)
         self.parcae_config = resolve_config(ParcaeConfig, config.parcae)
 
-        kernel_backend = getattr(config, "kernel_backend", None)
         if kernel_backend is None:
             kernel_backend = "cuequiv" if is_cuequivariance_installed() else "torch"
         if kernel_backend not in ("torch", "cuequiv", "triton"):
@@ -568,10 +571,10 @@ class KFold(torch.nn.Module):
             for feature extraction. The protein LM and structure tokenizers
             remain on device. Default is False.
         kernel_backend : str, optional
-            Override the model's kernel backend: "torch", "cuequiv", or
+            Select the triangle attention/multiplication backend: "torch", "cuequiv", or
             "triton". Triton requires CUDA and supports inference only.
-            When neither this argument nor the model config selects a backend,
-            use cuEquivariance if installed, otherwise PyTorch.
+            Attention pair bias always uses SDPA.
+            When omitted, use cuEquivariance if installed, otherwise PyTorch.
         """
         from huggingface_hub import snapshot_download
 
@@ -588,8 +591,6 @@ class KFold(torch.nn.Module):
             config_path = repo_path / "config.yaml"
 
         config = OmegaConf.load(config_path)
-        if kernel_backend is not None:
-            config.kernel_backend = kernel_backend
         if not use_struct_encoder:
             config.protein_structure_encoder = None
         if not use_rna_encoder:
@@ -604,7 +605,7 @@ class KFold(torch.nn.Module):
                 if config.get(encoder) is not None:
                     config[encoder].cache_dir = str(cache_dir)
 
-        model = cls(config)
+        model = cls(config, kernel_backend=kernel_backend)
         state_dict = torch.load(
             model_path, map_location="cpu", weights_only=True, mmap=True
         )

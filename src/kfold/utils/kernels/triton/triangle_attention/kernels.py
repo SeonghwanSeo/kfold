@@ -354,7 +354,15 @@ def triangle_attn_forward(
     def grid_b(meta):
         return (triton.cdiv(B * N * N, meta["BLOCK_QK"]), H)
 
-    bias_proj_kernel[grid_b](
+    # Apo uses one BF16 config across sequence lengths; other shapes keep tuning.
+    fixed_apo_config = X_ln.dtype == torch.bfloat16 and (C_in, H, D) == (64, 4, 16)
+    bias_kernel = bias_proj_kernel
+    bias_config = {}
+    if fixed_apo_config:
+        bias_kernel = bias_kernel.fn
+        bias_config = dict(BLOCK_QK=128, num_warps=4, num_stages=2)
+
+    bias_kernel[grid_b](
         X_ln,
         X_ln.stride(0),
         X_ln.stride(1),
@@ -376,6 +384,7 @@ def triangle_attn_forward(
         H=H,
         IO_DTYPE=io_dtype,
         USE_INT64=use_int64,
+        **bias_config,
     )
 
     has_mask = mask is not None
@@ -395,7 +404,13 @@ def triangle_attn_forward(
     def grid_a(meta):
         return (B * N, H, triton.cdiv(N, meta["BLOCK_M"]))
 
-    triangle_attn_kernel[grid_a](
+    attention_kernel = triangle_attn_kernel
+    attention_config = {}
+    if fixed_apo_config:
+        attention_kernel = attention_kernel.fn
+        attention_config = dict(BLOCK_M=128, BLOCK_K=32, num_warps=4, num_stages=2)
+
+    attention_kernel[grid_a](
         X_ln,
         X_ln.stride(0),
         X_ln.stride(1),
@@ -437,5 +452,6 @@ def triangle_attn_forward(
         SEPARATE_KV=separate_kv,
         IO_DTYPE=io_dtype,
         USE_INT64=use_int64,
+        **attention_config,
     )
     return original_out

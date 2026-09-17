@@ -11,8 +11,8 @@ from kfold.model.modules.ecsi import ECSISOARConfig
 
 
 class KFoldForTrain(KFold):
-    def __init__(self, config: KFoldConfig):
-        super().__init__(config)
+    def __init__(self, config: KFoldConfig, *, kernel_backend: str | None = None):
+        super().__init__(config, kernel_backend=kernel_backend)
         self.is_compiled = False
 
     def get_pretrained_module_names(self) -> list[str]:

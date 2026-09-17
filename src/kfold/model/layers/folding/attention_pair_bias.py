@@ -8,13 +8,9 @@ We implement two variants of this layer:
 
 import torch
 import torch.nn as nn
-from einops import rearrange
 
 from kfold.model.primitives import AdaLN, LayerNorm, Linear, LinearNoBias
-from kfold.model.primitives.attention import (
-    attention_pair_bias,
-    triton_attention_pair_bias,
-)
+from kfold.model.primitives.attention import attention_pair_bias
 
 
 class AttentionPairBias(nn.Module):
@@ -55,49 +51,6 @@ class AttentionPairBias(nn.Module):
             self.linear_out = LinearNoBias(channel_a, channel_a, init="final")
         else:
             self.linear_out = LinearNoBias(channel_a, channel_a, init="default")
-
-    def _prev_qkv(
-        self, a_q: torch.Tensor, a_k: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Compute the query, key, and value tensors from the input tensors."""
-        # [*, L, c] -> [*, L, c]
-        q = self.linear_q(a_q)
-        k = self.linear_k(a_k)
-        v = self.linear_v(a_k)
-        # [*, L, c] -> [*, H, L, c_h]
-        H = self.num_heads
-        q, k, v = map(
-            lambda t: rearrange(t, "... l (h d) -> ... h l d", h=H),
-            (q, k, v),
-        )
-        return q, k, v
-
-    def _attention(
-        self,
-        a: torch.Tensor,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        pair_bias: torch.Tensor,
-        mask: torch.Tensor,
-        *,
-        kernel_backend: str,
-    ) -> torch.Tensor:
-        return attention_pair_bias(
-            s=a,
-            q=q,
-            k=k,
-            v=v,
-            pair_bias=pair_bias,
-            mask=mask,
-            w_proj_g=self.linear_g.weight,
-            b_proj_g=self.linear_g.bias,
-            w_proj_o=self.linear_out.weight,
-            b_proj_o=self.linear_out.bias,
-            num_heads=self.num_heads,
-            inf=self.inf,
-            kernel_backend=kernel_backend,
-        )
 
 
 class SelfAttentionPairBias(AttentionPairBias):
@@ -175,26 +128,15 @@ class SelfAttentionPairBias(AttentionPairBias):
             assert s is None
             a = self.layernorm_a(a)
 
-        if self.kernel_backend == "triton":
-            a = triton_attention_pair_bias(
-                self,
-                a,
-                a,
-                pair_bias,
-                mask,
-                call_site=self.call_site,
-            )
-        else:
-            q, k, v = self._prev_qkv(a, a)
-            a = self._attention(
-                a,
-                q,
-                k,
-                v,
-                pair_bias,
-                mask,
-                kernel_backend=self.kernel_backend,
-            )
+        a = attention_pair_bias(
+            self,
+            a,
+            a,
+            pair_bias,
+            mask,
+            kernel_backend=self.kernel_backend,
+            call_site=self.call_site,
+        )
 
         if self.use_single_conditioning:
             assert s is not None
@@ -228,12 +170,13 @@ class CrossAttentionPairBias(AttentionPairBias):
         """
         self.use_single_conditioning: bool = channel_s is not None
 
+        # cuEq does not support local windows, which use the Torch backend.
         super().__init__(
             channel_a,
             num_heads,
             zero_init_out=(not self.use_single_conditioning),
             inf=inf,
-            kernel_backend=kernel_backend,
+            kernel_backend="torch" if kernel_backend == "cuequiv" else kernel_backend,
         )
 
         if self.use_single_conditioning:
@@ -287,28 +230,15 @@ class CrossAttentionPairBias(AttentionPairBias):
             a_q = self.layernorm_a_q(a_q)
             a_k = self.layernorm_a_k(a_k)
 
-        if self.kernel_backend == "triton":
-            a_q = triton_attention_pair_bias(
-                self,
-                a_q,
-                a_k,
-                pair_bias,
-                mask,
-                call_site="diffusion_local",
-            )
-        else:
-            a = rearrange(a_q, "... w l d -> ... (w l) d")
-            q, k, v = self._prev_qkv(a_q, a_k)
-            a = self._attention(
-                a,
-                q,
-                k,
-                v,
-                pair_bias,
-                mask,
-                kernel_backend="torch",
-            )
-            a_q = rearrange(a, "... (w l) d -> ... w l d", w=a_q.shape[-3])
+        a_q = attention_pair_bias(
+            self,
+            a_q,
+            a_k,
+            pair_bias,
+            mask,
+            kernel_backend=self.kernel_backend,
+            call_site="diffusion_local",
+        )
 
         if self.use_single_conditioning:
             assert s_q is not None

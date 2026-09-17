@@ -37,6 +37,7 @@ class PairformerStack(torch.nn.Module):
     ):
         """Initialize the Pairformer module."""
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_z: int = channel_z
         self.num_blocks: int = num_blocks
         self.dropout: float = dropout
@@ -50,7 +51,7 @@ class PairformerStack(torch.nn.Module):
                     self.channel_z,
                     num_tri_heads,
                     self.dropout,
-                    kernel_backend=kernel_backend,
+                    kernel_backend=self.kernel_backend,
                 )
             )
 
@@ -109,18 +110,19 @@ class PairformerBlock(torch.nn.Module):
             The dropout rate, by default 0.1
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_z: int = channel_z
         self.tri_mul_out = TriangleMultiplicationOutgoing(
-            channel_z, kernel_backend=kernel_backend
+            channel_z, kernel_backend=self.kernel_backend
         )
         self.tri_mul_in = TriangleMultiplicationIncoming(
-            channel_z, kernel_backend=kernel_backend
+            channel_z, kernel_backend=self.kernel_backend
         )
         self.tri_att_start = TriangleAttentionStartingNode(
-            channel_z, num_tri_heads, kernel_backend=kernel_backend
+            channel_z, num_tri_heads, kernel_backend=self.kernel_backend
         )
         self.tri_att_end = TriangleAttentionEndingNode(
-            channel_z, num_tri_heads, kernel_backend=kernel_backend
+            channel_z, num_tri_heads, kernel_backend=self.kernel_backend
         )
         self.transition_z = Transition(channel_z, expansion_factor=2)
         self.dropout_rowwise_z = DropoutRowwise(dropout)
@@ -259,6 +261,7 @@ class ApoModule(torch.nn.Module):
         kernel_backend: str = "torch",
     ) -> None:
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_z = cfg.channel_z
         self.channel_apo = cfg.channel_apo
 
@@ -280,7 +283,7 @@ class ApoModule(torch.nn.Module):
             num_blocks=cfg.num_blocks,
             dropout=cfg.dropout,
             blocks_per_ckpt=cfg.blocks_per_ckpt,
-            kernel_backend=kernel_backend,
+            kernel_backend=self.kernel_backend,
         )
         self.layernorm_out = LayerNorm(self.channel_apo)
         self.linear_out = LinearNoBias(self.channel_apo, self.channel_z, init="relu")

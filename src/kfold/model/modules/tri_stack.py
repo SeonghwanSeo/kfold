@@ -27,6 +27,7 @@ class TrianglularStack(nn.Module):
     ):
         """Initialize the Pairformer module."""
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_z: int = channel_z
         self.dropout: float = dropout
         self.num_blocks: int = num_blocks
@@ -39,7 +40,7 @@ class TrianglularStack(nn.Module):
                 TriangularBlock(
                     self.channel_z,
                     self.dropout,
-                    kernel_backend=kernel_backend,
+                    kernel_backend=self.kernel_backend,
                 )
             )
 
@@ -97,14 +98,15 @@ class TriangularBlock(nn.Module):
             The dropout rate, by default 0.25
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.channel_z: int = channel_z
         self.dropout: float = dropout
 
         self.tri_mul_out = TriangleMultiplicationOutgoing(
-            channel_z, kernel_backend=kernel_backend
+            channel_z, kernel_backend=self.kernel_backend
         )
         self.tri_mul_in = TriangleMultiplicationIncoming(
-            channel_z, kernel_backend=kernel_backend
+            channel_z, kernel_backend=self.kernel_backend
         )
         self.transition_z = Transition(channel_z, expansion_factor=4)
 

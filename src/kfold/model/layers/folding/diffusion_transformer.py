@@ -103,6 +103,7 @@ class GlobalTransformerStack(torch.nn.Module):
             The number of blocks per checkpoint
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.layernorm_z = LayerNorm(channel_z, create_offset=False)
         self.blocks = nn.ModuleList(
             [
@@ -111,7 +112,7 @@ class GlobalTransformerStack(torch.nn.Module):
                     channel_s,
                     channel_z,
                     num_heads,
-                    kernel_backend=kernel_backend,
+                    kernel_backend=self.kernel_backend,
                 )
                 for _ in range(num_blocks)
             ]
@@ -186,13 +187,14 @@ class GlobalTransformerBlock(nn.Module):
             The number of heads.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.linear_z_to_bias = LinearNoBias(channel_z, num_heads, init="default")
         self.attention = SelfAttentionPairBias(
             channel_a,
             num_heads,
             channel_s,
             call_site="diffusion_global",
-            kernel_backend=kernel_backend,
+            kernel_backend="sdpa",
         )
         self.transition = ConditionedTransitionBlock(channel_a, channel_s)
 
@@ -269,13 +271,14 @@ class CachedGlobalTransformerStack(nn.Module):
             The number of blocks per checkpoint
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.blocks = nn.ModuleList(
             [
                 CachedGlobalTransformerBlock(
                     channel_a,
                     channel_s,
                     num_heads,
-                    kernel_backend=kernel_backend,
+                    kernel_backend=self.kernel_backend,
                 )
                 for _ in range(num_blocks)
             ]
@@ -346,12 +349,13 @@ class CachedGlobalTransformerBlock(nn.Module):
             The number of heads.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.attention = SelfAttentionPairBias(
             channel_a,
             num_heads,
             channel_s,
             call_site="diffusion_global",
-            kernel_backend=kernel_backend,
+            kernel_backend="sdpa",
         )
         self.transition = ConditionedTransitionBlock(channel_a, channel_s)
 
@@ -429,6 +433,7 @@ class LocalTransformerStack(nn.Module):
             The number of blocks.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.layernorm_z = LayerNorm(channel_z, create_offset=False)
         self.blocks = nn.ModuleList(
             [
@@ -437,7 +442,7 @@ class LocalTransformerStack(nn.Module):
                     channel_s,
                     channel_z,
                     num_heads,
-                    kernel_backend=kernel_backend,
+                    kernel_backend=self.kernel_backend,
                 )
                 for _ in range(num_blocks)
             ]
@@ -518,12 +523,13 @@ class LocalTransformerBlock(nn.Module):
             The number of heads.
         """
         super().__init__()
+        self.kernel_backend = kernel_backend
         self.linear_z_to_bias = LinearNoBias(channel_z, num_heads, init="default")
         self.attention = CrossAttentionPairBias(
             channel_a,
             num_heads,
             channel_s,
-            kernel_backend=kernel_backend,
+            kernel_backend="sdpa",
         )
         self.transition = ConditionedTransitionBlock(channel_a, channel_s)
 

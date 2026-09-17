@@ -203,7 +203,14 @@ def _gated_output_projection(
             triton.cdiv(channel, meta["BLOCK_N"]),
         )
 
-    _gated_output_projection_kernel[grid](
+    # The Apo triangle-attention epilogue shares this kernel with experimental APB.
+    kernel = _gated_output_projection_kernel
+    config = {}
+    if channel == 64 and x.dtype == torch.bfloat16 and not attention_bhld:
+        kernel = kernel.fn
+        config = dict(BLOCK_M=128, BLOCK_N=64, BLOCK_K=32, num_warps=8, num_stages=3)
+
+    kernel[grid](
         gate_logits,
         attention,
         w_out,
@@ -217,6 +224,7 @@ def _gated_output_projection(
         ATTENTION_BHLD=attention_bhld,
         IO_DTYPE=tl_io_dtype(x.dtype),
         DOT_INPUT_PRECISION=(fp32_dot_precision if x.dtype == torch.float32 else "tf32"),
+        **config,
     )
     return output
 
