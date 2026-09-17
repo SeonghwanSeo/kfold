@@ -17,9 +17,9 @@ from functools import partial
 import torch
 
 from kfold.data.types.model_input import FoldingInput
+from kfold.kernels.triton.cdist import cdist as kernel_cdist
 from kfold.utils.checkpointing import checkpoint_fn
 from kfold.utils.geometry.rigid_align import weighted_rigid_align
-from kfold.utils.kernels.cdist import cdist as kernel_cdist
 
 
 def safe_cdist(x: torch.Tensor, y: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:

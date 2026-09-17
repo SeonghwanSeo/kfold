@@ -71,7 +71,7 @@ def triton_triangular_attn(
     if not x.is_cuda:
         raise RuntimeError("The Triton triangle attention backend requires CUDA.")
 
-    from kfold.utils.kernels.triton.triangle_attention import forward, precompute
+    from kfold.kernels.triton.triangle_attention import forward, precompute
 
     compute_dtype = _triton_compute_dtype(x)
     key = _triton_cache_key(module, x, compute_dtype)

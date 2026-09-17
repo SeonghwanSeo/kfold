@@ -105,7 +105,7 @@ def triton_attention_pair_bias(
     call_site: str,
 ) -> torch.Tensor:
     """Run the Triton APB implementation for normalized K-Fold inputs."""
-    from kfold.utils.kernels.triton.attention_pair_bias import (
+    from kfold.kernels.triton.attention_pair_bias import (
         triton_attention_pair_bias,
     )
 

@@ -105,7 +105,7 @@ def triton_triangluar_mult(
     if not x.is_cuda:
         raise RuntimeError("The Triton triangle multiplication backend requires CUDA.")
 
-    from kfold.utils.kernels.triton.triangle_multiplication import forward, precompute
+    from kfold.kernels.triton.triangle_multiplication import forward, precompute
 
     compute_dtype = _triton_compute_dtype(x)
     key = _triton_cache_key(module, x, compute_dtype)
