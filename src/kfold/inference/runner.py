@@ -262,6 +262,7 @@ class KFoldRunner:
         """Create an apo runner on demand for automatic structure generation."""
         return ApoRunner(
             self.device,
+            kernel_backend=self.model.kernel_backend,
             config=self.apo_config,
             cache_dir=self.cache_dir,
             lm=self.model.prot_seq_encoder.lm if self.share_atlaslm else None,

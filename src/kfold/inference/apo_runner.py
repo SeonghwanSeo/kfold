@@ -234,6 +234,7 @@ class ApoRunner:
         self,
         device: torch.device | str = "cuda",
         *,
+        kernel_backend: str | None = None,
         config: ApoConfig | None = None,
         cache_dir: str | Path | None = None,
         lm: AtlasLM | None = None,
@@ -245,6 +246,9 @@ class ApoRunner:
         ----------
         device : torch.device | str
             Model device.
+        kernel_backend : str | None
+            AtlasFold kernel backend: torch, cuequiv, or triton.
+            When omitted, use AtlasFold automatic selection.
         config : ApoConfig | None
             Apo generation settings.
         cache_dir : str | Path | None
@@ -255,6 +259,7 @@ class ApoRunner:
             Emit model-loading logs.
         """
         self.device = torch.device(device)
+        self.kernel_backend = kernel_backend
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.config: ApoConfig = config if config is not None else ApoConfig()
         self.verbose: bool = verbose
@@ -314,6 +319,9 @@ class ApoRunner:
                 model = load_atlasfold(
                     model_name,
                     self.device,
+                    kernel=self.kernel_backend
+                    if self.kernel_backend is not None
+                    else "auto",
                     cache_dir=self.cache_dir,
                     lm=self.lm,
                 )

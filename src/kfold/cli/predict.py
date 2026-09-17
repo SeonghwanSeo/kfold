@@ -97,7 +97,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--kernel",
         dest="kernel_backend",
         choices=("torch", "cuequiv", "triton"),
-        help="K-Fold kernel backend.",
+        help="Kernel backend for K-Fold and AtlasFold apo preparation.",
     )
     parser.add_argument(
         "--gpu-ids",
@@ -288,6 +288,12 @@ def run(args: argparse.Namespace) -> None:
     """Validate arguments, load queries, and run the selected prediction stages."""
     from kfold.cli.predict_complex import run as predict_complex
     from kfold.cli.prepare_apo import run as prepare_apo
+    from kfold.utils.runtime import select_kernel_backend
+
+    # Select the kernel backend if not explicitly specified.
+    if args.kernel_backend is None:
+        args.kernel_backend = select_kernel_backend(args.kernel_backend)
+    logger.info("Kernel backend: %s.", args.kernel_backend)
 
     queries = _load_queries(args)
     obsolete_queries = _find_obsolete_queries(args, queries)

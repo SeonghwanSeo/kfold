@@ -39,3 +39,19 @@ def is_triton_available() -> bool:
     if importlib.util.find_spec("triton") is None:
         return False
     return is_cuda_available()
+
+
+def select_kernel_backend(backend: str | None = None) -> str:
+    """Resolve the kernel backend, preferring Triton when unspecified."""
+    if backend is None:
+        if is_triton_available():
+            return "triton"
+        if is_cuequivariance_installed():
+            return "cuequiv"
+        return "torch"
+    if backend not in ("torch", "cuequiv", "triton"):
+        raise ValueError(
+            f"Unknown kernel_backend {backend!r}. "
+            "Expected 'torch', 'cuequiv', or 'triton'."
+        )
+    return backend

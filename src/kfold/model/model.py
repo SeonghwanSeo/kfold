@@ -40,7 +40,7 @@ from kfold.model.modules import (
 )
 from kfold.model.primitives import LayerNorm, Linear, LinearNoBias
 from kfold.utils.config import resolve_config
-from kfold.utils.runtime import is_cuequivariance_installed
+from kfold.utils.runtime import select_kernel_backend
 
 logger = logging.getLogger(__name__)
 
@@ -159,14 +159,7 @@ class KFold(torch.nn.Module):
         self.trunk_config = resolve_config(TrunkConfig, config.trunk)
         self.parcae_config = resolve_config(ParcaeConfig, config.parcae)
 
-        if kernel_backend is None:
-            kernel_backend = "cuequiv" if is_cuequivariance_installed() else "torch"
-        if kernel_backend not in ("torch", "cuequiv", "triton"):
-            raise ValueError(
-                f"Unknown kernel_backend {kernel_backend!r}. "
-                "Expected 'torch', 'cuequiv', or 'triton'."
-            )
-        self.kernel_backend = kernel_backend
+        self.kernel_backend = select_kernel_backend(kernel_backend)
 
         # Initialize input featurizer.
         self.input_embedder = input_embedder.InputEmbedder(
@@ -587,8 +580,8 @@ class KFold(torch.nn.Module):
         kernel_backend : str, optional
             Select the triangle attention/multiplication backend: "torch", "cuequiv", or
             "triton". Triton requires CUDA and supports inference only.
-            Attention pair bias always uses SDPA.
-            When omitted, use cuEquivariance if installed, otherwise PyTorch.
+            When omitted, prefer Triton when available, then cuEquivariance,
+            then PyTorch.
         """
         from huggingface_hub import snapshot_download
 

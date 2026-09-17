@@ -22,10 +22,14 @@ import torch.nn.functional as F
 from kfold.data.types.model_input import FoldingInput
 from kfold.model.model import KFold, KFoldConfig
 from kfold.model.modules.ecsi import ECSISOARConfig
+from kfold.utils.runtime import is_cuequivariance_installed
 
 
 class KFoldForTrain(KFold):
     def __init__(self, config: KFoldConfig, *, kernel_backend: str | None = None):
+        # Triton kernels support inference only.
+        if kernel_backend is None:
+            kernel_backend = "cuequiv" if is_cuequivariance_installed() else "torch"
         super().__init__(config, kernel_backend=kernel_backend)
         self.is_compiled = False
 

@@ -243,6 +243,7 @@ def _worker(
         work = "apo runner initialization"
         runner = ApoRunner(
             torch.device("cuda", gpu_id),
+            kernel_backend=args.kernel_backend,
             config=config,
             cache_dir=args.cache_dir,
             verbose=False,
@@ -320,8 +321,9 @@ def _worker(
                 completed,
                 perf_counter() - model_start,
             )
-    except torch.cuda.OutOfMemoryError:
-        raise SystemExit(
+    except torch.cuda.OutOfMemoryError as e:
+        logger.error(
             f"Apo GPU {gpu_id}: out of memory during {work}. "
             "Lower max_tokens_per_batch in the apo YAML configuration."
-        ) from None
+        )
+        raise e
