@@ -19,6 +19,20 @@ import multiprocessing
 from multiprocessing.connection import wait
 
 
+def distribute(costs: list[int], num_workers: int, method: str) -> list[list[int]]:
+    """Assign job indices round-robin or balance their estimated costs."""
+    if method == "round-robin":
+        return [list(range(rank, len(costs), num_workers)) for rank in range(num_workers)]
+    groups: list[list[int]] = [[] for _ in range(num_workers)]
+    loads = [0] * num_workers
+    for index in sorted(range(len(costs)), key=lambda index: costs[index], reverse=True):
+        rank = min(range(num_workers), key=lambda rank: loads[rank])
+        groups[rank].append(index)
+        loads[rank] += costs[index]
+    # Preserve the stage's original processing order within each worker.
+    return [sorted(group) for group in groups]
+
+
 def launch(worker, args, worker_jobs, *, stage: str):
     """Launch one GPU process for each preassigned group of jobs."""
     import torch

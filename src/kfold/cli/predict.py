@@ -107,6 +107,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="Visible CUDA device IDs (default: [0]).",
     )
     parser.add_argument(
+        "--distribution",
+        choices=("size", "round-robin"),
+        default="size",
+        help="Multi-GPU job distribution",
+    )
+    parser.add_argument(
         "--disable-struct-encoder",
         action="store_true",
         help="Disable the apo structure encoder to save ~6 GB of GPU memory.",

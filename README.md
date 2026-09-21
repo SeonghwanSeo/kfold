@@ -1,8 +1,6 @@
 # K-Fold
 
-K-Fold is currently in the **preview stage** and under active development.
-The first official release is expected around September 20.
-Preprint will be released soon.
+**\[Notice\]** Preprint will be released soon!
 
 K-Fold predicts biomolecular complex structures and binding-induced conformational changes.
 Through an apo-to-holo diffusion bridge, K-Fold aims to capture conformational changes in systems such as G protein-coupled receptors (GPCRs).
@@ -32,8 +30,6 @@ git clone https://github.com/SeonghwanSeo/kfold.git
 cd kfold
 pip install -e .
 ```
-
-K-Fold uses custom Triton kernels by default when Triton is installed and CUDA is available.
 
 ## Inference
 

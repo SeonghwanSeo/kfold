@@ -27,7 +27,7 @@ import torch
 from huggingface_hub.utils import disable_progress_bars
 
 from kfold import __version__
-from kfold.cli.multigpu import launch
+from kfold.cli.multigpu import distribute, launch
 from kfold.cli.prepare_apo import is_apo_prepared
 from kfold.inference.query import Query
 from kfold.inference.runner import KFoldRunner
@@ -104,7 +104,9 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
         for _, _, job_dir in pending:
             (job_dir / "done.txt").unlink(missing_ok=True)
         num_workers = min(len(args.gpu_ids), len(pending))
-        worker_jobs = [pending[rank::num_workers] for rank in range(num_workers)]
+        costs = [query.priority[0] ** 2 for query, _, _ in pending]
+        groups = distribute(costs, num_workers, args.distribution)
+        worker_jobs = [[pending[index] for index in group] for group in groups]
         launch(_worker, args, worker_jobs, stage="K-Fold inference")
 
     # Rank all requested seeds and save one representative result per query.

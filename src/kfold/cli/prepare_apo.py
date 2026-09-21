@@ -27,7 +27,7 @@ from time import perf_counter
 import gemmi
 import torch
 
-from kfold.cli.multigpu import launch
+from kfold.cli.multigpu import distribute, launch
 from kfold.data.utils.io.structure import read_gemmi_structure
 from kfold.inference.apo_runner import (
     ApoConfig,
@@ -122,7 +122,7 @@ def _pending_inputs(
 
 
 def _distribute_inputs(
-    inputs: dict[int | None, list[ApoInput]], num_gpus: int
+    inputs: dict[int | None, list[ApoInput]], num_gpus: int, method: str
 ) -> list[dict[int | None, list[ApoInput]]]:
     """Distribute entries by length, keeping identical sequences on the same worker."""
     entries = {item.sequence: item for items in inputs.values() for item in items}
@@ -137,12 +137,19 @@ def _distribute_inputs(
     )
     entry_order = {item.sequence: index for index, item in enumerate(ordered_entries)}
     num_workers = min(num_gpus, len(entries))
+    costs = [0] * len(ordered_entries)
+    for items in inputs.values():
+        for sequence in {item.sequence for item in items}:
+            index = entry_order[sequence]
+            costs[index] += len(ordered_entries[index].entry) ** 2
+    groups = distribute(costs, num_workers, method)
+    entry_ranks = {index: rank for rank, group in enumerate(groups) for index in group}
     worker_inputs: list[dict[int | None, list[ApoInput]]] = [
         {} for _ in range(num_workers)
     ]
     for seed, items in inputs.items():
         for item in sorted(items, key=lambda item: entry_order[item.sequence]):
-            rank = entry_order[item.sequence] % num_workers
+            rank = entry_ranks[entry_order[item.sequence]]
             worker_inputs[rank].setdefault(seed, []).append(item)
     return worker_inputs
 
@@ -220,7 +227,7 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int | None, Path]]) ->
 
     # Generate the remaining apo entries in GPU workers.
     if inputs:
-        worker_inputs = _distribute_inputs(inputs, len(args.gpu_ids))
+        worker_inputs = _distribute_inputs(inputs, len(args.gpu_ids), args.distribution)
         launch(
             partial(_worker, config=config),
             args,
@@ -313,8 +320,7 @@ def _worker(
                             (save_dir / "apo" / f"{item.output_prefix}.done").touch()
                         completed += 1
                         logger.info(
-                            "%s completed: %s (seeds=%s), length=%d, %.2f s "
-                            "[%d/%d].",
+                            "%s completed: %s (seeds=%s), length=%d, %.2f s [%d/%d].",
                             model_name,
                             result.name,
                             apo_seeds,
