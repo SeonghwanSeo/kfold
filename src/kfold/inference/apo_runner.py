@@ -29,7 +29,6 @@ from atlasfold.runner import SamplingConfig
 from atlasfold.runner_multimer import MultimerFoldingRunner as MultimerRunner
 from atlaslm import AtlasLM
 from atlaslm.pretrained import load_model as load_atlaslm
-from huggingface_hub.utils import disable_progress_bars
 from numpy.typing import NDArray
 
 from kfold.data.utils.io.structure import _read_protein_chain, read_gemmi_structure
@@ -287,8 +286,7 @@ class ApoRunner:
         # Share one AtlasLM; folding models are loaded on their first use.
         if lm is None:
             self._log("Loading AtlasLM.")
-            with disable_progress_bars():
-                lm = load_atlaslm(device=self.device, cache_dir=self.cache_dir)
+            lm = load_atlaslm(device=self.device, cache_dir=self.cache_dir)
         self.lm = lm
         self._runners: dict[str, MonomerRunner | MultimerRunner] = {}
 
@@ -317,16 +315,13 @@ class ApoRunner:
         model_name = "atlasfold-m" if multimer else "atlasfold"
         if model_name not in self._runners:
             self._log("Loading %s.", "AtlasFold-Multimer" if multimer else "AtlasFold")
-            with disable_progress_bars():
-                model = load_atlasfold(
-                    model_name,
-                    self.device,
-                    kernel=self.kernel_backend
-                    if self.kernel_backend is not None
-                    else "auto",
-                    cache_dir=self.cache_dir,
-                    lm=self.lm,
-                )
+            model = load_atlasfold(
+                model_name,
+                self.device,
+                kernel=self.kernel_backend if self.kernel_backend is not None else "auto",
+                cache_dir=self.cache_dir,
+                lm=self.lm,
+            )
             runner_class = MultimerRunner if multimer else MonomerRunner
             self._runners[model_name] = runner_class(model)
         return self._runners[model_name]

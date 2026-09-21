@@ -27,7 +27,6 @@ from time import perf_counter
 import numpy as np
 import torch
 from huggingface_hub import snapshot_download
-from huggingface_hub.utils import disable_progress_bars
 
 from kfold import __version__
 from kfold.data.types.ccd import CCD
@@ -253,8 +252,7 @@ class KFoldRunner:
             The loaded chemical component dictionary.
         """
         self._log("Loading CCD from release assets.")
-        with disable_progress_bars():
-            assets_dir = Path(snapshot_download(ASSETS_REPO_ID, cache_dir=self.cache_dir))
+        assets_dir = Path(snapshot_download(ASSETS_REPO_ID, cache_dir=self.cache_dir))
         return CCD.load(assets_dir / "assets/ccd.pkl")
 
     @cached_property

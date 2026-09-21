@@ -24,7 +24,6 @@ from pathlib import Path
 from time import perf_counter
 
 import torch
-from huggingface_hub.utils import disable_progress_bars
 
 from kfold import __version__
 from kfold.cli.multigpu import distribute, launch
@@ -206,16 +205,15 @@ def _worker(
         # Load one model and runner for all jobs assigned to this GPU.
         logger.info("Loading K-Fold model and runner.")
         init_start = perf_counter()
-        with disable_progress_bars():
-            model = KFold.from_pretrained(
-                device=torch.device("cuda", gpu_id),
-                cache_dir=args.cache_dir,
-                use_struct_encoder=not args.disable_struct_encoder,
-                use_rna_encoder=not args.disable_rna_encoder,
-                cpu_offload=args.cpu_offload,
-                kernel_backend=args.kernel_backend,
-            )
-            runner = KFoldRunner(model, cache_dir=args.cache_dir, verbose=False)
+        model = KFold.from_pretrained(
+            device=torch.device("cuda", gpu_id),
+            cache_dir=args.cache_dir,
+            use_struct_encoder=not args.disable_struct_encoder,
+            use_rna_encoder=not args.disable_rna_encoder,
+            cpu_offload=args.cpu_offload,
+            kernel_backend=args.kernel_backend,
+        )
+        runner = KFoldRunner(model, cache_dir=args.cache_dir, verbose=False)
         logger.info(
             "Model and runner initialized in %.1f s.", perf_counter() - init_start
         )
