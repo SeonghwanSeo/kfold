@@ -59,6 +59,7 @@ class ProteinNetEncoder(nn.Module):
         fa_token_id: torch.Tensor,
         seq_id: torch.Tensor | None = None,
         pos_id: torch.Tensor | None = None,
+        chain_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Encode sequence, backbone, and full-atom tokens.
 
@@ -67,10 +68,13 @@ class ProteinNetEncoder(nn.Module):
         seq_token_id, bb_token_id, fa_token_id : torch.Tensor
             Token IDs of shape (B, L) for the three input modalities.
         seq_id : torch.Tensor | None
-            Chain IDs of shape (B, L) for attention masking. If omitted,
-            all positions belong to the same chain.
+            Independent object IDs of shape (B, L) for attention masking.
+            Chains in the same assembled object share an ID.
         pos_id : torch.Tensor | None
             Position IDs of shape (B, L). If omitted, use arange(L).
+        chain_ids : torch.Tensor | None
+            Chain embedding indices in [0, 100), of shape (B, L).
+            Defaults to zero for the original single-chain inference path.
 
         Returns
         -------
@@ -81,8 +85,16 @@ class ProteinNetEncoder(nn.Module):
         x_bb = self.bb_embedding(bb_token_id)
         x_fa = self.fa_embedding(fa_token_id)
         x = self.fuse_layer(torch.cat([x_seq, x_bb, x_fa], dim=-1)).to(x_seq.dtype)
-        chain_ids = torch.zeros((1, 1), dtype=torch.long, device=seq_token_id.device)
-        chain_emb = self.chain_embedding(chain_ids)  # [1, 1, D]
+        if chain_ids is None:
+            chain_ids = torch.zeros((1, 1), dtype=torch.long, device=seq_token_id.device)
+        else:
+            if chain_ids.shape != seq_token_id.shape:
+                raise ValueError("chain_ids must match the input token shape")
+            if chain_ids.dtype not in (torch.int32, torch.int64):
+                raise ValueError("chain_ids must have an integer dtype")
+            if bool(((chain_ids < 0) | (chain_ids >= 100)).any()):
+                raise ValueError("chain_ids values must be in [0, 100)")
+        chain_emb = self.chain_embedding(chain_ids)
         x = x + chain_emb  # [B, L, D]
 
         if seq_id is None:

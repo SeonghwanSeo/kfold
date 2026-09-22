@@ -287,6 +287,7 @@ class KFold(torch.nn.Module):
         return_traj: bool = False,
         structure_seq_id: torch.Tensor | None = None,
         structure_pos_id: torch.Tensor | None = None,
+        structure_chain_id: torch.Tensor | None = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Run KFold structure prediction from a fully prepared input.
 
@@ -320,6 +321,8 @@ class KFold(torch.nn.Module):
                 structure_seq_id = structure_seq_id.unsqueeze(0)
             if structure_pos_id is not None:
                 structure_pos_id = structure_pos_id.unsqueeze(0)
+            if structure_chain_id is not None:
+                structure_chain_id = structure_chain_id.unsqueeze(0)
             return_batched_output = False
 
         if (
@@ -358,6 +361,7 @@ class KFold(torch.nn.Module):
             return_traj=return_traj,
             structure_seq_id=structure_seq_id,
             structure_pos_id=structure_pos_id,
+            structure_chain_id=structure_chain_id,
         )
 
         # remove batch dimension
@@ -381,6 +385,7 @@ class KFold(torch.nn.Module):
         return_traj: bool = False,
         structure_seq_id: torch.Tensor | None = None,
         structure_pos_id: torch.Tensor | None = None,
+        structure_chain_id: torch.Tensor | None = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         """Forward pass of KFold model for model training.
 
@@ -424,6 +429,7 @@ class KFold(torch.nn.Module):
             num_recycles,
             structure_seq_id=structure_seq_id,
             structure_pos_id=structure_pos_id,
+            structure_chain_id=structure_chain_id,
         )
         z = z.float()
 
@@ -467,6 +473,7 @@ class KFold(torch.nn.Module):
         f_input: FoldingInput,
         structure_seq_id: torch.Tensor | None = None,
         structure_pos_id: torch.Tensor | None = None,
+        structure_chain_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Merge the enabled pretrained encoders into the shared LM single."""
         s_lm = self.prot_seq_to_s_lm(self.prot_seq_encoder(f_input))
@@ -486,6 +493,7 @@ class KFold(torch.nn.Module):
                         f_input,
                         structure_seq_id=structure_seq_id,
                         structure_pos_id=structure_pos_id,
+                        structure_chain_id=structure_chain_id,
                     )
                 )
 
@@ -511,6 +519,7 @@ class KFold(torch.nn.Module):
         num_recycles: int,
         structure_seq_id: torch.Tensor | None = None,
         structure_pos_id: torch.Tensor | None = None,
+        structure_chain_id: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -554,6 +563,7 @@ class KFold(torch.nn.Module):
             f_input,
             structure_seq_id=structure_seq_id,
             structure_pos_id=structure_pos_id,
+            structure_chain_id=structure_chain_id,
         )
         z_lm = self.lm_to_pair(s_lm)
 

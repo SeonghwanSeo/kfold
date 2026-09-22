@@ -28,6 +28,7 @@ TRUNK_CONDITIONING_MODES = {
 CONDITIONING_MODES = {"prior_only", *TRUNK_CONDITIONING_MODES}
 TRUNK_CONDITIONING_SCHEMA = 3
 TRUNK_APO_POLICY = "per_final_seed_top1_per_generation_seed"
+MULTICHAIN_STRUCTURE_POLICY = "triprorep_chainwise_tokens_chain_ids_reset_positions_v1"
 
 
 def apo_generation_seeds(seeds, counts):
@@ -205,9 +206,12 @@ class ModelBackend:
         ):
             structure_seq_id = None
             structure_pos_id = None
+            structure_chain_id = None
             if self.model.prot_struct_encoder is not None:
-                structure_seq_id, structure_pos_id = apply_apo_structure_tokens(
-                    features, records, self.model.prot_struct_encoder
+                structure_seq_id, structure_pos_id, structure_chain_id = (
+                    apply_apo_structure_tokens(
+                        features, records, self.model.prot_struct_encoder
+                    )
                 )
             if getattr(self.args, "conditioning", "prior_only") in (
                 TRUNK_CONDITIONING_MODES
@@ -230,6 +234,13 @@ class ModelBackend:
                     pos_id=features.sequence.pos_id.cpu().numpy(),
                     structure_seq_id=effective_structure_seq_id.cpu().numpy(),
                     structure_pos_id=effective_structure_pos_id.cpu().numpy(),
+                    structure_chain_id=(
+                        torch.zeros_like(features.sequence.asym_id)
+                        if structure_chain_id is None
+                        else structure_chain_id
+                    )
+                    .cpu()
+                    .numpy(),
                 )
             started = time.perf_counter()
             output = self.model.inference(
@@ -239,6 +250,7 @@ class ModelBackend:
                 num_samples=self.args.num_samples,
                 structure_seq_id=structure_seq_id,
                 structure_pos_id=structure_pos_id,
+                structure_chain_id=structure_chain_id,
             )
         if device.type == "cuda":
             torch.cuda.synchronize(device)
@@ -352,6 +364,8 @@ def run_query(
             "generation_seeds": {str(s): v for s, v in generation_seeds.items()},
             "stages": stages,
         }
+        if conditioning == "prior_and_trunk_multichain":
+            policy["structure_representation_policy"] = MULTICHAIN_STRUCTURE_POLICY
         policy_path = out / "apo_policy.json"
         if policy_path.exists():
             if json.loads(policy_path.read_text()) != policy:
@@ -438,6 +452,10 @@ def run_query(
                 if trunk_mode
                 else {}
             )
+            if conditioning == "prior_and_trunk_multichain":
+                job_policy["structure_representation_policy"] = (
+                    MULTICHAIN_STRUCTURE_POLICY
+                )
             if target.exists():
                 previous = json.loads((target / "input.json").read_text())
                 if previous.get("conditioning", "prior_only") != conditioning:

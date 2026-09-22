@@ -267,6 +267,7 @@ class StructureEncoder(torch.nn.Module):
         f_input: FoldingInput,
         structure_seq_id: torch.Tensor | None = None,
         structure_pos_id: torch.Tensor | None = None,
+        structure_chain_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass of sequence representation module.
 
@@ -292,6 +293,7 @@ class StructureEncoder(torch.nn.Module):
                 f_input,
                 structure_seq_id=structure_seq_id,
                 structure_pos_id=structure_pos_id,
+                structure_chain_id=structure_chain_id,
             )
 
     def _forward(
@@ -299,6 +301,7 @@ class StructureEncoder(torch.nn.Module):
         f_input: FoldingInput,
         structure_seq_id: torch.Tensor | None = None,
         structure_pos_id: torch.Tensor | None = None,
+        structure_chain_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Forward pass of sequence representation module.
 
@@ -347,6 +350,15 @@ class StructureEncoder(torch.nn.Module):
                 raise ValueError("structure_pos_id values must be in [0, 20000)")
             pos_id = pos_id.masked_fill(~f_input.sequence.pad_mask, 0)
 
+        chain_id = structure_chain_id
+        if chain_id is not None:
+            if chain_id.shape != f_input.sequence.asym_id.shape:
+                raise ValueError("structure_chain_id must match sequence.asym_id shape")
+            if chain_id.dtype not in (torch.int32, torch.int64):
+                raise ValueError("structure_chain_id must have an integer dtype")
+            if bool(((chain_id < 0) | (chain_id >= 100)).any()):
+                raise ValueError("structure_chain_id values must be in [0, 100)")
+
         def expand_over_apo(x: torch.Tensor) -> torch.Tensor:
             return (
                 x[:, None, :]
@@ -357,6 +369,8 @@ class StructureEncoder(torch.nn.Module):
         seq_token_ids = expand_over_apo(seq_token_ids)
         seq_id = expand_over_apo(seq_id)
         pos_id = expand_over_apo(pos_id)
+        if chain_id is not None:
+            chain_id = expand_over_apo(chain_id)
         bb_token_ids = bb_token_ids.transpose(1, 2).reshape(batch_size * num_apo, seq_len)
         fa_token_ids = fa_token_ids.transpose(1, 2).reshape(batch_size * num_apo, seq_len)
 
@@ -370,6 +384,7 @@ class StructureEncoder(torch.nn.Module):
             fa_token_ids + self.offset,
             seq_id=seq_id,
             pos_id=pos_id,
+            chain_ids=chain_id,
         )
         x = x * allow_mask[..., None]  # mask out invalid tokens
         x = x.reshape(batch_size, num_apo, seq_len, -1)

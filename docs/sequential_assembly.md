@@ -210,32 +210,45 @@ the existing per-molecule structural inputs before the next full trunk call:
 changes only the protein structure-representation path for a selected object
 containing two or more proteins:
 
-- Its protein chains are converted to atom37 in one shared coordinate frame and
-  passed to the backbone/full-atom structure tokenizers in one call. A residue
-  index gap marks each chain boundary; the backbone tokenizer's spatial KNN can
-  therefore observe cross-chain neighbors without creating a peptide bond.
-- Those protein chains receive one structure-encoder-only sequence group ID, so
-  the pretrained structure encoder can attend across their chain boundary.
-  Its rotary position IDs use the same gap-separated residue indices as the
-  joint tokenizers, avoiding position collisions between chains.
-  Physical `asym_id` values remain unchanged, and the protein sequence encoder
-  remains chainwise.
-- Ligands never enter the protein structure encoder. Unassembled proteins and
-  separate selected objects keep distinct structure-encoder groups.
-- Apo geometry, `apo_uid`, ligand reference conformers and the ECSI prior are
-  identical to `prior_and_trunk`; both modes now share protein apo UIDs
-  within each assembled object and consume multiple intermediate samples. It is an experimental inference path and does not imply that the
-  frozen structure encoder was trained on this grouping policy.
+- Backbone/full-atom tokenization runs separately for each protein chain, as in
+  TriProRep's public per-chain tokenization API. No artificial residue gap or
+  cross-chain tokenizer KNN is introduced.
+- The resulting tokens are jointly encoded using the native complex convention:
+  chain embedding IDs 0, 1, ... (input-structure chain order within the selected
+  object), and encoder position IDs restarting at zero for each chain.
+- A separate attention-group ID joins the selected proteins, allowing cross-chain
+  attention without letting separate objects or unassembled antigens attend to
+  that group. Physical `asym_id` values remain unchanged; the protein sequence
+  encoder remains chainwise. Chain embedding IDs and attention-group IDs serve
+  different purposes and must not be interchanged.
+- Ligands never enter the protein structure encoder. Unassembled proteins keep
+  their native structure inputs and chain embedding index zero.
+- Apo geometry, `apo_uid`, ligand reference conformers and the ECSI prior follow
+  the same policy as `prior_and_trunk`. Both modes share protein apo UIDs within
+  each assembled object and consume multiple intermediate samples. No new
+  parameters are added; the existing pretrained chain embedding rows are used.
+
+This follows the complex input convention in TriProRep commit
+`0f648949956449447ff410c8375775b28d604048`:
+[complex dataset](https://github.com/hsjang0/TriProRep/blob/0f648949956449447ff410c8375775b28d604048/code/triprorep/dataloader/dataset.py#L287)
+and [encoder](https://github.com/hsjang0/TriProRep/blob/0f648949956449447ff410c8375775b28d604048/code/triprorep/models/backbones/net.py#L275).
+Use the multi-chain-trained encoder checkpoint for this mode.
+This input compatibility does not establish a prediction-accuracy improvement.
 
 The runner records `trunk_conditioning.npz` (apo geometry, reference positions,
 and IDs) and `structure_token_ids.npz` alongside each seed's existing artifacts.
 The latter includes physical/effective sequence and position IDs (`asym_id`,
-`pos_id`, `structure_seq_id`, and `structure_pos_id`), making joint attention
-grouping and chain-boundary positions auditable.
+`pos_id`, `structure_seq_id`, `structure_pos_id`, and `structure_chain_id`),
+making attention groups, per-chain positions, and learned chain IDs auditable.
 Conditioning mode is part of the resume manifest; modes cannot share outputs.
 As of 2026-09-22 both trunk modes use `conditioning_schema: 3`, distinguishing
 per-final-seed, per-generation-seed top-1 apo selection from schema 2's shared
 global top-N ensemble and earlier independent-UID, repeated-top-1 runs.
+The native multichain path additionally records
+`structure_representation_policy: triprorep_chainwise_tokens_chain_ids_reset_positions_v1`
+in settings, apo policy, and per-job input manifests. This rejects earlier
+512-gap multichain results even though their apo conditioning schema was also 3.
+The `prior_and_trunk` and `prior_only` result policies are unchanged.
 Old trunk output directories cannot be resumed silently;
 use a new output directory to preserve previous experiments. `prior_only`
 continues to leave the original apo inputs and UID grouping unchanged.
@@ -265,7 +278,7 @@ OPENBLAS_NUM_THREADS=1 PYTHONPATH=src "$KFOLD_PYTHON" -m pytest \
 
 The tests exercise real SMILES and protein–ligand–protein feature pipelines,
 atom remapping, rigid-object distance preservation, unchanged apo conditioning,
-joint multi-protein tokenization and attention grouping, ECSI endpoint
+chainwise tokenization with explicit multi-protein chain embeddings and attention grouping, ECSI endpoint
 consumption, subset validation, complete-candidate selection and
 restart/corruption behavior. The orchestration test uses a fake model backend;
 it verifies stage composition and call counts but is not evidence of learned
@@ -314,8 +327,9 @@ kfold --input examples/8jeo_sequential.yaml \
 
 `prior_only` updates ECSI initialization only. `prior_and_trunk` also replaces
 protein apo coordinates and recomputes structure tokens chainwise.
-`prior_and_trunk_multichain` jointly tokenizes and encodes the selected B/C
-protein complex while retaining their physical chain IDs. Both trunk modes assign the assembled B/C proteins a shared
+`prior_and_trunk_multichain` tokenizes B/C separately and jointly encodes their
+tokens with distinct chain embeddings and zero-based per-chain positions, while
+retaining their physical chain IDs. Both trunk modes assign the assembled B/C proteins a shared
 apo UID and use a separate per-generation-seed top-1 apo ensemble for each final
 seed. Final denoising can change the B/C arrangement.
 

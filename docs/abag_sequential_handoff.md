@@ -55,7 +55,7 @@ assembly:
 |---|---|---|---|
 | `prior_only` | Global intermediate top-1 | Original monomers and grouping | Original inputs |
 | `prior_and_trunk` | Global intermediate top-1 | Per-final-seed ensemble, shared H/L apo UID | Re-encoded chainwise |
-| `prior_and_trunk_multichain` | Global intermediate top-1 | Same ensemble policy and shared UID | Joint H/L tokenization and structure attention |
+| `prior_and_trunk_multichain` | Global intermediate top-1 | Same ensemble policy and shared UID | Chainwise tokens, distinct chain embeddings, joint structure attention |
 
 Both trunk modes use `conditioning_schema=3` and
 `per_final_seed_top1_per_generation_seed`. Each final seed S gets five
@@ -68,6 +68,18 @@ This aligns the trunk apo selection/grouping policy with AtlasFold-M; it does
 not make all conditioning or sampling identical to the AtlasFold-M baseline.
 Intermediate predictions run separately for each conditioning mode. The
 trunk is recomputed at each stage, and denoising may change H/L geometry.
+
+The multichain mode now follows TriProRep's native complex input convention:
+per-chain tokenization, chain embedding IDs 0/1 in input-chain order, positions
+restarting at 0 per chain, and joint attention within the selected object. It
+uses the existing multi-chain-trained weights. Attention groups remain separate
+from chain embedding IDs. The old 512-gap tokenization is no longer used.
+
+`structure_representation_policy` is recorded as
+`triprorep_chainwise_tokens_chain_ids_reset_positions_v1`. Use a new multichain
+output directory; old gap-policy intermediates/final results cannot resume.
+Prepared AtlasFold monomer apos remain reusable. The other two modes retain
+their existing input and resume policies.
 
 ## Run
 
@@ -127,9 +139,13 @@ This handoff does not bundle evaluation data or scripts.
 
 ## Validation
 
-The handoff's inference sources match the running experiment snapshot.
-The policy implementation passed 30 CPU unit tests before that experiment
-started. All 20 delivered queries passed the native parser, and the 17 default
+This revision replaces the earlier experiment's 512-gap representation with
+TriProRep's native chain embedding and per-chain position convention. Existing
+running jobs use their frozen old source snapshots; this change takes effect
+only in new runs.
+The updated policy passed 34 CPU tests, including learned chain-embedding
+use, cross-chain attention within an object, separate-object isolation,
+per-chain positions, one/five-apo axis routing, and old-policy resume rejection. All 20 delivered queries passed the native parser, and the 17 default
 queries passed the ordinary CLI dry-run. The launcher was syntax-checked;
 full GPU execution on a recipient's machine has not been validated.
 

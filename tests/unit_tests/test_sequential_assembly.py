@@ -374,6 +374,16 @@ def test_orchestration_full_trunk_input_top1_and_resume(
         with pytest.raises(ValueError, match="Missing per-seed apo policy"):
             run_query(query(), Pipeline(), [1, 2], samples, legacy, Backend())
         assert len(calls) == before
+    if conditioning == "prior_and_trunk_multichain":
+        # Reject old gap-tokenization results even when the apo policy matches.
+        policy_path = tmp_path / "apo_policy.json"
+        saved = policy_path.read_text()
+        legacy_policy = json.loads(saved)
+        legacy_policy.pop("structure_representation_policy")
+        policy_path.write_text(json.dumps(legacy_policy))
+        with pytest.raises(ValueError, match="apo policy changed"):
+            run_query(query(), Pipeline(), [1, 2], samples, tmp_path, Backend())
+        policy_path.write_text(saved)
     first_seed = intermediate_seeds[0]
     first_root = tmp_path / "pl"
     if conditioning != "prior_only":
@@ -731,7 +741,7 @@ def test_real_protein_ligand_protein_preserves_structure_conditioning(tmp_path):
         )
 
 
-def test_multichain_structure_repr_jointly_tokenizes_and_groups_attention(tmp_path):
+def test_multichain_structure_repr_chainwise_tokens_and_explicit_chain_ids(tmp_path):
     import warnings
 
     import torch
@@ -797,22 +807,23 @@ def test_multichain_structure_repr_jointly_tokenizes_and_groups_attention(tmp_pa
         joint.atom.prior_coords, chainwise.atom.prior_coords, equal_nan=True
     )
     assert len(chainwise_records) == 2
-    assert len(joint_records) == 1
+    assert len(joint_records) == 2
     assert len(joint_records[0]) == 3
     record = joint_records[0][0]
-    assert record["seq"] == "GG"
-    assert record["segments"] == [(1, 0, 1, 0, 1), (2, 0, 1, 1, 2)]
+    assert record["seq"] == "G"
+    assert record["targets"] == [(1, 0, 1)]
+    assert joint_records[1][0]["targets"] == [(2, 0, 1)]
     assert record["structure_group"] == [1, 2]
-    assert np.diff(record["residue_index"])[0] > 1
+    assert "residue_index" not in record
+    assert "segments" not in record
     expected = np.stack([ab_coords[ab_keys.index(key)] for key in keys if key[0] == "A"])
     expected_b = np.stack(
         [ab_coords[ab_keys.index(key)] for key in keys if key[0] == "B"]
     )
     mapped_a = full.chains[0].map_atom_coords_to_residue_coords(expected)
     mapped_b = full.chains[1].map_atom_coords_to_residue_coords(expected_b)
-    np.testing.assert_array_equal(
-        record["coords"], np.concatenate([mapped_a, mapped_b], axis=0)
-    )
+    np.testing.assert_array_equal(record["coords"], mapped_a)
+    np.testing.assert_array_equal(joint_records[1][0]["coords"], mapped_b)
 
     class Encoder:
         def __init__(self):
@@ -826,11 +837,11 @@ def test_multichain_structure_repr_jointly_tokenizes_and_groups_attention(tmp_pa
             return {"bb_token_id": values, "fa_token_id": values + 100}
 
     encoder = Encoder()
-    structure_seq_id, structure_pos_id = apply_apo_structure_tokens(
+    structure_seq_id, structure_pos_id, structure_chain_id = apply_apo_structure_tokens(
         joint, joint_records, encoder
     )
-    assert len(encoder.calls) == 3
-    assert all(call[0] == "GG" for call in encoder.calls)
+    assert len(encoder.calls) == 6
+    assert all(call[0] == "G" and call[2] is None for call in encoder.calls)
     assert structure_seq_id is not None
     assert structure_pos_id is not None
     # Physical identities stay unchanged; only the structure encoder override joins A/B.
@@ -838,17 +849,19 @@ def test_multichain_structure_repr_jointly_tokenizes_and_groups_attention(tmp_pa
     assert (structure_seq_id[joint.sequence.asym_id == 1] == 1).all()
     assert (structure_seq_id[joint.sequence.asym_id == 2] == 1).all()
     assert (structure_seq_id[joint.sequence.asym_id == 3] == 3).all()
-    # Physical positions restart per chain, while structure-only positions retain
-    # the same chain gap used by the joint structure tokenizers.
+    # TriProRep complex inputs use zero-based positions restarting per chain.
+    assert structure_chain_id is not None
+    assert (structure_chain_id[joint.sequence.asym_id == 1] == 0).all()
+    assert (structure_chain_id[joint.sequence.asym_id == 2] == 1).all()
+    assert (structure_chain_id[joint.sequence.asym_id == 3] == 0).all()
     assert joint.sequence.pos_id[1] == joint.sequence.pos_id[4] == 1
-    assert structure_pos_id[1] == 1
-    assert structure_pos_id[4] > structure_pos_id[1] + 1
+    assert structure_pos_id[1] == structure_pos_id[4] == 0
     assert torch.equal(
         structure_pos_id[joint.sequence.asym_id == 3],
         joint.sequence.pos_id[joint.sequence.asym_id == 3],
     )
     assert (joint.sequence.bb_struct_token_id[1] == 20).all()
-    assert (joint.sequence.bb_struct_token_id[4] == 21).all()
+    assert (joint.sequence.bb_struct_token_id[4] == 20).all()
 
     class ChainEncoder:
         def tokenize(self, seq, xyz):
@@ -927,6 +940,7 @@ def test_training_model_accepts_structure_encoder_overrides():
         parameters = inspect.signature(method).parameters
         assert "structure_seq_id" in parameters
         assert "structure_pos_id" in parameters
+        assert "structure_chain_id" in parameters
 
 
 def test_multichain_resume_settings_have_a_schema_version():
@@ -946,7 +960,13 @@ def test_multichain_resume_settings_have_a_schema_version():
     )
     assert _settings(args)["conditioning_schema"] == 3
     assert _settings(args)["apo_policy"] == "per_final_seed_top1_per_generation_seed"
+    from kfold.inference.sequential import MULTICHAIN_STRUCTURE_POLICY
+
+    assert (
+        _settings(args)["structure_representation_policy"] == MULTICHAIN_STRUCTURE_POLICY
+    )
     args.conditioning = "prior_and_trunk"
+    assert "structure_representation_policy" not in _settings(args)
     assert _settings(args)["conditioning_schema"] == 3
     args.conditioning = "prior_only"
     assert "conditioning_schema" not in _settings(args)

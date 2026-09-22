@@ -17,6 +17,7 @@ from kfold.cli.multigpu import launch
 from kfold.cli.prepare_apo import is_apo_prepared
 from kfold.inference.query import Query
 from kfold.inference.sequential import (
+    MULTICHAIN_STRUCTURE_POLICY,
     TRUNK_APO_POLICY,
     TRUNK_CONDITIONING_MODES,
     TRUNK_CONDITIONING_SCHEMA,
@@ -82,6 +83,8 @@ def _settings(args: argparse.Namespace) -> dict:
         settings["conditioning_schema"] = TRUNK_CONDITIONING_SCHEMA
         settings["apo_policy"] = TRUNK_APO_POLICY
         settings["num_apos"] = getattr(args, "num_apos", None)
+    if args.conditioning == "prior_and_trunk_multichain":
+        settings["structure_representation_policy"] = MULTICHAIN_STRUCTURE_POLICY
     return settings
 
 

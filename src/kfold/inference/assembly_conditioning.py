@@ -11,8 +11,6 @@ import numpy as np
 
 from .assembly import atom_keys
 
-_CHAIN_RESIDUE_INDEX_GAP = 512
-
 
 def apply_trunk_groups(
     struct,
@@ -83,7 +81,10 @@ def apply_trunk_groups(
         )
         return chain, coords
 
+    structure_groups = {}
     if multichain_structure:
+        # TriProRep concatenates per-chain tokens, with explicit chain embeddings
+        # and positions restarting at zero. Tokenizers still see one chain each.
         structure_order = [chain.name for chain in struct.metadata.chains]
         for group in groups:
             protein_names = [
@@ -91,55 +92,27 @@ def apply_trunk_groups(
                 for name in structure_order
                 if name in group.chains and chains[metadata[name]].is_protein
             ]
-            if not protein_names:
-                continue
+            ids = [metadata[name] for name in protein_names]
+            if len(ids) > 100:
+                raise ValueError("TriProRep supports at most 100 chains per object")
+            if len(ids) >= 2:
+                structure_groups.update({name: ids for name in protein_names})
+    for name in sorted(used):
+        chain = chains[metadata[name]]
+        if chain.is_protein:
             ensemble_records = []
             for slot in range(num_apo):
-                components = [protein_component(name, slot) for name in protein_names]
-                sequences = [
-                    chain.get_sequence(map_to_standard=True) for chain, _ in components
-                ]
-                coordinates = [coords for _, coords in components]
-                source_start = 0
-                residue_offset = 0
-                segments = []
-                residue_indices = []
-                for (chain, _coords), sequence in zip(components, sequences, strict=True):
-                    source_end = source_start + len(sequence)
-                    segments.append(
-                        (chain.asym_id, 0, chain.num_residues, source_start, source_end)
-                    )
-                    residue_indices.append(
-                        np.arange(1, len(sequence) + 1, dtype=np.int64) + residue_offset
-                    )
-                    source_start = source_end
-                    residue_offset += len(sequence) + _CHAIN_RESIDUE_INDEX_GAP
+                _, coords = protein_component(name, slot)
                 record = {
-                    "seq": "".join(sequences),
-                    "coords": np.concatenate(coordinates, axis=0),
-                    "targets": [segment[:3] for segment in segments],
-                    "segments": segments,
-                    "residue_index": np.concatenate(residue_indices),
-                    "structure_group": [chain.asym_id for chain, _ in components],
+                    "seq": chain.get_sequence(map_to_standard=True),
+                    "coords": coords,
+                    "targets": [(chain.asym_id, 0, chain.num_residues)],
                     "mask_missing_structure": True,
                 }
+                if name in structure_groups:
+                    record["structure_group"] = structure_groups[name]
                 ensemble_records.append(record)
             updated.append(ensemble_records)
-    else:
-        for name in sorted(used):
-            chain = chains[metadata[name]]
-            if chain.is_protein:
-                ensemble_records = []
-                for slot in range(num_apo):
-                    _, coords = protein_component(name, slot)
-                    record = {
-                        "seq": chain.get_sequence(map_to_standard=True),
-                        "coords": coords,
-                        "targets": [(chain.asym_id, 0, chain.num_residues)],
-                        "mask_missing_structure": True,
-                    }
-                    ensemble_records.append(record)
-                updated.append(ensemble_records)
     slots = np.argwhere(tokenized.atom.pad_mask)
     if len(slots) != len(keys):
         raise ValueError("Token/atom identity count differs")

@@ -103,6 +103,7 @@ class KFoldForTrain(KFold):
         f_input: FoldingInput,
         structure_seq_id: torch.Tensor | None = None,
         structure_pos_id: torch.Tensor | None = None,
+        structure_chain_id: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Merge the enabled pretrained encoders into the shared LM single."""
         prot_seq_encoder = self._get_model_module(self.prot_seq_encoder)
@@ -121,6 +122,7 @@ class KFoldForTrain(KFold):
                     f_input,
                     structure_seq_id=structure_seq_id,
                     structure_pos_id=structure_pos_id,
+                    structure_chain_id=structure_chain_id,
                 )
             )
 
@@ -133,6 +135,7 @@ class KFoldForTrain(KFold):
         grad_recurrence_steps: int = 0,
         structure_seq_id: torch.Tensor | None = None,
         structure_pos_id: torch.Tensor | None = None,
+        structure_chain_id: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Perform the forward pass.
 
@@ -149,7 +152,9 @@ class KFoldForTrain(KFold):
             Structure-encoder-only sequence groups used for multi-chain
             representation. Physical chain IDs remain unchanged.
         structure_pos_id : torch.Tensor | None, optional
-            Gap-separated positions for the same structure-encoder groups.
+            Per-chain positions for the same structure-encoder groups.
+        structure_chain_id : torch.Tensor | None, optional
+            Zero-based chain embedding indices within each assembled object.
 
         Returns
         -------
@@ -194,6 +199,7 @@ class KFoldForTrain(KFold):
             f_input,
             structure_seq_id=structure_seq_id,
             structure_pos_id=structure_pos_id,
+            structure_chain_id=structure_chain_id,
         )
         z_lm = self.lm_to_pair(s_lm)
 
