@@ -144,6 +144,7 @@ class PriorObject:
     keys: list
     coordinates: np.ndarray
     observed_mask: np.ndarray | None = None
+    apo_coordinates: np.ndarray | None = None
 
     def __post_init__(self):
         self.keys = [tuple(k) for k in self.keys]
@@ -168,6 +169,19 @@ class PriorObject:
         self.coordinates = self.coordinates.copy()
         self.coordinates[~self.observed_mask] = np.nan
 
+        if self.apo_coordinates is not None:
+            self.apo_coordinates = np.asarray(
+                self.apo_coordinates, dtype=np.float32
+            ).copy()
+            if (
+                self.apo_coordinates.ndim != 3
+                or self.apo_coordinates.shape[1:] != self.coordinates.shape
+                or len(self.apo_coordinates) == 0
+                or not np.isfinite(self.apo_coordinates[:, self.observed_mask]).all()
+            ):
+                raise ValueError("Invalid intermediate apo ensemble")
+            self.apo_coordinates[:, ~self.observed_mask] = np.nan
+
     @property
     def chains(self):
         return {k[0] for k in self.keys}
@@ -178,6 +192,11 @@ class PriorObject:
             keys=json.dumps(self.keys),
             coordinates=self.coordinates,
             observed_mask=self.observed_mask,
+            **(
+                {"apo_coordinates": self.apo_coordinates}
+                if self.apo_coordinates is not None
+                else {}
+            ),
         )
 
     @classmethod
@@ -187,6 +206,7 @@ class PriorObject:
                 json.loads(str(data["keys"])),
                 data["coordinates"].copy(),
                 data["observed_mask"].copy() if "observed_mask" in data else None,
+                data["apo_coordinates"].copy() if "apo_coordinates" in data else None,
             )
 
 
@@ -268,3 +288,65 @@ def select_top1(candidates):
     if not candidates or any(not np.isfinite(c["ranking_score"]) for c in candidates):
         raise ValueError("Missing or nonfinite candidate ranking score")
     return min(candidates, key=lambda c: (-c["ranking_score"], c["seed"], c["sample"]))
+
+
+def select_apo_ensemble(candidates, count):
+    """Select distinct predicted samples, keeping each complex in its own frame."""
+    select_top1(candidates)  # Validate every score with the same ranking policy.
+    if count < 1 or len(candidates) < count:
+        raise ValueError(
+            f"Intermediate apo ensemble needs {count} predictions; "
+            f"got {len(candidates)}. "
+            "Increase seeds/samples or reduce --num-apos."
+        )
+    if len({(c["seed"], c["sample"]) for c in candidates}) != len(candidates):
+        raise ValueError("Duplicate intermediate candidates")
+    selected = sorted(
+        candidates, key=lambda c: (-c["ranking_score"], c["seed"], c["sample"])
+    )[:count]
+    objects = [PriorObject.load(c["atoms"]) for c in selected]
+    first = objects[0]
+    coordinates = []
+    for obj in objects:
+        if set(obj.keys) != set(first.keys) or not obj.observed_mask.all():
+            raise ValueError(
+                "Intermediate ensemble atom mapping is incomplete or mismatched"
+            )
+        index = {k: i for i, k in enumerate(obj.keys)}
+        coordinates.append(obj.coordinates[[index[k] for k in first.keys]])
+    return PriorObject(
+        first.keys, first.coordinates, apo_coordinates=np.stack(coordinates)
+    ), selected
+
+
+def select_seed_apo_ensemble(candidates, generation_seeds, prior):
+    """Keep one winner per generation seed, in slot order, with a separate prior.
+
+    The apo policy matches AtlasFold-M's per-generation-seed selection. ECSI
+    retains its existing global top-1 policy, independent of apo slot zero.
+    """
+    if not generation_seeds or len(set(generation_seeds)) != len(generation_seeds):
+        raise ValueError("Expected distinct apo generation seeds")
+    if {c["seed"] for c in candidates} != set(generation_seeds):
+        raise ValueError("Apo candidates do not match the generation seeds")
+    if len({(c["seed"], c["sample"]) for c in candidates}) != len(candidates):
+        raise ValueError("Duplicate intermediate candidates")
+    selected = [
+        select_top1([c for c in candidates if c["seed"] == seed])
+        for seed in generation_seeds
+    ]
+    coordinates = []
+    for candidate in selected:
+        obj = PriorObject.load(candidate["atoms"])
+        if set(obj.keys) != set(prior.keys) or not obj.observed_mask.all():
+            raise ValueError(
+                "Intermediate ensemble atom mapping is incomplete or mismatched"
+            )
+        index = {k: i for i, k in enumerate(obj.keys)}
+        coordinates.append(obj.coordinates[[index[k] for k in prior.keys]])
+    return PriorObject(
+        prior.keys,
+        prior.coordinates,
+        prior.observed_mask,
+        apo_coordinates=np.stack(coordinates),
+    ), selected

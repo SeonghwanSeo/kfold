@@ -93,14 +93,51 @@ one GPU because a stage chooses one global confidence top-1 before continuing.
 Every seed must produce its complete sample count before it is published as
 complete. Select the global maximum of native `complex.ranking_score` across
 all seeds/samples, breaking ties by ascending seed then sample. No ground truth
-is available to selection. The next stage receives that same selected object
+is available to selection. The next stage receives that same selected ECSI prior object
 for all of its seeds; each seed creates independently augmented priors.
+For either trunk-conditioning mode, each final seed gets its own intermediate
+apo ensemble, following AtlasFold-M's **one top-1 per generation seed** policy.
+For final seed S and N resolved apo slots, run N intermediate generation seeds,
+each producing `--num-samples` candidates, and retain the highest-confidence
+sample from each generation seed in generation-seed order. With N <= 10,
+generation seeds are `10*S+1, ..., 10*S+N`; larger apo counts use
+`S*max(10, max_resolved_apo_count)+slot` to prevent collisions. Thus final
+seeds 1 and 2 with five apos use generation seeds 11–15 and 21–25 respectively.
+With ten final seeds, five apos and five samples, each predicted intermediate
+stage generates **250 structures**, selects five apos for each final seed, and
+the final stage still generates **50 structures**. Distinct generation seeds
+do not guarantee geometrically distinct predictions.
+
+Intermediate jobs use the original monomer apo/prior sources prepared for
+their parent final seed. Later intermediate stages also consume the assembled
+apo ensembles belonging to that same parent. H and L always occupy the same
+candidate's coordinate frame in each slot and share an apo UID. Antigen apos
+are retained from the parent's prepared input. `--share-apo-seeds` shares the
+original AtlasFold preparation only; generated intermediate ensembles remain
+separate for each final seed.
+
+This changes the **trunk apo selection policy**, not the ECSI selection rule:
+the global top-1 across the expanded intermediate candidate pool is still used
+as the rigid ECSI prior by every parent seed. It can differ from apo slot zero.
+Ligand reference conformers also retain that global top-1. A supplied
+GT/experimental intermediate bypasses generation and is used by every parent;
+a supplied single structure is repeated over apo slots as before.
+
+Each intermediate's `parent-seed-S/apo_selection.json` records the selected
+candidates, and `parent-seed-S/selected_ensemble.npz` stores its apo coordinates
+plus the global top-1 prior. Stage-root `selection.json` still identifies the
+global winner. `apo_policy.json` records the full generation seed schedule,
+sample count and stages; per-job `input.json` records `source_seed`.
 
 Rerunning the same command resumes completed stage/seed artifacts after checksum
 verification. Sequential settings are recorded in `settings.json`; changed
 settings require `--overwrite`. Failed attempts remain in hidden attempt
 directories for diagnosis, and only incomplete seeds are recomputed. Published
 stage selections must match on restart.
+Trunk conditioning schema 3 rejects the old global-top-N output format and
+changed seed/sample/apo schedules. Use a **new output directory** for this policy;
+existing completed apo preparation may be copied using the preparation reuse
+workflow, but previous intermediate/final predictions are not resumed.
 
 ```text
 OUTPUT/
@@ -112,9 +149,10 @@ OUTPUT/
     QUERY_seed-N/query.json, apo/...
     sequential/
       settings.json
+      apo_policy.json
       source_choices_seed-N.npz
       bind_p1_ligand/
-        seed-N/
+        parent-seed-S/seed-G/
           input.json, prior.npz, ecsi_init.npz, timing.json
           trunk_conditioning.npz, structure_token_ids.npz
           QUERY_seed-N_sample-M.cif
@@ -122,6 +160,7 @@ OUTPUT/
           QUERY_seed-N_sample-M_confidences.npz
           QUERY_seed-N_sample-M_atoms.npz
           complete.json
+        parent-seed-S/apo_selection.json, selected_ensemble.npz
         selection.json
       final/
         seed-N/...
@@ -135,6 +174,8 @@ evaluation; the intermediate systems deliberately have fewer molecules.
 Existing CIF and confidence formats are retained. Evaluators with fixed
 directory-depth globs may need their input-root adapter adjusted. No OST
 evaluation or benchmark-specific contact metric computation is embedded here.
+The extra `parent-seed-S` level applies to predicted intermediate stages in
+the two trunk modes. `prior_only` retains its original `STAGE/seed-S` layout.
 
 ## Experiment and validation
 
@@ -151,8 +192,17 @@ the existing per-molecule structural inputs before the next full trunk call:
   chemical bonds, charge, and reference-space IDs are unchanged.
 - No P–L shared apo UID, no ligand apo coordinates, and no new P–L pair pathway.
   The P1′–L′ relative pose is retained only in the ECSI prior object.
-- Unassembled P2 keeps the original apo ensemble. One selected P1′ is broadcast
-  over the existing apo axis; these are not independent predicted apo samples.
+- All protein chains in one assembled object receive the same fresh `apo_uid`,
+  enabling their cross-chain apo pair geometry. Separate objects and unassembled
+  proteins retain separate groups. Physical chain IDs and interface masks stay
+  unchanged. Ligands do not join this protein apo group.
+- Unassembled P2 keeps its original apo ensemble. Assembled proteins receive the
+  parent's per-generation-seed top-1 ensemble in the apo slots and BB/FA records.
+  The ECSI prior and ligand reference conformer still use confidence top-1.
+- Explicitly provided single GT/experimental structures remain a special case:
+  their sole structure is repeated over the apo slots. A provided `PriorObject`
+  can instead include `apo_coordinates` with shape `[N, atoms, 3]` to supply an
+  ensemble; it must have at least as many samples as the resolved apo axis.
 - No weights/architecture changes. The full trunk and structural encoders rerun;
   old trunk states are not reused. Nucleic-acid re-encoding is not supported.
 
@@ -173,8 +223,8 @@ containing two or more proteins:
 - Ligands never enter the protein structure encoder. Unassembled proteins and
   separate selected objects keep distinct structure-encoder groups.
 - Apo geometry, `apo_uid`, ligand reference conformers and the ECSI prior are
-  identical to `prior_and_trunk`; this mode does not create a new shared apo
-  object. It is an experimental inference path and does not imply that the
+  identical to `prior_and_trunk`; both modes now share protein apo UIDs
+  within each assembled object and consume multiple intermediate samples. It is an experimental inference path and does not imply that the
   frozen structure encoder was trained on this grouping policy.
 
 The runner records `trunk_conditioning.npz` (apo geometry, reference positions,
@@ -183,6 +233,12 @@ The latter includes physical/effective sequence and position IDs (`asym_id`,
 `pos_id`, `structure_seq_id`, and `structure_pos_id`), making joint attention
 grouping and chain-boundary positions auditable.
 Conditioning mode is part of the resume manifest; modes cannot share outputs.
+As of 2026-09-22 both trunk modes use `conditioning_schema: 3`, distinguishing
+per-final-seed, per-generation-seed top-1 apo selection from schema 2's shared
+global top-N ensemble and earlier independent-UID, repeated-top-1 runs.
+Old trunk output directories cannot be resumed silently;
+use a new output directory to preserve previous experiments. `prior_only`
+continues to leave the original apo inputs and UID grouping unchanged.
 The 21-system 0720-68K prepared experiment is documented at
 `/home/icl_hwkim/kfold/cofolding_jobs/20260909_mgbench_sequential_trunk_0720_68k/README.md`.
 That frozen runtime retains the original control's checkpoint-compatible legacy
@@ -259,9 +315,9 @@ kfold --input examples/8jeo_sequential.yaml \
 `prior_only` updates ECSI initialization only. `prior_and_trunk` also replaces
 protein apo coordinates and recomputes structure tokens chainwise.
 `prior_and_trunk_multichain` jointly tokenizes and encodes the selected B/C
-protein complex while retaining their physical chain IDs. Existing B/C shared
-apo UID is retained; a newly assembled pair does not receive a new shared apo
-UID. Final denoising can change the B/C arrangement.
+protein complex while retaining their physical chain IDs. Both trunk modes assign the assembled B/C proteins a shared
+apo UID and use a separate per-generation-seed top-1 apo ensemble for each final
+seed. Final denoising can change the B/C arrangement.
 
 Main changed the model/configuration API. The backend now strictly loads a
 state dictionary with the current KFold configuration and uses the current

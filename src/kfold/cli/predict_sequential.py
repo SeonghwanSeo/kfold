@@ -16,10 +16,13 @@ from kfold import __version__
 from kfold.cli.multigpu import launch
 from kfold.cli.prepare_apo import is_apo_prepared
 from kfold.inference.query import Query
+from kfold.inference.sequential import (
+    TRUNK_APO_POLICY,
+    TRUNK_CONDITIONING_MODES,
+    TRUNK_CONDITIONING_SCHEMA,
+)
 
 logger = logging.getLogger("kfold.sequential")
-
-_MULTICHAIN_CONDITIONING_SCHEMA = 1
 
 
 def _target_definition(query: Query) -> dict:
@@ -75,8 +78,10 @@ def _settings(args: argparse.Namespace) -> dict:
             str(provided.resolve()) if provided is not None else None
         ),
     }
-    if args.conditioning == "prior_and_trunk_multichain":
-        settings["conditioning_schema"] = _MULTICHAIN_CONDITIONING_SCHEMA
+    if args.conditioning in TRUNK_CONDITIONING_MODES:
+        settings["conditioning_schema"] = TRUNK_CONDITIONING_SCHEMA
+        settings["apo_policy"] = TRUNK_APO_POLICY
+        settings["num_apos"] = getattr(args, "num_apos", None)
     return settings
 
 

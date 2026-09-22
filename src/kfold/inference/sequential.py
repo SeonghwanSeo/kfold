@@ -14,6 +14,7 @@ from .assembly import (
     PriorObject,
     atom_keys,
     chain_names,
+    select_seed_apo_ensemble,
     select_top1,
     subset_query,
     subset_sources,
@@ -25,6 +26,21 @@ TRUNK_CONDITIONING_MODES = {
     "prior_and_trunk_multichain",
 }
 CONDITIONING_MODES = {"prior_only", *TRUNK_CONDITIONING_MODES}
+TRUNK_CONDITIONING_SCHEMA = 3
+TRUNK_APO_POLICY = "per_final_seed_top1_per_generation_seed"
+
+
+def apo_generation_seeds(seeds, counts):
+    """Match native seed*10+slot for <=10 apos; avoid collisions for larger N."""
+    if not seeds or len(set(seeds)) != len(seeds) or any(s < 0 for s in seeds):
+        raise ValueError("Expected unique nonnegative inference seeds")
+    if set(counts) != set(seeds) or any(n < 1 for n in counts.values()):
+        raise ValueError("Expected a positive apo count for every inference seed")
+    stride = max(10, max(counts.values()))
+    result = {s: [s * stride + i for i in range(1, counts[s] + 1)] for s in seeds}
+    if any(g >= 2**64 for values in result.values() for g in values):
+        raise ValueError("Apo generation seed exceeds the torch seed range")
+    return result
 
 
 def execution_plan(query, direct=False):
@@ -319,7 +335,36 @@ def run_query(
         )
         for s in seeds
     }
+    trunk_mode = conditioning in TRUNK_CONDITIONING_MODES
+    generation_seeds = (
+        apo_generation_seeds(seeds, {s: sources[s].num_apo for s in seeds})
+        if trunk_mode
+        else {}
+    )
     out.mkdir(parents=True, exist_ok=True)
+    if trunk_mode:
+        policy = {
+            "conditioning_schema": TRUNK_CONDITIONING_SCHEMA,
+            "apo_policy": TRUNK_APO_POLICY,
+            "conditioning": conditioning,
+            "seeds": list(seeds),
+            "samples_per_generation_seed": samples,
+            "generation_seeds": {str(s): v for s, v in generation_seeds.items()},
+            "stages": stages,
+        }
+        policy_path = out / "apo_policy.json"
+        if policy_path.exists():
+            if json.loads(policy_path.read_text()) != policy:
+                raise ValueError(
+                    "Sequential apo policy changed; use a new output directory"
+                )
+        elif any((out / stage["id"]).exists() for stage in stages):
+            raise ValueError(
+                "Missing per-seed apo policy for existing results; "
+                "use a new output directory"
+            )
+        else:
+            write_json(policy_path, policy)
     for seed, source in sources.items():
         # Retain exact selected apo/prior arrays for auditing embedding inputs.
         values = {f"apo_{a}": xyz for a, xyz in source.apo_coords.items()}
@@ -340,7 +385,7 @@ def run_query(
                     raise ValueError(f"Resolved sources changed: {source_path}")
         else:
             np.savez_compressed(source_path, **values)
-    groups = []
+    groups = {s: [] for s in seeds}
     rows = []
     padder = InferenceDataset([], pipeline.ccd, samples, pipeline.num_apo)
     for stage_index, stage in enumerate(stages):
@@ -371,16 +416,42 @@ def run_query(
                 raise ValueError("Provided intermediate changed during resume")
             write_json(receipt_path, receipt)
             obj.save(stage_out / "provided_atoms.npz")
-            groups = [g for g in groups if not g.chains <= chosen] + [obj]
+            for seed in seeds:
+                groups[seed] = [g for g in groups[seed] if not g.chains <= chosen] + [obj]
             continue
-        active = [g for g in groups if g.chains <= chosen]
         all_candidates = []
-        for seed in seeds:
-            target = stage_out / f"seed-{seed}"
+        per_seed_apo = trunk_mode and stage["id"] != "final"
+        jobs = [
+            (source_seed, seed)
+            for source_seed in seeds
+            for seed in (generation_seeds[source_seed] if per_seed_apo else [source_seed])
+        ]
+        for source_seed, seed in jobs:
+            active = [g for g in groups[source_seed] if g.chains <= chosen]
+            job_root = (
+                stage_out / f"parent-seed-{source_seed}" if per_seed_apo else stage_out
+            )
+            job_root.mkdir(parents=True, exist_ok=True)
+            target = job_root / f"seed-{seed}"
+            job_policy = (
+                {"source_seed": source_seed, "apo_policy": TRUNK_APO_POLICY}
+                if trunk_mode
+                else {}
+            )
             if target.exists():
                 previous = json.loads((target / "input.json").read_text())
                 if previous.get("conditioning", "prior_only") != conditioning:
                     raise ValueError(f"Conditioning changed: {target}")
+                if (
+                    conditioning in TRUNK_CONDITIONING_MODES
+                    and previous.get("conditioning_schema") != TRUNK_CONDITIONING_SCHEMA
+                ):
+                    raise ValueError(
+                        f"Trunk conditioning schema changed: {target}; "
+                        "use a new output directory"
+                    )
+                if any(previous.get(k) != v for k, v in job_policy.items()):
+                    raise ValueError(f"Apo seed routing changed: {target}")
                 complete = json.loads((target / "complete.json").read_text())
                 for filename, expected in complete["hashes"].items():
                     if digest(target / filename) != expected:
@@ -388,12 +459,14 @@ def run_query(
                 candidates = complete["candidates"]
             else:
                 # An incomplete attempt is never read as a completed seed.
-                attempt = stage_out / f".seed-{seed}-{uuid.uuid4().hex}"
+                attempt = job_root / f".seed-{seed}-{uuid.uuid4().hex}"
                 attempt.mkdir()
                 start = time.monotonic()
                 try:
                     seeded = sub.copy(seed=seed)
-                    source = subset_sources(source_full[seed], sub_struct, sources[seed])
+                    source = subset_sources(
+                        source_full[source_seed], sub_struct, sources[source_seed]
+                    )
                     extra = {}
                     if conditioning in TRUNK_CONDITIONING_MODES:
                         extra = {
@@ -444,8 +517,22 @@ def run_query(
                             "original_query": query.yaml,
                             "chains": stage["chains"],
                             "seed": seed,
+                            **job_policy,
                             "prior_objects": [sorted(g.chains) for g in active],
                             "conditioning": conditioning,
+                            **(
+                                {"conditioning_schema": TRUNK_CONDITIONING_SCHEMA}
+                                if conditioning in TRUNK_CONDITIONING_MODES
+                                else {}
+                            ),
+                            "trunk_apo_samples": [
+                                len(g.apo_coordinates)
+                                if g.apo_coordinates is not None
+                                else 1
+                                for g in active
+                            ]
+                            if extra
+                            else [],
                             "trunk_objects": [sorted(g.chains) for g in active]
                             if extra
                             else [],
@@ -486,6 +573,7 @@ def run_query(
                 all_candidates.append(
                     {
                         **c,
+                        **({"source_seed": source_seed} if trunk_mode else {}),
                         "stage": stage["id"],
                         "cif": str(target / f"{c['stem']}.cif"),
                         "atoms": str(target / f"{c['stem']}_atoms.npz"),
@@ -497,7 +585,27 @@ def run_query(
             raise ValueError(f"Selection changed: {selection_file}")
         write_json(selection_file, best)
         obj = PriorObject.load(best["atoms"])
-        groups = [g for g in groups if not g.chains <= chosen] + [obj]
+        for source_seed in seeds:
+            next_obj = obj
+            if per_seed_apo:
+                candidates = [
+                    c for c in all_candidates if c["source_seed"] == source_seed
+                ]
+                next_obj, apo_selection = select_seed_apo_ensemble(
+                    candidates, generation_seeds[source_seed], prior=obj
+                )
+                apo_root = stage_out / f"parent-seed-{source_seed}"
+                apo_selection_file = apo_root / "apo_selection.json"
+                if (
+                    apo_selection_file.exists()
+                    and json.loads(apo_selection_file.read_text()) != apo_selection
+                ):
+                    raise ValueError(f"Apo selection changed: {apo_selection_file}")
+                write_json(apo_selection_file, apo_selection)
+                next_obj.save(apo_root / "selected_ensemble.npz")
+            groups[source_seed] = [
+                g for g in groups[source_seed] if not g.chains <= chosen
+            ] + [next_obj]
         rows.extend(all_candidates)
     with (out / "candidates.csv").open("w") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))

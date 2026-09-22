@@ -9,6 +9,7 @@ from kfold.inference.assembly import (
     PriorObject,
     apply_prior_groups,
     atom_keys,
+    select_apo_ensemble,
     select_top1,
     subset_query,
     subset_sources,
@@ -45,6 +46,7 @@ def structure(names):
         chains.append(
             NS(
                 asym_id=i,
+                is_protein=name != "L",
                 num_residues=1,
                 num_atoms=2,
                 residue=NS(iter_residue_atoms=lambda r: range(2)),
@@ -171,19 +173,73 @@ def test_selection_no_oracle_and_deterministic_ties():
         select_top1([dict(seed=1, sample=0, ranking_score=float("nan"))])
 
 
+def test_seed_apo_selection_keeps_each_seed_and_independent_prior(tmp_path):
+    from kfold.inference.assembly import select_seed_apo_ensemble
+
+    keys = [("H", 1, "CA"), ("L", 1, "CA")]
+    prior = PriorObject(keys, np.zeros((2, 3)))
+    candidates = []
+    for seed in [11, 12]:
+        for sample in range(5):
+            path = tmp_path / f"{seed}-{sample}.npz"
+            xyz = np.array([[seed, sample, 0], [seed, sample, 7]], dtype=np.float32)
+            PriorObject(keys[::-1], xyz[::-1]).save(path)
+            candidates.append(
+                dict(
+                    seed=seed,
+                    sample=sample,
+                    ranking_score=100 * (seed == 12) + sample,
+                    atoms=str(path),
+                )
+            )
+    obj, selected = select_seed_apo_ensemble(candidates, [11, 12], prior)
+    assert [(c["seed"], c["sample"]) for c in selected] == [(11, 4), (12, 4)]
+    np.testing.assert_array_equal(obj.apo_coordinates[:, :, 2], [[0, 7], [0, 7]])
+    np.testing.assert_array_equal(obj.apo_coordinates[:, 0, 0], [11, 12])
+    np.testing.assert_array_equal(obj.coordinates, prior.coordinates)
+    with pytest.raises(ValueError, match="generation seeds"):
+        select_seed_apo_ensemble(candidates[:5], [11, 12], prior)
+
+
+def test_apo_generation_seed_schedule_matches_native_and_avoids_collisions():
+    from kfold.inference.sequential import apo_generation_seeds
+
+    seeds = list(range(1, 11))
+    schedule = apo_generation_seeds(seeds, dict.fromkeys(seeds, 5))
+    assert schedule[1] == [11, 12, 13, 14, 15]
+    assert schedule[10] == [101, 102, 103, 104, 105]
+    assert sum(map(len, schedule.values())) * 5 == 250
+    many = apo_generation_seeds([1, 2], {1: 12, 2: 11})
+    assert len(set(many[1] + many[2])) == 23
+    assert apo_generation_seeds([0], {0: 2})[0] == [1, 2]
+    with pytest.raises(ValueError, match="unique nonnegative"):
+        apo_generation_seeds([1, 1], {1: 5})
+
+
 def test_ordinary_pipeline_rejects_assembly():
     with pytest.raises(ValueError, match="inference_sequential"):
         InputDataPipeline(None).run(query())
 
 
-def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "conditioning", ["prior_only", "prior_and_trunk", "prior_and_trunk_multichain"]
+)
+@pytest.mark.parametrize("apo_count", [2, 5])
+def test_orchestration_full_trunk_input_top1_and_resume(
+    tmp_path, monkeypatch, conditioning, apo_count
+):
     import torch
 
-    from kfold.inference.sequential import run_query
+    from kfold.inference.sequential import run_query as run
+
+    def run_query(*args, **kwargs):
+        return run(*args, conditioning=conditioning, **kwargs)
+
     from kfold.inference.sequential_dataset import InferenceDataset
 
     monkeypatch.setattr(InferenceDataset, "pad_input", lambda self, f: f)
     calls = []
+    samples = apo_count
 
     class Pipeline:
         ccd = None
@@ -192,13 +248,48 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
         def read_query(self, q):
             return structure([c for s in q.sequences for c in s.ids])
 
-        def resolve_structure_sources(self, *args):
-            return ResolvedStructureSources(1, {}, [{}, {}], [])
+        def resolve_structure_sources(self, struct, q, rng):
+            return ResolvedStructureSources(
+                apo_count,
+                {1: np.full((apo_count, 1, 37, 3), q.seed, dtype=np.float32)},
+                [{}] * samples,
+                [],
+            )
 
-        def run(self, q, *, sources, prior_groups, stage_index):
+        def run(
+            self,
+            q,
+            *,
+            sources,
+            prior_groups,
+            stage_index,
+            trunk_groups=(),
+            multichain_structure=False,
+        ):
+            parent_seed = int(sources.apo_coords[1][0, 0, 0, 0])
+            expected_parent = (q.seed - 1) // 10 if q.seed > 10 else q.seed
+            assert parent_seed == expected_parent
+            if (
+                stage_index
+                and conditioning != "prior_only"
+                and trunk_groups[0].apo_coordinates is not None
+            ):
+                assert trunk_groups is prior_groups
+                assert trunk_groups[0].apo_coordinates.shape[0] == apo_count
+                np.testing.assert_array_equal(
+                    trunk_groups[0].apo_coordinates[:, 0, 0],
+                    [
+                        parent_seed * 10 + slot + samples - 1
+                        for slot in range(1, apo_count + 1)
+                    ],
+                )
+                # ECSI still receives global top-1, independent of apo slot 0.
+                np.testing.assert_array_equal(
+                    trunk_groups[0].coordinates, 20 + apo_count + samples - 1
+                )
             struct = self.read_query(q)
             calls.append((q.seed, struct.num_atoms, len(prior_groups)))
-            p = np.zeros((2, struct.num_atoms, 3), dtype=np.float32)
+            p = np.zeros((samples, struct.num_atoms, 3), dtype=np.float32)
             apply_prior_groups(
                 struct,
                 p,
@@ -207,7 +298,18 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
                 np.random.default_rng(1),
             )
             f = NS(
-                atom=NS(prior_coords=torch.from_numpy(p.transpose(1, 0, 2))),
+                atom=NS(
+                    prior_coords=torch.from_numpy(p.transpose(1, 0, 2)),
+                    apo_coords=torch.zeros((struct.num_atoms, apo_count, 3)),
+                    apo_mask=torch.ones((struct.num_atoms, apo_count), dtype=torch.bool),
+                    ref_pos=torch.zeros((struct.num_atoms, 3)),
+                    ref_space_uid=torch.arange(struct.num_atoms),
+                ),
+                token=NS(
+                    apo_uid=torch.arange(struct.num_atoms),
+                    apo_repr_coords=torch.zeros((struct.num_atoms, apo_count, 3)),
+                    apo_frame_coords=torch.zeros((struct.num_atoms, apo_count, 3, 3)),
+                ),
                 num_tokens=struct.num_atoms,
             )
             return struct, None, f, []
@@ -215,7 +317,7 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
     class Backend:
         def predict(self, q, struct, features, records, out):
             candidates = []
-            for sample in range(2):
+            for sample in range(samples):
                 stem = f"{q.name}_seed-{q.seed}_sample-{sample}"
                 PriorObject(
                     atom_keys(struct), np.ones((struct.num_atoms, 3)) * (q.seed + sample)
@@ -231,14 +333,56 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
                 )
             return candidates
 
-    best = run_query(query(), Pipeline(), [1, 2], 2, tmp_path, Backend())
-    assert calls == [(1, 4, 0), (2, 4, 0), (1, 6, 1), (2, 6, 1)]
-    assert (best["seed"], best["sample"]) == (2, 1)
-    assert run_query(query(), Pipeline(), [1, 2], 2, tmp_path, Backend()) == best
-    assert len(calls) == 4
-    (tmp_path / "pl/seed-1/test_seed-1_sample-0.cif").write_text("corrupted")
+    best = run_query(query(), Pipeline(), [1, 2], samples, tmp_path, Backend())
+    intermediate_seeds = (
+        [1, 2]
+        if conditioning == "prior_only"
+        else [s * 10 + i for s in [1, 2] for i in range(1, apo_count + 1)]
+    )
+    assert calls == [(s, 4, 0) for s in intermediate_seeds] + [(1, 6, 1), (2, 6, 1)]
+    assert (best["seed"], best["sample"]) == (2, samples - 1)
+    assert run_query(query(), Pipeline(), [1, 2], samples, tmp_path, Backend()) == best
+    assert len(calls) == len(intermediate_seeds) + 2
+    if conditioning != "prior_only":
+        import json
+
+        for parent in [1, 2]:
+            root = tmp_path / "pl" / f"parent-seed-{parent}"
+            picked = json.loads((root / "apo_selection.json").read_text())
+            assert [(c["seed"], c["sample"]) for c in picked] == [
+                (parent * 10 + slot, samples - 1) for slot in range(1, apo_count + 1)
+            ]
+            assert {c["source_seed"] for c in picked} == {parent}
+            assert PriorObject.load(
+                root / "selected_ensemble.npz"
+            ).apo_coordinates.shape == (apo_count, 4, 3)
+        input_path = tmp_path / "final/seed-1/input.json"
+        saved = input_path.read_text()
+        old = json.loads(saved)
+        old.pop("conditioning_schema")
+        input_path.write_text(json.dumps(old))
+        with pytest.raises(ValueError, match="schema changed"):
+            run_query(query(), Pipeline(), [1, 2], samples, tmp_path, Backend())
+        input_path.write_text(saved)
+        with pytest.raises(ValueError, match="apo policy changed"):
+            run_query(query(), Pipeline(), [1], samples, tmp_path, Backend())
+        with pytest.raises(ValueError, match="apo policy changed"):
+            run_query(query(), Pipeline(), [1, 2], samples + 1, tmp_path, Backend())
+        legacy = tmp_path / "legacy"
+        (legacy / "pl").mkdir(parents=True)
+        before = len(calls)
+        with pytest.raises(ValueError, match="Missing per-seed apo policy"):
+            run_query(query(), Pipeline(), [1, 2], samples, legacy, Backend())
+        assert len(calls) == before
+    first_seed = intermediate_seeds[0]
+    first_root = tmp_path / "pl"
+    if conditioning != "prior_only":
+        first_root /= "parent-seed-1"
+    (first_root / f"seed-{first_seed}/test_seed-{first_seed}_sample-0.cif").write_text(
+        "corrupted"
+    )
     with pytest.raises(ValueError, match="Changed result"):
-        run_query(query(), Pipeline(), [1, 2], 2, tmp_path, Backend())
+        run_query(query(), Pipeline(), [1, 2], samples, tmp_path, Backend())
 
     class FailingBackend(Backend):
         failed = False
@@ -253,13 +397,26 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
     backend = FailingBackend()
     retry = tmp_path / "retry"
     with pytest.raises(RuntimeError, match="interrupted"):
-        run_query(query(), Pipeline(), [1, 2], 2, retry, backend)
-    completed_before = (retry / "pl/seed-1/complete.json").read_bytes()
-    assert not (retry / "pl/seed-2").exists()
-    result = run_query(query(), Pipeline(), [1, 2], 2, retry, backend)
+        run_query(query(), Pipeline(), [1, 2], samples, retry, backend)
+    completed_file = (
+        retry / first_root.relative_to(tmp_path) / f"seed-{first_seed}/complete.json"
+    )
+    completed_before = completed_file.read_bytes()
+    failed_stage = "pl" if conditioning == "prior_only" else "final"
+    assert not (retry / failed_stage / "seed-2").exists()
+    result = run_query(query(), Pipeline(), [1, 2], samples, retry, backend)
     assert result["stage"] == "final"
-    assert (retry / "pl/seed-1/complete.json").read_bytes() == completed_before
-    assert len(list((retry / "pl").glob(".seed-2-*/failure.json"))) == 1
+    assert completed_file.read_bytes() == completed_before
+    assert len(list((retry / failed_stage).glob(".seed-2-*/failure.json"))) == 1
+
+    # A later intermediate must receive the ensemble for its own parent seed.
+    nested = query()
+    nested.sequences.append(Sequence(["D", "E"]))
+    nested.assembly["stages"].append({"id": "merge", "chains": ["A", "L", "D"]})
+    nested_best = run_query(
+        nested, Pipeline(), [1, 2], samples, tmp_path / "nested", Backend()
+    )
+    assert nested_best["stage"] == "final"
 
     # A provided GT/experimental intermediate bypasses binary prediction entirely.
     supplied = tmp_path / "provided.npz"
@@ -270,7 +427,7 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
         query(),
         Pipeline(),
         [1, 2],
-        2,
+        samples,
         oracle_out,
         Backend(),
         provided_intermediates={"pl": supplied},
@@ -285,7 +442,7 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
             query(),
             Pipeline(),
             [1, 2],
-            2,
+            samples,
             oracle_out,
             Backend(),
             provided_intermediates={"pl": supplied},
@@ -299,7 +456,7 @@ def test_orchestration_full_trunk_input_top1_and_resume(tmp_path, monkeypatch):
             query(),
             Pipeline(),
             [1, 2],
-            2,
+            samples,
             oracle_out,
             Backend(),
             provided_intermediates={"pl": supplied},
@@ -662,7 +819,9 @@ def test_multichain_structure_repr_jointly_tokenizes_and_groups_attention(tmp_pa
             self.calls = []
 
         def tokenize(self, seq, xyz, residue_index=None):
-            self.calls.append((seq, xyz.copy(), residue_index.copy()))
+            self.calls.append(
+                (seq, xyz.copy(), None if residue_index is None else residue_index.copy())
+            )
             values = torch.arange(len(seq), dtype=torch.long) + 20
             return {"bb_token_id": values, "fa_token_id": values + 100}
 
@@ -691,6 +850,73 @@ def test_multichain_structure_repr_jointly_tokenizes_and_groups_attention(tmp_pa
     assert (joint.sequence.bb_struct_token_id[1] == 20).all()
     assert (joint.sequence.bb_struct_token_id[4] == 21).all()
 
+    class ChainEncoder:
+        def tokenize(self, seq, xyz):
+            return {
+                "bb_token_id": torch.zeros(len(seq), dtype=torch.long),
+                "fa_token_id": torch.zeros(len(seq), dtype=torch.long),
+            }
+
+    # Distinct intermediate samples keep paired H/L poses in every apo slot;
+    # antigen C retains both its original ensemble and a separate UID.
+    q3 = q.copy(
+        sequences=[*q.sequences, ProteinSequence(id=["C"], sequence="G", apo=[str(pdb)])]
+    )
+    full3 = pipeline.read_query(q3)
+    source3 = pipeline.resolve_structure_sources(full3, q3, np.random.default_rng(0))
+    source3 = dataclasses.replace(
+        source3,
+        num_apo=3,
+        apo_coords={k: np.repeat(v, 3, axis=0) for k, v in source3.apo_coords.items()},
+        struct_token_records=[r * 3 for r in source3.struct_token_records],
+    )
+    ensemble = np.stack([ab_coords.copy() for _ in range(3)])
+    # Change B relative to A (not just the global rigid frame).
+    ensemble[1, [k[0] == "B" for k in ab_keys]] += 5
+    ensemble[2, [k[0] == "B" for k in ab_keys]] -= 3
+    grouped = PriorObject(ab_keys, ab_coords, apo_coordinates=ensemble)
+    grouped.save(tmp_path / "ensemble.npz")
+    grouped = PriorObject.load(tmp_path / "ensemble.npz")
+    np.testing.assert_array_equal(grouped.apo_coordinates, ensemble)
+    _, _, baseline, _ = pipeline.run(q3, sources=source3)
+    for multichain in (False, True):
+        _, tok, features, recs = pipeline.run(
+            q3,
+            sources=source3,
+            trunk_groups=[grouped],
+            multichain_structure=multichain,
+        )
+        a_uid = features.token.apo_uid[features.token.asym_id == 1]
+        b_uid = features.token.apo_uid[features.token.asym_id == 2]
+        assert (a_uid == b_uid[0]).all()
+        assert (b_uid == a_uid[0]).all()
+        other = ~torch.isin(features.token.asym_id, torch.tensor([1, 2]))
+        assert not (features.token.apo_uid[other] == a_uid[0]).any()
+        torch.testing.assert_close(
+            features.token.apo_uid[other], baseline.token.apo_uid[other]
+        )
+        assert tok.chain.apo_uid[0] == tok.chain.apo_uid[1]
+        all_keys = atom_keys(full3)
+        indices = [all_keys.index(k) for k in ab_keys]
+        torch.testing.assert_close(
+            features.atom.apo_coords[indices],
+            torch.from_numpy(ensemble.transpose(1, 0, 2)),
+        )
+        antigen = [i for i, k in enumerate(all_keys) if k[0] == "C"]
+        torch.testing.assert_close(
+            features.atom.apo_coords[antigen], baseline.atom.apo_coords[antigen]
+        )
+        changed_records = [r for r in recs if any(t[0] == 2 for t in r[0]["targets"])]
+        assert len(changed_records) == 1
+        assert not np.array_equal(
+            changed_records[0][0]["coords"],
+            changed_records[0][1]["coords"],
+            equal_nan=True,
+        )
+        apply_apo_structure_tokens(
+            features, recs, Encoder() if multichain else ChainEncoder()
+        )
+
 
 def test_training_model_accepts_structure_encoder_overrides():
     import inspect
@@ -718,8 +944,11 @@ def test_multichain_resume_settings_have_a_schema_version():
         conditioning="prior_and_trunk_multichain",
         provided_intermediates=None,
     )
-    assert _settings(args)["conditioning_schema"] == 1
+    assert _settings(args)["conditioning_schema"] == 3
+    assert _settings(args)["apo_policy"] == "per_final_seed_top1_per_generation_seed"
     args.conditioning = "prior_and_trunk"
+    assert _settings(args)["conditioning_schema"] == 3
+    args.conditioning = "prior_only"
     assert "conditioning_schema" not in _settings(args)
 
 
@@ -822,3 +1051,27 @@ def test_release_protein_pair_example_preserves_assembly_group(tmp_path):
     multichain_args.disable_struct_encoder = True
     with pytest.raises(ValueError, match="requires the protein structure encoder"):
         _load_queries(multichain_args)
+
+
+def test_ranked_apo_ensemble_identity_and_shortage(tmp_path):
+    keys = [("H", 1, "CA"), ("L", 1, "CA")]
+    candidates = []
+    for sample, score in enumerate([0.5, 0.9, 0.9]):
+        coords = np.array([[sample, 0, 0], [sample, 2, 0]], dtype=np.float32)
+        path = tmp_path / f"{sample}.npz"
+        # Deliberately different atom order for the highest ranked structure.
+        PriorObject(
+            keys[::-1] if sample == 1 else keys, coords[::-1] if sample == 1 else coords
+        ).save(path)
+        candidates.append(
+            dict(seed=1, sample=sample, ranking_score=score, atoms=str(path))
+        )
+    obj, selected = select_apo_ensemble(candidates, 2)
+    assert [c["sample"] for c in selected] == [1, 2]
+    assert obj.keys == keys[::-1]
+    np.testing.assert_array_equal(obj.apo_coordinates[:, :, 0], [[1, 1], [2, 2]])
+    np.testing.assert_array_equal(obj.apo_coordinates[:, :, 1], [[2, 0], [2, 0]])
+    with pytest.raises(ValueError, match="needs 4"):
+        select_apo_ensemble(candidates, 4)
+    with pytest.raises(ValueError, match="Duplicate"):
+        select_apo_ensemble([candidates[0], candidates[0]], 2)
