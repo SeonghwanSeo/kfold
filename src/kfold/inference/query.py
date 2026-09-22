@@ -219,7 +219,8 @@ class ProteinPair:
 
     kind: ClassVar[str] = "protein_pair"
     ctype: ClassVar[C.ChainType] = C.ChainType.PROTEIN
-    id: list[list[str]]
+    id1: list[str]
+    id2: list[str]
     sequence1: str
     sequence2: str
     modifications1: list[Modification] = dataclasses.field(default_factory=list)
@@ -229,14 +230,15 @@ class ProteinPair:
     description: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.id, list) or not self.id:
+        for field in ("id1", "id2"):
+            ids = getattr(self, field)
+            if not isinstance(ids, list) or not ids:
+                raise ValueError(f"'{field}' must be a non-empty list of chain IDs.")
+        if len(self.id1) != len(self.id2):
             raise ValueError(
-                "Protein pair 'id' must be a non-empty list of two-ID lists."
+                "Protein pair 'id1' and 'id2' must contain the same number of chain IDs."
             )
-        for pair in self.id:
-            if not isinstance(pair, list) or len(pair) != 2:
-                raise ValueError("Each protein pair copy requires exactly two chain IDs.")
-        _validate_ids([chain_id for pair in self.id for chain_id in pair])
+        _validate_ids(self.id1 + self.id2)
         _validate_polymer(self.sequence1, self.modifications1, self.ctype)
         _validate_polymer(self.sequence2, self.modifications2, self.ctype)
         _validate_structures(self.apo, self.prior)
@@ -277,7 +279,7 @@ def _parse_sequence(entry: dict, base_dir: Path) -> Sequence:
             cls = ProteinPair
             _check_fields(
                 data,
-                {"id", "sequence1", "sequence2"},
+                {"id1", "id2", "sequence1", "sequence2"},
                 common | {"modifications1", "modifications2", "apo", "prior"},
             )
         case "ligand":
@@ -289,13 +291,9 @@ def _parse_sequence(entry: dict, base_dir: Path) -> Sequence:
     fields = dict(data)
     if kind == "ligand" and isinstance(fields.get("ccd"), str):
         fields["ccd"] = [fields["ccd"]]
-    if kind == "protein_pair":
-        if isinstance(fields["id"], list) and all(
-            isinstance(chain_id, str) for chain_id in fields["id"]
-        ):
-            fields["id"] = [fields["id"]]
-    elif isinstance(fields["id"], str):
-        fields["id"] = [fields["id"]]
+    for field in ("id1", "id2") if kind == "protein_pair" else ("id",):
+        if isinstance(fields[field], str):
+            fields[field] = [fields[field]]
     # Parse residue modifications into validated objects.
     for field in ("modifications", "modifications1", "modifications2"):
         if field not in fields:
@@ -407,7 +405,7 @@ class Query:
             if isinstance(entry, ProteinPair):
                 chains = [
                     (chain_id, length)
-                    for pair in entry.id
+                    for pair in zip(entry.id1, entry.id2, strict=True)
                     for chain_id, length in zip(
                         pair, (len(entry.sequence1), len(entry.sequence2)), strict=True
                     )
@@ -450,7 +448,14 @@ class Query:
     @property
     def priority(self) -> tuple[int, str]:
         """Process smaller complexes first, breaking ties by query name."""
-        return sum(len(entry) * len(entry.id) for entry in self.sequences), self.name
+        return (
+            sum(
+                len(entry)
+                * len(entry.id1 if isinstance(entry, ProteinPair) else entry.id)
+                for entry in self.sequences
+            ),
+            self.name,
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> "Query":

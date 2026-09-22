@@ -212,13 +212,15 @@ Pair structures are generated automatically with AtlasFold-Multimer, or you can 
 
 | Field | Required | Description |
 | --- | --- | --- |
-| `id` | Yes | `[H, L]` for one pair, or `[[H, L], [M, N]]` for two copies. |
+| `id1`, `id2` | Yes | Chain ID or list of IDs for each component, corresponding to `sequence1` and `sequence2`. |
 | `sequence1`, `sequence2` | Yes | Amino-acid sequences in component order. |
 | `modifications1`, `modifications2` | No | Residue modifications for each component. |
 | `apo` | No | Optional two-chain structure paths to use instead of automatic generation. |
 | `prior` | No | List of separate two-chain prior paths; requires `apo`. |
 
-For `id: [[H, L], [M, N]]`, chains H and M use `sequence1`, and chains L and N use `sequence2`.
+Use `id1: H` and `id2: L` for one pair.
+For multiple copies, the two ID lists must have the same length and are paired by position.
+For `id1: [H, M]` and `id2: [L, N]`, chains H and M use `sequence1`, and chains L and N use `sequence2`, forming pairs H/L and M/N.
 The two copies are placed independently.
 Provided structures must contain exactly two non-empty protein chains in `sequence1`, `sequence2` order.
 

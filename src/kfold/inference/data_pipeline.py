@@ -154,13 +154,13 @@ class InputDataPipeline:
             if isinstance(entry, ProteinPair):
                 components = [
                     (
-                        [pair[0] for pair in entry.id],
+                        entry.id1,
                         entry.sequence1,
                         [apo.chain1 for apo in entry_apos],
                         [prior.chain1 for prior in entry_priors],
                     ),
                     (
-                        [pair[1] for pair in entry.id],
+                        entry.id2,
                         entry.sequence2,
                         [apo.chain2 for apo in entry_apos],
                         [prior.chain2 for prior in entry_priors],
@@ -258,7 +258,7 @@ class InputDataPipeline:
                     )
                     for codes in (entry.ccd_sequence1, entry.ccd_sequence2)
                 ]
-                copies = entry.id
+                copies = zip(entry.id1, entry.id2, strict=True)
             else:
                 entity_chains = [self._prepare_chain(entry, next(entity_ids))]
                 copies = [[chain_id] for chain_id in entry.id]
