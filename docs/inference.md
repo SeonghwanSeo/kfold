@@ -264,7 +264,7 @@ CCD codes must exist in the loaded dictionary.
 ### Residue modifications
 
 Add `modifications` to a protein, DNA, or RNA entry.
-Each modification specifies a 1-based `residue_index` within the sequence and the replacement `ccd` code.
+Each modification specifies a 1-based `index` within the sequence and the replacement `ccd` code.
 For example, this replaces the fourth residue with phosphoserine:
 
 ```yaml
@@ -274,7 +274,7 @@ sequences:
       id: A
       sequence: MKTSA
       modifications:
-        - residue_index: 4
+        - index: 4
           ccd: SEP
 ```
 

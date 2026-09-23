@@ -68,13 +68,13 @@ def _validate_ccd(code: str) -> None:
 
 @dataclasses.dataclass(kw_only=True)
 class Modification:
-    residue_index: int
+    index: int
     ccd: str
 
     def __post_init__(self) -> None:
-        if type(self.residue_index) is not int or self.residue_index < 1:
+        if type(self.index) is not int or self.index < 1:
             raise ValueError(
-                "Modification 'residue_index' must be a positive, 1-based integer."
+                "Modification residue index must be a positive, 1-based integer."
             )
         _validate_ccd(self.ccd)
 
@@ -92,16 +92,16 @@ def _validate_polymer(
     for modification in modifications:
         if not isinstance(modification, Modification):
             raise ValueError("'modifications' must contain Modification objects.")
-        if modification.residue_index > len(sequence):
+        if modification.index > len(sequence):
             raise ValueError(
-                f"Modification residue index {modification.residue_index} exceeds "
+                f"Modification residue index {modification.index} exceeds "
                 f"sequence length {len(sequence)}."
             )
-        if modification.residue_index in residue_indices:
+        if modification.index in residue_indices:
             raise ValueError(
-                f"Duplicate modification residue index: {modification.residue_index}."
+                f"Duplicate modification residue index: {modification.index}."
             )
-        residue_indices.add(modification.residue_index)
+        residue_indices.add(modification.index)
 
 
 def _ccd_sequence(
@@ -109,7 +109,7 @@ def _ccd_sequence(
 ) -> list[str]:
     codes = [RESIDUE_CODES[ctype][residue] for residue in sequence]
     for modification in modifications:
-        codes[modification.residue_index - 1] = modification.ccd
+        codes[modification.index - 1] = modification.ccd
     return codes
 
 
@@ -299,10 +299,10 @@ def _parse_sequence(entry: dict, base_dir: Path) -> Sequence:
         if field not in fields:
             continue
         if not isinstance(fields[field], list):
-            raise ValueError(f"'{field}' must be a list of residue_index/ccd mappings.")
+            raise ValueError(f"'{field}' must be a list of index/ccd mappings.")
         modifications = []
         for modification in fields[field]:
-            _check_fields(modification, {"residue_index", "ccd"}, set())
+            _check_fields(modification, {"index", "ccd"}, set())
             modifications.append(Modification(**modification))
         fields[field] = modifications
     # Resolve provided structure paths relative to the query file.

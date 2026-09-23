@@ -45,7 +45,7 @@ query = Query(
 Direct constructors require lists for `id`, ligand `ccd`, and `ProteinPair.id1` and `ProteinPair.id2`, such as `id1=["H"]` and `id2=["L"]`.
 For multiple protein-pair copies, `id1` and `id2` must have the same length and are paired by position.
 Provided `apo` and `prior` values must be lists of absolute `pathlib.Path` objects pointing to existing files.
-Modifications use `Modification(residue_index=4, ccd="SEP")`; bonds use `Bond(atom1=("A", 20, "NZ"), atom2=("C", 1, "C08"))`.
+Modifications use `Modification(index=4, ccd="SEP")`; bonds use `Bond(atom1=("A", 20, "NZ"), atom2=("C", 1, "C08"))`.
 
 ## Options
 
