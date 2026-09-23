@@ -128,7 +128,10 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
     for name in sorted({query.name for query, _, _ in jobs}):
         logger.info("Ranking samples and saving best prediction for %s.", name)
         summary_start = perf_counter()
-        _summarize_predictions(args.out_dir / name, name, args.seeds, args.num_samples)
+        if not _summarize_predictions(
+            args.out_dir / name, name, args.seeds, args.num_samples
+        ):
+            continue
         # Record the K-Fold settings requested in this CLI invocation.
         settings = {
             "version": __version__,
@@ -155,18 +158,25 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
 
 def _summarize_predictions(
     out_dir: Path, name: str, seeds: list[int], num_samples: int
-) -> None:
-    """Rank requested seeds and copy the best prediction."""
+) -> bool:
+    """Rank completed predictions and return whether results were saved."""
     # Collect confidence summaries from completed prediction jobs.
     records = []
     for seed in seeds:
         job_dir = out_dir / f"{name}_seed-{seed}"
         if not (job_dir / "done.txt").is_file():
-            raise ValueError(f"Prediction job is incomplete: {job_dir}.")
+            logger.warning("Skipping incomplete prediction job: %s.", job_dir)
+            continue
         prefix = f"{job_dir.name}_sample-"
         for sample in range(num_samples):
             path = job_dir / f"{prefix}{sample}_confidence.json"
-            if not path.is_file():
+            model_path = job_dir / f"{prefix}{sample}_model.cif"
+            if not path.is_file() or not model_path.is_file():
+                logger.warning(
+                    "Skipping sample %s in %s: missing structure or confidence output.",
+                    sample,
+                    job_dir,
+                )
                 continue
             with path.open() as f:
                 scores = json.load(f)["complex"]
@@ -175,7 +185,10 @@ def _summarize_predictions(
             records.append({"seed": seed, "sample": sample, **scores})
 
     if not records:
-        raise ValueError(f"No saved confidence summaries for {name} in {out_dir}.")
+        logger.warning(
+            "Skipping summary for %s: no completed predictions in %s.", name, out_dir
+        )
+        return False
 
     # Rank samples and copy the best structure and available confidence outputs.
     records.sort(key=lambda row: (-row["ranking_score"], row["seed"], row["sample"]))
@@ -209,6 +222,7 @@ def _summarize_predictions(
         )
         writer.writeheader()
         writer.writerows(records)
+    return True
 
 
 def _worker(
@@ -312,9 +326,8 @@ def _worker(
                 target,
                 progress,
             )
-    except torch.cuda.OutOfMemoryError as e:
+    except torch.cuda.OutOfMemoryError:
         logger.error(
             f"K-Fold GPU {gpu_id}: out of memory during {work}. "
             "Enable --cpu-offload to reduce inference memory use."
         )
-        raise e

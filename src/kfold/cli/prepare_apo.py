@@ -340,9 +340,8 @@ def _worker(
                 completed,
                 perf_counter() - model_start,
             )
-    except torch.cuda.OutOfMemoryError as e:
+    except torch.cuda.OutOfMemoryError:
         logger.error(
             f"Apo GPU {gpu_id}: out of memory during {work}. "
             "Lower max_tokens_per_batch in the apo YAML configuration."
         )
-        raise e
