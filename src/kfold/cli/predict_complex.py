@@ -32,7 +32,7 @@ from kfold.inference.query import Query
 from kfold.inference.runner import KFoldRunner
 from kfold.model import KFold
 
-logger = logging.getLogger("kfold.predict")
+logger = logging.getLogger("complex")
 
 
 def _load_prepared_query(query: Query, apo_dir: Path) -> Query:
@@ -100,6 +100,21 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
     )
     # Invalidate previous completion records and run the pending GPU jobs.
     if pending:
+        logger.info(
+            "Settings: struct_encoder=%s, rna_encoder=%s, kernel=%s, cpu_offload=%s",
+            "disabled" if args.disable_struct_encoder else "enabled",
+            "disabled" if args.disable_rna_encoder else "enabled",
+            args.kernel_backend,
+            args.cpu_offload,
+        )
+        logger.info(
+            "Starting complex inference: seeds=%s, num_samples=%d, "
+            "num_recycles=%d, num_steps=%d.",
+            args.seeds,
+            args.num_samples,
+            args.num_recycles,
+            args.num_steps,
+        )
         for _, _, job_dir in pending:
             (job_dir / "done.txt").unlink(missing_ok=True)
         num_workers = min(len(args.gpu_ids), len(pending))
@@ -124,7 +139,6 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
             "num_steps": args.num_steps,
             "use_struct_encoder": not args.disable_struct_encoder,
             "use_rna_encoder": not args.disable_rna_encoder,
-            "cpu_offload": args.cpu_offload,
             "kernel_backend": args.kernel_backend,
         }
         (args.out_dir / name / "kfold_settings.json").write_text(

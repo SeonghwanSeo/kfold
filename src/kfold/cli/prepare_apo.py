@@ -37,7 +37,7 @@ from kfold.inference.apo_runner import (
 )
 from kfold.inference.query import ProteinPair, ProteinSequence, Query
 
-logger = logging.getLogger("kfold.apo")
+logger = logging.getLogger("apo")
 
 
 @dataclass

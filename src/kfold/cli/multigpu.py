@@ -80,15 +80,19 @@ def launch(worker, args, worker_jobs, *, stage: str):
 def _worker_entry(worker, gpu_id, args, jobs, num_workers):
     """Configure a GPU process and show inference logs and library warnings."""
     import torch
+    from huggingface_hub.utils import disable_progress_bars
 
+    # Spawned workers do not inherit the parent's progress-bar settings.
+    disable_progress_bars()
     # Configure process-local logging and CUDA before entering the stage worker.
-    gpu_label = f" [GPU {gpu_id}]" if num_workers > 1 else ""
+    gpu_label = f" | gpu-{gpu_id}" if num_workers > 1 else ""
     logging.basicConfig(
-        level=logging.WARNING,
-        format=f"%(levelname)s: [%(name)s]{gpu_label} %(message)s",
-        force=True,
+        level=logging.INFO,
+        format=f"%(asctime)s | %(name)s{gpu_label} | %(message)s",
+        datefmt="%y/%m/%d %H:%M:%S",
     )
-    logging.getLogger("kfold").setLevel(logging.INFO)
+    logging.getLogger("cli").setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     torch.cuda.set_device(gpu_id)
     torch.set_float32_matmul_precision("highest")
     worker(gpu_id, args, jobs)

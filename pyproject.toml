@@ -33,7 +33,6 @@ kfold = "kfold.cli.main:main"
 version = { attr = "kfold.__version__" }
 
 [project.optional-dependencies]
-dev = ["pre-commit", "pytest"]
 train = [
   "torch>=2.7.0",
   'lightning', # for training loop

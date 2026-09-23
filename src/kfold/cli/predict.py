@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from kfold.inference.query import Query
 
-logger = logging.getLogger("kfold")
+logger = logging.getLogger("cli")
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -165,6 +165,39 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _download_models(cache_dir: Path | None) -> None:
+    """Cache all model weights and assets."""
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import tqdm
+
+    progress_bars = []
+
+    class DownloadProgress(tqdm):
+        def __init__(self, *args, **kwargs):
+            kwargs.update(leave=False, dynamic_ncols=True)
+            super().__init__(*args, **kwargs)
+            progress_bars.append(self)
+
+    logger.info("Downloading all model weights and assets.")
+    if cache_dir is not None:
+        logger.info("Cache directory: %s", cache_dir.resolve())
+
+    for repo_id in (
+        "SeonghwanSeo/atlaslm-3b-base",
+        "SeonghwanSeo/atlasfold-260703",
+        "SeonghwanSeo/atlasfold-m-260725",
+        "SeonghwanSeo/kfold-assets",
+        "SeonghwanSeo/kfold",
+    ):
+        try:
+            snapshot_download(repo_id, cache_dir=cache_dir, tqdm_class=DownloadProgress)
+        finally:
+            for bar in reversed(progress_bars):
+                bar.close()
+            progress_bars.clear()
+    logger.info("All model weights and assets are cached.")
+
+
 def _load_queries(args: argparse.Namespace) -> list["Query"]:
     """Validate runtime arguments and load queries in prediction order."""
     from kfold.inference.query import Query
@@ -292,9 +325,20 @@ def dry_run(args: argparse.Namespace) -> None:
 
 def run(args: argparse.Namespace) -> None:
     """Validate arguments, load queries, and run the selected prediction stages."""
+    from huggingface_hub.utils import disable_progress_bars
+
     from kfold.cli.predict_complex import run as predict_complex
     from kfold.cli.prepare_apo import run as prepare_apo
     from kfold.utils.runtime import select_kernel_backend
+
+    input_path = args.input.resolve()
+    output_path = args.out_dir.resolve()
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input path {input_path} does not exist.")
+
+    # Print the resolved input and output paths for clarity.
+    logger.info("Input path: %s", input_path)
+    logger.info("Output path: %s", output_path)
 
     # Select the kernel backend if not explicitly specified.
     if args.kernel_backend is None:
@@ -305,7 +349,11 @@ def run(args: argparse.Namespace) -> None:
     obsolete_queries = _find_obsolete_queries(args, queries)
     apo_jobs, jobs = _build_jobs(args, queries)
 
-    logger.info("Input: %s; output: %s.", args.input, args.out_dir)
+    # Populate the shared cache before any GPU worker loads a model.
+    _download_models(args.cache_dir)
+
+    # Disable Hugging Face progress bars to avoid cluttering the output.
+    disable_progress_bars()
 
     # Prepare provided and generated apo structures.
     if args.stage in ("all", "apo"):
@@ -323,4 +371,4 @@ def run(args: argparse.Namespace) -> None:
         predict_complex(args, jobs)
 
     # Report completion after all selected stages finish.
-    logger.info("Outputs: %s", args.out_dir.resolve())
+    logger.info("Output path: %s", output_path)
