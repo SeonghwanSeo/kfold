@@ -33,6 +33,10 @@ python scripts/train.py --config configs/train/stage_1.yaml
 Use `--num_gpus` and `--num_nodes` to select training resources, `--out_dir` for logs and checkpoints, and `--wandb` to enable Weights & Biases logging.
 Resume a run with `--resume_from_checkpoint /path/to/checkpoint.ckpt`.
 
+`KFoldForTrain` defaults to `kernel_backend="auto"`, selecting cuEquivariance when installed and PyTorch otherwise.
+Pass `kernel_backend="cuequiv"` or `kernel_backend="torch"` to select one explicitly in the Python API.
+`None` and the inference-only `"triton"` backend are not accepted for training.
+
 For a short debug run on one GPU with no data-loader workers or Weights & Biases logging:
 
 ```bash

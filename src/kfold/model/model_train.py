@@ -26,10 +26,14 @@ from kfold.utils.runtime import is_cuequivariance_installed
 
 
 class KFoldForTrain(KFold):
-    def __init__(self, config: KFoldConfig, *, kernel_backend: str | None = None):
+    def __init__(self, config: KFoldConfig, *, kernel_backend: str = "auto"):
         # Triton kernels support inference only.
-        if kernel_backend is None:
+        if kernel_backend == "auto":
             kernel_backend = "cuequiv" if is_cuequivariance_installed() else "torch"
+        if kernel_backend == "triton":
+            raise ValueError(
+                "The Triton backend is inference-only and cannot be used for training."
+            )
         super().__init__(config, kernel_backend=kernel_backend)
         self.is_compiled = False
 

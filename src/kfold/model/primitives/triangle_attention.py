@@ -84,9 +84,12 @@ def triton_triangular_attn(
             def cast(parameter: torch.Tensor) -> torch.Tensor:
                 return parameter.to(device=x.device, dtype=compute_dtype)
 
+            def cast_fp32(parameter: torch.Tensor) -> torch.Tensor:
+                return parameter.to(device=x.device, dtype=torch.float32)
+
             cached = precompute(
-                cast(module.layer_norm.weight),
-                cast(module.layer_norm.bias),
+                cast_fp32(module.layer_norm.weight),
+                cast_fp32(module.layer_norm.bias),
                 cast(module.mha.linear_q.weight).t().contiguous(),
                 cast(module.mha.linear_k.weight).t().contiguous(),
                 cast(module.mha.linear_v.weight).t().contiguous(),
@@ -106,7 +109,8 @@ def triton_triangular_attn(
 
         length, channel = x.shape[-2:]
         batch_shape = x.shape[:-3]
-        flat_x = x.to(compute_dtype).reshape(-1, length, length, channel)
+        # Normalize the original residual stream before rounding projection inputs.
+        flat_x = x.reshape(-1, length, length, channel)
         flat_mask = torch.broadcast_to(mask.bool(), x.shape[:-1]).reshape(
             -1, length, length
         )

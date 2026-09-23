@@ -140,7 +140,7 @@ class KFold(torch.nn.Module):
         self,
         config: KFoldConfig,
         *,
-        kernel_backend: str | None = None,
+        kernel_backend: str = "auto",
         atlaslm: torch.nn.Module | None = None,
     ):
         super().__init__()
@@ -553,7 +553,7 @@ class KFold(torch.nn.Module):
         use_struct_encoder: bool = True,
         use_rna_encoder: bool = True,
         cpu_offload: bool = False,
-        kernel_backend: str | None = None,
+        kernel_backend: str = "auto",
     ) -> Self:
         """Load a K-Fold from a pretrained model.
 
@@ -576,10 +576,10 @@ class KFold(torch.nn.Module):
             on CPU between inference calls. Move each to the input device only
             for feature extraction. Default is False.
         kernel_backend : str, optional
-            Select the triangle attention/multiplication backend: "torch", "cuequiv", or
-            "triton". Triton requires CUDA and supports inference only.
-            When omitted, prefer Triton when available, then cuEquivariance,
-            then PyTorch.
+            Kernel backend: "auto" (default), "torch", "cuequiv", or "triton".
+            Automatic selection prefers Triton when available, then
+            cuEquivariance, then PyTorch. None is not accepted.
+            Triton requires CUDA and supports inference only.
         """
         from huggingface_hub import snapshot_download
 

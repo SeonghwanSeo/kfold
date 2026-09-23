@@ -96,7 +96,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--kernel",
         dest="kernel_backend",
-        choices=("torch", "cuequiv", "triton"),
+        type=str,
+        default="auto",
+        choices=("auto", "torch", "triton", "cuequiv"),
         help="Kernel backend for K-Fold and AtlasFold apo preparation.",
     )
     parser.add_argument(
@@ -340,9 +342,8 @@ def run(args: argparse.Namespace) -> None:
     logger.info("Input path: %s", input_path)
     logger.info("Output path: %s", output_path)
 
-    # Select the kernel backend if not explicitly specified.
-    if args.kernel_backend is None:
-        args.kernel_backend = select_kernel_backend(args.kernel_backend)
+    # Resolve the kernel backend, preferring Triton when unspecified.
+    args.kernel_backend = select_kernel_backend(args.kernel_backend)
     logger.info("Kernel backend: %s.", args.kernel_backend)
 
     queries = _load_queries(args)

@@ -61,6 +61,11 @@ Modifications use `Modification(index=4, ccd="SEP")`; bonds use `Bond(atom1=("A"
 | `use_struct_encoder` | `True` | Load the protein structure encoder; disabling saves memory while retaining apo coordinates. |
 | `use_rna_encoder` | `True` | Load the RNA encoder; disable only for queries without RNA. |
 | `cpu_offload` | `False` | Offload encoders to CPU: less GPU memory, more CPU memory and transfer time. |
+| `kernel_backend` | `"auto"` | `"auto"`, `"triton"`, `"cuequiv"`, or `"torch"`; automatic selection prefers Triton, then cuEquivariance, then PyTorch. |
+
+Omit `kernel_backend` or pass `"auto"` for automatic selection; `None` is not accepted.
+`KFoldRunner` uses the model's selected backend for AtlasFold apo preparation as well.
+Triton requires CUDA and supports inference only.
 
 With `cpu_offload=True`, use the returned model directly with `KFoldRunner`; calling `.cuda()` or `.to("cuda")` afterward moves the offloaded encoders back to GPU.
 

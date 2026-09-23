@@ -105,7 +105,7 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
             "disabled" if args.disable_struct_encoder else "enabled",
             "disabled" if args.disable_rna_encoder else "enabled",
             args.kernel_backend,
-            args.cpu_offload,
+            "enabled" if args.cpu_offload else "disabled",
         )
         logger.info(
             "Starting complex inference: seeds=%s, num_samples=%d, "
@@ -153,7 +153,29 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
             args.out_dir / name,
             perf_counter() - summary_start,
         )
-    logger.info("K-Fold inference complete in %.1f s.", perf_counter() - start)
+
+    n_jobs = len(jobs)
+    n_pending = len(pending)
+    n_prev = n_jobs - n_pending
+    n_succ = sum((job_dir / "done.txt").is_file() for _, _, job_dir in pending)
+    n_fail = n_pending - n_succ
+
+    if n_prev == 0 and n_fail == 0:
+        log = f"{n_jobs} jobs total, {n_succ} succeeded."
+    elif n_prev == 0 and n_fail > 0:
+        log = f"{n_jobs} jobs total, {n_succ} succeeded, {n_fail} incomplete."
+    elif n_prev > 0 and n_fail == 0:
+        log = f"{n_jobs} jobs total, {n_prev} previously completed, {n_succ} succeeded."
+    else:
+        log = (
+            f"{n_jobs} jobs total, {n_prev} previously completed, "
+            f"{n_succ} succeeded, {n_fail} incomplete."
+        )
+    logger.info(
+        "K-Fold inference finished in %.1f s: %s",
+        perf_counter() - start,
+        log,
+    )
 
 
 def _summarize_predictions(
@@ -228,7 +250,6 @@ def _summarize_predictions(
 def _worker(
     gpu_id: int, args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]
 ) -> None:
-    work = "model loading"
     try:
         # Load one model and runner for all jobs assigned to this GPU.
         logger.info("Loading K-Fold model and runner.")
@@ -250,19 +271,12 @@ def _worker(
             target = f"{query.name} (seed={seed})"
             job_start = perf_counter()
             logger.info("Job started: %s %s.", target, progress)
-            # Load aligned apo and prior candidates from the prepared query.
-            work = f"structure loading for {target}"
-            logger.info("Structure loading started.")
+
             stage_start = perf_counter()
-            apos, priors = runner.load_apo_and_prior(query)
-            logger.info(
-                "Structure loading completed in %.1f s.",
-                perf_counter() - stage_start,
-            )
-            # Encode apo structures and construct the complex model input.
-            work = f"featurization for {target}"
             logger.info("Featurization started.")
-            stage_start = perf_counter()
+            # Load aligned apo and prior candidates from the prepared query.
+            apos, priors = runner.load_apo_and_prior(query)
+            # Encode apo structures and construct the complex model input.
             item = runner.build_input(
                 query, seed, args.num_samples, apos=apos, priors=priors
             )
@@ -274,7 +288,6 @@ def _worker(
                 perf_counter() - stage_start,
             )
             # Run complex prediction and report the highest-ranked sample.
-            work = f"K-Fold prediction for {target}"
             logger.info("Inference started.")
             stage_start = perf_counter()
             result = runner.predict_from_input(
@@ -303,7 +316,6 @@ def _worker(
                 scores["ranking_score"],
             )
             # Save outputs before marking the query/seed job complete.
-            work = f"output saving for {target}"
             logger.info("Saving started.")
             stage_start = perf_counter()
             result.settings["shared_apo"] = args.share_apo_seeds is not None
@@ -328,6 +340,6 @@ def _worker(
             )
     except torch.cuda.OutOfMemoryError:
         logger.error(
-            f"K-Fold GPU {gpu_id}: out of memory during {work}. "
+            f"K-Fold GPU {gpu_id}: out of memory. "
             "Enable --cpu-offload to reduce inference memory use."
         )

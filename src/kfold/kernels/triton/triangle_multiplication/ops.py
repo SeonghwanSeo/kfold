@@ -16,7 +16,6 @@
 
 import torch
 
-from .._common.ln_absorption import absorb_ln
 from .kernels import input_phase, output_phase
 
 
@@ -30,33 +29,20 @@ def precompute(
     p_out_weight,
     g_out_weight,
 ):
-    """Fold LayerNorm affine parameters into the four projection weights."""
-    proj_dtype = p_in_weight.dtype
-    p_in_c, sWp_in, Bp_in = absorb_ln(
-        p_in_weight, norm_in_weight, norm_in_bias, weight_dtype=proj_dtype
-    )
-    g_in_c, sWg_in, Bg_in = absorb_ln(
-        g_in_weight, norm_in_weight, norm_in_bias, weight_dtype=proj_dtype
-    )
-    p_out_c, sWp_out, Bp_out = absorb_ln(
-        p_out_weight, norm_out_weight, norm_out_bias, weight_dtype=proj_dtype
-    )
-    g_out_c, sWg_out, Bg_out = absorb_ln(
-        g_out_weight, norm_in_weight, norm_in_bias, weight_dtype=proj_dtype
-    )
+    """Pack projections and retain FP32 LayerNorm affine parameters.
+
+    Normalizing before the dot products avoids quantized folded weights and
+    cancellation when inputs have a large mean, while keeping the kernels fused.
+    """
     return {
-        "p_in_combined": p_in_c,
-        "g_in_combined": g_in_c,
-        "p_out_combined": p_out_c,
-        "g_out_combined": g_out_c,
-        "sum_W_p_in": sWp_in,
-        "sum_W_g_in": sWg_in,
-        "sum_W_p_out": sWp_out,
-        "sum_W_g_out": sWg_out,
-        "B_p_in_const": Bp_in,
-        "B_g_in_const": Bg_in,
-        "B_p_out_const": Bp_out,
-        "B_g_out_const": Bg_out,
+        "p_in_weight": p_in_weight.contiguous(),
+        "g_in_weight": g_in_weight.contiguous(),
+        "p_out_weight": p_out_weight.contiguous(),
+        "g_out_weight": g_out_weight.contiguous(),
+        "norm_in_weight": norm_in_weight.float().contiguous(),
+        "norm_in_bias": norm_in_bias.float().contiguous(),
+        "norm_out_weight": norm_out_weight.float().contiguous(),
+        "norm_out_bias": norm_out_bias.float().contiguous(),
     }
 
 
@@ -65,12 +51,10 @@ def forward(x, pre, *, direction, mask=None, eps=1e-5):
     ab_t = input_phase(
         x,
         mask,
-        pre["p_in_combined"],
-        pre["g_in_combined"],
-        pre["sum_W_p_in"],
-        pre["sum_W_g_in"],
-        pre["B_p_in_const"],
-        pre["B_g_in_const"],
+        pre["p_in_weight"],
+        pre["g_in_weight"],
+        pre["norm_in_weight"],
+        pre["norm_in_bias"],
         eps,
     )  # (2D, B, L, L)
 
@@ -87,12 +71,12 @@ def forward(x, pre, *, direction, mask=None, eps=1e-5):
     return output_phase(
         y,
         x,
-        pre["p_out_combined"],
-        pre["g_out_combined"],
-        pre["sum_W_p_out"],
-        pre["sum_W_g_out"],
-        pre["B_p_out_const"],
-        pre["B_g_out_const"],
+        pre["p_out_weight"],
+        pre["g_out_weight"],
+        pre["norm_out_weight"],
+        pre["norm_out_bias"],
+        pre["norm_in_weight"],
+        pre["norm_in_bias"],
         eps,
     )
 

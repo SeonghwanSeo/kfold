@@ -88,12 +88,16 @@ def forward(
     if mask is not None and mask.shape != (B, N, N):
         raise ValueError(f"mask must have shape {(B, N, N)}, got {mask.shape}")
     # x̃ = LN(x) computed once and shared by the kernels and the gate.
-    X_ln = torch.nn.functional.layer_norm(
-        X,
-        (C_in,),
-        pre["W_ln"].to(X.dtype),
-        pre["B_ln"].to(X.dtype) if pre["B_ln"] is not None else None,
-        eps,
+    X_ln = (
+        torch.nn.functional.layer_norm(
+            X.float(),
+            (C_in,),
+            pre["W_ln"].float(),
+            pre["B_ln"].float() if pre["B_ln"] is not None else None,
+            eps,
+        )
+        .to(X.dtype)
+        .to(pre["WQ_c"].dtype)
     )
 
     Np = ((N + pad_to - 1) // pad_to) * pad_to if pad_to and pad_to > 1 else N
@@ -108,7 +112,7 @@ def forward(
             mask_k = torch.nn.functional.pad(
                 mask.bool(), (0, Np - N, 0, Np - N), value=False
             )
-        O_pad = torch.empty(B, Np, Np, H * D, device=X.device, dtype=X.dtype)
+        O_pad = torch.empty(B, Np, Np, H * D, device=X.device, dtype=X_ln.dtype)
         triangle_attn_forward(
             X_ln_k,
             pre["WQ_c"],
@@ -123,7 +127,7 @@ def forward(
         )
         O_attn = O_pad[:, :N, :N]  # strided view; gate reads native batch/pair strides
     else:
-        O_attn = torch.empty(B, N, N, H * D, device=X.device, dtype=X.dtype)
+        O_attn = torch.empty(B, N, N, H * D, device=X.device, dtype=X_ln.dtype)
         triangle_attn_forward(
             X_ln,
             pre["WQ_c"],
