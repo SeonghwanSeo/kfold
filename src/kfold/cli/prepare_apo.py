@@ -111,7 +111,7 @@ def _pending_inputs(
             inputs.setdefault(seed, []).append(
                 ApoInput(query_name=query.name, sequence_index=index, entry=entry)
             )
-    num_entries = len({item.sequence for items in inputs.values() for item in items})
+    num_entries = sum(len({item.sequence for item in items}) for items in inputs.values())
     logger.info(
         "Apo preparation: %d jobs pending (%d complete); GPUs %s.",
         len(pending_jobs),
@@ -124,32 +124,30 @@ def _pending_inputs(
 def _distribute_inputs(
     inputs: dict[int | None, list[ApoInput]], num_gpus: int, method: str
 ) -> list[dict[int | None, list[ApoInput]]]:
-    """Distribute entries by length, keeping identical sequences on the same worker."""
-    entries = {item.sequence: item for items in inputs.values() for item in items}
+    """Distribute sequence/CLI seed pairs, keeping duplicate targets together."""
+    entries = {
+        (item.sequence, seed): item for seed, items in inputs.items() for item in items
+    }
     ordered_entries = sorted(
-        entries.values(),
-        key=lambda item: (
-            len(item.entry),
-            item.entry.kind,
-            item.query_name,
-            item.sequence_index,
+        entries,
+        key=lambda key: (
+            len(entries[key].entry),
+            entries[key].entry.kind,
+            entries[key].query_name,
+            entries[key].sequence_index,
         ),
     )
-    entry_order = {item.sequence: index for index, item in enumerate(ordered_entries)}
+    entry_order = {key: index for index, key in enumerate(ordered_entries)}
     num_workers = min(num_gpus, len(entries))
-    costs = [0] * len(ordered_entries)
-    for items in inputs.values():
-        for sequence in {item.sequence for item in items}:
-            index = entry_order[sequence]
-            costs[index] += len(ordered_entries[index].entry) ** 2
+    costs = [len(entries[key].entry) ** 2 for key in ordered_entries]
     groups = distribute(costs, num_workers, method)
     entry_ranks = {index: rank for rank, group in enumerate(groups) for index in group}
     worker_inputs: list[dict[int | None, list[ApoInput]]] = [
         {} for _ in range(num_workers)
     ]
     for seed, items in inputs.items():
-        for item in sorted(items, key=lambda item: entry_order[item.sequence]):
-            rank = entry_ranks[entry_order[item.sequence]]
+        for item in sorted(items, key=lambda item: entry_order[(item.sequence, seed)]):
+            rank = entry_ranks[entry_order[(item.sequence, seed)]]
             worker_inputs[rank].setdefault(seed, []).append(item)
     return worker_inputs
 
