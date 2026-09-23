@@ -14,7 +14,7 @@
 
 """Triton kernels for triangle multiplicative update projection phases.
 
-The shared kernel applies LayerNorm with folded projection parameters, sigmoid
+The shared kernel applies LayerNorm before projection, sigmoid
 gating, optional masking, and layout-aware stores.
 """
 
@@ -68,14 +68,14 @@ def fused_layer_norm_sigmoid_gated_transpose(
     X2_stride1,  # gate-branch input  (unused if not TWO_INPUTS)
     Wp_ptr,
     Wp_stride0,
-    Wp_stride1,  # (D_OUT, D) value proj (LN-folded)
+    Wp_stride1,  # (D_OUT, D) value projection
     Wg_ptr,
     Wg_stride0,
-    Wg_stride1,  # (D_OUT, D) gate proj  (LN-folded)
-    sWp_ptr,
-    sWg_ptr,
-    BPc_ptr,
-    BGc_ptr,
+    Wg_stride1,  # (D_OUT, D) gate projection
+    Norm1_weight_ptr,
+    Norm1_bias_ptr,
+    Norm2_weight_ptr,
+    Norm2_bias_ptr,
     Mask_ptr,
     Mask_stride0,
     Out_ptr,
@@ -127,6 +127,11 @@ def fused_layer_norm_sigmoid_gated_transpose(
     mean1 = tl.sum(X1_fp32, axis=-1) * inv_D
     diff1 = X1_fp32 - mean1[:, None]
     rstd1 = 1.0 / tl.sqrt(tl.sum(diff1 * diff1, axis=-1) * inv_D + EPS)
+    norm1_weight = tl.load(Norm1_weight_ptr + d_offs)
+    norm1_bias = tl.load(Norm1_bias_ptr + d_offs)
+    X1_norm = (diff1 * rstd1[:, None]) * norm1_weight[None, :] + norm1_bias[None, :]
+    # Match LayerNorm's output dtype, then the projection's autocast dtype.
+    X1_norm = X1_norm.to(X1.dtype).to(IO_DTYPE)
 
     # ---- load X2 (gate branch) — reuse X1 if single-input ----
     if TWO_INPUTS:
@@ -139,10 +144,12 @@ def fused_layer_norm_sigmoid_gated_transpose(
         mean2 = tl.sum(X2_fp32, axis=-1) * inv_D
         diff2 = X2_fp32 - mean2[:, None]
         rstd2 = 1.0 / tl.sqrt(tl.sum(diff2 * diff2, axis=-1) * inv_D + EPS)
+        norm2_weight = tl.load(Norm2_weight_ptr + d_offs)
+        norm2_bias = tl.load(Norm2_bias_ptr + d_offs)
+        X2_norm = (diff2 * rstd2[:, None]) * norm2_weight[None, :] + norm2_bias[None, :]
+        X2_norm = X2_norm.to(X2.dtype).to(IO_DTYPE)
     else:
-        X2 = X1
-        mean2 = mean1
-        rstd2 = rstd1
+        X2_norm = X1_norm
 
     if HAS_MASK:
         m_val = tl.load(Mask_ptr + m_ptr_offs * Mask_stride0, mask=m_mask, other=0.0).to(
@@ -163,15 +170,8 @@ def fused_layer_norm_sigmoid_gated_transpose(
             mask=k_mask[None, :],
             other=0.0,
         )
-        sWp = tl.load(sWp_ptr + k_offs, mask=k_mask, other=0.0)
-        sWg = tl.load(sWg_ptr + k_offs, mask=k_mask, other=0.0)
-        BPc = tl.load(BPc_ptr + k_offs, mask=k_mask, other=0.0)
-        BGc = tl.load(BGc_ptr + k_offs, mask=k_mask, other=0.0)
-
-        P = tl.dot(X1, Wp)  # value ← X1
-        G = tl.dot(X2, Wg)  # gate  ← X2
-        P = rstd1[:, None] * (P - mean1[:, None] * sWp[None, :]) + BPc[None, :]
-        G = rstd2[:, None] * (G - mean2[:, None] * sWg[None, :]) + BGc[None, :]
+        P = tl.dot(X1_norm, Wp)
+        G = tl.dot(X2_norm, Wg)
         Out = tl.sigmoid(G) * P
         if HAS_MASK:
             Out = Out * m_val[:, None]
@@ -195,7 +195,7 @@ def fused_layer_norm_sigmoid_gated_transpose(
 
 
 # ---------------------------------------------------------------------------
-# Phase launch wrappers (signatures unchanged — module.py depends on them)
+# Phase launch wrappers
 # ---------------------------------------------------------------------------
 def _launch(
     X1,
@@ -206,10 +206,10 @@ def _launch(
     X2_s1,
     Wp,
     Wg,
-    sWp,
-    sWg,
-    BPc,
-    BGc,
+    norm1_weight,
+    norm1_bias,
+    norm2_weight,
+    norm2_bias,
     mask,
     out,
     out_s0,
@@ -236,7 +236,7 @@ def _launch(
     # Length-independent BF16 configs measured for the Apo and main-trunk channels.
     kernel = fused_layer_norm_sigmoid_gated_transpose
     config = {}
-    if X1.dtype == torch.bfloat16 and D in (64, 256):
+    if Wp.dtype == torch.bfloat16 and D in (64, 256):
         kernel = kernel.fn
         if D == 64:
             config = dict(
@@ -267,10 +267,10 @@ def _launch(
         Wg,
         Wg.stride(0),
         Wg.stride(1),
-        sWp,
-        sWg,
-        BPc,
-        BGc,
+        norm1_weight,
+        norm1_bias,
+        norm2_weight,
+        norm2_bias,
         mask_ptr,
         mask_s0,
         out,
@@ -280,7 +280,7 @@ def _launch(
         D=D,
         D_OUT=D_OUT,
         EPS=eps,
-        IO_DTYPE=tl_io_dtype(X1.dtype),
+        IO_DTYPE=tl_io_dtype(Wp.dtype),
         HAS_MASK=has_mask,
         USE_INT64=use_int64,
         TWO_INPUTS=two_inputs,
@@ -293,20 +293,18 @@ def _launch(
 def input_phase(
     x,
     mask,
-    p_in_combined,
-    g_in_combined,
-    sum_W_p_in,
-    sum_W_g_in,
-    B_p_in_const,
-    B_g_in_const,
+    p_in_weight,
+    g_in_weight,
+    norm_in_weight,
+    norm_in_bias,
     eps,
 ):
     """Compute the masked input projection in D-major layout."""
     B, L, _, D = x.shape
-    D_OUT = p_in_combined.shape[0]
+    D_OUT = p_in_weight.shape[0]
     M = B * L * L
     x_flat = x.reshape(M, D)
-    out_t = torch.empty(D_OUT, M, device=x.device, dtype=x.dtype)  # (D_OUT, M)
+    out_t = torch.empty(D_OUT, M, device=x.device, dtype=p_in_weight.dtype)
     mask_flat = mask.reshape(M).to(torch.int8).contiguous() if mask is not None else None
     # X1=x (M,D): s0=token=D, s1=feature=1.  Out (D_OUT,M): s0=token=1, s1=feature=M.
     _launch(
@@ -316,12 +314,12 @@ def input_phase(
         None,
         0,
         0,
-        p_in_combined,
-        g_in_combined,
-        sum_W_p_in,
-        sum_W_g_in,
-        B_p_in_const,
-        B_g_in_const,
+        p_in_weight,
+        g_in_weight,
+        norm_in_weight,
+        norm_in_bias,
+        norm_in_weight,
+        norm_in_bias,
         mask_flat,
         out_t,
         1,
@@ -340,21 +338,21 @@ def input_phase(
 def output_phase(
     y_t,
     x,
-    p_out_combined,
-    g_out_combined,
-    sum_W_p_out,
-    sum_W_g_out,
-    B_p_out_const,
-    B_g_out_const,
+    p_out_weight,
+    g_out_weight,
+    norm_out_weight,
+    norm_out_bias,
+    norm_in_weight,
+    norm_in_bias,
     eps,
 ):
     """Gate the triangle product and return row-major output."""
     B, L, _, D = x.shape
-    D_OUT = p_out_combined.shape[0]
+    D_OUT = p_out_weight.shape[0]
     M = B * L * L
     y_flat = y_t.reshape(D, M)  # (D, M)
     x_flat = x.reshape(M, D)
-    out = torch.empty(M, D_OUT, device=x.device, dtype=x.dtype)  # (M, D_OUT)
+    out = torch.empty(M, D_OUT, device=x.device, dtype=p_out_weight.dtype)
     # X1=y (D,M): s0=token=1, s1=feature=M. X2=x (M,D): s0=D, s1=1.
     # Out (M,D_OUT): s0=D_OUT, s1=1.
     _launch(
@@ -364,12 +362,12 @@ def output_phase(
         x_flat,
         x_flat.stride(0),
         x_flat.stride(1),
-        p_out_combined,
-        g_out_combined,
-        sum_W_p_out,
-        sum_W_g_out,
-        B_p_out_const,
-        B_g_out_const,
+        p_out_weight,
+        g_out_weight,
+        norm_out_weight,
+        norm_out_bias,
+        norm_in_weight,
+        norm_in_bias,
         None,
         out,
         out.stride(0),

@@ -118,21 +118,25 @@ def triton_triangluar_mult(
             def cast(parameter: torch.Tensor) -> torch.Tensor:
                 return parameter.to(device=x.device, dtype=compute_dtype)
 
+            def cast_fp32(parameter: torch.Tensor) -> torch.Tensor:
+                return parameter.to(device=x.device, dtype=torch.float32)
+
             cached = precompute(
-                cast(module.layernorm_in.weight),
-                cast(module.layernorm_in.bias),
+                cast_fp32(module.layernorm_in.weight),
+                cast_fp32(module.layernorm_in.bias),
                 cast(module.linear_p_in.weight),
                 cast(module.linear_g_in.weight),
-                cast(module.layernorm_out.weight),
-                cast(module.layernorm_out.bias),
+                cast_fp32(module.layernorm_out.weight),
+                cast_fp32(module.layernorm_out.bias),
                 cast(module.linear_p_out.weight),
                 cast(module.linear_g_out.weight),
             )
             module._triton_multiplication_cache = cached
             module._triton_multiplication_cache_key = key
 
+        # Normalize the original residual stream before rounding projection inputs.
         output = forward(
-            x.to(compute_dtype),
+            x,
             cached,
             direction=direction,
             mask=mask.bool(),
