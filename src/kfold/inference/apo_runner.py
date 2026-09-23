@@ -233,7 +233,7 @@ class ApoRunner:
         self,
         device: torch.device | str = "cuda",
         *,
-        kernel_backend: str | None = None,
+        kernel_backend: str = "auto",
         config: ApoConfig | None = None,
         cache_dir: str | Path | None = None,
         lm: AtlasLM | None = None,
@@ -245,9 +245,9 @@ class ApoRunner:
         ----------
         device : torch.device | str
             Model device.
-        kernel_backend : str | None
-            AtlasFold kernel backend: torch, cuequiv, or triton.
-            When omitted, use AtlasFold automatic selection.
+        kernel_backend : str
+            AtlasFold kernel backend: auto (default), torch, cuequiv, or triton.
+            With auto, use AtlasFold automatic selection. None is not accepted.
         config : ApoConfig | None
             Apo generation settings.
         cache_dir : str | Path | None
@@ -258,6 +258,11 @@ class ApoRunner:
             Emit model-loading logs.
         """
         self.device = torch.device(device)
+        if kernel_backend not in ("auto", "torch", "triton", "cuequiv"):
+            raise ValueError(
+                f"Unknown kernel_backend {kernel_backend!r}. "
+                "Expected 'auto', 'torch', 'triton', or 'cuequiv'."
+            )
         self.kernel_backend = kernel_backend
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.config: ApoConfig = config if config is not None else ApoConfig()
@@ -318,7 +323,7 @@ class ApoRunner:
             model = load_atlasfold(
                 model_name,
                 self.device,
-                kernel=self.kernel_backend if self.kernel_backend is not None else "auto",
+                kernel=self.kernel_backend,
                 cache_dir=self.cache_dir,
                 lm=self.lm,
             )

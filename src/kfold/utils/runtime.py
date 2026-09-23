@@ -41,17 +41,29 @@ def is_triton_available() -> bool:
     return is_cuda_available()
 
 
-def select_kernel_backend(backend: str | None = None) -> str:
-    """Resolve the kernel backend, preferring Triton when unspecified."""
-    if backend is None:
+def select_kernel_backend(backend: str = "auto") -> str:
+    """Resolve auto to Triton, cuEquivariance, or PyTorch, in that order."""
+    if backend not in ("auto", "torch", "triton", "cuequiv"):
+        raise ValueError(
+            f"Unknown kernel_backend {backend!r}. "
+            "Expected 'auto', 'torch', 'triton', or 'cuequiv'."
+        )
+    if backend == "auto":
         if is_triton_available():
             return "triton"
         if is_cuequivariance_installed():
             return "cuequiv"
         return "torch"
-    if backend not in ("torch", "cuequiv", "triton"):
-        raise ValueError(
-            f"Unknown kernel_backend {backend!r}. "
-            "Expected 'torch', 'cuequiv', or 'triton'."
-        )
+    if backend == "triton":
+        if not is_triton_available():
+            raise ValueError(
+                "Triton is not available. "
+                "Please ensure that Triton is installed and CUDA is available."
+            )
+    elif backend == "cuequiv":
+        if not is_cuequivariance_installed():
+            raise ValueError(
+                "cuequivariance_torch is not installed. "
+                "Please install it to use the 'cuequiv' backend."
+            )
     return backend

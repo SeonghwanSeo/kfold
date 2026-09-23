@@ -23,7 +23,7 @@ dependencies = [
   "pyyaml",
   # apo sampler
   "numba",
-  "atlasfold>=1.0.3",
+  "atlasfold>=1.0.4",
 ]
 
 [project.scripts]

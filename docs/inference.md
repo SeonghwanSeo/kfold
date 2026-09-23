@@ -47,14 +47,14 @@ You can also provide apo structures from experiments or other prediction tools.
 Model weights and the chemical component dictionary (CCD) are downloaded automatically.
 Use `--cache-dir` to select a download cache.
 
-The default backend selection prefers Triton, then cuEquivariance, then PyTorch, depending on availability.
-Use `--kernel {triton,cuequiv,torch}` to select the backend explicitly for K-Fold complex prediction:
+The default backend, `auto`, prefers Triton, then cuEquivariance, then PyTorch, depending on availability.
+Use `--kernel {auto,triton,cuequiv,torch}` to select the backend for K-Fold complex prediction and AtlasFold apo preparation:
 
 ```bash
 kfold --input query.yaml --out-dir predictions/ --kernel triton
 ```
 
-This option does not change the backend used by AtlasFold for apo preparation.
+The selected backend is used for both stages.
 The `cuequiv` backend requires cuEquivariance to be installed separately.
 
 From the repository root, the script entry point provides the same interface:
@@ -136,7 +136,7 @@ The default `--stage all` prepares apos and predicts complexes.
 | `--num-samples` | `5` | Complex predictions per query/seed. |
 | `--num-recycles` | `10` | Model recycling iterations. |
 | `--num-steps` | `100` | Diffusion steps. |
-| `--kernel` | Automatic | K-Fold kernel backend: `triton`, `cuequiv`, or `torch`; selects the first available in that order when omitted. |
+| `--kernel` | `auto` | Backend for K-Fold and AtlasFold apo preparation: `auto`, `triton`, `cuequiv`, or `torch`; `auto` prefers Triton, then cuEquivariance, then PyTorch. |
 | `--gpu-ids` | `0` | Unique non-negative visible CUDA device IDs. |
 | `--disable-struct-encoder` | Off | Disable the protein structure encoder to save memory. |
 | `--disable-rna-encoder` | Off | Disable the RNA encoder; only for queries without RNA. |
