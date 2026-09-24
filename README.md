@@ -45,7 +45,7 @@ You can also [provide apo structures](docs/inference.md#providing-apo-structures
 Use `--kernel {auto,triton,cuequiv,torch}` to select the backend for K-Fold complex prediction and AtlasFold apo preparation.
 The default, `auto`, prefers Triton, then cuEquivariance, then PyTorch, depending on availability.
 
-For multi-seed inference, use `--share-apo-seeds 1 2 3` to generate one apo ensemble per target and reuse it across all inference seeds specified by `--seeds`.
+For multi-seed inference, use `--share-apo-seeds 1 2 3` to generate an apo ensemble for each protein entry and reuse it across all inference seeds specified by `--seeds`.
 This is particularly useful for relatively rigid apo structures or runs with many inference seeds; see [automatic apo generation](docs/inference.md#automatic-generation).
 
 Use `--stage apo` to prepare apo structures only, or `--stage complex` to predict complexes from prepared apos:
