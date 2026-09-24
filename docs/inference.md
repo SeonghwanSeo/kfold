@@ -131,8 +131,9 @@ The default `--stage all` prepares apos and predicts complexes.
 | `--stage` | `all` | Both stages (`all`), apo preparation (`apo`), or prediction from prepared inputs (`complex`). |
 | `--seeds` | `1` | One or more unique positive complex inference seeds. |
 | `--apo-config` | Built-in defaults | YAML settings for apo batching and AtlasFold sampling. |
-| `--num-apos` | `1` | Generated apos per protein entry per inference seed (1–5); excludes `--share-apo-seeds`. |
-| `--share-apo-seeds` | Off | Unique positive seeds for apos shared across inference seeds; excludes `--num-apos`. |
+| `--num-apos` | `1` | Generated apos per protein entry per inference seed without shared seeds (1–5). |
+| `--share-apo-seeds` | Off | Unique positive AtlasFold seeds for generating an apo ensemble shared across inference seeds. |
+| `--num-shared-apos` | `5` | Maximum apo candidates used per protein entry with shared seeds (1–5). |
 | `--num-samples` | `5` | Complex predictions per query/seed. |
 | `--num-recycles` | `10` | Model recycling iterations. |
 | `--num-steps` | `100` | Diffusion steps. |
@@ -302,26 +303,23 @@ These are generated automatically, or you can provide your own.
 
 ### Automatic generation
 
-K-Fold generates structures with AtlasFold for individual proteins and AtlasFold-Multimer for protein pairs.
+K-Fold generates apo structures with AtlasFold for individual proteins and AtlasFold-Multimer for protein pairs.
+
 By default, apo structures are generated separately for each complex inference seed.
-Use `--num-apos` to choose how many apo structures to generate for each protein or pair per inference seed (1–5; default: 1).
+Use `--num-apos` to choose how many apo structures to generate for each protein entry per inference seed (1–5; default: 1).
+For example, with `--seeds 42 --num-apos 3`, AtlasFold uses seeds `421`, `422`, and `423`, generating five diffusion samples per apo seed by default.
 
-With `--num-apos N`, AtlasFold runs with N distinct seeds for each complex inference seed, generating five predictions per AtlasFold seed by default.
-The highest-ranked prediction from each seed provides an apo structure used to condition K-Fold, while all predictions across these seeds form the prior ensemble from which starting coordinates are sampled for the diffusion bridge.
-
-Use `--share-apo-seeds` to generate one apo ensemble per target and reuse its apo and prior structures across all complex inference seeds.
-Reusing the same ensemble avoids repeating apo generation for every inference seed.
-This is particularly useful for relatively rigid apo structures or runs with many inference seeds.
+Generating apos separately can be costly when running many inference seeds.
+Use `--share-apo-seeds` to generate an apo ensemble for each protein entry and reuse it across all complex inference seeds, with `--num-shared-apos` controlling how many candidates each entry uses:
 
 ```bash
-kfold --input query.yaml --out-dir predictions/ --seeds 1 2 3 4 5 --share-apo-seeds 7 11 42
+kfold --input query.yaml --out-dir predictions/ --seeds 1 2 3 4 5 6 7 8 9 10 --share-apo-seeds 7 11 42 --num-shared-apos 2
 ```
 
-This generates apos using AtlasFold seeds 7, 11, and 42, then reuses them for complex inference seeds 1 through 5.
-The number of shared seeds determines the apo count for each automatically generated protein entry.
-Provide at least one unique positive integer after `--share-apo-seeds`; it cannot be combined with `--num-apos`.
-Additional inference seeds can reuse the prepared shared ensemble without further apo generation.
-Use `--overwrite` with `--stage apo` or `--stage all` when changing the shared seeds or switching between shared and per-inference-seed apo generation.
+This generates three apo candidates per entry using AtlasFold seeds `7`, `11`, and `42`, then randomly selects two candidates from each entry's ensemble for each complex inference seed.
+Selection is reproducible for a given inference seed, and entries with fewer candidates use all available candidates.
+By default, up to five candidates are used per entry.
+Selecting a subset leaves the prior ensemble unchanged.
 
 ### Providing apo structures
 
@@ -339,8 +337,10 @@ sequences:
 
 List one or more PDB or mmCIF files under `apo`.
 Relative paths are resolved from the query file's directory.
-If a file contains multiple models, all are used.
-Provided structures replace automatic generation for that protein or pair.
+If a file contains multiple models, each model is included as an apo candidate.
+Provided structures replace automatic generation for that entry.
+With `--share-apo-seeds`, `--num-shared-apos` also limits the provided apo candidates used per entry during complex prediction.
+Without shared seeds, all provided candidates are used.
 
 ## Outputs and confidence
 

@@ -287,7 +287,8 @@ class KFoldRunner:
                 chain.fa_tokens = encoded["fa_token_id"].cpu().numpy().copy()
 
     def load_apo_and_prior(
-        self, query: Query
+        self,
+        query: Query,
     ) -> tuple[
         list[list[ApoChain] | list[ApoMultimer]], list[list[ApoChain] | list[ApoMultimer]]
     ]:
@@ -366,7 +367,15 @@ class KFoldRunner:
             Input ready for predict_from_input, including prepared structures.
         """
         # Encode apo candidates before building the complex input features.
-        for ensemble in apos:
+        for entry_index, ensemble in enumerate(apos, start=1):
+            if len(ensemble) > 5:
+                logger.warning(
+                    "%s (seed=%d): protein entry %d uses %d apo candidates, exceeding 5.",
+                    query.name,
+                    seed,
+                    entry_index,
+                    len(ensemble),
+                )
             for apo in ensemble:
                 self.tokenize_apo(apo)
         return self.input_pipeline.build_input(

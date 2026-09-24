@@ -58,20 +58,28 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="YAML settings for apo batching and AtlasFold prediction.",
     )
-    apo_generation = parser.add_mutually_exclusive_group()
-    apo_generation.add_argument(
+    parser.add_argument(
         "--num-apos",
         type=int,
-        help="Generated apos per protein entry per inference seed (1–5; default: 1).",
+        default=1,
+        help="Generated apos per protein entry per inference seed "
+        "without shared seeds (1–5; default: 1).",
     )
-    apo_generation.add_argument(
+    parser.add_argument(
         "--share-apo-seeds",
         type=int,
         nargs="+",
-        help="Generate shared apos with these seeds "
-        "(unique, positive; excludes --num-apos).",
+        help="Generate apos with these unique positive seeds "
+        "and reuse them across inference seeds.",
     )
     # Complex prediction settings.
+    parser.add_argument(
+        "--num-shared-apos",
+        type=int,
+        default=5,
+        help="Maximum apo candidates per protein entry with shared seeds "
+        "(1–5; default: 5).",
+    )
     parser.add_argument(
         "--num-samples",
         type=int,
@@ -216,8 +224,9 @@ def _load_queries(args: argparse.Namespace) -> list[Query]:
             )
 
     # Apo and complex sampling counts.
-    if args.num_apos is not None and not 1 <= args.num_apos <= 5:
-        raise ValueError("--num-apos must be between 1 and 5.")
+    for name in ("num_apos", "num_shared_apos"):
+        if not 1 <= getattr(args, name) <= 5:
+            raise ValueError(f"--{name.replace('_', '-')} must be between 1 and 5.")
     for name in ("num_samples", "num_recycles", "num_steps"):
         if getattr(args, name) < 1:
             raise ValueError(f"--{name.replace('_', '-')} must be positive.")

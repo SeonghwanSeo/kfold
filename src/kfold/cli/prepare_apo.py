@@ -142,9 +142,6 @@ def run(args: argparse.Namespace, queries: list[Query]) -> None:
     """Prepare apo structures for all queries."""
     start = perf_counter()
 
-    # Keep apo-specific defaults local to this stage.
-    args = copy.deepcopy(args)
-
     config = ApoConfig.load(args.apo_config) if args.apo_config else ApoConfig()
 
     # Different logic is used for per-seed apo generation vs. shared apo seeds.
@@ -153,10 +150,8 @@ def run(args: argparse.Namespace, queries: list[Query]) -> None:
         # Shared apo seeds require only one job per query.
         jobs = [(query, None, args.out_dir / query.name) for query in queries]
     else:
-        # CLI seeds are used for apo generation; default is 1.
-        args.num_apos = args.num_apos or 1
-        if args.num_apos < 1:
-            raise ValueError("Number of apo seeds must be at least 1.")
+        if not 1 <= args.num_apos <= 5:
+            raise ValueError("Number of generated apos must be between 1 and 5.")
 
         # Prepare a list of jobs for each query and inference seed
         jobs = [

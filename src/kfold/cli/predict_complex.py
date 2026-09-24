@@ -19,6 +19,7 @@ import csv
 import json
 import logging
 import math
+import random
 import shutil
 from pathlib import Path
 from time import perf_counter
@@ -143,11 +144,11 @@ def run(args: argparse.Namespace, queries: list[Query]) -> None:
             args.out_dir / name, name, args.seeds, args.num_samples
         ):
             continue
+
         # Record the K-Fold settings requested in this CLI invocation.
         settings = {
             "version": __version__,
             "seeds": args.seeds,
-            "shared_apo": args.share_apo_seeds is not None,
             "num_samples": args.num_samples,
             "num_recycles": args.num_recycles,
             "num_steps": args.num_steps,
@@ -155,6 +156,10 @@ def run(args: argparse.Namespace, queries: list[Query]) -> None:
             "use_rna_encoder": not args.disable_rna_encoder,
             "kernel_backend": args.kernel_backend,
         }
+        if args.share_apo_seeds is not None:
+            settings["share_apo_seeds"] = args.share_apo_seeds
+            settings["num_shared_apos"] = args.num_shared_apos
+
         (args.out_dir / name / "kfold_settings.json").write_text(
             json.dumps(settings, indent=2) + "\n"
         )
@@ -274,11 +279,21 @@ def _worker(
             job_start = perf_counter()
             logger.info("Job started: %s %s.", target, progress)
 
+            # Featurize the query.
             stage_start = perf_counter()
             logger.info("Featurization started.")
             # Load aligned apo and prior candidates from the prepared query.
             apos, priors = runner.load_apo_and_prior(query)
-            # Encode apo structures and construct the complex model input.
+            if args.share_apo_seeds is not None:
+                # Select candidates within each protein entry, preserving entry order.
+                rng = random.Random(seed)
+                apos = [
+                    rng.sample(candidates, args.num_shared_apos)
+                    if len(candidates) > args.num_shared_apos
+                    else candidates
+                    for candidates in apos
+                ]
+            # Prepare the input for complex prediction
             item = runner.build_input(
                 query, seed, args.num_samples, apos=apos, priors=priors
             )
@@ -289,6 +304,7 @@ def _worker(
                 item.ref_struct.num_atoms,
                 perf_counter() - stage_start,
             )
+
             # Run complex prediction and report the highest-ranked sample.
             logger.info("Inference started.")
             stage_start = perf_counter()
@@ -320,7 +336,9 @@ def _worker(
             # Save outputs before marking the query/seed job complete.
             logger.info("Saving started.")
             stage_start = perf_counter()
-            result.settings["shared_apo"] = args.share_apo_seeds is not None
+            if args.share_apo_seeds is not None:
+                result.settings["share_apo_seeds"] = args.share_apo_seeds
+                result.settings["num_shared_apos"] = args.num_shared_apos
             result.save(
                 job_dir,
                 save_confidence=args.save_confidence,
