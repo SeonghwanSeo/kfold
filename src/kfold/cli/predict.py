@@ -17,10 +17,8 @@
 import argparse
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from kfold.inference.query import Query
+from kfold.inference.query import Query
 
 logger = logging.getLogger("cli")
 
@@ -200,10 +198,8 @@ def _download_models(cache_dir: Path | None) -> None:
     logger.info("All model weights and assets are cached.")
 
 
-def _load_queries(args: argparse.Namespace) -> list["Query"]:
+def _load_queries(args: argparse.Namespace) -> list[Query]:
     """Validate runtime arguments and load queries in prediction order."""
-    from kfold.inference.query import Query
-
     # Validate all runtime arguments, regardless of the selected stages.
     # GPU selection and generation seeds.
     if not args.gpu_ids or any(gpu_id < 0 for gpu_id in args.gpu_ids):
@@ -220,8 +216,6 @@ def _load_queries(args: argparse.Namespace) -> list["Query"]:
             )
 
     # Apo and complex sampling counts.
-    if args.num_apos is None and args.share_apo_seeds is None:
-        args.num_apos = 1
     if args.num_apos is not None and not 1 <= args.num_apos <= 5:
         raise ValueError("--num-apos must be between 1 and 5.")
     for name in ("num_samples", "num_recycles", "num_steps"):
@@ -252,49 +246,6 @@ def _load_queries(args: argparse.Namespace) -> list["Query"]:
     return queries
 
 
-def _find_obsolete_queries(
-    args: argparse.Namespace, queries: list["Query"]
-) -> dict[Path, list[Path]]:
-    """Validate preparation mode changes and locate superseded query files."""
-    # Switching preparation layouts requires rebuilding the selected apo inputs.
-    obsolete_queries: dict[Path, list[Path]] = {}
-    for query in queries:
-        target_dir = args.out_dir / query.name
-        if args.share_apo_seeds is not None:
-            paths = list(target_dir.glob(f"{query.name}_seed-*/query.json"))
-        else:
-            path = target_dir / "query.json"
-            paths = [path] if path.is_file() else []
-        if not paths:
-            continue
-        if not args.overwrite or args.stage == "complex":
-            raise ValueError(
-                f"Changing apo sharing mode for {query.name} requires preparing "
-                "apos again with --overwrite and --stage apo or --stage all. "
-                "Use the same --share-apo-seeds setting for both stages."
-            )
-        obsolete_queries[target_dir] = paths
-
-    return obsolete_queries
-
-
-def _build_jobs(
-    args: argparse.Namespace, queries: list["Query"]
-) -> tuple[list[tuple["Query", int | None, Path]], list[tuple["Query", int, Path]]]:
-    """Build preparation and inference jobs using their respective output layouts."""
-    jobs = [
-        (query, seed, args.out_dir / query.name / f"{query.name}_seed-{seed}")
-        for query in queries
-        for seed in args.seeds
-    ]
-    apo_jobs = (
-        [(query, None, args.out_dir / query.name) for query in queries]
-        if args.share_apo_seeds is not None
-        else jobs
-    )
-    return apo_jobs, jobs
-
-
 def dry_run(args: argparse.Namespace) -> None:
     """Validate selected queries and report pending work without writing outputs."""
     from huggingface_hub import snapshot_download
@@ -305,7 +256,6 @@ def dry_run(args: argparse.Namespace) -> None:
     from kfold.inference.runner import ASSETS_REPO_ID
 
     queries = _load_queries(args)
-    _find_obsolete_queries(args, queries)
 
     logger.info("Checking query CCD codes.")
     ccd_path = (
@@ -316,12 +266,11 @@ def dry_run(args: argparse.Namespace) -> None:
     for query in queries:
         query.validate_ccd_codes(ccd.keys())
 
-    apo_jobs, jobs = _build_jobs(args, queries)
     logger.info("Input: %s; output: %s.", args.input, args.out_dir)
     if args.stage in ("all", "apo"):
-        prepare_apo(args, apo_jobs)
+        prepare_apo(args, queries)
     if args.stage in ("all", "complex"):
-        predict_complex(args, jobs)
+        predict_complex(args, queries)
     logger.info("Dry run complete; no models loaded or outputs written.")
 
 
@@ -332,6 +281,9 @@ def run(args: argparse.Namespace) -> None:
     from kfold.cli.predict_complex import run as predict_complex
     from kfold.cli.prepare_apo import run as prepare_apo
     from kfold.utils.runtime import select_kernel_backend
+
+    # Populate the shared cache before any GPU worker loads a model.
+    _download_models(args.cache_dir)
 
     input_path = args.input.resolve()
     output_path = args.out_dir.resolve()
@@ -346,30 +298,19 @@ def run(args: argparse.Namespace) -> None:
     args.kernel_backend = select_kernel_backend(args.kernel_backend)
     logger.info("Kernel backend: %s.", args.kernel_backend)
 
+    # Load queries
     queries = _load_queries(args)
-    obsolete_queries = _find_obsolete_queries(args, queries)
-    apo_jobs, jobs = _build_jobs(args, queries)
-
-    # Populate the shared cache before any GPU worker loads a model.
-    _download_models(args.cache_dir)
 
     # Disable Hugging Face progress bars to avoid cluttering the output.
     disable_progress_bars()
 
     # Prepare provided and generated apo structures.
     if args.stage in ("all", "apo"):
-        # Retire the previous layout before writing the replacement queries.
-        for target_dir, paths in obsolete_queries.items():
-            for done in target_dir.glob(f"{target_dir.name}_seed-*/done.txt"):
-                done.unlink()
-            for path in paths:
-                path.unlink()
-                (path.parent / "apo_setting.json").unlink(missing_ok=True)
-        prepare_apo(args, apo_jobs)
+        prepare_apo(args, queries)
 
     # Predict complexes from prepared apo structures.
     if args.stage in ("all", "complex"):
-        predict_complex(args, jobs)
+        predict_complex(args, queries)
 
     # Report completion after all selected stages finish.
     logger.info("Output path: %s", output_path)

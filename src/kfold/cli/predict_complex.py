@@ -51,57 +51,67 @@ def _load_prepared_query(query: Query, apo_dir: Path) -> Query:
     return prepared
 
 
-def dry_run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
+def dry_run(args: argparse.Namespace, queries: list[Query]) -> None:
     """Validate saved preparations and count pending inference jobs without writing."""
     pending = 0
-    for query, _, job_dir in jobs:
-        apo_dir = job_dir.parent if args.share_apo_seeds is not None else job_dir
-        apo_ready = is_apo_prepared(query, apo_dir)
-        # Check saved apo/prior paths even for completed dry-run jobs.
-        if apo_ready and not (args.stage == "all" and args.overwrite):
-            Query.load(apo_dir / "query.json")
+    for query in queries:
+        for seed in args.seeds:
+            job_dir = args.out_dir / query.name / f"{query.name}_seed-{seed}"
+            apo_dir = job_dir.parent if args.share_apo_seeds is not None else job_dir
+            apo_ready = is_apo_prepared(query, apo_dir)
+            # Complex-only runs require prepared inputs, including completed jobs.
+            if args.stage == "complex":
+                _load_prepared_query(query, apo_dir)
+            elif apo_ready and not args.overwrite:
+                Query.load(apo_dir / "query.json")
 
-        if (job_dir / "done.txt").is_file() and not args.overwrite and apo_ready:
-            continue
+            if (job_dir / "done.txt").is_file() and not args.overwrite and apo_ready:
+                continue
 
-        # A default dry run includes queries whose preparation has not run yet.
-        if args.stage == "complex":
-            _load_prepared_query(query, apo_dir)
-        pending += 1
+            pending += 1
 
     logger.info(
         "K-Fold inference: %d jobs pending (%d complete); GPUs %s.",
         pending,
-        len(jobs) - pending,
-        args.gpu_ids[: min(len(args.gpu_ids), pending)],
+        len(queries) * len(args.seeds) - pending,
+        args.gpu_ids[:pending],
     )
 
 
-def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
+def run(args: argparse.Namespace, queries: list[Query]) -> None:
     """Predict unfinished complex jobs and summarize their ranked outputs."""
     start = perf_counter()
+
+    # Load prepared inputs for unfinished query/seed jobs.
     pending = []
-    for query, seed, job_dir in jobs:
-        apo_dir = job_dir.parent if args.share_apo_seeds is not None else job_dir
-        if (
-            (job_dir / "done.txt").is_file()
-            and not args.overwrite
-            and is_apo_prepared(query, apo_dir)
-        ):
-            continue
-        query = _load_prepared_query(query, apo_dir)
-        pending.append((query, seed, job_dir))
+    for query in queries:
+        for seed in args.seeds:
+            job_dir = args.out_dir / query.name / f"{query.name}_seed-{seed}"
+            apo_dir = job_dir.parent if args.share_apo_seeds is not None else job_dir
+            if (
+                (job_dir / "done.txt").is_file()
+                and not args.overwrite
+                and is_apo_prepared(query, apo_dir)
+            ):
+                continue
+            prepared = _load_prepared_query(query, apo_dir)
+            pending.append((prepared, seed, job_dir))
+
+    n_jobs = len(queries) * len(args.seeds)
+    n_pending = len(pending)
+    n_prev = n_jobs - n_pending
 
     logger.info(
         "K-Fold inference: %d jobs pending (%d complete); GPUs %s.",
-        len(pending),
-        len(jobs) - len(pending),
-        args.gpu_ids[: min(len(args.gpu_ids), len(pending))],
+        n_pending,
+        n_prev,
+        args.gpu_ids[:n_pending],
     )
+
     # Invalidate previous completion records and run the pending GPU jobs.
     if pending:
         logger.info(
-            "Settings: struct_encoder=%s, rna_encoder=%s, kernel=%s, cpu_offload=%s",
+            "Settings: struct_encoder=%s, rna_encoder=%s, kernel=%s, cpu_offload=%s.",
             "disabled" if args.disable_struct_encoder else "enabled",
             "disabled" if args.disable_rna_encoder else "enabled",
             args.kernel_backend,
@@ -117,7 +127,7 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
         )
         for _, _, job_dir in pending:
             (job_dir / "done.txt").unlink(missing_ok=True)
-        num_workers = min(len(args.gpu_ids), len(pending))
+        num_workers = min(len(args.gpu_ids), n_pending)
         costs = [query.priority[0] ** 2 for query, _, _ in pending]
         groups = distribute(costs, num_workers, args.distribution)
         worker_jobs = [[pending[index] for index in group] for group in groups]
@@ -125,7 +135,8 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
 
     # Rank all requested seeds and save one representative result per query.
     logger.info("Summarizing predictions.")
-    for name in sorted({query.name for query, _, _ in jobs}):
+    for query in queries:
+        name = query.name
         logger.info("Ranking samples and saving best prediction for %s.", name)
         summary_start = perf_counter()
         if not _summarize_predictions(
@@ -154,27 +165,18 @@ def run(args: argparse.Namespace, jobs: list[tuple[Query, int, Path]]) -> None:
             perf_counter() - summary_start,
         )
 
-    n_jobs = len(jobs)
-    n_pending = len(pending)
-    n_prev = n_jobs - n_pending
     n_succ = sum((job_dir / "done.txt").is_file() for _, _, job_dir in pending)
     n_fail = n_pending - n_succ
-
-    if n_prev == 0 and n_fail == 0:
-        log = f"{n_jobs} jobs total, {n_succ} succeeded."
-    elif n_prev == 0 and n_fail > 0:
-        log = f"{n_jobs} jobs total, {n_succ} succeeded, {n_fail} incomplete."
-    elif n_prev > 0 and n_fail == 0:
-        log = f"{n_jobs} jobs total, {n_prev} previously completed, {n_succ} succeeded."
-    else:
-        log = (
-            f"{n_jobs} jobs total, {n_prev} previously completed, "
-            f"{n_succ} succeeded, {n_fail} incomplete."
-        )
+    summary = [f"{n_jobs} jobs total"]
+    if n_prev:
+        summary.append(f"{n_prev} previously completed")
+    summary.append(f"{n_succ} succeeded")
+    if n_fail:
+        summary.append(f"{n_fail} incomplete")
     logger.info(
-        "K-Fold inference finished in %.1f s: %s",
+        "K-Fold inference finished in %.1f s: %s.",
         perf_counter() - start,
-        log,
+        ", ".join(summary),
     )
 
 
