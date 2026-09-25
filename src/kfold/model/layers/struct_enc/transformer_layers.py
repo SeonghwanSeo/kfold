@@ -30,7 +30,6 @@ class RotaryEmbedding(torch.nn.Module):
     def init_cache(self) -> None:
         """Cache BF16 factors with the previous inference-time angle rounding."""
         positions = torch.arange(20_000, device=self.inv_freq.device)
-        # Match the original integer-position/BF16-frequency einsum before sin/cos.
         freqs = torch.einsum("i,j->ij", positions, self.inv_freq.bfloat16())
         self.register_buffer("_cos_cached", freqs.cos().tile(1, 2), persistent=False)
         self.register_buffer("_sin_cached", freqs.sin().tile(1, 2), persistent=False)
