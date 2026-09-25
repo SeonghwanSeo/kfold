@@ -28,9 +28,9 @@ class RotaryEmbedding(torch.nn.Module):
         self.init_cache()
 
     def init_cache(self) -> None:
-        """Build nonpersistent FP32 tables from the loaded rotary frequencies."""
-        positions = torch.arange(20_000, dtype=torch.float32, device=self.inv_freq.device)
-        freqs = torch.outer(positions, self.inv_freq.float())
+        """Cache BF16 factors with the previous inference-time angle rounding."""
+        positions = torch.arange(20_000, device=self.inv_freq.device)
+        freqs = torch.einsum("i,j->ij", positions, self.inv_freq.bfloat16())
         self.register_buffer("_cos_cached", freqs.cos().tile(1, 2), persistent=False)
         self.register_buffer("_sin_cached", freqs.sin().tile(1, 2), persistent=False)
 
