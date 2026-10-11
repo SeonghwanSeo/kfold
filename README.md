@@ -7,6 +7,8 @@ Through an apo-to-holo diffusion bridge, it models how unbound molecules assembl
 
 Preprint will be available soon.
 
+To use K-Fold with agentic AI, visit [HITS Bio Co-Scientist](https://hyperlab.ai/en/bio-co-scientist).
+
 ## Model parameters
 
 K-Fold uses pretrained [AtlasLM](https://github.com/SeonghwanSeo/atlasfold) for protein sequence representations and [TriProRep](https://github.com/hsjang0/TriProRep) for protein structure representations.
