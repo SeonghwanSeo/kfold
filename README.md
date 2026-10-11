@@ -77,7 +77,7 @@ K-Fold was developed at KAIST as part of the K-Fold initiative supported by the 
 
 Members of Team KAIST are listed below (alphabetical order):
 
-- **Project management:** Hyeongwoo Kim<sup>3,†</sup>
+- **Project management:** Hyeongwoo Kim<sup>3,†,‡</sup>
 - **Engineering lead:** Seonghwan Seo<sup>3,†</sup>
 - **K-Fold architecture:** Seokhyun Moon<sup>3,†</sup>, Jun Hyeong Kim<sup>3</sup>, Shinwoo Kim<sup>3</sup>, Minha Park<sup>3</sup>, Jisu Seo<sup>3</sup>, Mingyeong Shin<sup>3</sup>, Wonho Zhung<sup>3</sup>
 - **Protein structure encoder:** Hyosoon Jang<sup>1,†</sup>, Taewon Kim<sup>1,†</sup>, Hyunjin Seo<sup>1</sup>
@@ -86,7 +86,7 @@ Members of Team KAIST are listed below (alphabetical order):
 - **Kernel optimization:** Youngchan Kim<sup>4</sup>
 - **Supervision:** Sungsoo Ahn<sup>1</sup>, Dongsu Han<sup>4,1</sup>, Sung Ju Hwang<sup>1</sup>, Ho Min Kim<sup>2</sup>, Woo Youn Kim<sup>3</sup>, Gyu Rie Lee<sup>2</sup>, Byung-Ha Oh<sup>2</sup>
 
-<sup>†</sup> Core contributor; <sup>1</sup> KAIST AI; <sup>2</sup> KAIST Biological Sciences; <sup>3</sup> KAIST Chemistry; <sup>4</sup> KAIST Electrical Engineering.
+<sup>†</sup> Core contributor; <sup>‡</sup> Corresponding author; <sup>1</sup> KAIST AI; <sup>2</sup> KAIST Biological Sciences; <sup>3</sup> KAIST Chemistry; <sup>4</sup> KAIST Electrical Engineering.
 
 We thank our collaborators at [HITS](https://hits.ai) for their contributions to K-Fold.
 
