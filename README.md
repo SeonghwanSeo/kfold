@@ -7,8 +7,6 @@ Through an apo-to-holo diffusion bridge, it models how unbound molecules assembl
 
 Preprint will be available soon.
 
-To use K-Fold with agentic AI, visit [HITS Bio Co-Scientist](https://hyperlab.ai/en/bio-co-scientist).
-
 ## Model parameters
 
 K-Fold uses pretrained [AtlasLM](https://github.com/SeonghwanSeo/atlasfold) for protein sequence representations and [TriProRep](https://github.com/hsjang0/TriProRep) for protein structure representations.
@@ -68,6 +66,10 @@ The default, `auto`, prefers Triton, then cuEquivariance, then PyTorch, dependin
 ## Training
 
 See the [training guide](docs/training.md) for data preparation, training commands, and configuration.
+
+## Use K-Fold with co-scientist
+
+To use K-Fold with agentic AI, visit [HITS Bio Co-Scientist](https://hyperlab.ai/en/bio-co-scientist).
 
 ## Citation
 
